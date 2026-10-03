@@ -1,0 +1,1 @@
+[{"id":555,"user":{"login":"fleet-bot"},"body":"<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: in_progress\n\n```json\n{\"state\":\"in_progress\",\"branch\":\"main; rm -rf ~\",\"pr\":null,\"implementor_attempts\":1}\n```\n","created_at":"2026-09-28T00:01:00Z"}]

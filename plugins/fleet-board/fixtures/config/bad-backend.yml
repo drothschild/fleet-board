@@ -1,0 +1,1 @@
+board: { backend: jira, repo: a/b }

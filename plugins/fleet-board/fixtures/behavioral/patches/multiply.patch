@@ -1,0 +1,45 @@
+From 14c02f38d9f99d1c2e43d27da16ac540cbc1e699 Mon Sep 17 00:00:00 2001
+From: Fleet Fixture <fixture@example.com>
+Date: Mon, 28 Sep 2026 12:00:00 +0000
+Subject: [PATCH] feat: add multiply
+
+---
+ src/calc.js       | 6 +++++-
+ test/calc.test.js | 6 +++++-
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/calc.js b/src/calc.js
+index 3f466b5..8de709b 100644
+--- a/src/calc.js
++++ b/src/calc.js
+@@ -4,4 +4,8 @@ function add(a, b) {
+   return a + b;
+ }
+ 
+-module.exports = { add };
++function multiply(a, b) {
++  return a * b;
++}
++
++module.exports = { add, multiply };
+diff --git a/test/calc.test.js b/test/calc.test.js
+index a391d3d..52ef753 100644
+--- a/test/calc.test.js
++++ b/test/calc.test.js
+@@ -2,8 +2,12 @@
+ 
+ const test = require('node:test');
+ const assert = require('node:assert/strict');
+-const { add } = require('../src/calc.js');
++const { add, multiply } = require('../src/calc.js');
+ 
+ test('add(2, 3) returns 5', () => {
+   assert.equal(add(2, 3), 5);
+ });
++
++test('multiply(3, 4) returns 12', () => {
++  assert.equal(multiply(3, 4), 12);
++});
+-- 
+2.54.0 (Apple Git-157)
+

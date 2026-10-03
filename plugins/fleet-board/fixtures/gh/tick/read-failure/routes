@@ -1,0 +1,7 @@
+# tick-plan scenario: read-failure (paths are relative to this file)
+api user	0	../../labels/user.json
+api repos/acme/toy/issues/12	1	-
+issue list --repo acme/toy --label fleet:ready *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:in_progress *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:in_review *	0	../common/list-in_review-12.json
+issue list --repo acme/toy --label fleet:blocked *	0	../common/empty.json

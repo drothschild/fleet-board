@@ -1,0 +1,19 @@
+{
+  "name": "fleet-board",
+  "owner": {
+    "name": "David Rothschild"
+  },
+  "metadata": {
+    "description": "The fleet-board Claude Code plugin: a GitHub issue board as a work queue for coding agents.",
+    "version": "1.0.0",
+    "pluginRoot": "plugins"
+  },
+  "plugins": [
+    {
+      "name": "fleet-board",
+      "source": "./plugins/fleet-board",
+      "version": "0.1.0",
+      "description": "Turns a GitHub issue board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates."
+    }
+  ]
+}

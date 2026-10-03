@@ -1,0 +1,8 @@
+# tick-plan scenario: action-failures-blocked-no-pr (paths are relative to this file)
+api user	0	../../labels/user.json
+api repos/acme/toy/issues/20	0	../common/issue-20-blocked.json
+api --paginate repos/acme/toy/issues/20/comments	0	comments-20.json
+issue list --repo acme/toy --label fleet:ready *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:in_progress *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:in_review *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:blocked *	0	../common/list-blocked-20.json

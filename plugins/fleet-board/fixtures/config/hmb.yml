@@ -1,0 +1,16 @@
+# HMB Workout: existing Projects v2 board, column names unchanged
+board:
+  backend: github-projects
+  repo: drothschild/HMBWorkout
+  project_number: 1
+  states: { in_progress: "In progress", in_review: "In review", human_qa: "Require Human Inteteraction", wont_do: "Won't Do" }
+commands:
+  test_one: "npm test -- --runTestsByPath {file}"
+  typecheck: "npx tsc --noEmit"
+  lint: "npm run lint"
+worktrees:
+  dir: ".worktrees"
+  setup: "npm ci"
+  mutate_on_copy: true
+human_qa_paths: ["src/app/**", "src/components/**"]
+merge: { policy: human }

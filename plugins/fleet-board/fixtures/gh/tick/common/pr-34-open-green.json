@@ -1,0 +1,1 @@
+{"isDraft":false,"state":"OPEN","mergedAt":null,"statusCheckRollup":[{"__typename":"CheckRun","conclusion":"SUCCESS"},{"__typename":"StatusContext","state":"SUCCESS"}],"headRefOid":"abc1234"}

@@ -1,0 +1,1 @@
+[{"id":501,"user":{"login":"alice"},"body":"Looks good to me.","created_at":"2026-09-28T00:00:00Z"},{"id":555,"user":{"login":"fleet-bot"},"body":"<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: ready · Round: —\n\n```json\n{\"state\":\"ready\",\"branch\":\"fleet/12-custom\",\"pr\":null,\"round\":null}\n```\n","created_at":"2026-09-28T00:01:00Z"}]

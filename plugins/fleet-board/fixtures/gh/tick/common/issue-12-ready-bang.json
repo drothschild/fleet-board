@@ -1,0 +1,1 @@
+{"number":12,"title":"!!!","html_url":"https://github.com/acme/toy/issues/12","body":"Subtract two numbers.\n\n## Acceptance\n- subtract(2,5) returns -3\n","labels":[{"name":"fleet:ready"}]}

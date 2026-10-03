@@ -1,0 +1,27 @@
+board:
+  backend: github-labels          # or github-projects
+  repo: owner/name
+  # project_number: 1               # github-projects only
+  states: { human_qa: "Require Human Inteteraction" }   # optional overrides
+commands:
+  test_one: "npm test -- --runTestsByPath {file}"
+  typecheck: "npx tsc --noEmit"
+  lint: "npm run lint"
+  # qa_build: "scripts/qa-build.sh"  # optional
+worktrees:
+  dir: "../.fleet-worktrees"
+  setup: "npm ci"                  # optional, once per new worktree
+  mutate_on_copy: false
+test_paths: ["test/**", "**/*.test.js"]
+human_qa_paths: ["src/components/**"]
+merge: { policy: human }           # or auto
+review: { mutation: true, verify_claim: true, max_rounds: 3 }
+models: { manager: sonnet, implementor: sonnet, reviewer: opus, fixer: sonnet, escalate_after_rounds: 2 }
+limits:
+  concurrency: 6
+  max_hours: 8
+  max_cost_usd: 40
+  tick_interval: 300
+  max_consecutive_failures: 3
+  max_turns: 150
+headless: { permission_mode: auto }

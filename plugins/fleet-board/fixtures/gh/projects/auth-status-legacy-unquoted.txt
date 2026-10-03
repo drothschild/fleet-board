@@ -1,0 +1,5 @@
+github.com
+  ✓ Logged in to github.com as REDACTED (keyring)
+  ✓ Git operations for github.com configured to use https protocol.
+  ✓ Token: gho_REDACTED
+  ✓ Token scopes: gist, project, read:org, repo, workflow

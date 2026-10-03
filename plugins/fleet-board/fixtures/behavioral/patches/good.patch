@@ -1,0 +1,49 @@
+From 20ebabf6473a6c722554e819584f7f1d68330c22 Mon Sep 17 00:00:00 2001
+From: Fleet Fixture <fixture@example.com>
+Date: Mon, 28 Sep 2026 12:00:00 +0000
+Subject: [PATCH] feat: add subtract
+
+---
+ src/calc.js       |  6 +++++-
+ test/calc.test.js | 10 +++++++++-
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/src/calc.js b/src/calc.js
+index 3f466b5..35314d7 100644
+--- a/src/calc.js
++++ b/src/calc.js
+@@ -4,4 +4,8 @@ function add(a, b) {
+   return a + b;
+ }
+ 
+-module.exports = { add };
++function subtract(a, b) {
++  return a - b;
++}
++
++module.exports = { add, subtract };
+diff --git a/test/calc.test.js b/test/calc.test.js
+index a391d3d..dc040fe 100644
+--- a/test/calc.test.js
++++ b/test/calc.test.js
+@@ -2,8 +2,16 @@
+ 
+ const test = require('node:test');
+ const assert = require('node:assert/strict');
+-const { add } = require('../src/calc.js');
++const { add, subtract } = require('../src/calc.js');
+ 
+ test('add(2, 3) returns 5', () => {
+   assert.equal(add(2, 3), 5);
+ });
++
++test('subtract(5, 2) returns 3', () => {
++  assert.equal(subtract(5, 2), 3);
++});
++
++test('subtract(2, 5) returns -3', () => {
++  assert.equal(subtract(2, 5), -3);
++});
+-- 
+2.54.0 (Apple Git-157)
+

@@ -1,0 +1,23 @@
+## Status
+clean
+
+## Findings
+- none
+
+## For the card
+Both Acceptance bullets map to a test, and every mutant was killed.
+
+## Acceptance map
+- f(x) -> y is returned -> test/a.test.js::t
+- subtract(2, 5) returns -3 -> test/calc.test.js::subtract(2, 5) returns -3
+
+## Mutation
+killed: 2 survived: 0 invalid: 1
+
+## Claim check
+claim: node --test test/calc.test.js passes 3 tests
+command: `node --test test/calc.test.js`
+result: tests 3, pass 3, fail 0
+matches: yes
+
+VERIFIED: `node --test test/calc.test.js` -> 3 passing tests

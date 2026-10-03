@@ -1,0 +1,10 @@
+# tick-plan scenario: in-review-human-qa-path (paths are relative to this file)
+api user	0	../../labels/user.json
+api repos/acme/toy/issues/12	0	../common/issue-12-in_review.json
+api --paginate repos/acme/toy/issues/12/comments	0	comments-12.json
+pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid	0	../common/pr-34-draft.json
+pr view 34 --repo acme/toy --json files*	0	../common/files-components.json
+issue list --repo acme/toy --label fleet:ready *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:in_progress *	0	../common/empty.json
+issue list --repo acme/toy --label fleet:in_review *	0	../common/list-in_review-12.json
+issue list --repo acme/toy --label fleet:blocked *	0	../common/empty.json

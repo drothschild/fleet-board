@@ -1,0 +1,30 @@
+{
+  "data": {
+    "repository": {
+      "issue": {
+        "projectItems": {
+          "nodes": [
+            {
+              "id": "PVTI_project2_item",
+              "project": {
+                "number": 2
+              },
+              "fieldValueByName": {
+                "name": "Done"
+              }
+            },
+            {
+              "id": "PVTI_lAHOACFUls4BfgODzg6jCC4",
+              "project": {
+                "number": 1
+              },
+              "fieldValueByName": {
+                "name": "In review"
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+ghe.example.com
+  ✓ Logged in to ghe.example.com account REDACTED (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: gho_REDACTED
+  - Token scopes: 'gist', 'project', 'read:org', 'repo', 'workflow'
+
+github.com
+  ✓ Logged in to github.com account REDACTED (keyring)
+  - Active account: true
+  - Git operations protocol: https
+  - Token: gho_REDACTED
+  - Token scopes: 'gist', 'read:org', 'repo', 'workflow'

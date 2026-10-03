@@ -1,0 +1,8 @@
+board:
+  repo: __SANDBOX_REPO__
+commands:
+  test_one: "node --test {file}"
+test_paths: ["test/**"]
+worktrees:
+  dir: "../.fleet-worktrees"
+review: { mutation: true, verify_claim: true, max_rounds: 3 }

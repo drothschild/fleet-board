@@ -1,0 +1,5 @@
+board:
+  repo: acme/toy
+review:
+  mutation:
+    enabled: true
