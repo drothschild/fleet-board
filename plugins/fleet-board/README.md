@@ -397,6 +397,10 @@ The plugin path changes when the plugin updates. After an update, run `/fleet-bo
 
 - **Unblocking a card re-runs the implementor.** When you move a card from Blocked back to Ready, it goes through `start` again: its note's round resets to 0, and the implementor is dispatched once more before review. The card keeps its branch and PR, so no work is lost, but the extra implementor dispatch costs a tick. Planned for 0.1.1.
 
+## Demo
+
+[`docs/demo.cast`](docs/demo.cast) is a terminal recording of `tests/behavioral-tick.sh --scenario ready-path` on a sandbox repo: one card goes from Ready to a PR ready for review in four headless ticks, and the run ends with all 48 checks passing. Play it with `asciinema play docs/demo.cast`, or open it in the [asciinema web player](https://docs.asciinema.org/manual/player/).
+
 ## Credits
 
 The process was first run by hand on HMB Workout. The general ideas (test first, adversarial review, worktree isolation) are common practice. The agent prompts were authored clean-room from behavior specs.
