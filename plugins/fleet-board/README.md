@@ -1,19 +1,6 @@
 # fleet-board
 
-Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. You write cards with an `## Acceptance` section and mark them ready. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review, and you do the merge. A hook, not prompt text, keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
-
-## Why
-
-The process came from [HMB Workout](https://github.com/drothschild/HMBWorkout), where it was run by hand: about 232 merged PRs and 132 completed cards between July and mid-September 2026. Three problems kept coming back, and a plugin solves them where instructions alone did not. When two writers update the same card, `gh issue edit` label changes race and one is lost. Role agents need to run on their configured models rather than the session's model, which means a manager has to dispatch them. And prompt text cannot enforce a rule like "never move a card out of Human QA", so a hook does.
-
-## How it differs
-
-- [vibe-kanban](https://github.com/BloopAI/vibe-kanban) is a local web UI that runs many coding agents (Claude Code, Codex, Gemini CLI and others) in isolated worktrees, with diff review. Its README says the project is sunsetting.
-- [claude-code-kanban](https://github.com/NikiforovAll/claude-code-kanban) is a live dashboard for your Claude Code sessions. It watches the task files Claude Code writes, and you steer a session by dragging its cards.
-- [Claw-Kanban](https://github.com/GreenSheep01201/Claw-Kanban) is a web board backed by its own SQLite database. It routes tasks to Claude Code, Codex CLI and Gemini CLI by role.
-- [Kandev](https://github.com/kdlbs/kandev) is a self-hosted kanban and review workspace for many agent providers, with configurable workflows and review gates.
-
-fleet-board has no UI or database of its own. The board is your GitHub issues or GitHub Project, the agents are Claude Code subagents, and the gates are Claude Code hooks.
+Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. You write cards with an `## Acceptance` section and mark them ready. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review, and you do the merge. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
 
 ## Install
 
@@ -80,7 +67,7 @@ Plus Won't Do.
 - **The manager** makes every other move: Ready to In Progress, In Progress to In Review, In Review to Human QA or Done, any active card to Blocked, and Blocked back to Ready once the PR it was waiting on has merged. It never touches Backlog, Human QA, Done or Won't Do.
 - **Role agents** never move cards. They post their reports as comments, and the manager acts on them.
 
-One writer per card is deliberate. `gh issue edit` sends label additions and removals as separate mutations, so two writers on one issue can leave it with the wrong labels.
+**One writer per card.** `gh issue edit` sends label additions and removals as separate mutations, so two writers on one issue can leave it with the wrong labels.
 
 **One step per tick.** Each tick, `tick-plan.sh` reads the Ready, In Progress, In Review and Blocked columns and picks exactly one action per card. The manager carries out those actions, dispatching up to `limits.concurrency` role agents at once, and prints the tick report. Under `merge.policy: human` (the default), a clean, reviewed PR is marked ready and waits for you.
 
@@ -401,9 +388,6 @@ The plugin path changes when the plugin updates. After an update, run `/fleet-bo
 
 [`docs/demo.cast`](docs/demo.cast) is a terminal recording of `tests/behavioral-tick.sh --scenario ready-path` on a sandbox repo: one card goes from Ready to a PR ready for review in four headless ticks, and the run ends with all 48 checks passing. Play it with `asciinema play docs/demo.cast`, or open it in the [asciinema web player](https://docs.asciinema.org/manual/player/).
 
-## Credits
-
-The process was first run by hand on HMB Workout. The general ideas (test first, adversarial review, worktree isolation) are common practice. The agent prompts were authored clean-room from behavior specs.
 
 ## License
 
