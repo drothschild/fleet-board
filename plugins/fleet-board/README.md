@@ -44,6 +44,61 @@ This walks one card through a fresh repo on the labels board. Commands run from 
    In a live sandbox run, two such cards reached Human QA in 3 ticks. The run stopped after the fourth, 11 minutes in, at an estimated $2.08.
 8. **Release Human QA yourself**, in the GitHub UI. Check the change, merge the PR, and move the card to `fleet:done` (or back to `fleet:ready`). No agent can do this step; the gate blocks it. On the no-QA path, merge the ready PR yourself. The next two ticks check `main` and move the card to Done.
 
+## Adding fleet-board to an existing project
+
+The first hour assumes a fresh repo. On a project that already has code, open issues and maybe a board, check a few things first. Each of these stopped a real card when fleet-board was adopted on HMB Workout.
+
+### Before you run init
+
+- **`main` is green.** Run your test suite on a fresh clone of the default branch. Roles branch from `origin/HEAD`, and the post-merge check runs your tests on `main`. A test that already fails turns up as noise in the reports of every card that touches it. Fix it first, or file it as a card.
+- **Setup works in a fresh worktree.** Whatever you will give as `worktrees.setup` (`npm ci`, `bundle install`, `uv sync`) must succeed in a brand-new worktree of `main`:
+
+  ```bash
+  git worktree add /tmp/fb-check origin/HEAD && (cd /tmp/fb-check && npm ci); git worktree remove --force /tmp/fb-check
+  ```
+
+  Two things break here that never break in your own checkout:
+  - **A lockfile out of sync with the manifest.** `npm ci` refuses it.
+  - **A dependency referenced by a relative path outside the repo**, such as `"file:../some-lib/some-lib.tgz"`. A worktree lives at `<worktrees.dir>/<card>-<slug>`, so `../` points somewhere else. Make `worktrees.setup` stage the file first, or depend on it some other way.
+
+  A setup failure doesn't damage anything: fleet-board removes the half-made worktree and records the failure on the card. After `review.max_rounds` failures in a row, the card is blocked.
+- **Commands run one test file.** `commands.test_one` must accept a single test path in place of `{file}`, for example `npm test -- --runTestsByPath {file}` for Jest, or `pytest {file}`. Add `commands.typecheck` and `commands.lint` if you have them; roles run them before they report.
+
+### Choosing the board
+
+- **No board yet, or a labels-based one:** choose **Labels**.
+  - Init creates the eight `fleet:<state>` labels and `needs-human-qa`.
+  - It uses `gh label create --force`, so a label you already have with one of those exact names gets fleet-board's color and description.
+  - An existing `bug` label is left alone.
+  - Your other labels are untouched.
+- **An existing GitHub Projects board:** choose **Projects** and map fleet-board's states onto your columns with `board.states`.
+  - **All eight states need a column.** Init checks every one, mapped or default (Backlog, Ready, In Progress, In Review, Human QA, Blocked, Done and Won't Do). If any has no matching Status option, init refuses and names the missing ones. It never renames or adds columns. A board without a Blocked column needs one added in the GitHub UI first.
+  - **Map only the names that differ.** See the [`board.states` example](#config-reference).
+  - **Labels.** Init still creates the `needs-human-qa` label, and a `bug` label when the repo has none.
+- **Decide where finished work needs human eyes.** Set `human_qa_paths` to the globs whose changes you want to check yourself, such as UI screens, and use the `needs-human-qa` label for one-off cards. Everything else ends as a PR ready for review.
+
+### Cards already on the board
+
+The manager reads four columns: Ready, In Progress, In Review and Blocked. It acts on **every** card it finds in them, including cards that were there before you installed fleet-board. On a labels board nothing is in those columns until you add a `fleet:*` label. On a Projects board, cards already sitting in your mapped In Progress or In Review columns are picked up on the first tick.
+
+- Run `/fleet-board:status` before the first tick to see exactly which cards it will act on.
+- Move in-flight work you want to finish by hand out of those four columns, for example back to Backlog. Or finish it before the first tick.
+- **Rewrite a card's Acceptance before you mark it Ready.** It needs one testable `- ` bullet per behavior, and device or manual checks go under `## Human QA` (see [Writing a card](#writing-a-card)). A prose Acceptance gets the card blocked by the implementor.
+
+### Process docs the plugin now owns
+
+If your repo has an `AGENTS.md` or `CLAUDE.md` with board or review rules, the agents read those too. Examples are "merge after review", "move the card to In Review" and "always mutation-test". Rules that disagree with fleet-board make agents argue with the manager.
+
+- **Remove** the rules fleet-board now enforces: column moves, test-first, review and mutation testing, who may release Human QA, and merging.
+- **Keep** the project facts, such as which changes need a device check and how to make a test build.
+- Add one line: `Board workflow, review and merge gates are run by the fleet-board plugin; see .fleet-board.yml.`
+
+### Start small
+
+1. Run `/fleet-board:init`, then commit `.fleet-board.yml` and get it onto the default branch. Role worktrees branch from `origin/HEAD`, so a config that is only on your local branch is not what they run with.
+2. Move **one** small card to Ready and run `/fleet-board:tick` interactively. Read each tick report until the card reaches a ready PR or Human QA.
+3. Only then hand over more cards or use the [headless wrapper](#running-overnight).
+
 ## The board
 
 A card is a GitHub issue. Its state is a label (`fleet:<state>`) on the labels board, or the Status column on a Projects board.
