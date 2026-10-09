@@ -24,18 +24,9 @@ board:
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
 
-## Supported YAML
-
-`config.sh` parses a subset of YAML, and anything else fails with a line number:
-
-- Keys are bare identifiers (`[A-Za-z_][A-Za-z0-9_]*`) at indentation 0 or 2 spaces, at most two levels deep.
-- A value is a double- or single-quoted string (no escape sequences), `true`, `false`, `null`, an integer or decimal, a bare string, a flow list `[a, "b"]`, or a flow map `{ k: v, k2: "v2" }`.
-- Comments start with `#` at the start of a line or after whitespace, outside quotes.
-- Rejected: tabs in indentation, block lists (`- item`), a third nesting level, nested flow collections, anchors and aliases, multi-line strings, and duplicate keys.
-
 ## Finding the file
 
-`config.sh` uses `$FLEET_BOARD_CONFIG` when set, then `.fleet-board.yml` at the git root, then the one in the main checkout (for a linked worktree). Its exit codes: 3 no config, 4 YAML outside the subset, 5 an invalid value.
+`config.sh` uses `$FLEET_BOARD_CONFIG` when set, then `.fleet-board.yml` at the git root, then the one in the main checkout (for a linked worktree). Its exit codes: 3 no config, 4 the file is not valid YAML or `yq` is missing, 5 an invalid value.
 
 ## How the board works in detail
 

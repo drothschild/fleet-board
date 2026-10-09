@@ -24,7 +24,7 @@ Never guess an install path, never write one down, and never use a scripts path 
 
 1. **Read the config.** In the user's repository, run `bash "<base directory>/../../scripts/config.sh"` with no key argument and the announced base directory filled in. On exit 0, keep its stdout as the config JSON.
 2. **Not set up (exit 3).** If `config.sh` exits 3, there is no `.fleet-board.yml`. Tell the user fleet-board is not set up in this repository and that they should run `/fleet-board:init`, then stop. Do not create or edit any config. Do not dispatch anything.
-3. **Invalid config (exit 4, 5, 2, or any other non-zero).** Exit 4 means the YAML is outside the supported subset, 5 means invalid values, 2 means a usage error. For any of these, or any other non-zero exit, show the user `config.sh`'s stderr and stop. Do not dispatch anything.
+3. **Invalid config (exit 4, 5, 2, or any other non-zero).** Exit 4 means the YAML is invalid or `yq` is missing, 5 means invalid values, 2 means a usage error. For any of these, or any other non-zero exit, show the user `config.sh`'s stderr and stop. Do not dispatch anything.
 4. **Scripts dir.** Run `cd "<base directory>/../../scripts" && pwd` to get the absolute scripts dir.
 5. **Repo root.** Run `git rev-parse --show-toplevel` to get the repo root.
 6. **Start time.** Run `date -u +%Y-%m-%dT%H:%M:%SZ` to get the start time in UTC ISO 8601.

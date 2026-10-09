@@ -17,7 +17,7 @@ Every requirement listed in this brief must appear in the spec. You may add beha
 ## Facts every fleet-board skill spec carries
 
 - **Locating scripts.** The plugin's scripts live at `<this skill's base directory>/../../scripts/`. The skill substitutes the real base directory that the Skill tool announced; it never guesses or writes down an install path. An absolute scripts dir is `cd "<base directory>/../../scripts" && pwd`.
-- **Config.** `bash "<base directory>/../../scripts/config.sh"`, run in the user's repository, prints the merged config as JSON. `config.sh <KEY>` (for example `config.sh limits.tick_interval`) prints one value. Exit codes: 0 ok; 3 no `.fleet-board.yml` (fleet-board is not set up in this repo); 4 YAML outside the supported subset; 5 invalid values; 2 usage error.
+- **Config.** `bash "<base directory>/../../scripts/config.sh"`, run in the user's repository, prints the merged config as JSON. `config.sh <KEY>` (for example `config.sh limits.tick_interval`) prints one value. Exit codes: 0 ok; 3 no `.fleet-board.yml` (fleet-board is not set up in this repo); 4 the YAML is invalid, or `yq` is missing; 5 invalid values; 2 usage error.
 - **No setup, no work.** In a repository with no `.fleet-board.yml`, a skill that needs the board tells the user to run `/fleet-board:init` and stops. It never creates the config itself.
 - **Frontmatter.** The skill file has `name`, `description` and `user-invocable: true` and nothing else; in particular no `allowed-tools` (a skill that declares it fails silently under headless `claude -p`).
 - **Headless use.** The overnight wrapper runs `claude -p "/fleet-board:tick"` and reads the last line of the result that matches `^dispatchable: `. A result without that line counts as a failed tick.
