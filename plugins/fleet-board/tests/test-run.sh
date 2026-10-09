@@ -527,12 +527,69 @@ seq_fixture 1 tick-idle
 run_wrapper --repo "$REPO"
 assert_stderr_not_contains "default mode: no warning" "warning"
 
-echo "haiku-warning"
+echo "haiku: no name-based warning"
 new_case "" "models: { manager: haiku }"
 seq_fixture 1 tick-idle
 run_wrapper --repo "$REPO"
-assert_exit "haiku-warning: exit 0" 0
-assert_stderr_contains "haiku-warning: stderr names haiku" "warning: models.manager is haiku"
+assert_exit "haiku: exit 0" 0
+assert_stderr_not_contains "haiku: no warning" "warning"
+
+echo "permission-mode: init event matches the requested mode"
+new_case
+seq_fixture 1 tick-idle
+run_wrapper --repo "$REPO"
+assert_exit "mode-match: exit 0" 0
+assert_stdout_contains "mode-match: stops as today" "stopped: nothing-dispatchable after 1 ticks"
+
+echo "permission-mode: init event reports another mode"
+new_case
+seq_fixture 1 tick-mode-default
+seq_fixture 2 tick-idle
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "mode-mismatch: exit 1" 1
+assert_stdout_contains "mode-mismatch: stop reason" "stopped: permission-mode-mismatch after 1 ticks"
+assert_eq "mode-mismatch: no second tick" "$(count)" "1"
+assert_file_contains "mode-mismatch: log names both modes and the model" "$LOG" \
+  "permission mode mismatch: requested auto, session ran in default (model claude-haiku-4-5)"
+assert_eq "mode-mismatch: the stopped line is last" "$(tail -1 "$LOG" 2>/dev/null)" \
+  "fleet-board-run: stopped: permission-mode-mismatch after 1 ticks, 0.00 h, cost_estimate_usd 0 (estimate)"
+
+echo "permission-mode: the requested mode comes from headless.permission_mode"
+new_case "" "headless: { permission_mode: acceptEdits }"
+seq_fixture 1 tick-idle
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "mode-mismatch-config: exit 1" 1
+assert_file_contains "mode-mismatch-config: requested acceptEdits, ran in auto" "$LOG" \
+  "permission mode mismatch: requested acceptEdits, session ran in auto (model claude-sonnet-5)"
+
+echo "permission-mode: a failed tick whose init event mismatches also stops the run"
+new_case
+seq_fixture 1 tick-mode-default
+printf '1\n' > "$FC/1.exit"
+seq_fixture 2 tick-idle
+run_wrapper --repo "$REPO"
+assert_exit "mode-mismatch-failed-tick: exit 1" 1
+assert_stdout_contains "mode-mismatch-failed-tick: stop reason" "stopped: permission-mode-mismatch after 1 ticks"
+assert_eq "mode-mismatch-failed-tick: no second tick" "$(count)" "1"
+
+echo "permission-mode: no init event is not a mismatch"
+new_case
+seq_fixture 1 tick-no-init
+run_wrapper --repo "$REPO"
+assert_exit "no-init: exit 0" 0
+assert_stdout_contains "no-init: handled as today" "stopped: nothing-dispatchable after 1 ticks"
+
+echo "permission-mode: no init event and no result keeps today's failure"
+new_case "max_consecutive_failures: 1"
+seq_fixture 1 tick-no-init-no-result
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "no-init-no-result: exit 1" 1
+assert_stdout_contains "no-init-no-result: consecutive-failures" "stopped: consecutive-failures after 1 ticks"
+assert_file_contains "no-init-no-result: reason" "$LOG" "reason: no result event"
+assert_file_not_contains "no-init-no-result: not a mismatch" "$LOG" "permission mode mismatch"
 
 echo "no-config"
 new_case
