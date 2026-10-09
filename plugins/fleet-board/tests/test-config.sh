@@ -479,6 +479,14 @@ for role in manager implementor reviewer fixer; do
   invalid_field_case "models.$role empty" "models: { $role: \"\" }" "models.$role must be a non-empty string"
   invalid_field_case "models.$role number" "models: { $role: 5 }" "models.$role must be a non-empty string"
 done
+invalid_field_case "models.escalation empty" 'models: { escalation: "" }' "models.escalation must be null or a non-empty string"
+invalid_field_case "models.escalation number" 'models: { escalation: 5 }' "models.escalation must be null or a non-empty string"
+REPO="$(printf 'board:\n  repo: a/b\nmodels: { escalation: fable }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
+assert_key "$REPO" "models.escalation" "fable" "models.escalation set"
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
+assert_key "$REPO" "models.escalation" "null" "models.escalation defaults to null"
 invalid_field_case "worktrees.dir empty" 'worktrees: { dir: "" }' "worktrees.dir must be a non-empty relative path"
 invalid_field_case "worktrees.dir absolute" 'worktrees: { dir: /tmp/wt }' "worktrees.dir must be a non-empty relative path"
 invalid_field_case "worktrees.dir number" 'worktrees: { dir: 7 }' "worktrees.dir must be a non-empty relative path"
