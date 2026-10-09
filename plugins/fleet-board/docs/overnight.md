@@ -24,7 +24,7 @@ bash <path from /fleet-board:status> --repo .
 
 ## When it stops
 
-`stop-file`, `max-hours` and `max-cost` are checked before every tick. `nothing-dispatchable`, `cost-unknown` and `max-cost` are checked right after a successful tick, and `consecutive-failures` after a failed one.
+`stop-file`, `max-hours` and `max-cost` are checked before every tick. `nothing-dispatchable`, `cost-unknown` and `max-cost` are checked right after a successful tick, and `consecutive-failures` after a failed one. `permission-mode-mismatch` is checked first, right after any tick, failed or not.
 
 | Stop reason | Condition | Config key | Exit |
 |---|---|---|---|
@@ -34,6 +34,7 @@ bash <path from /fleet-board:status> --repo .
 | `nothing-dispatchable` | a successful tick's report ends `dispatchable: false` | none | 0 |
 | `consecutive-failures` | this many failed ticks in a row, including ticks whose plan failed | `limits.max_consecutive_failures` (default 3) | 1 |
 | `cost-unknown` | a successful tick reports no cost at all | none | 1 |
+| `permission-mode-mismatch` | a tick's `system/init` event reports a `permissionMode` other than the requested one | `headless.permission_mode` (default `auto`) | 1 |
 | `interrupted (INT)`, `interrupted (TERM)` | the wrapper got Ctrl-C or `kill` | none | 130, 143 |
 
 The limits are checked between ticks, never during one, so a single tick can run past `max_hours` or `max_cost_usd`. What bounds a tick is `--max-turns`. The comparisons are strict: with `max_hours: 0` or `max_cost_usd: 0`, the first tick still runs, and the run stops after it.
@@ -66,7 +67,7 @@ For an interrupt, the line is written on a best-effort basis, and the tick count
 | Exit | Meaning |
 |---|---|
 | 0 | stopped: `nothing-dispatchable`, `stop-file`, `max-hours` or `max-cost` |
-| 1 | stopped: `consecutive-failures` or `cost-unknown`; or a setup failure (not a git repo, `claude` not found, the log cannot be written) |
+| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; or a setup failure (not a git repo, `claude` not found, the log cannot be written) |
 | 2 | usage error, or `FLEET_BOARD_ISOLATE=1` |
 | 3 | no `.fleet-board.yml` |
 | 4, 5 | the config failed `config.sh --check`; 5 also for a limit that is not a valid number |
