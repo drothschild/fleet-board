@@ -24,6 +24,6 @@ How it was done:
 
 Why bother: the test-first, adversarial-review process fleet-board encodes is common practice, and other plugins encode similar processes. Writing the prompts from specs, in sessions that couldn't see any of that material, keeps fleet-board's prompts its own work rather than a derivative of someone else's.
 
-You don't need any of this to use the plugin. To check it, the specs, the briefs they were written from, and a record of every authoring run (inputs, isolation checks, costs and file hashes) are in [`docs/implementation-plans/2026-09-28-fleet-board/specs/`](docs/implementation-plans/2026-09-28-fleet-board/specs/README.md). The `init` skill and the shell scripts were written directly and are not part of that record.
+None of this is needed to use the plugin. For checking it, the specs, the briefs they were written from, and a record of every authoring run (inputs, isolation checks, costs and file hashes) are in [`docs/implementation-plans/2026-09-28-fleet-board/specs/`](docs/implementation-plans/2026-09-28-fleet-board/specs/README.md). The `init` skill and the shell scripts were written directly and are not part of that record.
 
 MIT licensed.

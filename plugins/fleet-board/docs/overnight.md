@@ -1,6 +1,6 @@
 # Running fleet-board overnight
 
-`fleet-board-run.sh` runs ticks headless, one after another, until a stop condition holds. Each tick is a `claude -p "/fleet-board:tick"` session, the same tick you get from `/fleet-board:tick`.
+`fleet-board-run.sh` runs ticks headless, one after another, until a stop condition holds. Each tick is a `claude -p "/fleet-board:tick"` session, the same tick that `/fleet-board:tick` runs.
 
 ## Finding the wrapper
 
@@ -57,7 +57,7 @@ On stop it prints one line and appends it to the log:
 fleet-board-run: stopped: nothing-dispatchable after 7 ticks, 2.41 h, cost_estimate_usd 18.3 (estimate)
 ```
 
-Hours and costs always use a dot as the decimal point, whatever your locale; `claude` itself still runs in your locale.
+Hours and costs always use a dot as the decimal point, whatever the locale; `claude` itself still runs in the system locale.
 
 For an interrupt, the line is written on a best-effort basis, and the tick count includes the tick that was cut short. A run killed with `kill -9`, or ended by the machine shutting down, writes no stop line.
 
@@ -90,29 +90,29 @@ Each run appends every tick to one file:
 $HOME/.fleet-board/runs/<owner>-<name>-<YYYYmmdd-HHMMSS>.log
 ```
 
-Set `FLEET_BOARD_LOG_DIR` to put the logs somewhere else. A relative path is taken from the directory you start the wrapper in. A log directory the wrapper creates is mode 700, and the files it writes are mode 600, because they hold tick reports and raw session output.
+Set `FLEET_BOARD_LOG_DIR` to put the logs somewhere else. A relative path is taken from the directory the wrapper is started in. A log directory the wrapper creates is mode 700, and the files it writes are mode 600, because they hold tick reports and raw session output.
 
 A successful tick's block is a header line (`=== tick <n> <time> rc=0 cost_estimate_usd=<x> (estimate) ===`), the tick report, and the output of the worktree cleanup. A failed tick's block starts `=== tick <n> FAILED <time> rc=<rc> ===`, then gives the reason, the path of the tick's whole output, and the last 20 lines of that output, each cut to 2000 characters. The whole output of a failed tick is kept next to the log as `<log name>-tick-<n>.jsonl`. Successful ticks keep no such file.
 
 ## The cost figure is an estimate
 
-A tick's cost is the session's `total_cost_usd`, which Claude Code computes on the client. When a session reports none, the wrapper prices its `modelUsage` with `scripts/prices.json`, a dated price snapshot. The figure is not a bill. If you run on a subscription, it measures usage, not money. A failed tick's cost counts too, when its session reports one. A failed tick whose session ends without a `result` event, or whose result carries no cost, adds $0 and is logged `cost_estimate_usd=unknown`, even though it may have spent money.
+A tick's cost is the session's `total_cost_usd`, which Claude Code computes on the client. When a session reports none, the wrapper prices its `modelUsage` with `scripts/prices.json`, a dated price snapshot. The figure is not a bill. On a subscription, it measures usage, not money. A failed tick's cost counts too, when its session reports one. A failed tick whose session ends without a `result` event, or whose result carries no cost, adds $0 and is logged `cost_estimate_usd=unknown`, even though it may have spent money.
 
 ## Permissions
 
 - The wrapper never passes `--dangerously-skip-permissions`.
 - `--permission-mode` comes from `headless.permission_mode`, which defaults to `auto`. In `auto` mode, Claude Code approves or denies each tool call itself, with its safety classifier, so a tick can run unattended without skipping permission checks. No one is there to answer a permission prompt, so a stricter mode such as `default` leaves the tick's commands denied.
-- If you set `headless.permission_mode: bypassPermissions`, the wrapper prints a one-line warning, to stderr and to the log, before the first tick.
+- With `headless.permission_mode: bypassPermissions`, the wrapper prints a one-line warning, to stderr and to the log, before the first tick.
 
 ## Merges stay human
 
-`merge.policy: auto` is not supported for headless or overnight runs. Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session ("Merge Without Review"). The wrapper adds no permission rule and does not work around the classifier. An overnight run leaves reviewed PRs for you to merge. Auto merges work only where you have explicitly allowed them in your own Claude Code settings.
+`merge.policy: auto` is not supported for headless or overnight runs. Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session ("Merge Without Review"). The wrapper adds no permission rule and does not work around the classifier. An overnight run leaves reviewed PRs to be merged by hand. Auto merges work only where they are explicitly allowed in the user's own Claude Code settings.
 
 ## Worktree cleanup
 
 After each successful tick, the wrapper runs `scripts/cleanup-done.sh` from the repo root, in its own shell and outside any Claude session. It removes the worktrees of cards that reached done. It first lists the worktrees directory locally and reads the board only for done cards that still have a `<n>-*` entry there, so its cost grows with the leftover directories, not with the Done column. The manager never removes worktrees itself, because the auto-mode classifier denies that as irreversible local destruction. The cleanup's output goes into the log. If it fails, the log gets `warning: cleanup-done.sh exited <rc>` and its stderr. That is a warning only: the tick still counts as successful, and the run goes on.
 
-You can also run it by hand from the repo root. `<scripts dir>` is the directory of the wrapper path that `/fleet-board:status` prints:
+It can also be run by hand from the repo root. `<scripts dir>` is the directory of the wrapper path that `/fleet-board:status` prints:
 
 ```bash
 bash <scripts dir>/cleanup-done.sh
@@ -134,7 +134,7 @@ bash <scripts dir>/cleanup-done.sh
 
 The plugin ships no plist. This is an example to adapt. It starts a run at 22:00 every day.
 
-Save it as `~/Library/LaunchAgents/com.example.fleet-board.plist`. Replace `<repo>` with the absolute path of your repo. Replace `<plugin-dir>` with the plugin directory: the wrapper path that `/fleet-board:status` prints, without its trailing `/scripts/fleet-board-run.sh`. Replace `<your PATH>` with the output of `echo $PATH` in the terminal where `claude`, `gh` and `jq` work.
+Save it as `~/Library/LaunchAgents/com.example.fleet-board.plist`. Replace `<repo>` with the absolute path of the repo. Replace `<plugin-dir>` with the plugin directory: the wrapper path that `/fleet-board:status` prints, without its trailing `/scripts/fleet-board-run.sh`. Replace `<PATH>` with the output of `echo $PATH` in a terminal where `claude`, `gh` and `jq` work.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -155,7 +155,7 @@ Save it as `~/Library/LaunchAgents/com.example.fleet-board.plist`. Replace `<rep
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string><your PATH></string>
+    <string><PATH></string>
   </dict>
   <key>StartCalendarInterval</key>
   <dict>
