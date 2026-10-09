@@ -231,6 +231,18 @@ echo "Test: init.sh"
 echo ""
 
 # ---------------------------------------------------------------------------
+# yq is required (config.sh needs it): init refuses early, naming it
+setup_case
+NOYQ="$(mktemp -d)"; CLEANUP_DIRS+=("$NOYQ")
+for t in gh jq git; do ln -s "$(command -v $t)" "$NOYQ/$t"; done
+OLDPATH="$PATH"; PATH="$NOYQ:/usr/bin:/bin"
+run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+PATH="$OLDPATH"
+assert_exit "yq-missing: exit 1" 1
+assert_stderr_contains "yq-missing: names mikefarah/yq" "mikefarah/yq"
+if [ ! -f "$TARGET/.fleet-board.yml" ]; then pass "yq-missing: no config written"; else fail "yq-missing: no config written" "file exists"; fi
+
+# ---------------------------------------------------------------------------
 # AC7.1 labels-writes-valid-config
 setup_case
 { cat << ROUTESEOF

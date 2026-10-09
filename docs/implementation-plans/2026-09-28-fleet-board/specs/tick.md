@@ -34,7 +34,7 @@ Proposed description:
 
 1. The skill runs `bash "<base directory>/../../scripts/config.sh"` (no key argument) in the user's repository, with the announced base directory filled in. On exit 0 it keeps stdout as the config JSON.
 2. On exit 3 (no `.fleet-board.yml`), the skill tells the user that fleet-board is not set up in this repository and to run `/fleet-board:init`, then stops. It does not create or edit any config. Nothing is dispatched.
-3. On exit 4 (YAML outside the supported subset), 5 (invalid values) or 2 (usage error), the skill shows `config.sh`'s stderr to the user and stops. Nothing is dispatched. Any other non-zero exit is handled the same way.
+3. On exit 4 (the YAML is invalid, or `yq` is missing), 5 (invalid values) or 2 (usage error), the skill shows `config.sh`'s stderr to the user and stops. Nothing is dispatched. Any other non-zero exit is handled the same way.
 4. The skill gets the absolute scripts dir by running `cd "<base directory>/../../scripts" && pwd`.
 5. The skill gets the repo root by running `git rev-parse --show-toplevel`.
 6. The skill gets the start time by running `date -u +%Y-%m-%dT%H:%M:%SZ`.

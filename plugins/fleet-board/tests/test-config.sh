@@ -250,8 +250,8 @@ assert_key "$REPO" "board.repo" "acme/toy" "trailing comment dropped"
 assert_key "$REPO" "commands.test_one" "$(printf 'node --test "a b"\tx')" "double-quoted escapes"
 assert_key "$REPO" "commands.lint" "it's" "single-quoted quote"
 assert_key "$REPO" "commands.tail" "$(printf 'line one\nline two')" "multi-line string"
-assert_key "$REPO" "base.k[1].n" "2" "nested flow collection"
-assert_key "$REPO" "copy.k[1].n" "2" "alias resolved"
+assert_key "$REPO" "base.k" '[1,{"n":2}]' "nested flow collection"
+assert_key "$REPO" "copy.k" '[1,{"n":2}]' "alias resolved"
 
 # Test 10c: a file that is not valid YAML, or not a map, exits 4 and names the file
 REPO="$(printf 'board: [unclosed\n' | make_inline_repo)"

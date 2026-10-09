@@ -9,7 +9,7 @@ Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. 
 /plugin install fleet-board@fleet-board
 ```
 
-Requires `gh` (logged in, with the `repo` scope, plus `project` for a Projects board), `jq`, `git` and Claude Code 2.1.x. `/fleet-board:init` checks the `gh` scopes and prints the command that adds a missing one.
+Requires `gh` (logged in, with the `repo` scope, plus `project` for a Projects board), `jq`, `git`, [`yq`](https://github.com/mikefarah/yq) (mikefarah/yq v4, for example `brew install yq`) and Claude Code 2.1.x. `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
 
 ## Adding fleet-board to an existing project
 
@@ -107,7 +107,7 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `limits.max_hours`, `max_cost_usd`, `max_consecutive_failures`, `max_turns` | `8`, `40`, `3`, `200` | headless wrapper limits |
 | `headless.permission_mode` | `auto` | `--permission-mode` for each headless tick |
 
-The config file accepts a subset of YAML; see [docs/config.md](docs/config.md#supported-yaml).
+The config file is `.fleet-board.yml`, any valid YAML.
 
 ## Gates
 

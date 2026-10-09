@@ -117,7 +117,7 @@ If init.sh exits 1 and prints `Run: gh auth refresh -s ...`, tell the user to ru
 that command, then stop. Do not run it for them, and do not work around it.
 
 For any other exit 1, show the message and help the user fix its cause, such as a
-missing Status option. Then run init.sh again.
+missing Status option or a missing tool (`yq` is installed with `brew install yq`). Then run init.sh again.
 
 ## Step 7: On success
 

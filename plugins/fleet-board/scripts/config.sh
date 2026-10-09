@@ -14,7 +14,7 @@
 #   0 - successful read/validation
 #   2 - usage error (bad flag or KEY lookup error)
 #   3 - config file not found
-#   4 - YAML parse error (outside the supported subset)
+#   4 - YAML parse error, or mikefarah/yq v4 missing
 #   5 - validation error (invalid values)
 
 set -uo pipefail
@@ -89,14 +89,34 @@ if [ -z "$FILE" ] || [ ! -f "$FILE" ]; then
   exit 3
 fi
 
-# Parse YAML to JSON
-PARSED="$(awk -f "$HERE/yaml-subset.awk" "$FILE")" || exit 4
-
-# Validate JSON
-if ! echo "$PARSED" | jq -e . >/dev/null 2>&1; then
-  echo "config.sh: line 0: parser produced invalid JSON" >&2
+# Parse YAML to JSON with mikefarah/yq v4 (explode resolves anchors and aliases).
+# One yq process on the happy path; the version check runs only after a failure,
+# to tell a missing or wrong yq (the Python "yq" shares the name) from bad YAML.
+YQ_HINT="config.sh: needs mikefarah/yq v4 (https://github.com/mikefarah/yq), e.g. brew install yq"
+if ! command -v yq >/dev/null 2>&1; then
+  echo "$YQ_HINT; yq was not found on PATH" >&2
   exit 4
 fi
+YQ_ERR="$(mktemp)" || exit 4
+PARSED="$(yq -o=json -I=0 'explode(.)' "$FILE" 2>"$YQ_ERR")"
+YQ_RC=$?
+if [ "$YQ_RC" -ne 0 ] || ! printf '%s' "$PARSED" | jq -e . >/dev/null 2>&1; then
+  case "$(yq --version 2>/dev/null)" in
+    *mikefarah/yq*" version v4"*|*mikefarah/yq*" version 4"*)
+      echo "config.sh: $FILE: $(head -3 "$YQ_ERR" | tr '\n' ' ')" >&2 ;;
+    *) echo "$YQ_HINT; the yq on PATH is a different tool or version" >&2 ;;
+  esac
+  rm -f "$YQ_ERR"
+  exit 4
+fi
+rm -f "$YQ_ERR"
+
+# An empty file or a comment-only file is an empty config; any other non-map top level is an error
+case "$(printf '%s' "$PARSED" | jq -r 'type')" in
+  null) PARSED='{}' ;;
+  object) ;;
+  *) echo "config.sh: $FILE: the top level must be a map" >&2; exit 4 ;;
+esac
 
 # Merge with defaults
 MERGED="$(jq -c -n --slurpfile d "$HERE/config-defaults.json" '$d[0] * input' <(echo "$PARSED"))" || {

@@ -1578,3 +1578,13 @@ checker's grep for `sk-ant`, home and temp paths and the forbidden name found no
 2. A minimal edit: the run read `specs/manager.md` and `agents/manager.md` and changed only the sentence in 4.3 (4 turns, $0.2138). **Kept.**
 
 `tests/test-clean-room.sh`: `passed: 79   failed: 0`. **Revision cost:** $0.8775. **Running total, all API-key charges:** ~$35.81.
+
+### Revision (2026-10-09, issue #4): config parsed with `yq`
+
+**Cause.** `config.sh` now converts `.fleet-board.yml` with mikefarah/yq v4 instead of the YAML-subset parser, so exit 4 means invalid YAML or a missing `yq`.
+
+**Spec and brief changes** (hand edits): `tick.md` item 3 and `briefs/spec-req-tick.md` (config exit codes).
+
+**Run.** One isolated `claude -p --bare` run (`--model opus --tools "Read,Edit"`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers) read `specs/tick.md` and `skills/tick/SKILL.md` and changed only the phrase after "Exit 4 means" in step 3 (4 turns, $0.0547). **Kept.**
+
+`tests/test-clean-room.sh`: `passed: 79   failed: 0`. **Revision cost:** $0.0547. **Running total, all API-key charges:** ~$35.87.
