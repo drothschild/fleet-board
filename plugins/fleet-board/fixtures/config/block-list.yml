@@ -1,0 +1,7 @@
+board:
+  repo: acme/toy
+human_qa_paths:
+  - "src/**"
+  - docs/ui # a comment
+test_paths:
+  - "tests/**"

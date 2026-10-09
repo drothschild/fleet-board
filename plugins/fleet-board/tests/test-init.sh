@@ -225,7 +225,7 @@ LABELS_CMD=(--backend github-labels --repo acme/toy --test-one "node --test {fil
 PROJ_CMD=(--backend github-projects --repo drothschild/HMBWorkout --project 1
   --state "in_progress=In progress" --state "in_review=In review"
   --state "human_qa=Require Human Inteteraction" --state "wont_do=Won't Do")
-HEADER='# fleet-board config. Supported YAML subset: see the fleet-board README.'
+HEADER='# fleet-board config. See the fleet-board README.'
 
 echo "Test: init.sh"
 echo ""

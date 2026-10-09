@@ -204,29 +204,83 @@ assert_exit "subdir finds root" "0"
 assert_key "$SUBDIR" "board.repo" "acme/toy" "subdir resolves to root config"
 rm -rf "$REPO"
 
-# Test 8: bad-block-list.yml
-REPO="$(make_test_repo bad-block-list.yml)"
+# Test 8: block lists (and comments after list items) are accepted
+REPO="$(make_test_repo block-list.yml)"
 CLEANUP_DIRS+=("$REPO")
 run_config "$REPO"
-assert_exit "block list exit 4" "4"
-assert_stderr_contains "block list stderr has line number" "line 2"
-assert_stderr_contains "block list stderr explains error" "block lists are not supported"
+assert_exit "block list exit 0" "0"
+assert_key "$REPO" "human_qa_paths" '["src/**","docs/ui"]' "block list value"
+assert_key "$REPO" "test_paths" '["tests/**"]' "block list replaces the default list"
 
 # Test 9: bad-tab.yml
 REPO="$(make_test_repo bad-tab.yml)"
 CLEANUP_DIRS+=("$REPO")
 run_config "$REPO"
 assert_exit "tab exit 4" "4"
-assert_stderr_contains "tab stderr mentions tabs" "tabs"
+assert_stderr_contains "tab stderr names the file" ".fleet-board.yml"
 rm -rf "$REPO"
 
-# Test 10: bad-deep.yml
-REPO="$(make_test_repo bad-deep.yml)"
+# Test 10: a third (and fourth) nesting level is accepted
+REPO="$(make_test_repo deep.yml)"
 CLEANUP_DIRS+=("$REPO")
 run_config "$REPO"
-assert_exit "deep exit 4" "4"
-assert_stderr_contains "deep stderr mentions nesting" "two levels"
-rm -rf "$REPO"
+assert_exit "deep exit 0" "0"
+assert_key "$REPO" "notes.a.b.c" "deep" "deep nesting value"
+
+# Test 10b: comments, quoted strings with escapes, nested flow collections,
+# anchors and aliases, and multi-line strings
+REPO="$(cat <<'YAML' | make_inline_repo
+# leading comment
+board:
+  repo: acme/toy   # trailing comment
+commands:
+  test_one: "node --test \"a b\"\tx"
+  lint: 'it''s'
+  tail: |
+    line one
+    line two
+base: &base { k: [1, { n: 2 }] }
+copy: *base
+YAML
+)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO"
+assert_exit "rich yaml exit 0" "0"
+assert_key "$REPO" "board.repo" "acme/toy" "trailing comment dropped"
+assert_key "$REPO" "commands.test_one" "$(printf 'node --test "a b"\tx')" "double-quoted escapes"
+assert_key "$REPO" "commands.lint" "it's" "single-quoted quote"
+assert_key "$REPO" "commands.tail" "$(printf 'line one\nline two')" "multi-line string"
+assert_key "$REPO" "base.k[1].n" "2" "nested flow collection"
+assert_key "$REPO" "copy.k[1].n" "2" "alias resolved"
+
+# Test 10c: a file that is not valid YAML, or not a map, exits 4 and names the file
+REPO="$(printf 'board: [unclosed\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO"
+assert_exit "invalid yaml exit 4" "4"
+assert_stderr_contains "invalid yaml names the file" ".fleet-board.yml"
+REPO="$(printf -- '- a\n- b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO"
+assert_exit "top-level list exit 4" "4"
+assert_stderr_contains "top-level list says map" "must be a map"
+
+# Test 10d: yq missing, or the wrong yq (the Python one), exits 4 with the install hint
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
+NOYQ="$(mktemp -d)"; CLEANUP_DIRS+=("$NOYQ")
+for t in jq git dirname cat mktemp rm; do ln -s "$(command -v $t)" "$NOYQ/$t"; done
+OLDPATH="$PATH"; PATH="$NOYQ:/usr/bin:/bin"
+run_config "$REPO"
+PATH="$OLDPATH"
+assert_exit "yq missing exit 4" "4"
+assert_stderr_contains "yq missing names mikefarah yq" "mikefarah/yq"
+printf '#!/bin/sh\necho "yq 3.4.3"\n' > "$NOYQ/yq"; chmod +x "$NOYQ/yq"
+PATH="$NOYQ:/usr/bin:/bin"
+run_config "$REPO"
+PATH="$OLDPATH"
+assert_exit "wrong yq exit 4" "4"
+assert_stderr_contains "wrong yq names mikefarah yq" "mikefarah/yq"
 
 # Test 11: bad-backend.yml
 REPO="$(make_test_repo bad-backend.yml)"
