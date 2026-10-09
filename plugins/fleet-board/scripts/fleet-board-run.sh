@@ -66,13 +66,17 @@
 #
 # Permissions: --permission-mode comes from headless.permission_mode (default
 # auto). The wrapper never passes --dangerously-skip-permissions, and warns
-# before the first tick when the mode is bypassPermissions, or when
-# models.manager is a haiku model (Claude Code silently runs a haiku session
-# in default mode instead of auto, and a headless tick cannot answer prompts).
+# before the first tick when the mode is bypassPermissions. Claude Code can
+# silently start a session in another mode (some models fall back to default),
+# and a headless tick cannot answer prompts. So after each tick the wrapper
+# compares the permissionMode of the stream's system/init event with the
+# requested one, and a difference stops the run (permission-mode-mismatch).
+# A tick with no init event is not a mismatch.
 #
 # Exit codes:
 #   0 - stopped: nothing-dispatchable, stop-file, max-hours or max-cost
-#   1 - stopped: consecutive-failures or cost-unknown; or a setup failure
+#   1 - stopped: consecutive-failures, cost-unknown or permission-mode-mismatch;
+#       or a setup failure
 #   2 - usage error, or FLEET_BOARD_ISOLATE=1
 #   3, 4, 5 - config.sh --check failed (3: no .fleet-board.yml); 5 also for
 #       a limit that is not a valid number
@@ -235,9 +239,6 @@ log "fleet-board-run: start $(iso) repo=$REPO_SLUG root=$ROOT model=$MODEL permi
 if [ "$MODE" = bypassPermissions ]; then
   warn "headless.permission_mode is bypassPermissions: every tool call of every tick runs without a permission check"
 fi
-case "$MODEL" in
-  *haiku*) warn "models.manager is haiku: Claude Code runs a haiku session in permission mode default, not $MODE, and a headless tick cannot answer permission prompts; use sonnet or a larger model" ;;
-esac
 
 TICK=0
 FAILS=0
@@ -305,6 +306,22 @@ while :; do
     --permission-mode "$MODE" --output-format stream-json --verbose \
     --max-turns "$MAX_TURNS" </dev/null >"$OUT" 2>"$ERR"
   RC=$?
+
+  # The session's init event: a different permission mode would deny the
+  # same tool calls on every later tick, so the run stops (no retry)
+  INIT="$(jq -cR 'fromjson? | select(type == "object" and .type == "system" and .subtype == "init")' "$OUT" 2>/dev/null | head -1)"
+  GOT_MODE="$(jq -r '.permissionMode | strings' <<<"$INIT" 2>/dev/null)"
+  if [ -n "$GOT_MODE" ] && [ "$GOT_MODE" != "$MODE" ]; then
+    log "=== tick $TICK $(iso) rc=$RC ===" \
+      "permission mode mismatch: requested $MODE, session ran in $GOT_MODE (model $(jq -r '.model // "unknown"' <<<"$INIT" 2>/dev/null))"
+    SAVED="${LOG%.log}-tick-$TICK.jsonl"
+    if ( umask 077; set -C; cat "$OUT" > "$SAVED" ) 2>/dev/null; then
+      log "full output: $SAVED"
+    else
+      log "warning: cannot save the full output to $SAVED"
+    fi
+    stop permission-mode-mismatch 1
+  fi
 
   # The LAST result event: a session can emit several, and cost is cumulative
   RESULT="$(jq -cR 'fromjson? | select(type == "object" and .type == "result")' "$OUT" 2>/dev/null | tail -1)"

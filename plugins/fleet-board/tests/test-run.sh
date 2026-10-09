@@ -507,6 +507,7 @@ assert_eq "isolate=0: count == 1" "$(count)" "1"
 echo "bypass-warning"
 new_case "" "headless: { permission_mode: bypassPermissions }"
 seq_fixture 1 tick-idle
+sed -i.bak "s/\"permissionMode\":\"auto\"/\"permissionMode\":\"bypassPermissions\"/" "$FC/1.jsonl"
 run_wrapper --repo "$REPO"
 assert_exit "bypass-warning: exit 0" 0
 assert_stderr_contains "bypass-warning: stderr warning" "warning"
