@@ -17,38 +17,11 @@ You need:
 
 The scripts are plain bash and were tested with macOS's `/bin/bash` 3.2.
 
-## Your first hour
-
-This walks one card through a fresh repo on the labels board. Commands run from the repo root.
-
-1. **Create a repo** on GitHub with a little code and a test runner that can run one test file at a time, and clone it.
-2. **Run `/fleet-board:init`.** Choose **Labels**. It proposes commands from `package.json` when there is one; confirm or edit them. `commands.test_one` is the one that matters most: a command with `{file}` where one test file goes, such as `node --test {file}`. Init creates the eight `fleet:<state>` labels plus `needs-human-qa` (and `bug`, when the repo has none), and writes `.fleet-board.yml`.
-3. **Commit and push `.fleet-board.yml`.** Role agents work in worktrees branched from `origin/HEAD`. `config.sh` falls back to the main checkout's copy when a worktree has none, but pushing keeps every clone consistent.
-
-   ```bash
-   git add .fleet-board.yml && git commit -m "chore: add fleet-board config" && git push
-   ```
-
-4. **Write one card.** Open an issue whose body has an `## Acceptance` section listing, as `- ` bullets, what must be true when it's done. Each bullet must be something a test can check; on-device checks go under `## Human QA` instead (see [Writing a card](#writing-a-card)). Keep it small: one function and its tests. Add the `needs-human-qa` label if you want to look at the result before any PR is marked ready.
-5. **Label it `fleet:ready`.** That's your move; the manager never takes cards out of Backlog. A ready card without `## Acceptance` gets one comment explaining why it won't start.
-6. **Run `/fleet-board:tick`** a few times, or `/fleet-board:run` to keep ticking until nothing is left to do. Each tick prints a report ending in `dispatchable: true` or `dispatchable: false`.
-7. **Watch the card move.** With the defaults and a clean review:
-
-   | After | Card | What you'll see |
-   |---|---|---|
-   | tick 1 | `fleet:in_progress` | A branch `fleet/<n>-<slug>` and a worktree under `../.fleet-worktrees/`. A draft PR whose first commit holds only the failing tests. The implementor's report and the manager note as comments on the card. |
-   | tick 2 | `fleet:in_review` | The reviewer's round 1 report on the card, with its findings and mutation counts. |
-   | tick 3 | `fleet:human_qa`, or still `fleet:in_review` | With `needs-human-qa` (or a diff touching `human_qa_paths`): the card is in Human QA with a "What to check in Human QA" comment quoting its Acceptance section. Otherwise the PR is marked ready for review. If the review found Critical or Important issues, the fixer ran instead and a new review round followed in the same tick. |
-   | tick 4 | unchanged | Nothing left to dispatch: `dispatchable: false`. |
-
-   In a live sandbox run, two such cards reached Human QA in 3 ticks. The run stopped after the fourth, 11 minutes in, at an estimated $2.08.
-8. **Release Human QA yourself**, in the GitHub UI. Check the change, merge the PR, and move the card to `fleet:done` (or back to `fleet:ready`). No agent can do this step; the gate blocks it. On the no-QA path, merge the ready PR yourself. The next two ticks check `main` and move the card to Done.
-
 ## Adding fleet-board to an existing project
 
-The first hour assumes a fresh repo. On a project that already has code, open issues and maybe a board, check a few things first. Each of these stopped a real card when fleet-board was adopted on HMB Workout.
+On a project that already has code, open issues and maybe a board, check a few things first.
 
-### Before you run init
+### Check before init
 
 - **`main` is green.** Run your test suite on a fresh clone of the default branch. Roles branch from `origin/HEAD`, and the post-merge check runs your tests on `main`. A test that already fails turns up as noise in the reports of every card that touches it. Fix it first, or file it as a card.
 - **Setup works in a fresh worktree.** Whatever you will give as `worktrees.setup` (`npm ci`, `bundle install`, `uv sync`) must succeed in a brand-new worktree of `main`:
@@ -57,7 +30,7 @@ The first hour assumes a fresh repo. On a project that already has code, open is
   git worktree add /tmp/fb-check origin/HEAD && (cd /tmp/fb-check && npm ci); git worktree remove --force /tmp/fb-check
   ```
 
-  Two things break here that never break in your own checkout:
+  Two things break here that never break in checkout:
   - **A lockfile out of sync with the manifest.** `npm ci` refuses it.
   - **A dependency referenced by a relative path outside the repo**, such as `"file:../some-lib/some-lib.tgz"`. A worktree lives at `<worktrees.dir>/<card>-<slug>`, so `../` points somewhere else. Make `worktrees.setup` stage the file first, or depend on it some other way.
 
@@ -85,6 +58,12 @@ The manager reads four columns: Ready, In Progress, In Review and Blocked. It ac
 - Move in-flight work you want to finish by hand out of those four columns, for example back to Backlog. Or finish it before the first tick.
 - **Rewrite a card's Acceptance before you mark it Ready.** It needs one testable `- ` bullet per behavior, and device or manual checks go under `## Human QA` (see [Writing a card](#writing-a-card)). A prose Acceptance gets the card blocked by the implementor.
 
+### Start
+
+1. Run `/fleet-board:init`, then commit `.fleet-board.yml` and get it onto the default branch. Role worktrees branch from `origin/HEAD`, so a config that is only on your local branch is not what they run with.
+2. Move one small card to Ready and run `/fleet-board:tick` interactively. Read each tick report until the card reaches a ready PR or Human QA.
+3. Only then hand over more cards or use the [headless wrapper](#running-overnight).
+
 ### Process docs the plugin now owns
 
 If your repo has an `AGENTS.md` or `CLAUDE.md` with board or review rules, the agents read those too. Examples are "merge after review", "move the card to In Review" and "always mutation-test". Rules that disagree with fleet-board make agents argue with the manager.
@@ -93,11 +72,34 @@ If your repo has an `AGENTS.md` or `CLAUDE.md` with board or review rules, the a
 - **Keep** the project facts, such as which changes need a device check and how to make a test build.
 - Add one line: `Board workflow, review and merge gates are run by the fleet-board plugin; see .fleet-board.yml.`
 
-### Start small
 
-1. Run `/fleet-board:init`, then commit `.fleet-board.yml` and get it onto the default branch. Role worktrees branch from `origin/HEAD`, so a config that is only on your local branch is not what they run with.
-2. Move **one** small card to Ready and run `/fleet-board:tick` interactively. Read each tick report until the card reaches a ready PR or Human QA.
-3. Only then hand over more cards or use the [headless wrapper](#running-overnight).
+## On a Fresh Repo
+
+This walks one card through a fresh repo on the labels board. Commands run from the repo root.
+
+1. **Create a repo** on GitHub with a little code and a test runner that can run one test file at a time, and clone it.
+2. **Run `/fleet-board:init`.** Choose **Labels**. It proposes commands from `package.json` when there is one; confirm or edit them. `commands.test_one` is the one that matters most: a command with `{file}` where one test file goes, such as `node --test {file}`. Init creates the eight `fleet:<state>` labels plus `needs-human-qa` (and `bug`, when the repo has none), and writes `.fleet-board.yml`.
+3. **Commit and push `.fleet-board.yml`.** Role agents work in worktrees branched from `origin/HEAD`. `config.sh` falls back to the main checkout's copy when a worktree has none, but pushing keeps every clone consistent.
+
+   ```bash
+   git add .fleet-board.yml && git commit -m "chore: add fleet-board config" && git push
+   ```
+
+4. **Write one card.** Open an issue whose body has an `## Acceptance` section listing, as `- ` bullets, what must be true when it's done. Each bullet must be something a test can check; on-device checks go under `## Human QA` instead (see [Writing a card](#writing-a-card)). Keep it small: one function and its tests. Add the `needs-human-qa` label if you want to look at the result before any PR is marked ready.
+5. **Label it `fleet:ready`.** That's your move; the manager never takes cards out of Backlog. A ready card without `## Acceptance` gets one comment explaining why it won't start.
+6. **Run `/fleet-board:tick`** a few times, or `/fleet-board:run` to keep ticking until nothing is left to do. Each tick prints a report ending in `dispatchable: true` or `dispatchable: false`.
+7. **Watch the card move.** With the defaults and a clean review:
+
+   | After | Card | What you'll see |
+   |---|---|---|
+   | tick 1 | `fleet:in_progress` | A branch `fleet/<n>-<slug>` and a worktree under `../.fleet-worktrees/`. A draft PR whose first commit holds only the failing tests. The implementor's report and the manager note as comments on the card. |
+   | tick 2 | `fleet:in_review` | The reviewer's round 1 report on the card, with its findings and mutation counts. |
+   | tick 3 | `fleet:human_qa`, or still `fleet:in_review` | With `needs-human-qa` (or a diff touching `human_qa_paths`): the card is in Human QA with a "What to check in Human QA" comment quoting its Acceptance section. Otherwise the PR is marked ready for review. If the review found Critical or Important issues, the fixer ran instead and a new review round followed in the same tick. |
+   | tick 4 | unchanged | Nothing left to dispatch: `dispatchable: false`. |
+
+   In a live sandbox run, two such cards reached Human QA in 3 ticks. The run stopped after the fourth, 11 minutes in, at an estimated $2.08.
+8. **Release Human QA yourself**, in the GitHub UI. Check the change, merge the PR, and move the card to `fleet:done` (or back to `fleet:ready`). No agent can do this step; the gate blocks it. On the no-QA path, merge the ready PR yourself. The next two ticks check `main` and move the card to Done.
+
 
 ## The board
 
@@ -118,7 +120,7 @@ Plus Won't Do.
 
 **Who moves what.**
 
-- **You** move cards from Backlog to Ready, and release them from Human QA (to Done, or back to Ready).
+- **The User** move cards from Backlog to Ready, and release them from Human QA (to Done, or back to Ready).
 - **The manager** makes every other move: Ready to In Progress, In Progress to In Review, In Review to Human QA or Done, any active card to Blocked, and Blocked back to Ready once the PR it was waiting on has merged. It never touches Backlog, Human QA, Done or Won't Do.
 - **Role agents** never move cards. They post their reports as comments, and the manager acts on them.
 
@@ -188,9 +190,9 @@ When `models.implementor` and `models.reviewer` are the same, every tick warns t
 ```yaml
 board:
   backend: github-projects
-  repo: drothschild/HMBWorkout
+  repo: user/myProject
   project_number: 1
-  states: { in_progress: "In progress", in_review: "In review", human_qa: "Require Human Inteteraction", wont_do: "Won't Do" }
+  states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
 
 **Supported YAML.** `config.sh` parses a subset of YAML, and anything else fails with a line number:
@@ -348,7 +350,6 @@ A tick's cost is the session's `total_cost_usd`, which Claude Code computes on t
 - The wrapper never passes `--dangerously-skip-permissions`.
 - `--permission-mode` comes from `headless.permission_mode`, which defaults to `auto`. In `auto` mode, Claude Code approves or denies each tool call itself, with its safety classifier, so a tick can run unattended without skipping permission checks. No one is there to answer a permission prompt, so a stricter mode such as `default` leaves the tick's commands denied.
 - If you set `headless.permission_mode: bypassPermissions`, the wrapper prints a one-line warning, to stderr and to the log, before the first tick.
-- **Do not run the manager on haiku.** Claude Code runs a haiku session in permission mode `default` even when `--permission-mode auto` is passed, and it does not say so. Every Bash call of the tick is then denied, and the tick ends without a report. The wrapper warns before the first tick when `models.manager` names haiku. Use `sonnet` (the default) or a larger model.
 
 ### Merges stay human
 
