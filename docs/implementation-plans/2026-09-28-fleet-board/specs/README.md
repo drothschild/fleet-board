@@ -1566,3 +1566,15 @@ checker's grep for `sk-ant`, home and temp paths and the forbidden name found no
   skills `fleet-board:init`, `run`, `status`, `tick`; `plugin_errors: null`.
 
 **Cost of this revision:** $0.8481 (8 runs). **Running total, all API-key charges:** ~$34.93.
+
+### Revision (2026-10-09, issue #3): `models.escalation`
+
+**Cause.** Escalation could only switch implementor and fixer to `models.reviewer`. The new key `models.escalation` names another model (null keeps the reviewer's).
+
+**Spec and brief changes** (hand edits to the text, since `design.md` is not in this repo): `manager.md` item 4.3 and AC6.2, and `briefs/spec-req-manager.md` (Models paragraph and AC6.2), now name the escalation model.
+
+**Runs.** Two isolated `claude -p --bare` runs (`--model opus --tools "Read,Edit"`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, same command form as Task 8, reading only the files named in the prompt).
+1. A full re-author of `agents/manager.md` from `specs/manager.md` and `specs/reporting.md` (4 turns, $0.6637). **Discarded**: it reworded about 160 lines unrelated to the change.
+2. A minimal edit: the run read `specs/manager.md` and `agents/manager.md` and changed only the sentence in 4.3 (4 turns, $0.2138). **Kept.**
+
+`tests/test-clean-room.sh`: `passed: 79   failed: 0`. **Revision cost:** $0.8775. **Running total, all API-key charges:** ~$35.81.

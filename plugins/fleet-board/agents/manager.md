@@ -391,7 +391,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 
 4.2. For every counted action (everything except `skip`, `wait` and unlisted actions), this merge also records the action's outcome: `action_failures` + 1 and `last_action_error` when it made no progress, or `action_failures: 0` and `last_action_error: null` when it did (2.C). An outcome already written by an earlier merge in the same tick is not counted twice.
 
-4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the reviewer's model.
+4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the escalation model (`models.escalation`, or the reviewer's model when that is unset).
 
 4.4. Cards with a `skip` whose reason starts with `could not be blocked after ` or `unblock made no progress after `, and cards with `skip` or `wait`, get no note write (2.C.2).
 
