@@ -662,7 +662,7 @@ Review cycle 6 found that "move the card by hand" alone does not work, because a
 
 **PR lookups** use a single call per card: `gh pr view <pr> --repo R --json isDraft,state,mergedAt,statusCheckRollup,headRefOid`. `statusCheckRollup` feeds the `merge` rule, using the same green definition as gate G2e: every entry's `(.conclusion // .state)` is in SUCCESS, NEUTRAL or SKIPPED, and an empty rollup is green.
 
-**Models.** Start from the config `models`. When `round >= models.escalate_after_rounds`, `implementor` and `fixer` become `models.reviewer` and `escalated` is true. The reviewer model never changes. (AC6.2)
+**Models.** Start from the config `models`. When `round >= models.escalate_after_rounds`, `implementor` and `fixer` become `models.escalation`, or `models.reviewer` when that is null, and `escalated` is true. The reviewer model never changes. (AC6.2)
 
 **Warnings.** When the configured `models.implementor == models.reviewer`, add: `implementor and reviewer share model <m>; the reviewer shares the writer's blind spots`. (AC6.3)
 
@@ -706,7 +706,7 @@ AC1.1 to AC1.7, AC3.9, AC3.10, AC4.7, AC4.8, AC5.4, AC6.1 to AC6.4.
 
 ### fleet-board.AC6: Models, manager report, and headless run
 - **fleet-board.AC6.1 Success:** Each role runs on the model named in config; none inherits the session model.
-- **fleet-board.AC6.2 Success:** After `escalate_after_rounds` failed rounds, implementor and fixer run on the reviewer's model and the note records the switch.
+- **fleet-board.AC6.2 Success:** After `escalate_after_rounds` failed rounds, implementor and fixer run on the escalation model (`models.escalation`, default the reviewer's model) and the note records the switch.
 - **fleet-board.AC6.3 Success:** The tick report warns when implementor and reviewer share a model.
 - **fleet-board.AC6.4 Success:** The tick report ends with a stop signal (`dispatchable: true|false`) and a cost estimate labelled as an estimate.
 

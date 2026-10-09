@@ -486,7 +486,12 @@ CLEANUP_DIRS+=("$REPO")
 assert_key "$REPO" "models.escalation" "fable" "models.escalation set"
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO")
-assert_key "$REPO" "models.escalation" "null" "models.escalation defaults to null"
+run_config "$REPO"
+if printf '%s' "$LAST_OUT" | jq -e '.models | has("escalation") and .escalation == null' >/dev/null; then
+  pass "models.escalation defaults to null"
+else
+  fail "models.escalation defaults to null" "got $(printf '%s' "$LAST_OUT" | jq -c .models)"
+fi
 invalid_field_case "worktrees.dir empty" 'worktrees: { dir: "" }' "worktrees.dir must be a non-empty relative path"
 invalid_field_case "worktrees.dir absolute" 'worktrees: { dir: /tmp/wt }' "worktrees.dir must be a non-empty relative path"
 invalid_field_case "worktrees.dir number" 'worktrees: { dir: 7 }' "worktrees.dir must be a non-empty relative path"

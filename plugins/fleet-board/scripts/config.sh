@@ -145,6 +145,9 @@ VALIDATION_SCRIPT='
       (if (.models | type) == "object" then
         (if (.models.escalate_after_rounds | type) != "number" or (.models.escalate_after_rounds | floor) != .models.escalate_after_rounds or .models.escalate_after_rounds <= 0 then "models.escalate_after_rounds must be a positive integer" else empty end)
       else empty end),
+      (if (.models | type) == "object" then
+        (if (.models.escalation | type) != "null" and ((.models.escalation | type) != "string" or .models.escalation == "") then "models.escalation must be null or a non-empty string" else empty end)
+      else empty end),
       (if (.worktrees | type) == "object" then
         (if (.worktrees.mutate_on_copy | type) != "boolean" then "worktrees.mutate_on_copy must be boolean" else empty end)
       else empty end),

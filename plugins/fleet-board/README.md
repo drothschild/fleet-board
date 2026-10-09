@@ -71,7 +71,7 @@ Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on
 - **`## Acceptance` lists only what a test can check**, one `- ` bullet per behavior. The reviewer maps each bullet to a test; a bullet with no test is a finding.
 - **Put on-device and manual checks under `## Human QA`**, not in Acceptance. No agent can test them, so in Acceptance they only get the card blocked.
 
-**When a card gets blocked.** The manager blocks a card, with a comment saying why, when Critical or Important findings survive `review.max_rounds` rounds, when the implementor produces no PR in that many attempts, or when that many actions in a row make no progress. From round `models.escalate_after_rounds` on, the implementor and fixer run on the reviewer's model.
+**When a card gets blocked.** The manager blocks a card, with a comment saying why, when Critical or Important findings survive `review.max_rounds` rounds, when the implementor produces no PR in that many attempts, or when that many actions in a row make no progress. From round `models.escalate_after_rounds` on, the implementor and fixer run on `models.escalation`, or on the reviewer's model when that is unset.
 
 More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md](docs/config.md#how-the-board-works-in-detail).
 
@@ -100,7 +100,8 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
 | `models.manager` / `implementor` / `reviewer` / `fixer` | `sonnet` / `sonnet` / `opus` / `sonnet` | each role's model |
-| `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.reviewer` |
+| `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.escalation` |
+| `models.escalation` | unset | model for escalated implementor and fixer; unset means `models.reviewer`. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |
 | `limits.concurrency` | `6` | role agents running at once |
 | `limits.tick_interval` | `300` | seconds between ticks |
 | `limits.max_hours`, `max_cost_usd`, `max_consecutive_failures`, `max_turns` | `8`, `40`, `3`, `200` | headless wrapper limits |
