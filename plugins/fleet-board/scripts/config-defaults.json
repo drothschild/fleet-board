@@ -6,7 +6,7 @@
   "human_qa_paths": [],
   "merge": { "policy": "human" },
   "review": { "mutation": true, "verify_claim": true, "max_rounds": 3 },
-  "models": { "manager": "sonnet", "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "escalate_after_rounds": 2 },
+  "models": { "manager": "sonnet", "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "escalate_after_rounds": 2, "escalation": null },
   "limits": { "concurrency": 6, "max_hours": 8, "max_cost_usd": 40, "tick_interval": 300, "max_consecutive_failures": 3, "max_turns": 200 },
   "headless": { "permission_mode": "auto" }
 }

@@ -259,6 +259,26 @@ assert_jq "escalation: round 2 models.reviewer unchanged" "$(card 12 models.revi
 assert_jq "escalation: round 2 escalated" "$(card 12 escalated)" 'true'
 assert_jq "escalation: round 2 round" "$(card 12 round)" '2'
 
+# models.escalation unset: escalated models equal the reviewer's, exactly as before
+plan escalation-round2
+assert_jq "escalation unset: models" "$(card 12 models)" "$ESCALATED_MODELS"
+assert_jq "escalation unset: no warning" '.warnings' '[]'
+
+# models.escalation: X sends implementor and fixer to X; reviewer unchanged
+plan escalation-round2 "$(printf 'models:\n  escalation: fable')"
+assert_exit "escalation set: exit" 0
+assert_jq "escalation set: models" "$(card 12 models)" '{"implementor":"fable","reviewer":"opus","fixer":"fable"}'
+assert_jq "escalation set: escalated" "$(card 12 escalated)" 'true'
+assert_jq "escalation set: no warning" '.warnings' '[]'
+
+# models.escalation set: before the escalation round the configured models still apply
+plan in-review-fix "$(printf 'models:\n  escalation: fable')"
+assert_jq "escalation set: round 1 models" "$(card 12 models)" "$DEFAULT_MODELS"
+
+# models.escalation equal to models.reviewer: warn that the writer shares the reviewer's model
+plan escalation-round2 "$(printf 'models:\n  escalation: opus')"
+assert_jq "escalation equals reviewer: exact warning" '.warnings' '["escalation and reviewer share model opus; the escalated writer shares the reviewer'"'"'s blind spots"]'
+
 # AC1.7 in-review-block
 plan in-review-block
 assert_exit "in-review-block: exit" 0

@@ -281,11 +281,13 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
 
   [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
-    # Models (AC6.2): from escalate_after_rounds on, implementor and fixer use the reviewer model
+    # Models (AC6.2): from escalate_after_rounds on, implementor and fixer use
+    # models.escalation, or the reviewer model when that is null
     | ($round >= $m.escalate_after_rounds) as $esc
-    | {implementor: (if $esc then $m.reviewer else $m.implementor end),
+    | ($m.escalation // $m.reviewer) as $emodel
+    | {implementor: (if $esc then $emodel else $m.implementor end),
        reviewer: $m.reviewer,
-       fixer: (if $esc then $m.reviewer else $m.fixer end)} as $models
+       fixer: (if $esc then $emodel else $m.fixer end)} as $models
     | (($c.title // "") | slug) as $slug
     | decide($c; $n; $round) as $d
     | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
@@ -304,6 +306,9 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        (if $m.implementor == $m.reviewer
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)
+       + (if $m.escalation != null and $m.escalation == $m.reviewer
+          then ["escalation and reviewer share model \($m.escalation); the escalated writer shares the reviewer'"'"'s blind spots"]
+          else [] end)
        + [$cards[] | select(.action == "skip" and (.reason | startswith("lookup failed")))
           | "#\(.number): \(.reason)"]
        + [$cards[] | select(.action == "skip" and (.reason | test("without a merge$")))

@@ -338,7 +338,7 @@ When the plan's reason starts with `no progress after `, the manager runs these 
 
 4.2. For every counted action (everything except `skip`, `wait` and unlisted actions), this merge also records the action's outcome: `action_failures` + 1 and `last_action_error` when it made no progress, or `action_failures: 0` and `last_action_error: null` when it did (2.C). An outcome already written by an earlier merge in the same tick is not counted twice.
 
-4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the reviewer's model.
+4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the escalation model (`models.escalation`, or the reviewer's model when that is unset).
 
 4.4. Cards with a `skip` whose reason starts with `could not be blocked after ` or `unblock made no progress after `, and cards with `skip` or `wait`, get no note write (2.C.2).
 
@@ -460,6 +460,6 @@ When `tick-plan.sh` exits non-zero, the report has the same shape:
 - **fleet-board.AC4.8 Success:** A red `main` opens a P0 Backlog card linked to the merged PR.
 - **fleet-board.AC5.4 Failure:** A report missing the `VERIFIED:` line is rejected by the manager, which re-dispatches once with the rule quoted.
 - **fleet-board.AC6.1 Success:** Each role runs on the model named in config; none inherits the session model.
-- **fleet-board.AC6.2 Success:** After `escalate_after_rounds` failed rounds, implementor and fixer run on the reviewer's model and the note records the switch.
+- **fleet-board.AC6.2 Success:** After `escalate_after_rounds` failed rounds, implementor and fixer run on the escalation model (`models.escalation`, default the reviewer's model) and the note records the switch.
 - **fleet-board.AC6.3 Success:** The tick report warns when implementor and reviewer share a model.
 - **fleet-board.AC6.4 Success:** The tick report ends with a stop signal (`dispatchable: true|false`) and a cost estimate labelled as an estimate.
