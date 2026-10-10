@@ -258,6 +258,12 @@ assert_jq "in-review-head-moved: reason" "$(card 12 reason)" \
   '"PR head def5678 differs from the round 1 review at abc1234; review the new commits before fixing again"'
 assert_jq "in-review-head-moved: round unchanged" "$(card 12 round)" '1'
 assert_jq "in-review-head-moved: dispatchable" '.dispatchable' 'true'
+
+# in-review-head-same-full-sha: the note holds the short sha abc1234 and the
+# PR head is its full 40-character form. That is the same commit, so the plan
+# stays fix; reading it as a move would plan a review on every tick.
+plan in-review-head-same-full-sha
+assert_jq "in-review-head-same-full-sha: action" "$(card 12 action)" '"fix"'
 # AC6.2 escalation at round 1: not yet
 assert_jq "escalation: round 1 models" "$(card 12 models)" "$DEFAULT_MODELS"
 assert_jq "escalation: round 1 not escalated" "$(card 12 escalated)" 'false'

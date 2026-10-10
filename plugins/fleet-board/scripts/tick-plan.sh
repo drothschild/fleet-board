@@ -85,6 +85,14 @@
 # "#<n>: in review, but no PR is known".
 # A clean, current review whose human-QA answer is unknown is skipped with
 # the warning "human-QA need unknown for #<n>".
+# A current review with Critical or Important findings plans review, not fix,
+# when the open PR's headRefOid is no longer last_review.sha (compared by
+# prefix, so a short sha never reads as a move), with reason "PR head <h7>
+# differs from the round <round> review at <s7>; review the new commits before
+# fixing again". The commits came from a fixer whose report was never
+# reconciled (no round bump) or from a person; fixing again would redo the
+# work, while the manager's review action reviews exactly those commits
+# (prev_sha = last_review.sha). This comes before the max_rounds block.
 # A note worktree outside the current base (note.sh reads it as null) adds
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
@@ -227,6 +235,13 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
   def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-+"; "") | sub("-+$"; "")
     | .[0:40] | sub("-+$"; "") | if . == "" then "card" else . end;
   def act($a; $r): {action: $a, reason: $r};
+  # True when the open PR head is known and is not the commit the last review
+  # saw. Compared by prefix, so an abbreviated sha on either side never reads
+  # as a move (a false "moved" would plan a review every tick).
+  def head_moved($c; $lr):
+    ($c.pr_info.headRefOid // null) as $h | ($lr.sha // null) as $s
+    | ($h | type) == "string" and ($s | type) == "string" and $h != "" and $s != ""
+      and (($h | startswith($s)) or ($s | startswith($h)) | not);
   # The command a person runs after moving a skipped card by hand: the path is
   # absolute, and single-quoted when the shell would split or expand it
   def reset_cmd($n): "bash \($note_sh | if test("\\A[A-Za-z0-9/._+:@-]+\\z") then . else @sh end) reset-failures \($n)";
@@ -267,6 +282,10 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
             else act("finish"; "PR #\($c.pr) merged and main verified") end
           elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
           elif $lr == null or ($lr.round // 0) < $round then act("review"; "round \($round) not reviewed yet")
+          # Commits landed after a review with findings (a fixer whose report
+          # was never reconciled, or a person): review them; never fix again.
+          elif $ci > 0 and head_moved($c; $lr)
+            then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
           elif $ci > 0 and $round >= $max then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($max)")
           elif $ci > 0 then act("fix"; "\($ci) Critical/Important findings in round \($round)")
           elif $c.needs_human_qa == true then act("to_human_qa"; "no Critical/Important findings; needs human QA")
