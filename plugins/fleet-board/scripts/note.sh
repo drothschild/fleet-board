@@ -10,6 +10,8 @@
 #   note.sh merge <n> <json-patch>     get, merge the patch in, put
 #   note.sh reset-failures <n>         merge {"action_failures": 0,
 #                                      "last_action_error": null} (no file)
+#   note.sh fail <n> <error>           merge {"action_failures": <stored> + 1,
+#                                      "last_action_error": <error>} (no file)
 #
 # The note is a comment on the card: the marker line (added by board-note.sh),
 # a heading, a one-line summary, and one fenced ```json block holding the note.
@@ -44,6 +46,12 @@
 # reset the count, so without it the card would be skipped, or blocked again.
 # It behaves exactly like merge with that patch, including the refusal below.
 #
+# fail counts one action failure from its arguments alone. The manager uses it
+# when a step fails before a patch file exists, or because one cannot be
+# written (a refused Write): counting through merge would need that file, the
+# count would never rise, and tick-plan.sh would never block the card. The
+# error must be non-empty; like merge, it refuses an invalid stored note.
+#
 # merge: out_of_scope_created and bugs_filed append (deduplicated by title,
 # compared case-insensitively), report_errors appends, pending_followups is
 # replaced whole, and every other key is merged with jq's * operator. merge
@@ -55,14 +63,14 @@
 #   1 - the card could not be read or written (parse: stdin is not a card),
 #       the note's JSON block does not parse, put/merge was given an invalid
 #       note or a file that is not a JSON object, or merge (or reset-failures)
-#       found the stored note invalid
-#   2 - usage error
+#       found the stored note invalid (also fail)
+#   2 - usage error (fail: a missing or empty error)
 
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: note.sh get <n> | parse <n> < <board-read-json> | put <n> <json-file> | merge <n> <json-patch-file> | reset-failures <n>"; }
+usage() { fb_die 2 "usage: note.sh get <n> | parse <n> < <board-read-json> | put <n> <json-file> | merge <n> <json-patch-file> | reset-failures <n> | fail <n> <error>"; }
 
 [ $# -ge 2 ] || usage
 CMD="$1"
@@ -73,6 +81,10 @@ case "$CMD" in
   put|merge)
     [ $# -eq 3 ] || usage
     [ -f "$3" ] || fb_die 2 "file not found: $3"
+    ;;
+  fail)
+    [ $# -eq 3 ] || usage
+    [ -n "$3" ] || fb_die 2 "note.sh fail needs a non-empty error"
     ;;
   *) usage ;;
 esac
@@ -239,5 +251,15 @@ case "$CMD" in
     ;;
   reset-failures)
     note_merge '{"action_failures":0,"last_action_error":null}' "reset the action failures on"
+    ;;
+  fail)
+    OLD="$(note_get)"
+    rc=$?
+    [ $rc -ne 3 ] || fb_die 1 "refusing to count a failure on the invalid manager note on #$N; nothing written (replace it with note.sh put)"
+    [ $rc -eq 0 ] || exit 1
+    PATCH="$(jq -c -n --argjson o "$OLD" --arg e "$3" \
+      '{action_failures: (($o.action_failures // 0) + 1), last_action_error: $e}' 2>/dev/null)" \
+      || fb_die 1 "cannot build the failure count for #$N"
+    note_merge "$PATCH" "count a failure on"
     ;;
 esac
