@@ -12,7 +12,7 @@
     {
       "name": "fleet-board",
       "source": "./plugins/fleet-board",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "description": "Turns a GitHub issue board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates."
     }
   ]
