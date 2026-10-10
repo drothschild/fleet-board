@@ -1588,3 +1588,25 @@ checker's grep for `sk-ant`, home and temp paths and the forbidden name found no
 **Run.** One isolated `claude -p --bare` run (`--model opus --tools "Read,Edit"`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers) read `specs/tick.md` and `skills/tick/SKILL.md` and changed only the phrase after "Exit 4 means" in step 3 (4 turns, $0.0547). **Kept.**
 
 `tests/test-clean-room.sh`: `passed: 79   failed: 0`. **Revision cost:** $0.0547. **Running total, all API-key charges:** ~$35.87.
+
+### Revision 10 (2026-10-10, PR #17): temp file names a subagent may write
+
+**Cause (observed live).** In an HMBWorkout tick, Claude Code's `Write` tool refused the manager's temp files with "Subagents should return findings as text, not write report files". Claude Code refuses any subagent `Write` whose base name matches `^(REPORT|SUMMARY|FINDINGS|ANALYSIS).*\.md$` (case-insensitive). The manager chose its own names inside its `mktemp -d` directory and picked report-style `.md` names. Two fixer reports were never checked or reconciled (no round bump, no reviewer). The failures were not counted either, because counting needs a note-patch file. The next tick would have re-dispatched the same fixers. The role agents were not affected: they already take their report names from `mktemp`.
+
+**Script changes (not clean-room, test-first):** `tick-plan.sh` plans `review` instead of `fix` when the PR head moved past `last_review.sha` (prefix compare), and `note.sh fail <n> <error>` counts a failure with no patch file. A new lint, `tests/test-write-names.sh`, fails when an agent, skill, spec or brief names a file the guard refuses that does not exist in the repo.
+
+**Spec and brief changes** (hand edits):
+- `manager.md`: 0.10 (names from `mktemp <temp dir>/fb.XXXXXX`, why, and one retry at a fresh name after a refused write), 0.11 (the `note.sh fail` exception), 2.C.4 item 1 (count with `note.sh fail` when the counting patch file cannot be written), and two Must never items.
+- `briefs/spec-req-manager.md`: a "Revision 10 requirements" section, `note.sh fail` in the note.sh interface, and the withdrawn Revision 9 example path renamed from a guard-matching report name to `fb.Xy34Zq`. That section stays withdrawn.
+- Brief sha256 (16): `fdb629a26f458447` → `ce442ac3854a95a6`. Spec: `9bf693b6c34a2c64` → `fb360676344f154d`.
+
+**Run.** One isolated in-place edit of `agents/manager.md`, in the Revision b form:
+- Settings: `--model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.296, `claude-opus-5-5`.
+- Inputs: the staging dir (its only `--add-dir`) held `edit-req.md` (sha256 `c623062cd9819b00`) and a copy of the edited spec as `spec-manager.md` (`fb360676344f154d`). Prompt sha256 `d5537e8f0cff9c56`.
+- Isolation: only built-in `cc-plugin-*@builtin` plugins, tools `Edit` and `Read`.
+- Path audit: 3 reads (the two inputs and the target) and 5 edits, all of the target.
+- 9 turns, $0.2749. Evidence: `evidence/author-manager.r10.init.json` (sha256 `3d9ef3fe8d63c87c`), with no key and no local path.
+
+**Minimality check.** The diff has 5 hunks, each one a requirement item: the two 0.10 bullets, the 0.11 sentence, the 2.C.4 bullet, and the two Never lines. No unrelated line changed; the frontmatter is unchanged (`model: sonnet`, `color: blue`, the D3 tools). `agents/manager.md` sha256 `e2a04d5581581fb9` → `9c3dcfc1a2418805`. **Kept.**
+
+`tests/test-clean-room.sh`: `passed: 79   failed: 0`. `tests/test-write-names.sh`: `passed: 5   failed: 0`. **Revision cost:** $0.2749. **Running total, all API-key charges:** ~$36.14.
