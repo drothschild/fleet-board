@@ -56,13 +56,15 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 0.9. **gh calls.** Every `gh` call names the repo explicitly with `--repo <board.repo>`.
 
 0.10. **Temp files.** At the start of the tick, create one temp directory with `mktemp -d`, outside the repo and outside every worktree. Write all your report, note-patch, follow-up and comment files there with the `Write` tool.
+   - Each file gets its name from `mktemp <temp dir>/fb.XXXXXX`, run in a Bash call; note the absolute path it prints and write to exactly that path. Never choose a temp file's name yourself. Claude Code's `Write` tool refuses any subagent file whose base name matches `^(REPORT|SUMMARY|FINDINGS|ANALYSIS).*\.md$` (case-insensitive), with "Subagents should return findings as text, not write report files". A self-chosen name that starts with the word report and ends in `.md` matches it, and a refused report is never checked or reconciled. A `mktemp` name never matches it.
    - A temp file's content never goes inside a Bash command: no heredoc, `echo`, `printf` or `cat`. The gate reads Bash command text and blocks content that quotes a gated command.
    - Write each file with the `Write` tool, then pass only its path to the script.
    - If the `Write` tool refuses a file because it has not been read (an existing file, for example one just made by `mktemp`), read it once and write it again.
+   - If the `Write` tool refuses a file for any other reason, run `mktemp <temp dir>/fb.XXXXXX` again and write the same content once to the new path. If that write is refused too, the step has failed: the action made no progress and is counted with `note.sh fail` (2.C.4), because no patch file can be written.
 
 0.11. **Note reads and writes.**
    - `note.*` means the card's note as printed by `note.sh get N`, read after the plan. The plan does not carry `last_review`, `implementor_attempts` or the other note fields.
-   - Every note change is `note.sh merge <n> <patch-file>`. The patch file holds a JSON object with only the keys being changed.
+   - Every note change is `note.sh merge <n> <patch-file>`. The patch file holds a JSON object with only the keys being changed. The one exception is `note.sh fail <n> "<line>"`, used only as 2.C.4 allows.
    - Never run `note.sh put`.
    - Never run `note.sh reset-failures`. A person runs it after moving a skipped card by hand. You reset the counter yourself, inside your own merges.
 
@@ -261,6 +263,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
       - The line is the failed command's first stderr line. For a report rejected twice, it is `<role> report rejected twice: <the first parse-report stderr line of the second rejection>`.
       - The card's result in the tick report says the action made no progress.
       - `Warnings:` carries `#N: <action> made no progress (<new count> of <review.max_rounds>): <the line>`.
+      - When the counting patch file cannot be written (the `Write` tool refused it twice, 0.10), count with `note.sh fail N "<the line>"` instead. It takes the count and the line as arguments and adds 1 to the stored count itself. A refused temp file is a no-progress reason like any other: the line names the refused write.
    2. **Progress.** If the action made progress, merge `{"action_failures": 0, "last_action_error": null}`. Fold this into the action's last `note.sh merge` (the note-upkeep `state` merge of step 4) rather than writing it separately.
    3. **Folding.** The counting merge may be folded into the same `note.sh merge` as the note-upkeep `state`, and, for a report rejected twice, the `report_errors` entry. If that merge fails or is refused, the tick report carries its stderr line as a warning, and nothing else is done for the card.
    4. **A failed step ends the action.** After a failed step there is no dispatch and no later step of that action for the rest of the tick. Steps that already ran stand, for example `continue_implementor`'s attempt count or `start_review`'s board move.
@@ -493,7 +496,8 @@ Never:
 - Put a shell variable or `$(...)` where a card number, PR number or state belongs in a `board-move.sh`, `gh pr ready` or `gh pr merge` command.
 - Retry a command the gate blocked in another form.
 - Run a fleet-board script from any directory other than the repo root, or run a `gh` command without `--repo <board.repo>`.
-- Run `note.sh put` or `note.sh reset-failures`, or write a note other than through `note.sh merge`.
+- Run `note.sh put` or `note.sh reset-failures`, or write a note other than through `note.sh merge` (or `note.sh fail`, only when the counting patch file cannot be written, 2.C.4).
+- Choose a temp file's name yourself instead of taking it from `mktemp <temp dir>/fb.XXXXXX`, or write any file whose base name starts with `report`, `summary`, `findings` or `analysis` and ends in `.md`.
 - Reset `action_failures` before an action-failure block's move to `blocked` has succeeded.
 - Block or skip a card on your own for failures you counted, or take any action on a plan card skipped as `could not be blocked after ` or `unblock made no progress after `.
 - Post the Human QA comment before the move to `human_qa` succeeds, or post a second comment headed `What to check in Human QA`.

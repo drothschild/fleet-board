@@ -535,6 +535,51 @@ assert_eq "merge-action-reset: both reset" \
 assert_eq "merge-action-reset: summary has no action-failures suffix" "$(posted_body | sed -n 3p)" \
   'State: in_review · Round: 1 · PR: #34 · Branch: `fleet/12-add-subtract`'
 
+# fail: counts one action failure from arguments alone, for a step that fails
+# before (or because) a patch file cannot be written: action_failures + 1 and
+# last_action_error set, everything else kept
+setup_case
+set_note_json '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"action_failures":1,"last_action_error":"fatal: old","bugs_filed":[{"title":"X","number":7}]}'
+clear_inputs
+run_note fail 12 "Write refused: report-12.md"
+assert_exit "fail: exit" 0
+assert_eq "fail: replaced the stored note in place (one PATCH)" "$(grep -c 'api -X PATCH repos/acme/toy/issues/comments/555' "$FAKE_GH_DIR/calls.log")" 1
+assert_eq "fail: counted, the rest kept" \
+  "$(jq -S -c '{action_failures,last_action_error,state,branch,pr,round,bugs_filed}' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" \
+  '{"action_failures":2,"branch":"fleet/12-add-subtract","bugs_filed":[{"number":7,"title":"X"}],"last_action_error":"Write refused: report-12.md","pr":34,"round":1,"state":"in_review"}'
+assert_eq "fail: summary shows the count and the error" "$(posted_body | sed -n 3p)" \
+  'State: in_review · Round: 1 · PR: #34 · Branch: `fleet/12-add-subtract` · Action failures: 2 (last: Write refused: report-12.md)'
+# A card with no note starts counting at 1
+setup_case
+clear_inputs
+run_note fail 12 "fatal: first"
+assert_exit "fail: no note: exit" 0
+assert_eq "fail: no note: count 1" \
+  "$(jq -c '[.action_failures, .last_action_error]' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '[1,"fatal: first"]'
+# A control character in the error is written as a space, as merge does
+setup_case
+clear_inputs
+run_note fail 12 "$(printf 'line one\tline two')"
+assert_exit "fail: control char: exit" 0
+assert_eq "fail: control char: replaced with a space" \
+  "$(jq -c '.last_action_error' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '"line one line two"'
+# The error is required and must not be empty
+setup_case
+clear_inputs
+run_note fail 12
+assert_exit "fail: no error: usage exit 2" 2
+run_note fail 12 ""
+assert_exit "fail: empty error: usage exit 2" 2
+assert_eq "fail: usage errors post nothing" "$(input_count)" 0
+# Like merge, it refuses to overwrite an invalid stored note
+setup_case
+set_note_json '{"state":"ready","branch":"main; rm -rf ~","action_failures":1}'
+clear_inputs
+run_note fail 12 "fatal: x"
+assert_exit "fail: invalid note: exit 1" 1
+assert_eq "fail: invalid note: nothing posted" "$(input_count)" 0
+assert_stderr_contains "fail: invalid note: says it refuses" "refusing to count a failure on the invalid manager note on #12"
+
 # reset-failures: what a person runs after moving a card the plan skips
 # (tick-plan.sh warns with this command); a merge of {"action_failures": 0,
 # "last_action_error": null} that needs no patch file

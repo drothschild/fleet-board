@@ -29,7 +29,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Canonical states (`FB_STATES` in `board-lib.sh`): backlog ready in_progress in_review
   human_qa blocked done wont_do; board names come from `board.states.*` or the backend
   default. A new backend implements the same verbs.
-- **Manager note** (`scripts/note.sh get|parse|put|merge|reset-failures`). One comment per
+- **Manager note** (`scripts/note.sh get|parse|put|merge|reset-failures|fail`). One comment per
   card, starting with `FB_MARKER`, holding one fenced JSON block. Trust boundary: only a
   marker comment authored by the authenticated `gh` login counts; `get` validates fields
   that could steer shell commands (`pr`, `branch` = `fleet/<n>-<slug>`, absolute `worktree`
