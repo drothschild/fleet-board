@@ -246,6 +246,18 @@ assert_jq "in-review-needs-review: dispatchable" '.dispatchable' 'true'
 # in-review-fix
 plan in-review-fix
 assert_jq "in-review-fix: action" "$(card 12 action)" '"fix"'
+
+# in-review-head-moved: the round-1 review found an Important issue at
+# abc1234, but the PR head is now def5678. A fixer already pushed and its
+# report was never reconciled (no round bump), so fixing again would redo the
+# work; the new commits need a review instead.
+plan in-review-head-moved
+assert_exit "in-review-head-moved: exit" 0
+assert_jq "in-review-head-moved: action" "$(card 12 action)" '"review"'
+assert_jq "in-review-head-moved: reason" "$(card 12 reason)" \
+  '"PR head def5678 differs from the round 1 review at abc1234; review the new commits before fixing again"'
+assert_jq "in-review-head-moved: round unchanged" "$(card 12 round)" '1'
+assert_jq "in-review-head-moved: dispatchable" '.dispatchable' 'true'
 # AC6.2 escalation at round 1: not yet
 assert_jq "escalation: round 1 models" "$(card 12 models)" "$DEFAULT_MODELS"
 assert_jq "escalation: round 1 not escalated" "$(card 12 escalated)" 'false'
