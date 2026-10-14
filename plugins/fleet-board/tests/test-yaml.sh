@@ -15,13 +15,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PARSER="${SCRIPT_DIR}/../scripts/yaml.jq"
 FIXTURES="${SCRIPT_DIR}/../fixtures/config"
 
-PASS=0
-FAIL=0
 TMP="$(mktemp -d)"
+: > "$TMP/tally"  # ok and bad run in pipelines (subshells), so tally in a file
 trap 'rm -rf "$TMP"' EXIT
 
-pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2"; }
+pass() { echo p >> "$TMP/tally"; printf '  ok   %s\n' "$1"; }
+fail() { echo f >> "$TMP/tally"; printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2"; }
 
 HAVE_YQ=0
 case "$(yq --version 2>/dev/null)" in
@@ -129,5 +128,6 @@ printf 'l:\n  - k: v\n' | bad "map inside a block list" 'line 2: a block list it
 echo ""
 [ "$HAVE_YQ" = 1 ] && echo "(cross-checked against $(yq --version))"
 echo "-----------------------------------"
+PASS="$(grep -c p "$TMP/tally")"; FAIL="$(grep -c f "$TMP/tally")"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
