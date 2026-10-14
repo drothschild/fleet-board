@@ -4,12 +4,14 @@ Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. 
 
 ## Install
 
+Tell Claude Code "Go to https://github.com/drothschild/fleet-board and follow the install directions", or run:
+
 ```
 /plugin marketplace add drothschild/fleet-board
 /plugin install fleet-board@fleet-board
 ```
 
-Requires `gh` (logged in, with the `repo` scope, plus `project` for a Projects board), `jq`, `git`, [`yq`](https://github.com/mikefarah/yq) (mikefarah/yq v4, for example `brew install yq`) and Claude Code 2.1.x. `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
+Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
 
 ## Adding fleet-board to an existing project
 
