@@ -227,8 +227,8 @@ run_config "$REPO"
 assert_exit "deep exit 0" "0"
 assert_key "$REPO" "notes.a.b.c" "deep" "deep nesting value"
 
-# Test 10b: comments, quoted strings with escapes, nested flow collections,
-# anchors and aliases, and multi-line strings
+# Test 10b: comments, quoted strings with escapes, nested flow collections
+# and multi-line strings
 REPO="$(cat <<'YAML' | make_inline_repo
 # leading comment
 board:
@@ -239,8 +239,7 @@ commands:
   tail: |
     line one
     line two
-base: &base { k: [1, { n: 2 }] }
-copy: *base
+base: { k: [1, { n: 2 }] }
 YAML
 )"
 CLEANUP_DIRS+=("$REPO")
@@ -251,7 +250,6 @@ assert_key "$REPO" "commands.test_one" "$(printf 'node --test "a b"\tx')" "doubl
 assert_key "$REPO" "commands.lint" "it's" "single-quoted quote"
 assert_key "$REPO" "commands.tail" "$(printf 'line one\nline two')" "multi-line string"
 assert_key "$REPO" "base.k" '[1,{"n":2}]' "nested flow collection"
-assert_key "$REPO" "copy.k" '[1,{"n":2}]' "alias resolved"
 
 # Test 10c: a file that is not valid YAML, or not a map, exits 4 and names the file
 REPO="$(printf 'board: [unclosed\n' | make_inline_repo)"
@@ -265,22 +263,25 @@ run_config "$REPO"
 assert_exit "top-level list exit 4" "4"
 assert_stderr_contains "top-level list says map" "must be a map"
 
-# Test 10d: yq missing, or the wrong yq (the Python one), exits 4 with the install hint
-REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+# Test 10d: no yq is needed. With only jq and git on PATH (and a yq that
+# would fail loudly if called), config.sh still parses the file; an anchor,
+# which the bundled parser does not support, exits 4 with the line number.
+REPO="$(printf 'board:\n  repo: a/b\nmerge: { policy: human }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO")
 NOYQ="$(mktemp -d)"; CLEANUP_DIRS+=("$NOYQ")
 for t in jq git dirname cat mktemp rm; do ln -s "$(command -v $t)" "$NOYQ/$t"; done
+printf '#!/bin/sh\necho "yq must not be called" >&2; exit 99\n' > "$NOYQ/yq"; chmod +x "$NOYQ/yq"
 OLDPATH="$PATH"; PATH="$NOYQ:/usr/bin:/bin"
-run_config "$REPO"
+run_config "$REPO" "merge.policy"
 PATH="$OLDPATH"
-assert_exit "yq missing exit 4" "4"
-assert_stderr_contains "yq missing names mikefarah yq" "mikefarah/yq"
-printf '#!/bin/sh\necho "yq 3.4.3"\n' > "$NOYQ/yq"; chmod +x "$NOYQ/yq"
-PATH="$NOYQ:/usr/bin:/bin"
+assert_exit "no yq: exit 0" "0"
+assert_stdout_exact "no yq: value parsed" "human"
+assert_stderr_not_contains "no yq: yq never called" "yq must not be called"
+REPO="$(printf 'board:\n  repo: &r a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
 run_config "$REPO"
-PATH="$OLDPATH"
-assert_exit "wrong yq exit 4" "4"
-assert_stderr_contains "wrong yq names mikefarah yq" "mikefarah/yq"
+assert_exit "anchor exit 4" "4"
+assert_stderr_contains "anchor names file and line" ".fleet-board.yml: line 2: anchors, aliases and tags are not supported"
 
 # Test 11: bad-backend.yml
 REPO="$(make_test_repo bad-backend.yml)"
