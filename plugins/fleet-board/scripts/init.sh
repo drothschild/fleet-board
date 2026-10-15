@@ -119,7 +119,6 @@ TARGET="$DIR/.fleet-board.yml"
 for tool in gh jq git; do
   command -v "$tool" >/dev/null 2>&1 || die 1 "$tool is not on PATH"
 done
-command -v yq >/dev/null 2>&1 || die 1 "yq is not on PATH; config.sh needs mikefarah/yq v4 (https://github.com/mikefarah/yq), e.g. brew install yq"
 
 # --- Step 2: scopes --------------------------------------------------------
 # The active account's scopes line decides (fb_token_scopes). With none, a

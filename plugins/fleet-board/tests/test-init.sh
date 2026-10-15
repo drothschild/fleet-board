@@ -231,16 +231,23 @@ echo "Test: init.sh"
 echo ""
 
 # ---------------------------------------------------------------------------
-# yq is required (config.sh needs it): init refuses early, naming it
+# no-yq: init needs only gh, jq and git. With a yq on PATH that fails loudly
+# if called, init still writes a config that config.sh reads.
 setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+label create*	0	-
+ROUTESEOF
+default_routes; } > "$ROUTES"
 NOYQ="$(mktemp -d)"; CLEANUP_DIRS+=("$NOYQ")
 for t in gh jq git; do ln -s "$(command -v $t)" "$NOYQ/$t"; done
+printf '#!/bin/sh\necho "yq must not be called" >&2; exit 99\n' > "$NOYQ/yq"; chmod +x "$NOYQ/yq"
 OLDPATH="$PATH"; PATH="$NOYQ:/usr/bin:/bin"
 run_init "${LABELS_CMD[@]}" --dir "$TARGET"
 PATH="$OLDPATH"
-assert_exit "yq-missing: exit 1" 1
-assert_stderr_contains "yq-missing: names mikefarah/yq" "mikefarah/yq"
-if [ ! -f "$TARGET/.fleet-board.yml" ]; then pass "yq-missing: no config written"; else fail "yq-missing: no config written" "file exists"; fi
+assert_exit "no-yq: exit 0" 0
+assert_stderr_not_contains "no-yq: yq never named" "yq"
+if [ -f "$TARGET/.fleet-board.yml" ]; then pass "no-yq: config written"; else fail "no-yq: config written" "no file"; fi
 
 # ---------------------------------------------------------------------------
 # AC7.1 labels-writes-valid-config
