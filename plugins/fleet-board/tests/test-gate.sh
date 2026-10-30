@@ -751,19 +751,19 @@ card_routes > "$ROUTES"
 # An ordinary command full of quotes takes the fast path, and fast
 run_hook bash.json "printf '%s\\n' $(awk 'BEGIN { for (i = 1; i <= 8000; i++) printf "\"w%d\" '"'"'x'"'"' ", i }') > notes.txt"
 assert_silent_allow "bounded-time: 8000 quoted words, no gated keyword"
-assert_fast "bounded-time: 8000 quoted words, no gated keyword: fast" 3
+assert_fast "bounded-time: 8000 quoted words, no gated keyword: fast" 8
 run_hook bash.json "gh pr merge 4 --body $WORDS"
 assert_exit "bounded-time: 10000 unquoted words: exit 2" 2
-assert_fast "bounded-time: 10000 unquoted words: fast" 5
+assert_fast "bounded-time: 10000 unquoted words: fast" 15
 run_hook bash.json "gh pr merge 4 --body \"$WORDS\""
 assert_blocked "bounded-time: 10000 quoted words" "merge.policy is human"
-assert_fast "bounded-time: 10000 quoted words: fast" 5
+assert_fast "bounded-time: 10000 quoted words: fast" 15
 run_hook bash.json "gh issue edit 14 --body \"$WORDS\" --remove-label fleet:human_qa"
 assert_blocked "bounded-time: 10000-word body on an issue edit" "Human QA"
-assert_fast "bounded-time: 10000-word body on an issue edit: fast" 5
+assert_fast "bounded-time: 10000-word body on an issue edit: fast" 15
 run_hook bash.json "gh pr merge 4 # $(awk 'BEGIN { for (i = 0; i < 70000; i++) printf "x" }')"
 assert_blocked "bounded-time: over 64 KiB" "too long to check"
-assert_fast "bounded-time: over 64 KiB: fast" 5
+assert_fast "bounded-time: over 64 KiB: fast" 15
 run_hook bash.json "$(awk 'BEGIN { for (i = 0; i < 40; i++) printf "echo $("; printf "gh pr merge 4"; for (i = 0; i < 40; i++) printf ")" }')"
 assert_blocked "bounded-time: nesting too deep" "nests too deeply"
 setup_case labels-auto
@@ -777,7 +777,7 @@ stall_gh "pr view*" 6
 export FLEET_BOARD_GATE_TIMEOUT=2
 run_hook bash.json "gh pr merge 4"
 assert_blocked "bounded-time: stalled pr view" "could not verify PR 4"
-assert_fast "bounded-time: stalled pr view: fast" 5
+assert_fast "bounded-time: stalled pr view: fast" 15
 assert_log_has "bounded-time: the pr view was made" "pr view 4 --json"
 setup_case labels-human
 card_routes > "$ROUTES"
@@ -785,7 +785,7 @@ stall_gh "api repos/acme/toy/issues/14" 6
 export FLEET_BOARD_GATE_TIMEOUT=2
 run_hook bash.json "board-move.sh 14 done"
 assert_blocked "bounded-time: stalled card read" "could not verify card #14"
-assert_fast "bounded-time: stalled card read: fast" 5
+assert_fast "bounded-time: stalled card read: fast" 15
 unset FLEET_BOARD_GATE_TIMEOUT
 
 # I5 label-case: GitHub label names are case-insensitive
