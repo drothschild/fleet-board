@@ -10,6 +10,10 @@
 # with the values from the card's manager note and "—" for a missing one
 # ("PR —" when there is no PR). An empty section prints "(none)". A card
 # whose note cannot be read prints "#<n> <title> · note unreadable".
+# A ready card with an Acceptance section and unmet dependencies (deps.sh)
+# ends its line with " · waits for <ref> (<state or column>)[, ...]", the
+# reason tick-plan.sh plans wait with; if they cannot be looked up, with
+# " · dependencies unreadable" (exit 1).
 #
 # Exit codes:
 #   0 - board printed
@@ -28,6 +32,25 @@ case "$#:${1:-}" in
 esac
 
 fb_load_config
+
+DEPS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
+trap 'rm -f "$DEPS_FILE"' EXIT
+
+# waits_for <n>: prints the waiting reason of a ready card ("waits for ..."),
+# nothing when it has no unmet dependency; fails when they cannot be looked up
+waits_for() {
+  local card body refs out
+  card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1" </dev/null)" || return 1
+  body="$(jq -r '.body // ""' <<<"$card" 2>/dev/null)" || return 1
+  fb_has_acceptance "$body" || return 0
+  printf '%s\n' "$body" | grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' || return 0
+  printf '%s\n' "$body" > "$DEPS_FILE"
+  refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1
+  [ "$refs" != '[]' ] || return 0
+  out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$1" "$refs" 2>/dev/null)" || return 1
+  jq -r 'if (.unmet | length) == 0 then empty
+         else "waits for \([.unmet[] | "\(.ref) (\(.status | gsub("[[:cntrl:]]"; " ")))"] | join(", "))" end' <<<"$out"
+}
 
 RC=0
 for st in $STATES; do
@@ -48,10 +71,18 @@ for st in $STATES; do
       RC=1
       continue
     fi
-    jq -r --arg n "$n" --arg t "$title" '
+    suffix=""
+    if [ "$st" = ready ]; then
+      if wf="$(waits_for "$n")"; then
+        [ -z "$wf" ] || suffix=" · $wf"
+      else
+        suffix=" · dependencies unreadable"; RC=1
+      fi
+    fi
+    jq -r --arg n "$n" --arg t "$title" --arg sfx "$suffix" '
       def v: if . == null then "—" else tostring | gsub("[[:cntrl:]]"; " ") end;
       def m($k): if type == "object" then .[$k] | v else "—" end;
-      "  #\($n) \($t) · round \(.round | v) · PR \(if .pr == null then "—" else "#\(.pr)" end) · \(.models | m("implementor"))/\(.models | m("reviewer"))"' \
+      "  #\($n) \($t) · round \(.round | v) · PR \(if .pr == null then "—" else "#\(.pr)" end) · \(.models | m("implementor"))/\(.models | m("reviewer"))\($sfx)"' \
       <<<"$note" || { printf '  #%s %s · note unreadable\n' "$n" "$title"; RC=1; }
   done <<<"$ROWS"
 done
