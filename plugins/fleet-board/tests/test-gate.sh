@@ -1475,6 +1475,13 @@ for op in "cat > >(bash)" "tee > >(bash)" "cat > >(sh)" "cat 2> >(bash)"; do
   assert_exit "heredoc-procsub: $op: blocked" 2
 done
 
+# bash 4+ BASH_CMDS[cat]=... acts like hash -p, BASH_ALIASES[cat]=... like alias
+for pre in "BASH_CMDS[cat]=/bin/bash" "BASH_ALIASES[cat]=bash" "BASH_CMDS[cat]=/bin/bash;"; do
+  case "$pre" in *\;) sep=" " ;; *) sep=$'\n' ;; esac
+  run_hook bash.json "$(printf '%s%scat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep")"
+  assert_exit "heredoc-bashvars: $pre: blocked" 2
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
