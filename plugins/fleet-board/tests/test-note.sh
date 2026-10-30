@@ -193,6 +193,7 @@ cat > "$FAKE_GH_DIR/full.json" << JSONEOF
   "implementor_attempts": 2,
   "action_failures": 2,
   "last_action_error": "fatal: branch fleet/12-add-subtract is checked out elsewhere",
+  "deps_commented": ["acme/toy#22"],
   "updated_at": "2020-01-01T00:00:00Z"
 }
 JSONEOF
