@@ -45,7 +45,7 @@
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; HDN = 0; NOHD = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; SUBS = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -154,7 +154,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
       P++; d = substr(S, P, 1); if (d == ";" || d == "&") P++
       endseg(sid, par, ";"); continue
     }
-    if (c == "\n") { P++; endseg(sid, par, "NL"); if (HDN) skip_heredocs(); continue }
+    if (c == "\n") { P++; endseg(sid, par, "NL"); CMT = 0; if (HDN) skip_heredocs(); continue }
     if (c == "(") {
       P++
       # name ( ) defines a function
@@ -164,7 +164,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
     }
     if (c == ")") { P++; endseg(sid, par, ")"); continue }
     if (c == " " || c == "\t" || c == "\r") { flush(); P++; continue }
-    if (c == "#" && !IW) print "!NOPOP"
+    if (c == "#" && !IW) { print "!NOPOP"; CMT = 1 }
     if (IW) MX = 1
     W = W c; IW = 1; P++
   }
@@ -300,6 +300,7 @@ function ansi(    out, c, d, v, k, h) {
 # redirect: P is at < or >. An fd number or {name} written right before the
 # operator belongs to it; the word after the operator is its target.
 function redirect(    op, c, dash) {
+  SUBS = (IW && index(W, "[") > 0)   # a[1<<'2']=3 is an assignment, not a heredoc
   if (IW && (W ~ /^[0-9]+$/ || W ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) { W = ""; IW = 0 }
   else flush()
   op = ""
@@ -326,7 +327,7 @@ function redirect(    op, c, dash) {
 # (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
 # consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
 function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
-  if (NOHD) return 0
+  if (NOHD || CMT || SUBS) return 0   # comment text and a subscript hold no heredoc
   q = P
   while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
   word = ""; quoted = 0

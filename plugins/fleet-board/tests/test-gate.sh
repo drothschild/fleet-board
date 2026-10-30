@@ -1366,7 +1366,10 @@ for c in "$(printf 'echo hi # cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
          "$(printf 'echo hi #<<\\E\ngh pr merge 4\nE\n')" \
          "$(printf 'a[1<<'"'"'2'"'"']=3\ngh pr merge 4\n')"; do
   run_hook bash.json "$c"
-  assert_blocked "heredoc-comment-subscript: ${c%%$'\n'*}" "merge.policy"
+  case "$c" in
+    a\[*) assert_blocked "heredoc-comment-subscript: ${c%%$'\n'*}" "could not tell which directory" ;;
+    *) assert_blocked "heredoc-comment-subscript: ${c%%$'\n'*}" "merge.policy" ;;
+  esac
 done
 
 # hooks.json wiring: the harness runs the command string through a shell, so an
