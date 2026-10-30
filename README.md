@@ -1,6 +1,24 @@
 # fleet-board
 
-A Claude Code plugin that turns a GitHub issue board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates.
+## What it is
+
+A Claude Code plugin that turns a GitHub issue board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates. An implementor writes failing tests first, a separate reviewer attacks the result, and a human merges.
+
+## Demo
+
+![One card moves from Ready to a PR ready for review in four ticks](docs/demo.svg)
+
+One card goes from Ready to a PR ready for review in four ticks on a sandbox repo. The terminal recording is [`plugins/fleet-board/docs/demo.cast`](plugins/fleet-board/docs/demo.cast); play it with `asciinema play plugins/fleet-board/docs/demo.cast`.
+
+**Why it is built this way.** Cards are the state, tests come before code, a different agent reviews, and gates are hooks rather than requests. The reasoning is in the [design write-up](docs/design.md).
+
+## Results
+
+From the recorded run (`tests/behavioral-tick.sh --scenario ready-path`):
+
+- 4 ticks, 560 seconds, one card (Add subtract) taken from Ready to a PR ready for review, and not merged.
+- 48 checks passed, 0 failed.
+- A second card with no Acceptance section was skipped rather than guessed at.
 
 ## Install
 
@@ -37,7 +55,9 @@ Follow these steps in order, running each command with your shell tool. fleet-bo
 
 Everything else is in the [plugin README](plugins/fleet-board/README.md): requirements, a first-hour walkthrough on a fresh repo, [adding fleet-board to an existing project](plugins/fleet-board/README.md#adding-fleet-board-to-an-existing-project), the config reference and the gates.
 
-## How the agents were written
+## Provenance: how the agents were written (clean-room)
+
+I wrote the specs and the verification process, and the audit trail shows the prompts are my design: the agents' prompt files were produced from those specs in isolated runs, and every run was checked.
 
 The four agents (manager, implementor, reviewer, fixer) and four of the five skills (`reporting`, `tick`, `run`, `status`) were written **clean-room**. Here, that means the model that wrote each file could see only a written description of what the file must do, never another plugin's prompts or code.
 
