@@ -1,0 +1,10 @@
+# fleet-board config. See the fleet-board README.
+board:
+  backend: "github-projects"
+  repo: "drothschild/fleet-board"
+  project_number: 6
+  states: { in_progress: "In progress", in_review: "In review", human_qa: "Requires Human QA" }
+commands:
+  test_one: "bash {file}"
+merge:
+  policy: "auto"
