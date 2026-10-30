@@ -1410,6 +1410,16 @@ for c in "$(printf 'x=1 cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
   assert_exit "heredoc-allowlist: ${c%%$'\n'*}: blocked" 2
 done
 
+# a body fed to an interpreter is a script that runs: only cat, tee and the like
+# may have theirs skipped, and not when their output goes on (a pipe, a redirect)
+for op in "bash <<'E'" "sh <<'E'" "env bash <<'E'" "sudo bash <<'E'" "source /dev/stdin <<'E'" \
+          ". /dev/stdin <<'E'" "xargs sh -c <<'E'" "ssh host <<'E'" "python3 <<'E'" \
+          "true; bash <<'E'" "bash <<-'E'" "cat <<'E' | bash" "cat <<'E' | sh -s" \
+          "cat <<'E' >x.sh" "cat <<'E' ; true"; do
+  run_hook bash.json "$(printf '%s\ngh pr merge 4\nE\n' "$op")"
+  assert_blocked "heredoc-interpreter: $op" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
