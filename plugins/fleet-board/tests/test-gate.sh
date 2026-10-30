@@ -1399,6 +1399,17 @@ for c in "$(printf 'a[b[1] <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
   assert_exit "heredoc-nested-subscript: ${c%%$'\n'*}: blocked" 2
 done
 
+# a quoted heredoc with no delimiter line is not skipped: the body is lexed,
+# so a gated command inside it fails closed
+run_hook bash.json "$(printf 'cat <<'"'"'E'"'"'\ngh pr merge 4\n')"
+assert_blocked "heredoc-unterminated: body is lexed" "merge.policy"
+# only a plain command word may precede the operator: x=1 and [ words do not
+for c in "$(printf 'x=1 cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
+         "$(printf '[ -f x ] cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')"; do
+  run_hook bash.json "$c"
+  assert_blocked "heredoc-allowlist: ${c%%$'\n'*}" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
