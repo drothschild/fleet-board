@@ -1468,6 +1468,13 @@ for dl in '"E\$F"' '"E\\"' "\"E\\\$F\"''" "'E'x" '\E'; do
   assert_exit "heredoc-delimiter: $dl: blocked" 2
 done
 
+# a process substitution earlier in the segment may run a shell that reads the
+# body (cat > >(bash) <<'E'), so nothing is skipped after one
+for op in "cat > >(bash)" "tee > >(bash)" "cat > >(sh)" "cat 2> >(bash)"; do
+  run_hook bash.json "$(printf '%s <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$op")"
+  assert_exit "heredoc-procsub: $op: blocked" 2
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
