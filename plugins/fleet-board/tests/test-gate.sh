@@ -1446,6 +1446,14 @@ for pre in "hash -p /bin/bash cat" "hash -p /bin/bash cat;" "PATH=/tmp/zz:\$PATH
   esac
 done
 
+# an option can name a program that runs the body (sort --compress-program),
+# so only cat and tee without any - option have their body skipped
+for op in "sort --compress-program python3 -S 1 <<'E'" "sort <<'E'" "grep -f /dev/stdin x <<'E'" \
+          "wc --files0-from=- <<'E'" "tee -a x <<'E'" "head -n 1 <<'E'"; do
+  run_hook bash.json "$(printf '%s\ngh pr merge 4\nE\n' "$op")"
+  assert_blocked "heredoc-options: $op" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
