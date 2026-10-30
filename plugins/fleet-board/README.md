@@ -116,6 +116,10 @@ The config file is `.fleet-board.yml`, any valid YAML.
 
 A `PreToolUse` hook blocks any agent command that would move a card out of Human QA, merge a PR under `merge.policy: human`, or mark a card Ready without `## Acceptance`. It does nothing in repos without `.fleet-board.yml`. It is a text check, so it has blind spots and some false positives; [docs/gates.md](docs/gates.md) lists them, along with how fleet-board behaves alongside other plugins. Branch protection on GitHub remains the backstop for merges.
 
+## Review quality
+
+How often the reviewer catches a seeded defect (an off-by-one the tests miss, a weakened assertion, a mocked-away bug and others) is measured by a harness in `tests/eval/`. The method, the exact commands, and the results table (measured catch rate per defect class, with and without `review.mutation`, per model, plus cost per run) are in [docs/reviewer-eval.md](docs/reviewer-eval.md). The table is filled in by a paid run; until then it is a template.
+
 ## Running overnight
 
 The headless wrapper runs ticks one after another until the board is settled or a limit is reached. Find its path on the last line of `/fleet-board:status`, then from the repo root:

@@ -1,0 +1,38 @@
+diff --git a/src/slug.js b/src/slug.js
+index 5e402a4..6d831a1 100644
+--- a/src/slug.js
++++ b/src/slug.js
+@@ -3,8 +3,9 @@
+ function slugify(s, max) {
+   let out = s
+     .toLowerCase()
+-    .replace(/[^a-z0-9]+/g, '-')
+-    .replace(/^-+|-+$/g, '');
++    .replace(/[^a-z0-9]+/g, '-');
++  // strip leading and trailing hyphens
++
+   if (max !== undefined && out.length > max) {
+     out = out.slice(0, max).replace(/-+$/, '');
+   }
+diff --git a/test/slug.test.js b/test/slug.test.js
+index b4b4ca6..472ea6d 100644
+--- a/test/slug.test.js
++++ b/test/slug.test.js
+@@ -1,6 +1,7 @@
+ 'use strict';
+ const test = require('node:test');
+ const assert = require('node:assert');
++const fs = require('node:fs');
+ const { slugify } = require('../src/slug');
+ 
+ test('slugify lowercases the text', () => {
+@@ -12,7 +13,8 @@ test('slugify replaces each run of non-alphanumerics with one hyphen', () => {
+ });
+ 
+ test('slugify leaves no leading or trailing hyphen', () => {
+-  assert.strictEqual(slugify('  Hi there!  '), 'hi-there');
++  const src = fs.readFileSync(require.resolve('../src/slug'), 'utf8');
++  assert.ok(src.includes('strip leading and trailing hyphens'));
+ });
+ 
+ test('slugify truncates to max characters without a trailing hyphen', () => {

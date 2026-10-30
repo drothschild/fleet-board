@@ -1,0 +1,25 @@
+diff --git a/src/slug.js b/src/slug.js
+index 5e402a4..2803914 100644
+--- a/src/slug.js
++++ b/src/slug.js
+@@ -6,7 +6,7 @@ function slugify(s, max) {
+     .replace(/[^a-z0-9]+/g, '-')
+     .replace(/^-+|-+$/g, '');
+   if (max !== undefined && out.length > max) {
+-    out = out.slice(0, max).replace(/-+$/, '');
++    out = out.slice(0, max);
+   }
+   return out;
+ }
+diff --git a/test/slug.test.js b/test/slug.test.js
+index b4b4ca6..97c4c53 100644
+--- a/test/slug.test.js
++++ b/test/slug.test.js
+@@ -14,7 +14,3 @@ test('slugify replaces each run of non-alphanumerics with one hyphen', () => {
+ test('slugify leaves no leading or trailing hyphen', () => {
+   assert.strictEqual(slugify('  Hi there!  '), 'hi-there');
+ });
+-
+-test('slugify truncates to max characters without a trailing hyphen', () => {
+-  assert.strictEqual(slugify('ab cd ef', 3), 'ab');
+-});

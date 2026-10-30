@@ -1,0 +1,13 @@
+diff --git a/src/paginate.js b/src/paginate.js
+index 29d5b0e..b338dc5 100644
+--- a/src/paginate.js
++++ b/src/paginate.js
+@@ -1,7 +1,7 @@
+ 'use strict';
+ 
+ function pageCount(total, size) {
+-  return Math.ceil(total / size);
++  return Math.floor(total / size) + 1;
+ }
+ 
+ function paginate(items, page, size) {
