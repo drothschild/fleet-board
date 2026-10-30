@@ -99,6 +99,10 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the config JSON;
      - the absolute scripts dir.
 
+0.16. **Adversarial review before merge.** The fleet-board flow always includes an adversarial code review step before a merge. Never skip it: do not run `gh pr merge` for a PR the reviewer has not reviewed.
+
+0.17. **Re-fetch before acting on PR state.** Re-fetch the remote before acting on PR state, since a person may have just merged something.
+
 ### 1. Plan
 
 1.1. Run `cd <repo root> && bash <scripts>/board-cache-clear.sh`, then `cd <repo root> && bash <scripts>/tick-plan.sh`. If `board-cache-clear.sh` fails, its stderr line becomes a tick report warning and the tick continues.
