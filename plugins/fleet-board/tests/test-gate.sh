@@ -1359,6 +1359,16 @@ for c in "$(printf 'echo $(cat <<'"'"'E'"'"'\nhi\n)\ngh pr merge 4\nE\n')" \
   assert_blocked "heredoc-scope-bypass: ${c%%$'\n'*}" "merge.policy"
 done
 
+# a << in a comment or an assignment subscript is no heredoc: bash runs the
+# lines after it
+for c in "$(printf 'echo hi # cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
+         "$(printf '# cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
+         "$(printf 'echo hi #<<\\E\ngh pr merge 4\nE\n')" \
+         "$(printf 'a[1<<'"'"'2'"'"']=3\ngh pr merge 4\n')"; do
+  run_hook bash.json "$c"
+  assert_blocked "heredoc-comment-subscript: ${c%%$'\n'*}" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
