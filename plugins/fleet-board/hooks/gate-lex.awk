@@ -48,7 +48,7 @@
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; UNQ = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; UNQ = 0; FNDEF = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -85,6 +85,7 @@ function flush() {
       gsub(/\\/, "", W)
       gsub(/[\n\t\r]/, " ", W)
       gsub(US, " ", W)
+      if (W == "function" || W == "alias") FNDEF = 1
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
@@ -330,6 +331,7 @@ function redirect(    op, c, dash) {
 # (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
 # consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
 function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
+  if (FUNC || FNDEF) return 0   # a function or alias may stand in for cat, tee, ...
   if (NOHD || CMT) return 0   # comment text and a sub-scope hold no heredoc to skip
   # allowlist: skip a body only when every word before the operator is plain
   # (a command name and simple arguments). Anything else (an assignment, a
