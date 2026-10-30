@@ -248,6 +248,19 @@ run_check "$SCRIPT"
 assert_exit "dependency lookup failure: exit 1" 1
 assert_stdout_contains "dependency lookup failure: the card is marked" "  #30 Needs api · round — · PR — · —/— · dependencies unreadable"
 
+# A body bigger than the pipe buffer still shows the waiting reason
+setup_case
+ready_card 30 "Needs api" "## Depends on
+- #22
+
+$(head -c 80000 /dev/zero | tr '\0' 'x')
+
+## Acceptance
+- works
+"
+run_check "$SCRIPT"
+assert_stdout_contains "large body: the waiting reason is still shown" "waits for acme/toy#22 (open)"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

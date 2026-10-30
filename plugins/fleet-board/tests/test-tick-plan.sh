@@ -643,6 +643,20 @@ plan deps-in-progress-not-gated
 assert_jq "deps-in-progress-not-gated: in_progress is never gated" "$(card 12 action)" '"continue_implementor"'
 assert_eq "deps-in-progress-not-gated: no dependency lookup" "$(issue_views)" 0
 
+# A body larger than the pipe buffer: the Depends on heading is found early,
+# and the gate must still hold (a pre-check that SIGPIPEs would skip it)
+BIG="$(mktemp -d)"
+CLEANUP_DIRS+=("$BIG")
+{ printf '## Depends on\n- #22\n\n'; head -c 80000 /dev/zero | tr '\0' 'x'; printf '\n\n## Acceptance\n- subtract(2,5) returns -3\n'; } > "$BIG/body.md"
+jq -cn --rawfile b "$BIG/body.md" '{number: 12, title: "Add subtract", html_url: "u", body: $b, labels: [{name: "fleet:ready"}]}' > "$BIG/issue-12.json"
+sed -e "s|\.\./common/issue-12-ready-dep22\.json|$BIG/issue-12.json|" -e "s|\.\./common/|$TICK/common/|" -e "s|\.\./\.\./labels/|$TICK/../labels/|" \
+  "$TICK/deps-wait/routes" > "$BIG/routes"
+setup_case deps-wait
+FAKE_GH_ROUTES="$BIG/routes"
+export FAKE_GH_ROUTES
+run_check "$SCRIPT"
+assert_jq "deps-large-body: the gate holds for a body bigger than the pipe buffer" "$(card 12 action)" '"wait"'
+
 plan deps-no-acceptance
 assert_jq "deps-no-acceptance: no Acceptance wins over the gate" "$(card 13 action)" '"skip_no_acceptance"'
 assert_eq "deps-no-acceptance: no dependency lookup" "$(issue_views)" 0
