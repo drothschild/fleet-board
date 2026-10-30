@@ -190,8 +190,10 @@ if [ "$(jq -r .ok <<<"$OUT")" != true ]; then
       jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exited \(.exit)"' <<<"$OUT"
       printf '\nMerged PR: #%s\n' "$PR"
       printf 'Card: #%s\n' "$CARD"
+      printf '\n## Acceptance\n'
+      jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exits 0 on main"' <<<"$OUT"
     } > "$BODY" || fb_die 1 "cannot write the P0 card body"
-    CREATED="$(bash "$FLEET_SCRIPTS/board-create.sh" "$TITLE" "$BODY")" \
+    CREATED="$(bash "$FLEET_SCRIPTS/board-create.sh" "$TITLE" "$BODY" --state "$(fb_cfg followups.status)")" \
       || fb_die 1 "main is red at $COMMIT, and the P0 card could not be created"
     P0="$(jq -r '.number' <<<"$CREATED" 2>/dev/null)"
     fb_valid_number "$P0" || fb_die 1 "main is red at $COMMIT, and board-create.sh returned no card number"
