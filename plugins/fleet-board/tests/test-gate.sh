@@ -1461,6 +1461,13 @@ for body in '$(gh pr merge 4)' '`gh pr merge 4`' '${x:-$(gh pr merge 4)}'; do
   assert_blocked "heredoc-in-string: $body" "merge.policy"
 done
 
+# the delimiter must be a plain 'WORD' or "WORD": in a double-quoted delimiter
+# bash unescapes \$ \` \\ so its terminator line differs from the lexer's
+for dl in '"E\$F"' '"E\\"' "\"E\\\$F\"''" "'E'x" '\E'; do
+  run_hook bash.json "$(printf 'cat <<%s\n%s\ngh pr merge 4\n%s\n' "$dl" "E\$F" "E\\\$F")"
+  assert_exit "heredoc-delimiter: $dl: blocked" 2
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
