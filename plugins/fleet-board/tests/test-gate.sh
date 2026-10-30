@@ -1491,6 +1491,16 @@ for lp in "for i in 1 2; do" "while :; do" "until false; do"; do
   done
 done
 
+# a redirect or pipe on a closing } or fi applies to the cat inside the group,
+# so no body is skipped once a group or branch keyword has been seen
+for grp in "$(printf '{ true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n} | bash\n')" \
+           "$(printf '{ true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n} > >(bash)\n')" \
+           "$(printf 'if true; then true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\nfi | bash\n')" \
+           "$(printf 'case x in x) true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n;; esac | bash\n')"; do
+  run_hook bash.json "$grp"
+  assert_blocked "heredoc-group: ${grp%%$'\n'*}" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
