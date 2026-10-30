@@ -41,6 +41,10 @@
 # get, parse, merge and put read them as action_failures and
 # last_action_error (the new key wins when both are present) and drop them.
 #
+# accepted (null, or {"login", "at", "sha"}) is written by accept.sh: who
+# accepted the card's blocked change, when, and at which head. tick-plan.sh
+# honors it only when login is the authenticated one.
+#
 # deps_commented (null, or a list of "owner/repo#n" refs) is the set of unmet
 # dependencies of a waiting Ready card that the manager last commented about
 # (see deps.sh); merge replaces the list whole.
@@ -135,6 +139,8 @@ invalid_field() {
     elif (.implementor_attempts | nint | not) then "implementor_attempts"
     elif (.action_failures | . == null or (int and . >= 0) | not) then "action_failures"
     elif (.last_action_error | . == null or (type == "string" and clean) | not) then "last_action_error"
+    elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
+            and (.at | type == "string" and clean) and (.sha | type == "string" and test("\\A[0-9a-f]+\\z"))) | not) then "accepted"
     elif (.deps_commented | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+\\z"))) | not) then "deps_commented"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"

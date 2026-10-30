@@ -108,6 +108,11 @@
 # reconciled (no round bump) or from a person; fixing again would redo the
 # work, while the manager's review action reviews exactly those commits
 # (prev_sha = last_review.sha). This comes before the max_rounds block.
+# A note's accepted entry (accept.sh) moved last_review.sha to the accepted
+# head, so commits before it are not flagged and later ones are. It counts only
+# when accepted.login is the authenticated gh login; otherwise a current review
+# with Critical or Important findings plans review ("accept by <login> is not
+# honored ...") instead of fix.
 # A note worktree outside the current base (note.sh reads it as null) adds
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
@@ -143,7 +148,7 @@ card_input() {
   local st="$1" n="$2" title="$3"
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside=""
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
-  local deps_unmet='[]' deps_warn='[]' refs checked has_deps
+  local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
 
   read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
   if [ -z "$failed" ]; then
@@ -204,6 +209,15 @@ card_input() {
     fi
   fi
 
+  # An accepted entry (accept.sh) counts only when its login is the authenticated one
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$(jq -r '.accepted != null' <<<"$note")" = true ]; then
+    if me="$(fb_login 2>/dev/null)"; then
+      accepted_mine="$(jq --arg me "$me" '.accepted.login == $me' <<<"$note")"
+    else
+      failed="gh api user"
+    fi
+  fi
+
   # A blocked card's blocking PR
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = blocked ]; then
     bpr="$(jq -r '.blocking_pr // empty' <<<"$note")"
@@ -255,14 +269,14 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson nhq "$nhq" \
+    --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
       outside_warning: (if $outside == "" then null else $outside end),
       deps_unmet: $deps_unmet, deps_warnings: $deps_warn,
       has_acceptance: $has_acc, skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, blocking_merged: $bm, needs_human_qa: $nhq}'
+      pr_info: $info, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq}'
 }
 
 SEEN=" "
@@ -339,6 +353,9 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
           elif $lr == null or ($lr.round // 0) < $round then act("review"; "round \($round) not reviewed yet")
           # Commits landed after a review with findings (a fixer whose report
           # was never reconciled, or a person): review them; never fix again.
+          # An accept by another login is not honored: its baseline is not trusted
+          elif $ci > 0 and $n.accepted != null and $c.accepted_mine == false
+            then act("review"; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
           elif $ci > 0 and head_moved($c; $lr)
             then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
           elif $ci > 0 and $round >= $max then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($max)")
