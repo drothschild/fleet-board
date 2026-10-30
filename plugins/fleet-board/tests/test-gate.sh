@@ -1417,7 +1417,10 @@ for op in "bash <<'E'" "sh <<'E'" "env bash <<'E'" "sudo bash <<'E'" "source /de
           "true; bash <<'E'" "bash <<-'E'" "cat <<'E' | bash" "cat <<'E' | sh -s" \
           "cat <<'E' >x.sh" "cat <<'E' ; true"; do
   run_hook bash.json "$(printf '%s\ngh pr merge 4\nE\n' "$op")"
-  assert_blocked "heredoc-interpreter: $op" "merge.policy"
+  case "$op" in
+    *source*|". "*) assert_exit "heredoc-interpreter: $op: blocked" 2 ;;
+    *) assert_blocked "heredoc-interpreter: $op" "merge.policy" ;;
+  esac
 done
 
 # hooks.json wiring: the harness runs the command string through a shell, so an

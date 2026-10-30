@@ -336,6 +336,11 @@ function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
   # subscript, [ or [[, a quote, $, #) may make bash read << as something other
   # than a heredoc, and a wrong guess would hide the rest of the command.
   if (T !~ /^(\037[A-Za-z0-9_.\/+,:-]+)*$/ || W != "") return 0
+  # and the command must only read its input as data (cat, tee, ...): a shell,
+  # source, python or xargs would run the body. Nothing may follow the
+  # delimiter on the line either (a pipe to bash would run it).
+  split(substr(T, 2), cw, US)
+  if (cw[1] !~ /^(cat|tee|grep|wc|sort|head|tail|uniq)$/) return 0
   if (UNQ) return 0                   # an unquoted heredoc was seen: its body expands $( ), so lex all
   q = P
   while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
@@ -356,6 +361,8 @@ function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
     word = word c; q++
   }
   if (!quoted || word == "" || (substr(S, q, 1) == "$" || substr(S, q, 1) == "`")) { UNQ = 1; return 0 }
+  e = index(substr(S, q), "\n")
+  if ((e ? substr(S, q, e - 1) : substr(S, q)) !~ /^[ \t\r]*$/) return 0
   HDN++; HDD[HDN] = word; HDS[HDN] = dash
   P = q
   return 1
