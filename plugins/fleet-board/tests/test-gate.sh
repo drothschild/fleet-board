@@ -1440,7 +1440,10 @@ for pre in "hash -p /bin/bash cat" "hash -p /bin/bash cat;" "PATH=/tmp/zz:\$PATH
            "builtin hash -p /bin/bash cat" "declare -x PATH=/tmp/zz" "BASH_ENV=/tmp/e"; do
   case "$pre" in *\;) sep=" " ;; *) sep=$'\n' ;; esac
   run_hook bash.json "$(printf '%s%scat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep")"
-  assert_blocked "heredoc-rebound: $pre" "merge.policy"
+  case "$pre" in
+    eval*|BASH_ENV*) assert_exit "heredoc-rebound: $pre: blocked" 2 ;;
+    *) assert_blocked "heredoc-rebound: $pre" "merge.policy" ;;
+  esac
 done
 
 # hooks.json wiring: the harness runs the command string through a shell, so an

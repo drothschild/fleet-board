@@ -85,7 +85,10 @@ function flush() {
       gsub(/\\/, "", W)
       gsub(/[\n\t\r]/, " ", W)
       gsub(US, " ", W)
-      if (W == "function" || W == "alias") FNDEF = 1
+      # words that can rebind cat, tee, ... (a function, an alias, hash, a PATH
+      # or BASH_ENV change, or a builtin that assigns): no heredoc body is
+      # skipped after one
+      if (W ~ /^(function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_ENV") || index(W, "ENV=")) FNDEF = 1
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
