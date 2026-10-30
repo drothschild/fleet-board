@@ -45,7 +45,7 @@
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; HDN = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -173,12 +173,18 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
 
 # sub_scope: lexes a nested ( ... ) or ` ... ` as a new scope, keeping the
 # state of the segment it interrupts
-function sub_scope(term, par, depth,    sw, siw, sq, sm, st, sr, sb, sc, sd) {
+function sub_scope(term, par, depth,    shn, sw, siw, sq, sm, st, sr, sb, sc, sd) {
   if (depth >= MAXDEPTH) { OVER = 1; scan(term == "`" ? "`" : "("); return }
   sw = W; siw = IW; sq = QW; sm = MX; st = T; sr = R; sb = B; sc = CSID; sd = CDEP
   W = ""; IW = 0; QW = 0; MX = 0; T = ""; R = 0; B = "^"
   print "!SCOPE" US (++NSCOPE) US par
+  # inside ( ), $( ), ` ` and (( )) no heredoc body is skipped: bash finds the
+  # closer before it reads a body (a ) on a body line ends the substitution),
+  # and << in (( )) may be a shift with a quoted operand. The body is lexed.
+  shn = HDN; HDN = 0; NOHD++
   lex_scope(term, NSCOPE, par, depth + 1)
+  NOHD--
+  HDN = shn
   W = sw; IW = siw; QW = sq; MX = sm; T = st; R = sr; B = sb; CSID = sc; CDEP = sd
 }
 
@@ -320,6 +326,7 @@ function redirect(    op, c, dash) {
 # (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
 # consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
 function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
+  if (NOHD) return 0
   q = P
   while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
   word = ""; quoted = 0
