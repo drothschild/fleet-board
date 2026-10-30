@@ -16,7 +16,7 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 The gate reads command text before it runs. A string check cannot see:
 
-- commands written to a script file and then run (`bash x.sh`), including `cat > x.sh <<'EOF'` or `tee x.sh <<'EOF'` with the script as a quoted here-document body, which is not read, even when `. x.sh` follows in the same call;
+- commands written to a script file and then run (`bash x.sh`), including `cat > x.sh <<'EOF'` or `tee x.sh <<'EOF'` with the script as a quoted here-document body, which is not read, even when `. x.sh` follows in the same call, and the same body written to a named pipe, `/dev/fd/N` or `/dev/tcp/...` that a shell started earlier in the call is reading (`mkfifo p; bash < p & cat > p <<'EOF'`);
 - `gh api graphql -F query=@file`, and `-f query="$(cat q.graphql)"`;
 - gh aliases (`gh alias set`) and gh extensions;
 - HTTP clients other than `curl` and `gh api`: `wget`, `httpie`, `python -c`, `node -e` and so on;
