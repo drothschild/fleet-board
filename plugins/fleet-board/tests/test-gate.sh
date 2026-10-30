@@ -1511,7 +1511,7 @@ A=alias
 \$A cat=bash" "A=alias
 X=1 \$A cat=bash" "\`echo alias\` cat=bash"; do
   run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre")"
-  assert_blocked "heredoc-varword: ${pre%%$'\n'*}" "merge.policy"
+  assert_exit "heredoc-varword: ${pre%%$'\n'*}: blocked" 2
 done
 
 # hooks.json wiring: the harness runs the command string through a shell, so an

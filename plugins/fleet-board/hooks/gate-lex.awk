@@ -48,7 +48,7 @@
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; UNQ = 0; FNDEF = 0; SUBSEG = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; UNQ = 0; FNDEF = 0; SUBSEG = 0; RLX = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -90,7 +90,9 @@ function flush() {
       # cat) and words that can rebind cat, tee, ... (a function, an alias, hash, a PATH
       # or BASH_ENV change, or a builtin that assigns): no heredoc body is
       # skipped after one
-      if (W ~ /^(for|while|until|select|\{|if|then|else|elif|do|case|function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_") || index(W, "ENV=")) FNDEF = 1
+      if (W ~ /^(for|while|until|select|\{|if|then|else|elif|do|case|function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_") || index(W, "POSIX") || index(W, "SHELLOPTS") || index(W, "ENV=")) FNDEF = 1
+      # a command word held in a variable or substitution ($A cat=bash) may be alias, shopt or set
+      if (!RLX && index(W, "$") && T ~ /^(\037[A-Za-z_][A-Za-z0-9_]*=[^\037]*)*$/) FNDEF = 1
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
@@ -208,9 +210,9 @@ function relex(content, par, depth,    shn, ss, sp, sn, sw, siw, sq, sm, st, sr,
   W = ""; IW = 0; QW = 0; MX = 0; T = ""; R = 0; B = "^"
   shn = HDN; HDN = 0
   print "!SCOPE" US (++NSCOPE) US par
-  NOHD++   # the outer shell expands $( ) in a quoted string first: skip no body here
+  RLX++; NOHD++   # the outer shell expands $( ) in a quoted string first: skip no body here
   lex_scope("", NSCOPE, par, depth + 1)
-  NOHD--
+  NOHD--; RLX--
   HDN = shn
   S = ss; P = sp; N = sn
   W = sw; IW = siw; QW = sq; MX = sm; T = st; R = sr; B = sb; CSID = sc; CDEP = sd
