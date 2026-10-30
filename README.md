@@ -53,3 +53,7 @@ Why bother: the test-first, adversarial-review process fleet-board encodes is co
 None of this is needed to use the plugin. For checking it, the specs, the briefs they were written from, and a record of every authoring run (inputs, isolation checks, costs and file hashes) are in [`docs/implementation-plans/2026-09-28-fleet-board/specs/`](docs/implementation-plans/2026-09-28-fleet-board/specs/README.md). The `init` skill and the shell scripts were written directly and are not part of that record.
 
 MIT licensed.
+
+## Design
+
+The decisions behind the board, the gate and the review process, with the alternatives considered, are in [docs/design.md](docs/design.md).

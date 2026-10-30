@@ -134,6 +134,10 @@ Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Merge
 
 [`docs/demo.cast`](docs/demo.cast) records `tests/behavioral-tick.sh --scenario ready-path` on a sandbox repo: one card goes from Ready to a PR ready for review in four ticks, with all 48 checks passing. Play it with `asciinema play docs/demo.cast`.
 
+## Design
+
+The tradeoffs behind this plugin are written up in [docs/design.md](../../docs/design.md).
+
 ## License
 
 MIT
