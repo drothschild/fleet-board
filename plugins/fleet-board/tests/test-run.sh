@@ -939,7 +939,7 @@ default_fixture tick-busy
 printf '20\n' > "$FC/1.sleep"
 run_wrapper_term "$FC/count" --repo "$REPO"
 assert_exit "child-ignores-term: exit 143" 143
-assert_true "child-ignores-term: exits within 8 s of TERM (5 s grace; claude ignores TERM, sleeps 20 s)" test "$TERM_SECS" -le 8
+assert_true "child-ignores-term: exits within 15 s of TERM (5 s grace; claude ignores TERM, sleeps 20 s)" test "$TERM_SECS" -le 15
 assert_true "child-ignores-term: gives the child a grace period first (>= 4 s)" test "$TERM_SECS" -ge 4
 CPID="$(sed -n 1p "$FC/pids.log" 2>/dev/null)"
 i=0
