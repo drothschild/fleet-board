@@ -218,7 +218,11 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - On a non-zero exit nothing is merged. `main_check` stays null, so the next tick retries, and the tick report carries a warning.
    - Progress means `main_check` was recorded.
 
-2.15. **`finish`.** Only two steps: `board-move.sh N done`, then the note write setting `state: done`, `action_failures: 0` and `last_action_error: null`.
+2.15. **`finish`.** First, when the card body (`.body` from `board-read.sh N`) has a `## After merge` section, write the body to a temp file and run `after-merge.sh run <body-file>` from the repo root. It prints `{outcome, results, note, comment}`.
+   - `note.sh merge` with `after_merge` = the printed `note` lines, so each command's exit status is recorded in the card's note.
+   - When `outcome` is `blocked`: `board-move.sh N blocked`, then post the printed `comment` (it names the command and the missing allowlist entry, or the failing command and its exit status). The card does not go to `done` and gets no Human QA step. Stop here.
+   - When `outcome` is `done`, or the card has no such section, continue with the steps below.
+   Then two steps: `board-move.sh N done`, then the note write setting `state: done`, `action_failures: 0` and `last_action_error: null`.
    - The note write is best-effort. If it fails or is denied, the card's result in the tick report says so and `Warnings:` gives the reason. The tick does not fail, and the write is not retried in another form.
    - You remove no worktree and never run `worktree.sh remove`. `cleanup-done.sh` removes the worktrees of done cards outside any Claude session: the headless wrapper runs it after each successful tick, and interactive users run it by hand. An unattended session may deny worktree removal as irreversible local destruction.
    - Progress means the card is in `done`.

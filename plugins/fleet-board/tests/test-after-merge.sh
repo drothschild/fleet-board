@@ -166,6 +166,27 @@ body_file "Nothing here."
 run_check "$SCRIPT" run "$BODY"
 assert_jq "run: no section gives done with no results" '[.outcome, (.results | length)]' '["done",0]'
 
+echo "note lines"
+body_file "## After merge
+- echo hello
+- test -f /nonexistent-fleet-board-path"
+run_check "$SCRIPT" run "$BODY"
+assert_jq "run: each note line holds the command and its exit status" '.note' '["echo hello -> exit 0","test -f /nonexistent-fleet-board-path -> exit 1"]'
+
+body_file "## After merge
+- rm -rf /tmp/never"
+run_check "$SCRIPT" run "$BODY"
+assert_jq "run: a refused command's note line says refused" '.note' '["rm -rf /tmp/never -> refused (not allowlisted)"]'
+
+echo "manager wiring"
+MANAGER="${SCRIPT_DIR}/../agents/manager.md"
+if grep -qF -- 'after-merge.sh run' "$MANAGER"; then pass "manager: finish runs after-merge.sh"; else fail "manager: finish runs after-merge.sh" "missing"; fi
+
+echo "gate unchanged"
+bash "${SCRIPT_DIR}/test-gate.sh" >/dev/null 2>&1
+GATE_RC=$?
+assert_eq "gate: existing test-gate.sh suite passes unchanged" "$GATE_RC" "0"
+
 echo "docs"
 for needle in 'after_merge.allow' '## After merge'; do
   if grep -qF -- "$needle" "$DOCS"; then pass "docs: config.md mentions $needle"; else fail "docs: config.md mentions $needle" "missing"; fi
