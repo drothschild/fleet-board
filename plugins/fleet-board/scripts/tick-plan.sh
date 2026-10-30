@@ -219,9 +219,11 @@ card_input() {
   fi
 
   # A ready card's dependencies (only a card that could start is looked up)
+  # (grep reads the file, not a pipe: grep -q quits at its first match, and a
+  # body bigger than the pipe buffer would kill the writer and skip the gate)
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] \
-     && printf '%s\n' "$body" | grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$'; then
-    printf '%s\n' "$body" > "$DEPS_FILE"
+     && printf '%s\n' "$body" > "$DEPS_FILE" \
+     && grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; then
     if out="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE")" \
        && refs="$(jq -c '.refs' <<<"$out" 2>/dev/null)" \
        && deps_warn="$(jq -c --argjson n "$n" '[.warnings[] | "#\($n): \(.)"]' <<<"$out" 2>/dev/null)"; then

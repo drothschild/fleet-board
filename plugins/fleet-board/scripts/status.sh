@@ -43,8 +43,8 @@ waits_for() {
   card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1" </dev/null)" || return 1
   body="$(jq -r '.body // ""' <<<"$card" 2>/dev/null)" || return 1
   fb_has_acceptance "$body" || return 0
-  printf '%s\n' "$body" | grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' || return 0
   printf '%s\n' "$body" > "$DEPS_FILE"
+  grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE" || return 0
   refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1
   [ "$refs" != '[]' ] || return 0
   out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$1" "$refs" 2>/dev/null)" || return 1
