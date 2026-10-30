@@ -140,6 +140,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
       if (d == "(") { P += 2; sub_scope(")", sid, depth); if (IW) MX = 1; W = W "$SUB"; IW = 1; continue }
       if (d == "{") {
         P += 2; content = scan("{"); if (IW) MX = 1; W = W "${" content "}"; IW = 1
+        if (content ~ /=/ || content ~ /BASH_/) FNDEF = 1   # ${x:=v} assigns in this shell
         param(content, sid, depth); continue
       }
       if (d == "'") {
