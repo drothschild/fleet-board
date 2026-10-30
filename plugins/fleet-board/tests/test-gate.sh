@@ -1626,6 +1626,16 @@ LAST_EXIT=$?
 LAST_ERR="$(cat "$FAKE_GH_DIR/space.err")"
 assert_blocked "hooks.json: command blocks from a plugin root containing a space" "merge.policy"
 
+# docs/gates.md describes the cards.sh helper and the commands it replaces
+GATES_DOC="$SCRIPT_DIR/../docs/gates.md"
+for needle in 'cards.sh create' 'cards.sh add' 'cards.sh move' 'gh issue create' 'gh project item-add' 'gh project item-edit' 'board-move.sh'; do
+  if grep -qF -- "$needle" "$GATES_DOC"; then
+    pass "docs/gates.md: describes $needle"
+  else
+    fail "docs/gates.md: describes $needle" "not found in $GATES_DOC"
+  fi
+done
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
