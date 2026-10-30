@@ -217,11 +217,11 @@ assert_eq "red: one issue create" "$(calls_starting issue create)" 1
 CREATE="$(first_call issue create)"
 if [ -n "$CREATE" ]; then
   assert_true "red: title" has_pair "$CREATE" --title "[P0] main is red after #7"
-  assert_true "red: --label fleet:backlog" has_pair "$CREATE" --label fleet:backlog
+  assert_true "red: --label fleet:ready (follow-ups default to Ready)" has_pair "$CREATE" --label fleet:ready
   assert_true "red: --repo acme/toy" has_pair "$CREATE" --repo acme/toy
 else
   fail "red: title" "no issue create call"
-  fail "red: --label fleet:backlog" "no issue create call"
+  fail "red: --label fleet:ready (follow-ups default to Ready)" "no issue create call"
   fail "red: --repo acme/toy" "no issue create call"
 fi
 BODY="$(saved_body)"
@@ -229,6 +229,9 @@ case "$BODY" in *"Merged PR: #7"*) pass "red: body names the merged PR" ;; *) fa
 case "$BODY" in *"#12"*) pass "red: body links the card" ;; *) fail "red: body links the card" "body: $BODY" ;; esac
 case "$BODY" in *"$RED_SHA"*) pass "red: body names the commit" ;; *) fail "red: body names the commit" "body: $BODY" ;; esac
 case "$BODY" in *'`sh tests/check.sh` exited 1'*) pass "red: body names the failing command" ;; *) fail "red: body names the failing command" "body: $BODY" ;; esac
+. "$SCRIPT_DIR/../scripts/board-lib.sh"
+if fb_has_acceptance "$BODY"; then pass "red: P0 body has an ## Acceptance section (not skip_no_acceptance in tick-plan)"; else fail "red: P0 body has an ## Acceptance section (not skip_no_acceptance in tick-plan)" "body: $BODY"; fi
+case "$(printf '%s\n' "$BODY" | sed -n '/^## Acceptance/,$p')" in *$'\n- `sh tests/check.sh`'*) pass "red: Acceptance bullet names the failing command" ;; *) fail "red: Acceptance bullet names the failing command" "body: $BODY" ;; esac
 case "$BODY" in *'`true`'*) fail "red: body omits the passing command" "body: $BODY" ;; *) pass "red: body omits the passing command" ;; esac
 assert_eq "red: setup not re-run (no lockfile change)" "$(line_count "$MC/.setup-ran")" 1
 assert_user_checkout_untouched "red"

@@ -24,6 +24,10 @@ board:
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
 
+## `followups.status`
+
+Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with a `## Acceptance` section drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). An out-of-scope item whose detail has no backticked command gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. A follow-up whose detail says "depends on this card" carries `## Depends on` naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
+
 ## Finding the file
 
 `config.sh` uses `$FLEET_BOARD_CONFIG` when set, then `.fleet-board.yml` at the git root, then the one in the main checkout (for a linked worktree). Its exit codes: 3 no config, 4 the file is not valid YAML or uses YAML outside the supported subset, 5 an invalid value.

@@ -29,6 +29,16 @@
 #      succeeds. A failed PR comment only warns on stderr:
 #        fleet-board: warning: PR comment failed for #<n>
 #
+# Follow-up cards carry a "## Acceptance" section drafted from the finding (a
+# bug: its repro and expected result; an out-of-scope item: the first backticked
+# command in its detail) and, when the detail says "depends on this card", a
+# "## Depends on" section naming the spawning card. They are created in the
+# followups.status column (default ready). An out-of-scope item with no
+# backticked command is filed in Backlog with an issue comment saying why.
+# Pass one also searches closed issues (closed within RECENT_DAYS, 30): a
+# matching closed card suppresses the item like an open one, and the printed
+# entry gains "matched": "open"|"closed" (existing entries only).
+#
 # Prints {"out_of_scope_created":[{title,number,existing}], "bugs_filed":[...]}.
 #
 # Exit codes:
@@ -78,6 +88,10 @@ ITEMS="$(jq -c -n --argjson r "$REPORT" --argjson n "$NOTE" '
 
 # Pass one: every search, before any write
 MATCHES=()
+MATCHED_AS=()
+RECENT_DAYS=30
+STATUS="$(fb_cfg followups.status)"
+[ -n "$STATUS" ] || STATUS=ready
 while IFS= read -r item; do
   [ -n "$item" ] || continue
   title="$(jq -r .title <<<"$item")" || fb_die 1 "cannot read an item title; nothing filed"
@@ -89,16 +103,33 @@ while IFS= read -r item; do
     | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase))]
     | .[0].number // "none"' <<<"$rows" 2>/dev/null)" || fb_die 1 "unexpected open-issue search result for: $title; nothing filed"
   [ "$m" = none ] || fb_valid_number "$m" || fb_die 1 "unexpected open-issue search result for: $title; nothing filed"
+  if [ "$m" != none ]; then
+    MATCHES+=("$m")
+    MATCHED_AS+=(open)
+    continue
+  fi
+  # A card closed in the last RECENT_DAYS days counts as a duplicate too
+  rows="$(gh issue list --repo "$FLEET_REPO" --state closed --search "$terms in:title" --json number,title,closedAt --limit 50 </dev/null)" \
+    || fb_die 1 "closed-issue search failed for: $title; nothing filed"
+  m="$(jq -r --arg t "$title" --argjson d "$RECENT_DAYS" '
+    if type != "array" then error("not a list") else . end
+    | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase)
+                    and (.closedAt | type) == "string" and ((.closedAt | fromdateiso8601) >= (now - $d * 86400)))]
+    | .[0].number // "none"' <<<"$rows" 2>/dev/null)" || fb_die 1 "unexpected closed-issue search result for: $title; nothing filed"
+  [ "$m" = none ] || fb_valid_number "$m" || fb_die 1 "unexpected closed-issue search result for: $title; nothing filed"
   MATCHES+=("$m")
+  MATCHED_AS+=(closed)
 done <<<"$ITEMS"
 
 FILED_OOS='[]'
 FILED_BUGS='[]'
 emit() { jq -nc --argjson o "$FILED_OOS" --argjson b "$FILED_BUGS" '{out_of_scope_created: $o, bugs_filed: $b}'; }
 
-# record <kind> <title> <number> <existing>
+# record <kind> <title> <number> <existing> [open|closed]: the last says which
+# kind of existing card the item matched
 record() {
-  local e; e="$(jq -nc --arg t "$2" --argjson n "$3" --argjson x "$4" '{title: $t, number: $n, existing: $x}')" || return 1
+  local e; e="$(jq -nc --arg t "$2" --argjson n "$3" --argjson x "$4" --arg m "${5:-}" \
+    '{title: $t, number: $n, existing: $x} + (if $m == "" then {} else {matched: $m} end)')" || return 1
   if [ "$1" = bug ]; then FILED_BUGS="$(jq -c --argjson e "$e" '. + [$e]' <<<"$FILED_BUGS")"
   else FILED_OOS="$(jq -c --argjson e "$e" '. + [$e]' <<<"$FILED_OOS")"; fi
 }
@@ -116,13 +147,16 @@ i=0
 while IFS= read -r item; do
   [ -n "$item" ] || continue
   m="${MATCHES[$i]}"
+  how="${MATCHED_AS[$i]}"
   i=$((i + 1))
   kind="$(jq -r .kind <<<"$item")"
   title="$(jq -r .title <<<"$item")"
   if [ "$m" != none ]; then
-    gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
-      || stop "cannot comment on the existing issue #$m for: $title"
-    record "$kind" "$title" "$m" true || stop "cannot record #$m"
+    if [ "$how" = open ]; then
+      gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
+        || stop "cannot comment on the existing issue #$m for: $title"
+    fi
+    record "$kind" "$title" "$m" true "$how" || stop "cannot record #$m"
     if [ "$kind" = bug ]; then label="Known bug"; else label="Out of scope"; fi
     pr_comment "$label, already tracked as #$m: $title" "$m"
     continue
@@ -130,14 +164,22 @@ while IFS= read -r item; do
   BODY="$(mktemp)" || stop "cannot create a temp file"
   if [ "$kind" = bug ]; then
     jq -r --arg c "$CARD" --arg p "$PR" '
-      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c) (PR #\($p))."' \
+      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\n## Acceptance\n- `\(.repro)` gives the expected result: \(.expected)\n\nFound by fleet-board while working #\($c) (PR #\($p))."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
-    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug </dev/null)" || stop "cannot create the card for: $title"
+    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" </dev/null)" || stop "cannot create the card for: $title"
   else
-    jq -r --arg c "$CARD" --arg p "$PR" '
-      (if .detail == "" then "" else "\(.detail)\n\n" end) + "Found while working #\($c) (PR #\($p))."' \
+    # Acceptance is drafted from the first backticked command in the detail;
+    # without one there is no testable bullet, so the card goes to Backlog
+    cmd="$(jq -r '(.detail | capture("`(?<c>[^`]+)`") | .c) // empty' <<<"$item" 2>/dev/null)"
+    jq -r --arg c "$CARD" --arg p "$PR" --arg cmd "$cmd" '
+      (if .detail == "" then "" else "\(.detail)\n\n" end)
+      + (if $cmd == "" then "" else "## Acceptance\n- `\($cmd)` gives the result the description above expects\n\n" end)
+      + (if (.detail | test("depends on this card"; "i")) then "## Depends on\n- #\($c)\n\n" else "" end)
+      + "Found while working #\($c) (PR #\($p))."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
-    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" </dev/null)" || stop "cannot create the card for: $title"
+    state="$STATUS"
+    [ -n "$cmd" ] || state=backlog
+    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --state "$state" </dev/null)" || stop "cannot create the card for: $title"
   fi
   rm -f "$BODY"
   BODY=""
@@ -147,6 +189,10 @@ while IFS= read -r item; do
   if [ "$kind" = bug ]; then
     pr_comment "Bug found outside this card, filed as #$new: $title" "$new"
   else
+    if [ -z "$cmd" ]; then
+      gh issue comment "$new" --repo "$FLEET_REPO" --body "Filed in Backlog: the finding gave no testable Acceptance bullet (no failing command and expected result), so a person must write criteria and move it to Ready." </dev/null >/dev/null \
+        || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
+    fi
     pr_comment "Out of scope, tracked as #$new: $title" "$new"
   fi
 done <<<"$ITEMS"
