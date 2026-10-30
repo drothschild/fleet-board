@@ -45,7 +45,7 @@
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; SUBS = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; SUBS = 0; UNQ = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -300,7 +300,7 @@ function ansi(    out, c, d, v, k, h) {
 # redirect: P is at < or >. An fd number or {name} written right before the
 # operator belongs to it; the word after the operator is its target.
 function redirect(    op, c, dash) {
-  SUBS = (IW && index(W, "[") > 0)   # a[1<<'2']=3 is an assignment, not a heredoc
+  SUBS = match(T US W, /\[[^]]*$/) > 0   # a[1 <<'2']=3 is an assignment, not a heredoc
   if (IW && (W ~ /^[0-9]+$/ || W ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) { W = ""; IW = 0 }
   else flush()
   op = ""
@@ -317,6 +317,7 @@ function redirect(    op, c, dash) {
   if (op == "<<") {
     print "!NOPOP"
     if (queue_heredoc(dash)) return   # quoted delimiter: the body is skipped at the next newline
+    UNQ = 1   # not skipped (unquoted, or in a comment or sub-scope): no later quoted body is skipped
   }
   R = 1
 }
@@ -328,6 +329,7 @@ function redirect(    op, c, dash) {
 # consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
 function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
   if (NOHD || CMT || SUBS) return 0   # comment text and a subscript hold no heredoc
+  if (UNQ) return 0                   # an unquoted heredoc was seen: its body expands $( ), so lex all
   q = P
   while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
   word = ""; quoted = 0
@@ -346,7 +348,7 @@ function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
     if (c ~ /[ \t\n;&|()<>]/ || c == "$" || c == "`") break
     word = word c; q++
   }
-  if (!quoted || word == "" || (substr(S, q, 1) == "$" || substr(S, q, 1) == "`")) return 0
+  if (!quoted || word == "" || (substr(S, q, 1) == "$" || substr(S, q, 1) == "`")) { UNQ = 1; return 0 }
   HDN++; HDD[HDN] = word; HDS[HDN] = dash
   P = q
   return 1
