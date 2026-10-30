@@ -28,6 +28,11 @@
 #       decision does not use it
 #   gh pr view <blocking_pr> --json state,mergedAt
 #       blocked, when note.blocking_pr is set
+#   deps.sh parse / deps.sh check <n> <refs>
+#       ready, with an Acceptance section and a "## Depends on" section in the
+#       body: deps.sh check runs gh issue view <N> --repo <owner/repo> --json
+#       state,stateReason per dependency, and on the Projects backend the
+#       project Status of a dependency in board.repo (see deps.sh)
 # A failed lookup (or a failed card or note read) makes that card's action
 # skip, with reason "lookup failed: <command>" and a warning. It never falls
 # through to any other action.
@@ -37,6 +42,16 @@
 # "#<n>: invalid manager note: <field>; fix or replace it (note.sh put)":
 # note.sh merge refuses to write over an invalid note, so no action could
 # record its effect (an attempt count, a round), and the card would loop.
+#
+# Dependency gate: a ready card with an Acceptance section and any unmet
+# dependency (its "## Depends on" bullets) gets action wait, with reason
+# "waits for <ref> (<state or column>)[, <ref> (...)]", and stays in ready.
+# The card's waiting_on lists the unmet refs (null for any other card). Only
+# ready cards are gated; the card is not dispatchable for itself, while the
+# plan's dispatchable still reflects the other cards. A bullet that names no
+# dependency warns "#<n>: unrecognized dependency line: <line>" and is
+# ignored; a dependency closed as not planned (or at Status Won't Do) warns
+# "#<n> depends on <ref>, which was closed as not planned".
 #
 # The decision table itself is the single jq program below.
 #
@@ -118,7 +133,8 @@ SKIP_MARKER='<!-- fleet-board:skip-no-acceptance -->'
 
 CARDS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
 NOTE_ERR="$(mktemp)" || { rm -f "$CARDS_FILE"; fb_die 1 "cannot create a temp file"; }
-trap 'rm -f "$CARDS_FILE" "$NOTE_ERR"' EXIT
+DEPS_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR"; fb_die 1 "cannot create a temp file"; }
+trap 'rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"' EXIT
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
@@ -127,6 +143,7 @@ card_input() {
   local st="$1" n="$2" title="$3"
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside=""
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
+  local deps_unmet='[]' deps_warn='[]' refs checked
 
   read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
   if [ -z "$failed" ]; then
@@ -201,14 +218,39 @@ card_input() {
     fi
   fi
 
+  # A ready card's dependencies (only a card that could start is looked up)
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] \
+     && printf '%s\n' "$body" | grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$'; then
+    printf '%s\n' "$body" > "$DEPS_FILE"
+    if out="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE")" \
+       && refs="$(jq -c '.refs' <<<"$out" 2>/dev/null)" \
+       && deps_warn="$(jq -c --argjson n "$n" '[.warnings[] | "#\($n): \(.)"]' <<<"$out" 2>/dev/null)"; then
+      if [ "$refs" != '[]' ]; then
+        if checked="$(bash "$FLEET_SCRIPTS/deps.sh" check "$n" "$refs" 2>"$NOTE_ERR")" \
+           && deps_unmet="$(jq -c '.unmet' <<<"$checked" 2>/dev/null)" \
+           && out="$(jq -c '.warnings' <<<"$checked" 2>/dev/null)" \
+           && deps_warn="$(jq -c --argjson w "$out" '. + $w' <<<"$deps_warn" 2>/dev/null)"; then
+          :
+        else
+          failed="$(sed -n 's/^deps-lookup-failed: //p' "$NOTE_ERR" | head -1)"
+          [ -n "$failed" ] || failed="deps.sh check $n"
+          deps_unmet='[]'; deps_warn='[]'
+        fi
+      fi
+    else
+      failed="deps.sh parse $n"; deps_warn='[]'
+    fi
+  fi
+
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
-    --arg outside "$outside" \
+    --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson nhq "$nhq" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
       outside_warning: (if $outside == "" then null else $outside end),
+      deps_unmet: $deps_unmet, deps_warnings: $deps_warn,
       has_acceptance: $has_acc, skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, blocking_merged: $bm, needs_human_qa: $nhq}'
 }
@@ -269,7 +311,10 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
         elif $c.state == "blocked" and $n.blocking_pr != null and $c.blocking_merged == true and $fails >= $max
           then act("skip"; "unblock made no progress after \($fails) attempts: \($err)")
         elif $c.state == "ready" then
-          if $c.has_acceptance then act("start"; "ready, with an Acceptance section")
+          if $c.has_acceptance then
+            if ($c.deps_unmet | length) > 0
+            then act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))")
+            else act("start"; "ready, with an Acceptance section") end
           else act("skip_no_acceptance"; "no ## Acceptance section") end
         elif $c.state == "in_progress" then
           if $c.pr != null then act("start_review"; "PR #\($c.pr) exists")
@@ -313,10 +358,11 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
        pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
+       waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if $c.state == "in_review" then $c.needs_human_qa else null end),
        comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not) else null end),
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
-       outside_warning: $c.outside_warning}
+       outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
   | {dispatchable: any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance")
@@ -343,6 +389,7 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        + [$cards[] | select(.action == "skip" and (.reason | startswith("unblock made no progress after ")))
           | "#\(.number): \(.reason); move the card by hand, then run: \(reset_cmd(.number))"]
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
+       + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]),
-     cards: [$cards[] | del(.pending_wait, .outside_warning)]}
+     cards: [$cards[] | del(.pending_wait, .outside_warning, .deps_warnings)]}
 ' "$CARDS_FILE" || fb_die 1 "cannot build the tick plan"
