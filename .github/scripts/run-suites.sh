@@ -16,7 +16,11 @@ for suite in $pattern; do
     failed=$((failed + 1)); failed_names="$failed_names $suite"
     printf '%s ... FAIL (exit %s)\n' "$suite" "$rc"
     echo "::group::output of $suite"
-    "$BASH" "$suite" 2>&1 | tail -40
+    out="$("$BASH" "$suite" 2>&1)"
+    # The failing assertions are usually far above the tail; show them first.
+    printf '%s\n' "$out" | grep -A2 -E '^[[:space:]]*FAIL' | head -60
+    echo "--- last 40 lines ---"
+    printf '%s\n' "$out" | tail -40
     echo "::endgroup::"
   fi
 done
