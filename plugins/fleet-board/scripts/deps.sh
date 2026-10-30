@@ -17,9 +17,10 @@
 # check prints {"unmet": [{"ref","status"}], "warnings": [..]} for the refs
 # (parse's list) that card <card-n> depends on. Per dependency it runs
 #   gh issue view <n> --repo <owner/repo> --json state,stateReason
-# and, on the Projects backend, for a dependency in board.repo that is not
-# closed as completed or as not planned, the issue's project Status
-# (fp_item_for). A dependency is met when its issue is closed as completed, or
+# and, on the Projects backend, for a dependency (in any repo) that is not
+# closed as completed or as not planned, the issue's Status on this board's
+# project (fp_item_for). On the labels backend only the issue state counts.
+# A dependency is met when its issue is closed as completed, or
 # its Status is the done column. It is unmet otherwise, with status the
 # Status column name when it has one, else "open", "closed as not planned",
 # "closed as <reason>" or "closed". Closed as not planned, or Status Won't Do,
@@ -96,9 +97,8 @@ check_ref() {
     if [ "$state" = OPEN ]; then status=open
     elif [ -n "$reason" ]; then status="closed as $(printf '%s' "$reason" | tr 'A-Z_' 'a-z ')"
     else status=closed; fi
-    if [ "$(fb_cfg board.backend)" = github-projects ] \
-       && [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ]; then
-      item="$(fp_item_for "$num" 2>/dev/null)" || lookup_failed "gh api graphql (project items of $repo#$num)"
+    if [ "$(fb_cfg board.backend)" = github-projects ]; then
+      item="$(fp_item_for "$num" "$repo" 2>/dev/null)" || lookup_failed "gh api graphql (project items of $repo#$num)"
       pstatus="${item#*$'\t'}"
       if [ -n "$item" ] && [ -n "$pstatus" ]; then
         if [ "$pstatus" = "$(fb_state_name done)" ]; then met=true

@@ -59,16 +59,17 @@ fp_ensure_cache() {
   printf '%s\n' "$entry" > "$tmp" && mv "$tmp" "$cache" || { rm -f "$tmp"; fb_die 1 "cannot write $cache"; }
 }
 
-# fp_item_for <n>: prints "<item_id>\t<status name>" for the issue's item on
-# this project, or nothing when the issue is not on the project. A failed
-# lookup exits 1; it is never reported as "no item".
+# fp_item_for <n> [<owner/repo>]: prints "<item_id>\t<status name>" for the
+# issue's item on this project (the issue is in board.repo unless <owner/repo>
+# is given), or nothing when the issue is not on the project. A failed lookup
+# exits 1; it is never reported as "no item".
 fp_item_for() {
-  local n="$1" pn po result
+  local n="$1" repo="${2:-$FLEET_REPO}" pn po result
   pn="$(fb_cfg board.project_number)"
   po="$(fp_get_owner)"
   result="$(gh api graphql \
     -f query='query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){issue(number:$n){projectItems(first:20){nodes{id project{number} fieldValueByName(name:"Status"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}' \
-    -f o="${FLEET_REPO%%/*}" -f r="${FLEET_REPO#*/}" -F n="$n")" || \
+    -f o="${repo%%/*}" -f r="${repo#*/}" -F n="$n")" || \
     fb_die 1 "cannot look up project items for #$n"
   jq -r --argjson pn "$pn" '
     (.data.repository.issue.projectItems.nodes // error("no projectItems in response"))
