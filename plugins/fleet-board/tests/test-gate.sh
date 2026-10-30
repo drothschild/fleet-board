@@ -1333,6 +1333,22 @@ run_hook bash.json "gh pr merge 5"
 assert_blocked "lookup-budget-capped: FLEET_BOARD_GATE_TIMEOUT=08" "checks are not green"
 unset FLEET_BOARD_GATE_TIMEOUT
 
+# heredoc-body-opaque: the body of a quoted-delimiter here-document is text, not
+# commands. Words in it (HOME=, cd .., a stray backtick) once set the cwd-unknown
+# flags and failed the command closed; an absolute cd after it sets the cwd.
+setup_case labels-human
+card_routes > "$ROUTES"
+run_hook bash.json "$(sed "s|__REPO__|$REPO|" "$HOOK_FIXTURES/heredoc-cards-then-cd.sh")"
+assert_silent_allow "heredoc-body-opaque: heredocs, then an absolute cd and a ready move"
+run_hook bash.json "$(cat "$HOOK_FIXTURES/heredoc-docs-only.sh")"
+assert_silent_allow "heredoc-body-opaque: heredocs and ls only"
+# the body is skipped only to its delimiter: a command after it is still read
+run_hook bash.json "$(sed "s|__REPO__|$REPO|" "$HOOK_FIXTURES/heredoc-cards-then-cd.sh" | sed 's|ready$|ready; gh pr merge 4|')"
+assert_blocked "heredoc-body-opaque: gh pr merge after the heredocs is still blocked" "merge.policy"
+# an unquoted delimiter expands $( ), so its body is still read
+run_hook bash.json "$(printf 'cat <<EOF2\n$(gh pr merge 4)\nEOF2\n')"
+assert_blocked "heredoc-body-opaque: unquoted body with \$( ) is still read" "merge.policy"
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
