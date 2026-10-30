@@ -142,7 +142,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = `note.last_review.sha`, or `base` when there is no previous review |
 | `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer in the same tick, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
 | `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
-| `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, post a comment headed `What to check in Human QA` that quotes the card's `## Acceptance` section verbatim as a blockquote and includes the qa_build summary. If the card already has a comment with that heading, post nothing. |
+| `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, run `human-qa-handoff.sh [--qa-summary <file>] N <pr>` (2.11). It posts the `What to check in Human QA` comment once. |
 | `mark_ready` | `gh pr ready <pr> --repo R`. Never merge. |
 | `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
@@ -197,9 +197,10 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.11. **`to_human_qa`.**
    - The worktree is the plan card's `worktree`. `commands.qa_build`, when set, runs in that worktree. The summary is its exit code and the last 20 lines of its output, in a fenced block. When `commands.qa_build` is unset, the comment says that no QA build is configured.
-   - The Acceptance section is read from the card body (`.body` from `board-read.sh N`). It runs from the `## Acceptance` heading line up to the line before the next `## ` heading, or to the end of the body. Prefix each line with `> `.
+   - Write the qa_build summary to a temp file made with `mktemp` and pass it as `--qa-summary <file>`.
+   - `human-qa-handoff.sh` builds and posts the comment: the card's `## Acceptance` section as a blockquote, a checklist of pre-merge steps (mark a draft PR ready, resolve a conflict, each bullet of the card's `## Human QA` section), a note when no CI ran on the PR, the qa_build summary, and the sentence saying no agent moves the card out of Human QA and a person moves it to Done. With no steps it posts only the plain statement.
    - `board-move.sh N human_qa` runs first. Post the comment with `board-comment.sh` only after the move succeeds, so a failed move never leaves behind a comment that the next tick would post again.
-   - Before posting, check the card's `comments` (from `board-read.sh N`). If any comment already has a heading line reading `What to check in Human QA`, post nothing.
+   - The script posts nothing when a comment with the heading line `What to check in Human QA` already exists.
    - If the comment fails after the move, the card is still in `human_qa`, which counts as progress, and the tick report carries the stderr line as a warning. Progress means the card is in `human_qa`.
 
 2.12. **`mark_ready`.** Run `gh pr ready <pr> --repo R` and never merge. Progress means `gh pr ready` exited 0.
