@@ -1454,6 +1454,13 @@ for op in "sort --compress-program python3 -S 1 <<'E'" "sort <<'E'" "grep -f /de
   assert_blocked "heredoc-options: $op" "merge.policy"
 done
 
+# inside a quoted string the outer shell expands $( ) and backquotes before the
+# text is a script, so a heredoc there never has its body skipped
+for body in '$(gh pr merge 4)' '`gh pr merge 4`' '${x:-$(gh pr merge 4)}'; do
+  run_hook bash.json "$(printf 'echo "cat <<'"'"'E'"'"'\n%s\nE"\n' "$body")"
+  assert_blocked "heredoc-in-string: $body" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
