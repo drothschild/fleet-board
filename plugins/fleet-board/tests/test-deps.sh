@@ -195,15 +195,16 @@ issue_route() {
     "$(jq -cn --arg s "$3" --arg r "$4" '{state: $s, stateReason: (if $r == "" then null else $r end)}')"
 }
 
-# item_route <n> <Status name, "" for no Status, "-" for not on the project>
+# item_route <n> <Status name, "" for no Status, "-" for not on the project> [owner/repo]
 item_route() {
-  local nodes='[]'
+  local nodes='[]' glob="api graphql *-F n=$1"
+  [ -z "${3:-}" ] || glob="api graphql *-f o=${3%%/*} -f r=${3#*/} -F n=$1"
   case "$2" in
     -) ;;
     "") nodes='[{"id":"PVTI_x","project":{"number":1},"fieldValueByName":null}]' ;;
     *) nodes="$(jq -cn --arg s "$2" '[{id: "PVTI_x", project: {number: 1}, fieldValueByName: {name: $s}}]')" ;;
   esac
-  route "api graphql *-F n=$1" 0 \
+  route "$glob" 0 \
     "$(jq -cn --argjson nodes "$nodes" '{data: {repository: {issue: {projectItems: {nodes: $nodes}}}}}')"
 }
 
@@ -279,10 +280,52 @@ assert_jq "check: Status Won't Do warns as not planned" '.warnings' '["#12 depen
 
 setup_check "$PROJECTS_YML"
 issue_route acme/toy 22 CLOSED COMPLETED
-issue_route other/repo 7 OPEN ""
+issue_route other/repo 7 CLOSED COMPLETED
 run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"},{"repo":"other/repo","number":7,"ref":"other/repo#7"}]'
-assert_jq "check: projects, closed completed and another repo's issue need no project lookup" '.unmet' '[{"ref":"other/repo#7","status":"open"}]'
+assert_jq "check: projects, closed completed needs no project lookup, in any repo" '.unmet' '[]'
 assert_eq "check: projects, no graphql call was made" "$(grep -c 'graphql' "$FAKE_GH_DIR/calls.log")" 0
+
+# the Projects backend: a dependency in another repo that is an item on the same project
+CROSS='[{"repo":"other/repo","number":7,"ref":"other/repo#7"}]'
+setup_check "$PROJECTS_YML"
+issue_route other/repo 7 OPEN ""
+item_route 7 "Done" other/repo
+run_check "$SCRIPT" check 12 "$CROSS"
+assert_exit "check: cross-repo, Status Done, exit" 0
+assert_jq "check: cross-repo, an open issue at Status Done is met" '.unmet' '[]'
+assert_eq "check: cross-repo, the project lookup names the dependency's repo" \
+  "$(grep -c 'graphql.* -f o=other -f r=repo -F n=7' "$FAKE_GH_DIR/calls.log")" 1
+
+setup_check "$PROJECTS_YML"
+issue_route other/repo 7 OPEN ""
+item_route 7 "Won't Do" other/repo
+run_check "$SCRIPT" check 12 "$CROSS"
+assert_jq "check: cross-repo, Status Won't Do is unmet" '.unmet' '[{"ref":"other/repo#7","status":"Won'"'"'t Do"}]'
+assert_jq "check: cross-repo, Status Won't Do warns as not planned" '.warnings' '["#12 depends on other/repo#7, which was closed as not planned"]'
+
+setup_check "$PROJECTS_YML"
+issue_route other/repo 7 OPEN ""
+item_route 7 "In Review" other/repo
+issue_route other/repo 8 OPEN ""
+item_route 8 "-" other/repo
+run_check "$SCRIPT" check 12 '[{"repo":"other/repo","number":7,"ref":"other/repo#7"},{"repo":"other/repo","number":8,"ref":"other/repo#8"}]'
+assert_jq "check: cross-repo, another column or no item falls back like a same-repo card" '.unmet' \
+  '[{"ref":"other/repo#7","status":"In Review"},{"ref":"other/repo#8","status":"open"}]'
+
+setup_check "$PROJECTS_YML"
+issue_route other/repo 7 OPEN ""
+route "api graphql *-f o=other -f r=repo -F n=7" 1
+run_check "$SCRIPT" check 12 "$CROSS"
+assert_exit "check: cross-repo, a failed project lookup exits 1" 1
+assert_eq "check: cross-repo, a failed project lookup names its command" "$(lookup_cmd)" "gh api graphql (project items of other/repo#7)"
+
+# labels backend: a cross-repo dependency is judged by the issue state only
+setup_check
+issue_route other/repo 7 OPEN ""
+item_route 7 "Done" other/repo
+run_check "$SCRIPT" check 12 "$CROSS"
+assert_jq "check: labels backend, cross-repo Status is not consulted" '.unmet' '[{"ref":"other/repo#7","status":"open"}]'
+assert_eq "check: labels backend, cross-repo makes no graphql call" "$(grep -c 'graphql' "$FAKE_GH_DIR/calls.log")" 0
 
 setup_check "$PROJECTS_YML"
 issue_route acme/toy 22 OPEN ""
