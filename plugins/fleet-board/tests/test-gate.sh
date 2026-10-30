@@ -1349,6 +1349,16 @@ assert_blocked "heredoc-body-opaque: gh pr merge after the heredocs is still blo
 run_hook bash.json "$(printf 'cat <<EOF2\n$(gh pr merge 4)\nEOF2\n')"
 assert_blocked "heredoc-body-opaque: unquoted body with \$( ) is still read" "merge.policy"
 
+# a heredoc queued inside $( ) or backquotes dies with the scope: the shell
+# runs the lines after the closing ) as commands, so the lexer must too
+for c in "$(printf 'echo $(cat <<'"'"'E'"'"'\nhi\n)\ngh pr merge 4\nE\n')" \
+         "$(printf 'echo `cat <<'"'"'E'"'"'\nhi\n`\ngh pr merge 4\nE\n')" \
+         "$(printf 'echo $((1<<"2"))\ngh pr merge 4\n2\n')" \
+         "$(printf '(( x = 1 <<"2" ))\ngh pr merge 4\n2\n')"; do
+  run_hook bash.json "$c"
+  assert_blocked "heredoc-scope-bypass: ${c%%$'\n'*}" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
