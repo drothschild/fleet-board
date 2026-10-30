@@ -16,7 +16,7 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 The gate reads command text before it runs. A string check cannot see:
 
-- commands written to a script file and then run (`bash x.sh`);
+- commands written to a script file and then run (`bash x.sh`), including `cat > x.sh <<'EOF'` or `tee x.sh <<'EOF'` with the script as a quoted here-document body, which is not read, even when `. x.sh` follows in the same call, and the same body written to a named pipe, `/dev/fd/N` or `/dev/tcp/...` that a shell started earlier in the call is reading (`mkfifo p; bash < p & cat > p <<'EOF'`);
 - `gh api graphql -F query=@file`, and `-f query="$(cat q.graphql)"`;
 - gh aliases (`gh alias set`) and gh extensions;
 - HTTP clients other than `curl` and `gh api`: `wget`, `httpie`, `python -c`, `node -e` and so on;
@@ -31,7 +31,7 @@ The gate reads command text before it runs. A string check cannot see:
 It also blocks some harmless commands, because it prefers a block to a miss:
 
 - commands that only mention a gated command, such as `git commit -m "fix gh pr merge docs"` or `grep -rn "gh pr merge" docs/` (quoted text is checked too, since `bash -c "..."` runs it);
-- here-documents and comments containing a gated command;
+- comments, and here-documents containing a gated command, apart from one shape: the body of `cat` or `tee`, with no `-` option and a delimiter written `'WORD'` or `"WORD"` (letters, digits, `_`) (`cat > f <<'EOF'`), nothing after the delimiter on its line, plain words before it, a delimiter line that exists, and only plain assignments or `mkdir`, `ls`, `echo`, `cat`, `tee`, `true`, `pwd`, `cd`, `rm` or `touch` as the command word of every earlier segment in the call (any other command, such as `gh`, a loop or a group, turns the skip off for the rest of the call), is treated as text and not read. Every other here-document (an unquoted delimiter, `VAR=1 cat <<'EOF'`, `cat <<'EOF' | bash`, `bash <<'EOF'`, one inside `$( )`) is still read as commands;
 - `cd <dir>; gh pr merge N` after `true &&`, in a pipeline, or after `||`;
 - `cd "$VAR" && ...`, `source env.sh && ...` and `popd && ...` before a gated command, since the directory is unknown;
 - calls over 64 KiB with a gated keyword, more than 32 gated commands in one call, or nesting deeper than 24.

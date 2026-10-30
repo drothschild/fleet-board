@@ -1333,6 +1333,207 @@ run_hook bash.json "gh pr merge 5"
 assert_blocked "lookup-budget-capped: FLEET_BOARD_GATE_TIMEOUT=08" "checks are not green"
 unset FLEET_BOARD_GATE_TIMEOUT
 
+# heredoc-body-opaque: the body of a quoted-delimiter here-document is text, not
+# commands. Words in it (HOME=, cd .., a stray backtick) once set the cwd-unknown
+# flags and failed the command closed; an absolute cd after it sets the cwd.
+setup_case labels-human
+card_routes > "$ROUTES"
+run_hook bash.json "$(sed "s|__REPO__|$REPO|" "$HOOK_FIXTURES/heredoc-cards-then-cd.sh")"
+assert_silent_allow "heredoc-body-opaque: heredocs, then an absolute cd and a ready move"
+run_hook bash.json "$(cat "$HOOK_FIXTURES/heredoc-docs-only.sh")"
+assert_silent_allow "heredoc-body-opaque: heredocs and ls only"
+# the body is skipped only to its delimiter: a command after it is still read
+run_hook bash.json "$(sed "s|__REPO__|$REPO|" "$HOOK_FIXTURES/heredoc-cards-then-cd.sh" | sed 's|ready$|ready; gh pr merge 4|')"
+assert_blocked "heredoc-body-opaque: gh pr merge after the heredocs is still blocked" "merge.policy"
+# an unquoted delimiter expands $( ), so its body is still read
+run_hook bash.json "$(printf 'cat <<EOF2\n$(gh pr merge 4)\nEOF2\n')"
+assert_blocked "heredoc-body-opaque: unquoted body with \$( ) is still read" "merge.policy"
+
+# a heredoc queued inside $( ) or backquotes dies with the scope: the shell
+# runs the lines after the closing ) as commands, so the lexer must too
+for c in "$(printf 'echo $(cat <<'"'"'E'"'"'\nhi\n)\ngh pr merge 4\nE\n')" \
+         "$(printf 'echo `cat <<'"'"'E'"'"'\nhi\n`\ngh pr merge 4\nE\n')" \
+         "$(printf 'echo $((1<<"2"))\ngh pr merge 4\n2\n')" \
+         "$(printf '(( x = 1 <<"2" ))\ngh pr merge 4\n2\n')"; do
+  run_hook bash.json "$c"
+  assert_blocked "heredoc-scope-bypass: ${c%%$'\n'*}" "merge.policy"
+done
+
+# a << in a comment or an assignment subscript is no heredoc: bash runs the
+# lines after it
+for c in "$(printf 'echo hi # cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
+         "$(printf '# cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
+         "$(printf 'echo hi #<<\\E\ngh pr merge 4\nE\n')" \
+         "$(printf 'a[1<<'"'"'2'"'"']=3\ngh pr merge 4\n')"; do
+  run_hook bash.json "$c"
+  case "$c" in
+    a\[*) assert_blocked "heredoc-comment-subscript: ${c%%$'\n'*}" "could not tell which directory" ;;
+    *) assert_blocked "heredoc-comment-subscript: ${c%%$'\n'*}" "merge.policy" ;;
+  esac
+done
+
+# an unquoted heredoc expands $( ), so once one is seen no quoted heredoc is
+# skipped after it; a subscript may hold a space before the <<
+for c in "$(printf 'cat <<A\n<<'"'"'E'"'"'\n$(gh pr merge 4)\nA\nE\n')" \
+         "$(printf 'cat <<A\nx <<'"'"'E'"'"'\n`gh pr merge 4`\nA\nE\n')" \
+         "$(printf 'cat <<A <<'"'"'B'"'"'\n$(gh pr merge 4)\nA\nb\nB\n')" \
+         "$(printf 'cat <<A | cat <<'"'"'B'"'"'\n$(gh pr merge 4)\nA\nb\nB\n')" \
+         "$(printf 'a[1 <<'"'"'2'"'"']=3\ngh pr merge 4\n2\n')" \
+         "$(printf 'a[ 1 <<'"'"'2'"'"' ]=3\ngh pr merge 4\n2\n')"; do
+  run_hook bash.json "$c"
+  case "$c" in
+    a\[*) assert_blocked "heredoc-unquoted-first: ${c%%$'\n'*}" "could not tell which directory" ;;
+    *) assert_blocked "heredoc-unquoted-first: ${c%%$'\n'*}" "merge.policy" ;;
+  esac
+done
+
+# any [ earlier in the segment makes a following << suspect, even once a ] has
+# closed an inner subscript or sits in a quoted string
+for c in "$(printf 'a[b[1] <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'a[b[1]<<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'a[1 + b[1] <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'a["]" <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'x[0]=1 a[b[1]<<'"'"'2'"'"']=3\ngh pr merge 4\n')"; do
+  run_hook bash.json "$c"
+  assert_stderr_contains "heredoc-nested-subscript: ${c%%$'\n'*}" "fleet-board gate:"
+  assert_exit "heredoc-nested-subscript: ${c%%$'\n'*}: blocked" 2
+done
+
+# a quoted heredoc with no delimiter line is not skipped: the body is lexed,
+# so a gated command inside it fails closed
+run_hook bash.json "$(printf 'cat <<'"'"'E'"'"'\ngh pr merge 4\n')"
+assert_blocked "heredoc-unterminated: body is lexed" "merge.policy"
+# only a plain command word may precede the operator: x=1 and [ words do not
+for c in "$(printf 'x=1 cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
+         "$(printf '[ -f x ] cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')"; do
+  run_hook bash.json "$c"
+  assert_exit "heredoc-allowlist: ${c%%$'\n'*}: blocked" 2
+done
+
+# a body fed to an interpreter is a script that runs: only cat, tee and the like
+# may have theirs skipped, and not when their output goes on (a pipe, a redirect)
+for op in "bash <<'E'" "sh <<'E'" "env bash <<'E'" "sudo bash <<'E'" "source /dev/stdin <<'E'" \
+          ". /dev/stdin <<'E'" "xargs sh -c <<'E'" "ssh host <<'E'" "python3 <<'E'" \
+          "true; bash <<'E'" "bash <<-'E'" "cat <<'E' | bash" "cat <<'E' | sh -s" \
+          "cat <<'E' >x.sh" "cat <<'E' ; true"; do
+  run_hook bash.json "$(printf '%s\ngh pr merge 4\nE\n' "$op")"
+  case "$op" in
+    *source*|". "*) assert_exit "heredoc-interpreter: $op: blocked" 2 ;;
+    *) assert_blocked "heredoc-interpreter: $op" "merge.policy" ;;
+  esac
+done
+
+# a function or alias defined earlier in the call may shadow cat, tee, ...:
+# once the command defines one, no heredoc body is skipped
+for pre in "cat() { bash; }" "cat() { bash; }; " "function cat { sh; }" "tee() { bash; }" \
+           "shopt -s expand_aliases; alias cat=bash"; do
+  case "$pre" in *"; ") sep="" ;; *) sep=$'\n' ;; esac
+  case "$pre" in tee*) cmd="tee" ;; *) cmd="cat" ;; esac
+  run_hook bash.json "$(printf '%s%s%s <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep" "$cmd")"
+  assert_blocked "heredoc-shadowed: $pre" "merge.policy"
+done
+
+# anything else that can rebind cat or tee also turns the skip off: hash,
+# enable, a PATH change, read/printf -v/eval into a name, and the like
+for pre in "hash -p /bin/bash cat" "hash -p /bin/bash cat;" "PATH=/tmp/zz:\$PATH" "export PATH=/tmp/zz:\$PATH;" \
+           "enable -n cat" "unset -f cat" "eval 'cat() { bash; }'" "read -r PATH <<<x" ": \${PATH:=/tmp/zz};" \
+           "builtin hash -p /bin/bash cat" "declare -x PATH=/tmp/zz" "BASH_ENV=/tmp/e"; do
+  case "$pre" in *\;) sep=" " ;; *) sep=$'\n' ;; esac
+  run_hook bash.json "$(printf '%s%scat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep")"
+  case "$pre" in
+    eval*|BASH_ENV*) assert_exit "heredoc-rebound: $pre: blocked" 2 ;;
+    *) assert_blocked "heredoc-rebound: $pre" "merge.policy" ;;
+  esac
+done
+
+# an option can name a program that runs the body (sort --compress-program),
+# so only cat and tee without any - option have their body skipped
+for op in "sort --compress-program python3 -S 1 <<'E'" "sort <<'E'" "grep -f /dev/stdin x <<'E'" \
+          "wc --files0-from=- <<'E'" "tee -a x <<'E'" "head -n 1 <<'E'"; do
+  run_hook bash.json "$(printf '%s\ngh pr merge 4\nE\n' "$op")"
+  assert_blocked "heredoc-options: $op" "merge.policy"
+done
+
+# inside a quoted string the outer shell expands $( ) and backquotes before the
+# text is a script, so a heredoc there never has its body skipped
+for body in '$(gh pr merge 4)' '`gh pr merge 4`' '${x:-$(gh pr merge 4)}'; do
+  run_hook bash.json "$(printf 'echo "cat <<'"'"'E'"'"'\n%s\nE"\n' "$body")"
+  assert_blocked "heredoc-in-string: $body" "merge.policy"
+done
+
+# the delimiter must be a plain 'WORD' or "WORD": in a double-quoted delimiter
+# bash unescapes \$ \` \\ so its terminator line differs from the lexer's
+for dl in '"E\$F"' '"E\\"' "\"E\\\$F\"''" "'E'x" '\E'; do
+  run_hook bash.json "$(printf 'cat <<%s\n%s\ngh pr merge 4\n%s\n' "$dl" "E\$F" "E\\\$F")"
+  assert_exit "heredoc-delimiter: $dl: blocked" 2
+done
+
+# a process substitution earlier in the segment may run a shell that reads the
+# body (cat > >(bash) <<'E'), so nothing is skipped after one
+for op in "cat > >(bash)" "tee > >(bash)" "cat > >(sh)" "cat 2> >(bash)"; do
+  run_hook bash.json "$(printf '%s <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$op")"
+  assert_exit "heredoc-procsub: $op: blocked" 2
+done
+
+# bash 4+ BASH_CMDS[cat]=... acts like hash -p, BASH_ALIASES[cat]=... like alias
+for pre in "BASH_CMDS[cat]=/bin/bash" "BASH_ALIASES[cat]=bash" "BASH_CMDS[cat]=/bin/bash;"; do
+  case "$pre" in *\;) sep=" " ;; *) sep=$'\n' ;; esac
+  run_hook bash.json "$(printf '%s%scat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep")"
+  assert_exit "heredoc-bashvars: $pre: blocked" 2
+done
+
+# a loop runs the heredoc line again after a later line rebound cat, so no body
+# is skipped once a loop keyword has been seen
+for lp in "for i in 1 2; do" "while :; do" "until false; do"; do
+  for rb in "cat() { bash; }" "function cat { bash; }" "hash -p /bin/bash cat"; do
+    run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n%s\ndone\n' "$lp" "$rb")"
+    assert_blocked "heredoc-loop: $lp ... $rb" "merge.policy"
+  done
+done
+
+# a redirect or pipe on a closing } or fi applies to the cat inside the group,
+# so no body is skipped once a group or branch keyword has been seen
+for grp in "$(printf '{ true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n} | bash\n')" \
+           "$(printf '{ true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n} > >(bash)\n')" \
+           "$(printf 'if true; then true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\nfi | bash\n')" \
+           "$(printf 'case x in x) true; cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n;; esac | bash\n')"; do
+  run_hook bash.json "$grp"
+  assert_blocked "heredoc-group: ${grp%%$'\n'*}" "merge.policy"
+done
+
+# a command word held in a variable can be alias, shopt or set; POSIX mode
+# turns alias expansion on: neither is visible as a listed word
+for pre in "S=shopt
+\$S -s expand_aliases
+A=alias
+\$A cat=bash" "POSIXLY_CORRECT=1
+A=alias
+\$A cat=bash" "A=alias
+X=1 \$A cat=bash" "\`echo alias\` cat=bash"; do
+  run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre")"
+  assert_exit "heredoc-varword: ${pre%%$'\n'*}: blocked" 2
+done
+
+# every earlier command word must be inert (mkdir, ls, echo, cat, ...): a brace
+# expansion, a wrapper or a variable-held word can all make cat mean bash
+for pre in "{hash,-p,/bin/bash,cat}" "A=hash
+command \$A -p /bin/bash cat" "A=hash
+time \$A -p /bin/bash cat" "A=hash
+>/dev/null \$A -p /bin/bash cat" "A=hash
+env \$A -p /bin/bash cat" "nohup hash -p /bin/bash cat" "IFS=x" "LD_PRELOAD=/x/y.so" \
+          "gh issue view 4"; do
+  run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre")"
+  assert_exit "heredoc-earlier-word: ${pre//$'\n'/ ; }: blocked" 2
+done
+
+# a ${name:=value} or ${name=value} in an argument assigns in the shell itself
+# (bash 4+: ${BASH_CMDS[cat]:=/bin/bash} rebinds cat), even under an inert command
+for pre in 'echo ${BASH_CMDS[cat]:=/bin/bash}' 'echo "${BASH_CMDS[cat]:=/bin/bash}"' \
+           'echo "${BASH_CMDS[cat]=/bin/bash}"' 'true ${x:=y}' 'ls ${PATH:=/tmp/zz}'; do
+  run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre")"
+  assert_blocked "heredoc-param-assign: $pre" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate

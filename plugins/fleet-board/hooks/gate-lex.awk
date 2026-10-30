@@ -38,12 +38,17 @@
 # scope, so bash -c "...", sh -c '...' and eval "..." are seen; so is a whole
 # word written in pieces (gh\ pr\ merge, "cd x"'; gh ...'), since the shell
 # joins the pieces into one script. Quoted text that only mentions a command
-# is lexed too: a false positive, never a miss. Comment and here-document
-# text is lexed as commands, for the same reason (see !NOPOP).
+# is lexed too: a false positive, never a miss. Comment text and the body of a
+# here-document with an unquoted delimiter (it expands $( )) are lexed as
+# commands, for the same reason (see !NOPOP); the body of a quoted-delimiter
+# here-document (<<'EOF') is plain text and is skipped through its delimiter
+# line, but only in the simplest shape (see queue_heredoc): plain words before
+# the operator, no sub-scope or comment, no unquoted here-document before it,
+# and a delimiter line that exists. Every other shape is lexed.
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; UNQ = 0; FNDEF = 0; SUBSEG = 0; RLX = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -80,6 +85,18 @@ function flush() {
       gsub(/\\/, "", W)
       gsub(/[\n\t\r]/, " ", W)
       gsub(US, " ", W)
+      # Heredoc-body skipping needs every earlier command word in the call to be
+      # inert (FNDEF otherwise): a first word of a segment, after any assignment
+      # words, that is not on the short list below could rebind cat or tee (an
+      # alias, a function, hash, a brace expansion, a wrapper, a $-held word) or
+      # change what runs later (a loop, a group, a redirect on a closer); an
+      # assignment to a variable that steers command lookup counts the same. Words
+      # that are not first (arguments) never run, so they are not checked.
+      if (!RLX && T ~ /^(\037[A-Za-z_][A-Za-z0-9_]*\+?=[^\037]*)*$/) {
+        if (W ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) {
+          if (W ~ /^(PATH|ENV|BASH[A-Za-z0-9_]*|POSIX[A-Za-z0-9_]*|SHELLOPTS|IFS|CDPATH|GLOBIGNORE|HOME|FUNCNEST|PS4|PROMPT_COMMAND|LD_[A-Za-z0-9_]*|DYLD_[A-Za-z0-9_]*)\+?=/) FNDEF = 1
+        } else if (W !~ /^(cat|tee|mkdir|ls|echo|true|pwd|cd|rm|touch)$/) FNDEF = 1
+      }
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
@@ -93,7 +110,7 @@ function flush() {
 function endseg(sid, par, sep) {
   flush(); R = 0
   if (T != "") print sid US par US B US sep T
-  T = ""; B = sep
+  T = ""; B = sep; SUBSEG = 0
 }
 
 # lex_scope: lexes from P until TERM (")" or "`", or "" for end of input)
@@ -123,6 +140,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
       if (d == "(") { P += 2; sub_scope(")", sid, depth); if (IW) MX = 1; W = W "$SUB"; IW = 1; continue }
       if (d == "{") {
         P += 2; content = scan("{"); if (IW) MX = 1; W = W "${" content "}"; IW = 1
+        if (content ~ /=/ || content ~ /BASH_/) FNDEF = 1   # ${x:=v} assigns in this shell
         param(content, sid, depth); continue
       }
       if (d == "'") {
@@ -152,7 +170,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
       P++; d = substr(S, P, 1); if (d == ";" || d == "&") P++
       endseg(sid, par, ";"); continue
     }
-    if (c == "\n") { P++; endseg(sid, par, "NL"); continue }
+    if (c == "\n") { P++; endseg(sid, par, "NL"); CMT = 0; if (HDN) skip_heredocs(); continue }
     if (c == "(") {
       P++
       # name ( ) defines a function
@@ -162,7 +180,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
     }
     if (c == ")") { P++; endseg(sid, par, ")"); continue }
     if (c == " " || c == "\t" || c == "\r") { flush(); P++; continue }
-    if (c == "#" && !IW) print "!NOPOP"
+    if (c == "#" && !IW) { print "!NOPOP"; CMT = 1 }
     if (IW) MX = 1
     W = W c; IW = 1; P++
   }
@@ -171,25 +189,36 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
 
 # sub_scope: lexes a nested ( ... ) or ` ... ` as a new scope, keeping the
 # state of the segment it interrupts
-function sub_scope(term, par, depth,    sw, siw, sq, sm, st, sr, sb, sc, sd) {
+function sub_scope(term, par, depth,    shn, sw, siw, sq, sm, st, sr, sb, sc, sd) {
   if (depth >= MAXDEPTH) { OVER = 1; scan(term == "`" ? "`" : "("); return }
   sw = W; siw = IW; sq = QW; sm = MX; st = T; sr = R; sb = B; sc = CSID; sd = CDEP
   W = ""; IW = 0; QW = 0; MX = 0; T = ""; R = 0; B = "^"
   print "!SCOPE" US (++NSCOPE) US par
+  # inside ( ), $( ), ` ` and (( )) no heredoc body is skipped: bash finds the
+  # closer before it reads a body (a ) on a body line ends the substitution),
+  # and << in (( )) may be a shift with a quoted operand. The body is lexed.
+  shn = HDN; HDN = 0; NOHD++
   lex_scope(term, NSCOPE, par, depth + 1)
+  NOHD--
+  HDN = shn
   W = sw; IW = siw; QW = sq; MX = sm; T = st; R = sr; B = sb; CSID = sc; CDEP = sd
+  SUBSEG = 1   # a (...), $(...), `...` or >(...) ran in this segment
 }
 
 # relex: lexes the content of a quoted string as a script of a new scope
-function relex(content, par, depth,    ss, sp, sn, sw, siw, sq, sm, st, sr, sb, sc, sd) {
+function relex(content, par, depth,    shn, ss, sp, sn, sw, siw, sq, sm, st, sr, sb, sc, sd) {
   if (content !~ /[^ \t\n]/) return
   if (depth >= MAXDEPTH) { OVER = 1; return }
   ss = S; sp = P; sn = N
   sw = W; siw = IW; sq = QW; sm = MX; st = T; sr = R; sb = B; sc = CSID; sd = CDEP
   S = content; P = 1; N = length(S)
   W = ""; IW = 0; QW = 0; MX = 0; T = ""; R = 0; B = "^"
+  shn = HDN; HDN = 0
   print "!SCOPE" US (++NSCOPE) US par
+  RLX++; NOHD++   # the outer shell expands $( ) in a quoted string first: skip no body here
   lex_scope("", NSCOPE, par, depth + 1)
+  NOHD--; RLX--
+  HDN = shn
   S = ss; P = sp; N = sn
   W = sw; IW = siw; QW = sq; MX = sm; T = st; R = sr; B = sb; CSID = sc; CDEP = sd
 }
@@ -289,7 +318,7 @@ function ansi(    out, c, d, v, k, h) {
 
 # redirect: P is at < or >. An fd number or {name} written right before the
 # operator belongs to it; the word after the operator is its target.
-function redirect(    op, c) {
+function redirect(    op, c, dash) {
   if (IW && (W ~ /^[0-9]+$/ || W ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) { W = ""; IW = 0 }
   else flush()
   op = ""
@@ -298,10 +327,86 @@ function redirect(    op, c) {
     if (c != "<" && c != ">" && c != "&" && c != "|") break
     op = op c; P++
   }
+  dash = 0
   if (substr(S, P, 1) == "-") {
     if (op ~ /&$/) { P++; return }   # >&- and <&- close a descriptor: no target
-    if (op == "<<") P++              # <<- is a here-document operator
+    if (op == "<<") { P++; dash = 1 }   # <<- is a here-document operator
   }
-  if (op == "<<") print "!NOPOP"
+  if (op == "<<") {
+    print "!NOPOP"
+    if (queue_heredoc(dash)) return   # quoted delimiter: the body is skipped at the next newline
+    UNQ = 1   # not skipped (unquoted, or in a comment or sub-scope): no later quoted body is skipped
+  }
   R = 1
+}
+
+# queue_heredoc: P is just past << (or <<-). When the delimiter is quoted or
+# backslashed, the shell does no expansion in the body, so it is plain text:
+# the delimiter is consumed here and the body skipped at the next newline
+# (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
+# consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
+function queue_heredoc(dash,    q, d, c, e, quoted, word, ch, n, i) {
+  if (SUBSEG) return 0   # a process substitution may run a shell that reads the body
+  if (FUNC || FNDEF) return 0   # a function or alias may stand in for cat, tee, ...
+  if (NOHD || CMT) return 0   # comment text and a sub-scope hold no heredoc to skip
+  # allowlist: skip a body only when every word before the operator is plain
+  # (a command name and simple arguments). Anything else (an assignment, a
+  # subscript, [ or [[, a quote, $, #) may make bash read << as something other
+  # than a heredoc, and a wrong guess would hide the rest of the command.
+  if (T !~ /^(\037[A-Za-z0-9_.\/+,:-]+)*$/ || W != "") return 0
+  # and the command must only read its input as data (cat, tee, ...): a shell,
+  # source, python or xargs would run the body. Nothing may follow the
+  # delimiter on the line either (a pipe to bash would run it).
+  # Only cat and tee, and no - option: an option may name a program that runs
+  # the body (sort --compress-program sh).
+  n = split(substr(T, 2), cw, US)
+  if (cw[1] !~ /^(cat|tee)$/) return 0
+  for (i = 2; i <= n; i++) if (cw[i] ~ /^-/) return 0
+  if (UNQ) return 0                   # an unquoted heredoc was seen: its body expands $( ), so lex all
+  q = P
+  while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
+  word = ""; quoted = 0
+  while (q <= N) {
+    c = substr(S, q, 1)
+    if (c == "'" || c == "\"") {
+      e = index(substr(S, q + 1), c)
+      if (e == 0) return 0
+      word = word substr(S, q + 1, e - 1); q += e + 1; quoted = 1; continue
+    }
+    if (c == "\\") {
+      ch = substr(S, q + 1, 1)
+      if (ch == "\n" || ch == "") return 0
+      word = word ch; q += 2; quoted = 1; continue
+    }
+    if (c ~ /[ \t\n;&|()<>]/ || c == "$" || c == "`") break
+    word = word c; q++
+  }
+  if (!quoted || word == "" || (substr(S, q, 1) == "$" || substr(S, q, 1) == "`")) { UNQ = 1; return 0 }
+  e = index(substr(S, q), "\n")
+  if ((e ? substr(S, q, e - 1) : substr(S, q)) !~ /^[ \t\r]*$/) return 0
+  # the delimiter must be written 'WORD' or "WORD" (letters, digits, _): bash
+  # unescapes a backslash in other forms, so its terminator line would differ
+  if (substr(S, P, q - P) !~ /^[ \t]*('[A-Za-z0-9_]+'|"[A-Za-z0-9_]+")$/) return 0
+  HDN++; HDD[HDN] = word; HDS[HDN] = dash
+  P = q
+  return 1
+}
+
+# skip_heredocs: P is at the start of the line after a newline. Skips the
+# queued here-document bodies, each through the line holding its delimiter
+# (leading tabs ignored for <<-). A body with no delimiter line is not skipped.
+function skip_heredocs(    i, e, line, p0, found) {
+  p0 = P
+  for (i = 1; i <= HDN; i++) {
+    found = 0
+    while (P <= N) {
+      e = index(substr(S, P), "\n")
+      if (e == 0) { line = substr(S, P); P = N + 1 }
+      else { line = substr(S, P, e - 1); P += e }
+      if (HDS[i]) sub(/^\t+/, "", line)
+      if (line == HDD[i]) { found = 1; break }
+    }
+    if (!found) { P = p0; UNQ = 1; break }   # no delimiter line: lex the body
+  }
+  HDN = 0
 }
