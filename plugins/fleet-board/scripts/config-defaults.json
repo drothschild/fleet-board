@@ -4,6 +4,7 @@
   "worktrees": { "dir": "../.fleet-worktrees", "mutate_on_copy": false },
   "test_paths": ["test/**", "tests/**", "__tests__/**", "**/*.test.*", "**/*.spec.*", "**/*_test.*", "**/test_*"],
   "human_qa_paths": [],
+  "after_merge": { "allow": [] },
   "merge": { "policy": "human" },
   "review": { "mutation": true, "verify_claim": true, "max_rounds": 3 },
   "models": { "manager": "sonnet", "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "escalate_after_rounds": 2, "escalation": null },
