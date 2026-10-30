@@ -1372,6 +1372,21 @@ for c in "$(printf 'echo hi # cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
   esac
 done
 
+# an unquoted heredoc expands $( ), so once one is seen no quoted heredoc is
+# skipped after it; a subscript may hold a space before the <<
+for c in "$(printf 'cat <<A\n<<'"'"'E'"'"'\n$(gh pr merge 4)\nA\nE\n')" \
+         "$(printf 'cat <<A\nx <<'"'"'E'"'"'\n`gh pr merge 4`\nA\nE\n')" \
+         "$(printf 'cat <<A <<'"'"'B'"'"'\n$(gh pr merge 4)\nA\nb\nB\n')" \
+         "$(printf 'cat <<A | cat <<'"'"'B'"'"'\n$(gh pr merge 4)\nA\nb\nB\n')" \
+         "$(printf 'a[1 <<'"'"'2'"'"']=3\ngh pr merge 4\n2\n')" \
+         "$(printf 'a[ 1 <<'"'"'2'"'"' ]=3\ngh pr merge 4\n2\n')"; do
+  run_hook bash.json "$c"
+  case "$c" in
+    a\[*) assert_blocked "heredoc-unquoted-first: ${c%%$'\n'*}" "could not tell which directory" ;;
+    *) assert_blocked "heredoc-unquoted-first: ${c%%$'\n'*}" "merge.policy" ;;
+  esac
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
