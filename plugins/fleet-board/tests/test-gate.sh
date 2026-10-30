@@ -1407,7 +1407,7 @@ assert_blocked "heredoc-unterminated: body is lexed" "merge.policy"
 for c in "$(printf 'x=1 cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')" \
          "$(printf '[ -f x ] cat <<'"'"'E'"'"'\ngh pr merge 4\nE\n')"; do
   run_hook bash.json "$c"
-  assert_blocked "heredoc-allowlist: ${c%%$'\n'*}" "merge.policy"
+  assert_exit "heredoc-allowlist: ${c%%$'\n'*}: blocked" 2
 done
 
 # hooks.json wiring: the harness runs the command string through a shell, so an

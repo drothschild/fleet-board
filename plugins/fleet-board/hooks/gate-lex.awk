@@ -41,11 +41,14 @@
 # is lexed too: a false positive, never a miss. Comment text and the body of a
 # here-document with an unquoted delimiter (it expands $( )) are lexed as
 # commands, for the same reason (see !NOPOP); the body of a quoted-delimiter
-# here-document (<<'EOF') is plain text and is skipped through its delimiter line.
+# here-document (<<'EOF') is plain text and is skipped through its delimiter
+# line, but only in the simplest shape (see queue_heredoc): plain words before
+# the operator, no sub-scope or comment, no unquoted here-document before it,
+# and a delimiter line that exists. Every other shape is lexed.
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; SUBS = 0; UNQ = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; NOHD = 0; CMT = 0; UNQ = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -300,7 +303,6 @@ function ansi(    out, c, d, v, k, h) {
 # redirect: P is at < or >. An fd number or {name} written right before the
 # operator belongs to it; the word after the operator is its target.
 function redirect(    op, c, dash) {
-  SUBS = index(T US W, "[") > 0   # any [ in the segment (a[b[1]<<'2']=3 is an assignment, not a heredoc)
   if (IW && (W ~ /^[0-9]+$/ || W ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) { W = ""; IW = 0 }
   else flush()
   op = ""
@@ -328,7 +330,12 @@ function redirect(    op, c, dash) {
 # (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
 # consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
 function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
-  if (NOHD || CMT || SUBS) return 0   # comment text and a subscript hold no heredoc
+  if (NOHD || CMT) return 0   # comment text and a sub-scope hold no heredoc to skip
+  # allowlist: skip a body only when every word before the operator is plain
+  # (a command name and simple arguments). Anything else (an assignment, a
+  # subscript, [ or [[, a quote, $, #) may make bash read << as something other
+  # than a heredoc, and a wrong guess would hide the rest of the command.
+  if (T !~ /^(\037[A-Za-z0-9_.\/+,:-]+)*$/ || W != "") return 0
   if (UNQ) return 0                   # an unquoted heredoc was seen: its body expands $( ), so lex all
   q = P
   while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
@@ -356,16 +363,19 @@ function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
 
 # skip_heredocs: P is at the start of the line after a newline. Skips the
 # queued here-document bodies, each through the line holding its delimiter
-# (leading tabs ignored for <<-); an unterminated body runs to the end.
-function skip_heredocs(    i, e, line) {
+# (leading tabs ignored for <<-). A body with no delimiter line is not skipped.
+function skip_heredocs(    i, e, line, p0, found) {
+  p0 = P
   for (i = 1; i <= HDN; i++) {
+    found = 0
     while (P <= N) {
       e = index(substr(S, P), "\n")
       if (e == 0) { line = substr(S, P); P = N + 1 }
       else { line = substr(S, P, e - 1); P += e }
       if (HDS[i]) sub(/^\t+/, "", line)
-      if (line == HDD[i]) break
+      if (line == HDD[i]) { found = 1; break }
     }
+    if (!found) { P = p0; UNQ = 1; break }   # no delimiter line: lex the body
   }
   HDN = 0
 }
