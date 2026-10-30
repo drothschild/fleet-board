@@ -1387,6 +1387,18 @@ for c in "$(printf 'cat <<A\n<<'"'"'E'"'"'\n$(gh pr merge 4)\nA\nE\n')" \
   esac
 done
 
+# any [ earlier in the segment makes a following << suspect, even once a ] has
+# closed an inner subscript or sits in a quoted string
+for c in "$(printf 'a[b[1] <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'a[b[1]<<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'a[1 + b[1] <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'a["]" <<'"'"'2'"'"']=3\ngh pr merge 4\n')" \
+         "$(printf 'x[0]=1 a[b[1]<<'"'"'2'"'"']=3\ngh pr merge 4\n')"; do
+  run_hook bash.json "$c"
+  assert_stderr_contains "heredoc-nested-subscript: ${c%%$'\n'*}" "fleet-board gate:"
+  assert_exit "heredoc-nested-subscript: ${c%%$'\n'*}: blocked" 2
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
