@@ -373,6 +373,9 @@ function queue_heredoc(dash,    q, d, c, e, quoted, word, ch, n, i) {
   if (!quoted || word == "" || (substr(S, q, 1) == "$" || substr(S, q, 1) == "`")) { UNQ = 1; return 0 }
   e = index(substr(S, q), "\n")
   if ((e ? substr(S, q, e - 1) : substr(S, q)) !~ /^[ \t\r]*$/) return 0
+  # the delimiter must be written 'WORD' or "WORD" (letters, digits, _): bash
+  # unescapes a backslash in other forms, so its terminator line would differ
+  if (substr(S, P, q - P) !~ /^[ \t]*('[A-Za-z0-9_]+'|"[A-Za-z0-9_]+")$/) return 0
   HDN++; HDD[HDN] = word; HDS[HDN] = dash
   P = q
   return 1
