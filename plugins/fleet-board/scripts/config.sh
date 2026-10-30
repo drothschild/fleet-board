@@ -168,7 +168,9 @@ VALIDATION_SCRIPT='
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end)
       else empty end),
       (if (.limits | type) == "object" then
-        (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end)
+        (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end),
+        (("rate_limit_max_wait", "rate_limit_margin", "min_tick_gap") as $k
+          | if (.limits[$k] | type) != "number" or .limits[$k] < 0 then "limits.\($k) must be a non-negative number" else empty end)
       else empty end)
     ] | map(select(. != null))
   ;

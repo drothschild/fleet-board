@@ -108,6 +108,7 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `limits.concurrency` | `6` | role agents running at once |
 | `limits.tick_interval` | `300` | seconds between ticks |
 | `limits.max_hours`, `max_cost_usd`, `max_consecutive_failures`, `max_turns` | `8`, `40`, `3`, `200` | headless wrapper limits |
+| `limits.rate_limit_max_wait`, `rate_limit_margin`, `min_tick_gap` | `3600`, `5`, `0` | seconds: total rate-limit wait cap, margin after a reset, minimum gap between tick starts of runs sharing a token |
 | `headless.permission_mode` | `auto` | `--permission-mode` for each headless tick |
 
 The config file is `.fleet-board.yml`, any valid YAML.

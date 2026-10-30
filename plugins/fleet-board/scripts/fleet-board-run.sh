@@ -33,6 +33,12 @@
 #                         (never a tick whose report says `Plan failed:`: that
 #                         tick failed, so it counts toward consecutive-failures)
 #   consecutive-failures  limits.max_consecutive_failures failed ticks in a row  exit 1
+#   rate-limit-wait-cap   waiting out GitHub rate limits would exceed
+#                         limits.rate_limit_max_wait in total         exit 1
+# A `Plan failed:` reason naming a rate limit and `resets at <ISO UTC time>`
+# is waited out (until the reset plus limits.rate_limit_margin) and the next
+# tick runs; it does not count as a failed tick. With limits.min_tick_gap > 0,
+# tick starts of runs sharing FLEET_BOARD_TOKEN_LOCK are that far apart.
 #   cost-unknown          a successful tick gives no cost at all       exit 1
 #   interrupted (<sig>)   INT or TERM: the running claude, cleanup or sleep
 #                         (every background job) gets TERM, then KILL if it is
@@ -143,12 +149,18 @@ MAX_COST="$(cfg limits.max_cost_usd)" || exit 1
 INTERVAL="$(cfg limits.tick_interval)" || exit 1
 MAX_FAILS="$(cfg limits.max_consecutive_failures)" || exit 1
 MAX_TURNS="$(cfg limits.max_turns)" || exit 1
+RL_MAX_WAIT="$(cfg limits.rate_limit_max_wait)" || exit 1
+RL_MARGIN="$(cfg limits.rate_limit_margin)" || exit 1
+MIN_GAP="$(cfg limits.min_tick_gap)" || exit 1
 
 num_ok "$MAX_HOURS" || die 5 "invalid config: limits.max_hours must be a non-negative number, got: $MAX_HOURS"
 num_ok "$MAX_COST" || die 5 "invalid config: limits.max_cost_usd must be a non-negative number, got: $MAX_COST"
 num_ok "$INTERVAL" || die 5 "invalid config: limits.tick_interval must be a non-negative number, got: $INTERVAL"
 posint_ok "$MAX_FAILS" || die 5 "invalid config: limits.max_consecutive_failures must be a positive integer, got: $MAX_FAILS"
 posint_ok "$MAX_TURNS" || die 5 "invalid config: limits.max_turns must be a positive integer, got: $MAX_TURNS"
+num_ok "$RL_MAX_WAIT" || die 5 "invalid config: limits.rate_limit_max_wait must be a non-negative number, got: $RL_MAX_WAIT"
+num_ok "$RL_MARGIN" || die 5 "invalid config: limits.rate_limit_margin must be a non-negative number, got: $RL_MARGIN"
+num_ok "$MIN_GAP" || die 5 "invalid config: limits.min_tick_gap must be a non-negative number, got: $MIN_GAP"
 word_ok "$MODEL" || die 5 "invalid config: models.manager must be one word, got: $MODEL"
 word_ok "$MODE" || die 5 "invalid config: headless.permission_mode must be one word, got: $MODE"
 
@@ -165,6 +177,16 @@ fadd() { cawk -v a="$1" -v b="$2" "$AWK_FIX"' BEGIN { printf "%s", fix((a + 0) +
 fnum() { cawk -v a="$1" "$AWK_FIX"' BEGIN { printf "%s", fix(a + 0) }'; }
 # hours <printf format>: the hours since START
 hours() { cawk -v s="$(( $(date +%s) - START ))" -v f="$1" 'BEGIN { printf f, s / 3600 }'; }
+# now: the epoch seconds; FLEET_BOARD_NOW_FILE (tests only) holds a stubbed clock
+now() { if [ -n "${FLEET_BOARD_NOW_FILE:-}" ]; then cat "$FLEET_BOARD_NOW_FILE"; else date +%s; fi; }
+# SLEEP_CMD: the sleep for rate-limit waits and the stagger (tests stub it)
+SLEEP_CMD="${FLEET_BOARD_SLEEP:-sleep}"
+# whole <decimal>: its integer part (3.7 -> 3)
+whole() { local w="${1%%.*}"; printf '%s' "${w:-0}"; }
+# iso_epoch <YYYY-MM-DDTHH:MM:SSZ>: epoch seconds (GNU date, then BSD date)
+iso_epoch() {
+  date -u -d "$1" +%s 2>/dev/null || date -u -j -f %Y-%m-%dT%H:%M:%SZ "$1" +%s 2>/dev/null
+}
 iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
 # run_bg <command...>: runs a command in the background and waits for it,
@@ -212,7 +234,8 @@ on_signal() {
 }
 
 WORK="$(mktemp -d)" || die 1 "mktemp failed"
-trap 'rm -rf "$WORK"' EXIT
+LOCK_HELD=""
+trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null' EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
@@ -291,6 +314,54 @@ if [ -n "${FLEET_BOARD_TEST_BGJOB:-}" ]; then
   printf '%s\n' "$!" > "$FLEET_BOARD_TEST_BGJOB"
 fi
 
+# stagger: with limits.min_tick_gap > 0, runs sharing one token (one lock file,
+# FLEET_BOARD_TOKEN_LOCK, default $HOME/.fleet-board/token.lock) reserve tick
+# start slots at least min_tick_gap seconds apart. The file holds the last
+# reserved slot (epoch seconds); a mkdir lock guards the read-modify-write only,
+# not the sleep. A lock that cannot be taken in 5 s is skipped with a warning.
+GAP_INT="$(whole "$MIN_GAP")"
+TOKEN_LOCK="${FLEET_BOARD_TOKEN_LOCK:-$HOME/.fleet-board/token.lock}"
+stagger() {
+  local i=0 n last slot
+  [ "$GAP_INT" -gt 0 ] || return 0
+  mkdir -p "$(dirname "$TOKEN_LOCK")" 2>/dev/null
+  while ! mkdir "$TOKEN_LOCK.d" 2>/dev/null; do
+    i=$((i + 1))
+    if [ "$i" -gt 50 ]; then warn "cannot take the token lock $TOKEN_LOCK.d; starting the tick unstaggered"; return 0; fi
+    sleep 0.1
+  done
+  LOCK_HELD="$TOKEN_LOCK.d"
+  n="$(now)"
+  last="$(tr -d '[:space:]' < "$TOKEN_LOCK" 2>/dev/null)"
+  [[ "$last" =~ ^[0-9]+$ ]] || last=0
+  slot=$((last + GAP_INT))
+  [ "$slot" -gt "$n" ] || slot="$n"
+  printf '%s\n' "$slot" > "$TOKEN_LOCK" 2>/dev/null || warn "cannot write the token lock file $TOKEN_LOCK"
+  rmdir "$LOCK_HELD" 2>/dev/null
+  LOCK_HELD=""
+  if [ "$slot" -gt "$n" ]; then
+    log "stagger: waiting $((slot - n)) s (limits.min_tick_gap $MIN_GAP, shared lock $TOKEN_LOCK)"
+    run_bg "$SLEEP_CMD" "$((slot - n))"
+  fi
+}
+
+# rate_limit_wait <why>: when a failed plan's reason names a GitHub rate limit
+# with a reset time ("resets at <ISO UTC>"), prints the seconds to wait (until
+# the reset plus limits.rate_limit_margin) and returns 0; otherwise returns 1
+rate_limit_wait() {
+  local ts reset n w
+  case "$1" in plan\ failed:*) ;; *) return 1 ;; esac
+  printf '%s' "$1" | grep -qi 'rate limit' || return 1
+  ts="$(printf '%s' "$1" | grep -oEi 'resets? at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' | head -1 | awk '{ print $3 }')"
+  [ -n "$ts" ] || return 1
+  reset="$(iso_epoch "$ts")" && [ -n "$reset" ] || return 1
+  n="$(now)"
+  w=$((reset - n))
+  [ "$w" -ge 0 ] || w=0
+  printf '%s' "$((w + $(whole "$RL_MARGIN")))"
+}
+WAITED=0
+
 PLUGIN_ARGS=()
 [ -n "${FLEET_BOARD_PLUGIN_DIR:-}" ] && PLUGIN_ARGS=(--plugin-dir "$FLEET_BOARD_PLUGIN_DIR")
 
@@ -299,6 +370,7 @@ while :; do
   fgt "$(hours %.10f)" "$MAX_HOURS" && stop max-hours 0
   fgt "$COST" "$MAX_COST" && stop max-cost 0
 
+  stagger
   TICK=$((TICK + 1))
   OUT="$WORK/tick.jsonl"
   ERR="$WORK/tick.err"
@@ -362,6 +434,25 @@ while :; do
         | if length > 200 then .[0:200] + " [truncated]" else . end
         | "plan failed: " + . | sub(" +$"; "")' <<<"$RESULT" 2>/dev/null)"
     fi
+  fi
+
+  if [ -n "$WHY" ] && RLW="$(rate_limit_wait "$WHY")"; then
+    # A GitHub rate limit with a known reset: not a failed tick; wait it out
+    log "=== tick $TICK RATE LIMITED $(iso) rc=$RC ===" "reason: $WHY"
+    if TC="$(tick_cost "$RESULT")"; then
+      COST="$(fadd "$COST" "$TC")"
+      log "cost_estimate_usd=$TC (estimate)"
+    else
+      log "cost_estimate_usd=unknown"
+    fi
+    if [ $((WAITED + RLW)) -gt "$(whole "$RL_MAX_WAIT")" ]; then
+      log "rate limit wait of ${RLW}s would exceed the cap of $RL_MAX_WAIT s (limits.rate_limit_max_wait; already waited ${WAITED}s)"
+      stop rate-limit-wait-cap 1
+    fi
+    log "rate limit: waiting ${RLW}s until the reset (margin $RL_MARGIN s)"
+    run_bg "$SLEEP_CMD" "$RLW"
+    WAITED=$((WAITED + RLW))
+    continue
   fi
 
   if [ -n "$WHY" ]; then

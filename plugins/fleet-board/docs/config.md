@@ -24,6 +24,16 @@ board:
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
 
+## `limits` for the headless wrapper
+
+`fleet-board-run.sh` reads `limits.max_hours`, `max_cost_usd`, `tick_interval`, `max_consecutive_failures` and `max_turns` (see [overnight.md](overnight.md)). Three more keys deal with the GitHub quota. `config.sh` exits 5 when any of them is not a non-negative number.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `limits.rate_limit_max_wait` | `3600` | total seconds a run may spend waiting for rate limits to reset; a wait that would pass it stops the run (`rate-limit-wait-cap`, exit 1) |
+| `limits.rate_limit_margin` | `5` | seconds added after the reset time before the next tick |
+| `limits.min_tick_gap` | `0` | minimum seconds between tick starts across runs sharing one token (the whole-second part is used); `0` is off |
+
 ## Finding the file
 
 `config.sh` uses `$FLEET_BOARD_CONFIG` when set, then `.fleet-board.yml` at the git root, then the one in the main checkout (for a linked worktree). Its exit codes: 3 no config, 4 the file is not valid YAML or uses YAML outside the supported subset, 5 an invalid value.
