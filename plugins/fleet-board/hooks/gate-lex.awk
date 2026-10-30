@@ -85,14 +85,18 @@ function flush() {
       gsub(/\\/, "", W)
       gsub(/[\n\t\r]/, " ", W)
       gsub(US, " ", W)
-      # group, branch and loop keywords (a redirect on the closer, or a loop, reaches
-      # the heredoc line from later text; a loop re-runs it after a later line rebinds
-      # cat) and words that can rebind cat, tee, ... (a function, an alias, hash, a PATH
-      # or BASH_ENV change, or a builtin that assigns): no heredoc body is
-      # skipped after one
-      if (W ~ /^(for|while|until|select|\{|if|then|else|elif|do|case|function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_") || index(W, "POSIX") || index(W, "SHELLOPTS") || index(W, "ENV=")) FNDEF = 1
-      # a command word held in a variable or substitution ($A cat=bash) may be alias, shopt or set
-      if (!RLX && index(W, "$") && T ~ /^(\037[A-Za-z_][A-Za-z0-9_]*=[^\037]*)*$/) FNDEF = 1
+      # Heredoc-body skipping needs every earlier command word in the call to be
+      # inert (FNDEF otherwise): a first word of a segment, after any assignment
+      # words, that is not on the short list below could rebind cat or tee (an
+      # alias, a function, hash, a brace expansion, a wrapper, a $-held word) or
+      # change what runs later (a loop, a group, a redirect on a closer); an
+      # assignment to a variable that steers command lookup counts the same. Words
+      # that are not first (arguments) never run, so they are not checked.
+      if (!RLX && T ~ /^(\037[A-Za-z_][A-Za-z0-9_]*\+?=[^\037]*)*$/) {
+        if (W ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) {
+          if (W ~ /^(PATH|ENV|BASH[A-Za-z0-9_]*|POSIX[A-Za-z0-9_]*|SHELLOPTS|IFS|CDPATH|GLOBIGNORE|HOME|FUNCNEST|PS4|PROMPT_COMMAND|LD_[A-Za-z0-9_]*|DYLD_[A-Za-z0-9_]*)\+?=/) FNDEF = 1
+        } else if (W !~ /^(cat|tee|mkdir|ls|echo|true|pwd|cd|rm|touch)$/) FNDEF = 1
+      }
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
