@@ -205,7 +205,9 @@ function relex(content, par, depth,    shn, ss, sp, sn, sw, siw, sq, sm, st, sr,
   W = ""; IW = 0; QW = 0; MX = 0; T = ""; R = 0; B = "^"
   shn = HDN; HDN = 0
   print "!SCOPE" US (++NSCOPE) US par
+  NOHD++   # the outer shell expands $( ) in a quoted string first: skip no body here
   lex_scope("", NSCOPE, par, depth + 1)
+  NOHD--
   HDN = shn
   S = ss; P = sp; N = sn
   W = sw; IW = siw; QW = sq; MX = sm; T = st; R = sr; B = sb; CSID = sc; CDEP = sd
