@@ -1482,6 +1482,15 @@ for pre in "BASH_CMDS[cat]=/bin/bash" "BASH_ALIASES[cat]=bash" "BASH_CMDS[cat]=/
   assert_exit "heredoc-bashvars: $pre: blocked" 2
 done
 
+# a loop runs the heredoc line again after a later line rebound cat, so no body
+# is skipped once a loop keyword has been seen
+for lp in "for i in 1 2; do" "while :; do" "until false; do"; do
+  for rb in "cat() { bash; }" "function cat { bash; }" "hash -p /bin/bash cat"; do
+    run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n%s\ndone\n' "$lp" "$rb")"
+    assert_blocked "heredoc-loop: $lp ... $rb" "merge.policy"
+  done
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
