@@ -128,6 +128,17 @@ done
 lint "$FIX/manual-check.md"
 assert_contains "manual-check fixture: offending bullet" "$LAST_OUT" "The slider looks right on device"
 
+# CRLF line endings (GitHub web UI edits) lint like LF
+body="$(mktemp)"; CLEANUP_DIRS+=("$body")
+printf '## Acceptance\r\n- clamp returns 3\r\n' > "$body"
+lint "$body"
+assert_eq "crlf ok: exit 0" "$LAST_EXIT" 0
+assert_eq "crlf ok: prints nothing" "$LAST_OUT" ""
+printf '## Acceptance\r\n- check the layout on device\r\n' > "$body"
+lint "$body"
+assert_eq "crlf manual-check: exit 1" "$LAST_EXIT" 1
+assert_contains "crlf manual-check: names the rule" "$LAST_OUT" "manual-check"
+
 # usage
 run_check "$LINT"
 assert_eq "no argument: exit 2" "$LAST_EXIT" 2

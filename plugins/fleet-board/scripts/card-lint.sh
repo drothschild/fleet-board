@@ -33,6 +33,9 @@ else
   fb_die 2 "usage: card-lint.sh <number> | card-lint.sh --body-file <file>"
 fi
 
+# Issue bodies edited in the web UI often carry CRLF line endings
+BODY="${BODY//$'\r'/}"
+
 FOUND=0
 
 if ! fb_has_acceptance "$BODY"; then
