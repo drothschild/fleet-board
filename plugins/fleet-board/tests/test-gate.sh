@@ -1514,6 +1514,18 @@ X=1 \$A cat=bash" "\`echo alias\` cat=bash"; do
   assert_exit "heredoc-varword: ${pre%%$'\n'*}: blocked" 2
 done
 
+# every earlier command word must be inert (mkdir, ls, echo, cat, ...): a brace
+# expansion, a wrapper or a variable-held word can all make cat mean bash
+for pre in "{hash,-p,/bin/bash,cat}" "A=hash
+command \$A -p /bin/bash cat" "A=hash
+time \$A -p /bin/bash cat" "A=hash
+>/dev/null \$A -p /bin/bash cat" "A=hash
+env \$A -p /bin/bash cat" "nohup hash -p /bin/bash cat" "IFS=x" "LD_PRELOAD=/x/y.so" \
+          "gh issue view 4"; do
+  run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre")"
+  assert_exit "heredoc-earlier-word: ${pre//$'\n'/ ; }: blocked" 2
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
