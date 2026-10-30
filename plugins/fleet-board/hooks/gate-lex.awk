@@ -333,7 +333,7 @@ function redirect(    op, c, dash) {
 # the delimiter is consumed here and the body skipped at the next newline
 # (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
 # consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
-function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
+function queue_heredoc(dash,    q, d, c, e, quoted, word, ch, n, i) {
   if (FUNC || FNDEF) return 0   # a function or alias may stand in for cat, tee, ...
   if (NOHD || CMT) return 0   # comment text and a sub-scope hold no heredoc to skip
   # allowlist: skip a body only when every word before the operator is plain
@@ -344,8 +344,11 @@ function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
   # and the command must only read its input as data (cat, tee, ...): a shell,
   # source, python or xargs would run the body. Nothing may follow the
   # delimiter on the line either (a pipe to bash would run it).
-  split(substr(T, 2), cw, US)
-  if (cw[1] !~ /^(cat|tee|grep|wc|sort|head|tail|uniq)$/) return 0
+  # Only cat and tee, and no - option: an option may name a program that runs
+  # the body (sort --compress-program sh).
+  n = split(substr(T, 2), cw, US)
+  if (cw[1] !~ /^(cat|tee)$/) return 0
+  for (i = 2; i <= n; i++) if (cw[i] ~ /^-/) return 0
   if (UNQ) return 0                   # an unquoted heredoc was seen: its body expands $( ), so lex all
   q = P
   while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
