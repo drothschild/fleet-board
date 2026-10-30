@@ -14,6 +14,14 @@
 # ends its line with " · waits for <ref> (<state or column>)[, ...]", the
 # reason tick-plan.sh plans wait with; if they cannot be looked up, with
 # " · dependencies unreadable" (exit 1).
+# When any ready card waits, a dependency graph follows the sections, built
+# from the same lookups (no extra listing calls):
+#   dependency graph
+#   blocker <ref>          one section per blocker, then its waiting cards
+#     #<n>                 (refs in another repo keep their owner/repo prefix)
+#   critical path: <ref> -> ... -> <ref>   the longest chain of unmet deps
+#   can start now: #<n>, ...               ready cards with no unmet dep
+# A board with no waiting card prints no graph.
 #
 # Exit codes:
 #   0 - board printed
@@ -34,7 +42,9 @@ esac
 fb_load_config
 
 DEPS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
-trap 'rm -f "$DEPS_FILE"' EXIT
+EDGES_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
+START_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
+trap 'rm -f "$DEPS_FILE" "$EDGES_FILE" "$START_FILE"' EXIT
 
 # waits_for <n>: prints the waiting reason of a ready card ("waits for ..."),
 # nothing when it has no unmet dependency; fails when they cannot be looked up
@@ -49,6 +59,9 @@ waits_for() {
   refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1
   [ "$refs" != '[]' ] || return 0
   out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$1" "$refs" 2>/dev/null)" || return 1
+  jq -c --arg c "$1" --arg r "$FLEET_REPO" \
+    'select((.unmet | length) > 0) | {card: ("#" + $c), blockers: [.unmet[].ref | if startswith($r + "#") then sub("^.*#"; "#") else . end]}' \
+    <<<"$out" >> "$EDGES_FILE" 2>/dev/null
   jq -r 'if (.unmet | length) == 0 then empty
          else "waits for \([.unmet[] | "\(.ref) (\(.status | gsub("[[:cntrl:]]"; " ")))"] | join(", "))" end' <<<"$out"
 }
@@ -75,7 +88,7 @@ for st in $STATES; do
     suffix=""
     if [ "$st" = ready ]; then
       if wf="$(waits_for "$n")"; then
-        [ -z "$wf" ] || suffix=" · $wf"
+        if [ -z "$wf" ]; then printf '#%s\n' "$n" >> "$START_FILE"; else suffix=" · $wf"; fi
       else
         suffix=" · dependencies unreadable"; RC=1
       fi
@@ -87,4 +100,20 @@ for st in $STATES; do
       <<<"$note" || { printf '  #%s %s · note unreadable\n' "$n" "$title"; RC=1; }
   done <<<"$ROWS"
 done
+
+if [ -s "$EDGES_FILE" ]; then
+  jq -rs --arg starts "$(paste -sd, "$START_FILE")" '
+    . as $e
+    | ($e | map(.card)) as $waiting
+    | def nxt($n): [$e[] | select(.blockers | index($n)) | .card];
+      def longest($n; $seen):
+        [nxt($n)[] | . as $x | select($seen | index($x) | not) | longest($x; $seen + [$x])] as $subs
+        | if ($subs | length) == 0 then [$n]
+          else [$n] + ($subs | max_by(length)) end;
+    ([$e[].blockers[]] | unique) as $blockers
+    | "dependency graph",
+      ($blockers[] as $b | "blocker \($b)", (nxt($b)[] | "  \(.)")),
+      "critical path: \([$blockers[] | . as $x | select($waiting | index($x) | not) | longest($x; [$x])] | max_by(length) | join(" -> "))",
+      "can start now: \(if $starts == "" then "(none)" else ($starts | split(",") | join(", ")) end)"' "$EDGES_FILE" || RC=1
+fi
 exit "$RC"
