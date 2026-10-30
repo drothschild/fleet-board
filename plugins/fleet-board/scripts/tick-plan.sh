@@ -143,7 +143,7 @@ card_input() {
   local st="$1" n="$2" title="$3"
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside=""
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
-  local deps_unmet='[]' deps_warn='[]' refs checked
+  local deps_unmet='[]' deps_warn='[]' refs checked has_deps
 
   read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
   if [ -z "$failed" ]; then
@@ -221,9 +221,17 @@ card_input() {
   # A ready card's dependencies (only a card that could start is looked up)
   # (grep reads the file, not a pipe: grep -q quits at its first match, and a
   # body bigger than the pipe buffer would kill the writer and skip the gate)
-  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] \
-     && printf '%s\n' "$body" > "$DEPS_FILE" \
-     && grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; then
+  has_deps=1
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ]; then
+    # grep exits 1 on no match and 2 on an error: only 1 means "no Depends on"
+    if printf '%s\n' "$body" > "$DEPS_FILE"; then
+      grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; has_deps=$?
+    else
+      has_deps=2
+    fi
+    [ "$has_deps" -le 1 ] || failed="deps.sh parse $n (cannot read the card body)"
+  fi
+  if [ -z "$failed" ] && [ "$has_deps" -eq 0 ]; then
     if out="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE")" \
        && refs="$(jq -c '.refs' <<<"$out" 2>/dev/null)" \
        && deps_warn="$(jq -c --argjson n "$n" '[.warnings[] | "#\($n): \(.)"]' <<<"$out" 2>/dev/null)"; then
