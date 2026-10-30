@@ -74,6 +74,24 @@ Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on
 - **Put on-device and manual checks under `## Human QA`**, not in Acceptance. No agent can test them, so in Acceptance they only get the card blocked.
 - **Hold a card until another finishes with `## Depends on`**, one bullet per dependency: `- #22` for an issue in `board.repo`, or `- owner/repo#22` for another repo. While any dependency is unmet, the card stays in Ready, `/fleet-board:status` shows what it waits for, and the manager comments `Waiting for ...` once (again only when the set of unmet dependencies changes). A dependency is met when its issue is closed as completed, or, on a Projects board, when it is an item on the board's project in the Done column (in any repo; on a labels board only the issue state counts). Closed as not planned, or Won't Do, never counts as met and adds a tick warning. You still move the card from Backlog to Ready yourself; the gate only holds a Ready card back, and never one already in progress. See [Dependencies](docs/config.md#how-the-board-works-in-detail).
 
+**Card lint.** Before a Ready card is dispatched, `scripts/card-lint.sh` checks its body. A failing card stays in Ready, the manager posts one comment naming the rule and the bullet (again only when the lint result changes), and no implementor runs until you fix the card. The rules:
+
+- [`no-heading`](#card-lint-no-heading): the card has no `## Acceptance` heading.
+- [`no-bullets`](#card-lint-no-bullets): the heading has no `- ` bullet under it.
+- [`manual-check`](#card-lint-manual-check): an Acceptance bullet needs a person to check it.
+
+#### Card lint: no-heading
+
+The body needs a `## Acceptance` heading. A bold `**Acceptance**` line or `Acceptance:` is not a heading; the lint names it so you can turn it into one.
+
+#### Card lint: no-bullets
+
+Write one `- ` bullet per testable behavior under `## Acceptance`. One prose sentence gives the implementor nothing to map a test to.
+
+#### Card lint: manual-check
+
+An Acceptance bullet containing `on device`, `on a device`, `verify on`, `by hand`, `Human QA` or `simulator` (any case) can only be checked by a person. Move it under `## Human QA`; the same phrases there are not linted.
+
 **When a card gets blocked.** The manager blocks a card, with a comment saying why, when Critical or Important findings survive `review.max_rounds` rounds, when the implementor produces no PR in that many attempts, or when that many actions in a row make no progress. From round `models.escalate_after_rounds` on, the implementor and fixer run on `models.escalation`, or on the reviewer's model when that is unset.
 
 More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md](docs/config.md#how-the-board-works-in-detail).
