@@ -393,20 +393,20 @@ assert_jq "note-worktree-outside-base: warning" '.warnings' \
 
 # ---------------------------------------------------------------------------
 # gh calls for one in_review card: one card read (api user, issue, comments),
-# the PR view, and the files lookup only when the review is clean and current.
+# the PR view, the mergeable lookup, and the files lookup only when the review is clean and current.
 # Before the note and labels were taken from the card read: 11 per card.
 per_card_calls() { echo $(( $(wc -l < "$FAKE_GH_DIR/calls.log") - $(grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log") )); }
 plan in-review-mark-ready-human
-assert_eq "gh-calls: clean current review (mark_ready): 5 per card" "$(per_card_calls)" 5
+assert_eq "gh-calls: clean current review (mark_ready): 6 per card" "$(per_card_calls)" 6
 assert_eq "gh-calls: clean current review: one card read" "$(call_count api repos/acme/toy/issues/12)" 1
 assert_eq "gh-calls: clean current review: one files lookup" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
 plan in-review-fix
-assert_eq "gh-calls: findings (fix): 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: findings (fix): 5 per card, no files lookup" "$(per_card_calls)" 5
 assert_jq "gh-calls: findings: needs_human_qa not computed" "$(card 12 needs_human_qa)" 'null'
 plan in-review-needs-review
-assert_eq "gh-calls: review not current (review): 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: review not current (review): 5 per card, no files lookup" "$(per_card_calls)" 5
 plan in-review-human-qa-label
-assert_eq "gh-calls: labelled card: 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: labelled card: 5 per card, no files lookup" "$(per_card_calls)" 5
 assert_jq "gh-calls: labelled card still -> to_human_qa" "$(card 12 action)" '"to_human_qa"'
 
 # ---------------------------------------------------------------------------
