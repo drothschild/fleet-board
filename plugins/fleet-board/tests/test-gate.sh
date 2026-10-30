@@ -1423,6 +1423,16 @@ for op in "bash <<'E'" "sh <<'E'" "env bash <<'E'" "sudo bash <<'E'" "source /de
   esac
 done
 
+# a function or alias defined earlier in the call may shadow cat, tee, ...:
+# once the command defines one, no heredoc body is skipped
+for pre in "cat() { bash; }" "cat() { bash; }; " "function cat { sh; }" "tee() { bash; }" \
+           "shopt -s expand_aliases; alias cat=bash"; do
+  case "$pre" in *"; ") sep="" ;; *) sep=$'\n' ;; esac
+  case "$pre" in tee*) cmd="tee" ;; *) cmd="cat" ;; esac
+  run_hook bash.json "$(printf '%s%s%s <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep" "$cmd")"
+  assert_blocked "heredoc-shadowed: $pre" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
