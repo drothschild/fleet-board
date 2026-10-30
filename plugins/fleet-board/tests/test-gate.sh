@@ -1534,6 +1534,77 @@ for pre in 'echo ${BASH_CMDS[cat]:=/bin/bash}' 'echo "${BASH_CMDS[cat]:=/bin/bas
   assert_blocked "heredoc-param-assign: $pre" "merge.policy"
 done
 
+# ---------------------------------------------------------------------------
+# cards.sh: the helper the gate recognizes (create | add | move)
+setup_case labels-human
+card_routes > "$ROUTES"
+for c in "bash scripts/cards.sh move 12 ready" \
+         "scripts/cards.sh move 13 backlog" \
+         "bash scripts/cards.sh create 'New card' body.md --label bug" \
+         "bash scripts/cards.sh create 'New card' body.md --repo acme/toy" \
+         "bash scripts/cards.sh add 12" \
+         "bash scripts/cards.sh add 12 --repo=acme/toy"; do
+  run_hook bash.json "$c"
+  assert_silent_allow "cards-helper: allowed: $c"
+done
+for c in "bash scripts/cards.sh move 14 done" \
+         "bash scripts/cards.sh move 14 ready" \
+         "bash scripts/cards.sh add 14" \
+         "cards.sh move 14 backlog"; do
+  run_hook bash.json "$c"
+  assert_blocked "cards-helper: out of Human QA: $c" "Human QA"
+done
+run_hook bash.json "bash scripts/cards.sh move 13 ready"
+assert_blocked "cards-helper: ready needs Acceptance" "no '## Acceptance' section"
+run_hook bash.json "bash scripts/cards.sh move 14 human_qa"
+assert_silent_allow "cards-helper: a move into human_qa is allowed"
+for c in "bash scripts/cards.sh create T body.md --repo other/repo" \
+         "bash scripts/cards.sh add 12 --repo other/repo" \
+         "bash scripts/cards.sh add 12 -R other/repo" \
+         'bash scripts/cards.sh create T body.md --repo "$R"'; do
+  run_hook bash.json "$c"
+  assert_blocked "cards-helper: another repo is refused: $c" "repo"
+done
+# a loop over a visible list is allowed through cards.sh
+for c in 'for n in 12 13; do bash scripts/cards.sh move $n backlog; done' \
+         'for n in 12 13; do bash scripts/cards.sh add $n; done' \
+         'while read -r n; do bash scripts/cards.sh move "$n" backlog; done < ids.txt'; do
+  run_hook bash.json "$c"
+  assert_silent_allow "cards-helper: loop allowed: $c"
+done
+run_hook bash.json 'for n in 14; do bash scripts/cards.sh move 14 done; done'
+assert_blocked "cards-helper: a literal card in QA is refused inside a loop" "Human QA"
+
+# the same work through gh project item-edit with a variable item id is refused
+setup_case hmb
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+api graphql*	0	$FIXTURES/pr/item-status-qa.json
+ROUTESEOF
+card_routes; } > "$ROUTES"
+run_hook bash.json 'for i in PVTI_1 PVTI_2; do gh project item-edit --id $i --project-id P --field-id F --single-select-option-id O; done'
+assert_blocked "cards-helper: item-edit loop with a variable id is refused" "could not verify project item"
+run_hook bash.json 'for n in 12 13; do bash scripts/cards.sh move $n backlog; done'
+assert_silent_allow "cards-helper: the same loop through cards.sh is allowed"
+
+# The compound command from the card: cd, a heredoc, git commit and gh pr
+# create. None of its commands is gated, so the gate allows it, silently,
+# without reading the directory the cd goes to.
+setup_case labels-auto
+card_routes > "$ROUTES"
+pr_routes >> "$ROUTES"
+mkdir -p "$REPO/sub"
+for c in "$(printf 'cd sub && git commit -F- <<'"'"'EOF'"'"'\nfix thing\nEOF\ngh pr create --draft --title x --body-file b.md')" \
+         "$(printf 'cd sub && cat > msg.txt <<'"'"'EOF'"'"'\nfix thing\nEOF\ngit commit -F msg.txt && gh pr create --draft --title x')" \
+         "$(printf 'cd sub && git commit -m "$(cat <<'"'"'EOF'"'"'\nfix thing\nEOF\n)" && gh pr create --draft --title x')"; do
+  run_hook bash.json "$c"
+  assert_silent_allow "compound-commit-pr: allowed: ${c%%$'\n'*}"
+done
+assert_no_calls "compound-commit-pr: no gh lookups"
+# add a gated command to the compound and the gate judges it as before
+run_hook bash.json "$(printf 'cd sub && git commit -F- <<'"'"'EOF'"'"'\nfix thing\nEOF\ngh pr create --draft --title x && gh pr merge 3')"
+assert_blocked "compound-commit-pr: a gated merge in the same call is still gated" "draft"
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
