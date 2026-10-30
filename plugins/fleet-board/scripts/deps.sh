@@ -14,6 +14,20 @@
 # "unrecognized dependency line: <line>" (tick-plan.sh prefixes the card).
 # A ref repeated in the section counts once. "ref" is always "owner/repo#n".
 #
+# check prints {"unmet": [{"ref","status"}], "warnings": [..]} for the refs
+# (parse's list) that card <card-n> depends on. Per dependency it runs
+#   gh issue view <n> --repo <owner/repo> --json state,stateReason
+# and, on the Projects backend, for a dependency in board.repo that is not
+# closed as completed or as not planned, the issue's project Status
+# (fp_item_for). A dependency is met when its issue is closed as completed, or
+# its Status is the done column. It is unmet otherwise, with status the
+# Status column name when it has one, else "open", "closed as not planned",
+# "closed as <reason>" or "closed". Closed as not planned, or Status Won't Do,
+# also warns "#<card-n> depends on <ref>, which was closed as not planned".
+# A lookup that fails (or answers something unexpected) prints
+#   deps-lookup-failed: <command>
+# on stderr and exits 1, with nothing on stdout.
+#
 # Exit codes:
 #   0 - printed
 #   1 - a lookup failed, or the config could not be loaded (check)
@@ -32,10 +46,16 @@ case "$CMD" in
     [ $# -eq 2 ] || usage
     [ -f "$2" ] || fb_die 2 "file not found: $2"
     ;;
+  check)
+    [ $# -eq 3 ] || usage
+    fb_valid_number "$2" || fb_die 2 "card number must be numeric, got: $2"
+    jq -e 'type == "array"' <<<"$3" >/dev/null 2>&1 || fb_die 2 "refs must be a JSON array, got: $3"
+    ;;
   *) usage ;;
 esac
 
 fb_load_config
+. "$FLEET_SCRIPTS/adapters/github-projects/common.sh"
 
 # parse_body <file>: one "R<TAB>token" line per bullet that is a dependency and
 # one "W<TAB>line" per other nonblank line of the section
@@ -57,7 +77,52 @@ parse_body() {
   ' "$1"
 }
 
+# lookup_failed <command>: names the failed lookup on stderr and exits 1
+lookup_failed() { printf 'deps-lookup-failed: %s\n' "$1" >&2; exit 1; }
+
+# check_ref <repo> <number>: prints {"met": bool, "status": s, "not_planned": bool}
+check_ref() {
+  local repo="$1" num="$2" cmd out state reason item pstatus status="" met=false np=false
+  cmd="gh issue view $num --repo $repo --json state,stateReason"
+  out="$(gh issue view "$num" --repo "$repo" --json state,stateReason)" || lookup_failed "$cmd"
+  state="$(jq -r 'if (.state == "OPEN" or .state == "CLOSED") then .state else error("unexpected") end' <<<"$out" 2>/dev/null)" \
+    || lookup_failed "$cmd (unexpected response)"
+  reason="$(jq -r '.stateReason // ""' <<<"$out" 2>/dev/null)" || lookup_failed "$cmd (unexpected response)"
+  if [ "$state" = CLOSED ] && [ "$reason" = COMPLETED ]; then
+    met=true
+  elif [ "$state" = CLOSED ] && [ "$reason" = NOT_PLANNED ]; then
+    np=true; status="closed as not planned"
+  else
+    if [ "$state" = OPEN ]; then status=open
+    elif [ -n "$reason" ]; then status="closed as $(printf '%s' "$reason" | tr 'A-Z_' 'a-z ')"
+    else status=closed; fi
+    if [ "$(fb_cfg board.backend)" = github-projects ] \
+       && [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ]; then
+      item="$(fp_item_for "$num" 2>/dev/null)" || lookup_failed "gh api graphql (project items of $repo#$num)"
+      pstatus="${item#*$'\t'}"
+      if [ -n "$item" ] && [ -n "$pstatus" ]; then
+        if [ "$pstatus" = "$(fb_state_name done)" ]; then met=true
+        elif [ "$pstatus" = "$(fb_state_name wont_do)" ]; then np=true; status="$pstatus"
+        else status="$pstatus"; fi
+      fi
+    fi
+  fi
+  jq -cn --argjson met "$met" --arg status "$status" --argjson np "$np" '{met: $met, status: $status, not_planned: $np}'
+}
+
 case "$CMD" in
+  check)
+    RESULTS=""
+    while IFS=$'\t' read -r repo num ref; do
+      [ -n "$repo" ] || continue
+      fb_valid_number "$num" || fb_die 2 "bad ref number: $num"
+      r="$(check_ref "$repo" "$num")" || exit $?
+      RESULTS="$RESULTS$(jq -c --arg ref "$ref" '. + {ref: $ref}' <<<"$r")"$'\n'
+    done < <(jq -r '.[] | [.repo, (.number | tostring), .ref] | @tsv' <<<"$3")
+    printf '%s' "$RESULTS" | jq -s -c --argjson n "$2" '
+      {unmet: [.[] | select(.met | not) | {ref, status}],
+       warnings: [.[] | select(.not_planned) | "#\($n) depends on \(.ref), which was closed as not planned"]}'
+    ;;
   parse)
     ROWS="$(parse_body "$2")" || fb_die 1 "cannot read $2"
     printf '%s\n' "$ROWS" | jq -R -s -c --arg repo "$FLEET_REPO" '

@@ -65,15 +65,16 @@ jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
 # assert_jq <desc> <filter> <expected compact JSON>
 assert_jq() { assert_eq "$1" "$(jqc "$2")" "$3"; }
 
-# setup_repo [extra YAML appended to the config]: a repo for acme/toy
+# setup_repo [extra lines for the board: section]: a repo for acme/toy
 setup_repo() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
   {
-    printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n'
+    printf 'board:\n  repo: acme/toy\n'
     [ -n "${1:-}" ] && printf '%s\n' "$1"
+    printf 'worktrees:\n  dir: .fw\n'
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
@@ -209,7 +210,7 @@ item_route() {
 # lookup_cmd: the command a failed lookup named on stderr
 lookup_cmd() { sed -n 's/^deps-lookup-failed: //p' <<<"$LAST_ERR"; }
 
-PROJECTS_YML="$(printf 'board:\n  backend: github-projects\n  project_number: 1')"
+PROJECTS_YML="$(printf '  backend: github-projects\n  project_number: 1')"
 
 setup_check
 issue_route acme/toy 22 CLOSED COMPLETED
