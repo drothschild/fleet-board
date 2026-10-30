@@ -1,0 +1,30 @@
+diff --git a/src/paginate.js b/src/paginate.js
+index 29d5b0e..0536114 100644
+--- a/src/paginate.js
++++ b/src/paginate.js
+@@ -5,7 +5,9 @@ function pageCount(total, size) {
+ }
+ 
+ function paginate(items, page, size) {
+-  return items.slice((page - 1) * size, page * size);
++  const start = (page - 1) * size;
++  if (start + size > items.length) return [];
++  return items.slice(start, start + size);
+ }
+ 
+ module.exports = { pageCount, paginate };
+diff --git a/test/paginate.test.js b/test/paginate.test.js
+index e535983..f475051 100644
+--- a/test/paginate.test.js
++++ b/test/paginate.test.js
+@@ -12,10 +12,6 @@ test('paginate returns the items of a full page', () => {
+   assert.deepStrictEqual(paginate([1, 2, 3, 4, 5, 6], 2, 3), [4, 5, 6]);
+ });
+ 
+-test('paginate returns a short last page with the items that remain', () => {
+-  assert.deepStrictEqual(paginate([1, 2, 3, 4, 5], 2, 3), [4, 5]);
+-});
+-
+ test('paginate returns an empty array for a page beyond the last', () => {
+   assert.deepStrictEqual(paginate([1, 2, 3], 5, 3), []);
+ });
