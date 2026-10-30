@@ -153,6 +153,7 @@ api user	0	$FIXTURES/labels/user.json
 api repos/acme/toy/issues/12	0	$FIXTURES/labels/issue-12.json
 api --paginate repos/acme/toy/issues/12/comments	0	$FAKE_GH_DIR/comments.json
 issue list --repo acme/toy --state open --search*	0	$FAKE_GH_DIR/empty.json
+issue list --repo acme/toy --state closed --search*	0	$FAKE_GH_DIR/empty.json
 issue create --repo acme/toy --title Extract math utils *	0	$FAKE_GH_DIR/created-78.txt
 issue create --repo acme/toy --title Add CLI help *	0	$FAKE_GH_DIR/created-79.txt
 issue create --repo acme/toy --title First bug *	0	$FAKE_GH_DIR/created-78.txt
