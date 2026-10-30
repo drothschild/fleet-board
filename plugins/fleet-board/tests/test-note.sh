@@ -234,7 +234,7 @@ assert_exit "put-fills-defaults: exit" 0
 BODY="$(posted_body)"
 assert_eq "put-fills-defaults: every key with its default" \
   "$(jq -S -c 'del(.updated_at)' <<<"$(block_json "$BODY")" 2>/dev/null)" \
-  '{"action_failures":0,"blocked_findings":[],"blocking_pr":null,"branch":null,"bugs_filed":[],"escalated":null,"escalated_at_round":null,"implementor_attempts":0,"last_action_error":null,"last_review":null,"last_verified":null,"main_check":null,"merged_pr":null,"models":null,"out_of_scope_created":[],"pending_followups":null,"pr":null,"report_errors":[],"round":null,"state":"ready","worktree":null}'
+  '{"action_failures":0,"blocked_findings":[],"blocking_pr":null,"branch":null,"bugs_filed":[],"deps_commented":null,"escalated":null,"escalated_at_round":null,"implementor_attempts":0,"last_action_error":null,"last_review":null,"last_verified":null,"main_check":null,"merged_pr":null,"models":null,"out_of_scope_created":[],"pending_followups":null,"pr":null,"report_errors":[],"round":null,"state":"ready","worktree":null}'
 assert_eq "put-fills-defaults: summary line with nothing set" "$(printf '%s\n' "$BODY" | sed -n 3p)" \
   'State: ready · Round: — · PR: — · Branch: —'
 
@@ -406,6 +406,11 @@ hostile "action_failures fraction" action_failures '{"state":"ready","action_fai
 hostile "last_action_error number" last_action_error '{"state":"ready","last_action_error":5}'
 hostile "last_action_error object" last_action_error '{"state":"ready","last_action_error":{"a":1}}'
 hostile "last_action_error control char" last_action_error "$(jq -cn '{state:"ready",action_failures:1,last_action_error:"x\u001b[31my"}')"
+hostile "deps_commented string" deps_commented '{"state":"ready","deps_commented":"acme/toy#22"}'
+hostile "deps_commented number element" deps_commented '{"state":"ready","deps_commented":[22]}'
+hostile "deps_commented bare number" deps_commented '{"state":"ready","deps_commented":["#22"]}'
+hostile "deps_commented with shell" deps_commented '{"state":"ready","deps_commented":["acme/toy#22; rm -rf ~"]}'
+hostile "deps_commented control char" deps_commented "$(jq -cn '{state:"ready",deps_commented:["acme/toy#2\u001b[31m2"]}')"
 hostile "pending_followups not an object" pending_followups '{"state":"in_review","pending_followups":"x"}'
 hostile "note not an object" note '[1,2]'
 # A well-formed absolute worktree outside the current base (a re-clone, a
@@ -534,6 +539,21 @@ assert_eq "merge-action-reset: both reset" \
   "$(jq -c '[.action_failures, .last_action_error, .round]' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '[0,null,1]'
 assert_eq "merge-action-reset: summary has no action-failures suffix" "$(posted_body | sed -n 3p)" \
   'State: in_review · Round: 1 · PR: #34 · Branch: `fleet/12-add-subtract`'
+
+# deps_commented: the unmet dependency refs the manager last commented about.
+# null or a list of owner/repo#n refs; merge replaces the list whole.
+setup_case
+set_note_json '{"state":"ready","deps_commented":["acme/toy#22","other/repo#7"]}'
+run_note get 12
+assert_exit "deps-commented-valid: exit" 0
+assert_stderr_exact "deps-commented-valid: no warning" ""
+assert_eq "deps-commented-valid: read unchanged" "$(jq -c .deps_commented <<<"$LAST_OUT")" '["acme/toy#22","other/repo#7"]'
+printf '{"deps_commented":["other/repo#7"]}\n' > "$FAKE_GH_DIR/patch.json"
+clear_inputs
+run_note merge 12 "$FAKE_GH_DIR/patch.json"
+assert_exit "deps-commented-merge: exit" 0
+assert_eq "deps-commented-merge: the list is replaced, not appended" \
+  "$(jq -c .deps_commented <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '["other/repo#7"]'
 
 # fail: counts one action failure from arguments alone, for a step that fails
 # before (or because) a patch file cannot be written: action_failures + 1 and
