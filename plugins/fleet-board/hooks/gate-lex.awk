@@ -38,12 +38,14 @@
 # scope, so bash -c "...", sh -c '...' and eval "..." are seen; so is a whole
 # word written in pieces (gh\ pr\ merge, "cd x"'; gh ...'), since the shell
 # joins the pieces into one script. Quoted text that only mentions a command
-# is lexed too: a false positive, never a miss. Comment and here-document
-# text is lexed as commands, for the same reason (see !NOPOP).
+# is lexed too: a false positive, never a miss. Comment text and the body of a
+# here-document with an unquoted delimiter (it expands $( )) are lexed as
+# commands, for the same reason (see !NOPOP); the body of a quoted-delimiter
+# here-document (<<'EOF') is plain text and is skipped through its delimiter line.
 
 BEGIN {
   US = "\037"; HEX = "0123456789abcdef"; MAXDEPTH = 24
-  NSCOPE = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
+  NSCOPE = 0; HDN = 0; OVER = 0; FUNC = 0; QW = 0; MX = 0
   split("! case coproc do done elif else esac fi for function if in select then time until while { } [[ ]]", r, " ")
   for (k in r) RES[r[k]] = 1
 }
@@ -152,7 +154,7 @@ function lex_scope(term, sid, par, depth,    c, d, content) {
       P++; d = substr(S, P, 1); if (d == ";" || d == "&") P++
       endseg(sid, par, ";"); continue
     }
-    if (c == "\n") { P++; endseg(sid, par, "NL"); continue }
+    if (c == "\n") { P++; endseg(sid, par, "NL"); if (HDN) skip_heredocs(); continue }
     if (c == "(") {
       P++
       # name ( ) defines a function
@@ -181,15 +183,17 @@ function sub_scope(term, par, depth,    sw, siw, sq, sm, st, sr, sb, sc, sd) {
 }
 
 # relex: lexes the content of a quoted string as a script of a new scope
-function relex(content, par, depth,    ss, sp, sn, sw, siw, sq, sm, st, sr, sb, sc, sd) {
+function relex(content, par, depth,    shn, ss, sp, sn, sw, siw, sq, sm, st, sr, sb, sc, sd) {
   if (content !~ /[^ \t\n]/) return
   if (depth >= MAXDEPTH) { OVER = 1; return }
   ss = S; sp = P; sn = N
   sw = W; siw = IW; sq = QW; sm = MX; st = T; sr = R; sb = B; sc = CSID; sd = CDEP
   S = content; P = 1; N = length(S)
   W = ""; IW = 0; QW = 0; MX = 0; T = ""; R = 0; B = "^"
+  shn = HDN; HDN = 0
   print "!SCOPE" US (++NSCOPE) US par
   lex_scope("", NSCOPE, par, depth + 1)
+  HDN = shn
   S = ss; P = sp; N = sn
   W = sw; IW = siw; QW = sq; MX = sm; T = st; R = sr; B = sb; CSID = sc; CDEP = sd
 }
@@ -289,7 +293,7 @@ function ansi(    out, c, d, v, k, h) {
 
 # redirect: P is at < or >. An fd number or {name} written right before the
 # operator belongs to it; the word after the operator is its target.
-function redirect(    op, c) {
+function redirect(    op, c, dash) {
   if (IW && (W ~ /^[0-9]+$/ || W ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) { W = ""; IW = 0 }
   else flush()
   op = ""
@@ -298,10 +302,60 @@ function redirect(    op, c) {
     if (c != "<" && c != ">" && c != "&" && c != "|") break
     op = op c; P++
   }
+  dash = 0
   if (substr(S, P, 1) == "-") {
     if (op ~ /&$/) { P++; return }   # >&- and <&- close a descriptor: no target
-    if (op == "<<") P++              # <<- is a here-document operator
+    if (op == "<<") { P++; dash = 1 }   # <<- is a here-document operator
   }
-  if (op == "<<") print "!NOPOP"
+  if (op == "<<") {
+    print "!NOPOP"
+    if (queue_heredoc(dash)) return   # quoted delimiter: the body is skipped at the next newline
+  }
   R = 1
+}
+
+# queue_heredoc: P is just past << (or <<-). When the delimiter is quoted or
+# backslashed, the shell does no expansion in the body, so it is plain text:
+# the delimiter is consumed here and the body skipped at the next newline
+# (skip_heredocs). Returns 1 then. An unquoted delimiter returns 0 and
+# consumes nothing: its body expands $( ) and backquotes, so it stays lexed.
+function queue_heredoc(dash,    q, d, c, e, quoted, word, ch) {
+  q = P
+  while (substr(S, q, 1) == " " || substr(S, q, 1) == "\t") q++
+  word = ""; quoted = 0
+  while (q <= N) {
+    c = substr(S, q, 1)
+    if (c == "'" || c == "\"") {
+      e = index(substr(S, q + 1), c)
+      if (e == 0) return 0
+      word = word substr(S, q + 1, e - 1); q += e + 1; quoted = 1; continue
+    }
+    if (c == "\\") {
+      ch = substr(S, q + 1, 1)
+      if (ch == "\n" || ch == "") return 0
+      word = word ch; q += 2; quoted = 1; continue
+    }
+    if (c ~ /[ \t\n;&|()<>]/ || c == "$" || c == "`") break
+    word = word c; q++
+  }
+  if (!quoted || word == "" || (substr(S, q, 1) == "$" || substr(S, q, 1) == "`")) return 0
+  HDN++; HDD[HDN] = word; HDS[HDN] = dash
+  P = q
+  return 1
+}
+
+# skip_heredocs: P is at the start of the line after a newline. Skips the
+# queued here-document bodies, each through the line holding its delimiter
+# (leading tabs ignored for <<-); an unterminated body runs to the end.
+function skip_heredocs(    i, e, line) {
+  for (i = 1; i <= HDN; i++) {
+    while (P <= N) {
+      e = index(substr(S, P), "\n")
+      if (e == 0) { line = substr(S, P); P = N + 1 }
+      else { line = substr(S, P, e - 1); P += e }
+      if (HDS[i]) sub(/^\t+/, "", line)
+      if (line == HDD[i]) break
+    }
+  }
+  HDN = 0
 }
