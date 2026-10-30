@@ -300,7 +300,7 @@ function ansi(    out, c, d, v, k, h) {
 # redirect: P is at < or >. An fd number or {name} written right before the
 # operator belongs to it; the word after the operator is its target.
 function redirect(    op, c, dash) {
-  SUBS = match(T US W, /\[[^]]*$/) > 0   # a[1 <<'2']=3 is an assignment, not a heredoc
+  SUBS = index(T US W, "[") > 0   # any [ in the segment (a[b[1]<<'2']=3 is an assignment, not a heredoc)
   if (IW && (W ~ /^[0-9]+$/ || W ~ /^\{[A-Za-z_][A-Za-z0-9_]*\}$/)) { W = ""; IW = 0 }
   else flush()
   op = ""
