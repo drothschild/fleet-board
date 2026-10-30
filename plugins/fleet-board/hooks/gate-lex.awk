@@ -85,11 +85,12 @@ function flush() {
       gsub(/\\/, "", W)
       gsub(/[\n\t\r]/, " ", W)
       gsub(US, " ", W)
-      # loop keywords (a loop re-runs the heredoc line after a later line rebinds
+      # group, branch and loop keywords (a redirect on the closer, or a loop, reaches
+      # the heredoc line from later text; a loop re-runs it after a later line rebinds
       # cat) and words that can rebind cat, tee, ... (a function, an alias, hash, a PATH
       # or BASH_ENV change, or a builtin that assigns): no heredoc body is
       # skipped after one
-      if (W ~ /^(for|while|until|select|function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_") || index(W, "ENV=")) FNDEF = 1
+      if (W ~ /^(for|while|until|select|\{|if|then|else|elif|do|case|function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_") || index(W, "ENV=")) FNDEF = 1
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
