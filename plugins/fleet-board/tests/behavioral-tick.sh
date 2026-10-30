@@ -30,6 +30,12 @@
 #                 then a second card whose report of the same bug is linked, not
 #                 filed twice (AC3.10)
 #
+#   waits-on-dependency
+#                 card A (subtract) depends on a Backlog card D: A is not
+#                 dispatched and gets exactly one "Waiting for" comment; a second
+#                 tick with no change posts none; once D is closed as completed,
+#                 A is started
+#
 # Every tick is also scanned with plugin-interaction-scan.sh; foreign_skill and
 # foreign_agent must be 0.
 #
@@ -45,7 +51,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="default ready-path bad-report fix-block merge-auto merge-red out-of-scope bug-found"
+SCENARIOS="default ready-path bad-report fix-block merge-auto merge-red out-of-scope bug-found waits-on-dependency"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s [--scenario <%s>] [--max-ticks N]\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 SCENARIO=default
@@ -342,7 +348,7 @@ tick_checks() {
       '([.comments[] | select(.body | contains("fleet-board:skip-no-acceptance"))] | length) == 1 and .state == "ready"'
   fi
   # AC1.1 after the first tick
-  if [ "$i" = 1 ] && [ "$PRE_A_STATE" = ready ]; then
+  if [ "$i" = 1 ] && [ "$PRE_A_STATE" = ready ] && [ "$SCENARIO" != waits-on-dependency ]; then
     local st wt br
     st="$(card_state "$A")"
     wt="$(jq -r '.worktree // empty' "$RUN/tick-$i.note-$A.json")"
@@ -690,6 +696,48 @@ scenario_bug_found() {
     "any(.bugs_filed[]?; .number == $bugn and .existing == true)"
 }
 
+# implementor_dispatches TICK: how many implementor dispatches the tick made
+implementor_dispatches() {
+  jq -s '[.[] | select(.input.subagent_type == "fleet-board:implementor")] | length' "$RUN/tick-$1.agents.jsonl"
+}
+# waiting_comments CARD OUT: the card's "Waiting for" comments -> OUT (json list of bodies)
+waiting_comments() {
+  card_json "$1" | jq -c '[.comments[] | .body | select(startswith("Waiting for"))]' >"$2"
+}
+
+scenario_waits_on_dependency() {
+  local dep wref
+  mk_card "$BL_FIX/card-clamp.md" backlog " dependency"; dep="$CARD"
+  wref="$SANDBOX_REPO#$dep"
+  { cat "$BL_FIX/card-subtract.md"; printf '\n## Depends on\n- #%s\n' "$dep"; } >"$WORK/card-depends.md"
+  mk_card "$WORK/card-depends.md" ready; A="$CARD"
+  # tick 1: A waits and is commented once
+  run_tick
+  waiting_comments "$A" "$RUN/waiting-1.json"
+  card_json "$A" >"$RUN/card-1.json"
+  check_jq "waits: #$A is still ready after tick 1" "$RUN/card-1.json" '.state == "ready"'
+  check_jq "waits: tick 1 posted exactly one 'Waiting for $wref' comment on #$A" "$RUN/waiting-1.json" \
+    "length == 1 and (.[0] | contains(\"$wref\"))"
+  if [ "$(implementor_dispatches 1)" = 0 ]; then pass "waits: tick 1 dispatched no implementor"
+  else fail "waits: tick 1 dispatched no implementor" "$(implementor_dispatches 1) dispatch(es)"; fi
+  note_get "$A" >"$RUN/note-1.json"
+  check_jq "waits: note.deps_commented is [$wref]" "$RUN/note-1.json" ".deps_commented == [\"$wref\"]"
+  # tick 2: nothing changed, so no second comment
+  run_tick
+  waiting_comments "$A" "$RUN/waiting-2.json"
+  check_jq "waits: tick 2 posted no further comment on #$A" "$RUN/waiting-2.json" 'length == 1'
+  if [ "$(implementor_dispatches 2)" = 0 ]; then pass "waits: tick 2 dispatched no implementor"
+  else fail "waits: tick 2 dispatched no implementor" "$(implementor_dispatches 2) dispatch(es)"; fi
+  # D closed as completed: the next tick starts A
+  gh issue close "$dep" --repo "$SANDBOX_REPO" --reason completed >/dev/null || bl_die "cannot close #$dep"
+  run_tick
+  if [ "$(card_state "$A")" != ready ] && [ "$(implementor_dispatches 3)" -ge 1 ]; then
+    pass "waits: once #$dep is closed as completed, tick 3 started #$A ($(card_state "$A"))"
+  else
+    fail "waits: once #$dep is closed as completed, tick 3 started #$A" "state=$(card_state "$A"), implementor dispatches=$(implementor_dispatches 3)"
+  fi
+}
+
 case "$SCENARIO" in
   default) scenario_default ;;
   ready-path) scenario_ready_path ;;
@@ -699,6 +747,7 @@ case "$SCENARIO" in
   merge-red) scenario_merge_red ;;
   out-of-scope) scenario_out_of_scope ;;
   bug-found) scenario_bug_found ;;
+  waits-on-dependency) scenario_waits_on_dependency ;;
 esac
 
 DUR=$(( $(date +%s) - START_ALL ))
