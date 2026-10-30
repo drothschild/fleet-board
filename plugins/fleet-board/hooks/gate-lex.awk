@@ -88,7 +88,7 @@ function flush() {
       # words that can rebind cat, tee, ... (a function, an alias, hash, a PATH
       # or BASH_ENV change, or a builtin that assigns): no heredoc body is
       # skipped after one
-      if (W ~ /^(function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_ENV") || index(W, "ENV=")) FNDEF = 1
+      if (W ~ /^(function|alias|hash|enable|builtin|unset|export|declare|typeset|readonly|local|eval|source|\.|set|shopt|trap|exec|read|printf|mapfile|readarray|getopts|let)$/ || index(W, "PATH") || index(W, "BASH_") || index(W, "ENV=")) FNDEF = 1
       if (W == "") W = "\"\""
       else if (W == "\"\"") W = "\\\"\\\""
       else if (QW && (W in RES)) W = "\\" W
