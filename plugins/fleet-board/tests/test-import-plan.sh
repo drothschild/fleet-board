@@ -137,7 +137,7 @@ for c in Title Repo "Depends on" Labels; do
 done
 row_b="$(printf '%s\n' "$OUT" | grep '^| Add limits UI ')"
 case "$row_b" in *acme/web*"Add limits endpoint"*frontend*) pass "dry run row shows repo, depends on and labels" ;; *) fail "dry run row shows repo, depends on and labels" "$row_b" ;; esac
-check "dry run creates no issue" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null || true)" "0"
+check "dry run creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
 
 # ---------------------------------------------------------------- confirmed run
 echo "# confirmed run"
