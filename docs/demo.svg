@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 300" width="720" height="300" font-family="Menlo, Consolas, monospace" font-size="14">
+  <title>fleet-board demo: one card moves from Ready to a PR ready for review in four ticks</title>
+  <rect width="720" height="300" rx="8" fill="#0d1117"/>
+  <text x="20" y="28" fill="#8b949e">behavioral-tick.sh --scenario ready-path (sandbox repo)</text>
+
+  <g fill="none" stroke="#30363d">
+    <rect x="20" y="50" width="200" height="150" rx="6"/>
+    <rect x="260" y="50" width="200" height="150" rx="6"/>
+    <rect x="500" y="50" width="200" height="150" rx="6"/>
+  </g>
+  <g fill="#c9d1d9">
+    <text x="32" y="72">Ready</text>
+    <text x="272" y="72">In progress</text>
+    <text x="512" y="72">In review</text>
+  </g>
+
+  <!-- card 271 never moves: it has no Acceptance section -->
+  <g>
+    <rect x="32" y="140" width="176" height="44" rx="4" fill="#161b22" stroke="#6e7681"/>
+    <text x="42" y="158" fill="#8b949e">#271 Tidy calc</text>
+    <text x="42" y="175" fill="#8b949e" font-size="12">skipped: no Acceptance</text>
+  </g>
+
+  <!-- card 270 moves across the board, one step per tick -->
+  <g>
+    <rect x="0" y="0" width="176" height="44" rx="4" fill="#1f6feb" stroke="#58a6ff"/>
+    <text x="10" y="18" fill="#fff">#270 Add subtract</text>
+    <text x="10" y="35" fill="#cfe3ff" font-size="12">PR #272</text>
+    <animateTransform attributeName="transform" type="translate" calcMode="discrete"
+      values="32,88; 272,88; 512,88; 512,88" keyTimes="0; 0.25; 0.5; 1" dur="8s" repeatCount="indefinite"/>
+  </g>
+
+  <g fill="#c9d1d9">
+    <text x="20" y="232">tick 1: implementor opens a draft PR     tick 2: reviewer dispatched</text>
+    <text x="20" y="254">tick 3: reviewed     tick 4: PR ready for review, not merged</text>
+  </g>
+  <text x="20" y="282" fill="#3fb950">passed: 48   failed: 0   (4 ticks, 560 s)</text>
+</svg>
