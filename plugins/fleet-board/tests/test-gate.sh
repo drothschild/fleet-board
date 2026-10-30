@@ -1526,6 +1526,14 @@ env \$A -p /bin/bash cat" "nohup hash -p /bin/bash cat" "IFS=x" "LD_PRELOAD=/x/y
   assert_exit "heredoc-earlier-word: ${pre//$'\n'/ ; }: blocked" 2
 done
 
+# a ${name:=value} or ${name=value} in an argument assigns in the shell itself
+# (bash 4+: ${BASH_CMDS[cat]:=/bin/bash} rebinds cat), even under an inert command
+for pre in 'echo ${BASH_CMDS[cat]:=/bin/bash}' 'echo "${BASH_CMDS[cat]:=/bin/bash}"' \
+           'echo "${BASH_CMDS[cat]=/bin/bash}"' 'true ${x:=y}' 'ls ${PATH:=/tmp/zz}'; do
+  run_hook bash.json "$(printf '%s\ncat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre")"
+  assert_blocked "heredoc-param-assign: $pre" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
