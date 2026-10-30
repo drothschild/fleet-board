@@ -1433,6 +1433,16 @@ for pre in "cat() { bash; }" "cat() { bash; }; " "function cat { sh; }" "tee() {
   assert_blocked "heredoc-shadowed: $pre" "merge.policy"
 done
 
+# anything else that can rebind cat or tee also turns the skip off: hash,
+# enable, a PATH change, read/printf -v/eval into a name, and the like
+for pre in "hash -p /bin/bash cat" "hash -p /bin/bash cat;" "PATH=/tmp/zz:\$PATH" "export PATH=/tmp/zz:\$PATH;" \
+           "enable -n cat" "unset -f cat" "eval 'cat() { bash; }'" "read -r PATH <<<x" ": \${PATH:=/tmp/zz};" \
+           "builtin hash -p /bin/bash cat" "declare -x PATH=/tmp/zz" "BASH_ENV=/tmp/e"; do
+  case "$pre" in *\;) sep=" " ;; *) sep=$'\n' ;; esac
+  run_hook bash.json "$(printf '%s%scat <<'"'"'E'"'"'\ngh pr merge 4\nE\n' "$pre" "$sep")"
+  assert_blocked "heredoc-rebound: $pre" "merge.policy"
+done
+
 # hooks.json wiring: the harness runs the command string through a shell, so an
 # unquoted ${CLAUDE_PLUGIN_ROOT} word-splits on a space in the install path,
 # the hook exits 127, and a non-2 PreToolUse exit does not block: every gate
