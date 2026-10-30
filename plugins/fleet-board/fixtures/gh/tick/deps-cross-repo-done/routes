@@ -1,0 +1,13 @@
+# tick-plan scenario: deps-cross-repo-done (paths are relative to this file)
+# Projects backend (board.project_number 1): the only dependency is an open issue in another
+# repo that sits at Status Done on the same project, so the card starts.
+auth status	0	../../projects/auth-status-ok.txt
+project view 1 --owner acme --format json	0	../../projects/project-view.json
+project field-list 1 --owner acme --format json*	0	../../projects/field-list.json
+project item-list 1 --owner acme --format json --limit 1000	0	../common/item-list-projects-ready-12.json
+api user	0	../../labels/user.json
+api repos/acme/toy/issues/12	0	../common/issue-12-projects-depx7.json
+api --paginate repos/acme/toy/issues/12/comments	0	../common/empty.json
+api graphql *-f o=acme -f r=toy -F n=12	0	../common/graphql-card-12-ready.json
+api graphql *-f o=other -f r=repo -F n=7	0	../common/graphql-dep-done.json
+issue view 7 --repo other/repo --json state,stateReason	0	../common/dep-open.json

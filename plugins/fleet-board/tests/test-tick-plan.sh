@@ -91,7 +91,9 @@ setup_case() {
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
   {
-    printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n'
+    printf 'board:\n  repo: acme/toy\n'
+    [ -n "${3:-}" ] && printf '%s\n' "$3"
+    printf 'worktrees:\n  dir: .fw\n'
     printf 'human_qa_paths: ["src/components/**"]\n'
     [ -n "${2:-}" ] && printf '%s\n' "$2"
   } > "$REPO/.fleet-board.yml"
@@ -642,6 +644,13 @@ assert_jq "deps-bad-line: warning names the card and the line" '.warnings' '["#1
 plan deps-in-progress-not-gated
 assert_jq "deps-in-progress-not-gated: in_progress is never gated" "$(card 12 action)" '"continue_implementor"'
 assert_eq "deps-in-progress-not-gated: no dependency lookup" "$(issue_views)" 0
+
+# Projects backend: the only dependency is an open issue in another repo that
+# sits at Status Done on the same project, so the card starts
+plan deps-cross-repo-done "" "$(printf '  backend: github-projects\n  project_number: 1')"
+assert_exit "deps-cross-repo-done: exit" 0
+assert_jq "deps-cross-repo-done: a cross-repo dependency at Done is met, the card starts" "$(card 12 action)" '"start"'
+assert_jq "deps-cross-repo-done: no warnings" '.warnings' '[]'
 
 # A body larger than the pipe buffer: the Depends on heading is found early,
 # and the gate must still hold (a pre-check that SIGPIPEs would skip it)
