@@ -666,6 +666,15 @@ export FAKE_GH_ROUTES
 run_check "$SCRIPT"
 assert_jq "deps-large-body: the gate holds for a body bigger than the pipe buffer" "$(card 12 action)" '"wait"'
 
+# The same with ## Acceptance first: the Acceptance check must find it too
+{ printf '## Acceptance\n- subtract(2,5) returns -3\n\n## Depends on\n- #22\n\n'; head -c 80000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$BIG/body.md"
+jq -cn --rawfile b "$BIG/body.md" '{number: 12, title: "Add subtract", html_url: "u", body: $b, labels: [{name: "fleet:ready"}]}' > "$BIG/issue-12.json"
+setup_case deps-wait
+FAKE_GH_ROUTES="$BIG/routes"
+export FAKE_GH_ROUTES
+run_check "$SCRIPT"
+assert_jq "deps-large-body: Acceptance first in a large body is still found, the card waits" "$(card 12 action)" '"wait"'
+
 plan deps-no-acceptance
 assert_jq "deps-no-acceptance: no Acceptance wins over the gate" "$(card 13 action)" '"skip_no_acceptance"'
 assert_eq "deps-no-acceptance: no dependency lookup" "$(issue_views)" 0

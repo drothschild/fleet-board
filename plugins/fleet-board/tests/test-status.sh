@@ -261,6 +261,19 @@ $(head -c 80000 /dev/zero | tr '\0' 'x')
 run_check "$SCRIPT"
 assert_stdout_contains "large body: the waiting reason is still shown" "waits for acme/toy#22 (open)"
 
+# The same with ## Acceptance first
+setup_case
+ready_card 30 "Needs api" "## Acceptance
+- works
+
+## Depends on
+- #22
+
+$(head -c 80000 /dev/zero | tr '\0' 'x')
+"
+run_check "$SCRIPT"
+assert_stdout_contains "large body, Acceptance first: the waiting reason is still shown" "waits for acme/toy#22 (open)"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
