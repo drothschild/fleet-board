@@ -113,7 +113,8 @@ if [ -s "$EDGES_FILE" ]; then
     ([$e[].blockers[]] | unique) as $blockers
     | "dependency graph",
       ($blockers[] as $b | "blocker \($b)", (nxt($b)[] | "  \(.)")),
-      "critical path: \([$blockers[] | . as $x | select($waiting | index($x) | not) | longest($x; [$x])] | max_by(length) | join(" -> "))",
+      ([$blockers[] | . as $x | select($waiting | index($x) | not) | longest($x; [$x])] | max_by(length)) as $cp
+      | "critical path: \(if $cp == null then "(none)" else ($cp | join(" -> ")) end)",
       "can start now: \(if $starts == "" then "(none)" else ($starts | split(",") | join(", ")) end)"' "$EDGES_FILE" || RC=1
 fi
 exit "$RC"

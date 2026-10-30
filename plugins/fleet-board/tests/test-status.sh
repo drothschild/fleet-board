@@ -333,6 +333,33 @@ assert_stdout_not_contains "no dependencies: no graph" "blocker"
 assert_stdout_not_contains "no dependencies: no critical path" "critical path"
 assert_stdout_not_contains "no dependencies: no can-start line" "can start now"
 
+# A dependency cycle among Ready cards: no crash, critical path is (none)
+setup_case
+cyc_pre="$FAKE_GH_DIR/pre.txt"
+printf '[%s,%s]\n' "$(item 50 "Cyc A" fleet:ready)" "$(item 51 "Cyc B" fleet:ready)" > "$FAKE_GH_DIR/list-ready-cyc.json"
+printf '{"state":"OPEN","stateReason":null}\n' > "$FAKE_GH_DIR/dep-open.json"
+jq -cn --arg b "${ACC}## Depends on
+- #51
+" '{number:50, title:"Cyc A", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-50.json"
+jq -cn --arg b "${ACC}## Depends on
+- #50
+" '{number:51, title:"Cyc B", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-51.json"
+{
+  printf 'issue list --repo acme/toy --label fleet:ready --state open --json number,title,url,labels --limit 500\t0\t%s\n' "$FAKE_GH_DIR/list-ready-cyc.json"
+  for n in 50 51; do
+    printf '[]\n' > "$FAKE_GH_DIR/comments-$n.json"
+    printf 'api repos/acme/toy/issues/%s\t0\t%s\n' "$n" "$FAKE_GH_DIR/issue-$n.json"
+    printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s\n' "$n" "$FAKE_GH_DIR/comments-$n.json"
+    printf 'issue view %s --repo acme/toy --json state,stateReason\t0\t%s\n' "$n" "$FAKE_GH_DIR/dep-open.json"
+  done
+  cat "$ROUTES"
+} > "$cyc_pre"
+mv "$cyc_pre" "$ROUTES"
+run_check "$SCRIPT"
+assert_exit "cycle: exit 0" 0
+assert_stdout_contains "cycle: critical path is (none)" "critical path: (none)"
+assert_stdout_contains "cycle: can start now still printed" "can start now: (none)"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
