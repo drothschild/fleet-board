@@ -685,6 +685,39 @@ assert_jq "deps-other-card-starts: the other card starts" "$(card 14 action)" '"
 assert_jq "deps-other-card-starts: dispatchable reflects the other card" '.dispatchable' 'true'
 assert_jq "deps-other-card-starts: a card with no dependencies has waiting_on null" "$(card 14 waiting_on)" 'null'
 
+# update_branch: a PR whose mergeable state is CONFLICTING is brought up to
+# date by a merge. Routes are built at run time from an existing scenario plus
+# a "pr view <pr> --json mergeable" answer, so no fixture directory is needed.
+plan_mergeable() { # <case> <pr> <mergeable>
+  setup_case "$1"
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  printf '{"mergeable":"%s"}\n' "$3" > "$d/mergeable.json"
+  {
+    printf 'pr view %s --repo acme/toy --json mergeable\t0\t%s\n' "$2" "$d/mergeable.json"
+    sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-#	$TICK/$1/comments-#" "$TICK/$1/routes"
+  } > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+
+plan_mergeable in-review-fix 34 CONFLICTING
+assert_exit "update_branch: in review, conflicting: exit" 0
+assert_jq "update_branch: in review, conflicting PR plans update_branch, not fix" "$(card 12 action)" '"update_branch"'
+assert_jq "update_branch: in review, no dispatch action for the card" '[.cards[] | select(.action == "fix" or .action == "review" or .action == "start_review")] | length' '0'
+
+plan_mergeable in-progress-draft-pr 34 CONFLICTING
+assert_jq "update_branch: in progress, conflicting PR plans update_branch, not start_review" "$(card 12 action)" '"update_branch"'
+
+plan_mergeable in-review-fix 34 MERGEABLE
+assert_jq "update_branch: a mergeable PR keeps its action" "$(card 12 action)" '"fix"'
+
+plan_mergeable in-review-fix 34 UNKNOWN
+assert_jq "update_branch: an unknown mergeable state gets no update_branch" "$(card 12 action)" '"fix"'
+
+plan_mergeable in-progress-draft-pr 34 MERGEABLE
+assert_jq "update_branch: in progress, mergeable PR keeps start_review" "$(card 12 action)" '"start_review"'
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra
