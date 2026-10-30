@@ -44,6 +44,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
   `note.sh reset-failures <n>`. tick-plan only reads the count; the manager writes it.
+- **Dependency gate** (`scripts/deps.sh parse|check`). `parse` reads a card body's
+  `## Depends on` bullets (`#n` or `owner/repo#n`); `check` looks each up and prints
+  `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as
+  `deps-lookup-failed: <command>`. `tick-plan.sh` plans `wait` (with `waiting_on`) for a
+  Ready card with an unmet dependency; the manager records the refs it last commented on
+  in the note's `deps_commented`. Only Ready cards are gated.
 - **Gate hook** (`hooks/gate.sh`, lexer `hooks/gate-lex.awk`). PreToolUse(Bash); exit 2
   blocks; inert without `.fleet-board.yml` in the command's effective cwd. G1: nothing
   moves a card out of human_qa. G2: `gh pr merge` blocked under `merge.policy: human`;

@@ -41,6 +41,10 @@
 # get, parse, merge and put read them as action_failures and
 # last_action_error (the new key wins when both are present) and drop them.
 #
+# deps_commented (null, or a list of "owner/repo#n" refs) is the set of unmet
+# dependencies of a waiting Ready card that the manager last commented about
+# (see deps.sh); merge replaces the list whole.
+#
 # reset-failures is what a person runs after moving a card that tick-plan.sh
 # skips on its count (its warnings end with this command): a hand move does not
 # reset the count, so without it the card would be skipped, or blocked again.
@@ -103,7 +107,7 @@ DEFAULTS='{"state":null,"branch":null,"worktree":null,"pr":null,"round":null,"mo
   "escalated":null,"escalated_at_round":null,"last_verified":null,"last_review":null,
   "blocked_findings":[],"blocking_pr":null,"merged_pr":null,"main_check":null,
   "out_of_scope_created":[],"bugs_filed":[],"pending_followups":null,"report_errors":[],
-  "implementor_attempts":0,"action_failures":0,"last_action_error":null,"updated_at":null}'
+  "implementor_attempts":0,"action_failures":0,"last_action_error":null,"deps_commented":null,"updated_at":null}'
 
 # legacy: maps the pre-rename keys setup_failures and last_setup_error to
 # action_failures and last_action_error (unless those are present) and drops them
@@ -131,6 +135,7 @@ invalid_field() {
     elif (.implementor_attempts | nint | not) then "implementor_attempts"
     elif (.action_failures | . == null or (int and . >= 0) | not) then "action_failures"
     elif (.last_action_error | . == null or (type == "string" and clean) | not) then "last_action_error"
+    elif (.deps_commented | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+\\z"))) | not) then "deps_commented"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"
     elif (.worktree | . == null or . == $base or startswith($base + "/") | not) then "worktree-outside-base"

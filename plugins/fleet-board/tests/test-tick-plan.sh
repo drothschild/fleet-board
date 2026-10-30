@@ -91,7 +91,9 @@ setup_case() {
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
   {
-    printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n'
+    printf 'board:\n  repo: acme/toy\n'
+    [ -n "${3:-}" ] && printf '%s\n' "$3"
+    printf 'worktrees:\n  dir: .fw\n'
     printf 'human_qa_paths: ["src/components/**"]\n'
     [ -n "${2:-}" ] && printf '%s\n' "$2"
   } > "$REPO/.fleet-board.yml"
@@ -600,6 +602,88 @@ assert_jq "action-failures: scripts dir with a space: warning quotes the command
 plan list-failure
 assert_exit "list-failure: exit 1" 1
 assert_stdout_exact "list-failure: no plan printed" ""
+
+# ---------------------------------------------------------------------------
+# Dependency gate: a Ready card with an unmet "## Depends on" waits
+issue_views() { grep -c 'issue view' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
+
+plan deps-wait
+assert_exit "deps-wait: exit" 0
+assert_jq "deps-wait: action wait" "$(card 12 action)" '"wait"'
+assert_jq "deps-wait: reason names the dependency and its state" "$(card 12 reason)" '"waits for acme/toy#22 (open)"'
+assert_jq "deps-wait: waiting_on lists the unmet refs" "$(card 12 waiting_on)" '["acme/toy#22"]'
+assert_jq "deps-wait: the card stays in ready" "$(card 12 state)" '"ready"'
+assert_jq "deps-wait: not dispatchable" '.dispatchable' 'false'
+assert_jq "deps-wait: no warnings" '.warnings' '[]'
+
+plan deps-wait-two
+assert_jq "deps-wait-two: reason lists every unmet dependency, in order" "$(card 12 reason)" '"waits for acme/toy#22 (open), other/repo#7 (open)"'
+assert_jq "deps-wait-two: waiting_on" "$(card 12 waiting_on)" '["acme/toy#22","other/repo#7"]'
+
+plan deps-met
+assert_jq "deps-met: every dependency closed as completed, the card starts" "$(card 12 action)" '"start"'
+assert_jq "deps-met: waiting_on is null" "$(card 12 waiting_on)" 'null'
+assert_jq "deps-met: dispatchable" '.dispatchable' 'true'
+
+plan deps-not-planned
+assert_jq "deps-not-planned: action wait" "$(card 12 action)" '"wait"'
+assert_jq "deps-not-planned: reason" "$(card 12 reason)" '"waits for acme/toy#22 (closed as not planned)"'
+assert_jq "deps-not-planned: warning" '.warnings' '["#12 depends on acme/toy#22, which was closed as not planned"]'
+
+plan deps-lookup-failure
+assert_exit "deps-lookup-failure: exit" 0
+assert_jq "deps-lookup-failure: action skip" "$(card 12 action)" '"skip"'
+assert_jq "deps-lookup-failure: reason names the command" "$(card 12 reason)" '"lookup failed: gh issue view 22 --repo acme/toy --json state,stateReason"'
+assert_jq "deps-lookup-failure: warning" '.warnings' '["#12: lookup failed: gh issue view 22 --repo acme/toy --json state,stateReason"]'
+assert_jq "deps-lookup-failure: not dispatchable" '.dispatchable' 'false'
+
+plan deps-bad-line
+assert_jq "deps-bad-line: a line that is no dependency does not hold the card" "$(card 12 action)" '"start"'
+assert_jq "deps-bad-line: warning names the card and the line" '.warnings' '["#12: unrecognized dependency line: - nope"]'
+
+plan deps-in-progress-not-gated
+assert_jq "deps-in-progress-not-gated: in_progress is never gated" "$(card 12 action)" '"continue_implementor"'
+assert_eq "deps-in-progress-not-gated: no dependency lookup" "$(issue_views)" 0
+
+# Projects backend: the only dependency is an open issue in another repo that
+# sits at Status Done on the same project, so the card starts
+plan deps-cross-repo-done "" "$(printf '  backend: github-projects\n  project_number: 1')"
+assert_exit "deps-cross-repo-done: exit" 0
+assert_jq "deps-cross-repo-done: a cross-repo dependency at Done is met, the card starts" "$(card 12 action)" '"start"'
+assert_jq "deps-cross-repo-done: no warnings" '.warnings' '[]'
+
+# A body larger than the pipe buffer: the Depends on heading is found early,
+# and the gate must still hold (a pre-check that SIGPIPEs would skip it)
+BIG="$(mktemp -d)"
+CLEANUP_DIRS+=("$BIG")
+{ printf '## Depends on\n- #22\n\n'; head -c 80000 /dev/zero | tr '\0' 'x'; printf '\n\n## Acceptance\n- subtract(2,5) returns -3\n'; } > "$BIG/body.md"
+jq -cn --rawfile b "$BIG/body.md" '{number: 12, title: "Add subtract", html_url: "u", body: $b, labels: [{name: "fleet:ready"}]}' > "$BIG/issue-12.json"
+sed -e "s|\.\./common/issue-12-ready-dep22\.json|$BIG/issue-12.json|" -e "s|\.\./common/|$TICK/common/|" -e "s|\.\./\.\./labels/|$TICK/../labels/|" \
+  "$TICK/deps-wait/routes" > "$BIG/routes"
+setup_case deps-wait
+FAKE_GH_ROUTES="$BIG/routes"
+export FAKE_GH_ROUTES
+run_check "$SCRIPT"
+assert_jq "deps-large-body: the gate holds for a body bigger than the pipe buffer" "$(card 12 action)" '"wait"'
+
+# The same with ## Acceptance first: the Acceptance check must find it too
+{ printf '## Acceptance\n- subtract(2,5) returns -3\n\n## Depends on\n- #22\n\n'; head -c 80000 /dev/zero | tr '\0' 'x'; printf '\n'; } > "$BIG/body.md"
+jq -cn --rawfile b "$BIG/body.md" '{number: 12, title: "Add subtract", html_url: "u", body: $b, labels: [{name: "fleet:ready"}]}' > "$BIG/issue-12.json"
+setup_case deps-wait
+FAKE_GH_ROUTES="$BIG/routes"
+export FAKE_GH_ROUTES
+run_check "$SCRIPT"
+assert_jq "deps-large-body: Acceptance first in a large body is still found, the card waits" "$(card 12 action)" '"wait"'
+
+plan deps-no-acceptance
+assert_jq "deps-no-acceptance: no Acceptance wins over the gate" "$(card 13 action)" '"skip_no_acceptance"'
+assert_eq "deps-no-acceptance: no dependency lookup" "$(issue_views)" 0
+
+plan deps-other-card-starts
+assert_jq "deps-other-card-starts: the card with the dependency waits" "$(card 12 action)" '"wait"'
+assert_jq "deps-other-card-starts: the other card starts" "$(card 14 action)" '"start"'
+assert_jq "deps-other-card-starts: dispatchable reflects the other card" '.dispatchable' 'true'
+assert_jq "deps-other-card-starts: a card with no dependencies has waiting_on null" "$(card 14 waiting_on)" 'null'
 
 # usage
 plan ready-start

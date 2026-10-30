@@ -138,7 +138,9 @@ fb_canonical_of() {
   local s; for s in $FB_STATES; do [ "$(fb_state_name "$s")" = "$1" ] && { echo "$s"; return; }; done
 }
 
-fb_has_acceptance() { printf '%s\n' "$1" | grep -Eq '^##[[:space:]]+Acceptance([[:space:]].*)?$'; }
+# (a here-string, not a pipe: grep -q quits at its first match, and under pipefail a
+# body bigger than the pipe buffer would kill the writer and read as "no Acceptance")
+fb_has_acceptance() { grep -Eq '^##[[:space:]]+Acceptance([[:space:]].*)?$' <<<"$1"; }
 
 # fb_list_limit DEFAULT: the --limit a backend passes to its gh list call,
 # FLEET_BOARD_LIST_LIMIT when set. Dies (1) on a value that is not a positive

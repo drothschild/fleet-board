@@ -145,7 +145,8 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
 | `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
 | `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
-| `skip`, `wait` | nothing |
+| `skip` | nothing |
+| `wait` | nothing, except for a plan card in `ready`: its `waiting_on` lists the unmet dependencies. Unless `note.deps_commented` already equals that list, post one comment `Waiting for <waiting_on, joined with ", ">` → only after it posts, `note.sh merge` with `deps_commented` = `waiting_on`. |
 
 Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...` (0.6). Every comment is written to a temp file and posted with `board-comment.sh N <file>`.
 
@@ -396,7 +397,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 
 4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the escalation model (`models.escalation`, or the reviewer's model when that is unset).
 
-4.4. Cards with a `skip` whose reason starts with `could not be blocked after ` or `unblock made no progress after `, and cards with `skip` or `wait`, get no note write (2.C.2).
+4.4. Cards with a `skip` whose reason starts with `could not be blocked after ` or `unblock made no progress after `, and cards with `skip` or `wait`, get no note write (2.C.2), except the `deps_commented` write for a `ready` card's `wait` (2.2).
 
 ### 5. Tick report
 

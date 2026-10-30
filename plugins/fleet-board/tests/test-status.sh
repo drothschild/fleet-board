@@ -198,6 +198,82 @@ assert_exit "note-failure: exit 1" 1
 assert_stdout_contains "note-failure: other cards still listed" "$LINE12"
 assert_stdout_contains "note-failure: the card is marked" "  #14 Fix divide · note unreadable"
 
+# A ready card waiting on a dependency shows why
+# ready_card <n> <title> <body>: puts one ready card on the board (routes prepended)
+ready_card() {
+  local pre="$FAKE_GH_DIR/pre.txt"
+  jq -cn --argjson n "$1" --arg t "$2" --arg b "$3" \
+    '{number:$n, title:$t, html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-$1.json"
+  printf '[]\n' > "$FAKE_GH_DIR/comments-$1.json"
+  printf '[%s]\n' "$(item "$1" "$2" fleet:ready)" > "$FAKE_GH_DIR/list-ready-dep.json"
+  {
+    printf 'issue list --repo acme/toy --label fleet:ready --state open --json number,title,url,labels --limit 500\t0\t%s\n' "$FAKE_GH_DIR/list-ready-dep.json"
+    printf 'api repos/acme/toy/issues/%s\t0\t%s\n' "$1" "$FAKE_GH_DIR/issue-$1.json"
+    printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s\n' "$1" "$FAKE_GH_DIR/comments-$1.json"
+    printf '{"state":"OPEN","stateReason":null}\n' > "$FAKE_GH_DIR/dep-open.json"
+    printf '{"state":"CLOSED","stateReason":"COMPLETED"}\n' > "$FAKE_GH_DIR/dep-done.json"
+    printf 'issue view 22 --repo acme/toy --json state,stateReason\t0\t%s\n' "$FAKE_GH_DIR/dep-open.json"
+    printf 'issue view 7 --repo other/repo --json state,stateReason\t0\t%s\n' "$FAKE_GH_DIR/dep-done.json"
+    cat "$ROUTES"
+  } > "$pre"
+  mv "$pre" "$ROUTES"
+}
+ACC=$'Do it.\n\n## Acceptance\n- works\n\n'
+
+setup_case
+ready_card 30 "Needs api" "${ACC}## Depends on
+- #22
+- other/repo#7
+"
+run_check "$SCRIPT"
+assert_exit "waiting: exit" 0
+assert_stdout_contains "waiting: the unmet dependency and its state follow the card" \
+  "$(printf 'ready\n  #30 Needs api · round — · PR — · —/— · waits for acme/toy#22 (open)')"
+
+setup_case
+ready_card 30 "Needs api" "${ACC}## Depends on
+- other/repo#7
+"
+run_check "$SCRIPT"
+assert_exit "dependencies met: exit" 0
+assert_stdout_contains "dependencies met: no waiting reason" "$(printf 'ready\n  #30 Needs api · round — · PR — · —/—\n')"
+assert_stdout_not_contains "dependencies met: no waiting reason text" "waits for"
+
+setup_case
+ready_card 30 "Needs api" "${ACC}## Depends on
+- #99
+"
+printf 'issue view 99 --repo acme/toy --json state,stateReason\t1\t-\n' | cat - "$ROUTES" > "$FAKE_GH_DIR/r2" && mv "$FAKE_GH_DIR/r2" "$ROUTES"
+run_check "$SCRIPT"
+assert_exit "dependency lookup failure: exit 1" 1
+assert_stdout_contains "dependency lookup failure: the card is marked" "  #30 Needs api · round — · PR — · —/— · dependencies unreadable"
+
+# A body bigger than the pipe buffer still shows the waiting reason
+setup_case
+ready_card 30 "Needs api" "## Depends on
+- #22
+
+$(head -c 80000 /dev/zero | tr '\0' 'x')
+
+## Acceptance
+- works
+"
+run_check "$SCRIPT"
+assert_stdout_contains "large body: the waiting reason is still shown" "waits for acme/toy#22 (open)"
+
+# The same with ## Acceptance first
+setup_case
+ready_card 30 "Needs api" "## Acceptance
+- works
+
+## Depends on
+- #22
+
+$(head -c 80000 /dev/zero | tr '\0' 'x')
+"
+run_check "$SCRIPT"
+assert_stdout_contains "large body, Acceptance first: the waiting reason is still shown" "waits for acme/toy#22 (open)"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
