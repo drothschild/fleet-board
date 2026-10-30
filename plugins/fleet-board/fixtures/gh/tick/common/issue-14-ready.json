@@ -1,0 +1,1 @@
+{"number":14,"title":"Add abs","html_url":"https://github.com/acme/toy/issues/14","body":"Absolute value.\n\n## Acceptance\n- subtract(2,5) returns -3\n","labels":[{"name":"fleet:ready"}]}
