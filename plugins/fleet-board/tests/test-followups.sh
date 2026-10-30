@@ -234,7 +234,7 @@ run_ff
 assert_exit "oos-in-note: exit" 0
 assert_eq "oos-in-note: 1 issue create" "$(calls_starting issue create)" 1
 assert_eq "oos-in-note: 1 pr comment" "$(calls_starting pr comment 34)" 1
-assert_eq "oos-in-note: 1 search" "$(calls_starting issue list)" 1
+assert_eq "oos-in-note: open and closed search" "$(calls_starting issue list)" 2
 assert_eq "oos-in-note: output" "$(jqc .out_of_scope_created)" '[{"title":"Add CLI help","number":79,"existing":false}]'
 
 # ---------------------------------------------------------------------------
@@ -247,11 +247,11 @@ assert_eq "files-bug: 1 issue create" "$(calls_starting issue create)" 1
 CREATE="$(files_starting issue create | head -1)"
 if [ -n "$CREATE" ]; then
   assert_true "files-bug: --label bug" has_pair "$CREATE" --label bug
-  assert_true "files-bug: --label fleet:backlog" has_pair "$CREATE" --label fleet:backlog
+  assert_true "files-bug: --label fleet:ready" has_pair "$CREATE" --label fleet:ready
   assert_eq "files-bug: title" "$(arg_after "$CREATE" --title)" "Division by zero crashes"
 else
   fail "files-bug: --label bug" "no issue create call"
-  fail "files-bug: --label fleet:backlog" "no issue create call"
+  fail "files-bug: --label fleet:ready" "no issue create call"
   fail "files-bug: title" "no issue create call"
 fi
 EXPECTED_BODY="$(cat << 'BODYEOF'
@@ -266,6 +266,9 @@ an error
 
 ## Observed
 a crash
+
+## Acceptance
+- `node -e "require('./calc').div(1,0)"` gives the expected result: an error
 
 Found by fleet-board while working #12 (PR #34).
 BODYEOF
@@ -296,7 +299,7 @@ case "$(bodies_of issue comment 55)" in *"Also seen while working #12"*) pass "b
 assert_eq "bug-matches-open-issue: no comment on the near miss" "$(calls_starting issue comment 56)" 0
 assert_eq "bug-matches-open-issue: 1 pr comment 34" "$(calls_starting pr comment 34)" 1
 assert_eq "bug-matches-open-issue: pr comment body" "$(bodies_of pr comment 34)" "Known bug, already tracked as #55: add() overflows on large ints"
-assert_eq "bug-matches-open-issue: bugs_filed" "$(jqc .bugs_filed)" '[{"title":"add() overflows on large ints","number":55,"existing":true}]'
+assert_eq "bug-matches-open-issue: bugs_filed" "$(jqc .bugs_filed)" '[{"title":"add() overflows on large ints","number":55,"existing":true,"matched":"open"}]'
 
 # AC3.10 search-terms-sanitized (same run)
 SEARCH="$(files_starting issue list | head -1)"
@@ -321,7 +324,7 @@ run_ff
 assert_exit "oos-matches-open-issue: exit" 0
 assert_eq "oos-matches-open-issue: no issue create" "$(calls_starting issue create)" 0
 assert_eq "oos-matches-open-issue: pr comment body" "$(bodies_of pr comment 34)" "Out of scope, already tracked as #55: Extract math utils"
-assert_eq "oos-matches-open-issue: output" "$(jqc .out_of_scope_created)" '[{"title":"Extract math utils","number":55,"existing":true}]'
+assert_eq "oos-matches-open-issue: output" "$(jqc .out_of_scope_created)" '[{"title":"Extract math utils","number":55,"existing":true,"matched":"open"}]'
 
 # ---------------------------------------------------------------------------
 # AC3.10 bug-already-in-note: no gh write calls at all
@@ -353,7 +356,7 @@ setup_case
 report '[]' "[$(bug "First bug"),$(bug "Second bug")]"
 run_ff
 assert_exit "second-search-fails-files-nothing: exit" 1
-assert_eq "second-search-fails-files-nothing: both searched" "$(calls_starting issue list)" 2
+assert_eq "second-search-fails-files-nothing: both searched (open and closed for the first, open for the second)" "$(calls_starting issue list)" 3
 assert_eq "second-search-fails-files-nothing: no issue create" "$(calls_starting issue create)" 0
 assert_eq "second-search-fails-files-nothing: no pr comment" "$(calls_starting pr comment)" 0
 
@@ -399,7 +402,7 @@ report '[]' "[$(bug "Foo breaks"),$(bug "foo breaks")]"
 run_ff
 assert_exit "duplicate-title-in-input-files-once: exit" 0
 assert_eq "duplicate-title-in-input-files-once: one issue create" "$(calls_starting issue create)" 1
-assert_eq "duplicate-title-in-input-files-once: one search" "$(calls_starting issue list)" 1
+assert_eq "duplicate-title-in-input-files-once: open and closed search" "$(calls_starting issue list)" 2
 assert_eq "duplicate-title-in-input-files-once: one entry" "$(jqc '.bugs_filed | length')" 1
 
 # note-read-failure-files-nothing

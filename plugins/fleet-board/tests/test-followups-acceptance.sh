@@ -276,6 +276,7 @@ case "$(all_bodies)" in *"## Depends on"*) fail "no-depends: independent follow-
 
 # --- no testable bullet: Backlog and a comment saying why
 setup_case
+{ printf 'issue create --repo acme/toy --title Tidy the module layout *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
 report "$OOS_NOCMD" '[]'
 run_ff
 assert_exit "untestable: exit" 0
