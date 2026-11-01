@@ -186,7 +186,7 @@ echo "accept.sh: a failed move reports the reason and keeps the note"
 setup_case "$BLOCKED"
 set_note_json "$NOTE"
 MOVE_FAIL=1 run_accept 12
-assert_exit "accept: move fails: exit non-zero (1)" 1
+assert_exit "accept: move fails: exit non-zero (3)" 3
 assert_stderr_contains "accept: move fails: names the reason" "board refused"
 assert_stderr_contains "accept: move fails: says the move failed" "cannot move"
 assert_eq "accept: move fails: the note was still written" "$(wc -l < "$NOTE_LOG" | tr -d ' ')" 1
