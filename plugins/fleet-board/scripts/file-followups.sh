@@ -17,7 +17,7 @@
 #      item's title, case-insensitively. Any search failure exits 1 having
 #      filed nothing.
 #   2. Pass two files each item:
-#        match      gh issue comment <existing> "Also seen while working #<card> (PR #<pr>).",
+#        match      (open or closed) gh issue comment <existing> "Also seen while working #<card> (PR #<pr>).",
 #                   then gh pr comment "<Known bug|Out of scope>, already tracked as #<existing>: <title>"
 #        out of scope, no match
 #                   board-create.sh "<title>" (detail + "Found while working #<card> (PR #<pr>).")
@@ -152,10 +152,8 @@ while IFS= read -r item; do
   kind="$(jq -r .kind <<<"$item")"
   title="$(jq -r .title <<<"$item")"
   if [ "$m" != none ]; then
-    if [ "$how" = open ]; then
-      gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
-        || stop "cannot comment on the existing issue #$m for: $title"
-    fi
+    gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
+      || stop "cannot comment on the existing issue #$m for: $title"
     record "$kind" "$title" "$m" true "$how" || stop "cannot record #$m"
     if [ "$kind" = bug ]; then label="Known bug"; else label="Out of scope"; fi
     pr_comment "$label, already tracked as #$m: $title" "$m"
