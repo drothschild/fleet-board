@@ -58,3 +58,10 @@ echo y | bash <scripts>/import-plan.sh <cards file> [--status ready]
 
 On no, run nothing. Report the `Created owner/repo#N` lines the script prints. A failure
 (cycle, unknown dependency, missing project option) exits 1 with the reason; relay it.
+
+If a card's Why or Acceptance names a `.md` doc that is missing on the default branch,
+the script lists the docs and asks: `[m]` commit and merge the docs first, or `[e]` embed
+the section into the card. Ask the user which, then pipe both answers
+(`printf 'y\ne\n' | ...`). `m` (or no answer) creates nothing and exits 1; `e` replaces the
+reference with the section text from the working tree. Role worktrees branch from the
+default branch, so a card must never point at a file that is not there.
