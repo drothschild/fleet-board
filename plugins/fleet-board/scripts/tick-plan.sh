@@ -124,6 +124,12 @@
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
 #
+# Rate limit failures: when the script fails and its stderr names a GitHub rate
+# limit, it asks gh api rate_limit for the reset time and adds the line
+# "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
+# fleet-board-run.sh waits out. If that query fails, nothing is added. A
+# failure that is not a rate limit never gets the line.
+#
 # Exit codes:
 #   0 - plan printed
 #   1 - a column could not be listed, or the plan could not be built
@@ -134,6 +140,24 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
 [ $# -eq 0 ] || fb_die 2 "usage: tick-plan.sh (no arguments)"
+
+# stderr goes to a file so a rate-limit failure can be recognised at exit
+ERR_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
+exec 3>&2 2>"$ERR_FILE"
+finish() {
+  local rc=$? reset
+  exec 2>&3
+  cat "$ERR_FILE" >&2
+  if [ "$rc" -ne 0 ] && grep -qi 'rate limit' "$ERR_FILE"; then
+    reset="$(gh api rate_limit 2>/dev/null | jq -r '.resources.core.reset | if type == "number" then todate else empty end' 2>/dev/null)" || reset=""
+    case "$reset" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf 'resets at %s\n' "$reset" >&2 ;;
+    esac
+  fi
+  rm -f "$ERR_FILE" "${CARDS_FILE:-}" "${NOTE_ERR:-}" "${DEPS_FILE:-}" "${LINT_FILE:-}"
+  exit "$rc"
+}
+trap finish EXIT
 
 fb_load_config
 
@@ -147,7 +171,6 @@ CARDS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
 NOTE_ERR="$(mktemp)" || { rm -f "$CARDS_FILE"; fb_die 1 "cannot create a temp file"; }
 DEPS_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR"; fb_die 1 "cannot create a temp file"; }
 LINT_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"; fb_die 1 "cannot create a temp file"; }
-trap 'rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE" "$LINT_FILE"' EXIT
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
