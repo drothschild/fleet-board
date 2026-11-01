@@ -274,6 +274,92 @@ $(head -c 80000 /dev/zero | tr '\0' 'x')
 run_check "$SCRIPT"
 assert_stdout_contains "large body, Acceptance first: the waiting reason is still shown" "waits for acme/toy#22 (open)"
 
+# ---------------------------------------------------------------------------
+# The dependency graph. chain_case puts A (#40, in progress) <- B (#41) <- C (#42)
+# on the board, C also waiting on other/repo#9, plus #43 with no dependency.
+chain_case() {
+  setup_case
+  local pre="$FAKE_GH_DIR/pre.txt" n
+  printf '[%s]\n' "$(item 40 "Task A" fleet:in_progress)" > "$FAKE_GH_DIR/list-ip-chain.json"
+  printf '[%s,%s,%s]\n' "$(item 41 "Task B" fleet:ready)" "$(item 42 "Task C" fleet:ready)" "$(item 43 "Task D" fleet:ready)" \
+    > "$FAKE_GH_DIR/list-ready-chain.json"
+  printf '{"state":"OPEN","stateReason":null}\n' > "$FAKE_GH_DIR/dep-open.json"
+  jq -cn '{number:40, title:"Task A", html_url:"u", body:"b", labels:[{name:"fleet:in_progress"}]}' > "$FAKE_GH_DIR/issue-40.json"
+  printf '[]\n' > "$FAKE_GH_DIR/comments-40.json"
+  jq -cn --arg b "${ACC}## Depends on
+- #40
+" '{number:41, title:"Task B", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-41.json"
+  jq -cn --arg b "${ACC}## Depends on
+- #41
+- other/repo#9
+" '{number:42, title:"Task C", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-42.json"
+  jq -cn --arg b "${ACC}" '{number:43, title:"Task D", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-43.json"
+  {
+    printf 'issue list --repo acme/toy --label fleet:in_progress --state open --json number,title,url,labels --limit 500\t0\t%s\n' "$FAKE_GH_DIR/list-ip-chain.json"
+    printf 'issue list --repo acme/toy --label fleet:ready --state open --json number,title,url,labels --limit 500\t0\t%s\n' "$FAKE_GH_DIR/list-ready-chain.json"
+    for n in 40 41 42 43; do
+      [ -f "$FAKE_GH_DIR/comments-$n.json" ] || printf '[]\n' > "$FAKE_GH_DIR/comments-$n.json"
+      printf 'api repos/acme/toy/issues/%s\t0\t%s\n' "$n" "$FAKE_GH_DIR/issue-$n.json"
+      printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s\n' "$n" "$FAKE_GH_DIR/comments-$n.json"
+    done
+    printf 'issue view 40 --repo acme/toy --json state,stateReason\t0\t%s\n' "$FAKE_GH_DIR/dep-open.json"
+    printf 'issue view 41 --repo acme/toy --json state,stateReason\t0\t%s\n' "$FAKE_GH_DIR/dep-open.json"
+    printf 'issue view 9 --repo other/repo --json state,stateReason\t0\t%s\n' "$FAKE_GH_DIR/dep-open.json"
+    cat "$ROUTES"
+  } > "$pre"
+  mv "$pre" "$ROUTES"
+}
+
+chain_case
+run_check "$SCRIPT"
+assert_exit "graph: exit" 0
+assert_stdout_contains "graph: B grouped under its blocker A" "$(printf 'blocker #40\n  #41\n')"
+assert_stdout_contains "graph: C grouped under its blocker B" "$(printf 'blocker #41\n  #42\n')"
+assert_stdout_contains "graph: cross-repo blocker keeps its repo prefix" "$(printf 'blocker other/repo#9\n  #42\n')"
+assert_stdout_contains "graph: critical path is the longest chain" "critical path: #40 -> #41 -> #42"
+assert_stdout_contains "graph: can start now names the Ready card with no unmet dependency" "can start now: #43"
+assert_stdout_not_contains "graph: a waiting card is not startable" "can start now: #41"
+GRAPH_CALLS="$(grep -c 'issue list' "$FAKE_GH_DIR/calls.log")"
+if [ "$GRAPH_CALLS" = 5 ]; then pass "graph: one gh list call per column (5)"; else fail "graph: one gh list call per column" "expected 5 issue list calls, got $GRAPH_CALLS"; fi
+if grep -Eq 'issue (edit|comment|create|close)|-X (POST|PATCH|PUT|DELETE)|--method' "$FAKE_GH_DIR/calls.log"; then
+  fail "graph: read-only" "a mutating gh call was made"
+else pass "graph: read-only (no mutating gh call)"; fi
+
+# No dependencies: no graph output at all
+setup_case
+ready_card 30 "Plain" "${ACC}"
+run_check "$SCRIPT"
+assert_stdout_not_contains "no dependencies: no graph" "blocker"
+assert_stdout_not_contains "no dependencies: no critical path" "critical path"
+assert_stdout_not_contains "no dependencies: no can-start line" "can start now"
+
+# A dependency cycle among Ready cards: no crash, critical path is (none)
+setup_case
+cyc_pre="$FAKE_GH_DIR/pre.txt"
+printf '[%s,%s]\n' "$(item 50 "Cyc A" fleet:ready)" "$(item 51 "Cyc B" fleet:ready)" > "$FAKE_GH_DIR/list-ready-cyc.json"
+printf '{"state":"OPEN","stateReason":null}\n' > "$FAKE_GH_DIR/dep-open.json"
+jq -cn --arg b "${ACC}## Depends on
+- #51
+" '{number:50, title:"Cyc A", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-50.json"
+jq -cn --arg b "${ACC}## Depends on
+- #50
+" '{number:51, title:"Cyc B", html_url:"u", body:$b, labels:[{name:"fleet:ready"}]}' > "$FAKE_GH_DIR/issue-51.json"
+{
+  printf 'issue list --repo acme/toy --label fleet:ready --state open --json number,title,url,labels --limit 500\t0\t%s\n' "$FAKE_GH_DIR/list-ready-cyc.json"
+  for n in 50 51; do
+    printf '[]\n' > "$FAKE_GH_DIR/comments-$n.json"
+    printf 'api repos/acme/toy/issues/%s\t0\t%s\n' "$n" "$FAKE_GH_DIR/issue-$n.json"
+    printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s\n' "$n" "$FAKE_GH_DIR/comments-$n.json"
+    printf 'issue view %s --repo acme/toy --json state,stateReason\t0\t%s\n' "$n" "$FAKE_GH_DIR/dep-open.json"
+  done
+  cat "$ROUTES"
+} > "$cyc_pre"
+mv "$cyc_pre" "$ROUTES"
+run_check "$SCRIPT"
+assert_exit "cycle: exit 0" 0
+assert_stdout_contains "cycle: critical path is (none)" "critical path: (none)"
+assert_stdout_contains "cycle: can start now still printed" "can start now: (none)"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
