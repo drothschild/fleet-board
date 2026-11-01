@@ -142,6 +142,11 @@ else
   fail "second tick on the same state posts nothing" "comment posts after first run: $first, after second: $second"
 fi
 
+# A clean PR with no Human QA section prints no checklist header either
+setup_case "$PLAIN_BODY" "$PR_OK"
+run_handoff
+assert_lacks "clean PR without Human QA section: no checklist header" "Before merging:"
+
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]
