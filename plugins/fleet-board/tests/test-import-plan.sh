@@ -208,7 +208,7 @@ printf '%s' '{"cards":[{"key":"a","title":"Good card","repo":"acme/api","accepta
 reset_gh
 run_import "y" "$SB/badcards.json"
 check "a failing card makes the import exit 1" "$RC" "1"
-check "a failing card creates no issue" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null)" "0"
+check "a failing card creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
 case "$(cat "$SB/err") $OUT" in *untestable-bullet*) pass "the import names the lint rule" ;; *) fail "the import names the lint rule" "$(cat "$SB/err")" ;; esac
 case "$(cat "$SKILL")" in *lint*) pass "SKILL.md mentions the linter" ;; *) fail "SKILL.md mentions the linter" "missing" ;; esac
 
