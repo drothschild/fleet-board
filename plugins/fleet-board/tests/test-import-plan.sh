@@ -202,5 +202,15 @@ run_import "" "$SB/unknown.json" --dry-run
 check "unknown dependency exits 1" "$RC" "1"
 case "$(cat "$SB/err")" in *"unknown dependency: zzz"*) pass "unknown dependency error names the key" ;; *) fail "unknown dependency error names the key" "$(cat "$SB/err")" ;; esac
 
+# ---------------------------------------------------------------- card linter
+echo "# card linter"
+printf '%s' '{"cards":[{"key":"a","title":"Good card","repo":"acme/api","acceptance":["POST /limits returns 201"]},{"key":"b","title":"Bad card","repo":"acme/api","acceptance":["The panel looks right"]}]}' > "$SB/badcards.json"
+reset_gh
+run_import "y" "$SB/badcards.json"
+check "a failing card makes the import exit 1" "$RC" "1"
+check "a failing card creates no issue" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null)" "0"
+case "$(cat "$SB/err") $OUT" in *untestable-bullet*) pass "the import names the lint rule" ;; *) fail "the import names the lint rule" "$(cat "$SB/err")" ;; esac
+case "$(cat "$SKILL")" in *lint*) pass "SKILL.md mentions the linter" ;; *) fail "SKILL.md mentions the linter" "missing" ;; esac
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
