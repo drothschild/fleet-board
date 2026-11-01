@@ -53,6 +53,13 @@
 # ignored; a dependency closed as not planned (or at Status Won't Do) warns
 # "#<n> depends on <ref>, which was closed as not planned".
 #
+# Card lint: a ready card whose body fails card-lint.sh (and has the Acceptance
+# heading, or a "**Acceptance**" / "Acceptance:" line in place of it) gets action
+# skip_card_lint with reason "card lint failed: <rules>", the lint lines in
+# "lint" and a "lint_marker" HTML comment naming the result. comment_needed is
+# true until a comment holding that marker exists, so each distinct result is
+# commented once. A body with no Acceptance hint stays skip_no_acceptance.
+#
 # The decision table itself is the single jq program below.
 #
 # Pending follow-ups (note.pending_followups) hold a card in file_pending only
@@ -63,7 +70,7 @@
 # actions on the card, in a row, that failed to make progress, as the
 # manager records them: any action (start, continue_implementor,
 # start_review, review, fix, mark_ready, merge, verify_main, to_human_qa,
-# file_pending, block, unblock, finish, skip_no_acceptance) whose intended
+# file_pending, block, unblock, finish, skip_no_acceptance, skip_card_lint) whose intended
 # board or note change did not happen, for any reason (a failed setup step,
 # a report rejected twice, a failed gh, board or script call, a refused
 # merge); an action that made progress resets it to 0. This script only
@@ -134,7 +141,8 @@ SKIP_MARKER='<!-- fleet-board:skip-no-acceptance -->'
 CARDS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
 NOTE_ERR="$(mktemp)" || { rm -f "$CARDS_FILE"; fb_die 1 "cannot create a temp file"; }
 DEPS_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR"; fb_die 1 "cannot create a temp file"; }
-trap 'rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"' EXIT
+LINT_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"; fb_die 1 "cannot create a temp file"; }
+trap 'rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE" "$LINT_FILE"' EXIT
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
@@ -144,6 +152,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside=""
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps
+  local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
 
   read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
   if [ -z "$failed" ]; then
@@ -218,11 +227,39 @@ card_input() {
     fi
   fi
 
+  # A ready card's lint (card-lint.sh on the body already read). A failing lint
+  # gates the card when it has the Acceptance heading, or when the body shows
+  # "**Acceptance**" / "Acceptance:" without it; a body with no hint at all
+  # stays skip_no_acceptance. The marker names the lint result, so the manager
+  # comments once per distinct result.
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ]; then
+    if printf '%s\n' "$body" > "$LINT_FILE"; then
+      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --body-file "$LINT_FILE")"; lint_rc=$?
+      case "$lint_rc" in
+        0) ;;
+        1)
+          lint="$(jq -Rn '[inputs]' <<<"$lint_out")" || { lint='[]'; failed="card-lint.sh $n (unparsable)"; }
+          if [ "$has_acc" = true ] || [ "$(jq -r 'any(.[]; startswith("no-heading: found "))' <<<"$lint")" = true ]; then
+            lint_gate=true
+            digest="$(printf '%s\n' "$lint_out" | cksum | cut -d' ' -f1)"
+            lint_marker="\"<!-- fleet-board:card-lint:$digest -->\""
+            lint_commented="$(jq --argjson m "$lint_marker" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
+              || failed="board-read.sh $n (unparsable comments)"
+          else
+            lint='[]'
+          fi ;;
+        *) failed="card-lint.sh $n" ;;
+      esac
+    else
+      failed="card-lint.sh $n (cannot write the card body)"
+    fi
+  fi
+
   # A ready card's dependencies (only a card that could start is looked up)
   # (grep reads the file, not a pipe: grep -q quits at its first match, and a
   # body bigger than the pipe buffer would kill the writer and skip the gate)
   has_deps=1
-  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ]; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] && [ "$lint_gate" = false ]; then
     # grep exits 1 on no match and 2 on an error: only 1 means "no Depends on"
     if printf '%s\n' "$body" > "$DEPS_FILE"; then
       grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; has_deps=$?
@@ -254,14 +291,16 @@ card_input() {
 
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
-    --argjson has_acc "$has_acc" --argjson marker "$marker" --argjson note "$note" \
+    --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson nhq "$nhq" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
       outside_warning: (if $outside == "" then null else $outside end),
       deps_unmet: $deps_unmet, deps_warnings: $deps_warn,
-      has_acceptance: $has_acc, skip_marker: $marker, note: $note, pr: $pr,
+      has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
+      lint_commented: $lint_commented,
+      skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, blocking_merged: $bm, needs_human_qa: $nhq}'
 }
 
@@ -320,6 +359,8 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
           then act("block"; "no progress after \($fails) attempts: \($err)")
         elif $c.state == "blocked" and $n.blocking_pr != null and $c.blocking_merged == true and $fails >= $max
           then act("skip"; "unblock made no progress after \($fails) attempts: \($err)")
+        elif $c.state == "ready" and $c.lint_gate
+          then act("skip_card_lint"; "card lint failed: \([$c.lint[] | split(":")[0]] | unique | join(", "))")
         elif $c.state == "ready" then
           if $c.has_acceptance then
             if ($c.deps_unmet | length) > 0
@@ -370,13 +411,17 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if $c.state == "in_review" then $c.needs_human_qa else null end),
-       comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not) else null end),
+       comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not)
+                        elif $d.action == "skip_card_lint" then ($c.lint_commented | not)
+                        else null end),
+       lint: (if $d.action == "skip_card_lint" then $c.lint else null end),
+       lint_marker: (if $d.action == "skip_card_lint" then $c.lint_marker else null end),
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
   | {dispatchable: any($cards[];
-        (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance")
-        or (.action == "skip_no_acceptance" and .comment_needed == true)),
+        (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
+        or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true)),
      warnings: (
        (if $m.implementor == $m.reviewer
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
