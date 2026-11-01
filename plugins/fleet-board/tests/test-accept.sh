@@ -95,10 +95,22 @@ setup_case() {
   cat > "$STUB_SCRIPTS/note.sh" << 'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$NOTE_LOG"
+printf 'note %s\n' "$*" >> "$ORDER_LOG"
 [ "${1:-}" = merge ] && cat "$3" > "$PATCH_COPY"
+[ -n "${NOTE_FAIL:-}" ] && { echo "note stub: write refused" >&2; exit 1; }
 exit 0
 STUB
-  export NOTE_LOG PATCH_COPY
+  MOVE_LOG="$FAKE_GH_DIR/move-calls.log"
+  ORDER_LOG="$FAKE_GH_DIR/order.log"
+  cat > "$STUB_SCRIPTS/board-move.sh" << 'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOVE_LOG"
+printf 'move %s\n' "$*" >> "$ORDER_LOG"
+[ -n "${MOVE_FAIL:-}" ] && { echo "move stub: board refused" >&2; exit 1; }
+exit 0
+STUB
+  unset NOTE_FAIL MOVE_FAIL || true
+  export NOTE_LOG PATCH_COPY MOVE_LOG ORDER_LOG
 
   printf '%s\n' "$1" > "$FAKE_GH_DIR/issue.json"
   printf '[]\n' > "$FAKE_GH_DIR/comments.json"
@@ -130,7 +142,7 @@ set_note_json() {
 
 BLOCKED='{"number":12,"title":"Add subtract","html_url":"https://github.com/acme/toy/issues/12","body":"x\n\n## Acceptance\n- subtract works\n","labels":[{"name":"fleet:blocked"}]}'
 IN_REVIEW='{"number":12,"title":"Add subtract","html_url":"https://github.com/acme/toy/issues/12","body":"x\n\n## Acceptance\n- subtract works\n","labels":[{"name":"fleet:in_review"}]}'
-NOTE='{"state":"blocked","branch":"fleet/12-add-subtract","pr":34,"round":2,"action_failures":4,"last_action_error":"fatal: stuck","last_review":{"round":2,"sha":"abc1234","critical":0,"important":1}}'
+NOTE='{"state":"blocked","blocked_from":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":2,"action_failures":4,"last_action_error":"fatal: stuck","last_review":{"round":2,"sha":"abc1234","critical":0,"important":1}}'
 
 run_accept() { run_check "$STUB_SCRIPTS/accept.sh" "$@"; }
 
@@ -149,6 +161,35 @@ assert_eq "accept: records who accepted (authenticated login) and the sha" \
   "$(jq -c '[.accepted.login, .accepted.sha]' "$PATCH_COPY" 2>/dev/null)" '["fleet-bot","def5678abc"]'
 assert_eq "accept: records when (UTC timestamp)" \
   "$(jq -r '.accepted.at | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\\z")' "$PATCH_COPY" 2>/dev/null)" true
+
+echo "accept.sh: the card is moved out of Blocked after the note is written"
+setup_case "$BLOCKED"
+set_note_json "$NOTE"
+run_accept 12
+assert_eq "accept: moves the card to the state it was blocked from (move log)" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_review"
+assert_eq "accept: the note is written before the card is moved" \
+  "$(cut -d' ' -f1 "$ORDER_LOG" 2>/dev/null | tr '\n' ' ')" "note move "
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.blocked_from = "in_progress"' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: blocked from in_progress: moved back to in_progress" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_progress"
+
+echo "accept.sh: a failed note write does not move the card"
+setup_case "$BLOCKED"
+set_note_json "$NOTE"
+NOTE_FAIL=1 run_accept 12
+assert_exit "accept: note write fails: exit 1" 1
+assert_eq "accept: note write fails: the card is not moved" "$([ -f "$MOVE_LOG" ] && wc -l < "$MOVE_LOG" | tr -d ' ' || echo 0)" 0
+
+echo "accept.sh: a failed move reports the reason and keeps the note"
+setup_case "$BLOCKED"
+set_note_json "$NOTE"
+MOVE_FAIL=1 run_accept 12
+assert_exit "accept: move fails: exit non-zero (1)" 1
+assert_stderr_contains "accept: move fails: names the reason" "board refused"
+assert_stderr_contains "accept: move fails: says the move failed" "cannot move"
+assert_eq "accept: move fails: the note was still written" "$(wc -l < "$NOTE_LOG" | tr -d ' ')" 1
 
 echo "accept.sh: refusals leave the note unchanged"
 setup_case "$IN_REVIEW"
