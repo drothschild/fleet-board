@@ -710,6 +710,30 @@ assert_exit "usage: reset-failures with a non-numeric card" 2
 run_note reset-failures 12 "$FAKE_GH_DIR/patch.json"
 assert_exit "usage: reset-failures takes no file" 2
 
+# ---------------------------------------------------------------------------
+# after_merge_results: per-command results (command and exit status)
+setup_case
+set_note_json '{"state":"merged","pr":34}'
+printf '{"after_merge_results":[{"command":"npm test","exit":0},{"command":"npm run lint","exit":1}]}\n' > "$FAKE_GH_DIR/amr.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/amr.json"
+assert_exit "after-merge-results: merge accepts a per-command result field" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "after-merge-results: the results are stored in the note" \
+  "$(jq -c .after_merge_results <<<"$N" 2>/dev/null)" '[{"command":"npm test","exit":0},{"command":"npm run lint","exit":1}]'
+assert_eq "after-merge-results: existing fields are kept" "$(jq -c '[.state,.pr]' <<<"$N" 2>/dev/null)" '["merged",34]'
+
+# a malformed entry (non-numeric exit status) is refused and the note is unchanged
+setup_case
+set_note_json '{"state":"merged","pr":34}'
+printf '{"after_merge_results":[{"command":"npm test","exit":"abc"}]}\n' > "$FAKE_GH_DIR/bad.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bad.json"
+assert_exit "after-merge-results: non-numeric exit status is refused" 1
+assert_eq "after-merge-results: a refused merge writes nothing" "$(input_count)" "0"
+printf '{"after_merge_results":[{"exit":0}]}\n' > "$FAKE_GH_DIR/bad2.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bad2.json"
+assert_exit "after-merge-results: an entry without a command is refused" 1
+assert_eq "after-merge-results: that refused merge writes nothing" "$(input_count)" "0"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

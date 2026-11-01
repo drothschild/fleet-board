@@ -41,6 +41,10 @@
 # get, parse, merge and put read them as action_failures and
 # last_action_error (the new key wins when both are present) and drop them.
 #
+# accepted (null, or {"login", "at", "sha"}) is written by accept.sh: who
+# accepted the card's blocked change, when, and at which head. tick-plan.sh
+# honors it only when login is the authenticated one.
+#
 # deps_commented (null, or a list of "owner/repo#n" refs) is the set of unmet
 # dependencies of a waiting Ready card that the manager last commented about
 # (see deps.sh); merge replaces the list whole.
@@ -55,6 +59,10 @@
 # written (a refused Write): counting through merge would need that file, the
 # count would never rise, and tick-plan.sh would never block the card. The
 # error must be non-empty; like merge, it refuses an invalid stored note.
+#
+# after_merge_results (null, or a list of {"command": <non-empty string>,
+# "exit": <integer>}) holds the per-command results of the after-merge checks;
+# merge replaces the list whole. A malformed entry makes put and merge refuse.
 #
 # merge: out_of_scope_created and bugs_filed append (deduplicated by title,
 # compared case-insensitively), report_errors appends, pending_followups is
@@ -135,7 +143,12 @@ invalid_field() {
     elif (.implementor_attempts | nint | not) then "implementor_attempts"
     elif (.action_failures | . == null or (int and . >= 0) | not) then "action_failures"
     elif (.last_action_error | . == null or (type == "string" and clean) | not) then "last_action_error"
+    elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
+            and (.at | type == "string" and clean) and (.sha | type == "string" and test("\\A[0-9a-f]+\\z"))) | not) then "accepted"
     elif (.deps_commented | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+\\z"))) | not) then "deps_commented"
+    elif (.after_merge_results | . == null or (type == "array" and all(.[]; type == "object"
+            and (.command | type == "string" and length > 0 and clean) and (.exit | int)))
+          | not) then "after_merge_results"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"
     elif (.worktree | . == null or . == $base or startswith($base + "/") | not) then "worktree-outside-base"
