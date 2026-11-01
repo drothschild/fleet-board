@@ -20,7 +20,7 @@ pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 
 plugin_version=$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$PLUGIN_JSON" | head -1)
-market_version=$(awk '/"name": "fleet-board"/{f=1} f && /"version"/{gsub(/.*"version": "|".*/,""); print; exit}' "$MARKETPLACE")
+market_version=$(awk '/"source": "\.\/plugins\/fleet-board"/{f=1} f && /"version"/{gsub(/.*"version": "|".*/,""); print; exit}' "$MARKETPLACE")
 
 semver_gt() {
   local IFS=.
