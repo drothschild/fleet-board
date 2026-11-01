@@ -154,8 +154,8 @@ mk_issue 21 "$(printf '## Acceptance\n- the slider looks right\n')" fleet:ready
 mk_issue 22 "$(printf '## Acceptance\n- clamp returns 3\n')" fleet:backlog
 mk_issue 23 "$(printf '## Acceptance\n- the slider looks right\n')" fleet:in_review
 echo '[]' > "$FG/r/comments.json"; echo '[]' > "$FG/r/empty.json"
-echo '[{"number":21,"title":"t","url":"x"}]' > "$FG/r/ready.json"
-echo '[{"number":22,"title":"t","url":"x"}]' > "$FG/r/backlog.json"
+echo '[{"number":21,"title":"t","url":"x","labels":[{"name":"fleet:ready"}]}]' > "$FG/r/ready.json"
+echo '[{"number":22,"title":"t","url":"x","labels":[{"name":"fleet:backlog"}]}]' > "$FG/r/backlog.json"
 echo '{"login":"bot"}' > "$FG/r/user.json"
 {
   printf 'api user\t0\t%s\n' "$FG/r/user.json"
