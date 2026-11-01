@@ -62,8 +62,9 @@ N="$(jq '.cards | length' <<<"$PLAN")"
 
 echo "| Title | Repo | Depends on | Labels |"
 echo "|---|---|---|---|"
-jq -r '.cards as $c | $c[]
-  | "| \(.title) | \(.repo) | \([.deps[] | . as $d | ($c | map(select(.key == $d)) | first | .title) // $d] | join(", ")) | \((.labels // []) | join(", ")) |"' <<<"$PLAN"
+jq -r 'def esc: gsub("\\|"; "\\|");
+  .cards as $c | $c[]
+  | "| \(.title | esc) | \(.repo) | \([.deps[] | . as $d | ($c | map(select(.key == $d)) | first | .title) // $d | esc] | join(", ")) | \((.labels // []) | join(", ")) |"' <<<"$PLAN"
 
 [ "$DRY" -eq 1 ] && exit 0
 
