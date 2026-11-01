@@ -188,7 +188,7 @@ card_input() {
   fi
   if [ -z "$failed" ]; then
     fb_has_acceptance "$body" && has_acc=true
-    marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | select(contains("<!-- fleet-board:card-lint:"))] | (last // "") | contains($m)' <<<"$read" 2>/dev/null)" \
+    marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
       || failed="board-read.sh $n (unparsable comments)"
   fi
   if [ -z "$failed" ]; then
