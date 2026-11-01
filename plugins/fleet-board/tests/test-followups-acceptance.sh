@@ -293,7 +293,7 @@ case "$(bodies_of issue comment 78)" in *"testable"*"Backlog"*|*"Backlog"*"testa
 setup_case
 RECENT="$(date -u -v-3d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)"
 printf '[{"number":61,"title":"FIX ROUNDING","closedAt":"%s"}]\n' "$RECENT" > "$FAKE_GH_DIR/closed.json"
-{ printf 'issue list --repo acme/toy --state closed --search*\t0\t%s\n' "$FAKE_GH_DIR/closed.json"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+{ printf 'issue list --repo acme/toy --state closed --search*\t0\t%s\nissue comment 61 *\t0\t-\n' "$FAKE_GH_DIR/closed.json"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
 report "$OOS_CMD" '[]'
 run_ff
 assert_exit "dedupe-closed: exit" 0
