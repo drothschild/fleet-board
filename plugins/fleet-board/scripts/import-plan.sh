@@ -17,13 +17,18 @@
 # dependency was created first. Each issue is added to the project and set to
 # the --status column (default backlog). Needs board.backend github-projects.
 #
-# Exit codes: 0 done (or declined), 1 failure (cycle, unknown dependency, gh),
+# Before the table, every card is checked with lint.sh (untestable bullets,
+# unresolved dependencies, ...); a card that fails stops the run with nothing
+# created.
+#
+# Exit codes: 0 done (or declined), 1 failure (cycle, unknown dependency, lint, gh),
 # 2 usage error.
 
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
+FLEET_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 USAGE="usage: import-plan.sh <cards.json> [--status backlog|ready] [--dry-run]"
 CARDS="" STATUS=backlog DRY=0
 while [ $# -gt 0 ]; do
@@ -60,6 +65,32 @@ PLAN="$(jq -c '
 ' "$CARDS" 2>&1)" || fb_die 1 "$(sed -n -e 's/^jq: error ([^)]*): //' -e 's/^jq: error: //' -e 's/ at <[^>]*>.*$//' -e '/^jq: /d' -e '1p' <<<"$PLAN")"
 N="$(jq '.cards | length' <<<"$PLAN")"
 
+# render_body <refs-json>: the issue body of the card on stdin; a dependency
+# key found in <refs-json> becomes its real reference, any other stays as written
+render_body() {
+  jq -r --argjson refs "$1" '
+    "## Why\n\(.why // "")\n\n## Scope\n" + ((.scope // []) | map("- " + .) | join("\n"))
+    + "\n\n## Acceptance\n" + ((.acceptance // []) | map("- " + .) | join("\n"))
+    + (if (.deps | length) > 0
+       then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)'
+}
+
+# The card linter: render every card with its dependencies as plan keys and
+# lint the set. A failing card stops the import before anything is created.
+LINTDIR="$(mktemp -d)"
+BODY="$(mktemp)"; trap 'rm -rf "$LINTDIR" "$BODY"' EXIT
+n=0
+while [ "$n" -lt "$N" ]; do
+  jq -c --argjson i "$n" '.cards[$i]' <<<"$PLAN" > "$LINTDIR/.card"
+  render_body '{}' < "$LINTDIR/.card" > "$LINTDIR/$(jq -r '.key | gsub("[^A-Za-z0-9_.-]"; "_")' "$LINTDIR/.card").md"
+  n=$((n + 1))
+done
+rm -f "$LINTDIR/.card"
+LINTOUT="$(bash "$FLEET_SCRIPTS_DIR/lint.sh" --bodies "$LINTDIR" --no-file-check)" || {
+  printf '%s\n' "$LINTOUT" >&2
+  fb_die 1 "card lint failed; nothing was created"
+}
+
 echo "| Title | Repo | Depends on | Labels |"
 echo "|---|---|---|---|"
 jq -r '.cards as $c | $c[]
@@ -81,17 +112,12 @@ OPT="$(fp_option_id "$(fb_state_name "$STATUS")" "$CACHE")" || exit 1
 PN="$(fb_cfg board.project_number)"
 PO="$(fp_get_owner)"
 
-BODY="$(mktemp)"; trap 'rm -f "$BODY"' EXIT
 REFS='{}'
 i=0
 while [ "$i" -lt "$N" ]; do
   card="$(jq -c --argjson i "$i" '.cards[$i]' <<<"$PLAN")"
   i=$((i + 1))
-  jq -r --argjson refs "$REFS" '
-    "## Why\n\(.why // "")\n\n## Scope\n" + ((.scope // []) | map("- " + .) | join("\n"))
-    + "\n\n## Acceptance\n" + ((.acceptance // []) | map("- " + .) | join("\n"))
-    + (if (.deps | length) > 0
-       then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)' <<<"$card" > "$BODY"
+  render_body "$REFS" <<<"$card" > "$BODY"
   title="$(jq -r .title <<<"$card")"; repo="$(jq -r .repo <<<"$card")"
   largs=(); while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
   URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"

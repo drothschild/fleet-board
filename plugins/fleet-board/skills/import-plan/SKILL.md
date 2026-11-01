@@ -56,5 +56,6 @@ Ask the user whether to create the cards. Only on a yes, run:
 echo y | bash <scripts>/import-plan.sh <cards file> [--status ready]
 ```
 
-On no, run nothing. Report the `Created owner/repo#N` lines the script prints. A failure
-(cycle, unknown dependency, missing project option) exits 1 with the reason; relay it.
+On no, run nothing. Report the `Created owner/repo#N` lines the script prints. Before the table the script lints every card (the same rules as `/fleet-board:lint`) and
+creates nothing while one fails: fix the card in the cards file and rerun. A failure
+(cycle, unknown dependency, lint, missing project option) exits 1 with the reason; relay it.
