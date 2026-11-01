@@ -197,5 +197,21 @@ done
 assert_contains "manager.md handles skip_card_lint" "$(cat "$MANAGER")" "skip_card_lint"
 
 echo ""
+echo "Test: stderr stays empty (a bash 4 construct under /bin/bash 3.2 fails only on stderr)"
+echo ""
+for f in ok-with-human-qa.md no-heading-bold.md no-heading-colon.md plain-no-heading.md no-bullets.md manual-check.md; do
+  lint "$FIX/$f"
+  assert_eq "lint $f: stderr empty" "$LAST_ERR" ""
+done
+body="$(mktemp)"; CLEANUP_DIRS+=("$body")
+printf '## Acceptance\r\n- check the layout on device\r\n' > "$body"
+lint "$body"
+assert_eq "lint crlf manual-check: stderr empty" "$LAST_ERR" ""
+for f in ok-with-human-qa.md no-heading-bold.md plain-no-heading.md no-bullets.md manual-check.md; do
+  plan "$FIX/$f"
+  assert_eq "plan $f: stderr empty" "$LAST_ERR" ""
+done
+
+echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]
