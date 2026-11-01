@@ -202,6 +202,46 @@ run_import "" "$SB/unknown.json" --dry-run
 check "unknown dependency exits 1" "$RC" "1"
 case "$(cat "$SB/err")" in *"unknown dependency: zzz"*) pass "unknown dependency error names the key" ;; *) fail "unknown dependency error names the key" "$(cat "$SB/err")" ;; esac
 
+# ---------------------------------------------------------------- parse
+echo "# parse"
+cat > "$SB/plan-parse.md" <<'EOP'
+# Calc plan
+
+## Task 1: Add calc
+
+Files:
+- src/calc.js
+- Create src/index.js
+
+Test steps:
+- add(1, 2) returns 3
+- add("a", 1) throws a TypeError
+
+## Task 2: Add docs
+
+Files:
+- README.md
+
+Test steps:
+- README mentions `add`
+EOP
+cat > "$SB/plan-parse.expected.json" <<'EOP'
+{"cards":[
+{"title":"Add calc","scope":["src/calc.js","Create src/index.js"],"acceptance":["add(1, 2) returns 3","add(\"a\", 1) throws a TypeError"]},
+{"title":"Add docs","scope":["README.md"],"acceptance":["README mentions `add`"]}
+]}
+EOP
+bash "$SCRIPT" parse "$SB/plan-parse.md" > "$SB/parse1.out" 2> "$SB/parse1.err"; RC=$?
+check "parse exits 0" "$RC" "0"
+check "parse prints one card per task heading with title, scope, acceptance" \
+  "$(jq -cS . "$SB/parse1.out" 2>/dev/null)" "$(jq -cS . "$SB/plan-parse.expected.json")"
+bash "$SCRIPT" parse "$SB/plan-parse.md" > "$SB/parse2.out" 2>/dev/null
+check "parse is deterministic: two runs print identical output" "$(cmp -s "$SB/parse1.out" "$SB/parse2.out" && echo same || echo differ)" "same"
+printf '# Notes\n\nNo tasks here.\n' > "$SB/plan-empty.md"
+bash "$SCRIPT" parse "$SB/plan-empty.md" > "$SB/parse3.out" 2> "$SB/parse3.err"; RC=$?
+check "plan with no task headings exits 1" "$RC" "1"
+case "$(cat "$SB/parse3.err")" in *"no task headings"*) pass "no-task error prints a message" ;; *) fail "no-task error prints a message" "$(cat "$SB/parse3.err")" ;; esac
+
 # ---------------------------------------------------------------- labels backend
 echo "# labels backend"
 ROOT_P="$ROOT"
