@@ -8,7 +8,7 @@ BODY_FILE="$2"
 
 # Collect labels starting with backlog state label
 labels=()
-labels+=("$(fb_state_name backlog)")
+labels+=("$(fb_state_name "${FB_CREATE_STATE:-backlog}")")
 
 # Add any extra --label arguments
 shift 2

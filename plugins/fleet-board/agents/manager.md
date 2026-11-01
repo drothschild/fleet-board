@@ -142,13 +142,14 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = `note.last_review.sha`, or `base` when there is no previous review |
 | `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer in the same tick, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
 | `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
-| `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, post a comment headed `What to check in Human QA` that quotes the card's `## Acceptance` section verbatim as a blockquote and includes the qa_build summary. If the card already has a comment with that heading, post nothing. |
+| `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, run `human-qa-handoff.sh [--qa-summary <file>] N <pr>` (2.11). It posts the `What to check in Human QA` comment once. |
 | `mark_ready` | `gh pr ready <pr> --repo R`. Never merge. |
 | `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
 | `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
 | `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
+| `skip_card_lint` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with the plan card's `lint_marker` (an HTML comment, verbatim), then lists each line of the card's `lint` (`<rule>: <detail>`) and says to fix the card; the card stays in Ready. Otherwise do nothing. |
 | `skip` | nothing |
 | `wait` | nothing, except for a plan card in `ready`: its `waiting_on` lists the unmet dependencies. Unless `note.deps_commented` already equals that list, post one comment `Waiting for <waiting_on, joined with ", ">` → only after it posts, `note.sh merge` with `deps_commented` = `waiting_on`. |
 
@@ -197,9 +198,10 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.11. **`to_human_qa`.**
    - The worktree is the plan card's `worktree`. `commands.qa_build`, when set, runs in that worktree. The summary is its exit code and the last 20 lines of its output, in a fenced block. When `commands.qa_build` is unset, the comment says that no QA build is configured.
-   - The Acceptance section is read from the card body (`.body` from `board-read.sh N`). It runs from the `## Acceptance` heading line up to the line before the next `## ` heading, or to the end of the body. Prefix each line with `> `.
+   - Write the qa_build summary to a temp file made with `mktemp` and pass it as `--qa-summary <file>`.
+   - `human-qa-handoff.sh` builds and posts the comment: the card's `## Acceptance` section as a blockquote, a checklist of pre-merge steps (mark a draft PR ready, resolve a conflict, each bullet of the card's `## Human QA` section), a note when no CI ran on the PR, the qa_build summary, and the sentence saying no agent moves the card out of Human QA and a person moves it to Done. With no steps it posts only the plain statement.
    - `board-move.sh N human_qa` runs first. Post the comment with `board-comment.sh` only after the move succeeds, so a failed move never leaves behind a comment that the next tick would post again.
-   - Before posting, check the card's `comments` (from `board-read.sh N`). If any comment already has a heading line reading `What to check in Human QA`, post nothing.
+   - The script posts nothing when a comment with the heading line `What to check in Human QA` already exists.
    - If the comment fails after the move, the card is still in `human_qa`, which counts as progress, and the tick report carries the stderr line as a warning. Progress means the card is in `human_qa`.
 
 2.12. **`mark_ready`.** Run `gh pr ready <pr> --repo R` and never merge. Progress means `gh pr ready` exited 0.
@@ -230,6 +232,8 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 2.16. **`unblock`.** Progress means the card is in `ready`. The note merge clears `blocking_pr` and `blocked_findings` and resets both failure keys.
 
 2.17. **`skip_no_acceptance`.** At most one explanatory comment per card, ever: the plan sets `comment_needed` to false once a comment with the marker exists. Progress means the comment was posted, or none was needed.
+
+2.17a. **`skip_card_lint`.** One comment per distinct lint result: the marker embeds a checksum of the lint lines, and the plan sets `comment_needed` to false once a comment with that marker exists, so a second tick posts nothing and a changed result (a new marker) posts a new comment. Progress means the comment was posted, or none was needed.
 
 2.18. **Unlisted actions.** Treat any action value not in the table as `skip`, and add a tick report warning naming the card and the value.
 
@@ -264,6 +268,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - `finish`: the card is in `done`.
    - `file_pending`: `file-followups.sh` exited 0 and `pending_followups` was set to null.
    - `skip_no_acceptance`: the comment was posted, or none was needed.
+   - `skip_card_lint`: the comment was posted, or none was needed.
    - Any action: an accepted report with Status `blocked` that moved the card to `blocked` is progress.
    - `skip`, `wait` and unlisted actions change nothing and are not counted. Write no counter for them.
 

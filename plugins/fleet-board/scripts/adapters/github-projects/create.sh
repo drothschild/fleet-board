@@ -20,7 +20,7 @@ done
 
 # Resolve the Backlog option before creating anything, so an unmapped column
 # leaves no orphan issue behind (and a retry makes no duplicate).
-BACKLOG_OPT="$(fp_option_id "$(fb_state_name backlog)" "$CACHE")" || exit 1
+BACKLOG_OPT="$(fp_option_id "$(fb_state_name "${FB_CREATE_STATE:-backlog}")" "$CACHE")" || exit 1
 
 # The issue gets the extra labels only; on Projects the state is the Status column.
 URL="$(gh issue create --repo "$FLEET_REPO" --title "$TITLE" --body-file "$BODY_FILE" ${args[@]+"${args[@]}"})" || \
@@ -34,6 +34,6 @@ ITEM_ID="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json | 
 
 gh project item-edit --id "$ITEM_ID" --project-id "$(jq -r .project_id "$CACHE")" \
   --field-id "$(jq -r .field_id "$CACHE")" --single-select-option-id "$BACKLOG_OPT" >/dev/null || \
-  fb_die 1 "failed to move $URL to $(fb_state_name backlog)"
+  fb_die 1 "failed to move $URL to $(fb_state_name "${FB_CREATE_STATE:-backlog}")"
 
 jq -nc --arg u "$URL" '{number: ($u | split("/") | last | tonumber), url: $u}'
