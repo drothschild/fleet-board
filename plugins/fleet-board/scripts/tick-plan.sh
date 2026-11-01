@@ -188,7 +188,7 @@ card_input() {
   fi
   if [ -z "$failed" ]; then
     fb_has_acceptance "$body" && has_acc=true
-    marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
+    marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | select(contains("<!-- fleet-board:card-lint:"))] | (last // "") | contains($m)' <<<"$read" 2>/dev/null)" \
       || failed="board-read.sh $n (unparsable comments)"
   fi
   if [ -z "$failed" ]; then
@@ -268,7 +268,7 @@ card_input() {
   # gates the card when it has the Acceptance heading, or when the body shows
   # "**Acceptance**" / "Acceptance:" without it; a body with no hint at all
   # stays skip_no_acceptance. The marker names the lint result, so the manager
-  # comments once per distinct result.
+  # comments once per distinct result (compared with the latest posted lint comment only).
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ]; then
     if printf '%s\n' "$body" > "$LINT_FILE"; then
       lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --body-file "$LINT_FILE")"; lint_rc=$?
@@ -280,7 +280,7 @@ card_input() {
             lint_gate=true
             digest="$(printf '%s\n' "$lint_out" | cksum | cut -d' ' -f1)"
             lint_marker="\"<!-- fleet-board:card-lint:$digest -->\""
-            lint_commented="$(jq --argjson m "$lint_marker" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
+            lint_commented="$(jq --argjson m "$lint_marker" '[(.comments // [])[] | (.body // "") | select(contains("<!-- fleet-board:card-lint:"))] | (last // "") | contains($m)' <<<"$read" 2>/dev/null)" \
               || failed="board-read.sh $n (unparsable comments)"
           else
             lint='[]'
