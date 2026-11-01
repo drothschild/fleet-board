@@ -17,12 +17,39 @@
 # dependency was created first. Each issue is added to the project and set to
 # the --status column (default backlog). Needs board.backend github-projects.
 #
+# import-plan.sh parse <plan.md>
+#   Prints {"cards": [{title, scope, acceptance}, ...]} as JSON, one card per
+#   "## Task N: <title>" heading. scope comes from the bullets under "Files:",
+#   acceptance from the bullets under "Test steps:" (copied verbatim, never
+#   invented). Same input, same output. Exit 1 when there is no task heading.
+#
 # Exit codes: 0 done (or declined), 1 failure (cycle, unknown dependency, gh),
 # 2 usage error.
 
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
+
+if [ "${1:-}" = "parse" ]; then
+  [ $# -eq 2 ] || fb_die 2 "usage: import-plan.sh parse <plan.md>"
+  [ -f "$2" ] || fb_die 2 "file not found: $2"
+  OUT="$(LC_ALL=C awk '
+    function esc(t) { gsub(/\\/, "\\\\", t); gsub(/"/, "\\\"", t); gsub(/\t/, "\\t", t); return t }
+    function flush() { if (n) { printf "%s{\"title\":\"%s\",\"scope\":[%s],\"acceptance\":[%s]}", (n > 1 ? "," : ""), title, sc, ac } }
+    /\r$/ { sub(/\r$/, "") }
+    /^## Task [^:]*:/ { flush(); n++; t = $0; sub(/^## Task [^:]*:[ \t]*/, "", t); sub(/[ \t]+$/, "", t); title = esc(t); sc = ""; ac = ""; mode = ""; next }
+    /^## / { mode = ""; next }
+    n == 0 { next }
+    /^[ \t]*Files:[ \t]*$/ { mode = "s"; next }
+    /^[ \t]*Test steps:[ \t]*$/ { mode = "a"; next }
+    /^- / && mode != "" { b = "\"" esc(substr($0, 3)) "\""; if (mode == "s") sc = sc (sc == "" ? "" : ",") b; else ac = ac (ac == "" ? "" : ",") b; next }
+    /^[ \t]*$/ { next }
+    { mode = "" }
+    END { flush(); if (n) print ""; exit (n ? 0 : 3) }
+  ' "$2")" && [ -n "$OUT" ] || fb_die 1 "no task headings (## Task N: <title>) found in $2"
+  printf '{"cards":[%s]}\n' "$OUT" | jq -S .
+  exit 0
+fi
 
 USAGE="usage: import-plan.sh <cards.json> [--status backlog|ready] [--dry-run]"
 CARDS="" STATUS=backlog DRY=0
