@@ -81,17 +81,77 @@ OPT="$(fp_option_id "$(fb_state_name "$STATUS")" "$CACHE")" || exit 1
 PN="$(fb_cfg board.project_number)"
 PO="$(fp_get_owner)"
 
+# Docs referenced from a card's why or acceptance (scope lists files the card will
+# create, so it is not scanned) must exist on the default branch, because role
+# worktrees branch from it. A reference is path.md or path.md#section.
+DOCRE='[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/[A-Za-z0-9_.-]+\\.md(?:#[A-Za-z0-9_-]+)?'
+GITTOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+DEFREF="$(git -C "$GITTOP" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)"
+MISSING=()
+while IFS= read -r p; do
+  [ -n "$p" ] || continue
+  git -C "$GITTOP" cat-file -e "$DEFREF:$p" >/dev/null 2>&1 || MISSING+=("$p")
+done < <(jq -r "[.cards[] | ([.why // \"\"] + (.acceptance // []))[] | scan(\"$DOCRE\")] | map(sub(\"#.*\$\"; \"\")) | unique[]" <<<"$PLAN" 2>/dev/null)
+EMBED=0
+if [ "${#MISSING[@]}" -gt 0 ]; then
+  echo "These docs are missing on the default branch ($DEFREF), so agents cannot see them:"
+  printf '  %s\n' "${MISSING[@]}"
+  echo "Choose: [m] commit and merge the docs first, [e] embed the section into the card"
+  CHOICE=""; IFS= read -r CHOICE || true
+  case "$CHOICE" in
+    e|E|embed) EMBED=1 ;;
+    *) echo "Nothing created. Commit and merge the docs above, then run import-plan again." >&2; exit 1 ;;
+  esac
+fi
+
+# section_text <file> <anchor>: the section whose heading slug equals anchor, or the whole file.
+section_text() {
+  if [ -z "$2" ]; then cat "$1"; return; fi
+  awk -v want="$2" '
+    /^#+ / { h=$0; lvl=match(h, /[^#]/)-1; t=tolower(substr(h, lvl+2)); gsub(/[^a-z0-9]+/, "-", t); sub(/^-/, "", t); sub(/-$/, "", t)
+             if (on && lvl <= L) exit
+             if (!on && t == want) { on=1; L=lvl } }
+    on { print }' "$1"
+}
+
 BODY="$(mktemp)"; trap 'rm -f "$BODY"' EXIT
 REFS='{}'
 i=0
 while [ "$i" -lt "$N" ]; do
   card="$(jq -c --argjson i "$i" '.cards[$i]' <<<"$PLAN")"
   i=$((i + 1))
+  if [ "$EMBED" -eq 1 ]; then
+    embedded=""
+    while IFS= read -r ref; do
+      [ -n "$ref" ] || continue
+      p="${ref%%#*}"; a=""; case "$ref" in *"#"*) a="${ref#*#}" ;; esac
+      miss=0; for m in "${MISSING[@]}"; do [ "$m" = "$p" ] && miss=1; done
+      [ "$miss" -eq 1 ] || continue
+      [ -f "$GITTOP/$p" ] || fb_die 1 "cannot embed $ref: $p is not in the working tree"
+      text="$(section_text "$GITTOP/$p" "$a")"
+      [ -n "$text" ] || fb_die 1 "cannot embed $ref: section not found"
+      embedded="$embedded
+### Embedded from $(basename "$p")
+
+$text
+"
+    done < <(jq -r "[([.why // \"\"] + (.acceptance // []))[] | scan(\"$DOCRE\")] | unique[]" <<<"$card")
+    if [ -n "$embedded" ]; then
+      for m in "${MISSING[@]}"; do embedded="${embedded//$m/the doc}"; done
+      card="$(jq -c --arg e "$embedded" --argjson miss "$(printf '%s\n' "${MISSING[@]}" | jq -R . | jq -sc .)" '
+        def strip: reduce $miss[] as $m (.; split($m) | join("(embedded below)"));
+        def stripref: gsub("(embedded below)#[A-Za-z0-9_-]+"; "(embedded below)");
+        .why |= ((. // "") | strip | stripref)
+        | .acceptance |= ((. // []) | map(strip | stripref))
+        | .embedded = $e' <<<"$card")"
+    fi
+  fi
   jq -r --argjson refs "$REFS" '
     "## Why\n\(.why // "")\n\n## Scope\n" + ((.scope // []) | map("- " + .) | join("\n"))
     + "\n\n## Acceptance\n" + ((.acceptance // []) | map("- " + .) | join("\n"))
     + (if (.deps | length) > 0
-       then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)' <<<"$card" > "$BODY"
+       then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)
+    + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)' <<<"$card" > "$BODY"
   title="$(jq -r .title <<<"$card")"; repo="$(jq -r .repo <<<"$card")"
   largs=(); while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
   URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"

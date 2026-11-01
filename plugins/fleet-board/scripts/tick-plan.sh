@@ -129,6 +129,12 @@
 # when accepted.login is the authenticated gh login; otherwise a current review
 # with Critical or Important findings plans review ("accept by <login> is not
 # honored ...") instead of fix.
+# Review drift warnings, for an open in_review PR whose head moved past
+# last_review.sha (gh api compare, then each own commit of the PR, i.e. the
+# first-parent chain from the head): "#<n>: unreviewed_merge: ..." when that
+# chain holds a merge of main, and "#<n>: test_edit_after_review: ..." when one
+# of its non-merge commits touches a file matching test_paths. Best effort: a
+# failed lookup adds no warning and never skips the card or changes its action.
 # A note worktree outside the current base (note.sh reads it as null) adds
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
@@ -174,12 +180,73 @@ WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 
+TEST_GLOBS="$(jq -r '.test_paths[]' <<<"$FLEET_CFG")" || fb_die 1 "cannot read test_paths"
+
 SKIP_MARKER='<!-- fleet-board:skip-no-acceptance -->'
 
 CARDS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
 NOTE_ERR="$(mktemp)" || { rm -f "$CARDS_FILE"; fb_die 1 "cannot create a temp file"; }
 DEPS_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR"; fb_die 1 "cannot create a temp file"; }
 LINT_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"; fb_die 1 "cannot create a temp file"; }
+
+# is_test_path <path>: true when the path matches a test_paths glob (same glob
+# rule as needs-human-qa.sh: ** becomes *, and a leading **/ is optional)
+is_test_path() {
+  local path="$1" glob pat
+  while IFS= read -r glob; do
+    [ -n "$glob" ] || continue
+    pat="${glob//\*\*/*}"
+    # shellcheck disable=SC2254 # the glob is a pattern on purpose
+    case "$path" in $pat) return 0 ;; esac
+    case "$glob" in
+      '**/'*)
+        pat="${glob#\*\*/}"
+        pat="${pat//\*\*/*}"
+        # shellcheck disable=SC2254
+        case "$path" in $pat) return 0 ;; esac
+        ;;
+    esac
+  done <<<"$TEST_GLOBS"
+  return 1
+}
+
+# drift_lookup <note-json> <pr-info-json>: prints {merge, test_edit, from} for
+# the PR's own commits (the first-parent chain from the head, so commits that
+# arrived through a merge of main are not the PR's) made after last_review.sha.
+# Prints null when there is no reviewed sha, the head has not moved, or a
+# lookup fails.
+drift_lookup() {
+  local from head cmp chain sha files f merge=false tedit=false
+  from="$(jq -r '.last_review.sha // empty | strings' <<<"$1" 2>/dev/null)" || return 1
+  head="$(jq -r '.headRefOid // empty | strings' <<<"$2" 2>/dev/null)" || return 1
+  [ -n "$from" ] && [ -n "$head" ] || { echo null; return 0; }
+  case "$head" in "$from"*) echo null; return 0 ;; esac
+  case "$from" in "$head"*) echo null; return 0 ;; esac
+  [ "$(jq -r '.state' <<<"$2")" = OPEN ] || { echo null; return 0; }
+  cmp="$(gh api "repos/$FLEET_REPO/compare/$from...$head")" || return 1
+  chain="$(jq -r --arg head "$head" '
+    (.commits | map({key: .sha, value: .}) | from_entries) as $by
+    | def walk_chain($sha): if $by[$sha] == null then empty
+        else $by[$sha] as $c | $c, ($c.parents[0].sha // empty | walk_chain(.)) end;
+    [walk_chain($head)] | .[]
+    | "\(.sha)\t\(.parents | length)\t\(.commit.message | split("\n")[0])"' <<<"$cmp" 2>/dev/null)" || return 1
+  while IFS="$(printf '\t')" read -r sha parents subject; do
+    [ -n "$sha" ] || continue
+    if [ "$parents" -gt 1 ]; then
+      case "$subject" in
+        *[Mm]erge*main*) merge=true ;;
+      esac
+    else
+      # A commit whose files cannot be read is left out of the test-edit check
+      files="$(gh api "repos/$FLEET_REPO/commits/$sha" 2>/dev/null | jq -r '.files[].filename' 2>/dev/null)" || continue
+      while IFS= read -r f; do
+        [ -n "$f" ] && is_test_path "$f" && tedit=true
+      done <<<"$files"
+    fi
+  done <<<"$chain"
+  jq -cn --argjson m "$merge" --argjson t "$tedit" --arg from "$from" --arg head "$head" \
+    '{merge: $m, test_edit: $t, from: $from, head: $head}'
+}
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
@@ -189,6 +256,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
+  local drift=null
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
 
   read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
@@ -254,6 +322,12 @@ card_input() {
         *) nhq=null; failed="needs-human-qa.sh $n $pr (unexpected answer)" ;;
       esac
     fi
+  fi
+
+  # Review drift: commits on the PR since the last reviewed sha. Best effort: a
+  # lookup that fails adds no warning and never skips the card.
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = in_review ] && [ "$info" != null ]; then
+    drift="$(drift_lookup "$note" "$info")" || drift=null
   fi
 
   # An accepted entry (accept.sh) counts only when its login is the authenticated one
@@ -344,7 +418,7 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -353,7 +427,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq}'
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift}'
 }
 
 SEEN=" "
@@ -469,6 +543,7 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if $c.state == "in_review" then $c.needs_human_qa else null end),
+       drift: ($c.drift // null),
        comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not)
                         elif $d.action == "skip_card_lint" then ($c.lint_commented | not)
                         else null end),
@@ -501,8 +576,10 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
           | "#\(.number): \(.reason); fix the board, move the card by hand, then run: \(reset_cmd(.number))"]
        + [$cards[] | select(.action == "skip" and (.reason | startswith("unblock made no progress after ")))
           | "#\(.number): \(.reason); move the card by hand, then run: \(reset_cmd(.number))"]
+       + [$cards[] | select(.drift != null and .drift.merge) | "#\(.number): unreviewed_merge: PR head \(.drift.head[0:7]) contains a merge of main made after the last review at \(.drift.from[0:7])"]
+       + [$cards[] | select(.drift != null and .drift.test_edit) | "#\(.number): test_edit_after_review: commits after the last review at \(.drift.from[0:7]) touch a test file"]
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
        + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]),
-     cards: [$cards[] | del(.pending_wait, .outside_warning, .deps_warnings)]}
+     cards: [$cards[] | del(.pending_wait, .outside_warning, .deps_warnings, .drift)]}
 ' "$CARDS_FILE" || fb_die 1 "cannot build the tick plan"
