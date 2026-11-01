@@ -60,6 +60,10 @@
 # count would never rise, and tick-plan.sh would never block the card. The
 # error must be non-empty; like merge, it refuses an invalid stored note.
 #
+# after_merge_results (null, or a list of {"command": <non-empty string>,
+# "exit": <integer>}) holds the per-command results of the after-merge checks;
+# merge replaces the list whole. A malformed entry makes put and merge refuse.
+#
 # merge: out_of_scope_created and bugs_filed append (deduplicated by title,
 # compared case-insensitively), report_errors appends, pending_followups is
 # replaced whole, and every other key is merged with jq's * operator. merge
@@ -142,6 +146,9 @@ invalid_field() {
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
             and (.at | type == "string" and clean) and (.sha | type == "string" and test("\\A[0-9a-f]+\\z"))) | not) then "accepted"
     elif (.deps_commented | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+\\z"))) | not) then "deps_commented"
+    elif (.after_merge_results | . == null or (type == "array" and all(.[]; type == "object"
+            and (.command | type == "string" and length > 0 and clean) and (.exit | int)))
+          | not) then "after_merge_results"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"
     elif (.worktree | . == null or . == $base or startswith($base + "/") | not) then "worktree-outside-base"
