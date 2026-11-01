@@ -12,6 +12,27 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 `FLEET_BOARD_GATE_TIMEOUT` caps the lookups in one call, in seconds: 45 by default, at most 50. The hook's own timeout is 60 seconds, after which Claude Code lets the call through. Without `jq`, the hook exits 0 silently, but every fleet-board script needs `jq` too, so board commands fail anyway.
 
+## The cards.sh helper
+
+Bulk card setup used to mean one command per call and literal item ids: a shell loop calling `gh project item-edit --id $ITEM` is blocked ("could not verify project item"), because the gate cannot know what `$ITEM` is. `scripts/cards.sh` is the first-class replacement, and the gate recognizes it:
+
+- `cards.sh create <title> <body-file> [--label L]... [--repo OWNER/REPO]` replaces `gh issue create` + `gh project item-add` + `gh project item-edit` (it runs `board-create.sh`).
+- `cards.sh add <number> [--repo OWNER/REPO]` replaces `gh project item-add` + `gh project item-edit`: it puts an issue that is not on the board into Backlog, and does nothing for one that is.
+- `cards.sh move <number> <state> [--repo OWNER/REPO]` replaces `gh project item-edit --id ...` and `board-move.sh` in loops (it runs `board-move.sh`).
+
+Each subcommand prints a usage line and exits 2 on a bad flag or argument. What the gate does with a call:
+
+- `move N STATE` and `add N` with a card number it can read are judged like `board-move.sh`: a card in Human QA stays put (any state but `human_qa`), and `move N ready` needs the card's `## Acceptance` section.
+- A card number or state it cannot read (`cards.sh move "$n" ready` in a loop) is allowed, because `cards.sh` itself refuses to move a card out of Human QA. So `for n in 12 13; do cards.sh move $n ready; done` passes, where the same loop over `gh project item-edit --id $ITEM` is still blocked.
+- `--repo` (or `-R`) must name the repo in `board.repo`; any other repo, or one the gate cannot read (`--repo "$R"`), is blocked. Without the flag the configured repo is used.
+- A subcommand it cannot read (`cards.sh $SUB`) or `cards.sh` under `xargs` is blocked.
+
+The gate matches the command word `cards.sh` by name, like `board-move.sh`.
+
+## A commit and a PR in one call
+
+A single call such as `cd sub && git commit -F- <<'EOF' ... EOF` followed by `gh pr create --draft ...` is allowed. None of its commands is gated (`git commit` and `gh pr create` are not, and the heredoc body is read as text), so the gate exits 0 without reading the config or the board, and does not need to know where the `cd` goes. This holds for the heredoc piped to `git commit -F-`, for `cat > msg.txt <<'EOF'` followed by `git commit -F msg.txt`, and for `git commit -m "$(cat <<'EOF' ... EOF)"`. The decision is per command, not per call: adding a gated command to the same call (`... && gh pr merge 3`) is judged as before, in the directory the `cd` leads to, and a `cd` the gate cannot resolve before a gated command still blocks it. `tests/test-gate.sh` (the `compound-commit-pr` cases) pins both. If a call like this was blocked, the gated word was in it (a commit message that quotes `gh pr merge`, say): see the false positives below.
+
 ## Limits
 
 The gate reads command text before it runs. A string check cannot see:

@@ -98,7 +98,8 @@ OUT="$(jq -r '
   | ($c | split("\\\n") | join("") | split($q) | join("") | split("\"") | join("")
         | split("\\") | join("") | ascii_downcase) as $f
   | if ($f | contains("board-move") or contains("gh") or contains("merge") or contains("move.sh")
-           or contains("graphql") or contains("label") or contains("edit") or contains("item-"))
+           or contains("graphql") or contains("label") or contains("edit") or contains("item-")
+           or contains("cards.sh"))
        or ($c | contains("$" + $q))
     then "K" + $c
     elif ($f | contains("?") or contains("*") or contains("[")
@@ -133,6 +134,7 @@ NL=$'\n'
 #   merge   ARG ADMIN REPO EXTRA-REFS XARGS (1 when xargs may supply words)
 #   label   NAME-UNKNOWN SEGMENT-TEXT
 #   opaque  REASON          (a gated command the hook cannot read)
+#   cards   SUB N STATE REPO     (cards.sh create|add|move; see parse_cards)
 #   rawstate
 #   rawmerge
 # SHAPE_DIRS[k] lists the directories shape k may run in (one per line), and
@@ -222,6 +224,39 @@ parse_move() {
     n="${n:-\$ARGS}"; st='$ARGS'
   fi
   add_shape "move$US$n$US$st"
+}
+
+# parse_cards I: cards.sh create|add|move ... [--repo R]
+# The helper refuses to move a card out of Human QA itself, so a card number
+# or state it cannot read here is allowed; a repo flag is always checked.
+# Positionals: create TITLE BODY-FILE, add N, move N STATE.
+parse_cards() {
+  local k=$(($1 + 1)) sub="${TOK[$1+1]:-}" t repo="" p1="" p2="" np=0
+  if [ "$OPEN" = 1 ]; then
+    add_shape "opaque${US}could not verify the cards.sh call under xargs; blocking to be safe"
+    return 0
+  fi
+  case "$sub" in
+    create|add|move) ;;
+    *)
+      is_dyn "$sub" && add_shape "opaque${US}could not verify the cards.sh subcommand (cards.sh $sub); blocking to be safe"
+      return 0 ;;
+  esac
+  words_ok "$k" "cards.sh" || return 0
+  k=$((k + 1))
+  while [ $k -lt $NTOK ]; do
+    t="${TOK[k]}"
+    case "$t" in
+      --repo|-R) repo="${TOK[k+1]:-}"; k=$((k + 1)) ;;
+      --repo=*) repo="${t#--repo=}" ;;
+      -R?*) repo="${t#-R}" ;;
+      --label) k=$((k + 1)) ;;
+      -*) ;;
+      *) np=$((np + 1)); [ $np = 1 ] && p1="$t"; [ $np = 2 ] && p2="$t" ;;
+    esac
+    k=$((k + 1))
+  done
+  add_shape "cards$US$sub$US$p1$US$p2$US$repo"
 }
 
 # parse_issue_edit K: gh issue edit N... [--add-label L,...] [--remove-label L,...]
@@ -588,6 +623,7 @@ while IFS= read -r line; do
       [Gg][Hh]) parse_gh $i 1 ;;
       [Bb][Oo][Aa][Rr][Dd]-[Mm][Oo][Vv][Ee]|[Bb][Oo][Aa][Rr][Dd]-[Mm][Oo][Vv][Ee].[Ss][Hh]) parse_move $i ;;
       [Mm][Oo][Vv][Ee].[Ss][Hh]) case "$LOW" in *adapters*) parse_move $i ;; esac ;;
+      [Cc][Aa][Rr][Dd][Ss].[Ss][Hh]) parse_cards $i ;;
       [Cc][Uu][Rr][Ll]) API=1; API_DIRS="$API_DIRS$NL$CUR_DIRS"; [ -n "$CUR_DYN" ] && API_DYN="$CUR_DYN" ;;
       [Xx][Aa][Rr][Gg][Ss]) OPEN=1 ;;
       '{') BR=$((BR + 1)) ;;
@@ -686,6 +722,7 @@ DIR_POLICY=()
 DIR_BACKEND=()
 DIR_QA=()
 DIR_NAMES=()
+DIR_REPO=()
 
 # use_dir D: loads D's config (once) and sets CURDIR, POLICY, BACKEND,
 # QA_NAME and STATE_NAMES (lower case, one per line); returns 1 when D has no
@@ -712,10 +749,11 @@ use_dir() {
     # state, tab-separated; any failure or unexpected value fails closed
     info="$(cd "$d" && . "$S/board-lib.sh" && fb_load_config >/dev/null 2>&1 \
       && p="$(fb_cfg merge.policy)" && b="$(fb_cfg board.backend)" \
-      && printf 'policy\t%s\nbackend\t%s\n' "$p" "$b" \
+      && printf 'policy\t%s\nbackend\t%s\nrepo\t%s\n' "$p" "$b" "$(fb_cfg board.repo)" \
       && for s in $FB_STATES; do printf 'state\t%s\t%s\n' "$s" "$(fb_state_name "$s")"; done)" || info=""
     DIR_POLICY[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "policy" { print $2; exit }')"
     DIR_BACKEND[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "backend" { print $2; exit }')"
+    DIR_REPO[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "repo" { print $2; exit }')"
     DIR_QA[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }')"
     DIR_NAMES[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" { print $3 }' | tr '[:upper:]' '[:lower:]')"
     case "${DIR_POLICY[n]} ${DIR_BACKEND[n]}" in
@@ -727,7 +765,7 @@ use_dir() {
   fi
   [ "${DIR_OK[n]}" = 1 ] || return 1
   CURDIR="$d"; POLICY="${DIR_POLICY[n]}"; BACKEND="${DIR_BACKEND[n]}"
-  QA_NAME="${DIR_QA[n]}"; STATE_NAMES="${DIR_NAMES[n]}"
+  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"; STATE_NAMES="${DIR_NAMES[n]}"
   return 0
 }
 
@@ -889,6 +927,13 @@ while [ $k -lt ${#SHAPES[@]} ]; do
       move)
         is_dyn "$f1" && block "could not verify card #$f1; blocking to be safe"
         is_dyn "$f2" && block "could not verify the state card #$f1 moves to ($f2); blocking to be safe" ;;
+      cards)
+        # f4 is the --repo flag: only the configured board repo is allowed
+        if [ -n "$f4" ]; then
+          is_dyn "$f4" && block "could not verify the repo of cards.sh ($f4); blocking to be safe"
+          [ "$(printf '%s' "$f4" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$CFG_REPO" | tr '[:upper:]' '[:lower:]')" ] \
+            || block "cards.sh works on the configured repo ($CFG_REPO) only, not $f4"
+        fi ;;
       label)
         if [ "$BACKEND" = github-labels ] && { [ "$f1" = 1 ] || touches_state "$f2"; }; then
           block "editing or deleting a state label bypasses the board adapter; change state labels in the GitHub UI"
@@ -916,6 +961,13 @@ while [ $k -lt ${#SHAPES[@]} ]; do
       move) gate_move "$f1" "$f2" ;;
       edit) gate_edit "$f1" "$f2" "$f3" "$f4" ;;
       item) gate_item "$f1" ;;
+      cards)
+        # a card or state the hook cannot read is left to cards.sh, which
+        # refuses a move out of Human QA itself
+        case "$f1" in
+          add) is_dyn "$f2" || gate_move "$f2" backlog ;;
+          move) is_dyn "$f2" || gate_move "$f2" "$f3" ;;
+        esac ;;
       merge)
         check_pr "$f1" "$f3"
         for ref in $f4; do check_pr "$ref" "$f3"; done ;;
