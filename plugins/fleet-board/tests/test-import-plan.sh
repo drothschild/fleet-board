@@ -183,5 +183,24 @@ check "declined run exits 0" "$RC" "0"
 check "declined run prints the table" "$(printf '%s\n' "$OUT" | grep -c '^| ')" "4"
 if [ -s "$D/calls.log" ]; then fail "declined run leaves the gh log empty" "$(cat "$D/calls.log")"; else pass "declined run leaves the gh log empty"; fi
 
+# ---------------------------------------------------------------- dry run stops by itself
+echo "# dry run with a yes answer"
+reset_gh
+run_import "y" "$SB/cards.json" --dry-run
+check "dry run with a yes answer exits 0" "$RC" "0"
+check "dry run with a yes answer creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+
+# ---------------------------------------------------------------- explained failures
+echo "# cycle and unknown dependency"
+printf '%s' '{"cards":[{"key":"a","title":"A","repo":"x/y","depends_on":["b"]},{"key":"b","title":"B","repo":"x/y","depends_on":["a"]}]}' > "$SB/cycle.json"
+reset_gh
+run_import "" "$SB/cycle.json" --dry-run
+check "cycle exits 1" "$RC" "1"
+case "$(cat "$SB/err")" in *"dependency cycle"*) pass "cycle error explains the reason" ;; *) fail "cycle error explains the reason" "$(cat "$SB/err")" ;; esac
+printf '%s' '{"cards":[{"key":"a","title":"A","repo":"x/y","depends_on":["zzz"]}]}' > "$SB/unknown.json"
+run_import "" "$SB/unknown.json" --dry-run
+check "unknown dependency exits 1" "$RC" "1"
+case "$(cat "$SB/err")" in *"unknown dependency: zzz"*) pass "unknown dependency error names the key" ;; *) fail "unknown dependency error names the key" "$(cat "$SB/err")" ;; esac
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

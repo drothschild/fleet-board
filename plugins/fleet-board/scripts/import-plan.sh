@@ -57,7 +57,7 @@ PLAN="$(jq -c '
                | select(.deps | all(. as $d | isref or ($s.placed | index($d) != null)))] as $ready
       | .order += $ready | .placed += ($ready | map(.key)))
   | if (.order | length) < ($res | length) then error("dependency cycle among cards") else {cards: .order} end
-' "$CARDS" 2>&1)" || fb_die 1 "$(sed -n 's/^jq: error[^:]*: \([^ ].*\) at <.*/\1/p' <<<"$PLAN" | head -1)"
+' "$CARDS" 2>&1)" || fb_die 1 "$(sed -n -e 's/^jq: error ([^)]*): //' -e 's/^jq: error: //' -e 's/ at <[^>]*>.*$//' -e '/^jq: /d' -e '1p' <<<"$PLAN")"
 N="$(jq '.cards | length' <<<"$PLAN")"
 
 echo "| Title | Repo | Depends on | Labels |"
