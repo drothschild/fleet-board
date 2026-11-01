@@ -37,6 +37,10 @@ board:
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
 
+## `followups.status`
+
+Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with a `## Acceptance` section drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). An out-of-scope item whose detail has no backticked command gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. A follow-up whose detail says "depends on this card" carries `## Depends on` naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
+
 ## `limits` for the headless wrapper
 
 `fleet-board-run.sh` reads `limits.max_hours`, `max_cost_usd`, `tick_interval`, `max_consecutive_failures` and `max_turns` (see [overnight.md](overnight.md)). Three more keys deal with the GitHub quota. `config.sh` exits 5 when any of them is not a non-negative number.
