@@ -13,11 +13,17 @@
 # tick-plan.sh honors an accepted entry only when its login is the
 # authenticated one (the note itself is only trusted from that login).
 #
+# Then the card is moved out of Blocked, back to the state it was blocked from
+# (the note's blocked_from: ready, in_progress or in_review; in_review when
+# the note records none, since an accepted change always has a PR).
+#
 # Exit codes:
-#   0 - the note was written
+#   0 - the note was written and the card moved out of Blocked
 #   1 - the card is not Blocked, the note names no PR, the PR head cannot be
-#       read, or the note could not be written; the note is unchanged (the
-#       one write is the last step)
+#       read, or the note could not be written; the note is unchanged and the
+#       card is not moved (the one note write comes before the move)
+#   3 - the note was written but the card could not be moved; the note stays
+#       written, move the card by hand
 #   2 - usage error
 
 set -uo pipefail
@@ -39,6 +45,12 @@ STATE="$(jq -r '.state // empty' <<<"$CARD" 2>/dev/null)" || fb_die 1 "cannot pa
 [ "$STATE" = blocked ] || fb_die 1 "card #$N is not Blocked (state: ${STATE:-none}); nothing accepted"
 
 # The PR number from the note's json block (note.sh merge validates the note)
+BACK="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
+    $0 == "```json" && !found { found = 1; on = 1; next }
+    on && $0 == "```" { exit }
+    on { print }' | jq -r '.blocked_from // empty' 2>/dev/null)"
+case "$BACK" in ready|in_progress|in_review) ;; *) BACK=in_review ;; esac
+
 PR="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }
     on && $0 == "```" { exit }
@@ -58,3 +70,6 @@ jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%
 
 bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$TMP" || fb_die 1 "cannot write the manager note on #$N"
 printf 'fleet-board: #%s: accepted at %s by %s; failure count reset, review baseline moved\n' "$N" "$HEAD_SHA" "$ME"
+MOVE_ERR="$(bash "$FLEET_SCRIPTS/board-move.sh" "$N" "$BACK" 2>&1)" \
+  || fb_die 3 "the note on #$N is written; cannot move the card to $BACK:${MOVE_ERR:-no output}; move it by hand"
+printf 'fleet-board: #%s: moved out of Blocked to %s\n' "$N" "$BACK"
