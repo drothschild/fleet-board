@@ -12,6 +12,19 @@ When `models.implementor` and `models.reviewer` are the same, every tick warns t
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the manager merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA. `auto` is not supported headless: Claude Code's safety classifier blocks unattended merges ("Merge Without Review"). Merges stay human by default. `auto` works only where merges are explicitly allowed in the user's own Claude Code settings.
 
+## `after_merge.allow` and the `## After merge` section
+
+A card body may hold a `## After merge` section (heading in any case, ending at the next heading) with one command per `-` bullet, for example `- git tag v1.2.3` and `- git push origin v1.2.3`. After the card's PR merges, the manager runs `after-merge.sh run <body-file>`, which runs the commands in order and prints the outcome. Release steps no agent can do by hand need no Human QA step this way.
+
+`after_merge.allow` in `.fleet-board.yml` is a list of command prefixes; only a command that starts with one of them (as whole words) runs. A missing key means no command is allowed.
+
+```yaml
+after_merge:
+  allow: ["git tag", "git push origin"]
+```
+
+The manager records each command's exit status in the card's note. A command with no matching prefix is not run; the card moves to Blocked and the comment names the command and the missing `after_merge.allow` entry. A command holding `;`, `&`, `|`, a backtick, `$`, `<`, `>` or a newline is treated the same, so an allowed prefix cannot chain another command. A command that exits non-zero moves the card to Blocked, with the command and its exit status in the comment. Execution stops at the first refusal or failure. When every command succeeds the card moves to Done with no Human QA step.
+
 ## `board.states`
 
 Canonical states are `backlog`, `ready`, `in_progress`, `in_review`, `human_qa`, `blocked`, `done` and `wont_do`. On the labels board each defaults to `fleet:<state>`. On a Projects board they default to `Backlog`, `Ready`, `In Progress`, `In Review`, `Human QA`, `Blocked`, `Done` and `Won't Do`. Map only the ones that differ, for example a Projects board that keeps its existing column names:
@@ -23,6 +36,16 @@ board:
   project_number: 1
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
+
+## `limits` for the headless wrapper
+
+`fleet-board-run.sh` reads `limits.max_hours`, `max_cost_usd`, `tick_interval`, `max_consecutive_failures` and `max_turns` (see [overnight.md](overnight.md)). Three more keys deal with the GitHub quota. `config.sh` exits 5 when any of them is not a non-negative number.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `limits.rate_limit_max_wait` | `3600` | total seconds a run may spend waiting for rate limits to reset; a wait that would pass it stops the run (`rate-limit-wait-cap`, exit 1) |
+| `limits.rate_limit_margin` | `5` | seconds added after the reset time before the next tick |
+| `limits.min_tick_gap` | `0` | minimum seconds between tick starts across runs sharing one token (the whole-second part is used); `0` is off |
 
 ## Finding the file
 

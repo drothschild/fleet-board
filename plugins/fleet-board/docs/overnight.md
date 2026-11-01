@@ -33,6 +33,7 @@ bash <path from /fleet-board:status> --repo .
 | `max-cost` | the cost estimate exceeds the limit | `limits.max_cost_usd` (default 40) | 0 |
 | `nothing-dispatchable` | a successful tick's report ends `dispatchable: false` | none | 0 |
 | `consecutive-failures` | this many failed ticks in a row, including ticks whose plan failed | `limits.max_consecutive_failures` (default 3) | 1 |
+| `rate-limit-wait-cap` | waiting out GitHub rate limits would pass the total wait cap | `limits.rate_limit_max_wait` (default 3600 seconds) | 1 |
 | `cost-unknown` | a successful tick reports no cost at all | none | 1 |
 | `permission-mode-mismatch` | a tick's `system/init` event reports a `permissionMode` other than the requested one | `headless.permission_mode` (default `auto`) | 1 |
 | `interrupted (INT)`, `interrupted (TERM)` | the wrapper got Ctrl-C or `kill` | none | 130, 143 |
@@ -49,6 +50,12 @@ A tick also fails when its report has a `Plan failed:` line: the tick could not 
 - up to three `*`, `_` or backtick characters before `Plan`, between `failed` and the colon, and after the colon.
 
 So `- **Plan failed:**`, `**Plan failed**:`, `` `Plan failed:` `` and `- ## Plan failed:` all count. `## - Plan failed:`, a sentence or a table cell before the label, or a `-` with no space after it, do not. Up to three trailing `*`, `_` or backtick characters are removed from every logged reason, so `` `Plan failed: GraphQL error` `` logs `plan failed: GraphQL error`, and `Plan failed: bad glob src/*` logs `plan failed: bad glob src/`; only the log text changes, not whether the tick fails.
+
+### Rate limits and sharing a token
+
+When a tick's `Plan failed:` reason names a rate limit and gives a reset time as `resets at <UTC time like 2026-10-30T12:00:00Z>`, the run does not stop. It sleeps until that reset plus `limits.rate_limit_margin` seconds (default 5), then runs the next tick. Such a tick does not count toward `limits.max_consecutive_failures`. The log shows `tick N RATE LIMITED` and `rate limit: waiting <n>s`. The waits add up: when the next wait would push the total past `limits.rate_limit_max_wait` seconds (default 3600), the run stops with `rate-limit-wait-cap` and exit 1, and the log gives the reason. A rate limit with no reset time, and any other `Plan failed:`, stay failed ticks.
+
+Several runs on one GitHub token can exhaust its quota together. Set `limits.min_tick_gap` (seconds, default 0, off) and every run that shares the lock file keeps its tick starts at least that far apart. The lock file is `$HOME/.fleet-board/token.lock` (override with `FLEET_BOARD_TOKEN_LOCK`); it holds the last reserved start time, and a `.d` directory beside it guards the update. Runs on different tokens should use different lock files.
 
 Between ticks it waits `limits.tick_interval` seconds (default 300). Each tick runs with `--max-turns` set to `limits.max_turns` (default 200) and `--model` set to `models.manager`.
 
@@ -67,7 +74,7 @@ For an interrupt, the line is written on a best-effort basis, and the tick count
 | Exit | Meaning |
 |---|---|
 | 0 | stopped: `nothing-dispatchable`, `stop-file`, `max-hours` or `max-cost` |
-| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; or a setup failure (not a git repo, `claude` not found, the log cannot be written) |
+| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; `rate-limit-wait-cap`; or a setup failure (not a git repo, `claude` not found, the log cannot be written) |
 | 2 | usage error, or `FLEET_BOARD_ISOLATE=1` |
 | 3 | no `.fleet-board.yml` |
 | 4, 5 | the config failed `config.sh --check`; 5 also for a limit that is not a valid number |
@@ -128,6 +135,7 @@ bash <scripts dir>/cleanup-done.sh
 | `FLEET_BOARD_TICK_PROMPT` | `/fleet-board:tick` | the prompt of each tick |
 | `FLEET_BOARD_LOG_DIR` | `$HOME/.fleet-board/runs` | where run logs go |
 | `FLEET_BOARD_ISOLATE` | unset | fleet-board ships no role-isolation mechanism, so `1` is refused (exit 2) and `0` is the same as unset |
+| `FLEET_BOARD_TOKEN_LOCK` | `$HOME/.fleet-board/token.lock` | the lock file shared by runs on one token, used when `limits.min_tick_gap` is above 0 |
 | `FLEET_BOARD_CLEANUP` | `cleanup-done.sh` next to the wrapper | the cleanup script run after each successful tick |
 | `FLEET_BOARD_LIST_LIMIT` | 500 (labels), 1000 (Projects) | how many items one board listing asks `gh` for. A reply of exactly this many may be truncated, so the listing fails (exit 1). Two remedies: raise this variable, or shrink what is listed. On labels, the `done` and `wont_do` columns include closed issues and grow without bound: remove the done label (default `fleet:done`) from old closed issues. On Projects, every item counts, done ones included: archive done items. `cleanup-done.sh` alone accepts a done listing at the limit, with a warning; a card it misses only leaves its worktree behind |
 

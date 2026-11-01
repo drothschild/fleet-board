@@ -157,6 +157,9 @@ VALIDATION_SCRIPT='
       (if (.models | type) == "object" then
         (if (.models.escalation | type) != "null" and ((.models.escalation | type) != "string" or .models.escalation == "") then "models.escalation must be null or a non-empty string" else empty end)
       else empty end),
+      (if (.after_merge | type) != "object" then "after_merge must be an object"
+       elif (.after_merge.allow | type) != "array" or (.after_merge.allow | map(type != "string" or . == "") | any) then "after_merge.allow must be a list of non-empty strings"
+       else empty end),
       (if (.worktrees | type) == "object" then
         (if (.worktrees.mutate_on_copy | type) != "boolean" then "worktrees.mutate_on_copy must be boolean" else empty end)
       else empty end),
@@ -168,7 +171,9 @@ VALIDATION_SCRIPT='
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end)
       else empty end),
       (if (.limits | type) == "object" then
-        (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end)
+        (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end),
+        (("rate_limit_max_wait", "rate_limit_margin", "min_tick_gap") as $k
+          | if (.limits[$k] | type) != "number" or .limits[$k] < 0 then "limits.\($k) must be a non-negative number" else empty end)
       else empty end)
     ] | map(select(. != null))
   ;
