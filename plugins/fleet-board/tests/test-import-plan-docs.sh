@@ -82,7 +82,7 @@ run_import() { # <stdin> args...
   OUT="$(cd "$ROOT" && printf '%b' "$ans" | FAKE_D="$D" FAKE_EXISTING="$SB/existing" PATH="$STUBS:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
   RC=$?
 }
-issues() { grep -c '^issue create' "$D/calls.log" 2>/dev/null || true; }
+issues() { cat "$D/calls.log" 2>/dev/null | grep -c "^issue create"; true; }
 
 echo "# missing doc, user picks merge"
 reset_gh
