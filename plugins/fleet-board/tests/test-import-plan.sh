@@ -202,5 +202,25 @@ run_import "" "$SB/unknown.json" --dry-run
 check "unknown dependency exits 1" "$RC" "1"
 case "$(cat "$SB/err")" in *"unknown dependency: zzz"*) pass "unknown dependency error names the key" ;; *) fail "unknown dependency error names the key" "$(cat "$SB/err")" ;; esac
 
+# ---------------------------------------------------------------- labels backend
+echo "# labels backend"
+ROOT_P="$ROOT"
+ROOT="$SB/root-labels"; mkdir -p "$ROOT"; git -C "$ROOT" init -q
+cat > "$ROOT/.fleet-board.yml" <<'EOF2'
+board:
+  backend: github-labels
+  repo: acme/api
+EOF2
+reset_gh
+run_import "y" "$SB/cards.json"
+check "labels board: import-plan exits 0 instead of refusing" "$RC" "0"
+check "labels board: three issues created" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null)" "3"
+check "labels board: each created issue carries the fleet:backlog label" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:backlog')" "3"
+check "labels board: stubbed gh log has no project item call" "$(grep -c '^project ' "$D/calls.log" 2>/dev/null)" "0"
+reset_gh
+run_import "y" "$SB/cards.json" --status ready
+check "labels board: --status ready labels each issue fleet:ready" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:ready')" "3"
+ROOT="$ROOT_P"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
