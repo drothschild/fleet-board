@@ -183,6 +183,17 @@ has "argument 21 reports untestable-bullet" "$OUT" "untestable-bullet"
 run_board 23
 has "an explicit card outside Ready/Backlog is linted" "$OUT" "#23"
 
+# a failing Backlog card must show up in the no-argument run
+mk_issue 24 "$(printf '## Acceptance\n- the slider looks right\n')" fleet:backlog
+echo '[{"number":22,"title":"t","url":"x","labels":[{"name":"fleet:backlog"}]},{"number":24,"title":"t","url":"x","labels":[{"name":"fleet:backlog"}]}]' > "$FG/r/backlog.json"
+{
+  printf 'api repos/acme/toy/issues/24\t0\t%s\n' "$FG/r/issue24.json"
+  printf 'api --paginate repos/acme/toy/issues/24/comments\t0\t%s\n' "$FG/r/comments.json"
+} >> "$FG/routes"
+run_board
+has "no arguments: lints a failing Backlog card" "$OUT" "#24"
+hasnt "no arguments: clean Backlog card 22 stays silent" "$OUT" "#22"
+
 echo
 echo "passed: $PASS failed: $FAIL"
 [ "$FAIL" -eq 0 ]
