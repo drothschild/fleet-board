@@ -321,6 +321,9 @@ assert_eq "dedupe-open: output names the matched duplicate" "$(jqc '.out_of_scop
 # --- docs
 if grep -q 'followups.status' "$DOCS"; then pass "docs: config.md documents followups.status"; else fail "docs: config.md documents followups.status" "not found in $DOCS"; fi
 
+# docs: the key is pinned by fixed-string match (the dot is literal, not a wildcard)
+if grep -qF '## `followups.status`' "$DOCS" && grep -qF 'followups.status: backlog' "$DOCS"; then pass "docs: config.md has a literal followups.status heading and backlog example"; else fail "docs: config.md has a literal followups.status heading and backlog example" "not found in $DOCS"; fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
