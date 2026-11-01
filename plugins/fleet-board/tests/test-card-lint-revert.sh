@@ -117,6 +117,11 @@ lint A" '[{"id":5,"user":{"login":"fleet-bot"},"body":$a,"created_at":"2026-01-0
 plan "$FIX/no-bullets.md" "$HIST_A"
 assert_eq "A then A: one comment only" "$(card comment_needed)" false
 
+# Existing card-lint comment suite still passes unchanged.
+EXIST_OUT="$("$BASH_EXE" "$SCRIPT_DIR/test-card-lint.sh" 2>&1)"; EXIST_RC=$?
+assert_eq "existing test-card-lint.sh suite passes (exit 0)" "$EXIST_RC" 0
+assert_contains "existing test-card-lint.sh reports zero failures" "$EXIST_OUT" "Failed: 0"
+
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]
