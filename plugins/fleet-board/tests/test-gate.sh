@@ -1636,6 +1636,18 @@ for needle in 'cards.sh create' 'cards.sh add' 'cards.sh move' 'gh issue create'
   fi
 done
 
+# accept.sh now moves the card itself; the gate must still refuse an agent
+# moving a card out of Human QA (the accept move is a person's action).
+setup_case labels-human
+card_routes > "$ROUTES"
+for c in "bash /x/scripts/board-move.sh 14 in_review" \
+         "bash /x/scripts/board-move.sh 14 in_progress"; do
+  run_hook bash.json "$c"
+  assert_blocked "accept-move-still-gated: main agent: $c" "Human QA"
+  run_hook bash-subagent.json "$c"
+  assert_blocked "accept-move-still-gated: subagent: $c" "Human QA"
+done
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
