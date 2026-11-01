@@ -157,6 +157,9 @@ VALIDATION_SCRIPT='
       (if (.models | type) == "object" then
         (if (.models.escalation | type) != "null" and ((.models.escalation | type) != "string" or .models.escalation == "") then "models.escalation must be null or a non-empty string" else empty end)
       else empty end),
+      (if (.after_merge | type) != "object" then "after_merge must be an object"
+       elif (.after_merge.allow | type) != "array" or (.after_merge.allow | map(type != "string" or . == "") | any) then "after_merge.allow must be a list of non-empty strings"
+       else empty end),
       (if (.worktrees | type) == "object" then
         (if (.worktrees.mutate_on_copy | type) != "boolean" then "worktrees.mutate_on_copy must be boolean" else empty end)
       else empty end),
