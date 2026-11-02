@@ -85,7 +85,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
     - If `parse-report.sh` fails, it fixes the file with Edit or Write and repeats that check-and-post Bash call, posting only on exit 0.
     - Its final reply is exactly the posted report text.
 
-12. **Lists out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description>` entry per item. Such work is neither done silently in this card nor left unmentioned. The manager turns each entry into a card.
+12. **Lists out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description with a backticked check command and its expected result>` entry per item. Such work is neither done silently in this card nor left unmentioned. The manager turns each entry into a card.
 
 13. **Lists bugs it observed outside the card's diff.** A defect the implementor ran into outside its own diff goes under `Bugs found:`, as `- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>`. Examples: a pre-existing failing behavior, or a lint error in an untouched file.
     - The repro is a command it actually ran.
@@ -146,7 +146,7 @@ The role agent has only `Read, Write, Edit, Bash, Grep, Glob` and no `Skill` too
 ## For the card
 <free text for the card. Optional sub-lists:>
 Out of scope:
-- <title> :: <one-line description>
+- <title> :: <one-line description with a backticked check command and its expected result>
 Bugs found:
 - <title> :: repro: `<command>` :: expected: <text> :: observed: <text>
 
@@ -180,7 +180,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 - **Line rules** (review cycle 1; `parse-report.sh` rejects every violation, one `parse-report: `-prefixed stderr line each):
   - Any heading appears at most once. `## Status` holds exactly one non-blank line.
   - Every non-blank `## Findings` line is `- [Critical|Important|Minor] <text>` (that exact spelling, one space after `-`) or exactly `- none`. The section needs one of the two forms, never both.
-  - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. A bug's repro is backticked.
+  - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. A bug's repro is backticked.
   - Resolutions: the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
   - Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
   - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
@@ -207,6 +207,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 - `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>`
 - `bug repro must be a backticked command: <title>`
 - `out of scope entry needs <title> :: <detail>: <entry>`
+- `out of scope entry needs a backticked check command or the words no testable check: <entry>`
 - `malformed ## Acceptance map line: <line>`
 - `malformed ## Mutation line: <line>`
 - `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line`
@@ -229,7 +230,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 - In `## PR`, the first `#` followed by digits is read as the PR number. So `## PR` must contain no `#<digits>` except the real PR number: not the card number, not an example.
 - In `## For the card`, free text must not start a line with `- ` unless that line is an entry directly under `Out of scope:` or `Bugs found:`. Otherwise it is a stray list line. Put free text before the sub-lists, and do not leave a blank line between a sub-list header and its entries.
 - Each heading appears once. Do not repeat `## Findings` or `## PR`.
-- A `Bugs found:` entry needs all four parts, with the repro in backticks. An `Out of scope:` entry needs ` :: ` with text on both sides. Leave out a sub-list header entirely when it has no entries.
+- A `Bugs found:` entry needs all four parts, with the repro in backticks. An `Out of scope:` entry needs ` :: ` with text on both sides, and its detail holds a backticked check command or the words `no testable check`. Leave out a sub-list header entirely when it has no entries.
 
 ### Template A: normal report (Status `done`)
 
@@ -244,7 +245,7 @@ done
 Tests for both Acceptance items are in test/calc.test.js. Test-first commit 3f2a1c9, implementation commit 8b7d0e4, pushed head 8b7d0e4.
 `node --test test/calc.test.js`: 2 failing before implementation, 2 passing after. Typecheck passed; lint passed.
 Out of scope:
-- Divide by zero :: calc defines no behavior for divide(1, 0)
+- Divide by zero :: calc defines no behavior for divide(1, 0); `node -e "require('./src/calc').divide(1, 0)"` should exit non-zero with a RangeError
 Bugs found:
 - Lint error in untouched file :: repro: `npm run lint` :: expected: 0 problems :: observed: src/legacy.js 4:7 error 'tmp' is assigned a value but never used
 

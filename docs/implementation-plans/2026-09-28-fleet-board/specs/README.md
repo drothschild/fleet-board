@@ -1610,3 +1610,31 @@ checker's grep for `sk-ant`, home and temp paths and the forbidden name found no
 **Minimality check.** The diff has 5 hunks, each one a requirement item: the two 0.10 bullets, the 0.11 sentence, the 2.C.4 bullet, and the two Never lines. No unrelated line changed; the frontmatter is unchanged (`model: sonnet`, `color: blue`, the D3 tools). `agents/manager.md` sha256 `e2a04d5581581fb9` → `9c3dcfc1a2418805`. **Kept.**
 
 `tests/test-clean-room.sh`: `passed: 79   failed: 0`. `tests/test-write-names.sh`: `passed: 5   failed: 0`. **Revision cost:** $0.2749. **Running total, all API-key charges:** ~$36.14.
+
+### Revision 11 (2026-11-01, PR #98): Out of scope entries carry a check command
+
+**Cause.** Follow-up cards filed from `Out of scope:` entries landed in Backlog with no `## Acceptance` (seen on #81, #89, #90, #96, #97) because the roles wrote prose with no backticked command, and `file-followups.sh` drafts Acceptance only from one. `parse-report.sh` now rejects an entry whose detail has neither a non-blank backticked span nor the words `no testable check`, and `file-followups.sh` files the card in Backlog when the words appear even beside a backticked path.
+
+**Process note.** A first attempt hand-edited the agent files and the reporting skill. That broke the clean-room rule and was reverted (`3a0bf1f`). The files below were edited by isolated runs.
+
+**Spec and brief changes** (hand edits to the text, as in the issue #3 revision): `specs/{implementor,reviewer,fixer,reporting}.md` (entry shape, rule, rejection message, rejection-table row, examples) and a "Revision 11 requirements" section in `briefs/spec-req-{implementor,reviewer,fixer,reporting}.md`.
+
+**Runs.** Five isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.309. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `bfa8688aaf0d2e3f`) and the edited spec (`spec-reporting.md` for the manager, whose rejection table comes from the reporting spec). A first attempt failed with `Invalid API key` (0 turns of work, $0) and was re-run after the key was replaced. No run read or edited any file outside its inputs and its target.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/implementor.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 6 edits) | 10 | 0.1848 | `57c4c13bdee48fda` |
+| `agents/reviewer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 5 edits) | 9 | 0.1666 | `c7864087befb5453` |
+| `agents/fixer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1333 | `21753fef96be8e0e` |
+| `skills/reporting/SKILL.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 7 edits) | 11 | 0.2050 | `613def0f0629d1ae` |
+| `agents/manager.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 1 edit) | 5 | 0.2078 | `827d0952573d60c5` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{implementor,reviewer,fixer,reporting,manager}.r11.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is the entry shape, the Out of scope rule, the new rejection message or its table row, or an example entry. The implementor run also fixed the spec's own Template A example, which this revision's spec edit had missed (the spec was patched to match). **Kept.**
+
+**Revision cost:** $0.8975. 
+
+**Output sha256 before → after (16), against `main` at the time of the PR:** `agents/implementor.md` `3244f3a7c89636b9` → `57c4c13bdee48fda`; `agents/reviewer.md` `5fca329a826e7e44` → `c7864087befb5453`; `agents/fixer.md` `b7f6d4a41ddec2c3` → `21753fef96be8e0e`; `agents/manager.md` `ae4f3d63b1f0d926` → `827d0952573d60c5`; `skills/reporting/SKILL.md` `2229ebb859f5e64d` → `613def0f0629d1ae`. `edit-req.md` is not committed; its sha256 prefix is recorded above.
+
+**Follow-up to Revision 11 (second review).** `parse-report.sh` and `file-followups.sh` now pair the backticks of a detail as single-backtick spans (an even count, none adjacent) instead of matching a span anywhere, so text between two spans is never the command. The authored files were not re-run for this: they say "backticked check command" and "before any other backticked text", which the pairing rule implements. `specs/reviewer.md` had a stale shape line and was patched to agree with `agents/reviewer.md`. Known limits, documented in `docs/config.md`: a backticked file path written first is taken as the command, and invisible characters inside a span are not checked.

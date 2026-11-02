@@ -204,7 +204,7 @@ run_parse "$REPORTS/with-out-of-scope.md"
 assert_exit "with-out-of-scope: exit 0" 0
 assert_jq "with-out-of-scope: .out_of_scope | length == 2" '.out_of_scope | length == 2'
 assert_jq "with-out-of-scope: .out_of_scope[0].title is non-empty" '(.out_of_scope[0].title | type) == "string" and (.out_of_scope[0].title | length) > 0'
-assert_jq_exact "with-out-of-scope: .out_of_scope[0] splits title and detail" '.out_of_scope[0]' '{"title":"Add multiply","detail":"calc has no multiply; a later card could add it"}'
+assert_jq_exact "with-out-of-scope: .out_of_scope[0] splits title and detail" '.out_of_scope[0]' '{"title":"Add multiply","detail":"calc has no multiply; `grep -c multiply src/calc.js` should print 1"}'
 assert_jq_exact "with-out-of-scope: .bugs == []" '.bugs' '[]'
 
 run_parse "$REPORTS/with-bugs.md"
@@ -231,7 +231,7 @@ assert_jq_exact "with-oos-and-bugs: the bug is parsed" '.bugs[0].title' '"add dr
 run_parse "$REPORTS/with-bugs-then-oos.md"
 assert_exit "with-bugs-then-oos: exit 0 (Out of scope: ends the Bugs found list)" 0
 assert_jq "with-bugs-then-oos: .bugs | length == 1" '.bugs | length == 1'
-assert_jq_exact "with-bugs-then-oos: the Out of scope item is parsed" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply; a later card could add it"}]'
+assert_jq_exact "with-bugs-then-oos: the Out of scope item is parsed" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply; `grep -c multiply src/calc.js` should print 1"}]'
 
 # --- findings counting -----------------------------------------------------
 echo "findings counting"
@@ -402,6 +402,33 @@ run_parse "$REPORTS/oos-no-separator.md"
 assert_exit "oos-no-separator: exit 1" 1
 assert_stderr_line "oos-no-separator: quotes the entry" "parse-report: out of scope entry needs <title> :: <detail>: Add multiply, calc has no multiply"
 
+run_parse "$REPORTS/oos-no-check.md"
+assert_exit "oos-no-check: exit 1" 1
+assert_stderr_line "oos-no-check: asks for a backticked check command" "parse-report: out of scope entry needs a backticked check command or the words no testable check: Add multiply :: calc has no multiply; a later card could add it"
+
+run_parse "$REPORTS/oos-blank-backticks.md"
+assert_exit "oos-blank-backticks: exit 1 (a blank span is not a command)" 1
+
+run_parse "$REPORTS/oos-checkout-word.md"
+assert_exit "oos-checkout-word: exit 1 (no testable checkout is not the escape words)" 1
+
+run_parse "$REPORTS/oos-stray-backtick.md"
+assert_exit "oos-stray-backtick: exit 1 (an odd number of backticks pairs no span)" 1
+
+run_parse "$REPORTS/oos-double-backtick.md"
+assert_exit "oos-double-backtick: exit 1 (a double-backtick span is not a single span)" 1
+
+run_parse "$REPORTS/oos-between-spans.md"
+assert_exit "oos-between-spans: exit 0 (the blank span is skipped, make test is the command)" 0
+
+run_parse "$REPORTS/oos-with-check.md"
+assert_exit "oos-with-check: exit 0" 0
+assert_jq "oos-with-check: one Out of scope item" '.out_of_scope | length == 1'
+
+run_parse "$REPORTS/oos-no-testable-check.md"
+assert_exit "oos-no-testable-check: exit 0 (the escape words are accepted)" 0
+assert_jq "oos-no-testable-check: one Out of scope item" '.out_of_scope | length == 1'
+
 run_parse "$REPORTS/oos-entry-after-blank.md"
 assert_exit "oos-entry-after-blank: exit 1" 1
 assert_stderr_line "oos-entry-after-blank: quotes the stray line" "parse-report: stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): - Document calc :: the README does not list the exported functions"
@@ -413,7 +440,7 @@ assert_stderr_line "bugs-indented-entry: the list is then empty" "parse-report: 
 
 run_parse "$REPORTS/card-free-bullets.md"
 assert_exit "card-free-bullets: exit 0 (bullets under a text line are free text)" 0
-assert_jq_exact "card-free-bullets: one Out of scope item" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply"}]'
+assert_jq_exact "card-free-bullets: one Out of scope item" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply; `grep -c multiply src/calc.js` should print 1"}]'
 
 # --- Resolutions separators (review cycle 1: M4) ---------------------------
 echo "Resolutions separators"

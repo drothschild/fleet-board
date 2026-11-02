@@ -70,7 +70,7 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 
 7. **Status.** `## Status` is `clean` when the report has zero `[Critical]` and zero `[Important]` findings, and `findings` otherwise. `[Minor]` findings do not affect Status. When there are no findings of any severity, `## Findings` is exactly `- none`.
 
-8. **Bugs found vs findings.** A defect the reviewer observes **outside the PR's diff** while running tests, typecheck, lint or the claim (for example a pre-existing failing behavior in code the PR did not touch) goes under `Bugs found:` in `## For the card` as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``, where the repro is a command the reviewer actually ran and `observed` is what it printed. A defect in the PR's own diff, including behavior the PR introduced, is always a Finding, never a Bug found. The reviewer does not file issues for bugs; the manager does. Work worth doing that the card does not cover may be listed under `Out of scope:` as `- <title> :: <one-line description>`.
+8. **Bugs found vs findings.** A defect the reviewer observes **outside the PR's diff** while running tests, typecheck, lint or the claim (for example a pre-existing failing behavior in code the PR did not touch) goes under `Bugs found:` in `## For the card` as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``, where the repro is a command the reviewer actually ran and `observed` is what it printed. A defect in the PR's own diff, including behavior the PR introduced, is always a Finding, never a Bug found. The reviewer does not file issues for bugs; the manager does. Work worth doing that the card does not cover may be listed under `Out of scope:` as `- <title> :: <one-line description with a backticked check command and its expected result>`.
 
 9. **Clean worktree before posting.** Every mutation has been reverted before the report is posted. The reviewer runs `git status --porcelain` in the review worktree and it prints nothing. The report file is created with `mktemp`, outside the review worktree, so it never dirties the tree.
 
@@ -165,7 +165,7 @@ VERIFIED: `node --test test/calc.test.js` -> 2 tests passing
 ## For the card
 <free text for the card. Optional sub-lists:>
 Out of scope:
-- <title> :: <one-line description>
+- <title> :: <one-line description with a backticked check command and its expected result>
 Bugs found:
 - <title> :: repro: `<command>` :: expected: <text> :: observed: <text>
 
@@ -199,7 +199,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 - **Line rules** (review cycle 1; `parse-report.sh` rejects every violation, one `parse-report: `-prefixed stderr line each):
   - Any heading appears at most once. `## Status` holds exactly one non-blank line.
   - Every non-blank `## Findings` line is `- [Critical|Important|Minor] <text>` (that exact spelling, one space after `-`) or exactly `- none`. The section needs one of the two forms, never both.
-  - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. A bug's repro is backticked.
+  - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. A bug's repro is backticked.
   - Resolutions: the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
   - Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
   - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
@@ -226,6 +226,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 - `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>`
 - `bug repro must be a backticked command: <title>`
 - `out of scope entry needs <title> :: <detail>: <entry>`
+- `out of scope entry needs a backticked check command or the words no testable check: <entry>`
 - `malformed ## Acceptance map line: <line>`
 - `malformed ## Mutation line: <line>`
 - `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line`
