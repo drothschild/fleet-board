@@ -412,6 +412,15 @@ assert_exit "oos-blank-backticks: exit 1 (a blank span is not a command)" 1
 run_parse "$REPORTS/oos-checkout-word.md"
 assert_exit "oos-checkout-word: exit 1 (no testable checkout is not the escape words)" 1
 
+run_parse "$REPORTS/oos-stray-backtick.md"
+assert_exit "oos-stray-backtick: exit 1 (an odd number of backticks pairs no span)" 1
+
+run_parse "$REPORTS/oos-double-backtick.md"
+assert_exit "oos-double-backtick: exit 1 (a double-backtick span is not a single span)" 1
+
+run_parse "$REPORTS/oos-between-spans.md"
+assert_exit "oos-between-spans: exit 0 (the blank span is skipped, make test is the command)" 0
+
 run_parse "$REPORTS/oos-with-check.md"
 assert_exit "oos-with-check: exit 0" 0
 assert_jq "oos-with-check: one Out of scope item" '.out_of_scope | length == 1'

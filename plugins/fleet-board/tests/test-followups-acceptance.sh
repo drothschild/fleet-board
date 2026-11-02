@@ -315,6 +315,26 @@ else
   fail "blank-span: filed in fleet:backlog" "no issue create call"
 fi
 
+# --- spans are paired, not matched anywhere: the text between two spans is never the command
+setup_case
+report '[{"title":"Fix rounding","detail":"calc has no multiply; ` ` x `make test` exits 0"}]' '[]'
+run_ff
+ACC="$(all_bodies | sed -n '/^## Acceptance/,$p')"
+case "$ACC" in *'`make test`'*) pass "paired-spans: Acceptance runs make test" ;; *) fail "paired-spans: Acceptance runs make test" "$ACC" ;; esac
+case "$ACC" in *'` x `'*) fail "paired-spans: text between spans is not the command" "$ACC" ;; *) pass "paired-spans: text between spans is not the command" ;; esac
+
+# --- an odd number of backticks pairs no span: Backlog
+setup_case
+{ printf 'issue create --repo acme/toy --title Watch flag *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+report '[{"title":"Watch flag","detail":"the `--watch flag is ignored; `npm test -- --watch` exits 0"}]' '[]'
+run_ff
+F="$(create_file)"
+if [ -n "$F" ]; then
+  assert_true "stray-backtick: filed in fleet:backlog" has_pair "$F" --label fleet:backlog
+else
+  fail "stray-backtick: filed in fleet:backlog" "no issue create call"
+fi
+
 # --- dedupe against a recently closed card, case-insensitively
 setup_case
 RECENT="$(date -u -v-3d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)"
