@@ -1638,3 +1638,28 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Output sha256 before → after (16), against `main` at the time of the PR:** `agents/implementor.md` `3244f3a7c89636b9` → `57c4c13bdee48fda`; `agents/reviewer.md` `5fca329a826e7e44` → `c7864087befb5453`; `agents/fixer.md` `b7f6d4a41ddec2c3` → `21753fef96be8e0e`; `agents/manager.md` `ae4f3d63b1f0d926` → `827d0952573d60c5`; `skills/reporting/SKILL.md` `2229ebb859f5e64d` → `613def0f0629d1ae`. `edit-req.md` is not committed; its sha256 prefix is recorded above.
 
 **Follow-up to Revision 11 (second review).** `parse-report.sh` and `file-followups.sh` now pair the backticks of a detail as single-backtick spans (an even count, none adjacent) instead of matching a span anywhere, so text between two spans is never the command. The authored files were not re-run for this: they say "backticked check command" and "before any other backticked text", which the pairing rule implements. `specs/reviewer.md` had a stale shape line and was patched to agree with `agents/reviewer.md`. Known limits, documented in `docs/config.md`: a backticked file path written first is taken as the command, and invisible characters inside a span are not checked.
+
+### Revision 12 (2026-11-01, PR #109): Acceptance items no test can map to; only weakened tests are Critical
+
+**Cause.** Fixers reported `not fixed: needs human decision` on six cards. Five were Acceptance items with no test to map to (HMBWorkout#396, #393 and #390; HMBWorkoutServer#42; HMBWorkoutWebClient#39). One (HMBWorkoutWebClient#19) was a test adapted to the card's required behavior with every assertion intact, which the reviewer flagged `[Critical]` and the fixer could not clear.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/{reviewer,fixer,reporting}.md` and a "Revision 12 requirements" section in `briefs/spec-req-{reviewer,fixer,reporting,manager}.md`. `parse-report.sh` accepts the two new Acceptance map forms.
+
+**Runs.** Four isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.309, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `9caa82076fdf24bb`) and the edited spec (`spec-reporting.md` for the manager, whose rejection table comes from the reporting spec). No run read or edited any file outside its inputs and its target.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 8 edits) | 12 | 0.2131 | `6fe40d4c84ae9d1c` |
+| `agents/fixer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 6 edits) | 10 | 0.1586 | `e4a022f33ec04307` |
+| `skills/reporting/SKILL.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1622 | `bbcc25fe440ad71f` |
+| `agents/manager.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 1 edit) | 5 | 0.2011 | `85b01fcf7ec55df1` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{reviewer,fixer,reporting,manager}.r12.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is an Acceptance map shape or split line, the `CHECKED` or `NOT_APPLICABLE` rule, the mutation scope, the Restored, Adapted and Weakened classes, or the fixer's restore exception. The frontmatter is unchanged. `specs/fixer.md` still had the old split rule and was patched to agree with `agents/fixer.md`. **Kept.**
+
+**Known limits, not re-run.** The frontmatter description of `agents/fixer.md` and the opening of `specs/fixer.md` still say the fixer works without touching existing tests; the restore exception is in the body. `agents/implementor.md` and `specs/implementor.md` keep the old Acceptance map split rule: it describes a reviewer section the implementor never writes.
+
+**Revision cost:** $0.7350.
+
+**Output sha256 before → after (16), against `main` at the time of the PR:** `agents/reviewer.md` `c7864087befb5453` → `6fe40d4c84ae9d1c`; `agents/fixer.md` `21753fef96be8e0e` → `e4a022f33ec04307`; `agents/manager.md` `827d0952573d60c5` → `85b01fcf7ec55df1`; `skills/reporting/SKILL.md` `613def0f0629d1ae` → `bbcc25fe440ad71f`. `edit-req.md` is not committed; its sha256 prefix is recorded above.

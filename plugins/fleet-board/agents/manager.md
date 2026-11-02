@@ -387,7 +387,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 | `bug repro must be a backticked command: <title>` | A bug's repro is backticked. |
 | `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. |
 | `out of scope entry needs a backticked check command or the words no testable check: <entry>` | The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`. |
-| `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. |
+| `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. |
 | `malformed ## Mutation line: <line>` | Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`. |
 | `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line` | Mutation is exactly one line of the two forms. |
 | `## Claim check command must be one backticked command: <value>` | The Claim check `command:` holds one backticked command. |

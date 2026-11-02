@@ -73,7 +73,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
   - **implementor and fixer:** `## PR` containing `#<number>`.
   - **fixer:** also `## Resolutions`, with one line per input finding: `- <finding> :: fixed | not fixed: <why>`.
   - **reviewer:** `## Acceptance map`, `## Mutation` and `## Claim check`:
-    - **Acceptance map:** each line is `- <item text> -> <test file>::<test name>` or `- <item text> -> UNMAPPED`.
+    - **Acceptance map:** each line is `- <item text> -> <test file>::<test name>`, `- <item text> -> UNMAPPED`, ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>`.
     - **Mutation:** either `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`.
     - **Claim check:** either the lines `claim: <text>`, ``command: `<cmd>` ``, `result: <observed>` and `matches: yes|no`, or `skipped: review.verify_claim is off`.
 
@@ -83,7 +83,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 - Every non-blank `## Findings` line is `- [Critical] <text>`, `- [Important] <text>` or `- [Minor] <text>` (that exact spelling, one space after `-`), or exactly `- none`. The section needs one of the two forms, never both.
 - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. A bug's repro is backticked.
 - Resolutions: the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
-- Acceptance map lines are split on the last ` -> `. The test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
+- Acceptance map lines are split on the last ` -> `. The target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
 - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
 - CRLF line endings, tabs and padded headings (`##  Status `) are accepted.
 
@@ -161,7 +161,7 @@ When you re-dispatch, quote the "Rule it enforces" cell for each stderr line. (I
 | `bug repro must be a backticked command: <title>` | A bug's repro is backticked. | ``repro: `node --test test/parse.test.js` `` |
 | `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. | ``- Subtraction :: calc has no subtract(); `node -e "console.log(typeof require('./src/calc.js').subtract)"` should print function`` |
 | `out of scope entry needs a backticked check command or the words no testable check: <entry>` | The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`. | ``- Subtraction :: calc has no subtract(); `node -e "console.log(typeof require('./src/calc.js').subtract)"` should print function`` |
-| `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. | `- adds two numbers -> test/calc.test.js::adds two numbers` |
+| `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. | `- adds two numbers -> test/calc.test.js::adds two numbers` |
 | `malformed ## Mutation line: <line>` | Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`. | `killed: 2 survived: 0 invalid: 0` |
 | `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line` | Mutation is exactly one line of the two forms. | `skipped: review.mutation is off` |
 | `## Claim check command must be one backticked command: <value>` | The Claim check `command:` holds one backticked command. | ``command: `node --test test/calc.test.js` `` |
