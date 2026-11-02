@@ -507,6 +507,19 @@ run_parse --role reviewer "$REPORTS/reviewer-amap-not-applicable-empty.md"
 assert_exit "reviewer-amap-not-applicable-empty: exit 1" 1
 assert_stderr_line "reviewer-amap-not-applicable-empty: quotes the line" "parse-report: malformed ## Acceptance map line: - If the fix needs a schema change, it comes with a migration -> NOT_APPLICABLE:"
 
+run_parse --role reviewer "$REPORTS/reviewer-amap-arrow-in-check.md"
+assert_exit "reviewer-amap-arrow-in-check: exit 0" 0
+assert_jq_exact "reviewer-amap-arrow-in-check: an arrow in the command is not a test mapping" '.acceptance_map[0]' '{"item":"the item","test":null,"command":"grep a -> b::c"}'
+assert_jq_exact "reviewer-amap-arrow-in-check: an arrow in the reason is not a test mapping" '.acceptance_map[1]' '{"item":"the other item","test":null,"not_applicable":"no a -> b::c"}'
+
+run_parse --role reviewer "$REPORTS/reviewer-amap-checked-blank.md"
+assert_exit "reviewer-amap-checked-blank: exit 1" 1
+assert_stderr_contains "reviewer-amap-checked-blank: names the line" "malformed ## Acceptance map line"
+
+run_parse --role reviewer "$REPORTS/reviewer-amap-checked-lowercase.md"
+assert_exit "reviewer-amap-checked-lowercase: exit 1" 1
+assert_stderr_contains "reviewer-amap-checked-lowercase: names the line" "malformed ## Acceptance map line"
+
 # --- an indented finding line is malformed ------------------------------------
 echo "findings-indented"
 run_parse "$REPORTS/findings-indented.md"
