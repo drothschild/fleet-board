@@ -402,6 +402,18 @@ run_parse "$REPORTS/oos-no-separator.md"
 assert_exit "oos-no-separator: exit 1" 1
 assert_stderr_line "oos-no-separator: quotes the entry" "parse-report: out of scope entry needs <title> :: <detail>: Add multiply, calc has no multiply"
 
+run_parse "$REPORTS/oos-no-check.md"
+assert_exit "oos-no-check: exit 1" 1
+assert_stderr_line "oos-no-check: asks for a backticked check command" "parse-report: out of scope entry needs a backticked check command or the words 'no testable check': Add multiply :: calc has no multiply; a later card could add it"
+
+run_parse "$REPORTS/oos-with-check.md"
+assert_exit "oos-with-check: exit 0" 0
+assert_jq "oos-with-check: one Out of scope item" '.out_of_scope | length == 1'
+
+run_parse "$REPORTS/oos-no-testable-check.md"
+assert_exit "oos-no-testable-check: exit 0 (the escape words are accepted)" 0
+assert_jq "oos-no-testable-check: one Out of scope item" '.out_of_scope | length == 1'
+
 run_parse "$REPORTS/oos-entry-after-blank.md"
 assert_exit "oos-entry-after-blank: exit 1" 1
 assert_stderr_line "oos-entry-after-blank: quotes the stray line" "parse-report: stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): - Document calc :: the README does not list the exported functions"
