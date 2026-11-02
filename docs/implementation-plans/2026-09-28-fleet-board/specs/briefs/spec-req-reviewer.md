@@ -242,3 +242,13 @@ required by a named Acceptance item, latest report is the implementor's) or Weak
 (`[Critical]`, everything else, and anything uncertain). A Weakened finding gives the previous
 review SHA. A fixer may restore a test that such a finding names to its content at that SHA,
 and may not otherwise edit an existing test.
+
+## Revision 12 second pass (2026-11-01, from the adversarial review)
+
+`Restored` needs a fixer's Resolutions line naming the test and a SHA, and the whole test at HEAD
+identical to that SHA. A weakened-test finding marked `fixed` is compared with that SHA even if
+the diff since the previous review does not touch the test; a mismatch is `[Critical]` and gives
+the same SHA. `Adapted` also needs a killed mutant when `review.mutation` is true, kept out of
+the `## Mutation` counts. `NOT_APPLICABLE` is only for a condition about the change itself, never
+for behavior under a condition. A `CHECKED` command may be a diff the reviewer reads, and may hold
+` -> `. The report template lists all four Acceptance map forms.

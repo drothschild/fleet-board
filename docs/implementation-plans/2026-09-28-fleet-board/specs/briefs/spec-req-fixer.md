@@ -232,3 +232,8 @@ required by a named Acceptance item, latest report is the implementor's) or Weak
 (`[Critical]`, everything else, and anything uncertain). A Weakened finding gives the previous
 review SHA. A fixer may restore a test that such a finding names to its content at that SHA,
 and may not otherwise edit an existing test.
+
+## Revision 12 second pass (2026-11-01, from the adversarial review)
+
+A restore puts the whole test back (name, declaration and body, or a deleted test or test file)
+to exactly its content at the SHA in the finding. A partial restore is not allowed.

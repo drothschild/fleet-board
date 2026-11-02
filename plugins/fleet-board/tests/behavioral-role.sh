@@ -279,7 +279,7 @@ scenario_review_good() {
 
 scenario_review_unmapped() {
   run_review unmapped.patch .
-  check_jq "AC3.4 an UNMAPPED Acceptance item" "$RUN/report.json" 'any(.acceptance_map[]; .test == null)'
+  check_jq "AC3.4 an UNMAPPED Acceptance item" "$RUN/report.json" 'any(.acceptance_map[]; .test == null and .command == null and .not_applicable == null)'
   check_jq "AC3.4 Important finding names subtract(2, 5) / -3" "$RUN/report.json" \
     'any(.findings[]; .severity == "Important" and ((.text | contains("subtract(2, 5)")) or (.text | contains("-3"))))'
 }
