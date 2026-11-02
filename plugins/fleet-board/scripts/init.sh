@@ -257,6 +257,12 @@ create_needs_human_qa() {
     || die 1 "cannot create label needs-human-qa in $REPO"
 }
 
+create_needs_manual_step() {
+  gh label create needs-manual-step --repo "$REPO" --color d93f0b \
+    --description "fleet-board: dependency needs a manual step" --force >/dev/null \
+    || die 1 "cannot create label needs-manual-step in $REPO"
+}
+
 if [ "$BACKEND" = github-labels ]; then
   for s in $FB_STATES; do
     name="$(fb_state_name "$s")"
@@ -265,6 +271,7 @@ if [ "$BACKEND" = github-labels ]; then
       || die 1 "cannot create label $name in $REPO"
   done
   create_needs_human_qa
+  create_needs_manual_step
 else
   OWNER_EFF="$(fb_cfg board.project_owner)"
   [ -n "$OWNER_EFF" ] || OWNER_EFF="${REPO%%/*}"
@@ -287,6 +294,7 @@ else
     die 1 "project $PROJECT Status field lacks option(s): $LACKING; add it in the project's Status field or map it with $HINT"
   fi
   create_needs_human_qa
+  create_needs_manual_step
 fi
 
 # The bug label (both backends): created only when absent, never overwritten.
