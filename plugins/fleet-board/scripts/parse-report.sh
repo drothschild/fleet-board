@@ -166,11 +166,17 @@ function emit_bug(entry,    n, p, prefixed, repro, expd, obsd) {
 # has_check_span DETAIL: true when the backticks pair up into single-backtick spans
 # (an even number of backticks, none adjacent) and one span holds a non-blank
 # character. file-followups.sh applies the same rule when it drafts Acceptance.
-function has_check_span(d,    n, parts, i) {
+function has_check_span(d,    n, parts, i, b) {
   if (index(d, "``") > 0) return 0
   n = split(d, parts, "`")
   if (n % 2 == 0) return 0
-  for (i = 2; i <= n; i += 2) if (parts[i] ~ /[^ \t]/) return 1
+  for (i = 2; i <= n; i += 2) {
+    # U+00A0 and U+200B (as UTF-8 bytes) are blank, like file-followups.sh
+    b = parts[i]
+    gsub("\302\240", "", b)
+    gsub("\342\200\213", "", b)
+    if (b ~ /[^ \t]/) return 1
+  }
   return 0
 }
 function emit_oos(entry,    i, t, d) {
