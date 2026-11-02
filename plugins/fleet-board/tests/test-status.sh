@@ -13,6 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCRIPT="${SCRIPT_DIR}/../scripts/status.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
+# Calls that count as a board write; the read-only assertions fail on any match.
+READONLY_RE='issue (edit|comment|create|close)|label (create|edit|delete)|project item-[a-z]+|api .*(-f|-F|--field|--raw-field)[ =]|-X (POST|PATCH|PUT|DELETE)|--method'
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
 
@@ -321,7 +323,7 @@ assert_stdout_contains "graph: can start now names the Ready card with no unmet 
 assert_stdout_not_contains "graph: a waiting card is not startable" "can start now: #41"
 GRAPH_CALLS="$(grep -c 'issue list' "$FAKE_GH_DIR/calls.log")"
 if [ "$GRAPH_CALLS" = 5 ]; then pass "graph: one gh list call per column (5)"; else fail "graph: one gh list call per column" "expected 5 issue list calls, got $GRAPH_CALLS"; fi
-if grep -Eq 'issue (edit|comment|create|close)|-X (POST|PATCH|PUT|DELETE)|--method' "$FAKE_GH_DIR/calls.log"; then
+if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then
   fail "graph: read-only" "a mutating gh call was made"
 else pass "graph: read-only (no mutating gh call)"; fi
 
@@ -426,7 +428,7 @@ assert_stdout_contains "forecast: unattended cards" "can finish unattended: #66"
 assert_stdout_contains "forecast: where the run stops" "run stops at: #60 (needs-human-qa), #62 (needs-manual-step), #65 (backlog)"
 assert_stdout_not_contains "forecast: a card nobody depends on is not a gate" "#20"
 assert_stdout_not_contains "forecast: no board sections" "in_review"
-if grep -Eq 'issue (edit|comment|create|close)|-X (POST|PATCH|PUT|DELETE)|--method' "$FAKE_GH_DIR/calls.log"; then
+if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then
   fail "forecast: read-only" "a mutating gh call was made"
 else pass "forecast: read-only (no mutating gh call)"; fi
 
