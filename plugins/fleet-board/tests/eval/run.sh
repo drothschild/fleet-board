@@ -4,9 +4,12 @@
 #
 # For each defect in defects/catalogue.tsv, N times: build a throwaway git repo whose
 # PR (one commit on top of an empty base) is the fixture PR with that defect's patch
-# applied, dispatch the reviewer agent on it with `claude -p --bare` and a fresh
+# applied, dispatch the reviewer agent on it with `claude -p` and a fresh
 # CLAUDE_CONFIG_DIR, and record whether the report names the defect at Critical or
 # Important (parse-result.sh). Prints a catch-rate table per defect class.
+# Not --bare: it removes the Agent tool, so the reviewer could never be dispatched.
+# A run counts only if the transcript shows the dispatch and the report has a
+# ## Findings section; any other run is an error and is left out of the catch rate.
 #
 # Usage: run.sh [--runs N] [--mutation on|off] [--model NAME] [--defect ID]
 #                [--out DIR] [--dry-run]
@@ -18,7 +21,7 @@
 #                    (default: a new directory under $TMPDIR)
 #   --dry-run        print the exact commands, run nothing, exit 0
 #
-# REAL RUNS COST MONEY. Auth for the bare session comes from FB_ISOLATE_SETTINGS
+# REAL RUNS COST MONEY. Auth for the isolated session comes from FB_ISOLATE_SETTINGS
 # (default ~/.config/fleet-board/bare-settings.json, an apiKeyHelper settings file).
 # Exit: 0 ok, 1 a run failed, 2 usage error.
 #
@@ -102,6 +105,12 @@ build_repo() {
   git -C "$repo" -c user.email=eval@example.invalid -c user.name=eval commit -q -m "PR: $pr"
 }
 
+# True when the stream-json transcript $1 shows a dispatch of the reviewer agent.
+reviewer_dispatched() {
+  jq -e 'select(.type == "assistant") | .message.content[]?
+    | select(.type == "tool_use" and .input.subagent_type? == "fleet-board:reviewer")' "$1" >/dev/null 2>&1
+}
+
 RESULTS="${OUT:+$OUT/results.tsv}"
 [ "$DRY" = 1 ] || : > "$RESULTS"
 failed=0
@@ -114,7 +123,7 @@ while IFS="$(printf '\t')" read -r id class pr patch pattern; do
   while [ "$n" -le "$RUNS" ]; do
     repo="$WORK/$id-$n"
     prompt="$WORK/$id-$n.prompt"
-    cmd="cd $repo && CLAUDE_CONFIG_DIR=\"\$(mktemp -d)\" claude -p --bare --settings $SETTINGS --plugin-dir $PLUGIN_DIR --model $MODEL --permission-mode bypassPermissions --max-turns 80 --output-format json \"\$(cat $prompt)\""
+    cmd="cd $repo && CLAUDE_CONFIG_DIR=\"\$(mktemp -d)\" claude -p --settings $SETTINGS --plugin-dir $PLUGIN_DIR --model $MODEL --permission-mode bypassPermissions --max-turns 80 --output-format stream-json --verbose \"\$(cat $prompt)\" </dev/null"
     if [ "$DRY" = 1 ]; then
       echo "# defect=$id class=$class pr=$pr run=$n/$RUNS mutation=$MUTATION model=$MODEL"
       echo "$cmd"
@@ -125,16 +134,18 @@ while IFS="$(printf '\t')" read -r id class pr patch pattern; do
       fi
       write_prompt "$prompt" "$repo" "$pr"
       cfg="$(mktemp -d "${TMPDIR:-/tmp}/fb-eval-cfg.XXXXXX")"
-      (cd "$repo" && CLAUDE_CONFIG_DIR="$cfg" claude -p --bare --settings "$SETTINGS" \
+      (cd "$repo" && CLAUDE_CONFIG_DIR="$cfg" claude -p --settings "$SETTINGS" \
         --plugin-dir "$PLUGIN_DIR" --model "$MODEL" --permission-mode bypassPermissions \
-        --max-turns 80 --output-format json "$(cat "$prompt")" \
-        > "$WORK/$id-$n.json" 2> "$WORK/$id-$n.stderr")
+        --max-turns 80 --output-format stream-json --verbose "$(cat "$prompt")" \
+        > "$WORK/$id-$n.jsonl" 2> "$WORK/$id-$n.stderr" </dev/null)
       rm -rf "$cfg"
-      jq -r '.result // empty' "$WORK/$id-$n.json" > "$WORK/$id-$n.report.md" 2>/dev/null
-      cost="$(jq -r '.total_cost_usd // 0' "$WORK/$id-$n.json" 2>/dev/null || echo 0)"
-      if [ -s "$WORK/$id-$n.report.md" ]; then
+      jq -r 'select(.type == "result") | .result // empty' "$WORK/$id-$n.jsonl" > "$WORK/$id-$n.report.md" 2>/dev/null
+      cost="$(jq -r 'select(.type == "result") | .total_cost_usd // 0' "$WORK/$id-$n.jsonl" 2>/dev/null | tail -1)"
+      [ -n "$cost" ] || cost=0
+      if reviewer_dispatched "$WORK/$id-$n.jsonl" && grep -q '^## Findings' "$WORK/$id-$n.report.md"; then
         verdict="$(bash "$HERE/parse-result.sh" "$WORK/$id-$n.report.md" "$id")"
       else
+        echo "[eval] $id run $n: reviewer not dispatched, or no ## Findings in the report" >&2
         verdict=error; failed=1
       fi
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$class" "$n" "$MODEL" "$MUTATION" "$verdict" "$cost" >> "$RESULTS"
@@ -149,9 +160,16 @@ echo
 echo "| class | model | mutation | caught | runs | catch rate | cost (USD) |"
 echo "|---|---|---|---|---|---|---|"
 LC_ALL=C awk -F'\t' '
-  { runs[$2]++; if ($6 == "caught") c[$2]++; cost[$2] += $7; m[$2] = $4; mu[$2] = $5 }
-  END { for (k in runs) printf "| %s | %s | %s | %d | %d | %.0f%% | %.2f |\n", k, m[k], mu[k], c[k], runs[k], 100 * c[k] / runs[k], cost[k] }
+  { seen[$2] = 1; if ($6 != "error") runs[$2]++; if ($6 == "caught") c[$2]++; cost[$2] += $7; m[$2] = $4; mu[$2] = $5 }
+  END {
+    for (k in seen) {
+      rate = runs[k] ? sprintf("%.0f%%", 100 * c[k] / runs[k]) : "n/a"
+      printf "| %s | %s | %s | %d | %d | %s | %.2f |\n", k, m[k], mu[k], c[k], runs[k], rate, cost[k]
+    }
+  }
 ' "$RESULTS" | sort
 echo
+errored="$(awk -F'\t' '$6 == "error" { n++ } END { print n + 0 }' "$RESULTS")"
+[ "$errored" = 0 ] || echo "$errored run(s) errored and are left out of the catch rate; see the .report.md and .jsonl files in $WORK"
 echo "Per-run results: $RESULTS"
 exit "$failed"

@@ -22,12 +22,12 @@ Defect classes: off-by-one with a test that still passes (`off-by-one`), a test 
 ```bash
 bash plugins/fleet-board/tests/test-eval-fixtures.sh   # fixtures pass, patches apply, suites still pass with each defect
 bash plugins/fleet-board/tests/test-eval-run.sh        # dry run, flags, result parser
-bash plugins/fleet-board/tests/eval/run.sh --dry-run   # prints every claude -p --bare command, runs nothing
+bash plugins/fleet-board/tests/eval/run.sh --dry-run   # prints every claude -p command, runs nothing
 ```
 
 ## Running the eval (paid)
 
-Each run is one `claude -p --bare` reviewer session with a fresh `CLAUDE_CONFIG_DIR`, so no installed plugin, hook or personal instruction is loaded. Auth comes from the settings file in `FB_ISOLATE_SETTINGS` (default `~/.config/fleet-board/bare-settings.json`, an `apiKeyHelper` file), as in the other behavioral suites.
+Each run is one `claude -p` session with a fresh `CLAUDE_CONFIG_DIR`, so no installed plugin, hook or personal instruction is loaded. It is not `--bare`, because `--bare` removes the Agent tool and the session has to dispatch the reviewer. Auth comes from the settings file in `FB_ISOLATE_SETTINGS` (default `~/.config/fleet-board/bare-settings.json`, an `apiKeyHelper` file), as in the other behavioral suites.
 
 ```bash
 cd plugins/fleet-board/tests/eval
@@ -37,7 +37,7 @@ bash run.sh --runs 3 --mutation on  --model sonnet   # repeat for each candidate
 bash run.sh --defect off-by-one --runs 1             # one defect, one run
 ```
 
-Flags: `--runs N` (default 3), `--mutation on|off`, `--model <name>`, `--defect <id>`, `--out <dir>`, `--dry-run`. An unknown flag exits 2. The runner prints a catch-rate table per class and keeps each run's report, transcript and cost in `--out`, with one row per run in `results.tsv` (id, class, run, model, mutation, verdict, cost in USD).
+Flags: `--runs N` (default 3), `--mutation on|off`, `--model <name>`, `--defect <id>`, `--out <dir>`, `--dry-run`. An unknown flag exits 2. The runner prints a catch-rate table per class and keeps each run's report, transcript and cost in `--out`, with one row per run in `results.tsv` (id, class, run, model, mutation, verdict, cost in USD). The verdict is `caught`, `missed` or `error`. A run is an `error` when its transcript shows no dispatch of the reviewer or its report has no `## Findings` section; errored runs are left out of the catch rate and make the runner exit 1.
 
 The runner gives the reviewer the card body, the PR diff and a made-up implementor report; there is no GitHub PR, so the reviewer is told not to call `gh` or `board-comment.sh`.
 
