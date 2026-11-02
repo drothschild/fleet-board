@@ -734,6 +734,41 @@ clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bad2.json"
 assert_exit "after-merge-results: an entry without a command is refused" 1
 assert_eq "after-merge-results: that refused merge writes nothing" "$(input_count)" "0"
 
+# ---------------------------------------------------------------------------
+# blocked-from: the state a card was blocked from
+setup_case
+set_note_json '{"state":"blocked","blocked_from":"in_review"}'
+run_note get 12
+assert_eq "blocked-from: get returns a note with blocked_from in_review unchanged" \
+  "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"in_review"'
+
+setup_case
+set_note_json '{"state":"blocked","blocked_from":"banana"}'
+run_note get 12
+assert_stdout_exact "blocked-from: a note with blocked_from banana is rejected" "{}"
+assert_stderr_exact "blocked-from: the warning names blocked_from" \
+  "fleet-board: warning: ignoring invalid manager note on #12: blocked_from"
+
+setup_case
+set_note_json '{"state":"blocked","blocked_from":null}'
+run_note get 12
+assert_eq "blocked-from: a note with blocked_from null is accepted" \
+  "$(jq -c .state <<<"$LAST_OUT" 2>/dev/null)" '"blocked"'
+setup_case
+set_note_json '{"state":"blocked"}'
+run_note get 12
+assert_eq "blocked-from: a note with no blocked_from key is accepted" \
+  "$(jq -c .state <<<"$LAST_OUT" 2>/dev/null)" '"blocked"'
+
+setup_case
+set_note_json '{"state":"blocked"}'
+printf '{"blocked_from":"in_progress"}\n' > "$FAKE_GH_DIR/bf1.json"
+printf '{"round":2}\n' > "$FAKE_GH_DIR/bf2.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bf1.json"; assert_exit "blocked-from: first merge exit" 0; feed_back
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bf2.json"; assert_exit "blocked-from: second merge exit" 0
+assert_eq "blocked-from: merge keeps blocked_from across a merge that does not mention it" \
+  "$(jq -c .blocked_from <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '"in_progress"'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

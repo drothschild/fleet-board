@@ -41,6 +41,10 @@
 # get, parse, merge and put read them as action_failures and
 # last_action_error (the new key wins when both are present) and drop them.
 #
+# blocked_from (null, or ready, in_progress or in_review) is the state the
+# manager blocked the card from; accept.sh moves the card back to it. get
+# rejects any other value.
+#
 # accepted (null, or {"login", "at", "sha"}) is written by accept.sh: who
 # accepted the card's blocked change, when, and at which head. tick-plan.sh
 # honors it only when login is the authenticated one.
@@ -143,6 +147,7 @@ invalid_field() {
     elif (.implementor_attempts | nint | not) then "implementor_attempts"
     elif (.action_failures | . == null or (int and . >= 0) | not) then "action_failures"
     elif (.last_action_error | . == null or (type == "string" and clean) | not) then "last_action_error"
+    elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review" | not) then "blocked_from"
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
             and (.at | type == "string" and clean) and (.sha | type == "string" and test("\\A[0-9a-f]+\\z"))) | not) then "accepted"
     elif (.deps_commented | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+\\z"))) | not) then "deps_commented"
