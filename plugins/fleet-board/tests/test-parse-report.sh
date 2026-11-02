@@ -491,6 +491,22 @@ assert_exit "reviewer-amap-arrow-in-item --role reviewer: exit 0" 0
 assert_jq_exact "reviewer-amap-arrow-in-item: item keeps its arrow" '.acceptance_map[0].item' '"f(x) -> y is returned"'
 assert_jq_exact "reviewer-amap-arrow-in-item: test is the last arrow's target" '.acceptance_map[0].test' '"test/a.test.js::t"'
 
+# --- Acceptance items no test can map to ---------------------------------------
+echo "reviewer-amap-checked"
+run_parse --role reviewer "$REPORTS/reviewer-amap-checked.md"
+assert_exit "reviewer-amap-checked --role reviewer: exit 0" 0
+assert_jq_exact "reviewer-amap-checked: a test entry keeps its shape" '.acceptance_map[0]' '{"item":"subtract(5, 2) returns 3","test":"test/calc.test.js::subtract(5, 2) returns 3"}'
+assert_jq_exact "reviewer-amap-checked: CHECKED has no test and names the command" '.acceptance_map[1]' '{"item":"npm run typecheck exits 0","test":null,"command":"npm run typecheck"}'
+assert_jq_exact "reviewer-amap-checked: NOT_APPLICABLE has no test and gives the reason" '.acceptance_map[2]' '{"item":"If the fix needs a schema change, it comes with a migration","test":null,"not_applicable":"the diff changes no schema file"}'
+
+run_parse --role reviewer "$REPORTS/reviewer-amap-checked-no-backticks.md"
+assert_exit "reviewer-amap-checked-no-backticks: exit 1" 1
+assert_stderr_line "reviewer-amap-checked-no-backticks: quotes the line" "parse-report: malformed ## Acceptance map line: - npm run typecheck exits 0 -> CHECKED: npm run typecheck::ran"
+
+run_parse --role reviewer "$REPORTS/reviewer-amap-not-applicable-empty.md"
+assert_exit "reviewer-amap-not-applicable-empty: exit 1" 1
+assert_stderr_line "reviewer-amap-not-applicable-empty: quotes the line" "parse-report: malformed ## Acceptance map line: - If the fix needs a schema change, it comes with a migration -> NOT_APPLICABLE:"
+
 # --- an indented finding line is malformed ------------------------------------
 echo "findings-indented"
 run_parse "$REPORTS/findings-indented.md"
