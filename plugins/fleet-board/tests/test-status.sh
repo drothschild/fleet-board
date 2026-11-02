@@ -485,6 +485,69 @@ assert_stdout_not_contains "forecast chain: a card depending on a Backlog card i
 run_check "$SCRIPT" --forecast --all
 assert_exit "forecast with --all: usage error" 2
 
+# the label --forecast reads is one init.sh creates
+INIT_SCRIPT="${SCRIPT_DIR}/../scripts/init.sh"
+if grep -q 'gh label create needs-manual-step' "$INIT_SCRIPT" \
+   && grep -q 'needs-manual-step' "$SCRIPT"; then
+  pass "forecast: needs-manual-step label read by status.sh is created by init.sh"
+else fail "forecast: needs-manual-step label read by status.sh is created by init.sh" "init.sh does not create it"; fi
+
+# forecast-label-created-by-init: run init.sh against the fake gh on each
+# backend and count the `gh label create needs-manual-step --force` calls it
+# really makes (not a grep of its source), so status.sh --forecast's label exists.
+INIT_FIXTURES="$SCRIPT_DIR/../fixtures/gh/projects"
+# init_label_creates <backend args...>: run init.sh in a fresh fake-gh dir;
+# print the number of --force creates of needs-manual-step, or "exit <rc>"
+init_label_creates() {
+  local gh_dir target routes rc n f
+  gh_dir="$(mktemp -d)"; target="$(mktemp -d)"
+  CLEANUP_DIRS+=("$gh_dir" "$target")
+  mkdir -p "$gh_dir/bin"
+  ln -s "$SCRIPT_DIR/fake-gh.sh" "$gh_dir/bin/gh"
+  routes="$gh_dir/routes.txt"
+  printf '[]\n' > "$gh_dir/label-list-empty.json"
+  {
+    printf 'auth status\t0\t%s\n' "$INIT_FIXTURES/auth-status-ok.txt"
+    printf 'project field-list 1 --owner drothschild --format json*\t0\t%s\n' "$INIT_FIXTURES/field-list-with-blocked.json"
+    printf 'label list --repo * --search bug --json name*\t0\t%s\n' "$gh_dir/label-list-empty.json"
+    printf 'label create*\t0\t-\n'
+  } > "$routes"
+  ( unset FLEET_BOARD_CONFIG || true
+    cd "$gh_dir" && PATH="$gh_dir/bin:$ORIG_PATH" FAKE_GH_DIR="$gh_dir" FAKE_GH_ROUTES="$routes" \
+      "$BASH_EXE" "$INIT_SCRIPT" "$@" --dir "$target" >/dev/null 2>&1 )
+  rc=$?
+  if [ "$rc" -ne 0 ]; then echo "exit $rc"; return; fi
+  n=0
+  for f in "$gh_dir"/argv/*; do
+    [ -f "$f" ] || continue
+    [ "$(sed -n 1p "$f")" = label ] && [ "$(sed -n 2p "$f")" = create ] \
+      && [ "$(sed -n 3p "$f")" = needs-manual-step ] && grep -Fxq -- --force "$f" \
+      && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+got="$(init_label_creates --backend github-projects --repo drothschild/HMBWorkout --project 1 \
+  --state "in_progress=In progress" --state "in_review=In review" \
+  --state "human_qa=Require Human Inteteraction" --state "wont_do=Won't Do")"
+if [ "$got" = 1 ]; then
+  pass "forecast-label-created-by-init: init.sh (github-projects) creates needs-manual-step once"
+else
+  fail "forecast-label-created-by-init: init.sh (github-projects) creates needs-manual-step once" "got: $got"
+fi
+got="$(init_label_creates --backend github-labels --repo acme/toy --test-one "bash {file}")"
+if [ "$got" = 1 ]; then
+  pass "forecast-label-created-by-init: init.sh (github-labels) creates needs-manual-step once"
+else
+  fail "forecast-label-created-by-init: init.sh (github-labels) creates needs-manual-step once" "got: $got"
+fi
+# the label init.sh creates is the one --forecast reads
+if grep -Fq 'blocks("needs-manual-step")' "$SCRIPT"; then
+  pass "forecast-label-created-by-init: status.sh --forecast reads needs-manual-step"
+else
+  fail "forecast-label-created-by-init: status.sh --forecast reads needs-manual-step" "no blocks(\"needs-manual-step\") in status.sh"
+fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
