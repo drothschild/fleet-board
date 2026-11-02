@@ -168,7 +168,8 @@ while IFS= read -r item; do
   else
     # Acceptance is drafted from the first backticked command in the detail;
     # without one there is no testable bullet, so the card goes to Backlog
-    cmd="$(jq -r '(.detail | capture("`(?<c>[^`]+)`") | .c) // empty' <<<"$item" 2>/dev/null)"
+    # The words "no testable check" mean Backlog even when the detail also backticks a path.
+    cmd="$(jq -r 'if (.detail | test("(^|[^a-z])no testable check([^a-z]|$)"; "i")) then empty else (.detail | capture("`(?<c>[^`]*[^` \\t][^`]*)`") | .c) // empty end' <<<"$item" 2>/dev/null)"
     jq -r --arg c "$CARD" --arg p "$PR" --arg cmd "$cmd" '
       (if .detail == "" then "" else "\(.detail)\n\n" end)
       + (if $cmd == "" then "" else "## Acceptance\n- `\($cmd)` gives the result the description above expects\n\n" end)

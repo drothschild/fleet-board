@@ -58,7 +58,7 @@ In every example below, `commands.test_one` is `node --test {file}` and one conc
 ## For the card
 <free text for the card. Optional sub-lists:>
 Out of scope:
-- <title> :: <one-line description with a backticked check command and its expected result>
+- <title> :: <one-line description>
 Bugs found:
 - <title> :: repro: `<command>` :: expected: <text> :: observed: <text>
 
@@ -81,7 +81,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 
 - Any heading appears at most once. `## Status` holds exactly one non-blank line.
 - Every non-blank `## Findings` line is `- [Critical] <text>`, `- [Important] <text>` or `- [Minor] <text>` (that exact spelling, one space after `-`), or exactly `- none`. The section needs one of the two forms, never both.
-- `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command (what a person runs to see the work is done) or the words `no testable check`; the manager drafts the follow-up card's Acceptance from that command, and with the words the card is filed in Backlog for a person to triage. A bug's repro is backticked.
+- `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. A bug's repro is backticked.
 - Resolutions: the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
 - Acceptance map lines are split on the last ` -> `. The test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
 - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
@@ -118,7 +118,6 @@ Exit 1. Each message comes after `parse-report: `, with `<...>` filled in from t
 - `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>`
 - `bug repro must be a backticked command: <title>`
 - `out of scope entry needs <title> :: <detail>: <entry>`
-- `out of scope entry needs a backticked check command or the words no testable check: <entry>`
 - `malformed ## Acceptance map line: <line>`
 - `malformed ## Mutation line: <line>`
 - `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line`
@@ -159,8 +158,7 @@ When you re-dispatch, quote the "Rule it enforces" cell for each stderr line. (I
 | `empty sub-list: Bugs found:` | A `Bugs found:` header needs at least one entry. | `Bugs found:` directly followed by a four-part bug line |
 | `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>` | Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. | `- Subtraction :: calc has no subtract()` on the line right after `Out of scope:` |
 | `bug repro must be a backticked command: <title>` | A bug's repro is backticked. | ``repro: `node --test test/parse.test.js` `` |
-| `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command (what a person runs to see the work is done) or the words `no testable check`; the manager drafts the follow-up card's Acceptance from that command, and with the words the card is filed in Backlog for a person to triage. | `- Subtraction :: calc has no subtract()` |
-| `out of scope entry needs a backticked check command or the words no testable check: <entry>` | The detail names a backticked command a person can run to check the work, or says `no testable check`. | `- Subtraction :: calc has no subtract(); `node -e "console.log(typeof require('./src/calc.js').subtract)"` should print function` |
+| `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. | `- Subtraction :: calc has no subtract()` |
 | `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. | `- adds two numbers -> test/calc.test.js::adds two numbers` |
 | `malformed ## Mutation line: <line>` | Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`. | `killed: 2 survived: 0 invalid: 0` |
 | `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line` | Mutation is exactly one line of the two forms. | `skipped: review.mutation is off` |
@@ -202,7 +200,7 @@ done
 ## For the card
 Added add() with one test per Acceptance item.
 Out of scope:
-- Subtraction :: calc has no subtract(); `node -e "console.log(typeof require('./src/calc.js').subtract)"` should print function
+- Subtraction :: calc has no subtract() yet
 
 ## PR
 Draft PR #7 opened from branch fleet/card-12.

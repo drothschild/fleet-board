@@ -93,7 +93,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
     - If `parse-report.sh` fails, fix the file with Edit or Write and repeat that check-and-post Bash call, posting only on exit 0.
     - Your final reply is exactly the posted report text.
 
-12. **List out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description with a backticked check command and its expected result>` entry per item. Do not do it silently in this card, and do not leave it unmentioned. The manager turns each entry into a card.
+12. **List out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description>` entry per item. Do not do it silently in this card, and do not leave it unmentioned. The manager turns each entry into a card.
 
 13. **List bugs you observed outside the card's diff.** A defect you ran into outside your own diff goes under `Bugs found:`, as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``. Examples: a pre-existing failing behavior, or a lint error in an untouched file.
     - The repro is a command you actually ran.
@@ -136,7 +136,7 @@ You produce one report per dispatch. Post it on the card through `board-comment.
 ## For the card
 <free text for the card. Optional sub-lists:>
 Out of scope:
-- <title> :: <one-line description with a backticked check command and its expected result>
+- <title> :: <one-line description>
 Bugs found:
 - <title> :: repro: `<command>` :: expected: <text> :: observed: <text>
 
@@ -217,7 +217,7 @@ For the other block causes, the finding names that cause, and the `VERIFIED:` li
 - **Line rules** (`parse-report.sh` rejects every violation, one `parse-report: `-prefixed stderr line each):
   - Any heading appears at most once. `## Status` holds exactly one non-blank line.
   - Every non-blank `## Findings` line is `- [Critical|Important|Minor] <text>` (that exact spelling, one space after `-`) or exactly `- none`. The section needs one of the two forms, never both.
-  - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command (what a person runs to see the work is done) or the words `no testable check`; the manager drafts the follow-up card's Acceptance from that command, and with the words the card is filed in Backlog for a person to triage. A bug's repro is backticked.
+  - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. A bug's repro is backticked.
   - Resolutions: the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
   - Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
   - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
@@ -247,7 +247,6 @@ The role's sections are required; Status must be one of the role's two values; t
 - `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>`
 - `bug repro must be a backticked command: <title>`
 - `out of scope entry needs <title> :: <detail>: <entry>`
-- `out of scope entry needs a backticked check command or the words no testable check: <entry>`
 - `malformed ## Acceptance map line: <line>`
 - `malformed ## Mutation line: <line>`
 - `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line`

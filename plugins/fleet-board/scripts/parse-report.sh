@@ -168,7 +168,7 @@ function emit_oos(entry,    i, t, d) {
   t = (i > 0) ? trim(substr(entry, 1, i - 1)) : ""
   d = (i > 0) ? trim(substr(entry, i + 4)) : ""
   if (t == "" || d == "") { err("out of scope entry needs <title> :: <detail>: " entry); return }
-  if (d !~ /`[^`]+`/ && tolower(d) !~ /no testable check/) {
+  if (d !~ /`[^`]*[^` \t][^`]*`/ && tolower(d) !~ /(^|[^a-z])no testable check([^a-z]|$)/) {
     err("out of scope entry needs a backticked check command or the words no testable check: " entry); return
   }
   print "oos\t" t "\t" d

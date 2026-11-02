@@ -99,7 +99,7 @@ Run every command inside the review worktree at the PR head unless a step says o
    - A defect you observe **outside the PR's diff** while running tests, typecheck, lint or the claim goes under `Bugs found:` in `## For the card`. An example is a pre-existing failing behavior in code the PR did not touch. Write it as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``. The repro is a command you actually ran, and `observed` is what it printed.
    - A defect in the PR's own diff, including behavior the PR introduced, is always a Finding, never a Bug found.
    - Do not file issues for bugs. The manager does that.
-   - You may list work worth doing that the card does not cover under `Out of scope:` as `- <title> :: <one-line description with a backticked check command and its expected result>`.
+   - You may list work worth doing that the card does not cover under `Out of scope:` as `- <title> :: <one-line description>`.
 
 10. **Clean worktree before posting.** Revert every mutation before you post the report. Run `git status --porcelain` in the review worktree and confirm it prints nothing. Create the report file with `mktemp`, outside the review worktree, so it never dirties the tree.
 
@@ -143,7 +143,7 @@ The general shape every report follows:
 ## For the card
 <free text for the card. Optional sub-lists:>
 Out of scope:
-- <title> :: <one-line description with a backticked check command and its expected result>
+- <title> :: <one-line description>
 Bugs found:
 - <title> :: repro: `<command>` :: expected: <text> :: observed: <text>
 
@@ -168,7 +168,7 @@ Your template, with every reviewer section filled in:
 reviewed head: <sha>
 <plain free-text lines: per-mutant account, weak-assertion notes. Optional sub-lists:>
 Out of scope:
-- <title> :: <one-line description with a backticked check command and its expected result>
+- <title> :: <one-line description>
 Bugs found:
 - <title> :: repro: `<command>` :: expected: <text> :: observed: <text>
 
@@ -277,7 +277,7 @@ VERIFIED: `node --test test/calc.test.js` -> 1 passing test
 
 - Any heading appears at most once. `## Status` holds exactly one non-blank line.
 - Every non-blank `## Findings` line is `- [Critical|Important|Minor] <text>` (that exact spelling, one space after `-`) or exactly `- none`. The section needs one of the two forms, never both.
-- `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry. A blank line or a text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command (what a person runs to see the work is done) or the words `no testable check`; the manager drafts the follow-up card's Acceptance from that command, and with the words the card is filed in Backlog for a person to triage. A bug's repro is backticked.
+- `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry. A blank line or a text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. A bug's repro is backticked.
 - Resolutions (fixer only): the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
 - Acceptance map lines are split on the last ` -> `. The test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
 - The `VERIFIED:` integer ends at whitespace or the line end, so `-> 3abc` and `-> 3.5` are rejected.
@@ -311,7 +311,6 @@ VERIFIED: `node --test test/calc.test.js` -> 1 passing test
 - `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>`
 - `bug repro must be a backticked command: <title>`
 - `out of scope entry needs <title> :: <detail>: <entry>`
-- `out of scope entry needs a backticked check command or the words no testable check: <entry>`
 - `malformed ## Acceptance map line: <line>`
 - `malformed ## Mutation line: <line>`
 - `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line`
