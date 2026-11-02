@@ -23,6 +23,11 @@ Substitute the real base directory announced when the skill loaded.
 Read the spec and every plan named in the arguments. Note each plan's repo (`owner/repo`).
 `--status ready` in the arguments is passed through; the default is Backlog.
 
+Read each plan whatever its shape. `import-plan.sh parse` is an optional shortcut, not a
+requirement: it applies only to plans with `## Task N: <title>` headings and `Files:` /
+`Test steps:` blocks. For any other plan layout, group the tasks yourself and copy the
+test steps verbatim as acceptance.
+
 ## Step 2: Group tasks into cards
 
 Group plan tasks into PR-sized cards (one reviewable PR each). For each card write:
