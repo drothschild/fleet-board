@@ -270,8 +270,6 @@ if [ "$BACKEND" = github-labels ]; then
       --description "fleet-board state: $s" --force >/dev/null \
       || die 1 "cannot create label $name in $REPO"
   done
-  create_needs_human_qa
-  create_needs_manual_step
 else
   OWNER_EFF="$(fb_cfg board.project_owner)"
   [ -n "$OWNER_EFF" ] || OWNER_EFF="${REPO%%/*}"
@@ -293,9 +291,16 @@ else
   if [ -n "$LACKING" ]; then
     die 1 "project $PROJECT Status field lacks option(s): $LACKING; add it in the project's Status field or map it with $HINT"
   fi
+fi
+
+# The routing labels (both backends): needs-human-qa routes a card to Human
+# QA, and needs-manual-step is the label status.sh --forecast reads. One call
+# site, so neither backend can skip them.
+create_routing_labels() {
   create_needs_human_qa
   create_needs_manual_step
-fi
+}
+create_routing_labels
 
 # The bug label (both backends): created only when absent, never overwritten.
 # The search is fuzzy (it also returns bugfix, not-a-bug, ...), so list up to
