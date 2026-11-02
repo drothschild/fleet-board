@@ -204,7 +204,7 @@ run_parse "$REPORTS/with-out-of-scope.md"
 assert_exit "with-out-of-scope: exit 0" 0
 assert_jq "with-out-of-scope: .out_of_scope | length == 2" '.out_of_scope | length == 2'
 assert_jq "with-out-of-scope: .out_of_scope[0].title is non-empty" '(.out_of_scope[0].title | type) == "string" and (.out_of_scope[0].title | length) > 0'
-assert_jq_exact "with-out-of-scope: .out_of_scope[0] splits title and detail" '.out_of_scope[0]' '{"title":"Add multiply","detail":"calc has no multiply; a later card could add it"}'
+assert_jq_exact "with-out-of-scope: .out_of_scope[0] splits title and detail" '.out_of_scope[0]' '{"title":"Add multiply","detail":"calc has no multiply; `grep -c multiply src/calc.js` should print 1"}'
 assert_jq_exact "with-out-of-scope: .bugs == []" '.bugs' '[]'
 
 run_parse "$REPORTS/with-bugs.md"
@@ -231,7 +231,7 @@ assert_jq_exact "with-oos-and-bugs: the bug is parsed" '.bugs[0].title' '"add dr
 run_parse "$REPORTS/with-bugs-then-oos.md"
 assert_exit "with-bugs-then-oos: exit 0 (Out of scope: ends the Bugs found list)" 0
 assert_jq "with-bugs-then-oos: .bugs | length == 1" '.bugs | length == 1'
-assert_jq_exact "with-bugs-then-oos: the Out of scope item is parsed" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply; a later card could add it"}]'
+assert_jq_exact "with-bugs-then-oos: the Out of scope item is parsed" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply; `grep -c multiply src/calc.js` should print 1"}]'
 
 # --- findings counting -----------------------------------------------------
 echo "findings counting"
@@ -404,7 +404,7 @@ assert_stderr_line "oos-no-separator: quotes the entry" "parse-report: out of sc
 
 run_parse "$REPORTS/oos-no-check.md"
 assert_exit "oos-no-check: exit 1" 1
-assert_stderr_line "oos-no-check: asks for a backticked check command" "parse-report: out of scope entry needs a backticked check command or the words 'no testable check': Add multiply :: calc has no multiply; a later card could add it"
+assert_stderr_line "oos-no-check: asks for a backticked check command" "parse-report: out of scope entry needs a backticked check command or the words no testable check: Add multiply :: calc has no multiply; a later card could add it"
 
 run_parse "$REPORTS/oos-with-check.md"
 assert_exit "oos-with-check: exit 0" 0
@@ -425,7 +425,7 @@ assert_stderr_line "bugs-indented-entry: the list is then empty" "parse-report: 
 
 run_parse "$REPORTS/card-free-bullets.md"
 assert_exit "card-free-bullets: exit 0 (bullets under a text line are free text)" 0
-assert_jq_exact "card-free-bullets: one Out of scope item" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply"}]'
+assert_jq_exact "card-free-bullets: one Out of scope item" '.out_of_scope' '[{"title":"Add multiply","detail":"calc has no multiply; `grep -c multiply src/calc.js` should print 1"}]'
 
 # --- Resolutions separators (review cycle 1: M4) ---------------------------
 echo "Resolutions separators"

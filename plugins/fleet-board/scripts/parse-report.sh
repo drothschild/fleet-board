@@ -111,7 +111,8 @@ fi
 #                    header with no entry is an error. A "- " line that follows
 #                    a list only after blank lines, or an indented "  - " line
 #                    inside a list, is an error (it would otherwise be lost).
-#                    Out of scope entry: "<title> :: <detail>", both non-empty.
+#                    Out of scope entry: "<title> :: <detail>", both non-empty, the detail holding
+#                    a backticked check command (or the words "no testable check").
 #                    Bug entry: "<title> :: repro: `<cmd>` :: expected: <x> ::
 #                    observed: <y>", all non-empty, the repro backticked.
 #   ## PR            first "#<n>" is the PR number.
@@ -167,6 +168,9 @@ function emit_oos(entry,    i, t, d) {
   t = (i > 0) ? trim(substr(entry, 1, i - 1)) : ""
   d = (i > 0) ? trim(substr(entry, i + 4)) : ""
   if (t == "" || d == "") { err("out of scope entry needs <title> :: <detail>: " entry); return }
+  if (d !~ /`[^`]+`/ && tolower(d) !~ /no testable check/) {
+    err("out of scope entry needs a backticked check command or the words no testable check: " entry); return
+  }
   print "oos\t" t "\t" d
 }
 # res_split ENTRY: find the first " :: " followed by an outcome; sets RES_ITEM
