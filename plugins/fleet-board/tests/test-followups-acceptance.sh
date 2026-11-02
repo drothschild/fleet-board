@@ -289,6 +289,32 @@ fi
 assert_eq "untestable: one issue comment on the new card" "$(calls_starting issue comment 78)" 1
 case "$(bodies_of issue comment 78)" in *"testable"*"Backlog"*|*"Backlog"*"testable"*) pass "untestable: comment says why" ;; *) fail "untestable: comment says why" "$(bodies_of issue comment 78)" ;; esac
 
+# --- escape words beat a backticked span: Backlog, no Acceptance
+setup_case
+{ printf 'issue create --repo acme/toy --title Rename the module *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+report '[{"title":"Rename the module","detail":"no testable check; a naming call, see `README.md`"}]' '[]'
+run_ff
+assert_exit "escape-words: exit" 0
+F="$(create_file)"
+if [ -n "$F" ]; then
+  assert_true "escape-words: filed in fleet:backlog" has_pair "$F" --label fleet:backlog
+else
+  fail "escape-words: filed in fleet:backlog" "no issue create call"
+fi
+case "$(all_bodies)" in *"## Acceptance"*) fail "escape-words: body has no ## Acceptance" "$(all_bodies)" ;; *) pass "escape-words: body has no ## Acceptance" ;; esac
+
+# --- a blank backtick span drafts no Acceptance: Backlog
+setup_case
+{ printf 'issue create --repo acme/toy --title Tidy blank *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+report '[{"title":"Tidy blank","detail":"run ` ` to see"}]' '[]'
+run_ff
+F="$(create_file)"
+if [ -n "$F" ]; then
+  assert_true "blank-span: filed in fleet:backlog" has_pair "$F" --label fleet:backlog
+else
+  fail "blank-span: filed in fleet:backlog" "no issue create call"
+fi
+
 # --- dedupe against a recently closed card, case-insensitively
 setup_case
 RECENT="$(date -u -v-3d +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '3 days ago' +%Y-%m-%dT%H:%M:%SZ)"

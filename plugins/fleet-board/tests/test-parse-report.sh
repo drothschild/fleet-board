@@ -406,6 +406,12 @@ run_parse "$REPORTS/oos-no-check.md"
 assert_exit "oos-no-check: exit 1" 1
 assert_stderr_line "oos-no-check: asks for a backticked check command" "parse-report: out of scope entry needs a backticked check command or the words no testable check: Add multiply :: calc has no multiply; a later card could add it"
 
+run_parse "$REPORTS/oos-blank-backticks.md"
+assert_exit "oos-blank-backticks: exit 1 (a blank span is not a command)" 1
+
+run_parse "$REPORTS/oos-checkout-word.md"
+assert_exit "oos-checkout-word: exit 1 (no testable checkout is not the escape words)" 1
+
 run_parse "$REPORTS/oos-with-check.md"
 assert_exit "oos-with-check: exit 0" 0
 assert_jq "oos-with-check: one Out of scope item" '.out_of_scope | length == 1'
