@@ -448,6 +448,13 @@ assert_stdout_exact "forecast: nothing to warn about: one line" "forecast: nothi
 run_check "$SCRIPT" --forecast --all
 assert_exit "forecast with --all: usage error" 2
 
+# the label --forecast reads is one init.sh creates
+INIT_SCRIPT="${SCRIPT_DIR}/../scripts/init.sh"
+if grep -q 'gh label create needs-manual-step' "$INIT_SCRIPT" \
+   && grep -q 'needs-manual-step' "$SCRIPT"; then
+  pass "forecast: needs-manual-step label read by status.sh is created by init.sh"
+else fail "forecast: needs-manual-step label read by status.sh is created by init.sh" "init.sh does not create it"; fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
