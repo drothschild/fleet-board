@@ -331,8 +331,8 @@ stagger() {
     # a lock dir older than 10 s is stale (its holder holds it for milliseconds)
     mt="$(stat -c %Y "$TOKEN_LOCK.d" 2>/dev/null || stat -f %m "$TOKEN_LOCK.d" 2>/dev/null)"
     if [[ "$mt" =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - mt )) -gt 10 ]; then
-      rmdir "$TOKEN_LOCK.d" 2>/dev/null
-      continue
+      # only retry at once when the removal worked; otherwise fall through so the 5 s bound holds
+      if rmdir "$TOKEN_LOCK.d" 2>/dev/null; then continue; fi
     fi
     if [ "$i" -gt 50 ]; then warn "cannot take the token lock $TOKEN_LOCK.d; starting the tick unstaggered"; return 0; fi
     sleep 0.1
