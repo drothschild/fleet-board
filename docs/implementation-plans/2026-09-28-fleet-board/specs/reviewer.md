@@ -32,10 +32,12 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 0. **Record the head.** Run `git rev-parse HEAD` in the review worktree and record the SHA. The report's `## For the card` contains a plain line `reviewed head: <sha>` with that SHA, so the manager can pass it as the previous review SHA in the next round.
 
 1. **Map every Acceptance item to a test in the diff.**
-   - Every bullet of the card's `Acceptance` section produces exactly one line in `## Acceptance map`: `- <item text> -> <test file>::<test name>` when a test in the diff maps to it, or `- <item text> -> UNMAPPED` when none does.
+   - Every bullet of the card's `Acceptance` section produces exactly one line in `## Acceptance map`: `- <item text> -> <test file>::<test name>` when a test in the diff maps to it, ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>` when one of the two rules below allows it, or `- <item text> -> UNMAPPED` otherwise.
    - An item maps to a test in the diff when that test **exercises the item's behavior**: it calls the code under the item's inputs or scenario. A test that calls `subtract(5, 2)` maps to "subtract(5, 2) returns 3" even if its only assertion is `typeof subtract(5, 2) === 'number'`. Whether the assertion actually pins the behavior is judged by the mutation step (step 3), not by the map: a weak mapped test lets its mutant survive, and the survivor is the `[Critical]` finding.
    - An item is `UNMAPPED` only when no test in the diff exercises it at all. So with `review.mutation` on, a weak test gets a mutant, never an `UNMAPPED` line that skips mutation. The reviewer may additionally note a weak assertion in `## For the card` or as a `[Minor]` finding, but never instead of the mutant.
    - Every `UNMAPPED` item produces one `[Important]` finding naming the item, e.g. `- [Important] Acceptance item "subtract(2, 5) returns -3" has no test in the diff`.
+   - **`CHECKED`** is for an item that no test could exercise because it asks for a command's result (`npm run typecheck exits 0`) or states a condition of the repository (`No existing test is deleted, skipped or weakened`). The reviewer runs one command in this dispatch at the PR head that decides the item, and names it in the line. The command is one backticked command with no backtick and no ` -> ` inside it, and it never runs the whole suite. It records what the command printed in `## For the card`. If the command shows the item is not met, the item also produces one `[Important]` finding quoting the output. `CHECKED` is never used for behavior a test could exercise: that item is mapped to a test or is `UNMAPPED`.
+   - **`NOT_APPLICABLE`** is for an item that is conditional in its own words (`If the fix needs a schema change, it comes with a migration`) when the diff shows the condition is false. The reason says what in the diff shows it. It produces no finding. An item whose named code or feature does not exist is not this case: it is `UNMAPPED`, and a person decides.
 
 2. **Run only the test files the PR touched.**
    - The touched test files are the files in the PR diff that match `test_paths` and still exist at HEAD (the reviewer may list them with `git diff --name-only <reference SHA>..HEAD -- <test_paths>` in round 1, or from the PR diff).
@@ -44,12 +46,12 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 
 3. **Mutation** (`review.mutation`).
    - **When `review.mutation` is false:** no mutant is made, and `## Mutation` contains exactly the line `skipped: review.mutation is off`.
-   - **When `review.mutation` is true:** for every mapped Acceptance item (UNMAPPED items get no mutant), the reviewer makes exactly one mutant: a small change in the **implementation code** that the mapped test covers, chosen so that it breaks that item's behavior (for example flipping an operator, changing a constant, or removing a branch). Test files are never mutated.
+   - **When `review.mutation` is true:** for every Acceptance item mapped to a test (`UNMAPPED`, `CHECKED` and `NOT_APPLICABLE` items get no mutant), the reviewer makes exactly one mutant: a small change in the **implementation code** that the mapped test covers, chosen so that it breaks that item's behavior (for example flipping an operator, changing a constant, or removing a branch). Test files are never mutated.
      - It runs the mapped test's file through its test command and expects red.
      - It restores the mutated file with `git checkout -- <file>`, then re-runs the same test command and confirms it is green again before making the next mutant.
      - It classifies the mutant as exactly one of: **killed** (the mapped test went red), **survived** (the mapped test stayed green), or **invalid** (the mutant did not compile or run, so the test result says nothing about the assertion). If the mapped test was already red on the unmutated code, no meaningful mutant is possible and the item is counted invalid; the red test is already a step-2 finding.
      - Each survivor produces one `[Critical]` finding naming the item, the file mutated, the change made and the test that stayed green.
-     - `## Mutation` contains exactly one line, `killed: <n> survived: <n> invalid: <n>`, where the three counts sum to the number of mapped Acceptance items. A per-mutant account (item, file, change, command, outcome) goes in `## For the card` as plain, non-list lines (for example `mutant 1: src/calc.js "a - b" to "a + b"; node --test test/calc.test.js went red; killed`).
+     - `## Mutation` contains exactly one line, `killed: <n> survived: <n> invalid: <n>`, where the three counts sum to the number of Acceptance items mapped to a test. A per-mutant account (item, file, change, command, outcome) goes in `## For the card` as plain, non-list lines (for example `mutant 1: src/calc.js "a - b" to "a + b"; node --test test/calc.test.js went red; killed`).
      - **When `worktrees.mutate_on_copy` is true:** the reviewer copies the review worktree to a temporary directory, makes and runs every mutant in the copy, restores each mutant there with `git checkout -- <file>`, and removes the copy afterwards. The review worktree itself is never mutated.
 
 4. **Claim check** (`review.verify_claim`).
@@ -62,10 +64,13 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 
 5. **Typecheck and lint.** When `commands.typecheck` is set, the reviewer runs it; when `commands.lint` is set, it runs it. Each command that exits non-zero produces one `[Important]` finding naming the command and quoting the first relevant error lines. An unset command is not run and produces no finding.
 
-6. **Pre-existing tests must not be modified (round 2 and later).** In round 1 this step does nothing. In round 2 and later, the reviewer inspects `git diff <previous-review-sha>..HEAD -- <test_paths>`:
+6. **Pre-existing tests must not be weakened (round 2 and later).** In round 1 this step does nothing. In round 2 and later, the reviewer inspects `git diff <previous-review-sha>..HEAD -- <test_paths>`:
    - A test that existed at the previous review SHA is **modified** when any line inside its body differs at HEAD — a changed line, a deleted line, **or an added line**. Added lines count even when nothing is removed: an early `return;`, a `t.skip()` or `t.todo()` call, `.skip`, `.only` or `.todo` added to its declaration, an assertion wrapped in `if (false) { ... }`, or an assertion turned into a comment. Deleting a whole pre-existing test, or a pre-existing test file, is also a modification.
    - The reviewer compares each test that existed at the previous review SHA with the same test at HEAD, using the diff and, where a hunk's position is unclear, `git show <previous-review-sha>:<file>` and `git show HEAD:<file>` side by side. It does not merely count deleted lines.
-   - Every such modification produces one `[Critical]` finding whose text contains the test file path, names the test, and quotes the changed lines, e.g. `- [Critical] test/calc.test.js: existing test "subtract(2, 5) returns -3" was modified since the previous review: added "return;" before its assertion`.
+   - It classifies each modified test as exactly one of:
+     - **Restored:** the only changes put back an assertion or remove a skip, early return or similar guard, and the test passes at HEAD. This produces no finding. It notes the test in `## For the card`.
+     - **Adapted:** all of these hold: every assertion from the previous review SHA is still present word for word and still reached; the only other changes are the test's name or added or changed setup steps; the test passes at HEAD; the change is required by an Acceptance item, which it names; and the latest report is the implementor's, not the fixer's. This produces one `[Minor]` finding that names the test and the Acceptance item and quotes the changed lines.
+     - **Weakened:** anything else, including every example above, every deleted test, any non-restoring change when the latest report is the fixer's, and any case it cannot place with confidence. This produces one `[Critical]` finding whose text contains the test file path, names the test, gives the previous review SHA, and quotes the changed lines, e.g. `- [Critical] test/calc.test.js: existing test "subtract(2, 5) returns -3" was weakened since the previous review (<sha>): added "return;" before its assertion`.
    - New test blocks (a new test call outside every pre-existing test's body) and new test files are fine and produce no finding.
 
 7. **Status.** `## Status` is `clean` when the report has zero `[Critical]` and zero `[Important]` findings, and `findings` otherwise. `[Minor]` findings do not affect Status. When there are no findings of any severity, `## Findings` is exactly `- none`.
@@ -193,7 +198,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
   - **implementor and fixer:** `## PR` containing `#<number>`.
   - **fixer:** additionally `## Resolutions`, with one line per input finding: `- <finding> :: fixed | not fixed: <why>`.
   - **reviewer:** `## Acceptance map`, `## Mutation`, and `## Claim check`:
-    - **Acceptance map:** each line is `- <item text> -> <test file>::<test name>` or `- <item text> -> UNMAPPED`.
+    - **Acceptance map:** each line is `- <item text> -> <test file>::<test name>`, `- <item text> -> UNMAPPED`, ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>`.
     - **Mutation:** either the line `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`.
     - **Claim check:** either the lines `claim: <text>`, `command: \`<cmd>\``, `result: <observed>` and `matches: yes|no`, or `skipped: review.verify_claim is off`.
 - **Line rules** (review cycle 1; `parse-report.sh` rejects every violation, one `parse-report: `-prefixed stderr line each):
@@ -201,7 +206,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
   - Every non-blank `## Findings` line is `- [Critical|Important|Minor] <text>` (that exact spelling, one space after `-`) or exactly `- none`. The section needs one of the two forms, never both.
   - `Out of scope:` and `Bugs found:` each need at least one entry. Entries are unindented `- ` lines directly under the header or the previous entry; a blank or text line ends the list, and a `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. A bug's repro is backticked.
   - Resolutions: the finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, so ` :: ` may appear inside both. `<why>` is non-empty.
-  - Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
+  - Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
   - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
   - CRLF line endings, tabs and padded headings (`##  Status `) are accepted.
 - **With `--role`:** the role's sections are required; Status must be one of the role's two values; the implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked` (no PR may exist yet); the reviewer's `clean` means zero Critical and Important findings and `findings` at least one; the reviewer's Acceptance map and the fixer's Resolutions have at least one entry.
@@ -245,7 +250,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 
 ## 6. Acceptance criteria this role satisfies
 
-- **fleet-board.AC3.4 Success:** The reviewer maps each Acceptance item to a test and flags an unmapped item as Important.
+- **fleet-board.AC3.4 Success:** The reviewer maps each Acceptance item to a test, a command it ran, or a stated reason the item does not apply, and flags an unmapped item as Important.
 - **fleet-board.AC3.5 Success:** With `review.mutation` on, the reviewer reports killed, survived, and invalid counts, and a survivor is Critical.
 - **fleet-board.AC3.6 Success:** With `review.verify_claim` on, the reviewer executes one claim from the implementor's report and records the command and result.
 - **fleet-board.AC3.7 Success:** With either toggle off, the reviewer skips that step and says so in the report.

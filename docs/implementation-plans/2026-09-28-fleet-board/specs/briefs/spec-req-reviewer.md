@@ -228,3 +228,17 @@ words `no testable check` the follow-up card is filed in Backlog for a person to
 `out of scope entry needs a backticked check command or the words no testable check: <entry>`.
 The shape lines, the entry rule, the rejection-message list and every example Out of scope
 entry say so; examples always carry a check command.
+
+## Revision 12 requirements (2026-11-01, Acceptance items no test can map to)
+
+An `## Acceptance map` line may also be ``- <item> -> CHECKED: `<command>` `` or
+`- <item> -> NOT_APPLICABLE: <reason>`. `parse-report.sh` accepts both and rejects a `CHECKED`
+with no single backticked command and a `NOT_APPLICABLE` with no reason, using the existing
+`malformed ## Acceptance map line: <line>` message. The shape lines and the split rule say so.
+
+A pre-existing test changed since the previous review is classified Restored (no finding),
+Adapted (`[Minor]`: every assertion intact and reached, only name or setup changed, passes,
+required by a named Acceptance item, latest report is the implementor's) or Weakened
+(`[Critical]`, everything else, and anything uncertain). A Weakened finding gives the previous
+review SHA. A fixer may restore a test that such a finding names to its content at that SHA,
+and may not otherwise edit an existing test.

@@ -747,3 +747,10 @@ This is a minimal in-place edit, not a re-author.
 - **Counting (2.C.4, item 1).** When the counting patch file cannot be written (the `Write` tool refused it twice), the manager counts with `note.sh fail N "<the line>"`, which takes the count and the line as arguments and adds 1 to the stored count itself. A refused temp file is a no-progress reason like any other.
 - **Must never** additionally includes: choose a temp file's name itself instead of taking it from `mktemp <temp dir>/fb.XXXXXX`, or write any file whose base name starts with `report`, `summary`, `findings` or `analysis` and ends in `.md`. The note-write item allows `note.sh fail` only as 2.C.4 allows.
 - Nothing else changes.
+
+## Revision 12 requirements (2026-11-01, Acceptance items no test can map to)
+
+An `## Acceptance map` line may also be ``- <item> -> CHECKED: `<command>` `` or
+`- <item> -> NOT_APPLICABLE: <reason>`. `parse-report.sh` accepts both and rejects a `CHECKED`
+with no single backticked command and a `NOT_APPLICABLE` with no reason, using the existing
+`malformed ## Acceptance map line: <line>` message. The shape lines and the split rule say so.
