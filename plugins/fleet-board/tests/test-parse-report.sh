@@ -409,6 +409,19 @@ assert_stderr_line "oos-no-check: asks for a backticked check command" "parse-re
 run_parse "$REPORTS/oos-blank-backticks.md"
 assert_exit "oos-blank-backticks: exit 1 (a blank span is not a command)" 1
 
+INV_DIR="$(mktemp -d)"
+sed "s/run \` \` to see/run \`$(printf '\302\240')\` to see/" "$REPORTS/oos-blank-backticks.md" > "$INV_DIR/oos-nbsp-span.md"
+sed "s/run \` \` to see/run \`$(printf '\342\200\213')\` to see/" "$REPORTS/oos-blank-backticks.md" > "$INV_DIR/oos-zwsp-span.md"
+run_parse "$INV_DIR/oos-nbsp-span.md"
+assert_exit "oos-nbsp-span: exit 1 (a span holding only U+00A0 is blank)" 1
+assert_stderr_line "oos-nbsp-span: names the check-command error" "parse-report: out of scope entry needs a backticked check command or the words no testable check: Add multiply :: calc has no multiply; run \`$(printf '\302\240')\` to see"
+
+run_parse "$INV_DIR/oos-zwsp-span.md"
+assert_exit "oos-zwsp-span: exit 1 (a span holding only U+200B is blank)" 1
+assert_stderr_line "oos-zwsp-span: names the check-command error" "parse-report: out of scope entry needs a backticked check command or the words no testable check: Add multiply :: calc has no multiply; run \`$(printf '\342\200\213')\` to see"
+
+rm -rf "$INV_DIR"
+
 run_parse "$REPORTS/oos-checkout-word.md"
 assert_exit "oos-checkout-word: exit 1 (no testable checkout is not the escape words)" 1
 
