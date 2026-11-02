@@ -2,7 +2,7 @@
 
 The reviewer is the part of fleet-board that justifies the rest, and one anecdote is not a measurement. This eval turns "the reviewer catches things" into a catch rate: seed a known defect into a small correct PR whose tests still pass, ask the reviewer to review it, and count how often its report names the defect at **Critical** or **Important**.
 
-**Status: harness built, full run not yet done.** The results table below is a template. Nothing in it is a measurement until the Human QA step (the paid run) fills it in.
+**Status: measured for opus with `review.mutation` on.** The reviewer caught 6 of 6 defect classes in 3 of 3 runs each. Rows marked `not run` have not been measured.
 
 ## What is in `tests/eval/`
 
@@ -47,27 +47,35 @@ Catch rate is caught runs over total runs. A run counts as caught only when the 
 
 | Class | Model | review.mutation | Caught | Runs | Catch rate | Cost (USD) |
 |---|---|---|---|---|---|---|
-| off-by-one | opus | on | not run | | | |
+| off-by-one | opus | on | 3 | 3 | 100% | 0.76 |
 | off-by-one | opus | off | not run | | | |
-| source-text-assertion | opus | on | not run | | | |
+| source-text-assertion | opus | on | 3 | 3 | 100% | 0.61 |
 | source-text-assertion | opus | off | not run | | | |
-| weakened-assertion | opus | on | not run | | | |
+| weakened-assertion | opus | on | 3 | 3 | 100% | 0.62 |
 | weakened-assertion | opus | off | not run | | | |
-| untested-bullet | opus | on | not run | | | |
+| untested-bullet | opus | on | 3 | 3 | 100% | 0.54 |
 | untested-bullet | opus | off | not run | | | |
-| mocked-dependency | opus | on | not run | | | |
+| mocked-dependency | opus | on | 3 | 3 | 100% | 0.65 |
 | mocked-dependency | opus | off | not run | | | |
-| happy-path-only | opus | on | not run | | | |
+| happy-path-only | opus | on | 3 | 3 | 100% | 0.59 |
 | happy-path-only | opus | off | not run | | | |
 
 Add the same rows for each candidate model (for example sonnet).
+
+Every report was also scored by hand against the defect's patch, and the hand score agreed with the automated score on all 18 runs: each report named the seeded defect at Critical or Important. In one run (`weakened-assertion` run 2) the weak assertion itself was only Minor, but the wrong return value it hides and the surviving mutant were both Critical, so it counts as caught.
+
+What this does not show:
+
+- **Small sample and small PRs.** Three runs per class, on four fixture PRs of a few lines each, where the defect is a large part of the diff. Expect a lower rate on real PRs.
+- **No false-positive measure.** Every fixture PR has a defect, so this says nothing about how often the reviewer flags a correct PR.
+- **Patterns not stress-tested.** The catalogue patterns are loose, but every matching finding here was genuine, so this run could not expose a false match.
 
 ### Cost per run
 
 One line per eval invocation, copied from the runner's table and its `results.tsv`:
 
 ```
-<date>  bash run.sh --runs 3 --mutation on --model opus   18 runs  total $<sum of the cost column>  mean $<per run>
+2026-11-01  bash run.sh --runs 3 --mutation on --model opus   18 runs  total $3.76  mean $0.21
 ```
 
-No invocations recorded yet.
+The cost includes the reviewer subagent's usage. Two other paid invocations are not part of the results: an earlier run of 18 under `--bare`, where the reviewer was never dispatched ($0.41), and a one-run cost probe of `off-by-one` ($0.39).

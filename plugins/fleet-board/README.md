@@ -138,7 +138,7 @@ A `PreToolUse` hook blocks any agent command that would move a card out of Human
 
 ## Review quality
 
-How often the reviewer catches a seeded defect (an off-by-one the tests miss, a weakened assertion, a mocked-away bug and others) is measured by a harness in `tests/eval/`. The method, the exact commands, and the results table (measured catch rate per defect class, with and without `review.mutation`, per model, plus cost per run) are in [docs/reviewer-eval.md](docs/reviewer-eval.md). The table is filled in by a paid run; until then it is a template.
+The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `review.mutation` on), measured by a harness in `tests/eval/` on defects such as an off-by-one the tests miss, a weakened assertion and a mocked-away bug. The method, the exact commands, and the results table (measured catch rate per defect class, with and without `review.mutation`, per model, plus cost per run) are in [docs/reviewer-eval.md](docs/reviewer-eval.md).
 
 ## Running overnight
 
