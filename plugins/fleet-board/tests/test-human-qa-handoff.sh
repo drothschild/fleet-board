@@ -147,6 +147,25 @@ setup_case "$PLAIN_BODY" "$PR_OK"
 run_handoff
 assert_lacks "clean PR without Human QA section: no checklist header" "Before merging:"
 
+# Unresolved findings in the manager note become checklist items
+note_comment() { # <note json>: a manager-note comment fed to the fake gh
+  local nb
+  nb="$(printf '<!-- fleet-board:manager-note -->\n## Manager note\n\nsummary\n\n```json\n%s\n```\n' "$1")"
+  jq -n --arg b "$nb" '[{id:800,user:{login:"fleet-bot"},body:$b,created_at:"2026-09-28T00:00:00Z"}]' > "$FAKE_GH_DIR/comments.json"
+}
+setup_case "$PLAIN_BODY" "$PR_OK"
+note_comment '{"blocked_findings":[{"severity":"Critical","text":"test was deleted"},{"severity":"Important","text":"subtract(2,5) returns 3"}]}'
+run_handoff
+assert_has "unresolved finding 1 appears as a checklist item" "- [ ] [Critical] test was deleted"
+assert_has "unresolved finding 2 appears as a checklist item" "- [ ] [Important] subtract(2,5) returns 3"
+assert_has "unresolved findings get a findings section" "Unresolved findings"
+
+setup_case "$PLAIN_BODY" "$PR_OK"
+note_comment '{"blocked_findings":[]}'
+run_handoff
+assert_lacks "no unresolved findings: no findings section" "Unresolved findings"
+assert_lacks "no unresolved findings: no checklist" "- [ ]"
+
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]

@@ -8,6 +8,8 @@
 #   - a checklist of the pre-merge steps a person must do, from the PR's state
 #     (draft, conflicting, no checks) and each bullet of the card's
 #     ## Human QA section. No steps means no checklist at all;
+#   - the unresolved findings of the manager note (blocked_findings), each a
+#     checklist item under "Unresolved findings:"; none means no such section;
 #   - the contents of --qa-summary <file>, when given (the qa_build summary);
 #   - the sentence saying no agent moves the card out of Human QA.
 #
@@ -88,6 +90,12 @@ if [ -n "$QA_ITEMS" ]; then
   done <<<"$QA_ITEMS"
 fi
 
+NOTE_JSON="$(printf '%s\n' "$READ" | bash "$FLEET_SCRIPTS/note.sh" parse "$CARD" 2>/dev/null)" || NOTE_JSON='{}'
+FINDINGS="$(jq -r '(.blocked_findings // [])
+  | if type == "array" then . else [] end | .[]
+  | if type == "object" and (.text | type) == "string" then "- [ ] [\(.severity // "Unresolved")] \(.text | gsub("\n"; " "))" else empty end' \
+  <<<"$NOTE_JSON" 2>/dev/null)" || FINDINGS=""
+
 OUT="$(mktemp)" || fb_die 1 "cannot create a temp file"
 trap 'rm -f "$OUT"' EXIT
 {
@@ -99,6 +107,9 @@ trap 'rm -f "$OUT"' EXIT
   fi
   if [ -n "$STEPS" ]; then
     printf 'Before merging:\n\n%s\n' "$STEPS"
+  fi
+  if [ -n "$FINDINGS" ]; then
+    printf 'Unresolved findings:\n\n%s\n\n' "$FINDINGS"
   fi
   if [ -n "$CI_NOTE" ]; then
     printf '%s\n\n' "$CI_NOTE"

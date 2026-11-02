@@ -15,7 +15,14 @@
 # nothing unless the answer is y or yes. Issues are created in dependency order;
 # a dependency becomes "- owner/repo#N" with the real number, because the
 # dependency was created first. Each issue is added to the project and set to
-# the --status column (default backlog). Needs board.backend github-projects.
+# the --status column (default backlog). Needs board.backend github-projects or github-labels
+# (on labels, the issue gets the fleet:<status> label instead of a project item).
+#
+# import-plan.sh parse <plan.md>
+#   Prints {"cards": [{title, scope, acceptance}, ...]} as JSON, one card per
+#   "## Task N: <title>" heading. scope comes from the bullets under "Files:",
+#   acceptance from the bullets under "Test steps:" (copied verbatim, never
+#   invented). Same input, same output. Exit 1 when there is no task heading.
 #
 # Exit codes: 0 done (or declined), 1 failure (cycle, unknown dependency, gh),
 # 2 usage error.
@@ -23,6 +30,27 @@
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
+
+if [ "${1:-}" = "parse" ]; then
+  [ $# -eq 2 ] || fb_die 2 "usage: import-plan.sh parse <plan.md>"
+  [ -f "$2" ] || fb_die 2 "file not found: $2"
+  OUT="$(LC_ALL=C awk '
+    function esc(t) { gsub(/\\/, "\\\\", t); gsub(/"/, "\\\"", t); gsub(/\t/, "\\t", t); return t }
+    function flush() { if (n) { printf "%s{\"title\":\"%s\",\"scope\":[%s],\"acceptance\":[%s]}", (n > 1 ? "," : ""), title, sc, ac } }
+    /\r$/ { sub(/\r$/, "") }
+    /^## Task [^:]*:/ { flush(); n++; t = $0; sub(/^## Task [^:]*:[ \t]*/, "", t); sub(/[ \t]+$/, "", t); title = esc(t); sc = ""; ac = ""; mode = ""; next }
+    /^## / { mode = ""; next }
+    n == 0 { next }
+    /^[ \t]*Files:[ \t]*$/ { mode = "s"; next }
+    /^[ \t]*Test steps:[ \t]*$/ { mode = "a"; next }
+    /^- / && mode != "" { b = "\"" esc(substr($0, 3)) "\""; if (mode == "s") sc = sc (sc == "" ? "" : ",") b; else ac = ac (ac == "" ? "" : ",") b; next }
+    /^[ \t]*$/ { next }
+    { mode = "" }
+    END { flush(); if (n) print ""; exit (n ? 0 : 3) }
+  ' "$2")" && [ -n "$OUT" ] || fb_die 1 "no task headings (## Task N: <title>) found in $2"
+  printf '{"cards":[%s]}\n' "$OUT" | jq -S .
+  exit 0
+fi
 
 USAGE="usage: import-plan.sh <cards.json> [--status backlog|ready] [--dry-run]"
 CARDS="" STATUS=backlog DRY=0
@@ -62,8 +90,9 @@ N="$(jq '.cards | length' <<<"$PLAN")"
 
 echo "| Title | Repo | Depends on | Labels |"
 echo "|---|---|---|---|"
-jq -r '.cards as $c | $c[]
-  | "| \(.title) | \(.repo) | \([.deps[] | . as $d | ($c | map(select(.key == $d)) | first | .title) // $d] | join(", ")) | \((.labels // []) | join(", ")) |"' <<<"$PLAN"
+jq -r 'def esc: gsub("\\|"; "\\|");
+  .cards as $c | $c[]
+  | "| \(.title | esc) | \(.repo) | \([.deps[] | . as $d | ($c | map(select(.key == $d)) | first | .title) // $d | esc] | join(", ")) | \((.labels // []) | join(", ")) |"' <<<"$PLAN"
 
 [ "$DRY" -eq 1 ] && exit 0
 
@@ -73,13 +102,18 @@ echo
 case "$ANSWER" in y|Y|yes|YES|Yes) ;; *) echo "Nothing created."; exit 0 ;; esac
 
 fb_load_config
-[ "$(fb_cfg board.backend)" = "github-projects" ] || fb_die 1 "import-plan needs board.backend github-projects"
-. "$FLEET_SCRIPTS/adapters/github-projects/common.sh"
-CACHE="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.cache/projects.json"
-fp_ensure_cache "$CACHE" || exit 1
-OPT="$(fp_option_id "$(fb_state_name "$STATUS")" "$CACHE")" || exit 1
-PN="$(fb_cfg board.project_number)"
-PO="$(fp_get_owner)"
+BACKEND="$(fb_cfg board.backend)"
+case "$BACKEND" in
+  github-projects)
+    . "$FLEET_SCRIPTS/adapters/github-projects/common.sh"
+    CACHE="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.cache/projects.json"
+    fp_ensure_cache "$CACHE" || exit 1
+    OPT="$(fp_option_id "$(fb_state_name "$STATUS")" "$CACHE")" || exit 1
+    PN="$(fb_cfg board.project_number)"
+    PO="$(fp_get_owner)" ;;
+  github-labels) ;;
+  *) fb_die 1 "import-plan needs board.backend github-projects or github-labels" ;;
+esac
 
 # Docs referenced from a card's why or acceptance (scope lists files the card will
 # create, so it is not scanned) must exist on the default branch, because role
@@ -116,6 +150,7 @@ section_text() {
 
 BODY="$(mktemp)"; trap 'rm -f "$BODY"' EXIT
 REFS='{}'
+ENSURED=" "
 i=0
 while [ "$i" -lt "$N" ]; do
   card="$(jq -c --argjson i "$i" '.cards[$i]' <<<"$PLAN")"
@@ -153,13 +188,28 @@ $text
        then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)
     + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)' <<<"$card" > "$BODY"
   title="$(jq -r .title <<<"$card")"; repo="$(jq -r .repo <<<"$card")"
-  largs=(); while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
+  if [ "$BACKEND" = "github-labels" ]; then
+    case "$ENSURED" in
+      *" $repo "*) ;;
+      *)
+        slabel="$(fb_state_name "$STATUS")"
+        have="$(gh label list --repo "$repo" --limit 1000 --json name --jq '.[].name' 2>/dev/null)" || have=""
+        printf '%s\n' "$have" | grep -qxF -- "$slabel" \
+          || gh label create "$slabel" --repo "$repo" >/dev/null || fb_die 1 "failed to create label $slabel in $repo"
+        ENSURED="$ENSURED$repo " ;;
+    esac
+  fi
+  largs=()
+  [ "$BACKEND" = "github-labels" ] && largs+=(--label "$(fb_state_name "$STATUS")")
+  while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
   URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
   num="${URL##*/}"
+  if [ "$BACKEND" = "github-projects" ]; then
   ITEM="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json | jq -r '.id // empty')"
   [ -n "$ITEM" ] || fb_die 1 "failed to add $URL to project $PN"
   gh project item-edit --id "$ITEM" --project-id "$(jq -r .project_id "$CACHE")" \
     --field-id "$(jq -r .field_id "$CACHE")" --single-select-option-id "$OPT" >/dev/null || fb_die 1 "failed to set status of $URL"
+  fi
   REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "$repo#$num" '. + {($k): $r}' <<<"$REFS")"
   echo "Created $repo#$num: $title"
 done

@@ -142,13 +142,13 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = `note.last_review.sha`, or `base` when there is no previous review |
 | `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer in the same tick, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
 | `update_branch` | `worktree.sh create N <plan branch> <plan worktree>` → `update-branch.sh N <pr> <plan branch> <plan worktree>` (the plan card's `pr`). The script merges the base branch into the PR branch with a merge commit and a plain push, and does the note write, the Blocked move and the comment itself. Dispatch no role agent. Never rebase and never force-push. |
-| `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
+| `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
 | `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, run `human-qa-handoff.sh [--qa-summary <file>] N <pr>` (2.11). It posts the `What to check in Human QA` comment once. |
 | `mark_ready` | `gh pr ready <pr> --repo R`. Never merge. |
 | `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
-| `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
+| `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_from: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
 | `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
 | `skip_card_lint` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with the plan card's `lint_marker` (an HTML comment, verbatim), then lists each line of the card's `lint` (`<rule>: <detail>`) and says to fix the card; the card stays in Ready. Otherwise do nothing. |
 | `skip` | nothing |
@@ -223,7 +223,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.15. **`finish`.** First, when the card body (`.body` from `board-read.sh N`) has a `## After merge` section, write the body to a temp file and run `after-merge.sh run <body-file>` from the repo root. It prints `{outcome, results, note, comment}`.
    - `note.sh merge` with `after_merge` = the printed `note` lines, so each command's exit status is recorded in the card's note.
-   - When `outcome` is `blocked`: `board-move.sh N blocked`, then post the printed `comment` (it names the command and the missing allowlist entry, or the failing command and its exit status). The card does not go to `done` and gets no Human QA step. Stop here.
+   - When `outcome` is `blocked`: `board-move.sh N blocked`, `note.sh merge` with `blocked_from: "in_review"` (the card was in review when it merged), then post the printed `comment` (it names the command and the missing allowlist entry, or the failing command and its exit status). The card does not go to `done` and gets no Human QA step. Stop here.
    - When `outcome` is `done`, or the card has no such section, continue with the steps below.
    Then two steps: `board-move.sh N done`, then the note write setting `state: done`, `action_failures: 0` and `last_action_error: null`.
    - The note write is best-effort. If it fails or is denied, the card's result in the tick report says so and `Warnings:` gives the reason. The tick does not fail, and the write is not retried in another form.
@@ -296,6 +296,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 2.D.2. Then `board-move.sh N blocked`. If the move fails, the action made no progress and is counted as in 2.C.4 (`action_failures` + 1 and `last_action_error`). The counter is never reset before the move succeeds.
 
 2.D.3. Only after the move succeeds, `note.sh merge` with:
+   - `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), so `accept.sh` returns the card there;
    - `blocked_findings` = `[{"severity":"Important","text":"<the plan's reason>"}]`, never the review findings;
    - `action_failures: 0` and `last_action_error: null`;
    - the note-upkeep `state: blocked`.
@@ -339,9 +340,9 @@ When the plan's reason starts with `no progress after `, run these steps in this
    1. **`last_verified`** = `verified.line`.
    2. **Reviewer:** `last_review` = `{"round": <the round the reviewer was given>, "sha": <the sha worktree.sh review returned for this review>, "critical": counts.critical, "important": counts.important, "findings": findings}`.
    3. **Implementor:** `pr` = the parsed `pr`, merged only when it is non-null.
-   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by`, then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
+   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by` and `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
    5. **Status `blocked` with `blocked_by` null** (for example a fixer that could resolve a finding only by changing a test, marked `not fixed: needs human decision`):
-      - `note.sh merge` with `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
+      - `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`) and `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
       - `board-move.sh N blocked`;
       - a comment listing them.
 
@@ -389,7 +390,8 @@ When the plan's reason starts with `no progress after `, run these steps in this
 | `empty sub-list: Bugs found:` | A `Bugs found:` header needs at least one entry. |
 | `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>` | Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. |
 | `bug repro must be a backticked command: <title>` | A bug's repro is backticked. |
-| `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. |
+| `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. |
+| `out of scope entry needs a backticked check command or the words no testable check: <entry>` | The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`. |
 | `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. |
 | `malformed ## Mutation line: <line>` | Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`. |
 | `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line` | Mutation is exactly one line of the two forms. |

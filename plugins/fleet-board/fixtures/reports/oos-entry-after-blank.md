@@ -7,7 +7,7 @@ done
 ## For the card
 Added subtract(a, b) to src/calc.js.
 Out of scope:
-- Add multiply :: calc has no multiply
+- Add multiply :: calc has no multiply; `grep -c multiply src/calc.js` should print 1
 
 - Document calc :: the README does not list the exported functions
 
