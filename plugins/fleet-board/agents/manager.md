@@ -147,7 +147,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
-| `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
+| `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_from: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
 | `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
 | `skip_card_lint` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with the plan card's `lint_marker` (an HTML comment, verbatim), then lists each line of the card's `lint` (`<rule>: <detail>`) and says to fix the card; the card stays in Ready. Otherwise do nothing. |
 | `skip` | nothing |
@@ -336,7 +336,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
    1. **`last_verified`** = `verified.line`.
    2. **Reviewer:** `last_review` = `{"round": <the round the reviewer was given>, "sha": <the sha worktree.sh review returned for this review>, "critical": counts.critical, "important": counts.important, "findings": findings}`.
    3. **Implementor:** `pr` = the parsed `pr`, merged only when it is non-null.
-   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by`, then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
+   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by` and `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
    5. **Status `blocked` with `blocked_by` null** (for example a fixer that could resolve a finding only by changing a test, marked `not fixed: needs human decision`):
       - `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`) and `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
       - `board-move.sh N blocked`;
