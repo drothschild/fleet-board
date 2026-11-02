@@ -269,17 +269,22 @@ sec == "Acceptance map" {
   why = ""
   if (substr(line, 1, 2) == "- ") {
     entry = trim(substr(line, 3))
-    i = lastidx(entry, " -> ")
+    # A command or a reason may hold an arrow, so these two forms split at
+    # their own keyword, before the last-arrow rule can read one as a test.
+    i = index(entry, " -> CHECKED: ")
+    k = index(entry, " -> NOT_APPLICABLE: ")
+    if (i == 0 || (k > 0 && k < i)) i = k
+    if (i == 0) i = lastidx(entry, " -> ")
     if (i > 0) {
       item = trim(substr(entry, 1, i - 1))
       tt = trim(substr(entry, i + 4))
       j = index(tt, "::")
-      if (substr(tt, 1, 8) == "CHECKED:") {
+      if (tolower(substr(tt, 1, 8)) == "checked:") {
         rest = trim(substr(tt, 9))
-        if (item != "" && rest ~ /^`[^`]+`$/) { ok = 1; cmd = unquote(rest); tt = "" }
-      } else if (substr(tt, 1, 15) == "NOT_APPLICABLE:") {
+        if (substr(tt, 1, 8) == "CHECKED:" && item != "" && rest ~ /^`[^`]+`$/ && trim(unquote(rest)) != "") { ok = 1; cmd = unquote(rest); tt = "" }
+      } else if (tolower(substr(tt, 1, 15)) == "not_applicable:") {
         why = trim(substr(tt, 16))
-        if (item != "" && why != "") { ok = 1; tt = "" }
+        if (substr(tt, 1, 15) == "NOT_APPLICABLE:" && item != "" && why != "") { ok = 1; tt = "" }
       } else if (item != "" && (tt == "UNMAPPED" || (j > 1 && j < length(tt) - 1))) ok = 1
     }
   }
