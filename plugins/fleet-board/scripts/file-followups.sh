@@ -33,8 +33,10 @@
 # bug: its repro and expected result; an out-of-scope item: the first backticked
 # command in its detail) and, when the detail says "depends on this card", a
 # "## Depends on" section naming the spawning card. They are created in the
-# followups.status column (default ready). An out-of-scope item with no
-# backticked command is filed in Backlog with an issue comment saying why.
+# followups.status column (default ready). The command is the first backticked span
+# with a non-blank character, spans being paired single backticks (an even number of
+# them, none adjacent). An out-of-scope item with no such span, or whose detail holds
+# the words "no testable check", is filed in Backlog with an issue comment saying why.
 # Pass one also searches closed issues (closed within RECENT_DAYS, 30): a
 # matching closed card suppresses the item like an open one, and the printed
 # entry gains "matched": "open"|"closed" (existing entries only).
@@ -169,7 +171,8 @@ while IFS= read -r item; do
     # Acceptance is drafted from the first backticked command in the detail;
     # without one there is no testable bullet, so the card goes to Backlog
     # The words "no testable check" mean Backlog even when the detail also backticks a path.
-    cmd="$(jq -r 'if (.detail | test("(^|[^a-z])no testable check([^a-z]|$)"; "i")) then empty else (.detail | capture("`(?<c>[^`]*[^` \\t][^`]*)`") | .c) // empty end' <<<"$item" 2>/dev/null)"
+    # Spans pair up as in parse-report.sh: an even number of backticks, none adjacent, and the first span with a non-blank character is the command.
+    cmd="$(jq -r 'if (.detail | test("(^|[^a-z])no testable check([^a-z]|$)"; "i")) or (.detail | contains("``")) then empty else (.detail | split("`")) as $p | if ($p | length) % 2 == 0 then empty else ([$p | to_entries[] | select(.key % 2 == 1) | .value | select(test("[^ \\t]"))] | first) // empty end end' <<<"$item" 2>/dev/null)"
     jq -r --arg c "$CARD" --arg p "$PR" --arg cmd "$cmd" '
       (if .detail == "" then "" else "\(.detail)\n\n" end)
       + (if $cmd == "" then "" else "## Acceptance\n- `\($cmd)` gives the result the description above expects\n\n" end)

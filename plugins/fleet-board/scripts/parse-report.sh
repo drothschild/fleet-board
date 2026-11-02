@@ -163,12 +163,22 @@ function emit_bug(entry,    n, p, prefixed, repro, expd, obsd) {
   }
   print "bug\t" trim(p[1]) "\t" repro "\t" expd "\t" obsd
 }
+# has_check_span DETAIL: true when the backticks pair up into single-backtick spans
+# (an even number of backticks, none adjacent) and one span holds a non-blank
+# character. file-followups.sh applies the same rule when it drafts Acceptance.
+function has_check_span(d,    n, parts, i) {
+  if (index(d, "``") > 0) return 0
+  n = split(d, parts, "`")
+  if (n % 2 == 0) return 0
+  for (i = 2; i <= n; i += 2) if (parts[i] ~ /[^ \t]/) return 1
+  return 0
+}
 function emit_oos(entry,    i, t, d) {
   i = index(entry, " :: ")
   t = (i > 0) ? trim(substr(entry, 1, i - 1)) : ""
   d = (i > 0) ? trim(substr(entry, i + 4)) : ""
   if (t == "" || d == "") { err("out of scope entry needs <title> :: <detail>: " entry); return }
-  if (d !~ /`[^`]*[^` \t][^`]*`/ && tolower(d) !~ /(^|[^a-z])no testable check([^a-z]|$)/) {
+  if (!has_check_span(d) && tolower(d) !~ /(^|[^a-z])no testable check([^a-z]|$)/) {
     err("out of scope entry needs a backticked check command or the words no testable check: " entry); return
   }
   print "oos\t" t "\t" d
