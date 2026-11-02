@@ -385,7 +385,8 @@ When the plan's reason starts with `no progress after `, run these steps in this
 | `empty sub-list: Bugs found:` | A `Bugs found:` header needs at least one entry. |
 | `stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>` | Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error. |
 | `bug repro must be a backticked command: <title>` | A bug's repro is backticked. |
-| `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. |
+| `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. |
+| `out of scope entry needs a backticked check command or the words no testable check: <entry>` | The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`. |
 | `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. |
 | `malformed ## Mutation line: <line>` | Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`. |
 | `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line` | Mutation is exactly one line of the two forms. |

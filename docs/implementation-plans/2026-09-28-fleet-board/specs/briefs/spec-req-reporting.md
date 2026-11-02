@@ -201,3 +201,15 @@ Two consequences of the parser that a report writer must know:
 - **The report file procedure** (in the spec or skill): right after the step that writes the report with the Write tool, add exactly one sentence, in the file's own voice: if the Write tool refuses the file because it has not been read, read it once with the Read tool and write it again (still never a heredoc, `echo`, `printf` or `cat`, and never a different path).
 - The sentence appears once per file, after step (b) only; the check-and-post step, any Enforcement paragraph and the Must-never list do not repeat it.
 - Everything else is unchanged and byte-identical: the report templates, the frontmatter, the Must-never items and every other line.
+
+## Revision 11 requirements (2026-11-01, Out of scope entries carry a check command)
+
+An `Out of scope:` entry is `- <title> :: <detail>` and the detail must hold a backticked
+check command (what a person runs to see the work is done, with its expected result) or the
+words `no testable check`. The command is written before any other backticked text, because
+the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the
+words `no testable check` the follow-up card is filed in Backlog for a person to triage.
+`parse-report.sh` rejects an entry with neither, with the message
+`out of scope entry needs a backticked check command or the words no testable check: <entry>`.
+The shape lines, the entry rule, the rejection-message list and every example Out of scope
+entry say so; examples always carry a check command.
