@@ -318,15 +318,22 @@ fi
 # FLEET_BOARD_TOKEN_LOCK, default $HOME/.fleet-board/token.lock) reserve tick
 # start slots at least min_tick_gap seconds apart. The file holds the last
 # reserved slot (epoch seconds); a mkdir lock guards the read-modify-write only,
-# not the sleep. A lock that cannot be taken in 5 s is skipped with a warning.
+# not the sleep. A lock dir older than 10 s is stale and removed. A lock that
+# cannot be taken in 5 s is skipped with a warning.
 GAP_INT="$(whole "$MIN_GAP")"
 TOKEN_LOCK="${FLEET_BOARD_TOKEN_LOCK:-$HOME/.fleet-board/token.lock}"
 stagger() {
-  local i=0 n last slot
+  local i=0 n last slot mt
   [ "$GAP_INT" -gt 0 ] || return 0
   mkdir -p "$(dirname "$TOKEN_LOCK")" 2>/dev/null
   while ! mkdir "$TOKEN_LOCK.d" 2>/dev/null; do
     i=$((i + 1))
+    # a lock dir older than 10 s is stale (its holder holds it for milliseconds)
+    mt="$(stat -c %Y "$TOKEN_LOCK.d" 2>/dev/null || stat -f %m "$TOKEN_LOCK.d" 2>/dev/null)"
+    if [[ "$mt" =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - mt )) -gt 10 ]; then
+      rmdir "$TOKEN_LOCK.d" 2>/dev/null
+      continue
+    fi
     if [ "$i" -gt 50 ]; then warn "cannot take the token lock $TOKEN_LOCK.d; starting the tick unstaggered"; return 0; fi
     sleep 0.1
   done
