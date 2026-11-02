@@ -445,6 +445,41 @@ run_check "$SCRIPT" --forecast
 assert_exit "forecast: nothing to warn about: exit 0" 0
 assert_stdout_exact "forecast: nothing to warn about: one line" "forecast: nothing to warn about"
 
+# transitive chains: a Ready card waiting only on an unattended card also finishes unattended
+# (#72 waits on Backlog #73 so the forecast has something to warn about)
+chain_case() {
+  local alabels="$1" blist="$2"
+  setup_case
+  fc_card 70 "Chain head" "$alabels" "${ACC}"
+  fc_card 71 "Chain tail" '[]' "${ACC}## Depends on
+- ${blist}
+"
+  fc_card 72 "Waits on backlog" '[]' "${ACC}## Depends on
+- #73
+"
+  fc_card 73 "Not groomed" '[]' "no acceptance yet"
+  fc_list ready "$(item 70 "Chain head" fleet:ready)" "$(item 71 "Chain tail" fleet:ready)" "$(item 72 "Waits on backlog" fleet:ready)"
+  fc_list backlog "$(item 73 "Not groomed" fleet:backlog)"
+  run_check "$SCRIPT" --forecast
+  UNATT="$(printf '%s\n' "$LAST_OUT" | grep 'can finish unattended')"
+}
+
+chain_case '[]' '#70'
+assert_exit "forecast chain: exit 0" 0
+assert_stdout_contains "forecast chain: a card waiting only on an unattended card is unattended" "can finish unattended: #70, #71"
+
+chain_case '["needs-human-qa"]' '#70'
+LAST_OUT="$UNATT"
+assert_stdout_not_contains "forecast chain: a card depending on a needs-human-qa card is not unattended" "#71"
+
+chain_case '["needs-manual-step"]' '#70'
+LAST_OUT="$UNATT"
+assert_stdout_not_contains "forecast chain: a card depending on a needs-manual-step card is not unattended" "#71"
+
+chain_case '[]' '#73'
+LAST_OUT="$UNATT"
+assert_stdout_not_contains "forecast chain: a card depending on a Backlog card is not unattended" "#71"
+
 run_check "$SCRIPT" --forecast --all
 assert_exit "forecast with --all: usage error" 2
 
