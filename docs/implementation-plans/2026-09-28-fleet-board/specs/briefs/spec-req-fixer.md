@@ -211,3 +211,34 @@ Two consequences of the parser that a report writer must know:
 - **The report file procedure** (in the spec or agent): right after the step that writes the report with the Write tool, add exactly one sentence, in the file's own voice: if the Write tool refuses the file because it has not been read, read it once with the Read tool and write it again (still never a heredoc, `echo`, `printf` or `cat`, and never a different path).
 - The sentence appears once per file, after step (b) only; the check-and-post step, any Enforcement paragraph and the Must-never list do not repeat it.
 - Everything else is unchanged and byte-identical: the report templates, the frontmatter, the Must-never items and every other line.
+
+## Revision 11 requirements (2026-11-01, Out of scope entries carry a check command)
+
+An `Out of scope:` entry is `- <title> :: <detail>` and the detail must hold a backticked
+check command (what a person runs to see the work is done, with its expected result) or the
+words `no testable check`. The command is written before any other backticked text, because
+the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the
+words `no testable check` the follow-up card is filed in Backlog for a person to triage.
+`parse-report.sh` rejects an entry with neither, with the message
+`out of scope entry needs a backticked check command or the words no testable check: <entry>`.
+The shape lines, the entry rule, the rejection-message list and every example Out of scope
+entry say so; examples always carry a check command.
+
+## Revision 12 requirements (2026-11-01, restoring a weakened test)
+
+A pre-existing test changed since the previous review is classified Restored (no finding),
+Adapted (`[Minor]`: every assertion intact and reached, only name or setup changed, passes,
+required by a named Acceptance item, latest report is the implementor's) or Weakened
+(`[Critical]`, everything else, and anything uncertain). A Weakened finding gives the previous
+review SHA. A fixer may restore a test that such a finding names to its content at that SHA,
+and may not otherwise edit an existing test.
+
+## Revision 12 second pass (2026-11-01, from the adversarial review)
+
+A restore puts the whole test back (name, declaration and body, or a deleted test or test file)
+to exactly its content at the SHA in the finding. A partial restore is not allowed.
+
+## Revision 12 third pass (2026-11-02, from the second adversarial review)
+
+A restore may also put back file-level lines the test needs, such as an import or a helper, each
+exactly as at the SHA. Restored test files count as touched test files.

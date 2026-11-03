@@ -35,6 +35,8 @@ Call the result `<scripts dir>`. Run every command below from the user's reposit
    bash "<base directory>/../../scripts/status.sh" --all    # only when step 2 calls for it
    ```
 
+   When the user asks for a forecast or an overnight preflight (stall points before a run), run `status.sh --forecast` instead (never together with `--all`). It prints the critical-path human gates, dependencies needing a manual step (cards labelled `needs-manual-step`), Ready cards waiting on Backlog, the cards that can finish unattended and where the run stops, or the one line `forecast: nothing to warn about`. Pass it through verbatim.
+
    Capture stdout, stderr and the exit code separately. Do not run `status.sh` a second time.
 
 4. **Exit 0.** Print `status.sh`'s stdout verbatim. Do not reformat, reorder, summarize, drop or add card lines.

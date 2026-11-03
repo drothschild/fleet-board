@@ -53,6 +53,13 @@
 # ignored; a dependency closed as not planned (or at Status Won't Do) warns
 # "#<n> depends on <ref>, which was closed as not planned".
 #
+# Card lint: a ready card whose body fails card-lint.sh (and has the Acceptance
+# heading, or a "**Acceptance**" / "Acceptance:" line in place of it) gets action
+# skip_card_lint with reason "card lint failed: <rules>", the lint lines in
+# "lint" and a "lint_marker" HTML comment naming the result. comment_needed is
+# true until a comment holding that marker exists, so each distinct result is
+# commented once. A body with no Acceptance hint stays skip_no_acceptance.
+#
 # The decision table itself is the single jq program below.
 #
 # Pending follow-ups (note.pending_followups) hold a card in file_pending only
@@ -63,7 +70,7 @@
 # actions on the card, in a row, that failed to make progress, as the
 # manager records them: any action (start, continue_implementor,
 # start_review, review, fix, mark_ready, merge, verify_main, to_human_qa,
-# file_pending, block, unblock, finish, skip_no_acceptance) whose intended
+# file_pending, block, unblock, finish, skip_no_acceptance, skip_card_lint) whose intended
 # board or note change did not happen, for any reason (a failed setup step,
 # a report rejected twice, a failed gh, board or script call, a refused
 # merge); an action that made progress resets it to 0. This script only
@@ -108,9 +115,26 @@
 # reconciled (no round bump) or from a person; fixing again would redo the
 # work, while the manager's review action reviews exactly those commits
 # (prev_sha = last_review.sha). This comes before the max_rounds block.
+# A note's accepted entry (accept.sh) moved last_review.sha to the accepted
+# head, so commits before it are not flagged and later ones are. It counts only
+# when accepted.login is the authenticated gh login; otherwise a current review
+# with Critical or Important findings plans review ("accept by <login> is not
+# honored ...") instead of fix.
+# Review drift warnings, for an open in_review PR whose head moved past
+# last_review.sha (gh api compare, then each own commit of the PR, i.e. the
+# first-parent chain from the head): "#<n>: unreviewed_merge: ..." when that
+# chain holds a merge of main, and "#<n>: test_edit_after_review: ..." when one
+# of its non-merge commits touches a file matching test_paths. Best effort: a
+# failed lookup adds no warning and never skips the card or changes its action.
 # A note worktree outside the current base (note.sh reads it as null) adds
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
+#
+# Rate limit failures: when the script fails and its stderr names a GitHub rate
+# limit, it asks gh api rate_limit for the reset time and adds the line
+# "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
+# fleet-board-run.sh waits out. If that query fails, nothing is added. A
+# failure that is not a rate limit never gets the line.
 #
 # Exit codes:
 #   0 - plan printed
@@ -123,18 +147,97 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 
 [ $# -eq 0 ] || fb_die 2 "usage: tick-plan.sh (no arguments)"
 
+# stderr goes to a file so a rate-limit failure can be recognised at exit
+ERR_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
+exec 3>&2 2>"$ERR_FILE"
+finish() {
+  local rc=$? reset
+  exec 2>&3
+  cat "$ERR_FILE" >&2
+  if [ "$rc" -ne 0 ] && grep -qi 'rate limit' "$ERR_FILE"; then
+    reset="$(gh api rate_limit 2>/dev/null | jq -r '.resources.core.reset | if type == "number" then todate else empty end' 2>/dev/null)" || reset=""
+    case "$reset" in
+      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf 'resets at %s\n' "$reset" >&2 ;;
+    esac
+  fi
+  rm -f "$ERR_FILE" "${CARDS_FILE:-}" "${NOTE_ERR:-}" "${DEPS_FILE:-}" "${LINT_FILE:-}"
+  exit "$rc"
+}
+trap finish EXIT
+
 fb_load_config
 
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 
+TEST_GLOBS="$(jq -r '.test_paths[]' <<<"$FLEET_CFG")" || fb_die 1 "cannot read test_paths"
+
 SKIP_MARKER='<!-- fleet-board:skip-no-acceptance -->'
 
 CARDS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
 NOTE_ERR="$(mktemp)" || { rm -f "$CARDS_FILE"; fb_die 1 "cannot create a temp file"; }
 DEPS_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR"; fb_die 1 "cannot create a temp file"; }
-trap 'rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"' EXIT
+LINT_FILE="$(mktemp)" || { rm -f "$CARDS_FILE" "$NOTE_ERR" "$DEPS_FILE"; fb_die 1 "cannot create a temp file"; }
+
+# is_test_path <path>: true when the path matches a test_paths glob (same glob
+# rule as needs-human-qa.sh: ** becomes *, and a leading **/ is optional)
+is_test_path() {
+  local path="$1" glob pat
+  while IFS= read -r glob; do
+    [ -n "$glob" ] || continue
+    pat="${glob//\*\*/*}"
+    # shellcheck disable=SC2254 # the glob is a pattern on purpose
+    case "$path" in $pat) return 0 ;; esac
+    case "$glob" in
+      '**/'*)
+        pat="${glob#\*\*/}"
+        pat="${pat//\*\*/*}"
+        # shellcheck disable=SC2254
+        case "$path" in $pat) return 0 ;; esac
+        ;;
+    esac
+  done <<<"$TEST_GLOBS"
+  return 1
+}
+
+# drift_lookup <note-json> <pr-info-json>: prints {merge, test_edit, from} for
+# the PR's own commits (the first-parent chain from the head, so commits that
+# arrived through a merge of main are not the PR's) made after last_review.sha.
+# Prints null when there is no reviewed sha, the head has not moved, or a
+# lookup fails.
+drift_lookup() {
+  local from head cmp chain sha files f merge=false tedit=false
+  from="$(jq -r '.last_review.sha // empty | strings' <<<"$1" 2>/dev/null)" || return 1
+  head="$(jq -r '.headRefOid // empty | strings' <<<"$2" 2>/dev/null)" || return 1
+  [ -n "$from" ] && [ -n "$head" ] || { echo null; return 0; }
+  case "$head" in "$from"*) echo null; return 0 ;; esac
+  case "$from" in "$head"*) echo null; return 0 ;; esac
+  [ "$(jq -r '.state' <<<"$2")" = OPEN ] || { echo null; return 0; }
+  cmp="$(gh api "repos/$FLEET_REPO/compare/$from...$head")" || return 1
+  chain="$(jq -r --arg head "$head" '
+    (.commits | map({key: .sha, value: .}) | from_entries) as $by
+    | def walk_chain($sha): if $by[$sha] == null then empty
+        else $by[$sha] as $c | $c, ($c.parents[0].sha // empty | walk_chain(.)) end;
+    [walk_chain($head)] | .[]
+    | "\(.sha)\t\(.parents | length)\t\(.commit.message | split("\n")[0])"' <<<"$cmp" 2>/dev/null)" || return 1
+  while IFS="$(printf '\t')" read -r sha parents subject; do
+    [ -n "$sha" ] || continue
+    if [ "$parents" -gt 1 ]; then
+      case "$subject" in
+        *[Mm]erge*main*) merge=true ;;
+      esac
+    else
+      # A commit whose files cannot be read is left out of the test-edit check
+      files="$(gh api "repos/$FLEET_REPO/commits/$sha" 2>/dev/null | jq -r '.files[].filename' 2>/dev/null)" || continue
+      while IFS= read -r f; do
+        [ -n "$f" ] && is_test_path "$f" && tedit=true
+      done <<<"$files"
+    fi
+  done <<<"$chain"
+  jq -cn --argjson m "$merge" --argjson t "$tedit" --arg from "$from" --arg head "$head" \
+    '{merge: $m, test_edit: $t, from: $from, head: $head}'
+}
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
@@ -143,7 +246,9 @@ card_input() {
   local st="$1" n="$2" title="$3"
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside=""
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
-  local deps_unmet='[]' deps_warn='[]' refs checked has_deps
+  local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
+  local drift=null
+  local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
 
   read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
   if [ -z "$failed" ]; then
@@ -204,6 +309,21 @@ card_input() {
     fi
   fi
 
+  # Review drift: commits on the PR since the last reviewed sha. Best effort: a
+  # lookup that fails adds no warning and never skips the card.
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = in_review ] && [ "$info" != null ]; then
+    drift="$(drift_lookup "$note" "$info")" || drift=null
+  fi
+
+  # An accepted entry (accept.sh) counts only when its login is the authenticated one
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$(jq -r '.accepted != null' <<<"$note")" = true ]; then
+    if me="$(fb_login 2>/dev/null)"; then
+      accepted_mine="$(jq --arg me "$me" '.accepted.login == $me' <<<"$note")"
+    else
+      failed="gh api user"
+    fi
+  fi
+
   # A blocked card's blocking PR
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = blocked ]; then
     bpr="$(jq -r '.blocking_pr // empty' <<<"$note")"
@@ -218,11 +338,39 @@ card_input() {
     fi
   fi
 
+  # A ready card's lint (card-lint.sh on the body already read). A failing lint
+  # gates the card when it has the Acceptance heading, or when the body shows
+  # "**Acceptance**" / "Acceptance:" without it; a body with no hint at all
+  # stays skip_no_acceptance. The marker names the lint result, so the manager
+  # comments once per distinct result (compared with the latest posted lint comment only).
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ]; then
+    if printf '%s\n' "$body" > "$LINT_FILE"; then
+      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --body-file "$LINT_FILE")"; lint_rc=$?
+      case "$lint_rc" in
+        0) ;;
+        1)
+          lint="$(jq -Rn '[inputs]' <<<"$lint_out")" || { lint='[]'; failed="card-lint.sh $n (unparsable)"; }
+          if [ "$has_acc" = true ] || [ "$(jq -r 'any(.[]; startswith("no-heading: found "))' <<<"$lint")" = true ]; then
+            lint_gate=true
+            digest="$(printf '%s\n' "$lint_out" | cksum | cut -d' ' -f1)"
+            lint_marker="\"<!-- fleet-board:card-lint:$digest -->\""
+            lint_commented="$(jq --argjson m "$lint_marker" '[(.comments // [])[] | (.body // "") | select(contains("<!-- fleet-board:card-lint:"))] | (last // "") | contains($m)' <<<"$read" 2>/dev/null)" \
+              || failed="board-read.sh $n (unparsable comments)"
+          else
+            lint='[]'
+          fi ;;
+        *) failed="card-lint.sh $n" ;;
+      esac
+    else
+      failed="card-lint.sh $n (cannot write the card body)"
+    fi
+  fi
+
   # A ready card's dependencies (only a card that could start is looked up)
   # (grep reads the file, not a pipe: grep -q quits at its first match, and a
   # body bigger than the pipe buffer would kill the writer and skip the gate)
   has_deps=1
-  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ]; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] && [ "$lint_gate" = false ]; then
     # grep exits 1 on no match and 2 on an error: only 1 means "no Depends on"
     if printf '%s\n' "$body" > "$DEPS_FILE"; then
       grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; has_deps=$?
@@ -254,15 +402,17 @@ card_input() {
 
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
-    --argjson has_acc "$has_acc" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson nhq "$nhq" \
+    --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
+    --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
       outside_warning: (if $outside == "" then null else $outside end),
       deps_unmet: $deps_unmet, deps_warnings: $deps_warn,
-      has_acceptance: $has_acc, skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, blocking_merged: $bm, needs_human_qa: $nhq}'
+      has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
+      lint_commented: $lint_commented,
+      skip_marker: $marker, note: $note, pr: $pr,
+      pr_info: $info, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift}'
 }
 
 SEEN=" "
@@ -320,6 +470,8 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
           then act("block"; "no progress after \($fails) attempts: \($err)")
         elif $c.state == "blocked" and $n.blocking_pr != null and $c.blocking_merged == true and $fails >= $max
           then act("skip"; "unblock made no progress after \($fails) attempts: \($err)")
+        elif $c.state == "ready" and $c.lint_gate
+          then act("skip_card_lint"; "card lint failed: \([$c.lint[] | split(":")[0]] | unique | join(", "))")
         elif $c.state == "ready" then
           if $c.has_acceptance then
             if ($c.deps_unmet | length) > 0
@@ -339,6 +491,9 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
           elif $lr == null or ($lr.round // 0) < $round then act("review"; "round \($round) not reviewed yet")
           # Commits landed after a review with findings (a fixer whose report
           # was never reconciled, or a person): review them; never fix again.
+          # An accept by another login is not honored: its baseline is not trusted
+          elif $ci > 0 and $n.accepted != null and $c.accepted_mine == false
+            then act("review"; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
           elif $ci > 0 and head_moved($c; $lr)
             then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
           elif $ci > 0 and $round >= $max then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($max)")
@@ -370,13 +525,18 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if $c.state == "in_review" then $c.needs_human_qa else null end),
-       comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not) else null end),
+       drift: ($c.drift // null),
+       comment_needed: (if $d.action == "skip_no_acceptance" then ($c.skip_marker | not)
+                        elif $d.action == "skip_card_lint" then ($c.lint_commented | not)
+                        else null end),
+       lint: (if $d.action == "skip_card_lint" then $c.lint else null end),
+       lint_marker: (if $d.action == "skip_card_lint" then $c.lint_marker else null end),
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
   | {dispatchable: any($cards[];
-        (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance")
-        or (.action == "skip_no_acceptance" and .comment_needed == true)),
+        (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
+        or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true)),
      warnings: (
        (if $m.implementor == $m.reviewer
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
@@ -398,8 +558,10 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
           | "#\(.number): \(.reason); fix the board, move the card by hand, then run: \(reset_cmd(.number))"]
        + [$cards[] | select(.action == "skip" and (.reason | startswith("unblock made no progress after ")))
           | "#\(.number): \(.reason); move the card by hand, then run: \(reset_cmd(.number))"]
+       + [$cards[] | select(.drift != null and .drift.merge) | "#\(.number): unreviewed_merge: PR head \(.drift.head[0:7]) contains a merge of main made after the last review at \(.drift.from[0:7])"]
+       + [$cards[] | select(.drift != null and .drift.test_edit) | "#\(.number): test_edit_after_review: commits after the last review at \(.drift.from[0:7]) touch a test file"]
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
        + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]),
-     cards: [$cards[] | del(.pending_wait, .outside_warning, .deps_warnings)]}
+     cards: [$cards[] | del(.pending_wait, .outside_warning, .deps_warnings, .drift)]}
 ' "$CARDS_FILE" || fb_die 1 "cannot build the tick plan"

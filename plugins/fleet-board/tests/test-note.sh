@@ -710,6 +710,65 @@ assert_exit "usage: reset-failures with a non-numeric card" 2
 run_note reset-failures 12 "$FAKE_GH_DIR/patch.json"
 assert_exit "usage: reset-failures takes no file" 2
 
+# ---------------------------------------------------------------------------
+# after_merge_results: per-command results (command and exit status)
+setup_case
+set_note_json '{"state":"merged","pr":34}'
+printf '{"after_merge_results":[{"command":"npm test","exit":0},{"command":"npm run lint","exit":1}]}\n' > "$FAKE_GH_DIR/amr.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/amr.json"
+assert_exit "after-merge-results: merge accepts a per-command result field" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "after-merge-results: the results are stored in the note" \
+  "$(jq -c .after_merge_results <<<"$N" 2>/dev/null)" '[{"command":"npm test","exit":0},{"command":"npm run lint","exit":1}]'
+assert_eq "after-merge-results: existing fields are kept" "$(jq -c '[.state,.pr]' <<<"$N" 2>/dev/null)" '["merged",34]'
+
+# a malformed entry (non-numeric exit status) is refused and the note is unchanged
+setup_case
+set_note_json '{"state":"merged","pr":34}'
+printf '{"after_merge_results":[{"command":"npm test","exit":"abc"}]}\n' > "$FAKE_GH_DIR/bad.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bad.json"
+assert_exit "after-merge-results: non-numeric exit status is refused" 1
+assert_eq "after-merge-results: a refused merge writes nothing" "$(input_count)" "0"
+printf '{"after_merge_results":[{"exit":0}]}\n' > "$FAKE_GH_DIR/bad2.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bad2.json"
+assert_exit "after-merge-results: an entry without a command is refused" 1
+assert_eq "after-merge-results: that refused merge writes nothing" "$(input_count)" "0"
+
+# ---------------------------------------------------------------------------
+# blocked-from: the state a card was blocked from
+setup_case
+set_note_json '{"state":"blocked","blocked_from":"in_review"}'
+run_note get 12
+assert_eq "blocked-from: get returns a note with blocked_from in_review unchanged" \
+  "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"in_review"'
+
+setup_case
+set_note_json '{"state":"blocked","blocked_from":"banana"}'
+run_note get 12
+assert_stdout_exact "blocked-from: a note with blocked_from banana is rejected" "{}"
+assert_stderr_exact "blocked-from: the warning names blocked_from" \
+  "fleet-board: warning: ignoring invalid manager note on #12: blocked_from"
+
+setup_case
+set_note_json '{"state":"blocked","blocked_from":null}'
+run_note get 12
+assert_eq "blocked-from: a note with blocked_from null is accepted" \
+  "$(jq -c .state <<<"$LAST_OUT" 2>/dev/null)" '"blocked"'
+setup_case
+set_note_json '{"state":"blocked"}'
+run_note get 12
+assert_eq "blocked-from: a note with no blocked_from key is accepted" \
+  "$(jq -c .state <<<"$LAST_OUT" 2>/dev/null)" '"blocked"'
+
+setup_case
+set_note_json '{"state":"blocked"}'
+printf '{"blocked_from":"in_progress"}\n' > "$FAKE_GH_DIR/bf1.json"
+printf '{"round":2}\n' > "$FAKE_GH_DIR/bf2.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bf1.json"; assert_exit "blocked-from: first merge exit" 0; feed_back
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bf2.json"; assert_exit "blocked-from: second merge exit" 0
+assert_eq "blocked-from: merge keeps blocked_from across a merge that does not mention it" \
+  "$(jq -c .blocked_from <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '"in_progress"'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -1610,3 +1610,153 @@ checker's grep for `sk-ant`, home and temp paths and the forbidden name found no
 **Minimality check.** The diff has 5 hunks, each one a requirement item: the two 0.10 bullets, the 0.11 sentence, the 2.C.4 bullet, and the two Never lines. No unrelated line changed; the frontmatter is unchanged (`model: sonnet`, `color: blue`, the D3 tools). `agents/manager.md` sha256 `e2a04d5581581fb9` → `9c3dcfc1a2418805`. **Kept.**
 
 `tests/test-clean-room.sh`: `passed: 79   failed: 0`. `tests/test-write-names.sh`: `passed: 5   failed: 0`. **Revision cost:** $0.2749. **Running total, all API-key charges:** ~$36.14.
+
+### Revision 11 (2026-11-01, PR #98): Out of scope entries carry a check command
+
+**Cause.** Follow-up cards filed from `Out of scope:` entries landed in Backlog with no `## Acceptance` (seen on #81, #89, #90, #96, #97) because the roles wrote prose with no backticked command, and `file-followups.sh` drafts Acceptance only from one. `parse-report.sh` now rejects an entry whose detail has neither a non-blank backticked span nor the words `no testable check`, and `file-followups.sh` files the card in Backlog when the words appear even beside a backticked path.
+
+**Process note.** A first attempt hand-edited the agent files and the reporting skill. That broke the clean-room rule and was reverted (`3a0bf1f`). The files below were edited by isolated runs.
+
+**Spec and brief changes** (hand edits to the text, as in the issue #3 revision): `specs/{implementor,reviewer,fixer,reporting}.md` (entry shape, rule, rejection message, rejection-table row, examples) and a "Revision 11 requirements" section in `briefs/spec-req-{implementor,reviewer,fixer,reporting}.md`.
+
+**Runs.** Five isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.309. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `bfa8688aaf0d2e3f`) and the edited spec (`spec-reporting.md` for the manager, whose rejection table comes from the reporting spec). A first attempt failed with `Invalid API key` (0 turns of work, $0) and was re-run after the key was replaced. No run read or edited any file outside its inputs and its target.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/implementor.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 6 edits) | 10 | 0.1848 | `57c4c13bdee48fda` |
+| `agents/reviewer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 5 edits) | 9 | 0.1666 | `c7864087befb5453` |
+| `agents/fixer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1333 | `21753fef96be8e0e` |
+| `skills/reporting/SKILL.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 7 edits) | 11 | 0.2050 | `613def0f0629d1ae` |
+| `agents/manager.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 1 edit) | 5 | 0.2078 | `827d0952573d60c5` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{implementor,reviewer,fixer,reporting,manager}.r11.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is the entry shape, the Out of scope rule, the new rejection message or its table row, or an example entry. The implementor run also fixed the spec's own Template A example, which this revision's spec edit had missed (the spec was patched to match). **Kept.**
+
+**Revision cost:** $0.8975. 
+
+**Output sha256 before → after (16), against `main` at the time of the PR:** `agents/implementor.md` `3244f3a7c89636b9` → `57c4c13bdee48fda`; `agents/reviewer.md` `5fca329a826e7e44` → `c7864087befb5453`; `agents/fixer.md` `b7f6d4a41ddec2c3` → `21753fef96be8e0e`; `agents/manager.md` `ae4f3d63b1f0d926` → `827d0952573d60c5`; `skills/reporting/SKILL.md` `2229ebb859f5e64d` → `613def0f0629d1ae`. `edit-req.md` is not committed; its sha256 prefix is recorded above.
+
+**Follow-up to Revision 11 (second review).** `parse-report.sh` and `file-followups.sh` now pair the backticks of a detail as single-backtick spans (an even count, none adjacent) instead of matching a span anywhere, so text between two spans is never the command. The authored files were not re-run for this: they say "backticked check command" and "before any other backticked text", which the pairing rule implements. `specs/reviewer.md` had a stale shape line and was patched to agree with `agents/reviewer.md`. Known limits, documented in `docs/config.md`: a backticked file path written first is taken as the command, and invisible characters inside a span are not checked.
+
+### Revision 12 (2026-11-01, PR #109): Acceptance items no test can map to; only weakened tests are Critical
+
+**Cause.** Fixers reported `not fixed: needs human decision` on six cards. Five were Acceptance items with no test to map to (HMBWorkout#396, #393 and #390; HMBWorkoutServer#42; HMBWorkoutWebClient#39). One (HMBWorkoutWebClient#19) was a test adapted to the card's required behavior with every assertion intact, which the reviewer flagged `[Critical]` and the fixer could not clear.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/{reviewer,fixer,reporting}.md` and a "Revision 12 requirements" section in `briefs/spec-req-{reviewer,fixer,reporting,manager}.md`. `parse-report.sh` accepts the two new Acceptance map forms.
+
+**Runs.** Four isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.309, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `9caa82076fdf24bb`) and the edited spec (`spec-reporting.md` for the manager, whose rejection table comes from the reporting spec). No run read or edited any file outside its inputs and its target.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 8 edits) | 12 | 0.2131 | `6fe40d4c84ae9d1c` |
+| `agents/fixer.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 6 edits) | 10 | 0.1586 | `e4a022f33ec04307` |
+| `skills/reporting/SKILL.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1622 | `bbcc25fe440ad71f` |
+| `agents/manager.md` | `bfaf22829b0db0e0` | PASS | PASS (3 reads, 1 edit) | 5 | 0.2011 | `85b01fcf7ec55df1` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{reviewer,fixer,reporting,manager}.r12.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is an Acceptance map shape or split line, the `CHECKED` or `NOT_APPLICABLE` rule, the mutation scope, the Restored, Adapted and Weakened classes, or the fixer's restore exception. The frontmatter is unchanged. `specs/fixer.md` still had the old split rule and was patched to agree with `agents/fixer.md`. **Kept.**
+
+**Known limits, not re-run.** The frontmatter description of `agents/fixer.md` and the opening of `specs/fixer.md` still say the fixer works without touching existing tests; the restore exception is in the body. `agents/implementor.md` and `specs/implementor.md` keep the old Acceptance map split rule: it describes a reviewer section the implementor never writes.
+
+**Revision cost:** $0.7350.
+
+**Output sha256 before → after (16), against `main` at the time of the PR:** `agents/reviewer.md` `c7864087befb5453` → `6fe40d4c84ae9d1c`; `agents/fixer.md` `21753fef96be8e0e` → `e4a022f33ec04307`; `agents/manager.md` `827d0952573d60c5` → `85b01fcf7ec55df1`; `skills/reporting/SKILL.md` `613def0f0629d1ae` → `bbcc25fe440ad71f`. `edit-req.md` is not committed; its sha256 prefix is recorded above.
+
+**Second pass (2026-11-02), from the adversarial review of the first pass.** The review found that a partial restore could launder a weakening, because the reviewer compared only against its last reviewed commit and that baseline moves. It also found that a restore did not cover a `.skip`, a rename or a deleted test, that `NOT_APPLICABLE` and `CHECKED` could hide behavior, and that a changed setup could leave an assertion intact but meaningless. Hand edits: `specs/{reviewer,fixer}.md` and a "Revision 12 second pass" section in `briefs/spec-req-{reviewer,fixer}.md`. `parse-report.sh` splits a `CHECKED` or `NOT_APPLICABLE` line at its keyword and rejects blank commands and wrong-case keywords.
+
+Two more isolated in-place edits with the same recipe, Claude Code 2.1.317. `edit-req.md` for this pass has sha256 `2175c2bbc56e73ea` and is not committed.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 7 edits) | 11 | 0.2089 | `e51bcefc2e9ee74e` |
+| `agents/fixer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 1 edit) | 5 | 0.1170 | `98ed7148b89d5926` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins (this version also loads `cc-plugin-privacy`), tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{reviewer,fixer}.r12b.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is the `CHECKED` or `NOT_APPLICABLE` rule, the Restored or Adapted class, the new check on a finding marked `fixed`, the two added report template lines, the split rule, or the fixer's whole-test restore. The frontmatter is unchanged. **Kept.**
+
+**Known limits added by this pass, not re-run.** `agents/manager.md` and `skills/reporting/SKILL.md` still describe the split as on the last ` -> `. It misdescribes only a `CHECKED` command that holds ` -> `, which the parser accepts. An Adapted mutant is not run when `review.mutation` is false. Step 7 still does nothing on a round-1 re-review after a moved head; that gap predates this revision.
+
+**Second pass cost:** $0.3259. **Revision cost, both passes:** $1.0609.
+
+**Output sha256 after the second pass (16):** `agents/reviewer.md` `6fe40d4c84ae9d1c` → `e51bcefc2e9ee74e`; `agents/fixer.md` `e4a022f33ec04307` → `98ed7148b89d5926`.
+
+**Third pass (2026-11-02), from the adversarial review of the second pass.** That review found that the restore check trusted text the fixer wrote, so a fixer could name a SHA holding the weak test or reword the line to skip the check. It also found that the `CHECKED` example covered only the commits since the previous review, that a restore could be impossible when the weakening removed an import, and that a restored test that failed was reported as weakened. Hand edits: `specs/{reviewer,fixer,manager}.md` and a "Revision 12 third pass" section in `briefs/spec-req-{reviewer,fixer,manager}.md`. `tests/behavioral-role.sh` passes the new input; it was syntax checked, not run.
+
+Three more isolated in-place edits with the same recipe, Claude Code 2.1.317. `edit-req.md` for this pass has sha256 `9231dcd002de61dd` and is not committed. Inputs were that file and the role's own spec, including for the manager.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 6 edits) | 10 | 0.1976 | `8f383457e9129408` |
+| `agents/fixer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.1182 | `b5035f0e48a270f1` |
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.2426 | `8d673df7fd3f8f7f` |
+
+Isolation as in the second pass. Evidence: `evidence/author-{reviewer,fixer,manager}.r12c.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is the new input, the `CHECKED` rule, the Restored or Weakened class, the standing check, the fixer's restore or touched files, or the manager's dispatch. The frontmatter is unchanged. **Kept.**
+
+**Third pass cost:** $0.5584. **Revision cost, all passes:** $1.6193.
+
+**Output sha256 after the third pass (16):** `agents/reviewer.md` `e51bcefc2e9ee74e` → `8f383457e9129408`; `agents/fixer.md` `98ed7148b89d5926` → `b5035f0e48a270f1`; `agents/manager.md` `85b01fcf7ec55df1` → `8d673df7fd3f8f7f`.
+
+**Fourth pass (2026-11-02), from the adversarial review of the third pass.** That review found that a card with a `CHECKED` "no test weakened" item could give one test two findings with different SHAs, which no version of the test can satisfy. It also found that such a finding might not name the file or say "weakened", that the base branch was not an input, and that two scope lines left out the previous findings. Hand edits: `specs/reviewer.md` and a "Revision 12 fourth pass" section in `briefs/spec-req-reviewer.md`. Also from that review, `scripts/accept.sh` (not clean-room, changed test-first) clears the old findings so a person's accept can release a card; it forgives an open weakened-test finding.
+
+One more isolated in-place edit with the same recipe, Claude Code 2.1.317. `edit-req.md` for this pass has sha256 `b8f06e198b7985f4` and is not committed.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1648 | `f651a8a96074c365` |
+
+Isolation as in the second pass. Evidence: `evidence/author-reviewer.r12d.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: the three hunks are the opening sentence, the `CHECKED` rule and the Never item. The frontmatter is unchanged. **Kept.**
+
+**Known limits added by this pass, not re-run.** A SHA pinned by a finding can undo a change that main made to the same test, if main is merged into the PR. `agents/fixer.md` also still describes the Acceptance map split as on the last ` -> `.
+
+**Fourth pass cost:** $0.1648. **Revision cost, all passes:** $1.7841.
+
+**Output sha256 after the fourth pass (16):** `agents/reviewer.md` `8f383457e9129408` → `f651a8a96074c365`.
+
+### Revision 13 (2026-11-03, PR #113): `blocked_from` brought back into the spec
+
+**Cause.** PR #104 (`d10f00e`) hand-edited `agents/manager.md` to record and clear `blocked_from`, and left the spec and brief without it. Nothing failed. Merging main into the Revision 12 branch (`c076b23`) carried those lines in, so `agents/manager.md` on main hashed to `4c5eec8da11bcbc9`, not the recorded `8d673df7fd3f8f7f`. `git diff -U0 5f7a55e 1c8bdb3` on the file showed the six #104 hunks and nothing else. #104 also missed step 2.16, which still listed only `blocking_pr` and `blocked_findings` as cleared.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md` (the `block` and `unblock` rows, 2.16, 2.D.3, 3.6 items 4 and 5, and a new after-merge block bullet after 2.15) and a "Revision 13 requirements" section in `briefs/spec-req-manager.md`. Brief sha256 (16): `42daadbd7c5cf202` → `8b63ddc383d30969`. Spec: `240cf174527d19b1` → `a141dad5383476c5`. `tests/test-manager-blocked-from.sh` now runs its checks on the spec as well as the agent file. It is not clean-room and was changed test-first.
+
+**Starting point.** An in-place edit of the file on main would have found the rules already there. So the file was first restored byte for byte to the last clean-room output (`git show 5f7a55e:...`, sha256 `8d673df7fd3f8f7f`, its own commit), and the run authored the rules from the spec.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `f002d6a7d60fce4a`, not committed) and a copy of the edited spec as `spec-manager.md` (`a141dad5383476c5`). Prompt sha256 `12a5943fe990d82e`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 7 edits) | 11 | 0.2833 | `3a705d629a868fe2` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. The path audit found the three reads were the two inputs and the target, and all seven edits were of the target. No tool call failed. Evidence: `evidence/author-manager.r13.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: seven hunks, one per requirement item (the `block` and `unblock` rows, the `finish` blocked branch, 2.16, 2.D.3, 3.6 items 4 and 5). The frontmatter is unchanged. Against main the file differs by one line: 2.16 now clears `blocked_from`. The other six hunks came out byte-identical to the #104 text. **Kept.**
+
+**Known limits, not re-run.** `specs/manager.md` is still missing other rules that earlier PRs added to the agent file by hand, including the full `## After merge` flow, `skip_card_lint`, `human-qa-handoff.sh`, `deps_commented` and the standing rules on adversarial review and re-fetching PR state. The new after-merge bullet covers only the `blocked_from` rule, and 2.15 still opens with "Only two steps". In-place edits keep these rules. A full regeneration from the spec would drop them.
+
+**Revision cost:** $0.2833. **Running total, all API-key charges:** ~$39.10 (the last stated total, ~$36.14 at Revision 10, plus Revision 11's $0.8975, Revision 12's $1.7841 and this run).
+
+**Output sha256 before → after (16):** `agents/manager.md` `4c5eec8da11bcbc9` (main) → `8d673df7fd3f8f7f` (restored) → `3a705d629a868fe2`.
+
+**Second pass (2026-11-03), from the adversarial review of the first pass.** The review found that in 3.6 items 4 and 5 "the card's state before the move" named no source. The card has already moved when a role reports, and the plan card's `state` still says `ready` after `start`. A manager reading the plan would record `ready`, `accept.sh` would return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. Hand edits: `specs/manager.md` and a "Revision 13 second pass" section in `briefs/spec-req-manager.md`. Brief sha256 (16): `8b63ddc383d30969` → `be1c19ba90c89cf9`. Spec: `a141dad5383476c5` → `c8e2a05f6397ca02`. `tests/test-manager-blocked-from.sh` checks both items in both files.
+
+One more isolated in-place edit with the same recipe, Claude Code 2.1.317, starting from the first pass's output. `edit-req.md` for this pass has sha256 `4873d77194587861` and is not committed. Prompt sha256 `b40a876ec3968cf2`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.2439 | `e4e74e5d724175a9` |
+
+Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: two hunks, 3.6 items 4 and 5, each changing only the parenthesis after "the card's state before the move". The frontmatter is unchanged. Against main the file now differs by three lines. **Kept.**
+
+**Known limits added by this pass, not re-run.** No behavioral run exercised the new rule. An after-merge block sent back through `finish` by `accept.sh` restarts `after-merge.sh run` from the first command, and this is not documented; that predates this revision.
+
+**Second pass cost:** $0.2439. **Revision cost, both passes:** $0.5272. **Running total, all API-key charges:** ~$39.35.
+
+**Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.

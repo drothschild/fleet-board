@@ -150,6 +150,22 @@ assert_eq "stagger: second run exit 0" "$LAST_EXIT" "0"
 assert_eq "stagger: second run waited the rest of the gap" "$(cat "$SLEEPS")" "90"
 assert_eq "stagger: lock file records the later start" "$(tr -d '[:space:]' < "$LOCK" 2>/dev/null)" "$((NOW0 + 120))"
 
+echo "stale-token-lock (a token.lock.d older than 10 s is removed; a young one is kept)"
+new_case "min_tick_gap: 120"
+cp "$FX/tick-idle.jsonl" "$FC/default.jsonl"
+mkdir "$LOCK.d"; touch -t 200001010000 "$LOCK.d"
+printf '%s\n' "$((NOW0 + 30))" > "$LOCK"
+run_wrapper
+assert_eq "stale token lock is removed and the stagger still applies" "$(cat "$SLEEPS"):$([ -d "$LOCK.d" ] && echo kept || echo gone)" "150:gone"
+case "$LAST_ERR$LOGTXT" in *"starting the tick unstaggered"*) fail "stale lock: no unstaggered warning" "$LAST_ERR" ;; *) pass "stale lock: no unstaggered warning" ;; esac
+
+new_case "min_tick_gap: 120"
+cp "$FX/tick-idle.jsonl" "$FC/default.jsonl"
+mkdir "$LOCK.d"
+run_wrapper
+assert_eq "young token lock is not deleted and the run still waits for it" "$([ -d "$LOCK.d" ] && echo kept || echo gone)" "kept"
+case "$LAST_ERR" in *"starting the tick unstaggered"*) pass "young lock: the run waited, then started unstaggered" ;; *) fail "young lock: the run waited, then started unstaggered" "$LAST_ERR" ;; esac
+
 echo "stagger-off (min_tick_gap 0 never waits)"
 new_case "min_tick_gap: 0"
 cp "$FX/tick-idle.jsonl" "$FC/default.jsonl"

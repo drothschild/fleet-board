@@ -1,5 +1,7 @@
 # fleet-board
 
+[![tests](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml/badge.svg)](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml)
+
 ## What it is
 
 A Claude Code plugin that turns a GitHub issue board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates. An implementor writes failing tests first, a separate reviewer attacks the result, and a human merges.

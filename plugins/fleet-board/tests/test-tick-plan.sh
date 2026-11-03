@@ -261,6 +261,34 @@ assert_jq "in-review-head-moved: reason" "$(card 12 reason)" \
 assert_jq "in-review-head-moved: round unchanged" "$(card 12 round)" '1'
 assert_jq "in-review-head-moved: dispatchable" '.dispatchable' 'true'
 
+# Review drift warnings: commits after the last reviewed sha (abc1234)
+um='[.warnings[] | select(contains("unreviewed_merge"))] | length'
+te='[.warnings[] | select(contains("test_edit_after_review"))] | length'
+
+# A merge of main on the PR head, made after the last reviewed sha
+plan drift-merge
+assert_exit "drift-merge: exit" 0
+assert_jq "drift-merge: unreviewed_merge warning" "$um" '1'
+assert_jq "drift-merge: no test_edit_after_review (main's own commits are not the PR's)" "$te" '0'
+assert_jq "drift-merge: action unchanged" "$(card 12 action)" '"review"'
+
+# A commit after the last reviewed sha touches a file matching test_paths
+plan drift-test-edit
+assert_exit "drift-test-edit: exit" 0
+assert_jq "drift-test-edit: test_edit_after_review warning" "$te" '1'
+assert_jq "drift-test-edit: no unreviewed_merge" "$um" '0'
+assert_jq "drift-test-edit: action unchanged" "$(card 12 action)" '"review"'
+
+# Neither condition: no drift warning
+plan drift-clean
+assert_exit "drift-clean: exit" 0
+assert_jq "drift-clean: no drift warnings" '[.warnings[] | select(contains("unreviewed_merge") or contains("test_edit_after_review"))] | length' '0'
+assert_jq "drift-clean: warnings empty" '.warnings' '[]'
+
+# The existing head-moved check is unchanged when the drift lookups are unroutable
+plan in-review-head-moved
+assert_jq "in-review-head-moved: no drift warnings" '.warnings' '[]'
+
 # in-review-head-same-full-sha: the note holds the short sha abc1234 and the
 # PR head is its full 40-character form. That is the same commit, so the plan
 # stays fix; reading it as a move would plan a review on every tick.
