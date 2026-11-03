@@ -242,3 +242,10 @@ to exactly its content at the SHA in the finding. A partial restore is not allow
 
 A restore may also put back file-level lines the test needs, such as an import or a helper, each
 exactly as at the SHA. Restored test files count as touched test files.
+
+## Revision 14 requirements (2026-11-03, weakening outside a test body)
+
+The ban on changing existing tests also covers weakening outside a test's body: a changed or
+no-op test helper, a changed fixture or expected-output file, a new top-level setup hook such as
+a `beforeEach` that stubs the code under test, `describe(` changed to `describe.skip(`, and a new
+`test.only(...)` block or other `.only` marker. The Must-never list names them too.

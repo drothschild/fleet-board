@@ -773,3 +773,11 @@ In round 2 and later the manager passes the reviewer the previous findings:
 ## Revision 13 second pass (2026-11-03, from the adversarial review; these win over anything above)
 
 In 3.6 items 4 and 5 the card has already moved when the role reports, and the plan card's `state` still says `ready` after `start`. Recording `ready` would make `accept.sh` return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. So in those two items `blocked_from` = the card's state before the move: the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`.
+
+## Revision 14 requirements (2026-11-03, one round 1 reference SHA)
+
+The manager states one round 1 reference SHA in both places: the reviewer's inputs and the
+`review` action row. In round 1 the reference SHA `prev_sha` is the `base` from `worktree.sh
+review` (the merge-base), even when an earlier review exists, because `unblock`, `start` and
+`start_review` reset the round to 1. In round 2 and later it is `note.last_review.sha`. No line
+says round 1 uses `base` only when there is no previous review.

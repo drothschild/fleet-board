@@ -81,7 +81,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the review worktree path (`path` from `worktree.sh review`);
      - the config JSON;
      - the round number;
-     - the reference SHA `prev_sha`: in round 1 this is the `base` from `worktree.sh review`, in later rounds `note.last_review.sha`;
+     - the reference SHA `prev_sha`: in round 1 this is the `base` from `worktree.sh review` (the merge-base), even when an earlier review exists, in later rounds `note.last_review.sha`;
      - the previous findings: in round 2 and later, `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`; in round 1, none;
      - the absolute scripts dir.
    - **fixer** (`fleet-board:fixer`, `model` = the plan card's `models.fixer`):
@@ -128,7 +128,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `start` | `worktree.sh create N <plan branch> <plan worktree>` → `board-move.sh N in_progress` → `note.sh merge` with `branch`, `worktree`, `round: 0`, `models` (the plan card's) and `implementor_attempts: 1` → dispatch the implementor |
 | `continue_implementor` | `note.sh merge` with `implementor_attempts` = `note.implementor_attempts` (0 when null) + 1, plus `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the implementor with the note |
 | `start_review` | `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` |
-| `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = `note.last_review.sha`, or `base` when there is no previous review |
+| `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = the `base` from `worktree.sh review` in round 1 (`note.round` is 1), even when an earlier review exists (`unblock`, `start` and `start_review` reset the round to 1), otherwise `note.last_review.sha` |
 | `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer in the same tick, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
 | `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
 | `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, post a comment headed `What to check in Human QA` that quotes the card's `## Acceptance` section verbatim as a blockquote and includes the qa_build summary. If the card already has a comment with that heading, post nothing. |
