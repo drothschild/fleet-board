@@ -421,20 +421,20 @@ assert_jq "note-worktree-outside-base: warning" '.warnings' \
 
 # ---------------------------------------------------------------------------
 # gh calls for one in_review card: one card read (api user, issue, comments),
-# the PR view, and the files lookup only when the review is clean and current.
+# the PR view, the mergeable lookup, and the files lookup only when the review is clean and current.
 # Before the note and labels were taken from the card read: 11 per card.
 per_card_calls() { echo $(( $(wc -l < "$FAKE_GH_DIR/calls.log") - $(grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log") )); }
 plan in-review-mark-ready-human
-assert_eq "gh-calls: clean current review (mark_ready): 5 per card" "$(per_card_calls)" 5
+assert_eq "gh-calls: clean current review (mark_ready): 6 per card" "$(per_card_calls)" 6
 assert_eq "gh-calls: clean current review: one card read" "$(call_count api repos/acme/toy/issues/12)" 1
 assert_eq "gh-calls: clean current review: one files lookup" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
 plan in-review-fix
-assert_eq "gh-calls: findings (fix): 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: findings (fix): 5 per card, no files lookup" "$(per_card_calls)" 5
 assert_jq "gh-calls: findings: needs_human_qa not computed" "$(card 12 needs_human_qa)" 'null'
 plan in-review-needs-review
-assert_eq "gh-calls: review not current (review): 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: review not current (review): 5 per card, no files lookup" "$(per_card_calls)" 5
 plan in-review-human-qa-label
-assert_eq "gh-calls: labelled card: 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: labelled card: 5 per card, no files lookup" "$(per_card_calls)" 5
 assert_jq "gh-calls: labelled card still -> to_human_qa" "$(card 12 action)" '"to_human_qa"'
 
 # ---------------------------------------------------------------------------
@@ -712,6 +712,97 @@ assert_jq "deps-other-card-starts: the card with the dependency waits" "$(card 1
 assert_jq "deps-other-card-starts: the other card starts" "$(card 14 action)" '"start"'
 assert_jq "deps-other-card-starts: dispatchable reflects the other card" '.dispatchable' 'true'
 assert_jq "deps-other-card-starts: a card with no dependencies has waiting_on null" "$(card 14 waiting_on)" 'null'
+
+# update_branch: a PR whose mergeable state is CONFLICTING is brought up to
+# date by a merge. Routes are built at run time from an existing scenario plus
+# a "pr view <pr> --json mergeable" answer, so no fixture directory is needed.
+plan_mergeable() { # <case> <pr> <mergeable>
+  setup_case "$1"
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  printf '{"mergeable":"%s"}\n' "$3" > "$d/mergeable.json"
+  {
+    printf 'pr view %s --repo acme/toy --json mergeable\t0\t%s\n' "$2" "$d/mergeable.json"
+    sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-#	$TICK/$1/comments-#" "$TICK/$1/routes"
+  } > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+
+plan_mergeable in-review-fix 34 CONFLICTING
+assert_exit "update_branch: in review, conflicting: exit" 0
+assert_jq "update_branch: in review, conflicting PR plans update_branch, not fix" "$(card 12 action)" '"update_branch"'
+assert_jq "update_branch: in review, no dispatch action for the card" '[.cards[] | select(.action == "fix" or .action == "review" or .action == "start_review")] | length' '0'
+
+plan_mergeable in-progress-draft-pr 34 CONFLICTING
+assert_jq "update_branch: in progress, conflicting PR plans update_branch, not start_review" "$(card 12 action)" '"update_branch"'
+
+plan_mergeable in-review-fix 34 MERGEABLE
+assert_jq "update_branch: a mergeable PR keeps its action" "$(card 12 action)" '"fix"'
+
+plan_mergeable in-review-fix 34 UNKNOWN
+assert_jq "update_branch: an unknown mergeable state gets no update_branch" "$(card 12 action)" '"fix"'
+
+plan_mergeable in-progress-draft-pr 34 MERGEABLE
+assert_jq "update_branch: in progress, mergeable PR keeps start_review" "$(card 12 action)" '"start_review"'
+
+# ---------------------------------------------------------------------------
+# settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
+# settle <case> <n> [extra YAML]: set up the case and run --settle <n>
+settle() { local c="$1" n="$2"; shift 2; setup_case "$c" "$@"; run_check "$SCRIPT" --settle "$n"; }
+list_calls() { grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
+
+settle in-review-human-qa-path 12
+assert_exit "settle: clean review needing human QA: exit" 0
+assert_jq "settle: clean-reviewed card where needs-human-qa.sh says true plans to_human_qa" "$(card 12 action)" '"to_human_qa"'
+settle in-review-mark-ready-human 12
+assert_jq "settle: clean-reviewed draft PR where needs-human-qa.sh says false plans mark_ready" "$(card 12 action)" '"mark_ready"'
+settle in-progress-draft-pr 12
+assert_jq "settle: in_progress card with a PR plans move_to_review" "$(card 12 action)" '"move_to_review"'
+assert_jq "settle: move_to_review carries the pr" "$(card 12 pr)" '34'
+plan in-progress-draft-pr
+assert_jq "settle: a plan without --settle still plans start_review" "$(card 12 action)" '"start_review"'
+settle in-review-block 12
+assert_jq "settle: findings surviving the final round plan block" "$(card 12 action)" '"block"'
+
+# every other table action is skipped, with a reason naming the action
+settle_skips() { # <case> <card> <table action> [extra YAML]
+  settle "$1" "$2" "${4:-}"
+  assert_jq "settle: table action $3 plans skip ($1)" "$(card "$2" action)" '"skip"'
+  assert_jq "settle: skip reason names $3 ($1)" "$(card "$2" reason)" "$(jq -cn --arg a "$3" '"\($a) waits for the next tick"')"
+  assert_jq "settle: dispatchable false for $3 ($1)" '.dispatchable' 'false'
+}
+settle_skips ready-start 12 start
+settle_skips in-progress-no-pr 12 continue_implementor
+settle_skips in-review-needs-review 12 review
+settle_skips in-review-fix 12 fix
+settle_skips in-review-merge-auto 12 merge "$(printf 'merge:\n  policy: auto')"
+settle_skips merged-verify 12 verify_main
+settle_skips merged-finish 12 finish
+settle_skips blocked-unblock 20 unblock
+settle_skips pending-followups-hold-card 12 file_pending
+
+settle in-review-mark-ready-human 12
+assert_jq "settle: dispatchable is false even for a to-be-acted card" '.dispatchable' 'false'
+
+settle read-failure 12
+assert_exit "settle: failed lookup: exit" 0
+assert_jq "settle: failed lookup on a named card plans skip" "$(card 12 action)" '"skip"'
+assert_jq "settle: failed lookup warns" '[.warnings[] | select(startswith("#12: lookup failed"))] | length' 1
+
+settle in-review-fix 12
+assert_jq "settle: output lists only the named card" '[.cards[].number]' '[12]'
+assert_eq "settle: no column is listed" "$(list_calls)" 0
+plan in-review-fix
+assert_eq "settle: a normal plan does list columns" "$(list_calls)" 4
+
+plan in-review-fix
+run_check "$SCRIPT" --settle
+assert_exit "settle: no card exits 2" 2
+run_check "$SCRIPT" --settle abc
+assert_exit "settle: non-numeric card exits 2" 2
+run_check "$SCRIPT" --settle 12 x1
+assert_exit "settle: a non-numeric second card exits 2" 2
 
 # usage
 plan ready-start
