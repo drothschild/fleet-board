@@ -1760,3 +1760,44 @@ Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.jso
 **Second pass cost:** $0.2439. **Revision cost, both passes:** $0.5272. **Running total, all API-key charges:** ~$39.35.
 
 **Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.
+
+### Revision 14 (2026-11-03, card 115): remaining hand-added rules brought into the specs
+
+**Cause.** Revision 13 listed rules that PRs added to clean-room files by hand and left out of their specs. In-place edits keep such rules. A full regeneration from the spec would drop them. The audit below compared each spec with its authored file, not just the list in the card.
+
+**Audit, `specs/manager.md` against `agents/manager.md`.** Rules in the agent file and missing from the spec (the hand edits are in `8385f40`, `c32c5bb`, `aeefac1`, `30f7fb5` and `5a0e118`; the rest were never in the spec):
+- standing rules 0.16 (adversarial review before merge) and 0.17 (re-fetch before acting on PR state);
+- the full `## After merge` flow in 2.15 (`after-merge.sh run`, the `after_merge` note, the block, and the continue), where the spec still opened with "Only two steps";
+- the `to_human_qa` row and 2.11: `human-qa-handoff.sh [--qa-summary <file>] N <pr>`, the checklist of pre-merge steps and the `## Human QA` bullets;
+- the `skip_card_lint` row, 2.17a and its progress line in 2.C.3, with `lint_marker`;
+- the `wait` row with `deps_commented`, and the 4.4 exception for it;
+- a few rules the spec never carried: roles have no `Skill` tool (0.15 and Must never), an empty final reply is checked as empty text (3.1), never check a report with another role or without `--role` (3.2 and Must never), the exit 2 messages (3.5), the frontmatter `model` is only a fallback (Purpose);
+- one wrong cross-reference in the spec: 0.1 named 0.9 for the temp directory rule, which is 0.10.
+
+Not copied: the rejection-message table and the Status and PR background in the agent file's 3.9. They came from `reporting.md`, which was the other input of the Revision 12 manager runs, and 3.3 of the spec already says the rules are quoted from `reporting.md`. Commit `36f23c1` changed only that table, and `reporting.md` already carries its rows. The tick report template and What not to do are the same rules as the spec's Tick report and Must never.
+
+**Audit, `specs/status.md` against `skills/status/SKILL.md`.** One rule missing: `status.sh --forecast` (the `d2c3a75` hand edit, #76). The spec's script entry now covers `--forecast` and step 3 says when the skill runs it. The other lines of the skill and the spec agree.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 14 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `b4506b54ee6259f8`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `192070fb66ef2f39`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c`.
+
+**`agents/manager.md` is not re-authored.** The spec only caught up with the agent file, which already holds every rule, so it stays at `e4e74e5d724175a9`.
+
+**Starting point.** `skills/status/SKILL.md` on main (`bfd19b217ea02b84`) already held the `--forecast` paragraph. So the file was first restored byte for byte to the last clean-room output (`git show d2c3a75^:...`, sha256 `328ff52ca83b31c3`, its own commit), and the run authored `--forecast` from the spec.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `fc6e2cf0ad328121`, not committed) and a copy of the edited spec as `spec-status.md` (`68468a253aa2658a`). Prompt sha256 `dc8ebe2353a1be04`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `skills/status/SKILL.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 1 edit) | 5 | 0.0696 | `ca185e305e578202` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills, no MCP servers. Path audit: the three reads were the two inputs and the target, the one edit was of the target, and no tool call failed. Evidence: `evidence/author-status.r14.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: one hunk, two added lines (a paragraph in step 3 and its blank line). The paragraph says when to run `status.sh --forecast`, that it is never combined with `--all`, what it prints, that its output is passed through verbatim and that steps 4 to 7 apply to its exit code. The frontmatter is unchanged and no other line moved. **Kept.**
+
+**Test changes.** Two test commits followed the first one. One matched three needles to the spec's third-person wording ("re-fetches", "passes", "continues"). One made the skill check look for `--forecast` instead of `status.sh --forecast`, because the authored paragraph writes the command with the flag after the quoted path. No assertion was removed or skipped.
+
+**Known limits, not re-run.** The skill's frontmatter description does not mention a forecast, and the spec's proposed description does not either. No behavioral run exercised `--forecast` through the skill.
+
+**Revision cost:** $0.0696. **Running total, all API-key charges:** ~$39.42 (the last stated total, ~$39.35, plus this run).
+
+**Output sha256 before → after (16):** `skills/status/SKILL.md` `bfd19b217ea02b84` (main) → `328ff52ca83b31c3` (restored) → `ca185e305e578202`.
