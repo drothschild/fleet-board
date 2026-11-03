@@ -1760,3 +1760,29 @@ Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.jso
 **Second pass cost:** $0.2439. **Revision cost, both passes:** $0.5272. **Running total, all API-key charges:** ~$39.35.
 
 **Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.
+
+### Revision 14 (2026-11-03, card 111): weakened tests outside a test body, in round 1, and the SHA a finding gives
+
+**Cause.** The adversarial review of PR #109 traced four gaps that predate it. The weakened-test step counted only lines inside a test body and diffed only `test_paths`, so a no-op helper, a changed fixture, a new top-level `beforeEach`, `describe.skip(` and a new `test.only(...)` block all passed. The step did nothing in round 1, and `unblock`, `start` and `start_review` reset the round to 1, so a fixer's unreviewed commit was never checked. A finding could give a SHA at which the test was already weakened, so a fixer's restore counted as Restored while the weak test stayed. And `agents/manager.md` said two things about the round 1 reference SHA (`base` in the reviewer's inputs, `note.last_review.sha` in the `review` row).
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/{reviewer,fixer,manager}.md` and a "Revision 14 requirements" section in `briefs/spec-req-{reviewer,fixer,manager}.md`, committed before the agent files. The step runs in every round; in round 1 its reference SHA is the merge-base. It lists a test helper, a fixture, a top-level setup hook, a `.skip` marker and an `.only` marker. The `CHECKED` rule and the step give the reference SHA only when the test at it is not already weakened against the merge-base, otherwise the merge-base SHA. The manager's round 1 reference SHA is `base` in both places, even when an earlier review exists. `tests/test-weakened-test-scope.sh` checks all three specs and all three agent files; it is not clean-room and was written test-first (36 checks failed, 6 passed, before the spec change).
+
+Brief sha256 (16): reviewer `a274af1a0bfbd3c7` → `91f20ebf62b3bc32`; fixer `8d34d61154b9e22e` → `a262d7ce4d5ad0c7`; manager `be1c19ba90c89cf9` → `9c8d5d591fd3ba0d`. Spec sha256 (16): reviewer `f383e417fa064cfa` → `e154c40c82cfcdf4`; fixer `58e0234d6e98aab3` → `0e7b3e5cdd73041e`; manager `c8e2a05f6397ca02` → `75bcbb2186e2c81e`.
+
+**Runs.** Three isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Each run's only `--add-dir` was a staging dir holding that role's `edit-req.md` and a copy of the edited spec. `edit-req.md` sha256 (16), not committed: reviewer `95a32713ba55cacc`, fixer `427acbef42f6cb83`, manager `ba34d2d52bc47570`. The edit-req files, spec copies and logs were kept outside the repo.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 8 edits) | 12 | 0.2329 | `deb4a81bde0ddc31` |
+| `agents/fixer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.1310 | `a0144525ab919728` |
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.2544 | `ca3c496c69fb9d24` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. The path audit found each run's reads were its two inputs and the target, and every edit was of the target. No tool call failed. Evidence: `evidence/author-{reviewer,fixer,manager}.r14.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` was read line by line. Reviewer: the frontmatter description and opening sentence (round 2 wording), the reference SHA input, the `CHECKED` rule, step 7's heading, baseline and new bullet, the Adapted and Weakened classes and the `.only` exception. Fixer: one new item in step 3 and one new forbidden example. Manager: the `prev_sha` input bullet and the `review` row. The frontmatter `name` and `model` are unchanged. **Kept.**
+
+**Known limits, not re-run.** No behavioral run exercised the round 1 check or the new weakening classes. A helper or fixture outside `test_paths` is not in the diff the step reads. `specs/manager.md` still lacks the other rules that earlier PRs added to the agent file by hand (see Revision 13), so a full regeneration would drop them.
+
+**Revision cost:** $0.6183. **Running total, all API-key charges:** ~$39.97 (the last stated total, ~$39.35, plus this revision).
+
+**Output sha256 before → after (16):** `agents/reviewer.md` `f651a8a96074c365` → `deb4a81bde0ddc31`; `agents/fixer.md` `b5035f0e48a270f1` → `a0144525ab919728`; `agents/manager.md` `e4e74e5d724175a9` → `ca3c496c69fb9d24`.
