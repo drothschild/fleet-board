@@ -22,6 +22,9 @@
 #       in_progress/in_review, when note.pr is null and note.branch is set
 #   gh pr view <pr> --json isDraft,state,mergedAt,statusCheckRollup,headRefOid
 #       in_progress/in_review, when a PR is known
+#   gh pr view <pr> --json mergeable
+#       in_progress/in_review, when the PR is open. Best effort: a failed or
+#       unparsable answer reads as "unknown" and plans nothing (no skip).
 #   needs-human-qa.sh --labels <card labels> <n> <pr>
 #       in_review, when the PR is open and the review is clean and current
 #       (last_review.round >= note.round, as in the table, and no Critical or
@@ -53,6 +56,12 @@
 # dependency warns "#<n>: unrecognized dependency line: <line>" and is
 # ignored; a dependency closed as not planned (or at Status Won't Do) warns
 # "#<n> depends on <ref>, which was closed as not planned".
+#
+# Conflicting PRs: an open PR whose mergeable state is CONFLICTING, on an
+# in_progress or in_review card, plans update_branch (reason "PR #<pr> has
+# merge conflicts with its base branch"), before start_review, review, fix and
+# every other dispatch for the card. The manager runs update-branch.sh, which
+# merges the base into the branch and pushes (never rebases, never forces).
 #
 # Card lint: a ready card whose body fails card-lint.sh (and has the Acceptance
 # heading, or a "**Acceptance**" / "Acceptance:" line in place of it) gets action
@@ -127,7 +136,8 @@
 # fixing again". The commits came from a fixer whose report was never
 # reconciled (no round bump) or from a person; fixing again would redo the
 # work, while the manager's review action reviews exactly those commits
-# (prev_sha = last_review.sha). This comes before the max_rounds block.
+# (prev_sha is last_review.sha, or base when there is no previous review).
+# This comes before the max_rounds block.
 # A note's accepted entry (accept.sh) moved last_review.sha to the accepted
 # head, so commits before it are not flagged and later ones are. It counts only
 # when accepted.login is the authenticated gh login; otherwise a current review
@@ -268,7 +278,7 @@ drift_lookup() {
 # lookup_failed and no further lookups are made for the card.
 card_input() {
   local st="$1" n="$2" title="$3"
-  local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside=""
+  local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
   local drift=null
@@ -324,6 +334,12 @@ card_input() {
       else
         failed="$cmd"
       fi
+    fi
+    # Mergeable state of an open PR (best effort: unknown on any failure)
+    if [ -z "$failed" ] && [ "$info" != null ] && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
+      mergeable="$(gh pr view "$pr" --repo "$FLEET_REPO" --json mergeable 2>/dev/null \
+        | jq -c 'if (.mergeable | type) == "string" then .mergeable else null end' 2>/dev/null)" || mergeable=null
+      [ -n "$mergeable" ] || mergeable=null
     fi
     # The human-QA question matters only for a clean review of the current round
     if [ -z "$failed" ] && [ "$st" = in_review ] && [ "$info" != null ] \
@@ -433,7 +449,7 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -442,7 +458,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift}'
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -520,6 +536,9 @@ jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE
             then act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))")
             else act("start"; "ready, with an Acceptance section") end
           else act("skip_no_acceptance"; "no ## Acceptance section") end
+        elif ($c.state == "in_progress" or $c.state == "in_review") and $c.pr != null
+             and ($c.pr_info.state // null) == "OPEN" and $c.mergeable == "CONFLICTING"
+          then act("update_branch"; "PR #\($c.pr) has merge conflicts with its base branch")
         elif $c.state == "in_progress" then
           if $c.pr != null then act("start_review"; "PR #\($c.pr) exists")
           elif $tries >= $max then act("block"; "implementor produced no PR after \($tries) attempts")
