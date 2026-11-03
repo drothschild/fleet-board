@@ -150,6 +150,8 @@ The headless wrapper runs ticks one after another until the board is settled or 
 bash <path from /fleet-board:status> --repo .
 ```
 
+After each successful tick the wrapper also runs `scripts/settle.sh`, a plain shell script that starts no Claude session. It moves the cards whose next step needs no agent (for example a clean review to Human QA) right away instead of a whole tick later. It never merges and never moves a card out of Human QA. A person's interactive `/fleet-board:tick` does not run it.
+
 Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Merges stay manual: an overnight run leaves reviewed PRs to be merged by hand. Stop reasons, exit codes, the run log, cost estimates and scheduling with launchd are in [docs/overnight.md](docs/overnight.md).
 
 ## Known issues
