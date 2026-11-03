@@ -66,7 +66,7 @@ Reason for the choice: a sandbox is the stronger tool, but it is also heavy to i
 
 ## Evidence-based review
 
-A reviewer does not read a diff and give an opinion. It produces evidence that can be re-executed. It maps every Acceptance bullet to a named test or marks it unmapped. It runs mutation testing on the changed code to see whether the tests notice when behavior is broken. It re-executes one claim from the implementor's report and records whether the output matches. In the second round it also checks that no existing test was weakened, skipped or deleted to get green.
+A reviewer does not read a diff and give an opinion. It produces evidence that can be re-executed. It maps every Acceptance bullet to a named test, a command it ran, or a stated reason the bullet does not apply, or marks it unmapped. It runs mutation testing on the changed code to see whether the tests notice when behavior is broken. It re-executes one claim from the implementor's report and records whether the output matches. In the second round it also checks that no existing test was weakened, skipped or deleted to get green.
 
 Alternative: a reviewer that reads the code and judges it, which is cheaper and is how most human review works.
 

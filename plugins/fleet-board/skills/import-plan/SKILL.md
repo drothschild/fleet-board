@@ -23,6 +23,11 @@ Substitute the real base directory announced when the skill loaded.
 Read the spec and every plan named in the arguments. Note each plan's repo (`owner/repo`).
 `--status ready` in the arguments is passed through; the default is Backlog.
 
+Read each plan whatever its shape. `import-plan.sh parse` is an optional shortcut, not a
+requirement: it applies only to plans with `## Task N: <title>` headings and `Files:` /
+`Test steps:` blocks. For any other plan layout, group the tasks yourself and copy the
+test steps verbatim as acceptance.
+
 ## Step 2: Group tasks into cards
 
 Group plan tasks into PR-sized cards (one reviewable PR each). For each card write:
@@ -59,3 +64,11 @@ echo y | bash <scripts>/import-plan.sh <cards file> [--status ready]
 On no, run nothing. Report the `Created owner/repo#N` lines the script prints. Before the table the script lints every card (the same rules as `/fleet-board:lint`) and
 creates nothing while one fails: fix the card in the cards file and rerun. A failure
 (cycle, unknown dependency, lint, missing project option) exits 1 with the reason; relay it.
+
+
+If a card's Why or Acceptance names a `.md` doc that is missing on the default branch,
+the script lists the docs and asks: `[m]` commit and merge the docs first, or `[e]` embed
+the section into the card. Ask the user which, then pipe both answers
+(`printf 'y\ne\n' | ...`). `m` (or no answer) creates nothing and exits 1; `e` replaces the
+reference with the section text from the working tree. Role worktrees branch from the
+default branch, so a card must never point at a file that is not there.

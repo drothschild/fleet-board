@@ -1,0 +1,21 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  offline-suites:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show bash version
+        run: /bin/bash --version | head -1
+      # Uses the runner's system /bin/bash (3.2 on macOS), never a newer one.
+      - name: Run offline suites (includes test-clean-room.sh)
+        run: /bin/bash .github/scripts/run-suites.sh 'plugins/fleet-board/tests/test-*.sh'

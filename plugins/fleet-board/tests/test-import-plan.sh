@@ -70,6 +70,11 @@ case "$1 $2" in
     done
     cp "$bf" "$D/bodies/$n.md"
     echo "https://github.com/$repo/issues/$n" ;;
+  "label list")
+    repo=""; prev=""
+    for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
+    f="$D/labels/${repo//\//_}"
+    [ -f "$f" ] && cat "$f" ;;
   "project item-add")
     echo "{\"id\":\"ITEM_$(cat "$D/counter")\"}" ;;
   *) : ;;
@@ -211,6 +216,90 @@ check "a failing card makes the import exit 1" "$RC" "1"
 check "a failing card creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
 case "$(cat "$SB/err") $OUT" in *untestable-bullet*) pass "the import names the lint rule" ;; *) fail "the import names the lint rule" "$(cat "$SB/err")" ;; esac
 case "$(cat "$SKILL")" in *lint*) pass "SKILL.md mentions the linter" ;; *) fail "SKILL.md mentions the linter" "missing" ;; esac
+# ---------------------------------------------------------------- parse
+echo "# parse"
+cat > "$SB/plan-parse.md" <<'EOP'
+# Calc plan
+
+## Task 1: Add calc
+
+Files:
+- src/calc.js
+- Create src/index.js
+
+Test steps:
+- add(1, 2) returns 3
+- add("a", 1) throws a TypeError
+
+## Task 2: Add docs
+
+Files:
+- README.md
+
+Test steps:
+- README mentions `add`
+EOP
+cat > "$SB/plan-parse.expected.json" <<'EOP'
+{"cards":[
+{"title":"Add calc","scope":["src/calc.js","Create src/index.js"],"acceptance":["add(1, 2) returns 3","add(\"a\", 1) throws a TypeError"]},
+{"title":"Add docs","scope":["README.md"],"acceptance":["README mentions `add`"]}
+]}
+EOP
+bash "$SCRIPT" parse "$SB/plan-parse.md" > "$SB/parse1.out" 2> "$SB/parse1.err"; RC=$?
+check "parse exits 0" "$RC" "0"
+check "parse prints one card per task heading with title, scope, acceptance" \
+  "$(jq -cS . "$SB/parse1.out" 2>/dev/null)" "$(jq -cS . "$SB/plan-parse.expected.json")"
+bash "$SCRIPT" parse "$SB/plan-parse.md" > "$SB/parse2.out" 2>/dev/null
+check "parse is deterministic: two runs print identical output" "$(cmp -s "$SB/parse1.out" "$SB/parse2.out" && echo same || echo differ)" "same"
+printf '# Notes\n\nNo tasks here.\n' > "$SB/plan-empty.md"
+bash "$SCRIPT" parse "$SB/plan-empty.md" > "$SB/parse3.out" 2> "$SB/parse3.err"; RC=$?
+check "plan with no task headings exits 1" "$RC" "1"
+case "$(cat "$SB/parse3.err")" in *"no task headings"*) pass "no-task error prints a message" ;; *) fail "no-task error prints a message" "$(cat "$SB/parse3.err")" ;; esac
+
+# ---------------------------------------------------------------- labels backend
+echo "# labels backend"
+ROOT_P="$ROOT"
+ROOT="$SB/root-labels"; mkdir -p "$ROOT"; git -C "$ROOT" init -q
+cat > "$ROOT/.fleet-board.yml" <<'EOF2'
+board:
+  backend: github-labels
+  repo: acme/api
+EOF2
+reset_gh
+run_import "y" "$SB/cards.json"
+check "labels board: import-plan exits 0 instead of refusing" "$RC" "0"
+check "labels board: three issues created" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null)" "3"
+check "labels board: each created issue carries the fleet:backlog label" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:backlog')" "3"
+check "labels board: stubbed gh log has no project item call" "$(grep -c '^project ' "$D/calls.log" 2>/dev/null)" "0"
+reset_gh
+run_import "y" "$SB/cards.json" --status ready
+check "labels board: --status ready labels each issue fleet:ready" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:ready')" "3"
+# ---------------------------------------------------------------- labels must exist
+echo "# labels must exist before import"
+reset_gh
+run_import "y" "$SB/cards.json"
+check "labels board, label missing: exits 0" "$RC" "0"
+lc="$(grep -n '^label create fleet:backlog --repo acme/api' "$D/calls.log" | head -1 | cut -d: -f1)"
+ic="$(grep -n '^issue create --repo acme/api' "$D/calls.log" | head -1 | cut -d: -f1)"
+if [ -n "$lc" ] && [ -n "$ic" ] && [ "$lc" -lt "$ic" ]; then pass "labels board: gh label create fleet:backlog --repo acme/api is logged before that repo's first gh issue create"; else fail "labels board: gh label create fleet:backlog --repo acme/api is logged before that repo's first gh issue create" "label line '$lc', issue line '$ic'"; fi
+check "labels board: label created once for acme/api, not once per card" "$(grep -c '^label create fleet:backlog --repo acme/api' "$D/calls.log")" "1"
+check "labels board: label created once for acme/web though it has two cards" "$(grep -c '^label create fleet:backlog --repo acme/web' "$D/calls.log")" "1"
+check "labels board: label created for exactly the two repos" "$(grep -c '^label create ' "$D/calls.log")" "2"
+reset_gh
+mkdir -p "$D/labels"
+printf 'fleet:backlog\nbug\n' > "$D/labels/acme_api"
+printf 'fleet:backlog\n' > "$D/labels/acme_web"
+run_import "y" "$SB/cards.json"
+check "labels board, label exists: exits 0" "$RC" "0"
+check "labels board, label exists: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
+reset_gh
+run_import "y" "$SB/cards.json" --status ready
+check "labels board, --status ready: fleet:ready is created in each repo" "$(grep -c '^label create fleet:ready --repo ' "$D/calls.log")" "2"
+check "labels board, --status ready: fleet:backlog is not created" "$(grep -c '^label create fleet:backlog' "$D/calls.log")" "0"
+ROOT="$ROOT_P"
+reset_gh
+run_import "y" "$SB/cards.json"
+check "projects board: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -652,8 +652,9 @@ scenario_out_of_scope() {
   followup_ticks out_of_scope_created
   open_issues_titled "$OOS_TITLE" "$RUN/oos-match.json"
   CARDS="$CARDS $(jq -r '.[].number' "$RUN/oos-match.json" | tr '\n' ' ')"
-  check_jq "AC3.9 one open issue '$OOS_TITLE' with fleet:backlog whose body names #$A" "$RUN/oos-match.json" \
-    "length == 1 and (.[0].labels | map(.name) | index(\"fleet:backlog\")) != null and (.[0].body | test(\"#$A\\\\b\"))"
+  # A role now writes a check command, so the card lands in followups.status (default ready); with no command it is Backlog.
+  check_jq "AC3.9 one open issue '$OOS_TITLE' with fleet:ready or fleet:backlog whose body names #$A" "$RUN/oos-match.json" \
+    "length == 1 and (.[0].labels | map(.name) | (index(\"fleet:ready\") != null or index(\"fleet:backlog\") != null)) and (.[0].body | test(\"#$A\\\\b\"))"
   note_get "$A" >"$RUN/note-final.json"
   local pr; pr="$(jq -r '.pr // empty' "$RUN/note-final.json")"
   gh pr view "$pr" --repo "$SANDBOX_REPO" --json comments >"$RUN/pr-comments.json" 2>/dev/null

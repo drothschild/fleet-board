@@ -90,7 +90,7 @@ fi
 #   bugerr  <line>                            a Bugs found: entry of the wrong shape
 #   blk     <N>                               a "Blocked by: #N" line
 #   pr      <N>                               first #N inside ## PR
-#   amap    <item> <test or empty>            an Acceptance map entry
+#   amap    <item> <test> <command> <reason>  an Acceptance map entry (unused fields empty)
 #   mut     counts <k> <s> <i> | skipped      the ## Mutation line
 #   claim   <key> <value> | skipped           a ## Claim check line
 #   res     <finding> <outcome> <why>         a ## Resolutions entry
@@ -111,12 +111,14 @@ fi
 #                    header with no entry is an error. A "- " line that follows
 #                    a list only after blank lines, or an indented "  - " line
 #                    inside a list, is an error (it would otherwise be lost).
-#                    Out of scope entry: "<title> :: <detail>", both non-empty.
+#                    Out of scope entry: "<title> :: <detail>", both non-empty, the detail holding
+#                    a backticked check command (or the words "no testable check").
 #                    Bug entry: "<title> :: repro: `<cmd>` :: expected: <x> ::
 #                    observed: <y>", all non-empty, the repro backticked.
 #   ## PR            first "#<n>" is the PR number.
-#   ## Acceptance map  "- <item> -> <file>::<test name>" or "- <item> -> UNMAPPED"
-#                    (split on the last " -> ").
+#   ## Acceptance map  "- <item> -> <file>::<test name>", "- <item> -> UNMAPPED",
+#                    "- <item> -> CHECKED: `<command>`" or
+#                    "- <item> -> NOT_APPLICABLE: <reason>" (split on the last " -> ").
 #   ## Mutation      exactly one line: "killed: <n> survived: <n> invalid: <n>"
 #                    or "skipped: review.mutation is off".
 #   ## Claim check   one each of "claim: <text>", "command: `<cmd>`",
@@ -162,11 +164,24 @@ function emit_bug(entry,    n, p, prefixed, repro, expd, obsd) {
   }
   print "bug\t" trim(p[1]) "\t" repro "\t" expd "\t" obsd
 }
+# has_check_span DETAIL: true when the backticks pair up into single-backtick spans
+# (an even number of backticks, none adjacent) and one span holds a non-blank
+# character. file-followups.sh applies the same rule when it drafts Acceptance.
+function has_check_span(d,    n, parts, i) {
+  if (index(d, "``") > 0) return 0
+  n = split(d, parts, "`")
+  if (n % 2 == 0) return 0
+  for (i = 2; i <= n; i += 2) if (parts[i] ~ /[^ \t]/) return 1
+  return 0
+}
 function emit_oos(entry,    i, t, d) {
   i = index(entry, " :: ")
   t = (i > 0) ? trim(substr(entry, 1, i - 1)) : ""
   d = (i > 0) ? trim(substr(entry, i + 4)) : ""
   if (t == "" || d == "") { err("out of scope entry needs <title> :: <detail>: " entry); return }
+  if (!has_check_span(d) && tolower(d) !~ /(^|[^a-z])no testable check([^a-z]|$)/) {
+    err("out of scope entry needs a backticked check command or the words no testable check: " entry); return
+  }
   print "oos\t" t "\t" d
 }
 # res_split ENTRY: find the first " :: " followed by an outcome; sets RES_ITEM
@@ -250,19 +265,32 @@ sec == "PR" {
 sec == "Acceptance map" {
   if (t == "") next
   ok = 0
+  cmd = ""
+  why = ""
   if (substr(line, 1, 2) == "- ") {
     entry = trim(substr(line, 3))
-    i = lastidx(entry, " -> ")
+    # A command or a reason may hold an arrow, so these two forms split at
+    # their own keyword, before the last-arrow rule can read one as a test.
+    i = index(entry, " -> CHECKED: ")
+    k = index(entry, " -> NOT_APPLICABLE: ")
+    if (i == 0 || (k > 0 && k < i)) i = k
+    if (i == 0) i = lastidx(entry, " -> ")
     if (i > 0) {
       item = trim(substr(entry, 1, i - 1))
       tt = trim(substr(entry, i + 4))
       j = index(tt, "::")
-      if (item != "" && (tt == "UNMAPPED" || (j > 1 && j < length(tt) - 1))) ok = 1
+      if (tolower(substr(tt, 1, 8)) == "checked:") {
+        rest = trim(substr(tt, 9))
+        if (substr(tt, 1, 8) == "CHECKED:" && item != "" && rest ~ /^`[^`]+`$/ && trim(unquote(rest)) != "") { ok = 1; cmd = unquote(rest); tt = "" }
+      } else if (tolower(substr(tt, 1, 15)) == "not_applicable:") {
+        why = trim(substr(tt, 16))
+        if (substr(tt, 1, 15) == "NOT_APPLICABLE:" && item != "" && why != "") { ok = 1; tt = "" }
+      } else if (item != "" && (tt == "UNMAPPED" || (j > 1 && j < length(tt) - 1))) ok = 1
     }
   }
   if (!ok) { err("malformed ## Acceptance map line: " t); next }
   if (tt == "UNMAPPED") tt = ""
-  print "amap\t" item "\t" tt
+  print "amap\t" item "\t" tt "\t" cmd "\t" why
   namap++
   next
 }
@@ -453,7 +481,9 @@ printf '%s\n' "$RECORDS" | jq -Rn \
       pr: (recs("pr") | if length > 0 then (.[0][1] | tonumber) else null end),
       verified: {command: $ver_cmd, number: ($ver_num | tonumber), line: $ver_line},
       acceptance_map: (if has("Acceptance map")
-                       then recs("amap") | map({item: .[1], test: ((.[2] // "") | nul)})
+                       then recs("amap") | map({item: .[1], test: ((.[2] // "") | nul)}
+                                               + (if (.[3] // "") != "" then {command: .[3]} else {} end)
+                                               + (if (.[4] // "") != "" then {not_applicable: .[4]} else {} end))
                        else null end),
       mutation: (recs("mut") as $m
                  | if ($m | length) == 0 then null

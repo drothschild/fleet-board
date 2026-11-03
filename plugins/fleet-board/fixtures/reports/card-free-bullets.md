@@ -11,7 +11,7 @@ Changes:
 - test/subtract.test.js covers both Acceptance bullets
 
 Out of scope:
-- Add multiply :: calc has no multiply
+- Add multiply :: calc has no multiply; `grep -c multiply src/calc.js` should print 1
 
 Notes after the list:
 - a plain bullet under a text line is free text
