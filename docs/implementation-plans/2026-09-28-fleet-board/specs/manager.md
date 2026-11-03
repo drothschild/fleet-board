@@ -130,13 +130,13 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `start_review` | `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` |
 | `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = `note.last_review.sha`, or `base` when there is no previous review |
 | `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer in the same tick, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
-| `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
+| `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
 | `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, post a comment headed `What to check in Human QA` that quotes the card's `## Acceptance` section verbatim as a blockquote and includes the qa_build summary. If the card already has a comment with that heading, post nothing. |
 | `mark_ready` | `gh pr ready <pr> --repo R`. Never merge. |
 | `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
-| `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
+| `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_from: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
 | `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
 | `skip`, `wait` | nothing |
 
@@ -211,7 +211,9 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - The manager removes no worktree and never runs `worktree.sh remove`. `cleanup-done.sh` removes the worktrees of done cards outside any Claude session: the headless wrapper runs it after each successful tick, and interactive users run it by hand. An unattended session may deny worktree removal as irreversible local destruction.
    - Progress means the card is in `done`.
 
-2.16. **`unblock`.** Progress means the card is in `ready`. The note merge clears `blocking_pr` and `blocked_findings` and resets both failure keys.
+   - **After-merge block.** When `after-merge.sh run` on the card body's `## After merge` section prints a result whose `outcome` is `blocked`: `board-move.sh N blocked`, `note.sh merge` with `blocked_from: "in_review"` (the card was in review when it merged), then post the printed `comment`. The card does not go to `done`.
+
+2.16. **`unblock`.** Progress means the card is in `ready`. The note merge clears `blocking_pr`, `blocked_from` and `blocked_findings` and resets both failure keys.
 
 2.17. **`skip_no_acceptance`.** At most one explanatory comment per card, ever: the plan sets `comment_needed` to false once a comment with the marker exists. Progress means the comment was posted, or none was needed.
 
@@ -271,6 +273,7 @@ When the plan's reason starts with `no progress after `, the manager runs these 
 2.D.2. Then `board-move.sh N blocked`. If the move fails, the action made no progress and is counted as in 2.C.4 (`action_failures` + 1 and `last_action_error`). The counter is never reset before the move succeeds.
 
 2.D.3. Only after the move succeeds, `note.sh merge` with:
+   - `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), so `accept.sh` returns the card there;
    - `blocked_findings` = `[{"severity":"Important","text":"<the plan's reason>"}]`, never the review findings;
    - `action_failures: 0` and `last_action_error: null`;
    - the note-upkeep `state: blocked`.
@@ -314,9 +317,9 @@ When the plan's reason starts with `no progress after `, the manager runs these 
    1. **`last_verified`** = `verified.line`.
    2. **Reviewer:** `last_review` = `{"round": <the round the reviewer was given>, "sha": <the sha worktree.sh review returned for this review>, "critical": counts.critical, "important": counts.important, "findings": findings}`.
    3. **Implementor:** `pr` = the parsed `pr`, merged only when it is non-null.
-   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by`, then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
+   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by` and `blocked_from` = the card's state before the move (the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`), then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
    5. **Status `blocked` with `blocked_by` null** (for example a fixer that could resolve a finding only by changing a test, marked `not fixed: needs human decision`):
-      - `note.sh merge` with `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
+      - `note.sh merge` with `blocked_from` = the card's state before the move (the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`) and `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
       - `board-move.sh N blocked`;
       - a comment listing them.
 
