@@ -260,3 +260,10 @@ restored use only those: never a SHA from a role's report, and whatever the repo
 already named as weakened keeps that finding's SHA. A restored test that fails is `[Important]`
 against the implementation and keeps the SHA. A `CHECKED` repository condition is decided against
 the whole PR, and a finding that an existing test was weakened gives the merge-base SHA.
+
+## Revision 12 fourth pass (2026-11-02, from the third adversarial review)
+
+A `CHECKED` finding that an existing test was weakened contains the file path, says "weakened" and
+gives one SHA per test, in the same order as step 7: a previous finding's SHA, then the reference
+SHA when the test changed since it, then the merge-base. The reviewer reads the base branch with
+`gh pr view`. The statements of what the reviewer judges from name the previous findings.

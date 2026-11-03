@@ -1700,3 +1700,21 @@ Isolation as in the second pass. Evidence: `evidence/author-{reviewer,fixer,mana
 **Third pass cost:** $0.5584. **Revision cost, all passes:** $1.6193.
 
 **Output sha256 after the third pass (16):** `agents/reviewer.md` `e51bcefc2e9ee74e` → `8f383457e9129408`; `agents/fixer.md` `98ed7148b89d5926` → `b5035f0e48a270f1`; `agents/manager.md` `85b01fcf7ec55df1` → `8d673df7fd3f8f7f`.
+
+**Fourth pass (2026-11-02), from the adversarial review of the third pass.** That review found that a card with a `CHECKED` "no test weakened" item could give one test two findings with different SHAs, which no version of the test can satisfy. It also found that such a finding might not name the file or say "weakened", that the base branch was not an input, and that two scope lines left out the previous findings. Hand edits: `specs/reviewer.md` and a "Revision 12 fourth pass" section in `briefs/spec-req-reviewer.md`. Also from that review, `scripts/accept.sh` (not clean-room, changed test-first) clears the old findings so a person's accept can release a card; it forgives an open weakened-test finding.
+
+One more isolated in-place edit with the same recipe, Claude Code 2.1.317. `edit-req.md` for this pass has sha256 `b8f06e198b7985f4` and is not committed.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1648 | `f651a8a96074c365` |
+
+Isolation as in the second pass. Evidence: `evidence/author-reviewer.r12d.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: the three hunks are the opening sentence, the `CHECKED` rule and the Never item. The frontmatter is unchanged. **Kept.**
+
+**Known limits added by this pass, not re-run.** A SHA pinned by a finding can undo a change that main made to the same test, if main is merged into the PR. `agents/fixer.md` also still describes the Acceptance map split as on the last ` -> `.
+
+**Fourth pass cost:** $0.1648. **Revision cost, all passes:** $1.7841.
+
+**Output sha256 after the fourth pass (16):** `agents/reviewer.md` `8f383457e9129408` → `f651a8a96074c365`.
