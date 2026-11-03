@@ -12,6 +12,10 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 `FLEET_BOARD_GATE_TIMEOUT` caps the lookups in one call, in seconds: 45 by default, at most 50. The hook's own timeout is 60 seconds, after which Claude Code lets the call through. Without `jq`, the hook exits 0 silently, but every fleet-board script needs `jq` too, so board commands fail anyway.
 
+## settle.sh runs outside the gate
+
+`scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress and in_review, and its only move into human_qa is the hand-off after a clean review). A person's interactive `/fleet-board:tick` does not run it.
+
 ## The cards.sh helper
 
 Bulk card setup used to mean one command per call and literal item ids: a shell loop calling `gh project item-edit --id $ITEM` is blocked ("could not verify project item"), because the gate cannot know what `$ITEM` is. `scripts/cards.sh` is the first-class replacement, and the gate recognizes it:
