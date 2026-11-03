@@ -1742,3 +1742,21 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Revision cost:** $0.2833. **Running total, all API-key charges:** ~$39.10 (the last stated total, ~$36.14 at Revision 10, plus Revision 11's $0.8975, Revision 12's $1.7841 and this run).
 
 **Output sha256 before → after (16):** `agents/manager.md` `4c5eec8da11bcbc9` (main) → `8d673df7fd3f8f7f` (restored) → `3a705d629a868fe2`.
+
+**Second pass (2026-11-03), from the adversarial review of the first pass.** The review found that in 3.6 items 4 and 5 "the card's state before the move" named no source. The card has already moved when a role reports, and the plan card's `state` still says `ready` after `start`. A manager reading the plan would record `ready`, `accept.sh` would return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. Hand edits: `specs/manager.md` and a "Revision 13 second pass" section in `briefs/spec-req-manager.md`. Brief sha256 (16): `8b63ddc383d30969` → `be1c19ba90c89cf9`. Spec: `a141dad5383476c5` → `c8e2a05f6397ca02`. `tests/test-manager-blocked-from.sh` checks both items in both files.
+
+One more isolated in-place edit with the same recipe, Claude Code 2.1.317, starting from the first pass's output. `edit-req.md` for this pass has sha256 `4873d77194587861` and is not committed. Prompt sha256 `b40a876ec3968cf2`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.2439 | `e4e74e5d724175a9` |
+
+Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: two hunks, 3.6 items 4 and 5, each changing only the parenthesis after "the card's state before the move". The frontmatter is unchanged. Against main the file now differs by three lines. **Kept.**
+
+**Known limits added by this pass, not re-run.** No behavioral run exercised the new rule. An after-merge block sent back through `finish` by `accept.sh` restarts `after-merge.sh run` from the first command, and this is not documented; that predates this revision.
+
+**Second pass cost:** $0.2439. **Revision cost, both passes:** $0.5272. **Running total, all API-key charges:** ~$39.35.
+
+**Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.
