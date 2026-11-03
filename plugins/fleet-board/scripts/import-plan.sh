@@ -150,6 +150,7 @@ section_text() {
 
 BODY="$(mktemp)"; trap 'rm -f "$BODY"' EXIT
 REFS='{}'
+ENSURED=" "
 i=0
 while [ "$i" -lt "$N" ]; do
   card="$(jq -c --argjson i "$i" '.cards[$i]' <<<"$PLAN")"
@@ -187,6 +188,17 @@ $text
        then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)
     + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)' <<<"$card" > "$BODY"
   title="$(jq -r .title <<<"$card")"; repo="$(jq -r .repo <<<"$card")"
+  if [ "$BACKEND" = "github-labels" ]; then
+    case "$ENSURED" in
+      *" $repo "*) ;;
+      *)
+        slabel="$(fb_state_name "$STATUS")"
+        have="$(gh label list --repo "$repo" --limit 1000 --json name --jq '.[].name' 2>/dev/null)" || have=""
+        printf '%s\n' "$have" | grep -qxF -- "$slabel" \
+          || gh label create "$slabel" --repo "$repo" >/dev/null || fb_die 1 "failed to create label $slabel in $repo"
+        ENSURED="$ENSURED$repo " ;;
+    esac
+  fi
   largs=()
   [ "$BACKEND" = "github-labels" ] && largs+=(--label "$(fb_state_name "$STATUS")")
   while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")

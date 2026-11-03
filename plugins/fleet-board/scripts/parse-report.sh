@@ -90,7 +90,7 @@ fi
 #   bugerr  <line>                            a Bugs found: entry of the wrong shape
 #   blk     <N>                               a "Blocked by: #N" line
 #   pr      <N>                               first #N inside ## PR
-#   amap    <item> <test or empty>            an Acceptance map entry
+#   amap    <item> <test> <command> <reason>  an Acceptance map entry (unused fields empty)
 #   mut     counts <k> <s> <i> | skipped      the ## Mutation line
 #   claim   <key> <value> | skipped           a ## Claim check line
 #   res     <finding> <outcome> <why>         a ## Resolutions entry
@@ -116,8 +116,9 @@ fi
 #                    Bug entry: "<title> :: repro: `<cmd>` :: expected: <x> ::
 #                    observed: <y>", all non-empty, the repro backticked.
 #   ## PR            first "#<n>" is the PR number.
-#   ## Acceptance map  "- <item> -> <file>::<test name>" or "- <item> -> UNMAPPED"
-#                    (split on the last " -> ").
+#   ## Acceptance map  "- <item> -> <file>::<test name>", "- <item> -> UNMAPPED",
+#                    "- <item> -> CHECKED: `<command>`" or
+#                    "- <item> -> NOT_APPLICABLE: <reason>" (split on the last " -> ").
 #   ## Mutation      exactly one line: "killed: <n> survived: <n> invalid: <n>"
 #                    or "skipped: review.mutation is off".
 #   ## Claim check   one each of "claim: <text>", "command: `<cmd>`",
@@ -270,19 +271,32 @@ sec == "PR" {
 sec == "Acceptance map" {
   if (t == "") next
   ok = 0
+  cmd = ""
+  why = ""
   if (substr(line, 1, 2) == "- ") {
     entry = trim(substr(line, 3))
-    i = lastidx(entry, " -> ")
+    # A command or a reason may hold an arrow, so these two forms split at
+    # their own keyword, before the last-arrow rule can read one as a test.
+    i = index(entry, " -> CHECKED: ")
+    k = index(entry, " -> NOT_APPLICABLE: ")
+    if (i == 0 || (k > 0 && k < i)) i = k
+    if (i == 0) i = lastidx(entry, " -> ")
     if (i > 0) {
       item = trim(substr(entry, 1, i - 1))
       tt = trim(substr(entry, i + 4))
       j = index(tt, "::")
-      if (item != "" && (tt == "UNMAPPED" || (j > 1 && j < length(tt) - 1))) ok = 1
+      if (tolower(substr(tt, 1, 8)) == "checked:") {
+        rest = trim(substr(tt, 9))
+        if (substr(tt, 1, 8) == "CHECKED:" && item != "" && rest ~ /^`[^`]+`$/ && trim(unquote(rest)) != "") { ok = 1; cmd = unquote(rest); tt = "" }
+      } else if (tolower(substr(tt, 1, 15)) == "not_applicable:") {
+        why = trim(substr(tt, 16))
+        if (substr(tt, 1, 15) == "NOT_APPLICABLE:" && item != "" && why != "") { ok = 1; tt = "" }
+      } else if (item != "" && (tt == "UNMAPPED" || (j > 1 && j < length(tt) - 1))) ok = 1
     }
   }
   if (!ok) { err("malformed ## Acceptance map line: " t); next }
   if (tt == "UNMAPPED") tt = ""
-  print "amap\t" item "\t" tt
+  print "amap\t" item "\t" tt "\t" cmd "\t" why
   namap++
   next
 }
@@ -473,7 +487,9 @@ printf '%s\n' "$RECORDS" | jq -Rn \
       pr: (recs("pr") | if length > 0 then (.[0][1] | tonumber) else null end),
       verified: {command: $ver_cmd, number: ($ver_num | tonumber), line: $ver_line},
       acceptance_map: (if has("Acceptance map")
-                       then recs("amap") | map({item: .[1], test: ((.[2] // "") | nul)})
+                       then recs("amap") | map({item: .[1], test: ((.[2] // "") | nul)}
+                                               + (if (.[3] // "") != "" then {command: .[3]} else {} end)
+                                               + (if (.[4] // "") != "" then {not_applicable: .[4]} else {} end))
                        else null end),
       mutation: (recs("mut") as $m
                  | if ($m | length) == 0 then null
