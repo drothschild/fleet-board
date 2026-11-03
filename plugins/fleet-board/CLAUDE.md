@@ -73,6 +73,15 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Claude session. It reads a done card's note only when the worktrees base holds a
   `<n>-*` entry (a local prefilter), so its cost scales with the local dirs, not the Done
   column; keep any new per-card network call behind that prefilter.
+- **Settle step** (`scripts/settle.sh`): after each successful tick, and before
+  `cleanup-done.sh`, the wrapper runs it from the repo root, outside any Claude session. It
+  lists in_progress and in_review, runs `tick-plan.sh --settle`, and carries out only the
+  steps that start no agent (`move_to_review`, `to_human_qa`, `mark_ready`, `block`),
+  mirroring the manager's action table. It acts on the manager note, never merges, never
+  moves a card out of human_qa, and writes no `action_failures`; a `block` whose reason
+  starts with `no progress after` is left to the manager (2.D). A person's interactive
+  `/fleet-board:tick` does not run it. `FLEET_BOARD_SETTLE` overrides the script; a failure is
+  only a logged warning.
 - `ROLE_ISOLATION: none` (decided Phase 5); `FLEET_BOARD_ISOLATE=1` is refused.
 - **Clean-room primitives.** Every `agents/*.md` and
   `skills/{reporting,tick,run,status}/SKILL.md` was authored by an isolated

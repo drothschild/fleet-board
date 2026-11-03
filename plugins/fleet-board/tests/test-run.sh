@@ -17,7 +17,7 @@ FAKE_CLAUDE="$SCRIPT_DIR/fake-claude.sh"
 FX="$(cd "$SCRIPT_DIR/../fixtures/claude" && pwd)"
 
 unset FLEET_BOARD_CONFIG FLEET_BOARD_CLAUDE FLEET_BOARD_PLUGIN_DIR FLEET_BOARD_TICK_PROMPT \
-  FLEET_BOARD_LOG_DIR FLEET_BOARD_ISOLATE FLEET_BOARD_CLEANUP FAKE_CLAUDE_DIR FAKE_CLAUDE_MAX_CALLS \
+  FLEET_BOARD_LOG_DIR FLEET_BOARD_ISOLATE FLEET_BOARD_CLEANUP FLEET_BOARD_SETTLE FAKE_CLAUDE_DIR FAKE_CLAUDE_MAX_CALLS \
   FLEET_BOARD_TEST_BGJOB || true
 
 PASS=0
@@ -125,8 +125,12 @@ new_case() {
   chmod +x "$BIN/gh"
   # The default fake cleanup: counts its runs, records its cwd, succeeds
   CLEAN="$T/cleanup.sh"
-  printf '#!/bin/sh\nprintf "run\\n" >> "%s/cleanup-count"\npwd -P >> "%s/cleanup-cwd"\necho "fake cleanup ran"\necho "fake cleanup stderr" >&2\nexit ${FAKE_CLEANUP_EXIT:-0}\n' "$T" "$T" > "$CLEAN"
+  printf '#!/bin/sh\nprintf "cleanup\\n" >> "%s/order"\nprintf "run\\n" >> "%s/cleanup-count"\npwd -P >> "%s/cleanup-cwd"\necho "fake cleanup ran"\necho "fake cleanup stderr" >&2\nexit ${FAKE_CLEANUP_EXIT:-0}\n' "$T" "$T" "$T" > "$CLEAN"
   chmod +x "$CLEAN"
+  # The default fake settle: counts its runs, records its cwd, succeeds
+  SETTLE_FAKE="$T/settle.sh"
+  printf '#!/bin/sh\nprintf "settle\\n" >> "%s/order"\nprintf "run\\n" >> "%s/settle-count"\npwd -P >> "%s/settle-cwd"\necho "fake settle ran"\necho "fake settle stderr" >&2\nexit ${FAKE_SETTLE_EXIT:-0}\n' "$T" "$T" "$T" > "$SETTLE_FAKE"
+  chmod +x "$SETTLE_FAKE"
 
   # Per-case knobs (empty means unset for the run)
   C_LOG_DIR="$LOGS"
@@ -135,6 +139,8 @@ new_case() {
   C_ISOLATE=""
   C_CLEANUP="$CLEAN"
   C_CLEANUP_EXIT=""
+  C_SETTLE="$SETTLE_FAKE"
+  C_SETTLE_EXIT=""
   C_CWD="$REPO"
   C_LOCALE=""
   C_TEST_BGJOB=""
@@ -149,7 +155,7 @@ default_fixture() { cp "$FX/$1.jsonl" "$FC/default.jsonl"; }
 # wrapper (umask 022 so the log-mode checks do not depend on the caller's umask)
 case_env() {
   unset FLEET_BOARD_LOG_DIR FLEET_BOARD_PLUGIN_DIR FLEET_BOARD_TICK_PROMPT FLEET_BOARD_ISOLATE \
-    FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB || true
+    FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB || true
   export HOME="$HOMEDIR" PATH="$BIN:$ORIG_PATH" FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" FAKE_CLAUDE_DIR="$FC"
   [ -n "$C_LOG_DIR" ] && export FLEET_BOARD_LOG_DIR="$C_LOG_DIR"
   [ -n "$C_PLUGIN_DIR" ] && export FLEET_BOARD_PLUGIN_DIR="$C_PLUGIN_DIR"
@@ -157,6 +163,8 @@ case_env() {
   [ -n "$C_ISOLATE" ] && export FLEET_BOARD_ISOLATE="$C_ISOLATE"
   [ -n "$C_CLEANUP" ] && export FLEET_BOARD_CLEANUP="$C_CLEANUP"
   [ -n "$C_CLEANUP_EXIT" ] && export FAKE_CLEANUP_EXIT="$C_CLEANUP_EXIT"
+  [ -n "$C_SETTLE" ] && export FLEET_BOARD_SETTLE="$C_SETTLE"
+  [ -n "$C_SETTLE_EXIT" ] && export FAKE_SETTLE_EXIT="$C_SETTLE_EXIT"
   [ -n "$C_LOCALE" ] && export LC_ALL="$C_LOCALE"
   [ -n "$C_TEST_BGJOB" ] && export FLEET_BOARD_TEST_BGJOB="$C_TEST_BGJOB"
   # A private TMPDIR, so a temp file the run leaves behind is seen
@@ -652,6 +660,54 @@ LOG="$(the_log "$LOGS")"
 assert_file_contains "cleanup-default: the shipped script listed the done column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:done"
 assert_file_contains "cleanup-default: its failure (stub gh) is a logged warning" "$LOG" "warning: cleanup-done.sh exited 1"
 assert_eq "cleanup-default: the fake cleanup did not run" "$(lines "$T/cleanup-count")" "0"
+
+# ---------------------------------------------------------------------------
+echo "settle-after-tick (settle.sh runs after each successful tick, before cleanup-done.sh)"
+new_case "max_consecutive_failures: 3"
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-error
+seq_fixture 3 tick-idle
+run_wrapper --repo "$REPO/sub"
+assert_exit "settle-after-tick: exit 0" 0
+assert_eq "settle-after-tick: one settle per successful tick, none after the failed one" "$(lines "$T/settle-count")" "2"
+assert_eq "settle-after-tick: runs from the repo root" "$(sed -n 1p "$T/settle-cwd" 2>/dev/null)" "$REPO"
+assert_eq "settle-after-tick: settle runs before cleanup, each time" "$(tr '\n' ' ' < "$T/order" 2>/dev/null)" "settle cleanup settle cleanup "
+LOG="$(the_log "$LOGS")"
+assert_file_contains "settle-after-tick: its stdout is logged" "$LOG" "fake settle ran"
+assert_file_not_contains "settle-after-tick: no warning when it succeeds" "$LOG" "warning: settle.sh exited"
+
+echo "settle-not-after-failed-tick"
+new_case
+seq_fixture 1 tick-error
+seq_fixture 2 tick-idle
+run_wrapper --repo "$REPO"
+assert_exit "settle-failed-tick: exit 0" 0
+assert_eq "settle-failed-tick: settle ran once, for the successful tick only" "$(lines "$T/settle-count")" "1"
+
+echo "settle-fails (a logged warning only)"
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+C_SETTLE_EXIT=1
+run_wrapper --repo "$REPO"
+assert_exit "settle fails: still exit 0" 0
+assert_stdout_contains "settle fails: stop reason unchanged" "stopped: nothing-dispatchable after 2 ticks"
+LOG="$(the_log "$LOGS")"
+assert_file_contains "settle fails: warning in the log" "$LOG" "warning: settle.sh exited 1"
+assert_file_contains "settle fails: its stderr in the log" "$LOG" "fake settle stderr"
+assert_eq "settle fails: it ran after each successful tick" "$(lines "$T/settle-count")" "2"
+assert_eq "settle fails: cleanup still ran after each" "$(lines "$T/cleanup-count")" "2"
+
+echo "settle-default-script (FLEET_BOARD_SETTLE unset runs the shipped settle.sh)"
+new_case
+seq_fixture 1 tick-idle
+C_SETTLE=""
+run_wrapper --repo "$REPO"
+assert_exit "settle-default: exit 0" 0
+LOG="$(the_log "$LOGS")"
+assert_file_contains "settle-default: the shipped script listed the in_progress column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:in_progress"
+assert_file_contains "settle-default: its failure (stub gh) is a logged warning" "$LOG" "warning: settle.sh exited 1"
+assert_eq "settle-default: the fake settle did not run" "$(lines "$T/settle-count")" "0"
 
 # ---------------------------------------------------------------------------
 # Review cycle 1
