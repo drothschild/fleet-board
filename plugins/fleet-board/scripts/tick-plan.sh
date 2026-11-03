@@ -127,7 +127,8 @@
 # fixing again". The commits came from a fixer whose report was never
 # reconciled (no round bump) or from a person; fixing again would redo the
 # work, while the manager's review action reviews exactly those commits
-# (prev_sha = last_review.sha). This comes before the max_rounds block.
+# (prev_sha is last_review.sha, or base when there is no previous review).
+# This comes before the max_rounds block.
 # A note's accepted entry (accept.sh) moved last_review.sha to the accepted
 # head, so commits before it are not flagged and later ones are. It counts only
 # when accepted.login is the authenticated gh login; otherwise a current review
