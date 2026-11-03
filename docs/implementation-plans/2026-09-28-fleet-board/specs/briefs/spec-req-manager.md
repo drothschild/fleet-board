@@ -769,3 +769,7 @@ In round 2 and later the manager passes the reviewer the previous findings:
 - `unblock`: the note merge sets `blocked_from: null`, in the action table row and in 2.16.
 
 `note.sh get` treats a note whose `blocked_from` is any other value as invalid.
+
+## Revision 13 second pass (2026-11-03, from the adversarial review; these win over anything above)
+
+In 3.6 items 4 and 5 the card has already moved when the role reports, and the plan card's `state` still says `ready` after `start`. Recording `ready` would make `accept.sh` return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. So in those two items `blocked_from` = the card's state before the move: the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`.

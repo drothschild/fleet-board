@@ -317,9 +317,9 @@ When the plan's reason starts with `no progress after `, the manager runs these 
    1. **`last_verified`** = `verified.line`.
    2. **Reviewer:** `last_review` = `{"round": <the round the reviewer was given>, "sha": <the sha worktree.sh review returned for this review>, "critical": counts.critical, "important": counts.important, "findings": findings}`.
    3. **Implementor:** `pr` = the parsed `pr`, merged only when it is non-null.
-   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by` and `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
+   4. **Status `blocked` with a non-null `blocked_by`** (any role): `note.sh merge` with `blocking_pr` = `blocked_by` and `blocked_from` = the card's state before the move (the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`), then `board-move.sh N blocked`. The `unblock` action fires later, when that PR merges.
    5. **Status `blocked` with `blocked_by` null** (for example a fixer that could resolve a finding only by changing a test, marked `not fixed: needs human decision`):
-      - `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`) and `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
+      - `note.sh merge` with `blocked_from` = the card's state before the move (the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`) and `blocked_findings` = the report's Critical and Important findings, or, when there are none, one entry holding the report's `for_the_card` text;
       - `board-move.sh N blocked`;
       - a comment listing them.
 
