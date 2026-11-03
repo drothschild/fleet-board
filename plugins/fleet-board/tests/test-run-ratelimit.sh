@@ -162,7 +162,12 @@ case "$LAST_ERR$LOGTXT" in *"starting the tick unstaggered"*) fail "stale lock: 
 new_case "min_tick_gap: 120"
 cp "$FX/tick-idle.jsonl" "$FC/default.jsonl"
 mkdir "$LOCK.d"
+# The wrapper polls the lock for about 5 s of real sleeps; on a slow runner that
+# poll outlasts the 10 s stale limit, so keep the lock's mtime fresh while it runs.
+( while :; do touch "$LOCK.d" 2>/dev/null; sleep 1; done ) &
+REFRESH_PID=$!
 run_wrapper
+kill "$REFRESH_PID" 2>/dev/null; wait "$REFRESH_PID" 2>/dev/null
 assert_eq "young token lock is not deleted and the run still waits for it" "$([ -d "$LOCK.d" ] && echo kept || echo gone)" "kept"
 case "$LAST_ERR" in *"starting the tick unstaggered"*) pass "young lock: the run waited, then started unstaggered" ;; *) fail "young lock: the run waited, then started unstaggered" "$LAST_ERR" ;; esac
 
