@@ -157,10 +157,40 @@ assert_eq "accept: failure count reset to 0 and error cleared" \
   "$(jq -c '[.action_failures, .last_action_error]' "$PATCH_COPY" 2>/dev/null)" '[0,null]'
 assert_eq "accept: reviewed-sha baseline moved to the PR head" \
   "$(jq -c '.last_review.sha' "$PATCH_COPY" 2>/dev/null)" '"def5678abc"'
+assert_eq "accept: clears the old findings and leaves the round unreviewed" \
+  "$(jq -c '.last_review | [.round, .critical, .important, .findings]' "$PATCH_COPY" 2>/dev/null)" '[0,0,0,[]]'
 assert_eq "accept: records who accepted (authenticated login) and the sha" \
   "$(jq -c '[.accepted.login, .accepted.sha]' "$PATCH_COPY" 2>/dev/null)" '["fleet-bot","def5678abc"]'
 assert_eq "accept: records when (UTC timestamp)" \
   "$(jq -r '.accepted.at | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\\z")' "$PATCH_COPY" 2>/dev/null)" true
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 1 | .last_review.round = 1' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: in round 1 the unreviewed round is 0" \
+  "$(jq -c '.last_review.round' "$PATCH_COPY" 2>/dev/null)" '0'
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '. + {blocked_findings: [{severity: "Critical", text: "old"}], blocking_pr: 77}' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: clears what the block left behind" \
+  "$(jq -c '[.blocked_findings, .blocking_pr, .blocked_from]' "$PATCH_COPY" 2>/dev/null)" '[[],null,null]'
+
+echo "accept.sh: a card never reviewed goes where the plan starts a review"
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review) | del(.blocked_from)' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0 with no blocked_from: moved to in_progress" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_progress"
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review)' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0 blocked from in_review: moved to in_progress" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_progress"
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review) | .blocked_from = "ready"' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0 blocked from ready: stays ready" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 ready"
 
 echo "accept.sh: the card is moved out of Blocked after the note is written"
 setup_case "$BLOCKED"
@@ -258,6 +288,19 @@ tick_case "$(jq -c '.accepted.login = "mallory"' <<<"$AFTER")" def5678abc
 assert_eq "tick-plan: an accept by another login is not honored (review)" "$(jqc '.cards[0].action')" '"review"'
 assert_eq "tick-plan: the reason names the unhonored accept" \
   "$(jq -r '.cards[0].reason | contains("not honored")' <<<"$LAST_OUT")" true
+
+ACCEPTED='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":2,"action_failures":0,"last_review":{"round":1,"sha":"def5678abc","critical":0,"important":0,"findings":[]},"accepted":{"login":"fleet-bot","at":"2026-10-30T10:00:00Z","sha":"def5678abc"}}'
+tick_case "$ACCEPTED" def5678abc
+assert_eq "tick-plan: a note accept.sh wrote gets a fresh review, not a fix" "$(jqc '.cards[0].action')" '"review"'
+
+# Accept from round 3, back to In Progress: start_review resets the note's round
+# to 1, and its reviewer may fail. The plan must not read that as a clean review.
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 3 | .blocked_from = "in_progress"' <<<"$NOTE")"
+run_accept 12
+AFTER_RESET="$(jq -c '{state: "in_review", branch: "fleet/12-add-subtract", pr: 34, round: 1, last_review, accepted, action_failures}' "$PATCH_COPY" 2>/dev/null)"
+tick_case "$AFTER_RESET" def5678abc
+assert_eq "tick-plan: a failed review after an accept from a later round is reviewed again" "$(jqc '.cards[0].action')" '"review"'
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

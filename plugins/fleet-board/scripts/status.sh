@@ -34,7 +34,8 @@
 #   ready cards waiting on Backlog
 #     #<n> <title> · waits for #<m> (backlog), ...
 # then "can finish unattended: #<n>, ..." (ready cards with no unmet
-# dependency and no needs-human-qa / needs-manual-step label, or "(none)") and
+# dependency, or only unmet dependencies that are themselves in this list, and
+# no needs-human-qa / needs-manual-step label, or "(none)") and
 # "run stops at: #<n> (<reason>), ..." (the cards above, with needs-human-qa,
 # needs-manual-step or backlog as the reason). With no entry in the first three
 # sections it prints the one line "forecast: nothing to warn about". Exit codes
@@ -141,9 +142,17 @@ if [ -n "$FORECAST" ]; then
        | ([$r.refs[] | select(. as $x | $bl | index($x))]) as $w
        | select($w | length > 0)
        | {line: "  \($r | key) \($r.title) · waits for \([$w[] | "\(.) (backlog)"] | join(", "))", blockers: $w}] as $waits
-    | [$c[] | select(.col == "ready" and (.unmet | length) == 0
-                     and ((.labels | index("needs-human-qa")) == null)
-                     and ((.labels | index("needs-manual-step")) == null)) | key] as $free
+    | ([$c[] | select(.col == "ready"
+                      and ((.labels | index("needs-human-qa")) == null)
+                      and ((.labels | index("needs-manual-step")) == null))
+               | {k: key, unmet: [.unmet[].ref]}]) as $cand
+    | ([$cand[] | select(.unmet | length == 0) | .k]) as $seed
+    | ($seed | until(. as $f
+          | [$cand[] | select(.k as $k | ($f | index($k)) == null)
+             | select(.unmet | all(. as $u | $f | index($u) != null)) | .k] | length == 0;
+        . as $f | $f + [$cand[] | select(.k as $k | ($f | index($k)) == null)
+                        | select(.unmet | all(. as $u | $f | index($u) != null)) | .k])) as $freeset
+    | [$c[] | select(.col == "ready") | key | select(. as $k | $freeset | index($k) != null)] as $free
     | ([$waits[].blockers[]] | unique) as $bls
     | if ($gates | length) + ($manual | length) + ($waits | length) == 0
       then "forecast: nothing to warn about"

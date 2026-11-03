@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # tick-plan.sh - decides one step for every card on the board (the tick plan).
 #
-# Usage: tick-plan.sh        (no arguments; run inside the repo)
+# Usage: tick-plan.sh                 (run inside the repo)
+#        tick-plan.sh --settle <n>... (settle mode, below)
 #
 # Lists the ready, in_progress, in_review and blocked columns, reads each card
 # once (board-read.sh; the manager note is parsed from that read with
@@ -61,6 +62,18 @@
 # commented once. A body with no Acceptance hint stays skip_no_acceptance.
 #
 # The decision table itself is the single jq program below.
+#
+# Settle mode (--settle <n>...): the same plan JSON for only the named cards,
+# keeping only the steps that start no agent. Each card is read with
+# board-read.sh (its column comes from that read); no column is listed. The
+# table's result is filtered: to_human_qa, block and mark_ready stay;
+# start_review becomes move_to_review (move the card to in_review and record
+# round 1 and pr; no dispatch; the next tick's review action starts the
+# reviewer); a table skip stays a skip; any other action becomes skip, with
+# reason "<action> waits for the next tick". A settle plan always has
+# dispatchable false. A plan without --settle never emits move_to_review.
+# A card whose lookup fails is skipped with a warning, as in a normal plan.
+# Exit 2 when --settle has no card or a non-numeric card.
 #
 # Pending follow-ups (note.pending_followups) hold a card in file_pending only
 # when a PR is known to file them against: pending_followups.pr, else note.pr,
@@ -145,7 +158,18 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-[ $# -eq 0 ] || fb_die 2 "usage: tick-plan.sh (no arguments)"
+SETTLE=false
+SETTLE_NUMS=""
+if [ $# -gt 0 ]; then
+  [ "$1" = "--settle" ] || fb_die 2 "usage: tick-plan.sh [--settle <n>...]"
+  shift
+  [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle <n>... (at least one card)"
+  for a in "$@"; do
+    fb_valid_number "$a" || fb_die 2 "card number must be numeric, got: $a"
+    case " $SETTLE_NUMS " in *" $a "*) ;; *) SETTLE_NUMS="$SETTLE_NUMS $a" ;; esac
+  done
+  SETTLE=true
+fi
 
 # stderr goes to a file so a rate-limit failure can be recognised at exit
 ERR_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
@@ -250,7 +274,13 @@ card_input() {
   local drift=null
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
 
-  read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
+  if [ "${4:-}" = FAILED ]; then
+    failed="board-read.sh $n"
+  elif [ -n "${4:-}" ]; then
+    read="$4"
+  else
+    read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
+  fi
   if [ -z "$failed" ]; then
     body="$(jq -r '.body // ""' <<<"$read" 2>/dev/null)" || failed="board-read.sh $n (unparsable)"
   fi
@@ -415,8 +445,20 @@ card_input() {
       pr_info: $info, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift}'
 }
 
+if [ "$SETTLE" = true ]; then
+  for n in $SETTLE_NUMS; do
+    if READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" \
+       && ST="$(jq -r '.state // "none"' <<<"$READ" 2>/dev/null)" \
+       && TITLE="$(jq -c '.title // ""' <<<"$READ" 2>/dev/null)"; then
+      card_input "$ST" "$n" "$TITLE" "$READ" >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$n"
+    else
+      card_input none "$n" '""' FAILED >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$n"
+    fi
+  done
+fi
+
 SEEN=" "
-for st in ready in_progress in_review blocked; do
+for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review blocked); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
   NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
@@ -430,7 +472,7 @@ for st in ready in_progress in_review blocked; do
   done
 done
 
-jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
+jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
@@ -518,7 +560,12 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        reviewer: $m.reviewer,
        fixer: (if $esc then $emodel else $m.fixer end)} as $models
     | (($c.title // "") | slug) as $slug
-    | decide($c; $n; $round) as $d
+    | decide($c; $n; $round) as $d0
+    # Settle mode keeps only the steps that start no agent
+    | (if $settle | not then $d0
+       elif ($d0.action == "to_human_qa" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip") then $d0
+       elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
+       else act("skip"; "\($d0.action) waits for the next tick") end) as $d
     | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
@@ -534,9 +581,9 @@ jq -s -c --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCR
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
-  | {dispatchable: any($cards[];
+  | {dispatchable: (($settle | not) and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
-        or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true)),
+        or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
        (if $m.implementor == $m.reviewer
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]

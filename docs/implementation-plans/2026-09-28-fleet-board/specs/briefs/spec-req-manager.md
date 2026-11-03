@@ -747,3 +747,29 @@ This is a minimal in-place edit, not a re-author.
 - **Counting (2.C.4, item 1).** When the counting patch file cannot be written (the `Write` tool refused it twice), the manager counts with `note.sh fail N "<the line>"`, which takes the count and the line as arguments and adds 1 to the stored count itself. A refused temp file is a no-progress reason like any other.
 - **Must never** additionally includes: choose a temp file's name itself instead of taking it from `mktemp <temp dir>/fb.XXXXXX`, or write any file whose base name starts with `report`, `summary`, `findings` or `analysis` and ends in `.md`. The note-write item allows `note.sh fail` only as 2.C.4 allows.
 - Nothing else changes.
+
+## Revision 12 requirements (2026-11-01, Acceptance items no test can map to)
+
+An `## Acceptance map` line may also be ``- <item> -> CHECKED: `<command>` `` or
+`- <item> -> NOT_APPLICABLE: <reason>`. `parse-report.sh` accepts both and rejects a `CHECKED`
+with no single backticked command and a `NOT_APPLICABLE` with no reason, using the existing
+`malformed ## Acceptance map line: <line>` message. The shape lines and the split rule say so.
+
+## Revision 12 third pass (2026-11-02, from the second adversarial review)
+
+In round 2 and later the manager passes the reviewer the previous findings:
+`note.last_review.findings` filtered to Critical and Important, as for the fixer.
+
+## Revision 13 requirements (2026-11-03: `blocked_from`; these win over anything above)
+
+`blocked_from` is a note key: null, or `ready`, `in_progress` or `in_review`, the state the card was in before it moved to `blocked`. `accept.sh` returns the card there. It is recorded on every block path and cleared on `unblock`:
+
+- The `block` action, the action-failure block (2.D.3), and 3.6 items 4 and 5: `blocked_from` = the card's state before the move.
+- The after-merge block in `finish`, when `after-merge.sh run` prints `outcome` `blocked`: `blocked_from: "in_review"`, because the card was in review when it merged.
+- `unblock`: the note merge sets `blocked_from: null`, in the action table row and in 2.16.
+
+`note.sh get` treats a note whose `blocked_from` is any other value as invalid.
+
+## Revision 13 second pass (2026-11-03, from the adversarial review; these win over anything above)
+
+In 3.6 items 4 and 5 the card has already moved when the role reports, and the plan card's `state` still says `ready` after `start`. Recording `ready` would make `accept.sh` return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. So in those two items `blocked_from` = the card's state before the move: the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`.
