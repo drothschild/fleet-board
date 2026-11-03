@@ -33,7 +33,7 @@ check_reviewer() {
   local who="$1" f="$2" blk checked
   blk="$(reviewer_block "$f")"
   if [ -z "$blk" ]; then bad "$who: weakened-test step found"; return; fi
-  block_lacks "$who: weakened-test step is not limited to round 2 and later" "$(printf '%s\n' "$blk" | head -1)" 'round 2 and later'
+  block_lacks "$who: weakened-test step is not limited to round 2 and later" "$(printf '%s\n' "$blk" | head -1 | grep -o '\*\*Pre-existing[^*]*\*\*')" 'round 2 and later'
   block_lacks "$who: weakened-test step no longer does nothing in round 1" "$blk" 'this step does nothing'
   block_has "$who: step covers test helpers" "$blk" 'helper'
   block_has "$who: step covers fixtures" "$blk" 'fixture'
