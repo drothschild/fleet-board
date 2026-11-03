@@ -1663,3 +1663,22 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Revision cost:** $0.7350.
 
 **Output sha256 before → after (16), against `main` at the time of the PR:** `agents/reviewer.md` `c7864087befb5453` → `6fe40d4c84ae9d1c`; `agents/fixer.md` `21753fef96be8e0e` → `e4a022f33ec04307`; `agents/manager.md` `827d0952573d60c5` → `85b01fcf7ec55df1`; `skills/reporting/SKILL.md` `613def0f0629d1ae` → `bbcc25fe440ad71f`. `edit-req.md` is not committed; its sha256 prefix is recorded above.
+
+**Second pass (2026-11-02), from the adversarial review of the first pass.** The review found that a partial restore could launder a weakening, because the reviewer compared only against its last reviewed commit and that baseline moves. It also found that a restore did not cover a `.skip`, a rename or a deleted test, that `NOT_APPLICABLE` and `CHECKED` could hide behavior, and that a changed setup could leave an assertion intact but meaningless. Hand edits: `specs/{reviewer,fixer}.md` and a "Revision 12 second pass" section in `briefs/spec-req-{reviewer,fixer}.md`. `parse-report.sh` splits a `CHECKED` or `NOT_APPLICABLE` line at its keyword and rejects blank commands and wrong-case keywords.
+
+Two more isolated in-place edits with the same recipe, Claude Code 2.1.317. `edit-req.md` for this pass has sha256 `2175c2bbc56e73ea` and is not committed.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 7 edits) | 11 | 0.2089 | `e51bcefc2e9ee74e` |
+| `agents/fixer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 1 edit) | 5 | 0.1170 | `98ed7148b89d5926` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins (this version also loads `cc-plugin-privacy`), tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{reviewer,fixer}.r12b.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is the `CHECKED` or `NOT_APPLICABLE` rule, the Restored or Adapted class, the new check on a finding marked `fixed`, the two added report template lines, the split rule, or the fixer's whole-test restore. The frontmatter is unchanged. **Kept.**
+
+**Known limits added by this pass, not re-run.** `agents/manager.md` and `skills/reporting/SKILL.md` still describe the split as on the last ` -> `. It misdescribes only a `CHECKED` command that holds ` -> `, which the parser accepts. An Adapted mutant is not run when `review.mutation` is false. Step 7 still does nothing on a round-1 re-review after a moved head; that gap predates this revision.
+
+**Second pass cost:** $0.3259. **Revision cost, both passes:** $1.0609.
+
+**Output sha256 after the second pass (16):** `agents/reviewer.md` `6fe40d4c84ae9d1c` → `e51bcefc2e9ee74e`; `agents/fixer.md` `e4a022f33ec04307` → `98ed7148b89d5926`.
