@@ -29,6 +29,11 @@
 #   5. Every *.sh under scripts/ and hooks/ is executable in git's index
 #      (mode 100755 in git ls-files -s), so a fresh clone and an installed
 #      copy get the same bits. Skipped, and says so, outside a git checkout.
+#   6. Every clean-room file's sha256 matches $MANIFEST (clean-room-manifest.txt
+#      next to specs/README.md), and every clean-room file has a manifest
+#      line, so a hand edit fails. Skipped, and says so, when the specs
+#      directory is absent. A manifest note starting "exception:" names a file
+#      that is not a clean-room output; it is still hash-checked.
 #
 # Usage: bash plugins/fleet-board/tests/test-clean-room.sh
 #        SPECS_DIR=<dir> bash plugins/fleet-board/tests/test-clean-room.sh
@@ -156,6 +161,45 @@ for f in ${SKILLS[@]+"${SKILLS[@]}"} ${AGENTS[@]+"${AGENTS[@]}"}; do
     fail "$rel: frontmatter has name: and description:" "missing --- block, name: or description:"
   fi
 done
+
+# --- 6. clean-room hash manifest ------------------------------------------
+echo "clean-room manifest"
+MANIFEST="$SPECS_DIR/clean-room-manifest.txt"
+
+# sha256_of <file>: hex digest via sha256sum (GNU) or shasum (BSD/macOS).
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+if [ ! -d "$SPECS_DIR" ]; then
+  echo "  skip: specs dir not found, manifest check skipped (not a source checkout)"
+elif [ ! -f "$MANIFEST" ]; then
+  fail "manifest exists" "no manifest at $MANIFEST"
+else
+  for f in ${CR_FILES[@]+"${CR_FILES[@]}"}; do
+    rel="${f#"$PLUGIN_DIR"/}"
+    line="$(awk -v p="$rel" '$1 !~ /^#/ && $2 == p {print; exit}' "$MANIFEST")"
+    if [ -z "$line" ]; then
+      fail "$rel: listed in manifest" "not in manifest $MANIFEST; add its sha256"
+      continue
+    fi
+    want="$(printf '%s' "$line" | awk '{print $1}')"
+    got="$(sha256_of "$f")"
+    if [ "$want" = "$got" ]; then
+      if printf '%s' "$line" | grep -q '# exception:'; then
+        pass "$rel: hash matches manifest (named exception)"
+      else
+        pass "$rel: hash matches manifest"
+      fi
+    else
+      fail "$rel: hash matches manifest" "manifest $want, file $got: clean-room files are never hand-edited; change the spec and re-author, then update the manifest"
+    fi
+  done
+fi
 
 # 5. shipped shell scripts are executable in git's index
 if git -C "$PLUGIN_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
