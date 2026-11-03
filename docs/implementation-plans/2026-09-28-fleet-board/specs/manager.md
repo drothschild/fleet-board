@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The manager runs one tick of fleet-board. It reads the board through the tick plan, moves every listed card forward exactly one step, writes the result back to the card and its manager note, and returns a tick report as its final message. The manager keeps no state of its own; the board is the only state. Everything a later tick needs is in each card's manager note. The manager never relies on memory of an earlier tick and never reads a role agent's transcript. It sees only the role agents' final reports. The tick skill dispatches the manager, and the manager dispatches the role agents (implementor, reviewer, fixer), which work in git worktrees.
+The manager runs one tick of fleet-board. It reads the board through the tick plan, moves every listed card forward exactly one step, writes the result back to the card and its manager note, and returns a tick report as its final message. The manager keeps no state of its own; the board is the only state. Everything a later tick needs is in each card's manager note. The manager never relies on memory of an earlier tick and never reads a role agent's transcript. It sees only the role agents' final reports. The tick skill dispatches the manager, and the manager dispatches the role agents (implementor, reviewer, fixer), which work in git worktrees. The `model` in the agent file's frontmatter is only a fallback: the tick skill passes the configured model when it dispatches the manager.
 
 ## Inputs
 
@@ -21,7 +21,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 
 ### 0. Standing rules
 
-0.1. **Tools.** The manager has exactly these tools: `Agent`, `Skill`, `Read`, `Write`, `Bash`, `Grep` and `Glob`. It uses `Write` only for the files in its temp directory (0.9): report files, note-patch files, follow-up files and comment files.
+0.1. **Tools.** The manager has exactly these tools: `Agent`, `Skill`, `Read`, `Write`, `Bash`, `Grep` and `Glob`. It uses `Write` only for the files in its temp directory (0.10): report files, note-patch files, follow-up files and comment files.
 
 0.2. **Skills.** The only skill the manager invokes is `fleet-board:reporting`, which holds the report-checking rules. It never invokes any other skill.
 
@@ -66,7 +66,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 
 0.14. **Stateless.** Every decision comes from the tick plan, from `note.sh get N`, from `board-read.sh N`, or from outputs of scripts and dispatches in this tick. Nothing comes from an earlier tick's conversation or from a role's transcript.
 
-0.15. **What each role is given.**
+0.15. **What each role is given.** Roles have no `Skill` tool; the manager never asks a role to use, load or follow the reporting skill.
    - **implementor** (`subagent_type: fleet-board:implementor`, `model` = the plan card's `models.implementor`):
      - the card number, title and body, from `board-read.sh N`;
      - the absolute worktree path and the branch (the plan card's);
@@ -91,6 +91,10 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the findings list: `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`;
      - the config JSON;
      - the absolute scripts dir.
+
+0.16. **Adversarial review before merge.** The fleet-board flow always includes an adversarial code review step before a merge. The manager never skips it: it does not run `gh pr merge` for a PR the reviewer has not reviewed.
+
+0.17. **Re-fetch before acting on PR state.** The manager re-fetches the remote before acting on PR state, since a person may have just merged something.
 
 ### 1. Plan
 
@@ -131,14 +135,16 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = `note.last_review.sha`, or `base` when there is no previous review |
 | `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer in the same tick, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
 | `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress` or `in_review`), `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
-| `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, post a comment headed `What to check in Human QA` that quotes the card's `## Acceptance` section verbatim as a blockquote and includes the qa_build summary. If the card already has a comment with that heading, post nothing. |
+| `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, run `human-qa-handoff.sh [--qa-summary <file>] N <pr>` (2.11). It posts the `What to check in Human QA` comment once. |
 | `mark_ready` | `gh pr ready <pr> --repo R`. Never merge. |
 | `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
 | `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_from: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
 | `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
-| `skip`, `wait` | nothing |
+| `skip_card_lint` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with the plan card's `lint_marker` (an HTML comment, verbatim), then lists each line of the card's `lint` (`<rule>: <detail>`) and says to fix the card; the card stays in Ready. Otherwise do nothing. |
+| `skip` | nothing |
+| `wait` | nothing, except for a plan card in `ready`: its `waiting_on` lists the unmet dependencies. Unless `note.deps_commented` already equals that list, post one comment `Waiting for <waiting_on, joined with ", ">` → only after it posts, `note.sh merge` with `deps_commented` = `waiting_on`. |
 
 Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...` (0.6). Every comment is written to a temp file and posted with `board-comment.sh N <file>`.
 
@@ -185,9 +191,10 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.11. **`to_human_qa`.**
    - The worktree is the plan card's `worktree`. `commands.qa_build`, when set, runs in that worktree. The summary is its exit code and the last 20 lines of its output, in a fenced block. When `commands.qa_build` is unset, the comment says that no QA build is configured.
-   - The Acceptance section is read from the card body (`.body` from `board-read.sh N`). It runs from the `## Acceptance` heading line up to the line before the next `## ` heading, or to the end of the body. Each line is prefixed with `> `.
-   - `board-move.sh N human_qa` runs first. The comment is posted with `board-comment.sh` only after the move succeeds, so a failed move never leaves behind a comment that the next tick would post again.
-   - Before posting, the manager checks the card's `comments` (from `board-read.sh N`). If any comment already has a heading line reading `What to check in Human QA`, it posts nothing.
+   - The manager writes the qa_build summary to a temp file made with `mktemp` and passes it as `--qa-summary <file>`.
+   - `human-qa-handoff.sh` builds and posts the comment: the card's `## Acceptance` section as a blockquote, a checklist of pre-merge steps (mark a draft PR ready, resolve a conflict, each bullet of the card's `## Human QA` section), a note when no CI ran on the PR, the qa_build summary, and the sentence saying no agent moves the card out of Human QA and a person moves it to Done. With no steps it posts only the plain statement.
+   - `board-move.sh N human_qa` runs first. The comment is posted only after the move succeeds, so a failed move never leaves behind a comment that the next tick would post again.
+   - The script posts nothing when a comment with the heading line `What to check in Human QA` already exists.
    - If the comment fails after the move, the card is still in `human_qa`, which counts as progress, and the tick report carries the stderr line as a warning. Progress means the card is in `human_qa`.
 
 2.12. **`mark_ready`.** Runs `gh pr ready <pr> --repo R` and never merges. Progress means `gh pr ready` exited 0.
@@ -206,16 +213,22 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - On a non-zero exit nothing is merged. `main_check` stays null, so the next tick retries, and the tick report carries a warning.
    - Progress means `main_check` was recorded.
 
-2.15. **`finish`.** Only two steps: `board-move.sh N done`, then the note write setting `state: done`, `action_failures: 0` and `last_action_error: null`.
+2.15. **`finish`.** First, when the card body (`.body` from `board-read.sh N`) has a `## After merge` section, the manager writes the body to a temp file and runs `after-merge.sh run <body-file>` from the repo root. It prints `{outcome, results, note, comment}`.
+   - `note.sh merge` with `after_merge` = the printed `note` lines, so each command's exit status is recorded in the card's note.
+   - **After-merge block.** When `outcome` is `blocked`: `board-move.sh N blocked`, `note.sh merge` with `blocked_from: "in_review"` (the card was in review when it merged), then post the printed `comment` (it names the command and the missing allowlist entry, or the failing command and its exit status). The card does not go to `done` and gets no Human QA step. The manager stops here.
+   - When `outcome` is `done`, or the card has no such section, the manager continues with the steps below.
+
+   Then two steps: `board-move.sh N done`, then the note write setting `state: done`, `action_failures: 0` and `last_action_error: null`.
    - The note write is best-effort. If it fails or is denied, the card's result in the tick report says so and `Warnings:` gives the reason. The tick does not fail, and the write is not retried in another form.
    - The manager removes no worktree and never runs `worktree.sh remove`. `cleanup-done.sh` removes the worktrees of done cards outside any Claude session: the headless wrapper runs it after each successful tick, and interactive users run it by hand. An unattended session may deny worktree removal as irreversible local destruction.
    - Progress means the card is in `done`.
 
-   - **After-merge block.** When `after-merge.sh run` on the card body's `## After merge` section prints a result whose `outcome` is `blocked`: `board-move.sh N blocked`, `note.sh merge` with `blocked_from: "in_review"` (the card was in review when it merged), then post the printed `comment`. The card does not go to `done`.
 
 2.16. **`unblock`.** Progress means the card is in `ready`. The note merge clears `blocking_pr`, `blocked_from` and `blocked_findings` and resets both failure keys.
 
 2.17. **`skip_no_acceptance`.** At most one explanatory comment per card, ever: the plan sets `comment_needed` to false once a comment with the marker exists. Progress means the comment was posted, or none was needed.
+
+2.17a. **`skip_card_lint`.** One comment per distinct lint result: the marker embeds a checksum of the lint lines, and the plan sets `comment_needed` to false once a comment with that marker exists, so a second tick posts nothing and a changed result (a new marker) posts a new comment. Progress means the comment was posted, or none was needed.
 
 2.18. **Unlisted actions.** Any action value not in the table is treated as `skip`, and the tick report carries a warning naming the card and the value.
 
@@ -250,6 +263,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - `finish`: the card is in `done`.
    - `file_pending`: `file-followups.sh` exited 0 and `pending_followups` was set to null.
    - `skip_no_acceptance`: the comment was posted, or none was needed.
+   - `skip_card_lint`: the comment was posted, or none was needed.
    - Any action: an accepted report with Status `blocked` that moved the card to `blocked` is progress.
    - `skip`, `wait` and unlisted actions change nothing and are not counted. The manager writes no counter for them.
 
@@ -291,9 +305,9 @@ When the plan's reason starts with `no progress after `, the manager runs these 
 
 ### 3. Report reconciliation (for every role result)
 
-3.1. The manager writes the agent's final report text, exactly as returned and without appended tool metadata (0.12), to a file in the temp directory.
+3.1. The manager writes the agent's final report text, exactly as returned and without appended tool metadata (0.12), to a file in the temp directory. Nothing is trimmed, completed or reformatted. If the final reply is empty or missing, the manager writes and checks that empty text; the checker rejects it (missing sections, `found 0` VERIFIED lines), and the manager handles it like any other rejection.
 
-3.2. It runs `cd <repo root> && bash <scripts>/parse-report.sh --role <role> <file>`, where `<role>` is the role it dispatched.
+3.2. It runs `cd <repo root> && bash <scripts>/parse-report.sh --role <role> <file>`, where `<role>` is the role it dispatched. It never checks a report with another role or without `--role`.
 
 3.3. **Exit 1 (rejected).** The manager re-dispatches the same role once, with the same `subagent_type`, the same model, `run_in_background: false` and the same inputs, plus this text:
 
@@ -311,7 +325,7 @@ When the plan's reason starts with `no progress after `, the manager runs these 
 
    Nothing acts on a rejected report: no card move, no PR change, no follow-up filing, no `last_verified`.
 
-3.5. **Exit 2 (usage error).** The error is in the manager's own call. The manager fixes the call (flag, role name, file path) and runs the checker again. It never re-dispatches for exit 2, and exit 2 does not count as a rejection.
+3.5. **Exit 2 (usage error).** The messages are `unknown flag: <flag>`, `unknown role: <role>`, `cannot read file: <file>` or the usage line. The error is in the manager's own call. The manager fixes the call (flag, role name, file path) and runs the checker again. It never re-dispatches for exit 2, and exit 2 does not count as a rejection.
 
 3.6. **Exit 0 (accepted).** Every value used afterwards comes from the checker's JSON on stdout, never from re-reading the markdown. The fields used are `status`, `findings` (`[{severity,text}]`), `counts` (`{critical,important,minor}`), `out_of_scope` (`[{title,detail}]`), `bugs` (`[{title,repro,expected,observed}]`), `blocked_by` (an integer or null), `pr` (an integer or null) and `verified.line`. Then, in this order:
    1. **`last_verified`** = `verified.line`.
@@ -347,7 +361,7 @@ When the plan's reason starts with `no progress after `, the manager runs these 
 
 4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the escalation model (`models.escalation`, or the reviewer's model when that is unset).
 
-4.4. Cards with a `skip` whose reason starts with `could not be blocked after ` or `unblock made no progress after `, and cards with `skip` or `wait`, get no note write (2.C.2).
+4.4. Cards with a `skip` whose reason starts with `could not be blocked after ` or `unblock made no progress after `, and cards with `skip` or `wait`, get no note write (2.C.2), except the `deps_commented` write for a `ready` card's `wait` (2.2).
 
 ### 5. Tick report
 
@@ -385,7 +399,9 @@ When the plan's reason starts with `no progress after `, the manager runs these 
 - Run more than `limits.concurrency` role agents at once.
 - Invoke any skill other than `fleet-board:reporting`.
 - Dispatch any agent other than `fleet-board:implementor`, `fleet-board:reviewer` and `fleet-board:fixer`. That rules out a general-purpose agent, any other built-in agent and another manager.
+- Ask a role to use, load or follow the reporting skill.
 - Edit, complete, trim or rewrite a role's report, or accept or act on a report that `parse-report.sh --role <role>` rejected.
+- Check a report with a role other than the one it dispatched, or without `--role`, or re-parse report markdown by hand when the checker's JSON is available.
 - Re-dispatch a role more than once for one rejected report, or re-dispatch because the checker exited 2.
 - Paraphrase a rejection instead of quoting the `parse-report: ` lines exactly.
 - Drop a reported out-of-scope item or bug. Every item is filed or stays in `pending_followups`, and pending items are never replaced, only added to.
