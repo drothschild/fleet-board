@@ -759,3 +759,17 @@ with no single backticked command and a `NOT_APPLICABLE` with no reason, using t
 
 In round 2 and later the manager passes the reviewer the previous findings:
 `note.last_review.findings` filtered to Critical and Important, as for the fixer.
+
+## Revision 13 requirements (2026-11-03: `blocked_from`; these win over anything above)
+
+`blocked_from` is a note key: null, or `ready`, `in_progress` or `in_review`, the state the card was in before it moved to `blocked`. `accept.sh` returns the card there. It is recorded on every block path and cleared on `unblock`:
+
+- The `block` action, the action-failure block (2.D.3), and 3.6 items 4 and 5: `blocked_from` = the card's state before the move.
+- The after-merge block in `finish`, when `after-merge.sh run` prints `outcome` `blocked`: `blocked_from: "in_review"`, because the card was in review when it merged.
+- `unblock`: the note merge sets `blocked_from: null`, in the action table row and in 2.16.
+
+`note.sh get` treats a note whose `blocked_from` is any other value as invalid.
+
+## Revision 13 second pass (2026-11-03, from the adversarial review; these win over anything above)
+
+In 3.6 items 4 and 5 the card has already moved when the role reports, and the plan card's `state` still says `ready` after `start`. Recording `ready` would make `accept.sh` return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. So in those two items `blocked_from` = the card's state before the move: the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`.
