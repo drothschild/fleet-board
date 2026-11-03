@@ -23,6 +23,9 @@ check_file() {
   line_has "$who: action-failure block records the state before the move" "$f" '^ +- `blocked_from` = ' "$before"
   line_has "$who: 3.6 item 4 records blocked_from" "$f" 'Status `blocked` with a non-null `blocked_by`' "$before"
   line_has "$who: 3.6 item 5 records blocked_from" "$f" '`blocked_findings` = the report' "$before"
+  # start has already moved the card, so the plan card's state (ready) is wrong there.
+  line_has "$who: 3.6 item 4 names in_progress after start" "$f" 'Status `blocked` with a non-null `blocked_by`' '`in_progress` after `start`'
+  line_has "$who: 3.6 item 5 names in_progress after start" "$f" '`blocked_findings` = the report' '`in_progress` after `start`'
   line_has "$who: after-merge block records in_review" "$f" 'outcome` is `blocked`' 'blocked_from: "in_review"'
   line_has "$who: unblock clears blocked_from" "$f" '^\| `unblock`' 'blocked_from: null'
   line_has "$who: 2.16 clears blocked_from" "$f" '^2\.16\. ' 'blocked_from'
