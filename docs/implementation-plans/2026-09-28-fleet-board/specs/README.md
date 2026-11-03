@@ -1767,7 +1767,31 @@ Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.jso
 
 **Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.
 
-### Revision 14 (2026-11-03, card 115): remaining hand-added rules brought into the specs
+### Revision 14 (2026-11-03, PR #63, card #134): the `update_branch` action
+
+**Cause.** PR #63 (card #40) hand-edited `agents/manager.md` to add the `update_branch` action, and left the spec and brief without it. Main's guard from PR #118 failed it: `agents/manager.md` hashed to `b1a5fa7fc685b1ab`, not the recorded `e4e74e5d724175a9`, and the ubuntu and macOS checks went red on `test-clean-room.sh` and `test-clean-room-manifest.sh`.
+
+**Process note.** The hand edit was reverted in its own commit: the file was restored byte for byte to main's clean-room output (sha256 `e4e74e5d724175a9`). The rules below were then authored by an isolated run from the spec. The spec text for the action was copied from the hand edit, so the run's output is byte-identical to it; the difference is that it now comes from the spec.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 13): `specs/manager.md` (an `update_branch` row before the `block` row, rule 2.17b after 2.17, and a progress bullet after `block`) and a "Revision 14 requirements" section in `briefs/spec-req-manager.md`. Brief sha256 (16): `be1c19ba90c89cf9` → `01f16d923f52c88e`. Spec: `c8e2a05f6397ca02` → `25ae50cd1f955690`.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `559caaf157fdccdd`, not committed) and a copy of the edited spec as `spec-manager.md` (`25ae50cd1f955690`). Prompt sha256 `6e4b0ba7b1b002f2`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 3 edits) | 7 | 0.2721 | `b1a5fa7fc685b1ab` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills, no MCP servers. The path audit found the three reads were the two inputs and the target, and all three edits were of the target. Evidence: `evidence/author-manager.r14.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: three hunks, the table row, rule 2.17b and the progress bullet. The frontmatter is unchanged. **Kept.**
+
+**Known limits, not re-run.** The limits listed under Revision 13 still hold: `specs/manager.md` is missing other rules that earlier PRs added to the agent file by hand (including `skip_card_lint`, whose rule 2.17a this run placed the new rule after).
+
+**Revision cost:** $0.2721. **Running total, all API-key charges:** ~$39.62.
+
+**Output sha256 before → after (16):** `agents/manager.md` `e4e74e5d724175a9` (main, restored) → `b1a5fa7fc685b1ab`.
+
+### Revision 15 (2026-11-03, card 115): remaining hand-added rules brought into the specs
 
 **Cause.** Revision 13 listed rules that PRs added to clean-room files by hand and left out of their specs. In-place edits keep such rules. A full regeneration from the spec would drop them. The audit below compared each spec with its authored file, not just the list in the card.
 
@@ -1784,7 +1808,7 @@ Not copied: the rejection-message table and the Status and PR background in the 
 
 **Audit, `specs/status.md` against `skills/status/SKILL.md`.** One rule missing: `status.sh --forecast` (the `d2c3a75` hand edit, #76). The spec's script entry now covers `--forecast` and step 3 says when the skill runs it. The other lines of the skill and the spec agree.
 
-**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 14 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `b4506b54ee6259f8`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `192070fb66ef2f39`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c`.
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 15 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `b4506b54ee6259f8`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `192070fb66ef2f39`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c`.
 
 **`agents/manager.md` is not re-authored.** The spec only caught up with the agent file, which already holds every rule, so it stays at `e4e74e5d724175a9`.
 

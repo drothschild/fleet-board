@@ -8,7 +8,8 @@
 #
 # Scenarios: implementor, implementor-no-acceptance, review-good,
 #            review-unmapped, review-survivor, review-toggles-off, fixer,
-#            review-tamper, review-restored, review-unrestored
+#            review-tamper, review-restored, review-unrestored,
+#            review-round1-weakened
 #
 # Env:
 #   RUN              keep transcripts here (default $TMPDIR/fb-p5/behavioral/<scenario>-<ts>)
@@ -22,7 +23,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored"
+SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored review-round1-weakened"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s <%s>\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 [ -n "${SANDBOX_REPO:-}" ] || { echo "behavioral-role: SANDBOX_REPO is not set" >&2; exit 2; }
@@ -427,6 +428,24 @@ scenario_review_unrestored() {
     "any(.findings[]; .severity == \"Critical\" and (.text | contains(\"test/calc.test.js\")) and (.text | contains(\"${GOOD_SHA:0:7}\")))"
 }
 
+# round 1: the PR itself weakens the pre-existing add test, so there is no
+# earlier review to compare with; the CHECKED Acceptance item must catch it
+# against the whole PR.
+scenario_review_round1_weakened() {
+  new_card "$BL_FIX/card-subtract-keep-tests.md"
+  open_patch_pr "$PATCHES/round1-weaken.patch"
+  harness_report "$BL_REPORTS/implementor-ok.md" "$RUN/implementor-report.md"
+  post_report "$CARD" "$RUN/implementor-report.md"
+  review_worktree
+  config_json '{commands, review, test_paths, worktrees}' >"$RUN/review-config.json"
+  reviewer_prompt "$RUN/reviewer-prompt.txt" 1 "$BASE_SHA" "$RUN/implementor-report.md" "$RUN/review-config.json"
+  local head_before; head_before="$(git -C "$CLONE" rev-parse "origin/$BRANCH")"
+  dispatch_role reviewer opus "$RUN/reviewer-prompt.txt"
+  reviewer_common "$head_before"
+  check_jq "a weakened test in round 1 gets an Important or Critical finding naming test/calc.test.js" "$RUN/report.json" \
+    'any(.findings[]; (.severity == "Critical" or .severity == "Important") and (.text | contains("test/calc.test.js")))'
+}
+
 case "$SCENARIO" in
   implementor) scenario_implementor ;;
   implementor-no-acceptance) scenario_implementor_no_acceptance ;;
@@ -438,6 +457,7 @@ case "$SCENARIO" in
   review-tamper) scenario_review_tamper ;;
   review-restored) scenario_review_restored ;;
   review-unrestored) scenario_review_unrestored ;;
+  review-round1-weakened) scenario_review_round1_weakened ;;
 esac
 
 echo "RUN: $RUN"
