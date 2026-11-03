@@ -415,8 +415,7 @@ scenario_review_restored() {
   git -C "$WT" push -q origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
   review_after_fixer
   check_jq "a restored test gets no Critical or Important finding" "$RUN/report.json" \
-    'all(.findings[]; (.severity == "Critical" or .severity == "Important")
-       and (.text | test("calc\\.test\\.js|weakened")) | not)'
+    'all(.findings[]; .severity != "Critical" and .severity != "Important")'
 }
 
 scenario_review_unrestored() {
@@ -424,10 +423,8 @@ scenario_review_unrestored() {
   git -C "$WT" commit -q --allow-empty -m "fix: address review findings" || bl_die "cannot commit"
   git -C "$WT" push -q origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
   review_after_fixer
-  check_jq "an unrestored test is Critical, whatever the report says" "$RUN/report.json" \
-    'any(.findings[]; .severity == "Critical" and (.text | contains("test/calc.test.js")))'
-  check_jq "that finding keeps the seeded SHA" "$RUN/report.json" \
-    "any(.findings[]; .severity == \"Critical\" and (.text | contains(\"${GOOD_SHA:0:7}\")))"
+  check_jq "an unrestored test is Critical and keeps the seeded SHA, whatever the report says" "$RUN/report.json" \
+    "any(.findings[]; .severity == \"Critical\" and (.text | contains(\"test/calc.test.js\")) and (.text | contains(\"${GOOD_SHA:0:7}\")))"
 }
 
 case "$SCENARIO" in
