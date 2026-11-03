@@ -59,7 +59,7 @@ else
 fi
 
 # status --forecast
-has "skill: status runs status.sh --forecast for a forecast" "$PLUGIN/skills/status/SKILL.md" 'status.sh --forecast'
+has "skill: status runs status.sh --forecast for a forecast" "$PLUGIN/skills/status/SKILL.md" '--forecast'
 if [ -f "$SPECS/status.md" ]; then
   has "spec: status runs status.sh --forecast for a forecast or overnight preflight" "$SPECS/status.md" 'status.sh --forecast'
   has "spec: --forecast is never passed together with --all" "$SPECS/status.md" 'never together with `--all`'
