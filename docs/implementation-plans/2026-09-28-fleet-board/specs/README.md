@@ -16,6 +16,12 @@ README, and ran the processes and the checks.
 | `README.md` | the executing session |
 | `plugins/fleet-board/agents/{implementor,reviewer,fixer}.md`, `plugins/fleet-board/skills/reporting/SKILL.md` | Task 6 authors (below) |
 
+**Hash manifest.** `clean-room-manifest.txt` in this directory lists the sha256 of every
+clean-room file. `plugins/fleet-board/tests/test-clean-room.sh` fails when a file's hash differs
+or a clean-room file has no line. When you record a revision in this README, update the manifest
+in the same commit with `shasum -a 256 <file>` for each re-authored file. A line with an
+`# exception:` note names a file that is not a clean-room output.
+
 - **Claude Code:** 2.1.284
 - **Date:** 2026-09-28
 - **Auth:** `--settings ~/.config/fleet-board/bare-settings.json` (an `apiKeyHelper`; `apiKeySource: apiKeyHelper` in every init event). The key never appears in any log or file here.

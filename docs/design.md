@@ -30,7 +30,9 @@ The manager runs a tick: it reads the board, plans one action for each card, per
 
 Alternative: a long-running manager that holds a card in memory and drives it from Ready to Done in one session, looping until the work finishes.
 
-Because the manager keeps no state of its own, it is restartable: kill it at any point and the next tick picks up from what the board says. It is inspectable, since the plan for a tick is a single JSON document produced by one decision table, which can be read and tested offline. And the blast radius is bounded: a confused manager can do one wrong thing to each card, and the failure counter stops it repeating the same wrong thing. A long-running manager would be faster per card, but a hung or drifting session would take every in-flight card with it, and its state could not be examined from outside.
+Because the manager keeps no state of its own, it is restartable: kill it at any point and the next tick picks up from what the board says. It is inspectable, since the plan for a tick is a single JSON document produced by one decision table, which can be read and tested offline. And the blast radius is bounded: a confused manager can do one wrong thing to each card, and the failure counter stops it repeating the same wrong thing.
+
+The one exception to "a card advances at most one step per tick" is `settle.sh`: it also moves cards, but only between ticks, and only for steps that start no agent. A card can therefore advance one step in a tick and one more in the settle step after it, and the settle step costs no Claude session. It writes no failure count: the next tick plans the same action and counts a failure there. A long-running manager would be faster per card, but a hung or drifting session would take every in-flight card with it, and its state could not be examined from outside.
 
 ## Role agents never move cards
 
@@ -39,6 +41,8 @@ Implementors, reviewers and fixers do their work and post a report on the card. 
 Alternative: let each agent move its own card when it finishes, so the board always reflects the latest truth with no middleman.
 
 Reason for the choice: a single writer of state is far easier to reason about than four. Reports are checked by a parser before they are posted, so a malformed report is rejected and the card stays put instead of landing in the wrong column. An agent that is wrong about its own work, or that has been steered by hostile text in a card, can say whatever it likes in its report, but it cannot promote itself. The cost is one extra hop per transition, which the one-step-per-tick rule already makes cheap.
+
+`settle.sh` also moves cards, only between ticks, and only for steps that start no agent. The headless wrapper runs it after the manager has finished, so there is still one writer at a time. It acts on the manager note, not on posted reports: a PR that exists moves to In review, a clean review reaches Human QA, a draft PR is marked ready, and a card whose findings survive the last round is blocked. It never merges and never moves a card out of Human QA.
 
 ## The manager note is the only persistent state
 
