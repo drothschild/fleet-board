@@ -268,7 +268,7 @@ gives one SHA per test, in the same order as step 7: a previous finding's SHA, t
 SHA when the test changed since it, then the merge-base. The reviewer reads the base branch with
 `gh pr view`. The statements of what the reviewer judges from name the previous findings.
 
-## Revision 14 requirements (2026-11-03, single backticks for the check command)
+## Revision 16 requirements (2026-11-03, single backticks for the check command)
 
 The check command in an `Out of scope:` entry is written in single backticks with no backtick
 inside it. A markdown double-backtick span, or an odd number of backticks, gives no command,
