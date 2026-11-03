@@ -1,0 +1,13 @@
+# Clean-room manifest: sha256 of every clean-room file, checked by
+# plugins/fleet-board/tests/test-clean-room.sh (check 6).
+# Format: <sha256>  <path under plugins/fleet-board>  [# note]
+# A line whose note starts with "exception:" is a named exception, not a
+# clean-room output. Update this file whenever a revision is recorded in README.md.
+b5035f0e48a270f1f2a336ae345fb4e1b21521962d11214dd4714fa760f86098  agents/fixer.md
+57c4c13bdee48fdaf9cf4a42443c935cfb82ecaf05b6f116d3526b35e2923e19  agents/implementor.md
+e4e74e5d724175a9f8f9eac2afc15313cbf0a2a854c5787c9dfc5bd616a0438b  agents/manager.md
+f651a8a96074c365a27db5945573d5dce93d135f9f083fd4f2e8a3e984a93f81  agents/reviewer.md
+bbcc25fe440ad71ffb9b6ee5be9153784d162c6f2ddb83a0c3ab41af02db74ad  skills/reporting/SKILL.md
+0c56f165db5b62d7bafe17b300b2b4aaa487ce84e55bd1ab7ec15550be9dc189  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
+607506d57700d8b1fa62ecffbee5b0134aa819b63b0675761dc2fc60b38bfd93  skills/run/SKILL.md
+bfd19b217ea02b844676f9277fbbf689b1d5cbe41a5507893ea08f960e0ea4d7  skills/status/SKILL.md  # exception: hand-edited by #76, not a clean-room output; card #115 re-authors it and removes this exception
