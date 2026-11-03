@@ -8,7 +8,7 @@
 #
 # Scenarios: implementor, implementor-no-acceptance, review-good,
 #            review-unmapped, review-survivor, review-toggles-off, fixer,
-#            review-tamper
+#            review-tamper, review-restored, review-unrestored
 #
 # Env:
 #   RUN              keep transcripts here (default $TMPDIR/fb-p5/behavioral/<scenario>-<ts>)
@@ -22,7 +22,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper"
+SCENARIOS="implementor implementor-no-acceptance review-good review-unmapped review-survivor review-toggles-off fixer review-tamper review-restored review-unrestored"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s <%s>\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 [ -n "${SANDBOX_REPO:-}" ] || { echo "behavioral-role: SANDBOX_REPO is not set" >&2; exit 2; }
@@ -66,7 +66,7 @@ Scripts directory: $S
 EOF
 }
 
-# reviewer_prompt OUT ROUND REF_SHA REPORT_FILE CONFIG_JSON_FILE
+# reviewer_prompt OUT ROUND REF_SHA REPORT_FILE CONFIG_JSON_FILE [PREVIOUS_FINDINGS]
 reviewer_prompt() {
   cat >"$1" <<EOF
 Card number: $CARD
@@ -86,7 +86,7 @@ $(cat "$5")
 
 Review round: $2
 Reference SHA ($( [ "$2" = 1 ] && echo "round-1 base SHA" || echo "head SHA the previous review examined")): $3
-Previous findings: none
+Previous findings: ${6:-none}
 Scripts directory: $S
 EOF
 }
@@ -384,6 +384,52 @@ scenario_review_tamper() {
     'any(.findings[]; .severity == "Critical" and (.text | contains("test/calc.test.js")))'
 }
 
+# seed_weakened: a PR whose second commit deletes a test, with the round 1
+# finding the reviewer would have raised. GOOD_SHA has the test, WEAK_SHA does not.
+seed_weakened() {
+  new_card "$BL_FIX/card-subtract.md"
+  open_patch_pr "$PATCHES/good.patch"
+  GOOD_SHA="$(git -C "$WT" rev-parse HEAD)"
+  push_patch "$PATCHES/tamper.patch"
+  WEAK_SHA="$(git -C "$WT" rev-parse HEAD)"
+  SEEDED_FINDING="- [Critical] test/calc.test.js: test 'subtract(2, 5) returns -3' was weakened; restore it from $GOOD_SHA"
+}
+
+# review_after_fixer: round 2 from WEAK_SHA, given the seeded finding and a fixer
+# report that claims it was fixed, whether or not the test came back
+review_after_fixer() {
+  harness_report "$BL_REPORTS/fixer-restored.md" "$RUN/fixer-report.md"
+  post_report "$CARD" "$RUN/fixer-report.md"
+  review_worktree
+  config_json '{commands, review, test_paths, worktrees}' >"$RUN/review-config.json"
+  reviewer_prompt "$RUN/reviewer-prompt.txt" 2 "$WEAK_SHA" "$RUN/fixer-report.md" "$RUN/review-config.json" "$SEEDED_FINDING"
+  local head_before; head_before="$(git -C "$CLONE" rev-parse "origin/$BRANCH")"
+  dispatch_role reviewer opus "$RUN/reviewer-prompt.txt"
+  reviewer_common "$head_before"
+}
+
+scenario_review_restored() {
+  seed_weakened
+  git -C "$WT" checkout -q "$GOOD_SHA" -- test/calc.test.js || bl_die "cannot restore the test"
+  git -C "$WT" commit -q -m "fix: restore the weakened test" || bl_die "cannot commit the restore"
+  git -C "$WT" push -q origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
+  review_after_fixer
+  check_jq "a restored test gets no Critical or Important finding" "$RUN/report.json" \
+    'all(.findings[]; (.severity == "Critical" or .severity == "Important")
+       and (.text | test("calc\\.test\\.js|weakened")) | not)'
+}
+
+scenario_review_unrestored() {
+  seed_weakened
+  git -C "$WT" commit -q --allow-empty -m "fix: address review findings" || bl_die "cannot commit"
+  git -C "$WT" push -q origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
+  review_after_fixer
+  check_jq "an unrestored test is Critical, whatever the report says" "$RUN/report.json" \
+    'any(.findings[]; .severity == "Critical" and (.text | contains("test/calc.test.js")))'
+  check_jq "that finding keeps the seeded SHA" "$RUN/report.json" \
+    "any(.findings[]; .severity == \"Critical\" and (.text | contains(\"${GOOD_SHA:0:7}\")))"
+}
+
 case "$SCENARIO" in
   implementor) scenario_implementor ;;
   implementor-no-acceptance) scenario_implementor_no_acceptance ;;
@@ -393,6 +439,8 @@ case "$SCENARIO" in
   review-toggles-off) scenario_review_toggles_off ;;
   fixer) scenario_fixer ;;
   review-tamper) scenario_review_tamper ;;
+  review-restored) scenario_review_restored ;;
+  review-unrestored) scenario_review_unrestored ;;
 esac
 
 echo "RUN: $RUN"
