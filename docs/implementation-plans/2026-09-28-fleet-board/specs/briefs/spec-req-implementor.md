@@ -231,3 +231,11 @@ words `no testable check` the follow-up card is filed in Backlog for a person to
 `out of scope entry needs a backticked check command or the words no testable check: <entry>`.
 The shape lines, the entry rule, the rejection-message list and every example Out of scope
 entry say so; examples always carry a check command.
+
+## Revision 14 requirements (2026-11-03, single backticks for the check command)
+
+The check command in an `Out of scope:` entry is written in single backticks with no backtick
+inside it. A markdown double-backtick span, or an odd number of backticks, gives no command,
+because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
+command were present. When the command cannot be written that way, the entry uses the words
+`no testable check`. The entry rule says so.

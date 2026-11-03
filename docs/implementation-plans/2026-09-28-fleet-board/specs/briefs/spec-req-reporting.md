@@ -220,3 +220,11 @@ An `## Acceptance map` line may also be ``- <item> -> CHECKED: `<command>` `` or
 `- <item> -> NOT_APPLICABLE: <reason>`. `parse-report.sh` accepts both and rejects a `CHECKED`
 with no single backticked command and a `NOT_APPLICABLE` with no reason, using the existing
 `malformed ## Acceptance map line: <line>` message. The shape lines and the split rule say so.
+
+## Revision 14 requirements (2026-11-03, single backticks for the check command)
+
+The check command in an `Out of scope:` entry is written in single backticks with no backtick
+inside it. A markdown double-backtick span, or an odd number of backticks, gives no command,
+because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
+command were present. When the command cannot be written that way, the entry uses the words
+`no testable check`. The entry rule says so.
