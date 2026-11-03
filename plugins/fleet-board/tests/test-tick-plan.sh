@@ -713,6 +713,64 @@ assert_jq "deps-other-card-starts: the other card starts" "$(card 14 action)" '"
 assert_jq "deps-other-card-starts: dispatchable reflects the other card" '.dispatchable' 'true'
 assert_jq "deps-other-card-starts: a card with no dependencies has waiting_on null" "$(card 14 waiting_on)" 'null'
 
+# ---------------------------------------------------------------------------
+# settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
+# settle <case> <n> [extra YAML]: set up the case and run --settle <n>
+settle() { local c="$1" n="$2"; shift 2; setup_case "$c" "$@"; run_check "$SCRIPT" --settle "$n"; }
+list_calls() { grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
+
+settle in-review-human-qa-path 12
+assert_exit "settle: clean review needing human QA: exit" 0
+assert_jq "settle: clean-reviewed card where needs-human-qa.sh says true plans to_human_qa" "$(card 12 action)" '"to_human_qa"'
+settle in-review-mark-ready-human 12
+assert_jq "settle: clean-reviewed draft PR where needs-human-qa.sh says false plans mark_ready" "$(card 12 action)" '"mark_ready"'
+settle in-progress-draft-pr 12
+assert_jq "settle: in_progress card with a PR plans move_to_review" "$(card 12 action)" '"move_to_review"'
+assert_jq "settle: move_to_review carries the pr" "$(card 12 pr)" '34'
+plan in-progress-draft-pr
+assert_jq "settle: a plan without --settle still plans start_review" "$(card 12 action)" '"start_review"'
+settle in-review-block 12
+assert_jq "settle: findings surviving the final round plan block" "$(card 12 action)" '"block"'
+
+# every other table action is skipped, with a reason naming the action
+settle_skips() { # <case> <card> <table action> [extra YAML]
+  settle "$1" "$2" "${4:-}"
+  assert_jq "settle: table action $3 plans skip ($1)" "$(card "$2" action)" '"skip"'
+  assert_jq "settle: skip reason names $3 ($1)" "$(card "$2" reason)" "$(jq -cn --arg a "$3" '"\($a) waits for the next tick"')"
+  assert_jq "settle: dispatchable false for $3 ($1)" '.dispatchable' 'false'
+}
+settle_skips ready-start 12 start
+settle_skips in-progress-no-pr 12 continue_implementor
+settle_skips in-review-needs-review 12 review
+settle_skips in-review-fix 12 fix
+settle_skips in-review-merge-auto 12 merge "$(printf 'merge:\n  policy: auto')"
+settle_skips merged-verify 12 verify_main
+settle_skips merged-finish 12 finish
+settle_skips blocked-unblock 20 unblock
+settle_skips pending-followups-hold-card 12 file_pending
+
+settle in-review-mark-ready-human 12
+assert_jq "settle: dispatchable is false even for a to-be-acted card" '.dispatchable' 'false'
+
+settle read-failure 12
+assert_exit "settle: failed lookup: exit" 0
+assert_jq "settle: failed lookup on a named card plans skip" "$(card 12 action)" '"skip"'
+assert_jq "settle: failed lookup warns" '[.warnings[] | select(startswith("#12: lookup failed"))] | length' 1
+
+settle in-review-fix 12
+assert_jq "settle: output lists only the named card" '[.cards[].number]' '[12]'
+assert_eq "settle: no column is listed" "$(list_calls)" 0
+plan in-review-fix
+assert_eq "settle: a normal plan does list columns" "$(list_calls)" 4
+
+plan in-review-fix
+run_check "$SCRIPT" --settle
+assert_exit "settle: no card exits 2" 2
+run_check "$SCRIPT" --settle abc
+assert_exit "settle: non-numeric card exits 2" 2
+run_check "$SCRIPT" --settle 12 x1
+assert_exit "settle: a non-numeric second card exits 2" 2
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra
