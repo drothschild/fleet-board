@@ -1682,3 +1682,21 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins (this version also loads 
 **Second pass cost:** $0.3259. **Revision cost, both passes:** $1.0609.
 
 **Output sha256 after the second pass (16):** `agents/reviewer.md` `6fe40d4c84ae9d1c` → `e51bcefc2e9ee74e`; `agents/fixer.md` `e4a022f33ec04307` → `98ed7148b89d5926`.
+
+**Third pass (2026-11-02), from the adversarial review of the second pass.** That review found that the restore check trusted text the fixer wrote, so a fixer could name a SHA holding the weak test or reword the line to skip the check. It also found that the `CHECKED` example covered only the commits since the previous review, that a restore could be impossible when the weakening removed an import, and that a restored test that failed was reported as weakened. Hand edits: `specs/{reviewer,fixer,manager}.md` and a "Revision 12 third pass" section in `briefs/spec-req-{reviewer,fixer,manager}.md`. `tests/behavioral-role.sh` passes the new input; it was syntax checked, not run.
+
+Three more isolated in-place edits with the same recipe, Claude Code 2.1.317. `edit-req.md` for this pass has sha256 `9231dcd002de61dd` and is not committed. Inputs were that file and the role's own spec, including for the manager.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 6 edits) | 10 | 0.1976 | `8f383457e9129408` |
+| `agents/fixer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.1182 | `b5035f0e48a270f1` |
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.2426 | `8d673df7fd3f8f7f` |
+
+Isolation as in the second pass. Evidence: `evidence/author-{reviewer,fixer,manager}.r12c.init.json`.
+
+**Minimality check.** `git diff -U0` was read line by line: every hunk is the new input, the `CHECKED` rule, the Restored or Weakened class, the standing check, the fixer's restore or touched files, or the manager's dispatch. The frontmatter is unchanged. **Kept.**
+
+**Third pass cost:** $0.5584. **Revision cost, all passes:** $1.6193.
+
+**Output sha256 after the third pass (16):** `agents/reviewer.md` `e51bcefc2e9ee74e` → `8f383457e9129408`; `agents/fixer.md` `98ed7148b89d5926` → `b5035f0e48a270f1`; `agents/manager.md` `85b01fcf7ec55df1` → `8d673df7fd3f8f7f`.

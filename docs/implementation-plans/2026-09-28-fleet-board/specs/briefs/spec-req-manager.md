@@ -754,3 +754,8 @@ An `## Acceptance map` line may also be ``- <item> -> CHECKED: `<command>` `` or
 `- <item> -> NOT_APPLICABLE: <reason>`. `parse-report.sh` accepts both and rejects a `CHECKED`
 with no single backticked command and a `NOT_APPLICABLE` with no reason, using the existing
 `malformed ## Acceptance map line: <line>` message. The shape lines and the split rule say so.
+
+## Revision 12 third pass (2026-11-02, from the second adversarial review)
+
+In round 2 and later the manager passes the reviewer the previous findings:
+`note.last_review.findings` filtered to Critical and Important, as for the fixer.

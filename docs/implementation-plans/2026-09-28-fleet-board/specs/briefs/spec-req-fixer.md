@@ -237,3 +237,8 @@ and may not otherwise edit an existing test.
 
 A restore puts the whole test back (name, declaration and body, or a deleted test or test file)
 to exactly its content at the SHA in the finding. A partial restore is not allowed.
+
+## Revision 12 third pass (2026-11-02, from the second adversarial review)
+
+A restore may also put back file-level lines the test needs, such as an import or a helper, each
+exactly as at the SHA. Restored test files count as touched test files.

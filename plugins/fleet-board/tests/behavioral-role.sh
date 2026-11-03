@@ -86,6 +86,7 @@ $(cat "$5")
 
 Review round: $2
 Reference SHA ($( [ "$2" = 1 ] && echo "round-1 base SHA" || echo "head SHA the previous review examined")): $3
+Previous findings: none
 Scripts directory: $S
 EOF
 }

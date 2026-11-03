@@ -252,3 +252,11 @@ the same SHA. `Adapted` also needs a killed mutant when `review.mutation` is tru
 the `## Mutation` counts. `NOT_APPLICABLE` is only for a condition about the change itself, never
 for behavior under a condition. A `CHECKED` command may be a diff the reviewer reads, and may hold
 ` -> `. The report template lists all four Acceptance map forms.
+
+## Revision 12 third pass (2026-11-02, from the second adversarial review)
+
+The reviewer receives the previous findings, and `Restored` and the check that a weakened test was
+restored use only those: never a SHA from a role's report, and whatever the report marked. A test
+already named as weakened keeps that finding's SHA. A restored test that fails is `[Important]`
+against the implementation and keeps the SHA. A `CHECKED` repository condition is decided against
+the whole PR, and a finding that an existing test was weakened gives the merge-base SHA.

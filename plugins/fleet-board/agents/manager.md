@@ -90,6 +90,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the config JSON;
      - the round number;
      - the reference SHA `prev_sha`: in round 1 this is the `base` from `worktree.sh review`, in later rounds `note.last_review.sha`;
+     - the previous findings: in round 2 and later, `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`; in round 1, none;
      - the absolute scripts dir.
    - **fixer** (`subagent_type: fleet-board:fixer`, `model` = the plan card's `models.fixer`):
      - the card number, title and body;
@@ -186,7 +187,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    4. Reconcile its report (step 3).
    5. Only when the fixer's report is accepted and its Status is `done`: `note.sh merge` with `round` = `note.round` + 1, `models` = the plan card's `models`, and, when the plan card's `escalated` is true, `escalated: true` and `escalated_at_round` = the new round.
    6. `worktree.sh review N <pr>`.
-   7. Dispatch the reviewer with `round` = the new round, `prev_sha` = `note.last_review.sha`, and the fixer's report as the latest report.
+   7. Dispatch the reviewer with `round` = the new round, `prev_sha` = `note.last_review.sha`, the previous findings, and the fixer's report as the latest report.
 
    If the fixer's report is rejected twice, or its Status is `blocked`, the round stays the same and no reviewer is dispatched this tick. Progress means the fixer's report was accepted and `round` + 1 was merged. A failure in the reviewer step that follows in the same tick is a warning, and the next tick's `review` action counts it.
 
