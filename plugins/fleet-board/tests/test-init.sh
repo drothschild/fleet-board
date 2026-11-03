@@ -302,15 +302,15 @@ run_init "${LABELS_CMD[@]}" --dir "$TARGET"
 assert_exit "labels-creates-all: exit" 0
 
 forced="$(calls_of label create | with_arg --force)"
-assert_count "labels-creates-all: exactly 9 label create calls with --force" "$(printf '%s\n' "$forced" | count_lines)" 9
+assert_count "labels-creates-all: exactly 10 label create calls with --force" "$(printf '%s\n' "$forced" | count_lines)" 10
 
 n_repo=0
 for f in $forced; do file_has_pair "$f" --repo acme/toy && n_repo=$((n_repo + 1)); done
-assert_count "labels-creates-all: all 9 --force creates carry --repo acme/toy" "$n_repo" 9
+assert_count "labels-creates-all: all 10 --force creates carry --repo acme/toy" "$n_repo" 10
 
 got_names="$(for f in $forced; do sed -n 3p "$f"; done | sort | tr '\n' ' ')"
-want_names="$(printf '%s\n' fleet:backlog fleet:ready fleet:in_progress fleet:in_review fleet:human_qa fleet:blocked fleet:done fleet:wont_do needs-human-qa | sort | tr '\n' ' ')"
-assert_count "labels-creates-all: names are the 8 fleet:<state> labels plus needs-human-qa" "$got_names" "$want_names"
+want_names="$(printf '%s\n' fleet:backlog fleet:ready fleet:in_progress fleet:in_review fleet:human_qa fleet:blocked fleet:done fleet:wont_do needs-human-qa needs-manual-step | sort | tr '\n' ' ')"
+assert_count "labels-creates-all: names are the 8 fleet:<state> labels plus needs-human-qa and needs-manual-step" "$got_names" "$want_names"
 
 bad=""
 for pair in backlog:cfd3d7 ready:0e8a16 in_progress:1d76db in_review:5319e7 human_qa:fbca04 blocked:b60205 done:0e8a16 wont_do:ffffff; do
@@ -366,7 +366,7 @@ assert_exit "bug-label-kept-if-present: exit" 0
 assert_count "bug-label-kept-if-present: bug label was checked" "$(calls_of label list | count_lines)" 1
 assert_count "bug-label-kept-if-present: no label create bug" "$(label_creates_named bug | count_lines)" 0
 assert_count "bug-label-kept-if-present: no label edit" "$(calls_of label edit | count_lines)" 0
-assert_count "bug-label-kept-if-present: state labels still created" "$(calls_of label create | with_arg --force | count_lines)" 9
+assert_count "bug-label-kept-if-present: state labels still created" "$(calls_of label create | with_arg --force | count_lines)" 10
 if [ -f "$TARGET/.fleet-board.yml" ]; then
   pass "bug-label-kept-if-present: config written"
 else
@@ -488,6 +488,14 @@ if [ -n "$f" ] && [ -n "$fl" ] && [ "$(seq_of "$f")" -gt "$(seq_of "$fl")" ]; th
 else
   fail "projects-verifies-options-ok: needs-human-qa created after options verify" "field-list=$fl create=$f"
 fi
+nms="$(label_creates_named needs-manual-step)"
+assert_count "projects-verifies-options-ok: needs-manual-step created exactly once" "$(printf '%s\n' "$nms" | count_lines)" 1
+f="$(printf '%s\n' "$nms" | head -n 1)"
+if [ -n "$f" ] && file_has_pair "$f" --repo drothschild/HMBWorkout && grep -Fxq -- --force "$f"; then
+  pass "projects-verifies-options-ok: needs-manual-step create args"
+else
+  fail "projects-verifies-options-ok: needs-manual-step create args" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
+fi
 lists="$(calls_of label list)"
 assert_count "projects-verifies-options-ok: one bug label check" "$(printf '%s\n' "$lists" | count_lines)" 1
 f="$(printf '%s\n' "$lists" | head -n 1)"
@@ -500,7 +508,7 @@ fi
 bug_creates="$(label_creates_named bug)"
 assert_count "projects-verifies-options-ok: exactly one label create bug" "$(printf '%s\n' "$bug_creates" | count_lines)" 1
 assert_count "projects-verifies-options-ok: label create bug has no --force" "$(printf '%s\n' "$bug_creates" | with_arg --force | count_lines)" 0
-assert_count "projects-verifies-options-ok: label creates total" "$(calls_of label create | count_lines)" 2
+assert_count "projects-verifies-options-ok: label creates total" "$(calls_of label create | count_lines)" 3
 
 # projects-owner-flag: --owner overrides the repo owner
 setup_case
@@ -962,7 +970,7 @@ want="$(printf '%s\n' "$HEADER" 'board:' '  backend: "github-labels"' '  repo: "
 got="$(cat "$TARGET/.fleet-board.yml" 2>/dev/null)"
 assert_count "env-not-inherited labels: file is exactly the flags' config" "$got" "$want"
 assert_count "env-not-inherited labels: no POISON in the file" "$(grep -c POISON "$TARGET/.fleet-board.yml" 2>/dev/null)" 0
-assert_count "env-not-inherited labels: 9 label creates with --force" "$(calls_of label create | with_arg --force | count_lines)" 9
+assert_count "env-not-inherited labels: 10 label creates with --force" "$(calls_of label create | with_arg --force | count_lines)" 10
 assert_count "env-not-inherited labels: no POISON in any gh call" "$(cat "$FAKE_GH_DIR"/argv/* 2>/dev/null | grep -c POISON)" 0
 
 # env-not-inherited (projects): field-list uses the repo owner, not $OWNER
