@@ -157,10 +157,18 @@ assert_eq "accept: failure count reset to 0 and error cleared" \
   "$(jq -c '[.action_failures, .last_action_error]' "$PATCH_COPY" 2>/dev/null)" '[0,null]'
 assert_eq "accept: reviewed-sha baseline moved to the PR head" \
   "$(jq -c '.last_review.sha' "$PATCH_COPY" 2>/dev/null)" '"def5678abc"'
+assert_eq "accept: clears the old findings and leaves the round unreviewed" \
+  "$(jq -c '.last_review | [.round, .critical, .important, .findings]' "$PATCH_COPY" 2>/dev/null)" '[1,0,0,[]]'
 assert_eq "accept: records who accepted (authenticated login) and the sha" \
   "$(jq -c '[.accepted.login, .accepted.sha]' "$PATCH_COPY" 2>/dev/null)" '["fleet-bot","def5678abc"]'
 assert_eq "accept: records when (UTC timestamp)" \
   "$(jq -r '.accepted.at | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\\z")' "$PATCH_COPY" 2>/dev/null)" true
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 1 | .last_review.round = 1' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: in round 1 the unreviewed round is 0" \
+  "$(jq -c '.last_review.round' "$PATCH_COPY" 2>/dev/null)" '0'
 
 echo "accept.sh: the card is moved out of Blocked after the note is written"
 setup_case "$BLOCKED"
@@ -258,6 +266,10 @@ tick_case "$(jq -c '.accepted.login = "mallory"' <<<"$AFTER")" def5678abc
 assert_eq "tick-plan: an accept by another login is not honored (review)" "$(jqc '.cards[0].action')" '"review"'
 assert_eq "tick-plan: the reason names the unhonored accept" \
   "$(jq -r '.cards[0].reason | contains("not honored")' <<<"$LAST_OUT")" true
+
+ACCEPTED='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":2,"action_failures":0,"last_review":{"round":1,"sha":"def5678abc","critical":0,"important":0,"findings":[]},"accepted":{"login":"fleet-bot","at":"2026-10-30T10:00:00Z","sha":"def5678abc"}}'
+tick_case "$ACCEPTED" def5678abc
+assert_eq "tick-plan: a note accept.sh wrote gets a fresh review, not a fix" "$(jqc '.cards[0].action')" '"review"'
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
