@@ -70,6 +70,11 @@ case "$1 $2" in
     done
     cp "$bf" "$D/bodies/$n.md"
     echo "https://github.com/$repo/issues/$n" ;;
+  "label list")
+    repo=""; prev=""
+    for a in "$@"; do [ "$prev" = "--repo" ] && repo="$a"; prev="$a"; done
+    f="$D/labels/${repo//\//_}"
+    [ -f "$f" ] && cat "$f" ;;
   "project item-add")
     echo "{\"id\":\"ITEM_$(cat "$D/counter")\"}" ;;
   *) : ;;
@@ -260,7 +265,32 @@ check "labels board: stubbed gh log has no project item call" "$(grep -c '^proje
 reset_gh
 run_import "y" "$SB/cards.json" --status ready
 check "labels board: --status ready labels each issue fleet:ready" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:ready')" "3"
+# ---------------------------------------------------------------- labels must exist
+echo "# labels must exist before import"
+reset_gh
+run_import "y" "$SB/cards.json"
+check "labels board, label missing: exits 0" "$RC" "0"
+lc="$(grep -n '^label create fleet:backlog --repo acme/api' "$D/calls.log" | head -1 | cut -d: -f1)"
+ic="$(grep -n '^issue create --repo acme/api' "$D/calls.log" | head -1 | cut -d: -f1)"
+if [ -n "$lc" ] && [ -n "$ic" ] && [ "$lc" -lt "$ic" ]; then pass "labels board: gh label create fleet:backlog --repo acme/api is logged before that repo's first gh issue create"; else fail "labels board: gh label create fleet:backlog --repo acme/api is logged before that repo's first gh issue create" "label line '$lc', issue line '$ic'"; fi
+check "labels board: label created once for acme/api, not once per card" "$(grep -c '^label create fleet:backlog --repo acme/api' "$D/calls.log")" "1"
+check "labels board: label created once for acme/web though it has two cards" "$(grep -c '^label create fleet:backlog --repo acme/web' "$D/calls.log")" "1"
+check "labels board: label created for exactly the two repos" "$(grep -c '^label create ' "$D/calls.log")" "2"
+reset_gh
+mkdir -p "$D/labels"
+printf 'fleet:backlog\nbug\n' > "$D/labels/acme_api"
+printf 'fleet:backlog\n' > "$D/labels/acme_web"
+run_import "y" "$SB/cards.json"
+check "labels board, label exists: exits 0" "$RC" "0"
+check "labels board, label exists: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
+reset_gh
+run_import "y" "$SB/cards.json" --status ready
+check "labels board, --status ready: fleet:ready is created in each repo" "$(grep -c '^label create fleet:ready --repo ' "$D/calls.log")" "2"
+check "labels board, --status ready: fleet:backlog is not created" "$(grep -c '^label create fleet:backlog' "$D/calls.log")" "0"
 ROOT="$ROOT_P"
+reset_gh
+run_import "y" "$SB/cards.json"
+check "projects board: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
