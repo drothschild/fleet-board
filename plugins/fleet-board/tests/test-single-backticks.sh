@@ -29,7 +29,7 @@ for r in implementor reviewer fixer reporting; do
   at_least_one "spec $r states 'no backtick inside'" "$SPECS_DIR/$r.md" 'no backtick inside'
 done
 for f in agents/implementor.md agents/reviewer.md agents/fixer.md skills/reporting/SKILL.md; do
-  at_least_one "$f says 'single backticks'" "$PLUGIN_DIR/$f" 'single backticks'
+  at_least_one "$f ties the check command to 'single backticks'" "$PLUGIN_DIR/$f" 'check command.*single backticks\|single backticks.*check command'
 done
 
 # README: the new revision section raises the 'tools exactly' count above main's.
@@ -42,11 +42,18 @@ else
   fail "README 'tools exactly' count did not rise (main $base, now $now)"
 fi
 
-if grep -q 'built-in plugins only, tools `Edit` and `Read`' "$SPECS_DIR/README.md"; then
-  pass "README isolation line reads built-in plugins only, tools Edit and Read"
-else
-  fail "README isolation line missing 'built-in plugins only, tools \`Edit\` and \`Read\`'"
-fi
+# The last revision section is this card's: heading names single backticks and
+# its Isolation line reads built-in plugins only, tools exactly Edit and Read.
+last_head="$(grep -n '^### Revision' "$SPECS_DIR/README.md" | tail -1)"
+case "$last_head" in
+  *'single backtick'*) pass "README has a new revision section about single backticks" ;;
+  *) fail "last README revision heading does not mention single backticks: $last_head" ;;
+esac
+iso="$(grep '^Isolation:' "$SPECS_DIR/README.md" | tail -1)"
+case "$iso" in
+  *'cc-plugin-*@builtin'*'tools exactly `Edit` and `Read`'*) pass "README isolation line: built-in plugins only, tools Edit and Read" ;;
+  *) fail "README isolation line wrong: $iso" ;;
+esac
 
 printf 'passed: %s   failed: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
