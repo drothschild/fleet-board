@@ -9,7 +9,8 @@
 # approved:
 #   action_failures    -> 0, last_action_error -> null
 #   last_review.sha    -> the PR's current head (the reviewed-sha baseline)
-#   last_review.round  -> one below the note's round, so the plan reviews again
+#   last_review.round  -> 0, below any round the note holds or start_review sets,
+#                         so the plan reviews again
 #   last_review.findings, .critical, .important -> cleared: the review from the
 #                         new baseline raises again whatever is still wrong
 #   blocked_findings -> [], blocking_pr, blocked_from -> null: nothing stale
@@ -80,9 +81,9 @@ case "$HEAD_SHA" in
 esac
 
 TMP="$(mktemp)" || fb_die 1 "cannot create a temp file"
-jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson round "$ROUND" \
+jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   '{action_failures: 0, last_action_error: null,
-    last_review: {round: ([$round - 1, 0] | max), sha: $sha, critical: 0, important: 0, findings: []},
+    last_review: {round: 0, sha: $sha, critical: 0, important: 0, findings: []},
     blocked_findings: [], blocking_pr: null, blocked_from: null,
     accepted: {login: $me, at: $at, sha: $sha}}' > "$TMP" || fb_die 1 "cannot build the patch"
 
