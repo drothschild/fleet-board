@@ -1718,3 +1718,27 @@ Isolation as in the second pass. Evidence: `evidence/author-reviewer.r12d.init.j
 **Fourth pass cost:** $0.1648. **Revision cost, all passes:** $1.7841.
 
 **Output sha256 after the fourth pass (16):** `agents/reviewer.md` `8f383457e9129408` → `f651a8a96074c365`.
+
+### Revision 13 (2026-11-03, PR #113): `blocked_from` brought back into the spec
+
+**Cause.** PR #104 (`d10f00e`) hand-edited `agents/manager.md` to record and clear `blocked_from`, and left the spec and brief without it. Nothing failed. Merging main into the Revision 12 branch (`c076b23`) carried those lines in, so `agents/manager.md` on main hashed to `4c5eec8da11bcbc9`, not the recorded `8d673df7fd3f8f7f`. `git diff -U0 5f7a55e 1c8bdb3` on the file showed the six #104 hunks and nothing else. #104 also missed step 2.16, which still listed only `blocking_pr` and `blocked_findings` as cleared.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md` (the `block` and `unblock` rows, 2.16, 2.D.3, 3.6 items 4 and 5, and a new after-merge block bullet after 2.15) and a "Revision 13 requirements" section in `briefs/spec-req-manager.md`. Brief sha256 (16): `42daadbd7c5cf202` → `8b63ddc383d30969`. Spec: `240cf174527d19b1` → `a141dad5383476c5`. `tests/test-manager-blocked-from.sh` now runs its checks on the spec as well as the agent file. It is not clean-room and was changed test-first.
+
+**Starting point.** An in-place edit of the file on main would have found the rules already there. So the file was first restored byte for byte to the last clean-room output (`git show 5f7a55e:...`, sha256 `8d673df7fd3f8f7f`, its own commit), and the run authored the rules from the spec.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `f002d6a7d60fce4a`, not committed) and a copy of the edited spec as `spec-manager.md` (`a141dad5383476c5`). Prompt sha256 `12a5943fe990d82e`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 7 edits) | 11 | 0.2833 | `3a705d629a868fe2` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. The path audit found the three reads were the two inputs and the target, and all seven edits were of the target. No tool call failed. Evidence: `evidence/author-manager.r13.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: seven hunks, one per requirement item (the `block` and `unblock` rows, the `finish` blocked branch, 2.16, 2.D.3, 3.6 items 4 and 5). The frontmatter is unchanged. Against main the file differs by one line: 2.16 now clears `blocked_from`. The other six hunks came out byte-identical to the #104 text. **Kept.**
+
+**Known limits, not re-run.** `specs/manager.md` is still missing other rules that earlier PRs added to the agent file by hand, including the full `## After merge` flow, `skip_card_lint`, `human-qa-handoff.sh`, `deps_commented` and the standing rules on adversarial review and re-fetching PR state. The new after-merge bullet covers only the `blocked_from` rule, and 2.15 still opens with "Only two steps". In-place edits keep these rules. A full regeneration from the spec would drop them.
+
+**Revision cost:** $0.2833. **Running total, all API-key charges:** ~$39.10 (the last stated total, ~$36.14 at Revision 10, plus Revision 11's $0.8975, Revision 12's $1.7841 and this run).
+
+**Output sha256 before → after (16):** `agents/manager.md` `4c5eec8da11bcbc9` (main) → `8d673df7fd3f8f7f` (restored) → `3a705d629a868fe2`.
