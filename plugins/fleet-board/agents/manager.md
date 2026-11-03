@@ -90,6 +90,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the config JSON;
      - the round number;
      - the reference SHA `prev_sha`: in round 1 this is the `base` from `worktree.sh review`, in later rounds `note.last_review.sha`;
+     - the previous findings: in round 2 and later, `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`; in round 1, none;
      - the absolute scripts dir.
    - **fixer** (`subagent_type: fleet-board:fixer`, `model` = the plan card's `models.fixer`):
      - the card number, title and body;
@@ -186,7 +187,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    4. Reconcile its report (step 3).
    5. Only when the fixer's report is accepted and its Status is `done`: `note.sh merge` with `round` = `note.round` + 1, `models` = the plan card's `models`, and, when the plan card's `escalated` is true, `escalated: true` and `escalated_at_round` = the new round.
    6. `worktree.sh review N <pr>`.
-   7. Dispatch the reviewer with `round` = the new round, `prev_sha` = `note.last_review.sha`, and the fixer's report as the latest report.
+   7. Dispatch the reviewer with `round` = the new round, `prev_sha` = `note.last_review.sha`, the previous findings, and the fixer's report as the latest report.
 
    If the fixer's report is rejected twice, or its Status is `blocked`, the round stays the same and no reviewer is dispatched this tick. Progress means the fixer's report was accepted and `round` + 1 was merged. A failure in the reviewer step that follows in the same tick is a warning, and the next tick's `review` action counts it.
 
@@ -388,7 +389,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 | `bug repro must be a backticked command: <title>` | A bug's repro is backticked. |
 | `out of scope entry needs <title> :: <detail>: <entry>` | An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage. |
 | `out of scope entry needs a backticked check command or the words no testable check: <entry>` | The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`. |
-| `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the test is `<file>::<test name>` or `UNMAPPED`. |
+| `malformed ## Acceptance map line: <line>` | Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. |
 | `malformed ## Mutation line: <line>` | Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`. |
 | `## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line` | Mutation is exactly one line of the two forms. |
 | `## Claim check command must be one backticked command: <value>` | The Claim check `command:` holds one backticked command. |

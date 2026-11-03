@@ -9,13 +9,21 @@
 # approved:
 #   action_failures    -> 0, last_action_error -> null
 #   last_review.sha    -> the PR's current head (the reviewed-sha baseline)
+#   last_review.round  -> 0, below any round the note holds or start_review sets,
+#                         so the plan reviews again
+#   last_review.findings, .critical, .important -> cleared: the review from the
+#                         new baseline raises again whatever is still wrong
+#   blocked_findings -> [], blocking_pr, blocked_from -> null: nothing stale
+#                         reaches the Human QA handoff or a later unblock
 #   accepted           -> {"login": <authenticated gh login>, "at": <UTC>, "sha": <head>}
 # tick-plan.sh honors an accepted entry only when its login is the
 # authenticated one (the note itself is only trusted from that login).
 #
 # Then the card is moved out of Blocked, back to the state it was blocked from
 # (the note's blocked_from: ready, in_progress or in_review; in_review when
-# the note records none, since an accepted change always has a PR).
+# the note records none, since an accepted change always has a PR). A card in
+# round 0 that would go to in_review goes to in_progress instead, so it is
+# reviewed.
 #
 # Exit codes:
 #   0 - the note was written and the card moved out of Blocked
@@ -57,6 +65,15 @@ PR="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     on { print }' | jq -r '.pr // empty' 2>/dev/null)"
 fb_valid_number "$PR" || fb_die 1 "the manager note on #$N names no PR; nothing accepted"
 
+ROUND="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
+    $0 == "```json" && !found { found = 1; on = 1; next }
+    on && $0 == "```" { exit }
+    on { print }' | jq -r '.round // 0' 2>/dev/null)"
+fb_valid_number "$ROUND" || ROUND=0
+# Round 0 has nothing below it to mark unreviewed, so In Review would take the
+# clean path; from In Progress the plan starts a review of the PR.
+[ "$ROUND" -eq 0 ] && [ "$BACK" = in_review ] && BACK=in_progress
+
 OUT="$(gh pr view "$PR" --repo "$FLEET_REPO" --json headRefOid)" || fb_die 1 "cannot read the PR head of #$PR; nothing accepted"
 HEAD_SHA="$(jq -r '.headRefOid // empty' <<<"$OUT" 2>/dev/null)"
 case "$HEAD_SHA" in
@@ -65,7 +82,9 @@ esac
 
 TMP="$(mktemp)" || fb_die 1 "cannot create a temp file"
 jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{action_failures: 0, last_action_error: null, last_review: {sha: $sha},
+  '{action_failures: 0, last_action_error: null,
+    last_review: {round: 0, sha: $sha, critical: 0, important: 0, findings: []},
+    blocked_findings: [], blocking_pr: null, blocked_from: null,
     accepted: {login: $me, at: $at, sha: $sha}}' > "$TMP" || fb_die 1 "cannot build the patch"
 
 bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$TMP" || fb_die 1 "cannot write the manager note on #$N"

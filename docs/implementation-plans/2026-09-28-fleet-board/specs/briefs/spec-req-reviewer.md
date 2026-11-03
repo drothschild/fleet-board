@@ -228,3 +228,42 @@ words `no testable check` the follow-up card is filed in Backlog for a person to
 `out of scope entry needs a backticked check command or the words no testable check: <entry>`.
 The shape lines, the entry rule, the rejection-message list and every example Out of scope
 entry say so; examples always carry a check command.
+
+## Revision 12 requirements (2026-11-01, Acceptance items no test can map to)
+
+An `## Acceptance map` line may also be ``- <item> -> CHECKED: `<command>` `` or
+`- <item> -> NOT_APPLICABLE: <reason>`. `parse-report.sh` accepts both and rejects a `CHECKED`
+with no single backticked command and a `NOT_APPLICABLE` with no reason, using the existing
+`malformed ## Acceptance map line: <line>` message. The shape lines and the split rule say so.
+
+A pre-existing test changed since the previous review is classified Restored (no finding),
+Adapted (`[Minor]`: every assertion intact and reached, only name or setup changed, passes,
+required by a named Acceptance item, latest report is the implementor's) or Weakened
+(`[Critical]`, everything else, and anything uncertain). A Weakened finding gives the previous
+review SHA. A fixer may restore a test that such a finding names to its content at that SHA,
+and may not otherwise edit an existing test.
+
+## Revision 12 second pass (2026-11-01, from the adversarial review)
+
+`Restored` needs a fixer's Resolutions line naming the test and a SHA, and the whole test at HEAD
+identical to that SHA. A weakened-test finding marked `fixed` is compared with that SHA even if
+the diff since the previous review does not touch the test; a mismatch is `[Critical]` and gives
+the same SHA. `Adapted` also needs a killed mutant when `review.mutation` is true, kept out of
+the `## Mutation` counts. `NOT_APPLICABLE` is only for a condition about the change itself, never
+for behavior under a condition. A `CHECKED` command may be a diff the reviewer reads, and may hold
+` -> `. The report template lists all four Acceptance map forms.
+
+## Revision 12 third pass (2026-11-02, from the second adversarial review)
+
+The reviewer receives the previous findings, and `Restored` and the check that a weakened test was
+restored use only those: never a SHA from a role's report, and whatever the report marked. A test
+already named as weakened keeps that finding's SHA. A restored test that fails is `[Important]`
+against the implementation and keeps the SHA. A `CHECKED` repository condition is decided against
+the whole PR, and a finding that an existing test was weakened gives the merge-base SHA.
+
+## Revision 12 fourth pass (2026-11-02, from the third adversarial review)
+
+A `CHECKED` finding that an existing test was weakened contains the file path, says "weakened" and
+gives one SHA per test, in the same order as step 7: a previous finding's SHA, then the reference
+SHA when the test changed since it, then the merge-base. The reviewer reads the base branch with
+`gh pr view`. The statements of what the reviewer judges from name the previous findings.
