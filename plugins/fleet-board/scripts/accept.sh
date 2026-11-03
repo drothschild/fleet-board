@@ -9,6 +9,9 @@
 # approved:
 #   action_failures    -> 0, last_action_error -> null
 #   last_review.sha    -> the PR's current head (the reviewed-sha baseline)
+#   last_review.round  -> one below the note's round, so the plan reviews again
+#   last_review.findings, .critical, .important -> cleared: the review from the
+#                         new baseline raises again whatever is still wrong
 #   accepted           -> {"login": <authenticated gh login>, "at": <UTC>, "sha": <head>}
 # tick-plan.sh honors an accepted entry only when its login is the
 # authenticated one (the note itself is only trusted from that login).
@@ -57,6 +60,12 @@ PR="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     on { print }' | jq -r '.pr // empty' 2>/dev/null)"
 fb_valid_number "$PR" || fb_die 1 "the manager note on #$N names no PR; nothing accepted"
 
+ROUND="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
+    $0 == "```json" && !found { found = 1; on = 1; next }
+    on && $0 == "```" { exit }
+    on { print }' | jq -r '.round // 0' 2>/dev/null)"
+fb_valid_number "$ROUND" || ROUND=0
+
 OUT="$(gh pr view "$PR" --repo "$FLEET_REPO" --json headRefOid)" || fb_die 1 "cannot read the PR head of #$PR; nothing accepted"
 HEAD_SHA="$(jq -r '.headRefOid // empty' <<<"$OUT" 2>/dev/null)"
 case "$HEAD_SHA" in
@@ -64,8 +73,9 @@ case "$HEAD_SHA" in
 esac
 
 TMP="$(mktemp)" || fb_die 1 "cannot create a temp file"
-jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{action_failures: 0, last_action_error: null, last_review: {sha: $sha},
+jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson round "$ROUND" \
+  '{action_failures: 0, last_action_error: null,
+    last_review: {round: ([$round - 1, 0] | max), sha: $sha, critical: 0, important: 0, findings: []},
     accepted: {login: $me, at: $at, sha: $sha}}' > "$TMP" || fb_die 1 "cannot build the patch"
 
 bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$TMP" || fb_die 1 "cannot write the manager note on #$N"
