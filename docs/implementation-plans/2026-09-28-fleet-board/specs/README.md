@@ -1760,3 +1760,26 @@ Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.jso
 **Second pass cost:** $0.2439. **Revision cost, both passes:** $0.5272. **Running total, all API-key charges:** ~$39.35.
 
 **Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.
+
+### Revision 14 (2026-11-03, card #100): single backticks for the Out of scope check command
+
+**Cause.** A role that wrote a markdown double-backtick span to hold a command containing a backtick had its report rejected with "out of scope entry needs a backticked check command or the words no testable check", which reads as if no command were present. `parse-report.sh` pairs single backticks only, so a double-backtick span or an odd number of backticks gives no command. The guidance said only "backticked".
+
+**Spec and brief changes** (hand edits to the text): `specs/{implementor,reviewer,fixer,reporting}.md` now say the check command is written in single backticks with no backtick inside it, and the words `no testable check` are used when it cannot be written that way. A "Revision 14 requirements" section was added to `briefs/spec-req-{implementor,reviewer,fixer,reporting}.md`.
+
+**Runs.** Four isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, `< /dev/null`, Claude Code 2.1.317. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `f5b8ffd2fe593016`) and the edited spec as `spec-<name>.md`. The repo owner approved the spend on the card. The `manager.md` file was not re-run: its rejection table text is unchanged and the card names four files.
+
+| Output | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|
+| `agents/implementor.md` | PASS | PASS (3 reads, 4 edits) | 8 | 0.1847 | `57c4c13bdee48fda` | `913b1f6ad549f65b` |
+| `agents/reviewer.md` | PASS | PASS (3 reads, 3 edits) | 7 | 0.1856 | `f651a8a96074c365` | `f549da78e4813abf` |
+| `agents/fixer.md` | PASS | PASS (3 reads, 1 edit) | 5 | 0.1307 | `b5035f0e48a270f1` | `ab7b0d220bc9b92f` |
+| `skills/reporting/SKILL.md` | PASS | PASS (3 reads, 2 edits) | 6 | 0.1727 | `bbcc25fe440ad71f` | `aa83f0da1e35a233` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-{implementor,reviewer,fixer,reporting}.r14.init.json` (sha256 `697ee0ea12e52e02`, identical), with no key and no local path.
+
+**Path audit.** Every run read the two inputs and its target, and edited only its target; no file outside the staging dir and the target was read or edited.
+
+**Minimality check.** `git diff -U0` over `agents` and `skills` was read: every hunk is the Out of scope entry rule, the rejection-message explanation, the pitfall line or the table row. Frontmatter unchanged. **Kept.**
+
+**Revision cost:** $0.6737. The plugin version is bumped to 0.7.1.
