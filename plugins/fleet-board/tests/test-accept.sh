@@ -158,7 +158,7 @@ assert_eq "accept: failure count reset to 0 and error cleared" \
 assert_eq "accept: reviewed-sha baseline moved to the PR head" \
   "$(jq -c '.last_review.sha' "$PATCH_COPY" 2>/dev/null)" '"def5678abc"'
 assert_eq "accept: clears the old findings and leaves the round unreviewed" \
-  "$(jq -c '.last_review | [.round, .critical, .important, .findings]' "$PATCH_COPY" 2>/dev/null)" '[1,0,0,[]]'
+  "$(jq -c '.last_review | [.round, .critical, .important, .findings]' "$PATCH_COPY" 2>/dev/null)" '[0,0,0,[]]'
 assert_eq "accept: records who accepted (authenticated login) and the sha" \
   "$(jq -c '[.accepted.login, .accepted.sha]' "$PATCH_COPY" 2>/dev/null)" '["fleet-bot","def5678abc"]'
 assert_eq "accept: records when (UTC timestamp)" \
@@ -292,6 +292,15 @@ assert_eq "tick-plan: the reason names the unhonored accept" \
 ACCEPTED='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":2,"action_failures":0,"last_review":{"round":1,"sha":"def5678abc","critical":0,"important":0,"findings":[]},"accepted":{"login":"fleet-bot","at":"2026-10-30T10:00:00Z","sha":"def5678abc"}}'
 tick_case "$ACCEPTED" def5678abc
 assert_eq "tick-plan: a note accept.sh wrote gets a fresh review, not a fix" "$(jqc '.cards[0].action')" '"review"'
+
+# Accept from round 3, back to In Progress: start_review resets the note's round
+# to 1, and its reviewer may fail. The plan must not read that as a clean review.
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 3 | .blocked_from = "in_progress"' <<<"$NOTE")"
+run_accept 12
+AFTER_RESET="$(jq -c '{state: "in_review", branch: "fleet/12-add-subtract", pr: 34, round: 1, last_review, accepted, action_failures}' "$PATCH_COPY" 2>/dev/null)"
+tick_case "$AFTER_RESET" def5678abc
+assert_eq "tick-plan: a failed review after an accept from a later round is reviewed again" "$(jqc '.cards[0].action')" '"review"'
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
