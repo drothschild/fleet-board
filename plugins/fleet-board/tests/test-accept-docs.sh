@@ -25,6 +25,8 @@ doc_has "config.md says the failure count is reset" "action_failures"
 doc_has "config.md says the reviewed-sha baseline moves" "last_review.sha"
 doc_has "config.md says who accepted is recorded" "accepted"
 doc_has "config.md says only the authenticated login counts" "authenticated"
+doc_has "config.md says a never-reviewed card goes to in_progress" "round 0"
+doc_has "config.md says a CHECKED item is not forgiven" "\`CHECKED\`"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
