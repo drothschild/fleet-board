@@ -89,6 +89,35 @@ else
   fail "specs/README.md says to update the manifest when recording a revision"
 fi
 
+# 6. with sha256sum hidden from PATH, the shasum -a 256 fallback is used and passes
+R="$(fresh_copy nosha)"
+BIN="$TMP/nosha-bin"
+mkdir -p "$BIN"
+for d in /usr/bin /bin; do
+  for t in "$d"/*; do
+    n="$(basename "$t")"
+    [ "$n" = "sha256sum" ] && continue
+    [ -e "$BIN/$n" ] || ln -s "$t" "$BIN/$n" 2>/dev/null
+  done
+done
+REAL_SHASUM="$(command -v shasum 2>/dev/null)"
+rm -f "$BIN/shasum"
+if [ -n "$REAL_SHASUM" ]; then
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >>"%s/shasum.log"\nexec "%s" "$@"\n' "$TMP" "$REAL_SHASUM" >"$BIN/shasum"
+  chmod +x "$BIN/shasum"
+  OUT="$(PATH="$BIN" /bin/bash "$R/plugins/fleet-board/tests/test-clean-room.sh" 2>&1)"
+  RC=$?
+  if ! PATH="$BIN" command -v sha256sum >/dev/null 2>&1 \
+     && [ "$RC" -eq 0 ] && grep -q -- '-a 256' "$TMP/shasum.log" 2>/dev/null \
+     && printf '%s' "$OUT" | grep -q 'hash matches manifest'; then
+    pass "manifest check falls back to shasum -a 256 when sha256sum is absent"
+  else
+    fail "manifest check falls back to shasum -a 256 when sha256sum is absent" "rc=$RC"
+  fi
+else
+  pass "manifest check shasum fallback: skipped, no shasum on this machine"
+fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
