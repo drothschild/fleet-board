@@ -170,6 +170,28 @@ run_accept 12
 assert_eq "accept: in round 1 the unreviewed round is 0" \
   "$(jq -c '.last_review.round' "$PATCH_COPY" 2>/dev/null)" '0'
 
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '. + {blocked_findings: [{severity: "Critical", text: "old"}], blocking_pr: 77}' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: clears what the block left behind" \
+  "$(jq -c '[.blocked_findings, .blocking_pr, .blocked_from]' "$PATCH_COPY" 2>/dev/null)" '[[],null,null]'
+
+echo "accept.sh: a card never reviewed goes where the plan starts a review"
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review) | del(.blocked_from)' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0 with no blocked_from: moved to in_progress" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_progress"
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review)' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0 blocked from in_review: moved to in_progress" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_progress"
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review) | .blocked_from = "ready"' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0 blocked from ready: stays ready" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 ready"
+
 echo "accept.sh: the card is moved out of Blocked after the note is written"
 setup_case "$BLOCKED"
 set_note_json "$NOTE"
