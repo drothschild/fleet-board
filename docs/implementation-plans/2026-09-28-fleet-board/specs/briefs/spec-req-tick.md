@@ -49,6 +49,8 @@ Clarifications (the spec must carry each):
 - "Verbatim" means the manager's final message exactly as returned, with nothing added after it. When the manager's reply has no `dispatchable:` line, the skill prints it as returned and says the tick produced no stop signal; it never adds, invents or changes a `dispatchable:` line.
 - A plain request to process or work the board is one tick: the skill runs one tick and stops; it never loops (looping is the `run` skill).
 
+- **Revision 15 (card 152): a manager that runs in the background.** Some runtimes (the Claude desktop app) have an Agent tool with no `run_in_background` parameter, so the flag is ignored and the manager always runs in the background. The spec must say what the skill does then: it still passes `run_in_background: false`, but when the Agent call returns only a launch acknowledgement, it ends its turn and waits for the manager's completion notice, then prints the manager's final message verbatim. It does not poll, re-dispatch or do the manager's work, and it never prints the acknowledgement as the tick report. The report and its last-line stop signal are unchanged.
+
 ## Acceptance criteria
 
 - **fleet-board.AC6.1 Success:** Each role runs on the model named in config; none inherits the session model. *(The tick skill's part: the manager itself is dispatched with `models.manager`.)*
