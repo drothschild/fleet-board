@@ -571,10 +571,10 @@ scenario_fix_block() {
 
 # seed_merge PATCH: a non-draft PR with a clean current review, merged by the
 # HARNESS from its own shell (as the human would), outside any claude session.
-# Merges stay human: Claude Code's auto-mode classifier blocks an unattended
+# Merges are not exercised: Claude Code's auto-mode classifier blocks an unattended
 # "gh pr merge" in a headless session ("Merge Without Review"), so the manager's
 # merge action is not exercised here; the ticks cover the post-merge path
-# (verify_main, finish). The committed config (merge.policy: human) is used.
+# (verify_main, finish). The committed config (merge.policy: auto) is used.
 seed_merge() {
   seed_pr "$BL_FIX/card-multiply.md" "$1" 0; A="$CARD"
   seed_note "$A" 1 0 '[]'
