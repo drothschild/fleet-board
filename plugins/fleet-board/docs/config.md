@@ -10,7 +10,7 @@ When `models.implementor` and `models.reviewer` are the same, every tick warns t
 
 ## `merge.policy`
 
-Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the manager merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA. `auto` is not supported headless: Claude Code's safety classifier blocks unattended merges ("Merge Without Review"). Merges stay human by default. `auto` works only where merges are explicitly allowed in the user's own Claude Code settings.
+Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the manager merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA. Headless runs merge too: `scripts/merge-reviewed.sh` runs after each tick, outside any Claude session, and merges the same PRs (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
 
 ## `after_merge.allow` and the `## After merge` section
 

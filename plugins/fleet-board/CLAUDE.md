@@ -68,8 +68,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
 
 ## Invariants
 
-- Merges stay human in headless runs; the wrapper never adds permission rules or
-  `--dangerously-skip-permissions`. Worktree removal runs in `cleanup-done.sh`, outside any
+- Headless merges happen only in `scripts/merge-reviewed.sh`, a plain shell step outside any
+  Claude session that the wrapper runs after `settle.sh`. It merges only under
+  `merge.policy: auto`, for a clean-reviewed, non-draft, green PR whose card is in_review
+  and needs no Human QA (it asks `tick-plan.sh --settle-merge`); under `human` it makes no
+  call. The wrapper never adds permission rules or `--dangerously-skip-permissions`, and no
+  tick merges headless. `FLEET_BOARD_MERGE_REVIEWED` overrides the script. Worktree removal runs in `cleanup-done.sh`, outside any
   Claude session. It reads a done card's note only when the worktrees base holds a
   `<n>-*` entry (a local prefilter), so its cost scales with the local dirs, not the Done
   column; keep any new per-card network call behind that prefilter.
