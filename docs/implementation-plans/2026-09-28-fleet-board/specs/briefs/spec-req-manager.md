@@ -817,3 +817,18 @@ The manager states one round 1 reference SHA in both places: the reviewer's inpu
 review` (the merge-base), even when an earlier review exists, because `unblock`, `start` and
 `start_review` reset the round to 1. In round 2 and later it is `note.last_review.sha`. No line
 says round 1 uses `base` only when there is no previous review.
+
+## Revision 19 requirements (2026-11-06, PR #174: manager wording after the merge with Revision 18; these win over anything above)
+
+The spec text for every item below is in `specs/manager.md`; write each one into the file where the spec puts it (the spec's 0.16 is the file's 0.18). Nothing else in the file changes, and the frontmatter is unchanged.
+
+1. **`start_review` row.** The row opens with the route rule: the route runs first; a route failure stops the action with no move and no note write, and the next tick retries; the route's stdout (the JSON list of stage names whose label the card now carries) goes in the card's tick report line. Then the chain, unbroken: `` `review-stages.sh route N <pr>` → `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` | `` — the row ends exactly with that last clause and the closing `|`. The row never names `last_review`.
+2. **Stage agent `prev_sha`.** The stage agent inputs bullet becomes: `prev_sha`: `note.last_review.sha`, the head the previous round reviewed (In Review's review for a stage's round 1). A stage review always follows an In Review review, so there is always one. No line in the file says "no previous review".
+3. **Routing is re-evaluated.** In 2.7, the clause saying nothing re-routes a card already in In Review (and that routing after the move would fail open) is replaced by: routing is re-evaluated after that: on every clean, current review the planner re-matches every stage's `paths` against the PR's current files (`review-stages.sh match`), so a later commit that touches a routed path sends the card to that stage; a person can skip only a label-only stage, by removing its label.
+4. **Provider round.** In the provider stages rule, a bullet after the `<sha>` bullet: `<round>` is `note.round`, as for the agent stage.
+5. **Exit 6 entry.** The `report_errors` entry's `errors` holds the script's stderr `parse-report:` lines (not "the printed rejection lines").
+6. **Exit 2 bound.** After "it is not a report error": when the cause is the plan card's stage (an unknown stage or an agent stage in the plan card's `stage`) and not the manager's own argv, it is a failed script call instead: the action made no progress and is counted (2.C.4) with `last_action_error` = the script's last stderr line. Never change the stage name and never re-run the script in the same tick.
+7. **0.3 scope.** The `stage.agent` allowance covers `review_stage`, the re-review after `fix` on a card whose plan card has a `stage`, and the dispatch that follows `advance_stage`.
+8. **5.4 cost line.** Add: provider spend that `stage-review.sh` reports on exit 6, and on exit 1 after a reply, is in the ledger and counted by the headless wrapper, not in this line.
+
+Unchanged: the exit 3 handling stays (the plan waits while the key variable is unset, but the variable can vanish between plan and run).
