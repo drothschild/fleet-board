@@ -651,6 +651,19 @@ for k in timeout max_output_tokens max_diff_bytes; do
 done
 invalid_field_case "provider base_url http" "providers: { corp: { base_url: \"http://llm.corp.example/v1\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must start with https:// or a loopback http:// address"
 invalid_field_case "provider base_url lookalike" "providers: { corp: { base_url: \"http://localhost.evil.example/v1\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must start with https:// or a loopback http:// address"
+# userinfo in the authority sends the request (and the key) to the host after '@'
+for u in 'http://localhost:@evil.example/v1' 'http://127.0.0.1:1@evil.example/v1' 'http://[::1]:x@evil.example/v1' 'http://localhost:123@example.com/v1' 'https://user@x.example/v1'; do
+  invalid_field_case "provider base_url userinfo $u" "providers: { corp: { base_url: \"$u\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must not contain userinfo"
+done
+invalid_field_case "provider base_url loopback bad port" "providers: { corp: { base_url: \"http://localhost:abc/v1\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must start with https:// or a loopback http:// address"
+for u in 'http://localhost:11434/v1' 'http://[::1]:8080/' 'http://127.0.0.1/v1' 'http://localhost' 'https://x.example/v1?a=b@c'; do
+  REPO="$(printf 'board:\n  repo: a/b\nproviders: { corp: { base_url: "%s", api_key_env: null } }\n%s\n' "$u" "$CORP_STAGE" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+  case "$u" in
+    https://*) assert_stderr_not_contains "provider base_url $u: '@' after the authority is not userinfo" "userinfo" ;;
+    *) assert_exit "provider base_url $u: loopback accepted" 0 ;;
+  esac
+done
 invalid_field_case "provider api_key_env bad" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: sk_lower } }"$'\n'"$CORP_STAGE" "providers.corp.api_key_env must match ^[A-Z_][A-Z0-9_]*\$"
 invalid_field_case "provider api_key_env null remote" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: null } }"$'\n'"$CORP_STAGE" "providers.corp.api_key_env may be null only for a loopback base_url"
 invalid_field_case "provider max_tokens_param" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: K, max_tokens_param: limit } }"$'\n'"$CORP_STAGE" "providers.corp.max_tokens_param must be max_tokens or max_completion_tokens"

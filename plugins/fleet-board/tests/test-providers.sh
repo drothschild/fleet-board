@@ -178,6 +178,27 @@ assert_exit "loopback_without_key: exit 0" 0
 assert_lacks "loopback_without_key: no Authorization header" "$(curl_log)" "Authorization"
 assert_eq "loopback_without_key: no header file" "$(curl_log | grep -c "^ARG @.*/auth$")" "0"
 
+# base_url backstop: userinfo and non-loopback http never reach curl
+for u in 'http://localhost:@evil.example/v1' 'http://127.0.0.1:1@evil.example/v1' 'http://[::1]:x@evil.example/v1' 'http://localhost:123@example.com/v1' 'https://user@api.example.test/v1'; do
+  setup "200 ok.json"
+  chat --base-url "$u" --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env TEST_KEY
+  assert_exit "base_url_userinfo $u: exit 2" 2
+  assert_eq "base_url_userinfo $u: stderr" "$LAST_ERR" "provider: base_url must not contain userinfo"
+  assert_eq "base_url_userinfo $u: no curl call" "$(calls)" "0"
+done
+for u in 'http://llm.example.test/v1' 'http://localhost.evil.example/v1' 'http://localhost:abc/v1'; do
+  setup "200 ok.json"
+  chat --base-url "$u" --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env TEST_KEY
+  assert_exit "base_url_not_loopback $u: exit 2" 2
+  assert_eq "base_url_not_loopback $u: stderr" "$LAST_ERR" "provider: base_url must start with https:// or a loopback http:// address"
+  assert_eq "base_url_not_loopback $u: no curl call" "$(calls)" "0"
+done
+for u in 'http://localhost:11434/v1' 'http://[::1]:8080/' 'http://127.0.0.1/v1'; do
+  setup "200 ok.json"
+  chat --base-url "$u" --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env -
+  assert_exit "base_url_loopback $u: accepted" 0
+done
+
 # max_tokens_param_used
 setup "200 ok.json"
 chat "${BASE[@]}" --key-env TEST_KEY
