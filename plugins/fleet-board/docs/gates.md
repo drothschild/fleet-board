@@ -52,7 +52,8 @@ The gate reads command text before it runs. A string check cannot see:
 - `gh ... -R owner/board` or `GH_REPO=owner/board` from a directory without a config, which is inert by design;
 - `parallel board-move.sh ::: 14 ::: done`;
 - `cd -P link/..`, which the hook resolves logically and the shell physically;
-- raw writes into `board.dir` on a `local` board (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered.
+- raw writes into `board.dir` on a `local` board (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered;
+- with the board page running, `curl` against the page's API (`curl -X POST -H 'X-Fleet-Board: 1' http://127.0.0.1:<port>/api/cards/<n>/move`), which can move a card out of Human QA: the gate classifies `curl` only against the GitHub API. This is a residual, not covered.
 
 It also blocks some harmless commands, because it prefers a block to a miss:
 

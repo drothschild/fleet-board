@@ -80,20 +80,28 @@ Same verbs as the other backends. Each script sources `board-lib.sh` and uses `j
 | `list <state>` | Reads every `cards/*.json`, keeps those whose `state` equals the argument, sorts by number, prints `[{number,title,url}]`. No truncation rule, since nothing is paginated. Exit 1 naming the file when any card file is unparsable (fail closed: a short column drops cards). `--allow-truncated` is accepted and ignored. |
 | `move <n> <state>` | Takes `fb_lock n`, applies the Ready rule (`fb_has_acceptance` on the body, exit 1 otherwise), rewrites `state` and `updated_at`. Exit 0 without a write when the card is already there. |
 | `create <title> <body-file> [--label L]...` | Takes a lock on `next` (same `mkdir` lock pattern as `fb_lock`), allocates the number, writes the card with `state` = `FB_CREATE_STATE` (default `backlog`), prints `{number, url}`. |
-| `comment <n> <body-file>` | Under `fb_lock n`, appends `{id: next_comment_id, author: fb_login, body, created_at}`. |
-| `note <n> <body-file>` | Under `fb_lock n`, replaces the body of the last marker comment by this author, or appends one; then removes `active/<n>` (see Active cards). |
+| `comment <n> <body-file>` | Under `fb_lock n`, appends `{id: next_comment_id, author: fb_login, body, created_at}`; then removes `active/<n>` (see Active cards). |
+| `note <n> <body-file>` | Under `fb_lock n`, replaces the body of the last marker comment by this author, or appends one. |
 | `cache-clear` | No-op, exit 0. |
 
-A local-only helper, not part of the contract, used by the web server:
+Local-only helpers, not part of the contract:
 
-- `edit <n> <title-file> <body-file> <labels-json>`: under `fb_lock n`, re-reads the card
-  and rewrites only `title`, `body`, `labels` and `updated_at`, never `comments` or
-  `state`, so an agent's comment landing at the same moment is never lost.
+- `edit <n> <title-file> <body-file> <labels-json>` (the web server): under `fb_lock n`,
+  re-reads the card and rewrites only `title`, `body`, `labels` and `updated_at`, never
+  `comments` or `state`, so an agent's comment landing at the same moment is never lost.
+- `label <n> add|remove <label>` (`review-stages.sh route`): under `fb_lock n`, re-reads
+  the card and adds or removes one label, rewriting only `labels` and `updated_at`.
+- `fl_find_title <title> open|closed [days]` in `local-lib.sh` (the follow-up and P0
+  de-duplication): the card whose title equals `<title>` case-insensitively, lowest number
+  first. `open` is any state but `done` and `wont_do`; `closed` is `done` or `wont_do`
+  with `updated_at` (else `created_at`) within `days` (default 30). An unparsable card file
+  fails the search (exit 1).
 
 ### Identity
 
-`fb_login` on the `local` backend prints `FLEET_BOARD_USER`, else `$USER`, with no `gh`
-call. The note trust boundary becomes filesystem access: anyone who can write the store
+`fb_login` on the `local` backend prints `FLEET_BOARD_USER`, else `$USER`, else
+`id -un`, with no `gh` call, and exits 1 when all three are empty (the server's
+`local_user()` follows the same order with `getpass.getuser()` and raises when empty). The note trust boundary becomes filesystem access: anyone who can write the store
 can write anything, and the field validation in `note.sh get` still applies to every field
 it checks today. `accept.sh` records that same identity, and `tick-plan.sh` compares
 against it, so `accepted` works without `gh api user`.
@@ -114,7 +122,17 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 - A provider-backed stage gets no `worktree.sh` call: the manager runs `stage-review.sh`
   instead. So `stage-review.sh` writes the same marker when it starts and removes it on
   exit (an `EXIT` trap), on the `local` backend only.
-- The local `note` verb removes `active/<n>`.
+- The local `comment` verb removes `active/<n>`. Every role ends by posting its report with
+  `board-comment.sh`, and the manager posts no comment between `worktree.sh` and the
+  dispatch. The `note` verb leaves the marker alone: on `start` the manager writes the note
+  after `worktree.sh create` and before the dispatch, so a note that cleared the marker
+  would leave the implementor's whole first run unlit. A provider stage's report is posted
+  the same way and its `EXIT` trap removes the marker on every other exit.
+- `fleet-board-run.sh` removes every `<board.dir>/active/*` marker after each tick's
+  session exits, whatever the outcome (local backend only; a failure is a warning), so a
+  role that crashed without a report does not stay lit into the next tick.
+- A comment a person posts from the page also clears the card's marker; the next role
+  dispatch lights it again.
 - The page shows a card as active only while its marker exists **and** a run is alive. A
   marker left behind by a killed tick stops counting the moment the run is gone. The
   server also deletes every marker when it observes the run go from alive to gone.
@@ -125,8 +143,9 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 
 `scripts/board-web.sh [--repo DIR] [--port N]`:
 
-1. `cd` to the repo root (as `fleet-board-run.sh` does), run `config.sh --check`, exit with
-   its code on failure.
+1. `cd` to the repo root, the directory holding the git common dir (as `board-lib.sh`
+   resolves `FLEET_ROOT`, so from a linked worktree the page shows the store the scripts
+   write), run `config.sh --check`, exit with its code on failure.
 2. Refuse (exit 2) when `board.backend` is not `local`.
 3. Refuse (exit 1) when `python3` is not on `PATH`, naming it.
 4. `exec python3 "$HERE/board-web.py" --root <root> --port <port> --scripts "$HERE"`.
@@ -144,9 +163,12 @@ on `board.port` (default 8765; `--port` overrides). Static files are served from
 `scripts/board-web/static/` (`index.html`, `board.css`, `board.js`). The server never
 imports anything outside the standard library and never fetches anything from the network.
 
-Mutating requests (`POST`, `PATCH`) must carry the header `X-Fleet-Board: 1` and an
-`Origin` equal to the server's own origin (or no `Origin`, for curl); otherwise 403. This
-stops a page in another tab from driving the board.
+Every request must carry `Host: 127.0.0.1:<port>` or `Host: localhost:<port>` (the bound
+port); any other Host is 403, reads included, so a page on a name that resolves to
+127.0.0.1 (DNS rebinding) cannot read the board. Mutating requests (`POST`, `PATCH`) must
+also carry the header `X-Fleet-Board: 1` and an `Origin` equal to the server's own origin
+(or no `Origin`, for curl); otherwise 403. This stops a page in another tab from driving
+the board.
 
 ### API
 
@@ -157,7 +179,7 @@ Reads go straight to the store files. Writes run the same script an agent would,
 |---|---|---|
 | `GET /api/board` | `{states: [{key, name}], cards: [{number, title, state, labels, note: {round, pr, models, stage, action_failures}, active, updated_at}], run: <run status>}` | files; state order and names from `config.sh` + `fb_state_name` (one subprocess, cached until the config file's mtime changes) |
 | `GET /api/cards/<n>` | the full card: body, comments, the manager note body, `url` of the PR when the note has `pr` | file |
-| `POST /api/cards` `{title, body, labels, state?}` | create; `state` defaults to backlog | `board-create.sh`, then `board-move.sh` when `state` is given |
+| `POST /api/cards` `{title, body, labels, state?}` | create; `state` defaults to backlog. Always created in backlog and then moved, so `state: ready` obeys the Acceptance rule; a refused move is `409` naming the created card | `board-create.sh`, then `board-move.sh` when `state` is not backlog |
 | `PATCH /api/cards/<n>` `{title?, body?, labels?}` | edit | `adapters/local/edit.sh` |
 | `POST /api/cards/<n>/move` `{state}` | move | `board-move.sh` |
 | `POST /api/cards/<n>/comments` `{body}` | comment as the page's user | `board-comment.sh` |
@@ -179,7 +201,15 @@ the parent, as for the wrapper): `run.pid`, `run.out` (the wrapper's stdout and 
 and `run.log` (the path the wrapper printed as its log, parsed from the first lines of
 `run.out`).
 
-- **Start** refuses (409) when a run is alive. Otherwise it removes a leftover
+- **Run lock.** `fleet-board-run.sh` holds `<LOG_DIR>/<owner>-<name>.lock` (`LOG_DIR` =
+  `$FLEET_BOARD_LOG_DIR`, else `$HOME/.fleet-board/runs`) for its whole life, holding the
+  same two lines as `run.pid` (the pid, then `ps -o lstart=` under `LC_ALL=C TZ=UTC`). It
+  refuses to start (exit 1, `another run holds <lock> (pid N)`) while the lock names a live
+  pid with that start time, and removes the lock in its `EXIT` trap. The server computes the
+  same path and treats a live lock as an alive run, so a wrapper started from a terminal or
+  launchd is seen: Start is refused, Stop works, status shows its pid.
+- **Start** refuses (409, naming the pid) when a run is alive (its own `run.pid` or the run
+  lock). Otherwise it removes a leftover
   `.fleet-board.stop`, clears `active/`, and spawns
   `bash <scripts>/fleet-board-run.sh --repo <root>` with `start_new_session=True`,
   stdin from `/dev/null`, stdout and stderr to `run.out`, and writes `run.pid`. The run
@@ -192,6 +222,11 @@ and `run.log` (the path the wrapper printed as its log, parsed from the first li
   file), `stopping` (alive, stop file present), `stopped` (dead; the reason, tick count,
   hours and cost come from the wrapper's final `fleet-board-run: stopped: ...` line in
   `run.out`). The current tick number comes from the last `tick <n>` line of the run log.
+  A run alive only through the run lock reports the lock's pid and nothing from `run.out`,
+  which describes an older run. When a stopped run's `run.out` has no `stopped:` line (the
+  wrapper exited at once, for example a config error or the run lock), status carries
+  `out_tail`, the first and last lines of `run.out` (at most 20), which the page shows in
+  the pill's title and the log panel.
   A restarted server reattaches by reading the pid file.
 
 ### Plan import
@@ -287,14 +322,20 @@ calls, never `innerHTML` from card text, so a hostile card body cannot script th
 | `scripts/board-lib.sh` | `fb_default_name` for `local`: the Projects human names, and `Review: <stage>`; `fb_login` local identity |
 | `scripts/init.sh` | `--backend local`: write config, create `board.dir` and `cards/`, write `next`, add `<board.dir>/` to `.gitignore` when not already ignored, skip label creation, keep the `gh` scope check (PRs) |
 | `scripts/review-stages.sh setup` | `local`: nothing to create, exit 0 |
+| `scripts/review-stages.sh route` | `local`: adds a stage label to the card file with `adapters/local/label.sh`, never `gh issue edit` |
+| `scripts/file-followups.sh` | `local`: open and recently closed duplicates found with `fl_find_title`; the "Also seen" and Backlog comments posted with `board-comment.sh`; PR comments stay on GitHub |
+| `scripts/verify-main.sh` | `local`: the open P0 card found with `fl_find_title`, so a red main reuses its P0 card |
+| `scripts/lint.sh` | `local`: a `#n` or `board.repo#n` dependency resolves to `cards/<n>.json` (missing file = unresolved); other repos through `gh` as now |
+| `scripts/fleet-board-run.sh` | the run lock (all backends); on `local`, clears `active/*` after each tick's session |
 | `scripts/deps.sh` | `#n` on `local` reads `cards/<n>.json` (state `done` means met; a missing file is a failed lookup); `owner/repo#n` through `gh` as now |
 | `scripts/import-plan.sh` | the `local` case above |
 | `scripts/worktree.sh` | the active marker on `create` and `review` |
 | `scripts/stage-review.sh` | the active marker for the run's duration (provider stages) |
+| `scripts/adapters/local/comment.sh` | clears the active marker (not `note.sh`) |
 | `hooks/gate.sh` | add `local` to the policy/backend case at line 761; the Projects item lookups (873, 965) return as for `github-labels` |
 | `skills/import-plan/SKILL.md` | `--preview` |
 | `skills/init/SKILL.md` | offer Local as a third backend |
-| `README.md`, `docs/config.md`, `docs/overnight.md`, `docs/gates.md` | the config rows, a "Local board" section (install, launch, Start/Stop, import), the gate residual |
+| `README.md`, `docs/config.md`, `docs/overnight.md`, `docs/gates.md` | the config rows, a "Local board" section (install, launch, Start/Stop, import), the run lock, the gate residuals (raw writes into `board.dir`; `curl` against the page's API) |
 | `plugins/fleet-board/CLAUDE.md` | backends line; the active-marker contract |
 | `docs/design.md` | one tradeoff section: a local store gives up the card-as-durable-shared-state property for freedom from rate limits |
 | `.claude-plugin/plugin.json`, `marketplace.json` | 0.13.0 |
@@ -306,7 +347,9 @@ not touched.
 
 - **Gate.** Raw writes into `board.dir` (`jq ... > .fleet-board/cards/3.json`, `mv`,
   `sed -i`) bypass the gate, which is a text check on board commands. Listed in
-  `docs/gates.md` as a residual, not claimed as covered.
+  `docs/gates.md` as a residual, not claimed as covered. So is `curl` against the page's
+  API while the page runs (for example `POST /api/cards/<n>/move` out of Human QA): the
+  gate classifies `curl` only against the GitHub API.
 - **Role prompts.** The clean-room role prompts give `gh issue view <n> --json body` as the
   example command for re-reading a card. On a local board that reads an unrelated GitHub
   issue with the same number in `board.repo`. The manager passes the card body inline, so
@@ -320,8 +363,9 @@ not touched.
 - Adapter: unparsable card file fails `read` (exit 1) and the whole `list` (exit 1,
   naming the file); a missing store exits 1 saying to run `/fleet-board:init`; lock
   timeouts as today (`FLEET_BOARD_LOCK_WAIT`).
-- Server: port in use is reported by `board-web.sh` with the port number (exit 1); a
-  wrapper that exits at once shows `stopped` with its first stderr lines; a pid file whose
+- Server: port in use is one line, `board-web: port N is in use` (exit 1, no traceback);
+  `board-web.sh --port` outside 1024-65535 is a usage error (exit 2); a wrapper that exits
+  at once shows `stopped` with its output (`out_tail`); a pid file whose
   process is gone is `stopped` or `idle` as above; a failed import shows its error and
   creates nothing; a request body that is not JSON or lacks a required field is 400.
 - Concurrency: the page's edit helper and the agents' comment and note writes all take the
@@ -334,8 +378,8 @@ is trusted (break the script, watch the assertion fail, restore it):
 
 - `test-board-local.sh`: the six verbs and `edit` against a temp repo; the Ready refusal;
   atomic write (a reader during a write sees old or new, never partial); eight concurrent
-  `comment` calls lose nothing; `note` replaces rather than appends; `note` clears the
-  active marker; `list` fails closed on a corrupt file; `fb_login` with and without
+  `comment` calls lose nothing; `note` replaces rather than appends; `comment` clears the
+  active marker and `note` leaves it; `list` fails closed on a corrupt file; `fb_login` with and without
   `FLEET_BOARD_USER`.
 - `test-config.sh`, `test-init.sh`, `test-gate.sh`, `test-deps.sh`, `test-import-plan.sh`,
   `test-review-stages.sh`, `test-worktree.sh`, `test-stage-review.sh`: new `local` cases.

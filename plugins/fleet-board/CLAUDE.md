@@ -33,12 +33,15 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (`FB_STATES_FIXED` is the list without stages); board names come from `board.states.*` or
   the backend default (`fleet:review_<name>` labels, `Review: <name>` columns). A new backend implements the same verbs.
 - **Active marker** (`fb_mark_active` in `board-lib.sh`). On `local` only, `worktree.sh create|review`
-  and `stage-review.sh` write `<board.dir>/active/<n>`; the `local` `note` verb removes it. The
+  and `stage-review.sh` write `<board.dir>/active/<n>`; the `local` `comment` verb removes it
+  (every role ends with its report comment), never the `note` verb, which the manager runs
+  between `worktree.sh` and the dispatch on `start`. `stage-review.sh` also removes its marker
+  in its EXIT trap, and `fleet-board-run.sh` removes every marker after each tick's session. The
   page lights a card while its marker exists and a run is alive; Start clears stale markers and
-  the server clears them when it sees the run end. A failed write is a warning.
+  the server clears them when it sees the run end. A failed write or removal is a warning.
 - **Manager note** (`scripts/note.sh get|parse|put|merge|reset-failures|fail`). One comment per
   card, starting with `FB_MARKER`, holding one fenced JSON block. Trust boundary: only a
-  marker comment authored by the authenticated `gh` login counts (on `local`, `fb_login` is `FLEET_BOARD_USER`, else `$USER`, with no `gh` call, and the boundary is filesystem access); `get` validates fields
+  marker comment authored by the authenticated `gh` login counts (on `local`, `fb_login` is `FLEET_BOARD_USER`, else `$USER`, else `id -un`, with no `gh` call, exit 1 when all are empty, and the boundary is filesystem access); `get` validates fields
   that could steer shell commands (`pr`, `branch` = `fleet/<n>-<slug>`, absolute `worktree`
   inside the worktrees base, integer counters, control-char-free `last_action_error`) and
   treats an invalid note as `{}` with a warning. `put`/`merge` refuse to write an invalid
@@ -138,7 +141,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (Phase 4). Policy: add a residual to that list, do not claim the hook covers it.
 - **Headless wrapper** (`scripts/fleet-board-run.sh`): exit codes and stop reasons are
   documented in `README.md`; keep the README table and the script in step. It exports
-  `FLEET_BOARD_RUN_ID` before the first tick (see Provider stages).
+  `FLEET_BOARD_RUN_ID` before the first tick (see Provider stages). It holds the run lock
+  `<LOG_DIR>/<owner>-<name>.lock` (pid, then `ps -o lstart=` in C/UTC; the board page's
+  `run.pid` format) for its life and exits 1 while another live run holds it; `board-web.py`
+  reads the same path, so keep the two in step.
 
 ## Invariants
 

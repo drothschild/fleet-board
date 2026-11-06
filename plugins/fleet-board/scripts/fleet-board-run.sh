@@ -270,7 +270,7 @@ on_signal() {
 WORK="$(mktemp -d)" || die 1 "mktemp failed"
 LOCK_HELD=""
 RUN_LOCK=""
-trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null; release_run_lock' EXIT
+trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null; [ -z "$RUN_LOCK" ] || release_run_lock' EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
