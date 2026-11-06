@@ -1162,6 +1162,28 @@ lstart_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" | awk '{ $1 = $1; print }'; 
 new_case
 seq_fixture 1 tick-idle
 mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+# Hold the claim guard while another wrapper attempts stale-owner recovery.
+# Run the wrapper directly as a subprocess so the guard is held throughout.
+(
+  case_env
+  python3 - "$LOGS/acme-toy.lock.guard" "$BASH_EXE" "$SCRIPT" --repo "$REPO" <<'PYTEST'
+import fcntl
+import subprocess
+import sys
+
+with open(sys.argv[1], "a") as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    sys.exit(subprocess.run(sys.argv[2:], stdin=subprocess.DEVNULL, timeout=15).returncode)
+PYTEST
+) > "$T/guard.out" 2> "$T/guard.err"
+LAST_EXIT=$?
+assert_exit "run-lock: another claimant cannot recover a stale lock" 1
+assert_eq "run-lock: claim contention runs no tick" "$(count)" "absent"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
 printf '%s\n%s\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
 run_wrapper --repo "$REPO"
 assert_exit "run-lock: a live holder refuses the start" 1

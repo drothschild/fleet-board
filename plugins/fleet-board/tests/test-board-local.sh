@@ -286,6 +286,9 @@ run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "$b" 'notjson
 assert_exit "edit bad labels exit 2" 2
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 77 "$t" "$b" '[]'
 assert_exit "edit missing card exit 1" 1
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "" null
+assert_exit "title-only edit succeeds" 0
+[ "$(jq -c .labels "$REPO/.fleet-board/cards/1.json")" = '["x","y"]' ] && pass "title-only edit preserves labels" || fail "title-only edit preserves labels" "labels changed"
 # the manager writes the note between worktree.sh (which marks) and the
 # dispatch, so note must leave the marker; the role's report comment clears it
 mkdir -p "$REPO/.fleet-board/active"; : > "$REPO/.fleet-board/active/1"; : > "$REPO/.fleet-board/active/2"
@@ -293,6 +296,9 @@ run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$n"
 if [ -e "$REPO/.fleet-board/active/1" ]; then pass "note leaves the active marker"; else fail "note leaves the active marker" "removed"; fi
 run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$c"
 assert_exit "comment with a marker exit 0" 0
+if [ -e "$REPO/.fleet-board/active/1" ]; then pass "ordinary comment leaves the active marker"; else fail "ordinary comment leaves the active marker" "removed"; fi
+FLEET_BOARD_ROLE_REPORT=1 run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$c"
+assert_exit "report comment exit 0" 0
 if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "comment removes the active marker"; else fail "comment removes the active marker" "still present"; fi
 if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card's marker"; else fail "comment leaves another card's marker" "removed"; fi
 
