@@ -18,7 +18,8 @@
 # Exit codes:
 #   0 - reply printed
 #   1 - HTTP or transport failure (stderr: "provider: <reason>")
-#   2 - usage error
+#   2 - usage error, or a --base-url with userinfo, a control character, or a
+#       plain-http host that is not loopback ("provider: base_url ..."; no curl call)
 #   3 - --key-env names an unset or empty variable (no curl call)
 
 set -eu
@@ -53,6 +54,14 @@ done
 case "$MAX_TOKENS" in *[!0-9]*) usage "--max-tokens must be an integer" ;; esac
 case "$TIMEOUT" in *[!0-9]*) usage "--timeout must be an integer" ;; esac
 case "$MAX_PARAM" in max_tokens|max_completion_tokens) ;; *) usage "--max-tokens-param must be max_tokens or max_completion_tokens" ;; esac
+# Backstop for config.sh's base_url rule: no userinfo in the authority, and a
+# plain-http host must itself be loopback (optional numeric port). grep is
+# line-based, so a control character is refused first.
+case "$BASE_URL" in *[[:cntrl:]]*) die "base_url holds a control character" 2 ;; esac
+printf '%s' "$BASE_URL" | grep -Eq '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@' \
+  && die "base_url must not contain userinfo" 2
+printf '%s' "$BASE_URL" | grep -Eq '^(https://[^/?#]|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$))' \
+  || die "base_url must start with https:// or a loopback http:// address" 2
 if [ "$KEY_ENV" != "-" ]; then
   printf '%s' "$KEY_ENV" | grep -Eq '^[A-Z_][A-Z0-9_]*$' || usage "--key-env must match ^[A-Z_][A-Z0-9_]*$ or be -"
 fi

@@ -107,7 +107,7 @@ Built-in presets are `openai`, `gemini`, `openrouter` and `ollama`; their values
 | Key | Rule |
 |---|---|
 | provider name | matches `^[a-z][a-z0-9_-]*$` |
-| `base_url` | an https address, or an http address whose host is `localhost`, `127.0.0.1` or `[::1]` |
+| `base_url` | an https address, or an http address whose host is `localhost`, `127.0.0.1` or `[::1]` with an optional numeric port; no userinfo (`user@`) in either (`base_url must not contain userinfo`). `chat.sh` repeats both checks before any request |
 | `api_key_env` | the name of an environment variable, matching `^[A-Z_][A-Z0-9_]*$`; `null` only for a loopback `base_url` |
 | `max_tokens_param` | `max_tokens` or `max_completion_tokens` |
 

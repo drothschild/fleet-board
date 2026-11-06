@@ -98,7 +98,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Authorization header, loopback only) and reaches curl through a mode-600 header file,
   never argv; provider text on stderr has the key replaced by `[redacted]` and is cut to
   300 characters. Retries HTTP 429 and 5xx twice. Exit 0 reply; 1 HTTP or transport
-  failure; 2 usage; 3 key variable unset (no curl call). Config: `providers` (name ->
+  failure; 2 usage, or a `--base-url` with userinfo, a control character or a non-loopback
+  plain-http host (the same rule `config.sh` applies; no curl call); 3 key variable unset (no curl call). Config: `providers` (name ->
   `base_url`, `api_key_env`, `max_tokens_param`) merged over `providers/presets.json`
   (`openai`, `gemini`, `openrouter`, `ollama`); config never holds a key value. A stage
   sets exactly one of `agent` and `provider`; a provider stage needs `model` and `price`.

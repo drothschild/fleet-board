@@ -193,6 +193,11 @@ for u in 'http://llm.example.test/v1' 'http://localhost.evil.example/v1' 'http:/
   assert_eq "base_url_not_loopback $u: stderr" "$LAST_ERR" "provider: base_url must start with https:// or a loopback http:// address"
   assert_eq "base_url_not_loopback $u: no curl call" "$(calls)" "0"
 done
+# grep is line-based: a newline must not let a loopback first line vouch for the rest
+setup "200 ok.json"
+chat --base-url "$(printf 'http://localhost\nevil.example')" --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env -
+assert_exit "base_url_control_char: exit 2" 2
+assert_eq "base_url_control_char: no curl call" "$(calls)" "0"
 for u in 'http://localhost:11434/v1' 'http://[::1]:8080/' 'http://127.0.0.1/v1'; do
   setup "200 ok.json"
   chat --base-url "$u" --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env -
