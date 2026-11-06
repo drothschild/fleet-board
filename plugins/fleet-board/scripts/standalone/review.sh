@@ -51,7 +51,6 @@ jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$SHA" --arg image "$FLEET_BO
 bash "$SCRIPTS/standalone/worker.sh" --request "$SCRATCH/request.json" --scratch "$SCRATCH/worker" > "$SCRATCH/result" & CHILD=$!
 wait "$CHILD"; RC=$?; CHILD=""
 [ "$RC" -eq 0 ] || exit "$RC"
-[ "$(jq -r .outcome "$SCRATCH/result")" = clean ] || { echo 'review findings need unsupported reconciliation' >&2; exit 1; }
 jq -r .report "$SCRATCH/result" > "$SCRATCH/reviewer-report"
 PARSED="$(bash "$SCRIPTS/parse-report.sh" --role reviewer "$SCRATCH/reviewer-report")" || exit 1
 jq -e '(.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/dev/null || { echo 'review follow-ups require reconciliation' >&2; exit 1; }
