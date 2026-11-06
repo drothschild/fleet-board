@@ -56,6 +56,7 @@ case "$*" in
     body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"fleet-bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments"; mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{"id":555}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'api -X PATCH repos/acme/toy/issues/comments/555 --input -')
+    if [ -e "$GH_STATE/fail-patch" ]; then rm "$GH_STATE/fail-patch"; exit 1; fi
     body="$(cat)"; jq --argjson x "$body" 'map(if .id == 555 then .body = $x.body else . end)' "$GH_STATE/comments" > "$GH_STATE/new-comments" || exit 1
     mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{}' ;;
   'pr list '*) if [ -e "$GH_STATE/pr" ]; then echo '[{"number":34}]'; else echo '[]'; fi ;;
@@ -229,7 +230,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -317,6 +318,24 @@ WRAPPER
     [ "$NEW_SHA" != "$SHA" ] || { echo 'FAIL: fix did not advance branch' >&2; exit 1; }
     jq -e --arg sha "$NEW_SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"round\": 2")) and (.body | contains("\"important\": 0")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: clean re-review not recorded on new head' >&2; exit 1; }
     echo 'PASS: fix-re-review'
+    exit 0
+  fi
+  if [ "${1:-start}" = review-resume-verdict ]; then
+    cp "$TMP/worker.sh" "$TMP/clean-reviewer"
+    python3 - "$TMP/worker.sh" <<'PY_WORKER'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace('"outcome":"clean"', '"outcome":"findings"').replace(r'## Status\nclean\n## Findings\n- none', r'## Status\nfindings\n## Findings\n- [Important] Original finding')
+open(p, 'w').write(s)
+PY_WORKER
+    touch "$TMP/state/fail-patch"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-first" 2>&1; then echo 'FAIL: simulated review-note failure succeeded' >&2; exit 1; fi
+    jq -e 'any(.[]; (.body | contains("fleet-board:standalone-review:")) and (.body | contains("Original finding")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: original review report missing' >&2; exit 1; }
+    cp "$TMP/clean-reviewer" "$TMP/worker.sh"
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-resumed"; then echo 'FAIL: review recovery failed' >&2; exit 1; fi
+    jq -e 'any(.[]; .id == 555 and (.body | contains("\"important\": 1")) and (.body | contains("Original finding")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review verdict changed on retry' >&2; exit 1; }
+    jq -e '[.[] | select(.body | contains("fleet-board:standalone-review:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review report duplicated' >&2; exit 1; }
+    echo 'PASS: review-resume-verdict'
     exit 0
   fi
   if [ "${1:-start}" = review-human-race ]; then

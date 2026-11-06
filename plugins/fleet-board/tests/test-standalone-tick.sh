@@ -4,7 +4,7 @@ set -uo pipefail
 unset CDPATH
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-if [ "${1:-}" = start ] || [ "${1:-}" = resume ] || [ "${1:-}" = push-destination ] || [ "${1:-}" = resume-note ] || [ "${1:-}" = tick-interrupt ] || [ "${1:-}" = symlink-checkout ] || [ "${1:-}" = resume-ref ] || [ "${1:-}" = interrupt-pr ] || [ "${1:-}" = clean-review ] || [ "${1:-}" = review-stale ] || [ "${1:-}" = review-human-race ] || [ "${1:-}" = review-followups ] || [ "${1:-}" = findings-review ] || [ "${1:-}" = review-move-race ] || [ "${1:-}" = fix-re-review ] || [ "${1:-}" = fix-resume-note ] || [ "${1:-}" = fix-two-rounds ]; then
+if [ "${1:-}" = start ] || [ "${1:-}" = resume ] || [ "${1:-}" = push-destination ] || [ "${1:-}" = resume-note ] || [ "${1:-}" = tick-interrupt ] || [ "${1:-}" = symlink-checkout ] || [ "${1:-}" = resume-ref ] || [ "${1:-}" = interrupt-pr ] || [ "${1:-}" = clean-review ] || [ "${1:-}" = review-stale ] || [ "${1:-}" = review-human-race ] || [ "${1:-}" = review-followups ] || [ "${1:-}" = findings-review ] || [ "${1:-}" = review-move-race ] || [ "${1:-}" = fix-re-review ] || [ "${1:-}" = fix-resume-note ] || [ "${1:-}" = fix-two-rounds ] || [ "${1:-}" = review-resume-verdict ]; then
   exec bash "$TEST_DIR/test-standalone-start.sh" "$1"
 fi
 if [ "${1:-}" = worker-boundary ]; then
