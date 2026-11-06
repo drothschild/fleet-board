@@ -1,7 +1,7 @@
 # Per-card reconciliation: a card advances when its own role returns
 
-Date: 2026-11-06. Status: proposed design, awaiting approval. Nothing under `plugins/` changes
-until it is approved.
+Date: 2026-11-06. Status: approved 2026-11-06 (full settle-table follow-on, 60 s wait, clean-room
+spend approved), not yet implemented. Nothing under `plugins/` has changed.
 
 ## Problem
 
