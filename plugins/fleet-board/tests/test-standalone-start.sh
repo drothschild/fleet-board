@@ -74,6 +74,21 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-start}" = resume-ref ]; then
+  REAL_GIT="$(command -v git)"
+  touch "$TMP/state/fail-ref"
+  cat > "$TMP/bin/git" <<WRAPPER
+#!/bin/bash
+for arg in "\$@"; do
+  if [ "\$arg" = update-ref ] && [ -e "$TMP/state/fail-ref" ]; then rm "$TMP/state/fail-ref"; exit 1; fi
+done
+exec "$REAL_GIT" "\$@"
+WRAPPER
+  chmod +x "$TMP/bin/git"
+  if bash "$ROOT/bin/fleet-board" tick > "$TMP/ref-out" 2>&1; then echo 'FAIL: simulated ref failure succeeded' >&2; exit 1; fi
+  [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
+  if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
+fi
 if [ "${1:-start}" = symlink-checkout ]; then
   cat > "$TMP/worker.sh" <<'MALICIOUS'
 #!/bin/sh
@@ -154,7 +169,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ]; then
+if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ] || [ "${1:-start}" = resume-ref ]; then
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: report duplicated' >&2; exit 1; }
   [ "$(grep -c '^pr create ' "$TMP/state/calls")" = 1 ] || { echo 'FAIL: draft PR duplicated' >&2; exit 1; }
 fi
