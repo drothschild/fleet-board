@@ -21,9 +21,25 @@ cleanup() {
   [ -z "$LOCK" ] || rmdir "$LOCK" 2>/dev/null || true
   rm -rf "$SCRATCH"
 }
+CHILD=""
+cancel() {
+  local code="$1"
+  if [ -n "$CHILD" ]; then
+    kill -TERM "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+    CHILD=""
+  fi
+  exit "$code"
+}
+run_start() {
+  bash "$SCRIPTS/standalone/start.sh" "$@" & CHILD=$!
+  wait "$CHILD"; local rc=$?
+  CHILD=""
+  return "$rc"
+}
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'cancel 130' INT
+trap 'cancel 143' TERM
 if [ "$MODE" = tick ]; then
   COMMON="$(git rev-parse --git-common-dir)" || exit 1
   COMMON="$(cd "$COMMON" && pwd -P)" || exit 1
@@ -39,7 +55,7 @@ if [ "$MODE" = tick ]; then
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
     jq -e '.version == 1 and (.plan_card | type == "object")' "$JOURNAL" >/dev/null || { echo 'invalid action journal' >&2; exit 1; }
     jq '.plan_card' "$JOURNAL" > "$SCRATCH/card" || exit 1
-    bash "$SCRIPTS/standalone/start.sh" "$SCRATCH/card" "$SCRATCH" || exit 1
+    run_start "$SCRATCH/card" "$SCRATCH" || exit 1
     jq -n --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]}'
     exit 0
   done
@@ -88,5 +104,5 @@ if ! jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.car
   exit 1
 fi
 jq '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/card"
-bash "$SCRIPTS/standalone/start.sh" "$SCRATCH/card" "$SCRATCH" || exit 1
+run_start "$SCRATCH/card" "$SCRATCH" || exit 1
 jq '. + {outcome: "progress"}' "$PLAN"

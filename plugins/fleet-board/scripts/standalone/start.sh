@@ -5,6 +5,18 @@ unset CDPATH
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPTS/board-lib.sh"
 [ "$#" -eq 2 ] || exit 2
+CHILD=""
+cancel() {
+  local code="$1"
+  if [ -n "$CHILD" ]; then
+    kill -TERM "$CHILD" 2>/dev/null || true
+    wait "$CHILD" 2>/dev/null || true
+    CHILD=""
+  fi
+  exit "$code"
+}
+trap 'cancel 130' INT
+trap 'cancel 143' TERM
 CARD="$1" SCRATCH="$2"
 fb_load_config
 # This increment is fixture-only until PR/report recovery is implemented.
@@ -59,7 +71,10 @@ else
   cp "$FLEET_BOARD_WORKER_SCRIPT" "$SCRATCH/worker/worker.sh" || exit 1
   jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$BASE" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg prompt "$TITLE" \
     '{version:1,card:$card,action:"start",role:"implementor",worktree:$wt,expected_ref:$ref,prompt:$prompt,limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
-  bash "$SCRIPTS/standalone/worker.sh" --request "$SCRATCH/request.json" --scratch "$SCRATCH/worker" > "$SCRATCH/result" || exit 1
+  bash "$SCRIPTS/standalone/worker.sh" --request "$SCRATCH/request.json" --scratch "$SCRATCH/worker" > "$SCRATCH/result" & CHILD=$!
+  wait "$CHILD"; RC=$?
+  CHILD=""
+  [ "$RC" -eq 0 ] || exit "$RC"
   [ "$(jq -r .outcome "$SCRATCH/result")" = done ] || { echo 'worker did not complete implementation' >&2; exit 1; }
   CLONE="$SCRATCH/worker/checkout"
   [ -d "$CLONE" ] && [ ! -L "$CLONE" ] || exit 1
