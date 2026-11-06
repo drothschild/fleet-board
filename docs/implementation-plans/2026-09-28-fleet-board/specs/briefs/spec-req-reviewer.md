@@ -276,7 +276,7 @@ because `parse-report.sh` pairs single backticks only, and the rejection then re
 command were present. When the command cannot be written that way, the entry uses the words
 `no testable check`. The entry rule says so.
 
-## Revision 17 requirements (2026-11-03, weakening outside a test body and in round 1)
+## Revision 18 requirements (2026-11-03, weakening outside a test body and in round 1)
 
 The weakened-test step runs in every round, not only round 2 and later. In round 1 its reference
 SHA is the merge-base, so its diff covers every commit on the PR branch, including a fixer's
