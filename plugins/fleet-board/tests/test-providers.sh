@@ -260,6 +260,36 @@ assert_eq "reply_without_usage_is_a_failure: stderr" "$LAST_ERR" "provider: repl
 assert_eq "reply_without_usage_is_a_failure: nothing on stdout" "$LAST_OUT" ""
 assert_eq "reply_without_usage_is_a_failure: temp removed" "$(tmp_left)" "0"
 
+# usage counts must be non-negative integers (a fraction would abort the
+# caller's $((...)); a negative one would lower the recorded spend)
+for f in usage-fraction usage-negative usage-string; do
+  setup "200 $f.json"
+  chat "${BASE[@]}" --key-env TEST_KEY
+  assert_exit "$f: exit 1" 1
+  assert_eq "$f: stderr" "$LAST_ERR" "provider: reply has no usage"
+  assert_eq "$f: nothing on stdout" "$LAST_OUT" ""
+done
+
+# key_with_control_character: refused before any file is written (no header injection)
+for k in "$(printf 'sk-a\r\nX-Evil: 1')" "$(printf 'sk-a\nb')" "$(printf 'sk-a\tb')"; do
+  setup "200 ok.json"
+  CTRL_KEY="$k" chat "${BASE[@]}" --key-env CTRL_KEY
+  assert_exit "key_with_control_character: exit 3" 3
+  assert_eq "key_with_control_character: stderr" "$LAST_ERR" "provider: CTRL_KEY holds a control character"
+  assert_eq "key_with_control_character: no curl call" "$(calls)" "0"
+  assert_eq "key_with_control_character: no temp dir" "$(tmp_left)" "0"
+done
+
+# curl_ignores_curlrc_and_caps_size: -q first, --max-filesize set
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_eq "curl -q is the first argument" "$(grep '^ARG ' "$WORK/case/curl.log" | head -1)" "ARG -q"
+assert_contains "curl --max-filesize 20971520" "$(curl_log)" "$(printf 'ARG --max-filesize\nARG 20971520')"
+setup "200 ok.json"
+chat --base-url http://localhost:11434/v1 --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env -
+assert_eq "curl -q first (no key)" "$(grep '^ARG ' "$WORK/case/curl.log" | head -1)" "ARG -q"
+assert_contains "curl --max-filesize (no key)" "$(curl_log)" "$(printf 'ARG --max-filesize\nARG 20971520')"
+
 # transport_failure: not retried, one stderr line, key redacted
 setup "exit 28 curl-timeout.err" "200 ok.json"
 chat "${BASE[@]}" --key-env TEST_KEY
