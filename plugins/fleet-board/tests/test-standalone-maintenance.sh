@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in wait|wait-resume|lint|block|unblock) ;; *) echo 'usage: test-standalone-maintenance.sh wait|wait-resume|lint' >&2; exit 2 ;; esac
+case "${1:-}" in wait|wait-resume|lint|block|block-resume|unblock) ;; *) echo 'usage: test-standalone-maintenance.sh wait|wait-resume|lint' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/maintenance.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -15,7 +15,7 @@ case "$*" in
   'api user') echo '{"login":"bot"}' ;;
   'api repos/acme/toy/issues/12') column="$(cat "$STATE/column")"; jq -n --arg col "$column" '{number:12,title:"test",body:"## Acceptance\n- test",html_url:"https://github.com/acme/toy/issues/12",labels:(if $col == "none" then [] else [{name:("fleet:"+$col)}] end)}' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:'*) printf none > "$STATE/column" ;;
-  'issue edit 12 --repo acme/toy --add-label fleet:'*) printf '%s' "${7#fleet:}" > "$STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:'*) if [ -e "$STATE/fail-add" ]; then rm "$STATE/fail-add"; exit 1; fi; printf '%s' "${7#fleet:}" > "$STATE/column" ;;
   'pr view 34 --repo acme/toy --json number,state,mergedAt') echo '{"number":34,"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z"}' ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$STATE/comments" ;;
   'issue comment 12 --repo acme/toy --body-file '*) jq --rawfile body "$7" '. + [{id:556,user:{login:"bot"},body:$body}]' "$STATE/comments" > "$STATE/new" && mv "$STATE/new" "$STATE/comments" ;;
@@ -28,7 +28,7 @@ GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH" STATE="$TMP/state" FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 cd "$TMP/repo" || exit 1
-if [ "$1" = block ] || [ "$1" = unblock ]; then
+if [ "$1" = block ] || [ "$1" = block-resume ] || [ "$1" = unblock ]; then
   if [ "$1" = unblock ]; then
     printf blocked > "$STATE/column"
     printf '%s\n' '{"blocking_pr":34,"blocked_from":"ready","blocked_findings":[{"severity":"Important","text":"old"}],"action_failures":2,"last_action_error":"old"}' > "$TMP/patch"
@@ -37,10 +37,14 @@ if [ "$1" = block ] || [ "$1" = unblock ]; then
   else
     jq -n '{number:12,state:"ready",action:"block",reason:"no progress after 3 attempts: failed"}' > "$TMP/card"
   fi
+  if [ "$1" = block-resume ]; then
+    touch "$STATE/fail-add"
+    if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: interrupted move unexpectedly succeeded' >&2; exit 1; fi
+  fi
   bash "$HANDLER" "$TMP/card" "$TMP/scratch" || exit 1
   bash "$HANDLER" "$TMP/card" "$TMP/scratch" || exit 1
   note="$(bash "$TESTS/../scripts/note.sh" get 12)" || exit 1
-  if [ "$1" = block ]; then
+  if [ "$1" = block ] || [ "$1" = block-resume ]; then
     [ "$(cat "$STATE/column")" = blocked ] && jq -e '.blocked_from == "ready" and .blocked_findings[0].text == "no progress after 3 attempts: failed" and .action_failures == 0' <<<"$note" >/dev/null || exit 1
     jq -e '[.[] | select(.body | contains("fleet-board:maintenance:block:"))] | length == 1' "$STATE/comments" >/dev/null || exit 1
   else
