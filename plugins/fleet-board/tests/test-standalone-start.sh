@@ -170,7 +170,7 @@ case "$*" in
     state=OPEN; [ ! -e "$GH_STATE/merged" ] || state=MERGED
     jq -n --arg sha "$sha" --arg state "$state" --argjson draft "$draft" '{number:34,isDraft:$draft,state:$state,headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->",statusCheckRollup:[{__typename:"CheckRun",conclusion:"SUCCESS"}],mergeable:"MERGEABLE"}' ;;
   'pr view 34 --repo acme/toy --json isDraft,mergeable,statusCheckRollup') echo '{"isDraft":true,"mergeable":"MERGEABLE","statusCheckRollup":[]}' ;;
-  'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
+  'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body'|'pr view 34 --repo acme/toy --json number,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
     if [ -e "$GH_STATE/force-review" ]; then
       count=0; [ ! -e "$GH_STATE/review-views" ] || count="$(cat "$GH_STATE/review-views")"
       count=$((count + 1)); printf '%s' "$count" > "$GH_STATE/review-views"
@@ -338,7 +338,8 @@ if [ "${1:-start}" = continue-resume ]; then
   echo 'PASS: continue-resume'
   exit 0
 fi
-if [ "${1:-start}" = real-run ]; then
+if [ "${1:-start}" = real-run ] || [ "${1:-start}" = real-run-settle-resume ]; then
+  if [ "$1" = real-run-settle-resume ]; then touch "$GH_STATE/fail-patch"; fi
   cat >> "$TMP/repo/.fleet-board.yml" <<'YML'
 limits:
   tick_interval: 0
@@ -367,9 +368,13 @@ VERIFY
   if ! bash "$ROOT/bin/fleet-board" run --repo "$TMP/repo" > "$TMP/run-out" 2> "$TMP/run-err"; then cat "$TMP/run-out" "$TMP/run-err" >&2; echo 'FAIL: real fixture run failed' >&2; exit 1; fi
   grep -q 'stopped: nothing-dispatchable' "$TMP/run-out" || { cat "$TMP/run-out" >&2; echo 'FAIL: run did not settle idle' >&2; exit 1; }
   [ "$(cat "$TMP/state/column")" = done ] || { echo 'FAIL: run did not finish card' >&2; exit 1; }
+  if [ "$1" = real-run-settle-resume ]; then
+    if ! grep -q 'warning: standalone settle failed' "$TMP/logs"/*.log; then echo 'FAIL: settle interruption was not observed' >&2; exit 1; fi
+    jq -e 'any(.[]; .id == 555 and (.body | contains("\"round\": 1")) and (.body | contains("\"last_review\": {")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review stalled after settle recovery' >&2; exit 1; }
+  fi
   [ "$(grep -c '^pr merge ' "$TMP/state/calls")" = 1 ] || { echo 'FAIL: run did not merge exactly once' >&2; exit 1; }
   jq -e 'any(.[]; .id == 555 and (.body | contains("\"ok\": true")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: run did not record verified main' >&2; exit 1; }
-  echo 'PASS: real-run'
+  echo "PASS: $1"
   exit 0
 fi
 if [ "${1:-start}" = symlink-checkout ]; then
