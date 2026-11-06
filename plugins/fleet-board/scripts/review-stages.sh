@@ -214,6 +214,8 @@ case "$MODE" in
     fb_load_config
     BACKEND="$(jq -r '.board.backend' <<<"$FLEET_CFG")"
     STAGES="$(jq -c '.review.stages // []' <<<"$FLEET_CFG")" || fb_die 1 "cannot read review.stages"
+    # the local backend keeps stage labels as plain strings in card files
+    [ "$BACKEND" = local ] && exit 0
     while IFS=$'\t' read -r name label; do
       [ -n "$name" ] || continue
       gh label create "$label" --repo "$FLEET_REPO" --color d93f0b \

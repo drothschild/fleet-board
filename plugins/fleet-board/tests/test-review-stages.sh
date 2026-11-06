@@ -105,6 +105,8 @@ setup_case() {
     projects) board='  backend: github-projects
   repo: acme/toy
   project_number: 7' ;;
+    local) board='  backend: local
+  repo: acme/toy' ;;
     *) board='  backend: github-labels
   repo: acme/toy' ;;
   esac
@@ -311,6 +313,13 @@ setup_case labels "$CARD_PLAIN" "x"
 sed -i.bak "s#^label create \*	0	-#label create *	1	-#" "$ROUTES"; rm -f "$ROUTES.bak"
 run_stages setup
 assert_exit "setup: failed label create -> exit 1" 1
+
+# setup (local backend): stage labels are plain strings in card files; no gh call at all
+setup_case local "$CARD_PLAIN" "x"
+run_stages setup
+assert_exit "setup local: exit 0" 0
+assert_eq "setup local: no label create" "$(cnt_prefix label create)" 0
+assert_eq "setup local: no gh call at all" "$(ls "$FAKE_GH_DIR/argv" 2>/dev/null | wc -l | tr -d ' ')" 0
 
 # setup (projects backend)
 setup_case projects "$CARD_PLAIN" "x"
