@@ -64,7 +64,7 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/fix-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
@@ -73,6 +73,7 @@ if [ "$MODE" = tick ]; then
     case "$(basename "$JOURNAL")" in
       start-*) run_start "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       fix-*) run_fix "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      review-*) run_review "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
       *) exit 1 ;;
     esac
     jq -n --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]}'
