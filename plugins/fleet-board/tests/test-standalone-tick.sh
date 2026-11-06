@@ -106,8 +106,8 @@ WRAPPER
   exit 0
 fi
 case "${1:-}" in
-  plan-only) ;;
-  *) echo "usage: $0 plan-only" >&2; exit 2 ;;
+  plan-only|tick-holds) ;;
+  *) echo "usage: $0 plan-only|tick-holds|worker-boundary" >&2; exit 2 ;;
 esac
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -123,6 +123,31 @@ export PATH="$TMP/bin:$PATH" FAKE_GH_DIR="$TMP/gh" FAKE_GH_ROUTES="$ROOT/plugins
 cd "$TMP/repo"
 bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/expected" || exit 1
 rm -rf "$TMP/repo/.fw" "$TMP/repo/preflight-ran"
+if [ "$1" = tick-holds ]; then
+  jq '.cards[0].action = "skip" | .dispatchable = false' "$TMP/expected" > "$TMP/idle.json"
+  cat > "$TMP/planner" <<PLAN
+#!/usr/bin/env bash
+cat "$TMP/idle.json"
+PLAN
+  chmod +x "$TMP/planner"
+  if ! FLEET_BOARD_TICK_PLAN="$TMP/planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/idle-out"; then
+    echo 'FAIL: idle tick failed' >&2; exit 1
+  fi
+  if ! jq -e '.outcome == "idle" and .dispatchable == false and .cards[0].action == "skip"' "$TMP/idle-out" >/dev/null; then
+    echo 'FAIL: idle tick outcome malformed' >&2; exit 1
+  fi
+  cp "$TMP/expected" "$TMP/idle.json"
+  if FLEET_BOARD_TICK_PLAN="$TMP/planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/held-out" 2>/dev/null; then
+    echo 'FAIL: unsupported start action accepted' >&2; exit 1
+  fi
+  if [ -s "$TMP/held-out" ]; then echo 'FAIL: held action reported success' >&2; exit 1; fi
+  for call in "$FAKE_GH_DIR"/argv/*; do
+    [ -f "$call" ] || continue
+    if grep -Eq '^(create|edit|comment|close|merge)$' "$call"; then echo 'FAIL: held tick wrote to board' >&2; exit 1; fi
+  done
+  echo 'PASS: tick-holds'
+  exit 0
+fi
 if ! bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/actual"; then
   echo 'FAIL: standalone plan-only should succeed' >&2; exit 1
 fi
