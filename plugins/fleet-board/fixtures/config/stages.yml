@@ -12,5 +12,12 @@ models: { reviewer: opus }
 review:
   max_rounds: 3
   stages:
-    - { name: security, agent: "acme:security-reviewer", model: opus, paths: ["src/auth/**", "**/*.sql"], brief: "Focus on authz, secrets, injection." }
-    - { name: ux, agent: ux-reviewer, model: sonnet, advisory: true }
+    - name: security
+      agent: "acme:security-reviewer"
+      model: opus
+      paths: ["src/auth/**", "**/*.sql"]
+      brief: "Focus on authz, secrets, injection."
+    - name: ux
+      agent: ux-reviewer
+      model: sonnet
+      advisory: true
