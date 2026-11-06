@@ -68,6 +68,11 @@ PR_STATE="$(jq -r .state <<<"$INFO")"
 if [ "$PR_STATE" = OPEN ]; then
   [ "$ACTION" = merge ] && [ "$(fb_cfg merge.policy)" = auto ] && [ "$ACTUAL" = "$STATE" ] || exit 1
   jq -e '.isDraft == false and .mergeable == "MERGEABLE" and (.statusCheckRollup | type == "array" and length > 0 and all(.[]; (.conclusion // .state) as $s | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED"))' <<<"$INFO" >/dev/null || { echo 'PR is not ready and green' >&2; exit 1; }
+  # Re-read after the PR lookup and journal write; either a QA flag or a
+  # concurrent state move must hold the merge at the latest available read.
+  read_card && [ "$ACTUAL" = "$STATE" ] || { echo 'card state changed before merge' >&2; exit 1; }
+  LABELS="$(jq -c .labels <<<"$CURRENT")" || exit 1
+  [ "$(bash "$SCRIPTS/needs-human-qa.sh" --labels "$LABELS" "$N" "$PR")" = false ] || { echo 'Human QA required before merge' >&2; exit 1; }
   # GitHub atomically rejects a head that moved after the evidence check.
   gh pr merge "$PR" --repo "$FLEET_REPO" --squash --match-head-commit "$SHA" >/dev/null || exit 1
   INFO="$(pr_info)" || exit 1
