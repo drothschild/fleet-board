@@ -100,7 +100,10 @@ REMOTE_HEAD="$(remote_head)" || exit 1
 if [ "$REMOTE_HEAD" = "$BEFORE" ] && [ "$AFTER" != "$BEFORE" ]; then
   card_state || exit 1
   [ -d "$CLONE/.git" ] && [ ! -L "$CLONE/.git" ] && [ "$(git -C "$CLONE" rev-parse HEAD)" = "$AFTER" ] || exit 1
-  git -C "$CLONE" -c protocol.file.allow=always -c core.hooksPath=/dev/null push "$REMOTE_DIR" "HEAD:refs/heads/$BRANCH" >/dev/null || exit 1
+  # The lease enforces the exact old head even if the remote rewinds between
+  # our read and push. Independently require a fast-forward before permitting it.
+  git -C "$CLONE" merge-base --is-ancestor "$BEFORE" "$AFTER" || exit 1
+  git -C "$CLONE" -c protocol.file.allow=always -c core.hooksPath=/dev/null push --force-with-lease="refs/heads/$BRANCH:$BEFORE" "$REMOTE_DIR" "HEAD:refs/heads/$BRANCH" >/dev/null || exit 1
 elif [ "$REMOTE_HEAD" != "$AFTER" ]; then
   echo 'PR head changed before update' >&2; exit 1
 fi
