@@ -149,6 +149,7 @@ merge:
   policy: ${1#labels-}
 YML
       ;;
+    stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
     bad-backend) cp "$CONFIG_FIXTURES/bad-backend.yml" "$REPO/.fleet-board.yml" ;;
     *) echo "setup_case: unknown config $1" >&2; exit 1 ;;
@@ -1701,6 +1702,17 @@ assert_blocked "merge-only-reviewed: gh pr merge blocked under auto for a confli
 reviewed_head_case clean
 run_hook bash.json "gh pr merge 4 --squash"
 assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
+
+# ---------------------------------------------------------------------------
+# review stage columns move under the existing rules (G1 sees the config's
+# stage states): in_review -> review_security is allowed, human_qa -> any
+# stage state is blocked
+setup_case stages
+card_routes > "$ROUTES"
+run_hook bash.json "board-move.sh 12 review_security"
+assert_silent_allow "stage-move: board-move.sh 12 review_security from in_review"
+run_hook bash.json "board-move.sh 14 review_security"
+assert_blocked "stage-move: board-move.sh 14 review_security from human_qa" "Human QA"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
