@@ -91,8 +91,10 @@ cnt_prefix() {
 
 STAGES_YML='  stages:
     - name: security
+      agent: sec-reviewer
       paths: ["src/auth/**"]
     - name: ux
+      agent: ux-reviewer
       paths: ["src/ui/**"]
       advisory: true'
 

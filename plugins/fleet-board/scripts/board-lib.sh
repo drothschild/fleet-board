@@ -199,6 +199,24 @@ fb_list_truncated() {
   fb_die 1 "$3 returned $1 items, the list limit ($2); the list may be truncated. Set FLEET_BOARD_LIST_LIMIT above $2, or $4, and retry"
 }
 
+# fb_glob_match <path> <pattern>: exit 0 when the path matches. Matched with
+# bash `case` after turning ** into *; a pattern that starts with **/ also
+# matches with that prefix removed (src/components/** matches
+# src/components/a/b.tsx, **/*.test.* matches a.test.js).
+fb_glob_match() {
+  local path="$1" pat="${2//\*\*/*}"
+  # shellcheck disable=SC2254 # the pattern is a glob on purpose
+  case "$path" in $pat) return 0 ;; esac
+  case "$2" in
+    '**/'*)
+      pat="${2#\*\*/}"
+      pat="${pat//\*\*/*}"
+      case "$path" in $pat) return 0 ;; esac
+      ;;
+  esac
+  return 1
+}
+
 fb_valid_number() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
