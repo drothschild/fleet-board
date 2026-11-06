@@ -14,15 +14,19 @@ mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/gh"
 git -C "$TMP/repo" init -q
 git -C "$TMP/repo" config user.email test@example.com
 git -C "$TMP/repo" config user.name 'Test User'
-printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nhuman_qa_paths: ["src/components/**"]\n' > "$TMP/repo/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nhuman_qa_paths: ["src/components/**"]\ncommands:\n  preflight: touch preflight-ran\n' > "$TMP/repo/.fleet-board.yml"
 git -C "$TMP/repo" add .fleet-board.yml
 git -C "$TMP/repo" commit -q -m initial
 ln -s "$TEST_DIR/fake-gh.sh" "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH" FAKE_GH_DIR="$TMP/gh" FAKE_GH_ROUTES="$ROOT/plugins/fleet-board/fixtures/gh/tick/ready-start/routes"
 cd "$TMP/repo"
 bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/expected" || exit 1
+rm -rf "$TMP/repo/.fw" "$TMP/repo/preflight-ran"
 if ! bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/actual"; then
   echo 'FAIL: standalone plan-only should succeed' >&2; exit 1
+fi
+if [ -e "$TMP/repo/preflight-ran" ] || [ -e "$TMP/repo/.fw" ]; then
+  echo 'FAIL: plan-only ran preflight or created worktree directory' >&2; exit 1
 fi
 if ! cmp -s "$TMP/expected" "$TMP/actual"; then
   echo 'FAIL: standalone plan differs from planner' >&2; exit 1
