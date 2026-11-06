@@ -150,6 +150,32 @@ WRAPPER
   if docker ps -a --filter "name=fleet-worker-$(basename "$TMP/stubborn")-" --format '{{.Names}}' | grep -q .; then
     echo 'FAIL: stubborn worker container survived' >&2; exit 1
   fi
+  # A second TERM during container removal must not abort cleanup.
+  mkdir "$TMP/duplicate" "$TMP/duplicate-wrapper"
+  cat > "$TMP/duplicate/worker.sh" <<'WORKER'
+#!/bin/sh
+: > /scratch/running
+while :; do sleep 1; done
+WORKER
+  cat > "$TMP/duplicate-wrapper/docker" <<WRAPPER
+#!/bin/bash
+if [ "\$1" = rm ]; then touch "$TMP/removing"; sleep 3; fi
+exec "$REAL_DOCKER" "\$@"
+WRAPPER
+  chmod +x "$TMP/duplicate-wrapper/docker"
+  PATH="$TMP/duplicate-wrapper:$PATH" bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/duplicate" > "$TMP/duplicate.out" 2>&1 & WORKER_PID=$!
+  NAME="fleet-worker-$(basename "$TMP/duplicate")-$WORKER_PID"
+  for unused in 1 2 3 4 5; do [ -e "$TMP/duplicate/running" ] && break; sleep 1; done
+  [ -e "$TMP/duplicate/running" ] || { docker rm -f "$NAME" >/dev/null 2>&1 || true; kill -KILL "$WORKER_PID" 2>/dev/null || true; echo 'FAIL: duplicate-signal worker did not start' >&2; exit 1; }
+  kill -TERM "$WORKER_PID"
+  for unused in 1 2 3 4 5; do [ -e "$TMP/removing" ] && break; sleep 1; done
+  [ -e "$TMP/removing" ] || { docker rm -f "$NAME" >/dev/null 2>&1 || true; kill -KILL "$WORKER_PID" 2>/dev/null || true; echo 'FAIL: cleanup was not reached' >&2; exit 1; }
+  kill -TERM "$WORKER_PID" 2>/dev/null || true
+  wait "$WORKER_PID" 2>/dev/null || true
+  if docker inspect "$NAME" >/dev/null 2>&1; then
+    docker rm -f "$NAME" >/dev/null 2>&1 || true
+    echo 'FAIL: duplicate signal interrupted cleanup' >&2; exit 1
+  fi
   if PATH=/nonexistent /bin/bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch" >/dev/null 2>&1; then
     echo 'FAIL: unavailable isolation accepted' >&2; exit 1
   fi
