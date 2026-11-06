@@ -108,6 +108,7 @@ case "$*" in
     if [ -e "$GH_STATE/fail-move" ]; then rm "$GH_STATE/fail-move"; exit 1; fi
     printf in_progress > "$GH_STATE/column" ;;
   'issue comment 12 --repo acme/toy --body-file '*)
+    if [ -e "$GH_STATE/fail-blocked-report" ] && grep -q 'fleet-board:implementor-blocked:' "$7"; then rm "$GH_STATE/fail-blocked-report"; exit 1; fi
     jq --rawfile body "$7" '. + [{id:556,user:{login:"fleet-bot"},body:$body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments" || exit 1
     mv "$GH_STATE/new-comments" "$GH_STATE/comments" ;;
   'api -X POST repos/acme/toy/issues/12/comments --input -')
@@ -208,7 +209,7 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
-if [ "${1:-start}" = continue-implementor ] || [ "${1:-start}" = continue-resume ] || [ "${1:-start}" = continue-blocked ]; then
+if [ "${1:-start}" = continue-implementor ] || [ "${1:-start}" = continue-resume ] || [ "${1:-start}" = continue-blocked ] || [ "${1:-start}" = continue-blocked-resume ] || [ "${1:-start}" = blocked-changed-blocker ]; then
   printf in_progress > "$TMP/state/column"
   cat > "$TMP/existing-note" <<'NOTE'
 <!-- fleet-board:manager-note -->
@@ -235,12 +236,43 @@ WRAPPER
   [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
   if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
 fi
-if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ]; then
+if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ] || [ "${1:-start}" = continue-blocked-resume ] || [ "${1:-start}" = blocked-changed-blocker ]; then
   cat > "$TMP/worker.sh" <<'BLOCKED'
 #!/bin/sh
 set -eu
 printf '%s\n' '{"version":1,"outcome":"blocked","report":"## Status\nblocked\n## Findings\n- none\n## For the card\nCannot proceed.\nBlocked by: #44\n## PR\nNone\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 BLOCKED
+  if [ "$1" = continue-blocked-resume ]; then
+    REAL_JQ="$(command -v jq)"
+    touch "$GH_STATE/fail-continue-complete"
+    cat > "$TMP/bin/jq" <<WRAPPER
+#!/bin/bash
+for arg in "\$@"; do
+  case "\$arg" in */continue-12-3.json) if [ -e "$GH_STATE/fail-continue-complete" ] && [ "\$1" = '.completed = true' ]; then rm "$GH_STATE/fail-continue-complete"; exit 1; fi ;; esac
+done
+exec "$REAL_JQ" "\$@"
+WRAPPER
+    chmod +x "$TMP/bin/jq"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/blocked-first" 2>&1; then echo 'FAIL: simulated continuation completion failure succeeded' >&2; exit 1; fi
+    [ "$(cat "$GH_STATE/column")" = blocked ] || { echo 'FAIL: interruption preceded blocked outcome' >&2; exit 1; }
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/blocked-resumed"; then echo 'FAIL: blocked continuation recovery failed' >&2; exit 1; fi
+    jq -e '.completed == true' "$TMP/repo/.git/fleet-board-standalone/continue-12-3.json" >/dev/null || { echo 'FAIL: continuation journal remained pending' >&2; exit 1; }
+    jq -e '[.[] | select(.body | contains("fleet-board:implementor-blocked:"))] | length == 1' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: blocked report duplicated' >&2; exit 1; }
+    echo 'PASS: continue-blocked-resume'
+    exit 0
+  fi
+  if [ "$1" = blocked-changed-blocker ]; then
+    touch "$GH_STATE/fail-blocked-report"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/blocked-first" 2>&1; then echo 'FAIL: simulated report interruption succeeded' >&2; exit 1; fi
+    [ "$(cat "$GH_STATE/column")" = blocked ] || { echo 'FAIL: interruption preceded blocked move' >&2; exit 1; }
+    printf '%s\n' '{"blocking_pr":55}' > "$TMP/human-blocker"
+    bash "$ROOT/plugins/fleet-board/scripts/note.sh" merge 12 "$TMP/human-blocker" || exit 1
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/blocked-resumed" 2>&1; then echo 'FAIL: changed blocker was overwritten' >&2; exit 1; fi
+    note="$(bash "$ROOT/plugins/fleet-board/scripts/note.sh" get 12)" || exit 1
+    jq -e '.blocking_pr == 55' <<<"$note" >/dev/null || { echo 'FAIL: human blocker changed' >&2; exit 1; }
+    echo 'PASS: blocked-changed-blocker'
+    exit 0
+  fi
   if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/blocked-out"; then echo 'FAIL: blocked implementor was not reconciled' >&2; exit 1; fi
   if [ "$1" = continue-blocked ]; then ACTION=continue_implementor; ATTEMPTS=3; else ACTION=start; ATTEMPTS=1; fi
   jq -e --arg action "$ACTION" '.outcome == "progress" and .cards[0].action == $action' "$TMP/blocked-out" >/dev/null || { echo 'FAIL: blocked outcome malformed' >&2; exit 1; }
