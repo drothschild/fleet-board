@@ -55,7 +55,9 @@ check_pr <<<"$INFO" || { echo 'review PR identity mismatch' >&2; exit 1; }
 SHA="$(jq -r .headRefOid <<<"$INFO")"
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
 JDIR="$COMMON/fleet-board-standalone"; mkdir -p "$JDIR" || exit 1
-JOURNAL="$JDIR/review-$N-$ROUND-${STAGE_NAME:-standard}-$SHA.json"
+JOURNAL_KIND=core
+[ -z "$STAGE_NAME" ] || JOURNAL_KIND="stage-$STAGE_NAME"
+JOURNAL="$JDIR/review-$N-$ROUND-$JOURNAL_KIND-$SHA.json"
 [ -z "$RECOVERY_JOURNAL" ] || [ "$RECOVERY_JOURNAL" = "$JOURNAL" ] || { echo 'review head changed since saved verdict' >&2; exit 1; }
 RECOVERING=false
 if [ -e "$JOURNAL" ]; then

@@ -65,7 +65,7 @@ case "$*" in
   'issue list --repo acme/toy --label '*) echo '[]' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label needs-security-review') touch "$GH_STATE/stage-label" ;;
-  'issue edit 12 --repo acme/toy --add-label fleet:review_security'|'issue edit 12 --repo acme/toy --add-label fleet:review_standard') printf '%s' "${6#fleet:}" > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:review_security'|'issue edit 12 --repo acme/toy --add-label fleet:review_standard') printf '%s' "${7#fleet:}" > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_review')
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
