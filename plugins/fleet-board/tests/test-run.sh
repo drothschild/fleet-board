@@ -1179,6 +1179,8 @@ PYTEST
 ) > "$T/guard.out" 2> "$T/guard.err"
 LAST_EXIT=$?
 assert_exit "run-lock: another claimant cannot recover a stale lock" 1
+LAST_ERR="$(cat "$T/guard.err")"
+assert_stderr_contains "run-lock: the guard refusal says another run" "another run"
 assert_eq "run-lock: claim contention runs no tick" "$(count)" "absent"
 
 new_case
@@ -1215,6 +1217,28 @@ case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
   *) fail "run-lock: line 2 is a ps start time" "$(cat "$FC_LOCKSEEN" 2>/dev/null)" ;;
 esac
 assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
+
+# A TERM that lands right after the claim leaves no lock behind: RUN_LOCK is
+# set before the claim helper runs. The fake helper claims for real, then
+# sends TERM to its parent (the wrapper).
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+cp -R "$SCRIPT_DIR/../scripts" "$T/scripts-term"
+cat > "$T/scripts-term/claim-run-lock.py" <<'PYTERM'
+import os, signal, subprocess, sys
+here = os.path.dirname(os.path.abspath(__file__))
+rc = subprocess.run([sys.executable, os.path.join(here, "claim-run-lock-real.py")] + sys.argv[1:]).returncode
+if rc == 0:
+    os.kill(os.getppid(), signal.SIGTERM)
+sys.exit(rc)
+PYTERM
+cp "$SCRIPT_DIR/../scripts/claim-run-lock.py" "$T/scripts-term/claim-run-lock-real.py"
+SAVED_SCRIPT="$SCRIPT"; SCRIPT="$T/scripts-term/fleet-board-run.sh"
+run_wrapper --repo "$REPO"
+SCRIPT="$SAVED_SCRIPT"
+assert_exit "run-lock: TERM right after the claim exits 143" 143
+assert_false "run-lock: TERM right after the claim leaves no lock file" test -e "$LOGS/acme-toy.lock"
 
 echo ""
 echo "-----------------------------------"
