@@ -8,6 +8,12 @@ write runs the script an agent would run (board-create.sh, board-move.sh,
 board-comment.sh, adapters/local/edit.sh) with cwd = the repo root. The server
 never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 `listening on http://127.0.0.1:<port>`; requests are logged to stderr.
+
+Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
+FLEET_BOARD_RUN (headless wrapper override), FLEET_BOARD_CLAUDE (the claude binary the
+import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
+session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
+the import id instead of a generated one).
 """
 from __future__ import annotations
 
@@ -15,12 +21,15 @@ import argparse
 import json
 import os
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from collections import deque
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -377,6 +386,179 @@ def temp_text(text: str) -> str:
     return path
 
 
+# --- import -------------------------------------------------------------------
+
+CREATED_RE = re.compile(r"^Created #(\d+):", re.M)
+
+# id -> the Popen this server spawned for the import session (kept so it is reaped).
+_IMPORTS: dict = {}
+_IMPORT_LOCK = threading.RLock()
+
+
+def import_dir(id: str) -> Path:
+    cfg, _ = ctx()
+    path = state_dir(APP["root"], cfg) / "imports" / id
+    if not path.is_dir():
+        raise ApiError(404, "import %s not found" % id)
+    return path
+
+
+def read_json_file(path: Path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def write_private(path: Path, text: str):
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def new_import_id() -> str:
+    return os.environ.get("FLEET_BOARD_TEST_IMPORT_ID") or (
+        "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(2)))
+
+
+def start_import(plan_text: str, status: str) -> str:
+    """Starts the headless preview session for a plan; returns the import id."""
+    cfg, _ = ctx()
+    id = new_import_id()
+    idir = state_dir(APP["root"], cfg) / "imports" / id
+    with _IMPORT_LOCK:
+        if idir.exists():
+            raise ApiError(409, "import %s already exists" % id)
+        idir.mkdir(parents=True, mode=0o700)
+        os.chmod(str(idir), 0o700)
+        write_private(idir / "plan.md", plan_text)
+        write_private(idir / "meta.json", json.dumps({
+            "status": status,
+            "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }))
+        prompt = "/fleet-board:import-plan %s --preview %s" % (idir / "plan.md", idir / "cards.json")
+        if status == "ready":
+            prompt += " --status ready"
+        argv = [
+            os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
+            "--output-format", "stream-json", "--verbose",
+            "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
+            "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
+        ]
+        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
+        if plugin_dir:
+            argv += ["--plugin-dir", plugin_dir]
+        argv.append(prompt)
+        try:
+            ofd = os.open(str(idir / "session.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            efd = os.open(str(idir / "session.err"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(ofd, "wb") as out, os.fdopen(efd, "wb") as err:
+                _IMPORTS[id] = subprocess.Popen(
+                    argv, cwd=APP["root"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
+                    start_new_session=True,
+                )
+        except OSError as exc:
+            raise ApiError(500, "cannot start %s: %s" % (argv[0], exc))
+    return id
+
+
+def last_session_text(path: Path) -> str:
+    """The text of the last assistant event with a text block; partial lines are skipped."""
+    last = ""
+    for line in read_text(path).splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("type") != "assistant":
+            continue
+        content = (ev.get("message") or {}).get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                last = block["text"]
+    return last
+
+
+def session_error(idir: Path, rc) -> str:
+    """The last stderr line, else the last result text, else 'claude exited <rc>'."""
+    lines = [l for l in read_text(idir / "session.err").splitlines() if l.strip()]
+    if lines:
+        return lines[-1]
+    result = ""
+    for line in read_text(idir / "session.jsonl").splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and ev.get("type") == "result" and isinstance(ev.get("result"), str) and ev["result"]:
+            result = ev["result"]
+    return result or "claude exited %s" % ("?" if rc is None else rc)
+
+
+def import_elapsed(idir: Path, running: bool) -> int:
+    meta = read_json_file(idir / "meta.json") or {}
+    try:
+        start = datetime.strptime(meta["created_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+    except (KeyError, ValueError, TypeError):
+        start = idir.stat().st_mtime
+    try:
+        end = time.time() if running else (idir / "session.jsonl").stat().st_mtime
+    except OSError:
+        end = time.time()
+    return max(0, int(end - start))
+
+
+def import_status(id: str) -> dict:
+    """running while the session lives; ready when cards.json parses; failed otherwise."""
+    idir = import_dir(id)
+    with _IMPORT_LOCK:
+        proc = _IMPORTS.get(id)
+        running = proc is not None and proc.poll() is None
+        rc = proc.returncode if proc is not None else None
+    status = {"state": "running", "elapsed_s": import_elapsed(idir, running),
+              "last_text": last_session_text(idir / "session.jsonl"),
+              "cards": None, "table": None, "error": None}
+    if running:
+        return status
+    cards = read_json_file(idir / "cards.json")
+    if cards is None:
+        status.update(state="failed", error=session_error(idir, rc))
+        return status
+    drc, table, derr = run_script(APP["root"], ["bash", script("import-plan.sh"), str(idir / "cards.json"), "--dry-run"])
+    if drc != 0:
+        status.update(state="failed", cards=cards,
+                      error=derr.rstrip("\n") or "import-plan.sh --dry-run exited %d" % drc)
+        return status
+    status.update(state="ready", cards=cards, table=table)
+    return status
+
+
+def create_import(id: str, embed: bool) -> dict:
+    """Creates the previewed cards through import-plan.sh; once per import."""
+    idir = import_dir(id)
+    with _IMPORT_LOCK:
+        meta = read_json_file(idir / "meta.json") or {}
+        if meta.get("created"):
+            raise ApiError(409, "import %s was already created" % id)
+        state = import_status(id)
+        if state["state"] != "ready":
+            raise ApiError(409, "import %s is %s, not ready" % (id, state["state"]))
+        argv = ["bash", script("import-plan.sh"), str(idir / "cards.json")]
+        if meta.get("status") == "ready":
+            argv += ["--status", "ready"]
+        rc, out, err = run_script(APP["root"], argv, stdin="y\n" + ("e\n" if embed else "m\n"))
+        if rc != 0:
+            raise ApiError(409, err.rstrip("\n") or "import-plan.sh exited %d" % rc)
+        created = [int(n) for n in CREATED_RE.findall(out)]
+        if not created:
+            raise ApiError(409, "import-plan.sh created nothing: %s" % (out.strip() or err.strip()))
+        meta["created"] = True
+        write_private(idir / "meta.json", json.dumps(meta))
+    return {"created": created, "output": out}
+
+
 # --- controllers: (params, body) -> (status, payload) -------------------------
 
 def ctx():
@@ -556,9 +738,28 @@ def stop_run(params, body):
     return 200, {"state": "stopping"}
 
 
+def post_import(params, body):
+    plan = require_str(body, "plan")
+    status = body.get("status", "backlog")
+    if status not in ("backlog", "ready"):
+        raise ApiError(400, "status must be backlog or ready")
+    return 200, {"import_id": start_import(plan, status)}
+
+
+def get_import(params, body):
+    return 200, import_status(params["id"])
+
+
+def create_import_cards(params, body):
+    embed = body.get("embed_docs", False)
+    if not isinstance(embed, bool):
+        raise ApiError(400, "embed_docs must be a boolean")
+    return 200, create_import(params["id"], embed)
+
+
 # --- handler and route dispatch -----------------------------------------------
 
-# (method, path regex, controller); named groups that are digits become ints.
+# (method, path regex, controller); the n group becomes an int, id stays a string.
 ROUTES = [
     ("GET", r"/api/board", get_board),
     ("POST", r"/api/cards", create_card),
@@ -569,6 +770,9 @@ ROUTES = [
     ("GET", r"/api/run", get_run),
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
+    ("POST", r"/api/import", post_import),
+    ("GET", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_import),
+    ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
 ]
 NO_BODY = (start_run, stop_run)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
@@ -579,7 +783,7 @@ def match_route(method: str, path: str):
     for m, pattern, fn in ROUTES:
         hit = re.fullmatch(pattern, path)
         if hit and m == method:
-            return fn, {k: int(v) for k, v in hit.groupdict().items()}
+            return fn, {k: (int(v) if k == "n" else v) for k, v in hit.groupdict().items()}
     return None
 
 
