@@ -124,8 +124,9 @@ function eq(a, b, what) {
     run("renderBoard = function (b, force) { if (force) for (const c of b.cards) globalThis.__live[c.number] = renderCard(c, 'r'); }");
     ctx.__live = live;
     const gates = [];
+    let postGate = null;
     ctx.fetch = function (path, opts) {
-      if (opts.method === "POST") return Promise.resolve({ ok: true, status: 200, json: async function () { return {}; } });
+      if (opts.method === "POST") return new Promise(function (res) { postGate = function () { res({ ok: true, status: 200, json: async function () { return {}; } }); }; });
       return new Promise(function (res) {
         gates.push(function () { res({ ok: true, status: 200, json: async function () { return { cards: [{ number: 7, state: "b" }], states: [], run: null }; } }); });
       });
@@ -134,6 +135,8 @@ function eq(a, b, what) {
     const moving = ctx.moveCard(7, "b");
     await new Promise(function (r) { setImmediate(r); });
     eq(live[7].classList.contains("pending"), true, "pending while in flight");
+    postGate();
+    await new Promise(function (r) { setImmediate(r); });
     const poll = ctx.fetchBoard(); // a poll supersedes the forced refresh
     await new Promise(function (r) { setImmediate(r); });
     gates.forEach(function (g) { g(); });
