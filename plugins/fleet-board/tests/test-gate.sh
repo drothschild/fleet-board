@@ -1648,6 +1648,60 @@ for c in "bash /x/scripts/board-move.sh 14 in_review" \
   assert_blocked "accept-move-still-gated: subagent: $c" "Human QA"
 done
 
+# ---------------------------------------------------------------------------
+# merge-only-reviewed-heads: under auto, a head that moved past last_review is
+# merged only when every commit since is a clean merge of main.
+# reviewed_head_case <kind>: real commits in $REPO (conflict | clean), a note
+# on card 12 whose last_review.sha is the pre-merge commit, PR 4 on that head.
+reviewed_head_case() {
+  local kind="$1" b0 r m h dir
+  setup_case labels-auto
+  dir="$FAKE_GH_DIR/rh"; mkdir -p "$dir"
+  git -C "$REPO" config user.email t@example.com; git -C "$REPO" config user.name T
+  printf 'base\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -q -m base
+  b0="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q -b fleet/12-add-subtract
+  printf 'feature\n' > "$REPO/f.txt"; git -C "$REPO" commit -q -am feature
+  r="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q -b mainline "$b0"
+  if [ "$kind" = conflict ]; then printf 'mainline\n' > "$REPO/f.txt"; else printf 'o\n' > "$REPO/g.txt"; git -C "$REPO" add g.txt; fi
+  git -C "$REPO" commit -q -am "change on main"
+  m="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q fleet/12-add-subtract
+  if [ "$kind" = clean ]; then
+    git -C "$REPO" merge -q --no-edit -m "Merge branch 'main' into fleet/12-add-subtract" mainline
+  else
+    git -C "$REPO" merge -q --no-edit mainline >/dev/null 2>&1
+    printf 'resolved by hand\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt
+    git -C "$REPO" commit -q -m "Merge branch 'main' into fleet/12-add-subtract"
+  fi
+  h="$(git -C "$REPO" rev-parse HEAD)"
+  jq -n --arg h "$h" --arg r "$r" --arg m "$m" --arg b "$b0" \
+    '{commits: [{sha: $m, parents: [{sha: $b}], commit: {message: "change on main"}},
+                {sha: $h, parents: [{sha: $r}, {sha: $m}], commit: {message: "Merge branch main into fleet/12-add-subtract"}}]}' > "$dir/compare.json"
+  jq -n --arg h "$h" '{headRefName: "fleet/12-add-subtract", headRefOid: $h}' > "$dir/head.json"
+  jq -n --arg r "$r" '[{id: 555, user: {login: "fleet-bot"},
+    body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: in_review · Round: 1\n\n```json\n"
+      + ({state: "in_review", branch: "fleet/12-add-subtract", pr: 4, round: 1,
+          last_review: {round: 1, sha: $r, critical: 0, important: 0, findings: []}} | tojson)
+      + "\n```\n"), created_at: "2026-09-28T00:01:00Z"}]' > "$dir/comments.json"
+  {
+    card_routes | grep -v 'issues/\*/comments'
+    printf 'api --paginate repos/acme/toy/issues/*/comments\t0\t%s/comments.json\n' "$dir"
+    printf 'pr view 4 --json headRefName,headRefOid\t0\t%s/head.json\n' "$dir"
+    printf 'api repos/acme/toy/compare/%s...%s\t0\t%s/compare.json\n' "$r" "$h" "$dir"
+    pr_routes
+  } > "$ROUTES"
+}
+
+reviewed_head_case conflict
+run_hook bash.json "gh pr merge 4 --squash"
+assert_blocked "merge-only-reviewed: gh pr merge blocked under auto for a conflict-resolving merge after last_review" "review"
+
+reviewed_head_case clean
+run_hook bash.json "gh pr merge 4 --squash"
+assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
