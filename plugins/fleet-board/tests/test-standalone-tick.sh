@@ -36,6 +36,15 @@ if FLEET_BOARD_TICK_PLAN="$TMP/unknown-plan" bash "$ROOT/bin/fleet-board" tick -
   echo 'FAIL: unknown action accepted' >&2; exit 1
 fi
 if [ -s "$TMP/unknown-out" ]; then echo 'FAIL: invalid plan emitted' >&2; exit 1; fi
+cat > "$TMP/malformed-plan" <<'PLAN'
+#!/usr/bin/env bash
+printf '%s\n' '{"dispatchable":true,"warnings":[],"cards":[{"number":12,"action":"start"}]}'
+PLAN
+chmod +x "$TMP/malformed-plan"
+if FLEET_BOARD_TICK_PLAN="$TMP/malformed-plan" bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/malformed-out" 2> "$TMP/malformed-err"; then
+  echo 'FAIL: malformed card accepted' >&2; exit 1
+fi
+if [ -s "$TMP/malformed-out" ]; then echo 'FAIL: malformed plan emitted' >&2; exit 1; fi
 for call in "$FAKE_GH_DIR"/argv/*; do
   [ -f "$call" ] || continue
   if grep -Eq '^(create|edit|comment|close|merge)$' "$call"; then
