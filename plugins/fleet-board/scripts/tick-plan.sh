@@ -119,7 +119,7 @@
 # commented once. A body with no Acceptance hint stays skip_no_acceptance.
 #
 # Scope overlap: a ready card that would start waits (reason "Scope overlaps
-# #<n> on <path>") when an in_progress or in_review card names a path that its
+# #<n> on <path>") when an in_progress, in_review or stage-column card names a path that its
 # "## Scope" also names. Paths are backticked spans in that section with no
 # whitespace and a "/" or an extension; a card naming none starts as usual.
 # At most one merge is planned per tick: the lowest card number; the other
@@ -750,7 +750,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
   . as $all
   # Open cards (in_progress, in_review) and the lowest card number whose table
   # action is merge: only that card merges this tick
-  | [$all[] | select(.state == "in_progress" or .state == "in_review")] as $open
+  | [$all[] | select(.state == "in_progress" or is_review(.))] as $open
   | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger
   | [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
