@@ -39,10 +39,18 @@ if [ -e "$JOURNAL" ]; then
   [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || exit 1
   jq -e --argjson n "$N" --argjson pr "$PR" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" '.version == 1 and .card == $n and .pr == $pr and .repo == $repo and .branch == $branch' "$JOURNAL" >/dev/null || exit 1
   if jq -e '.completed == true' "$JOURNAL" >/dev/null; then
-    [ "$(remote_head)" = "$(jq -r .after "$JOURNAL")" ] && exit 0
-    echo 'branch changed after completed update' >&2; exit 1
+    CURRENT_BASE="$(git --git-dir="$REMOTE_DIR" rev-parse refs/heads/main)" || exit 1
+    if [ "$(remote_head)" = "$(jq -r .after "$JOURNAL")" ] && [ "$CURRENT_BASE" = "$(jq -r .base "$JOURNAL")" ]; then exit 0; fi
+    # The prior operation is complete. Remove only the clone created by it.
+    if [ -e "$CLONE" ]; then
+      [ -d "$CLONE" ] && [ ! -L "$CLONE" ] && [ -d "$CLONE/.git" ] && [ ! -L "$CLONE/.git" ] || exit 1
+      [ "$(git -C "$CLONE" remote get-url origin)" = "$REMOTE_DIR" ] || exit 1
+      rm -rf "$CLONE" || exit 1
+    fi
+    rm "$JOURNAL" || exit 1
   fi
-else
+fi
+if [ ! -e "$JOURNAL" ]; then
   card_state || { echo 'card state changed before update' >&2; exit 1; }
   INFO="$(pr_info)" || exit 1
   identity <<<"$INFO" || exit 1
