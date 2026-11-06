@@ -217,6 +217,40 @@ WRAPPER
   [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
   if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
 fi
+if [ "${1:-start}" = real-run ]; then
+  cat >> "$TMP/repo/.fleet-board.yml" <<'YML'
+limits:
+  tick_interval: 0
+  min_tick_gap: 0
+  max_consecutive_failures: 2
+YML
+  cat > "$TMP/worker.sh" <<'WORKER'
+#!/bin/sh
+set -eu
+if grep -q '"role": "implementor"' /scratch/request.json; then
+  printf 'after\n' > source.txt
+  git add source.txt
+  git -c user.name=Fixture -c user.email=fixture@example.com commit -qm implement
+  printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#34\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+else
+  grep -q '"role": "reviewer"' /scratch/request.json
+  printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+fi
+WORKER
+  cat > "$TMP/verify-main" <<'VERIFY'
+#!/bin/bash
+sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/main)"
+jq -n --arg sha "$sha" '{commit:$sha,ok:true,results:[]}'
+VERIFY
+  export FLEET_BOARD_VERIFY_MAIN="$TMP/verify-main" FLEET_BOARD_LOG_DIR="$TMP/logs"
+  if ! bash "$ROOT/bin/fleet-board" run --repo "$TMP/repo" > "$TMP/run-out" 2> "$TMP/run-err"; then cat "$TMP/run-out" "$TMP/run-err" >&2; echo 'FAIL: real fixture run failed' >&2; exit 1; fi
+  grep -q 'stopped: nothing-dispatchable' "$TMP/run-out" || { cat "$TMP/run-out" >&2; echo 'FAIL: run did not settle idle' >&2; exit 1; }
+  [ "$(cat "$TMP/state/column")" = done ] || { echo 'FAIL: run did not finish card' >&2; exit 1; }
+  [ "$(grep -c '^pr merge ' "$TMP/state/calls")" = 1 ] || { echo 'FAIL: run did not merge exactly once' >&2; exit 1; }
+  jq -e 'any(.[]; .id == 555 and (.body | contains("\"ok\": true")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: run did not record verified main' >&2; exit 1; }
+  echo 'PASS: real-run'
+  exit 0
+fi
 if [ "${1:-start}" = symlink-checkout ]; then
   cat > "$TMP/worker.sh" <<'MALICIOUS'
 #!/bin/sh
