@@ -30,8 +30,21 @@ git -C "$SCRATCH/checkout" remote remove origin || exit 1
 git -C "$SCRATCH/checkout" checkout -q --detach "$REF" || exit 1
 [ "$(git -C "$SCRATCH/checkout" rev-parse HEAD)" = "$REF" ] && [ -d "$SCRATCH/checkout/.git" ] && [ ! -L "$SCRATCH/checkout/.git" ] && [ ! -e "$SCRATCH/checkout/.git/objects/info/alternates" ] || { echo 'unsafe worker checkout' >&2; exit 1; }
 NAME="fleet-worker-$(basename "$SCRATCH")-$$"
+# Create first so cancellation can always remove a known container before start.
+PID="" WATCHDOG=""
+cleanup() {
+  [ -z "$WATCHDOG" ] || kill "$WATCHDOG" 2>/dev/null || true
+  [ -z "$PID" ] || kill "$PID" 2>/dev/null || true
+  [ -z "$PID" ] || wait "$PID" 2>/dev/null || true
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  [ -z "$WATCHDOG" ] || wait "$WATCHDOG" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 # No host credentials or controller checkout are mounted into the container.
-docker run --rm --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh > "$SCRATCH/worker.stdout" 2> "$SCRATCH/worker.stderr" &
+docker create --pull never --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh >/dev/null || { echo 'cannot create isolated worker' >&2; exit 1; }
+docker start -a "$NAME" > "$SCRATCH/worker.stdout" 2> "$SCRATCH/worker.stderr" &
 PID=$!
 (
   sleep "$SECONDS_LIMIT" & TIMER=$!
@@ -39,15 +52,6 @@ PID=$!
   wait "$TIMER" && docker rm -f "$NAME" >/dev/null 2>&1 || true
 ) </dev/null >/dev/null 2>&1 &
 WATCHDOG=$!
-cleanup() {
-  kill "$WATCHDOG" 2>/dev/null || true
-  docker rm -f "$NAME" >/dev/null 2>&1 || true
-  wait "$PID" 2>/dev/null || true
-  wait "$WATCHDOG" 2>/dev/null || true
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 wait "$PID"; RC=$?
 kill "$WATCHDOG" 2>/dev/null || true
 wait "$WATCHDOG" 2>/dev/null || true
