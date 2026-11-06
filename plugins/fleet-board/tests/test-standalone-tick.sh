@@ -4,8 +4,8 @@ set -uo pipefail
 unset CDPATH
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-if [ "${1:-}" = start ]; then
-  exec bash "$TEST_DIR/test-standalone-start.sh"
+if [ "${1:-}" = start ] || [ "${1:-}" = resume ]; then
+  exec bash "$TEST_DIR/test-standalone-start.sh" "$1"
 fi
 if [ "${1:-}" = worker-boundary ]; then
   TMP="$(mktemp -d)"
