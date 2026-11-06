@@ -102,8 +102,11 @@ bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/blocked-final" || exit 1
 MARKER="<!-- fleet-board:implementor-blocked:$N:$ATTEMPT:$BASE -->"
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 [ "$(jq -r .state <<<"$CURRENT")" = blocked ] || exit 1
-if ! jq -e --arg marker "$MARKER" 'any(.comments[]; .body | startswith($marker))' <<<"$CURRENT" >/dev/null; then
-  { printf '%s\n\n' "$MARKER"; cat "$SCRATCH/blocked-report"; } > "$SCRATCH/blocked-comment"
+ME="$(fb_login)" || exit 1
+{ printf '%s\n\n' "$MARKER"; cat "$SCRATCH/blocked-report"; } > "$SCRATCH/blocked-comment"
+if jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.comments[]; .author == $me and (.body | startswith($marker)))' <<<"$CURRENT" >/dev/null; then
+  jq -e --arg marker "$MARKER" --arg me "$ME" --rawfile body "$SCRATCH/blocked-comment" '[.comments[] | select(.author == $me and (.body | startswith($marker)))] | length == 1 and .[0].body == $body' <<<"$CURRENT" >/dev/null || { echo 'saved blocked report differs from posted report' >&2; exit 1; }
+else
   bash "$SCRIPTS/board-comment.sh" "$N" "$SCRATCH/blocked-comment" || exit 1
 fi
 jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
