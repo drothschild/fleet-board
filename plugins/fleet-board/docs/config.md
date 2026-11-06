@@ -45,6 +45,45 @@ board:
 
 Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with a `## Acceptance` section drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). The Acceptance command is the first backticked span with a non-blank character; spans are paired single backticks, so a detail with an odd number of backticks or a double backtick has none. An out-of-scope item with no such span, or whose detail holds the words `no testable check` (even beside a backticked path, and even when quoted), gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. Roles are told to write the check command before any other backticked text; a backticked file path written first is taken as the command, and invisible characters inside a span are not checked. A follow-up whose detail says "depends on this card" carries `## Depends on` naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
 
+## `review.stages`
+
+Empty by default, so every existing config keeps its behavior. Each entry adds a board column after In Review, with its own reviewer, for checks the evidence reviewer does not make (security, UX, compliance). A stage names either an `agent` (a Claude subagent) or a `provider` (see [`providers`](#providers)); it sets exactly one.
+
+```yaml
+review:
+  max_rounds: 3
+  stages:
+    - name: security                  # required; ^[a-z][a-z0-9_]*$; unique
+      agent: acme:security-reviewer   # an agent, or provider (below), not both
+      model: opus                     # default: models.reviewer
+      paths: ["src/auth/**", "**/*.sql"]  # default []: routed by label only
+      label: needs-security-review    # default: needs-<name>-review
+      advisory: false                 # default false
+      max_rounds: 2                   # default: review.max_rounds
+      brief: "Focus on authz, secrets, injection."  # optional; passed verbatim
+    - name: compliance
+      provider: openai                # instead of agent
+      model: <model id, passed verbatim>
+      price: { input: 1.25, output: 10 }   # USD per million tokens; required
+      timeout: 600                    # seconds
+      max_output_tokens: 16000
+      max_diff_bytes: 400000
+```
+
+A stage is the state `review_<name>`, in config order between `in_review` and `human_qa`. On the labels backend its column is the label `fleet:review_<name>`; on Projects it is the Status option `Review: <name>`. `board.states.review_<name>` renames it; a `review_` key naming no stage is rejected.
+
+**Routing.** A stage applies to a card when the card carries the stage's label, or when a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next tick retries. A person can add a label before a stage begins to force a visit, or remove it to skip one; a stage already reviewed is not visited again. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
+
+**Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). It creates each stage's routing label on both backends and its state label on the labels backend. On Projects it checks the Status field has a column for each stage and exits 1 naming the missing ones; add them by hand, or map the stage onto an existing column with `board.states`.
+
+**Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there in the same tick. Critical or Important findings go to the fixer and the same stage re-reviews, up to the stage's `max_rounds`; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
+
+**Advisory.** An `advisory: true` stage posts its report and its findings are read as clean: it never fixes and never blocks the card.
+
+**Trade-off.** A finding is fixed and re-reviewed in its own stage only. Earlier stages are not re-run, so a later stage's fix is not seen again by the evidence reviewer or by an earlier stage. The reviewed-heads rule still applies: a PR is merged only at a head some reviewer saw, so a fix that lands after the last review is reviewed again before it merges.
+
+**A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body and the PR diff to that provider, and only those: it has no tools and no worktree, so it runs no tests.
+
 ## `providers`
 
 A review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). A stage sets exactly one; `config.sh` exits 5 with `review.stages[<i>] must set exactly one of agent and provider` otherwise.
