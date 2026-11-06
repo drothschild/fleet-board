@@ -872,6 +872,90 @@ plan_real nonmerge
 assert_exit "merge-only-reviewed: non-merge commit: exit" 0
 assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
 
+# Scope overlap and one merge per tick. Fixtures are built at run time.
+# scope_issue <dir> <n> <label> <scope section text, or NONE>: writes the issue
+scope_issue() {
+  local dir="$1" n="$2" label="$3" scope="$4" body
+  body="Work."$'\n\n'
+  if [ "$scope" != NONE ]; then body="$body## Scope"$'\n'"$scope"$'\n\n'; fi
+  body="$body## Acceptance"$'\n'"- it works"$'\n'
+  jq -n --argjson n "$n" --arg l "fleet:$label" --arg b "$body" \
+    '{number: $n, title: "Card \($n)", html_url: "https://github.com/acme/toy/issues/\($n)", body: $b, labels: [{name: $l}]}' \
+    > "$dir/issue-$n.json"
+}
+
+# scope_routes <dir> <ready numbers> <in_review numbers>: routes for those cards
+scope_routes() {
+  local dir="$1" n pr
+  {
+    printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
+    for n in $2 $3; do
+      printf 'api repos/acme/toy/issues/%s\t0\t%s/issue-%s.json\n' "$n" "$dir" "$n"
+      if [ -f "$dir/comments-$n.json" ]; then
+        printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/comments-%s.json\n' "$n" "$dir" "$n"
+      else
+        printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/common/empty.json\n' "$n" "$TICK"
+      fi
+    done
+    for n in $3; do
+      pr=$((n + 22))
+      printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/common/pr-34-open-green.json\n' "$pr" "$TICK"
+      printf 'pr view %s --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$pr" "$TICK"
+    done
+    for st in ready:"$2" in_progress: in_review:"$3" blocked:; do
+      local col="${st%%:*}" nums="${st#*:}" arr="[]" x
+      arr="$(for x in $nums; do jq -cn --argjson n "$x" --arg l "fleet:$col" '{number: $n, title: "Card \($n)", url: "u", labels: [{name: $l}]}'; done | jq -cs '.')"
+      printf '%s\n' "$arr" > "$dir/list-$col.json"
+      printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s/list-%s.json\n' "$col" "$dir" "$col"
+    done
+  } > "$dir/routes"
+  FAKE_GH_ROUTES="$dir/routes"; export FAKE_GH_ROUTES
+}
+
+# scope_review_note <dir> <n>: a clean round 1 review note for card n, PR n+22
+scope_review_note() {
+  sed -e "s/fleet\\/12-add-subtract/fleet\\/$2-card/" -e "s/\\\\\"pr\\\\\":34/\\\\\"pr\\\\\":$(($2 + 22))/" \
+    "$TICK/in-review-merge-auto/comments-12.json" > "$1/comments-$2.json"
+}
+
+# plan_scope <ready card's scope text or NONE>: ready card 14, in_review card 12 naming src/a.sh
+plan_scope() {
+  setup_case ready-start
+  local dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+  scope_issue "$dir" 12 in_review '- Modify `src/a.sh`: the change'
+  scope_issue "$dir" 14 ready "$1"
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "14" "12"
+  run_check "$SCRIPT"
+}
+
+plan_scope '- Modify `src/a.sh`: another change'
+assert_exit "scope-overlap: exit" 0
+assert_jq "scope-overlap: a Ready card sharing a path with an in_review card waits" "$(card 14 action)" '"wait"'
+assert_jq "scope-overlap: the reason names the other card" "$(card 14 reason | sed 's/^/(/; s/$/ | contains("#12"))/')" 'true'
+
+plan_scope '- Modify `src/b.sh`: another change'
+assert_exit "scope-disjoint: exit" 0
+assert_jq "scope-disjoint: cards naming different paths start" "$(card 14 action)" '"start"'
+
+plan_scope 'Everything in the card, no file named here.'
+assert_exit "scope-none: exit" 0
+assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
+
+# Three cards eligible to merge: exactly one merge, lowest number first
+setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto')"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+for n in 12 13 15; do
+  scope_issue "$dir" "$n" in_review NONE
+  scope_review_note "$dir" "$n"
+done
+scope_routes "$dir" "" "15 12 13"
+run_check "$SCRIPT"
+assert_exit "merge-one: exit" 0
+assert_jq "merge-one: exactly one of three eligible cards is merge" '[.cards[] | select(.action == "merge")] | length' 1
+assert_jq "merge-one: the merge is the lowest card number" '[.cards[] | select(.action == "merge") | .number]' '[12]'
+assert_jq "merge-one: the others wait" '[.cards[] | select(.action == "wait") | .number] | sort' '[13,15]'
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra

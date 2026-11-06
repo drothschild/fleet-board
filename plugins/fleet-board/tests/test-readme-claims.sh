@@ -43,5 +43,52 @@ r=bad
 grep -qF '| `review.stages[].provider` |' "$README" && r=ok
 check "key table has a review.stages[].provider row" "$r"
 
+# --- settle.sh docs claims (it runs outside the gate, so these are safety claims) ---
+DOCS_DIR="${SCRIPT_DIR}/../docs"
+GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
+OVERNIGHT="${OVERNIGHT_FILE:-${DOCS_DIR}/overnight.md}"
+
+gsec="$(awk '/^## settle\.sh runs outside the gate$/{f=1;next} f && /^## /{exit} f' "$GATES")"
+r=bad
+[ -n "$gsec" ] && r=ok
+check "gates.md has the heading '## settle.sh runs outside the gate'" "$r"
+
+r=bad
+printf '%s\n' "$gsec" | grep -qi "never merges" && r=ok
+check "gates.md settle.sh section says settle.sh never merges" "$r"
+
+r=bad
+printf '%s\n' "$gsec" | grep -qi "never moves a card out of human_qa" && r=ok
+check "gates.md settle.sh section says it never moves a card out of human_qa" "$r"
+
+settle_lines() { grep -F 'scripts/settle.sh' "$1"; }
+for pair in "README:$README" "overnight.md:$OVERNIGHT"; do
+  name="${pair%%:*}"; file="${pair#*:}"
+  lines="$(settle_lines "$file")"
+  r=bad; [ -n "$lines" ] && r=ok
+  check "$name mentions scripts/settle.sh" "$r"
+  r=bad; printf '%s\n' "$lines" | grep -qi "never merges" && r=ok
+  check "$name says settle.sh never merges" "$r"
+  r=bad; printf '%s\n' "$lines" | grep -qF 'interactive `/fleet-board:tick` does not run it' && r=ok
+  check "$name says an interactive /fleet-board:tick does not run settle.sh" "$r"
+done
+
+# The overrides must work: a copy with the "never merges" sentence removed must fail.
+if [ -z "${README_CLAIMS_NESTED:-}" ]; then
+  tmp="$(mktemp -d)"
+  for var in README_FILE GATES_FILE OVERNIGHT_FILE; do
+    case "$var" in
+      README_FILE) src="$README" ;;
+      GATES_FILE) src="$GATES" ;;
+      OVERNIGHT_FILE) src="$OVERNIGHT" ;;
+    esac
+    sed 's/never merges/may merge/g' "$src" > "$tmp/$var.md"
+    r=bad
+    if ! env README_CLAIMS_NESTED=1 "$var=$tmp/$var.md" bash "${BASH_SOURCE[0]:-$0}" >/dev/null 2>&1; then r=ok; fi
+    check "$var pointing at a copy without 'never merges' makes the test fail" "$r"
+  done
+  rm -rf "$tmp"
+fi
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
