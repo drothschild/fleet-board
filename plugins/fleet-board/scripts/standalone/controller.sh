@@ -63,6 +63,8 @@ run_stage() { run_group bash "$SCRIPTS/standalone/stage.sh" "$@"; }
 run_hold() { run_group bash "$SCRIPTS/standalone/hold.sh" "$@"; }
 run_maintenance() { run_group bash "$SCRIPTS/standalone/maintenance.sh" "$@"; }
 run_update_branch() { run_group bash "$SCRIPTS/standalone/update-branch.sh" "$@"; }
+run_settle_move() { run_group bash "$SCRIPTS/standalone/settle-move.sh" "$@"; }
+run_settle_stage() { run_group bash "$SCRIPTS/standalone/settle-stage.sh" "$@"; }
 run_publication() { run_group bash "$SCRIPTS/standalone/publication.sh" "$@"; }
 trap cleanup EXIT
 trap 'cancel 130' INT
@@ -87,7 +89,7 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/blocked-*.json "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json "$COMMON"/fleet-board-standalone/maintenance-file_pending-*.json "$COMMON"/fleet-board-standalone/update-branch-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/blocked-*.json "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json "$COMMON"/fleet-board-standalone/maintenance-file_pending-*.json "$COMMON"/fleet-board-standalone/update-branch-*.json "$COMMON"/fleet-board-standalone/settle-move-*.json "$COMMON"/fleet-board-standalone/settle-stage-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
@@ -104,6 +106,8 @@ if [ "$MODE" = tick ]; then
       stage-*) run_stage "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       maintenance-*) run_maintenance "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       update-branch-*) run_update_branch "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      settle-move-*) run_settle_move "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      settle-stage-*) run_settle_stage "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       *) exit 1 ;;
     esac
     jq -n --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]} + (if $fixture then {cost_usd:0} else {} end)'
