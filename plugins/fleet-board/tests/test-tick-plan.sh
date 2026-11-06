@@ -1088,6 +1088,40 @@ assert_jq "no_warning_when_stage_not_acted_on: no warning" '.warnings' '[]'
 # settle: review_stage is skipped there, so no warning
 ssettle stage-provider-review 12
 assert_jq "no_warning_when_stage_not_acted_on: settle skip" '.warnings' '[]'
+# advance_into_provider_stage_warns: the manager runs review_stage right after
+# advance_stage, so entering a provider stage with its key unset warns once
+splan stage-advance-to-provider
+assert_exit "advance_into_provider_stage_warns: exit" 0
+assert_jq "advance_into_provider_stage_warns: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "advance_into_provider_stage_warns: stage" "$(card 12 stage.name)" '"compliance"'
+assert_jq "advance_into_provider_stage_warns: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+setup_case stage-advance-to-provider "$STAGES_YAML"
+OPENAI_API_KEY=x; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "advance_into_provider_stage_warns: key set, no warning" '.warnings' '[]'
+# advance into an agent stage never warns
+splan stage-advance-from-review
+assert_jq "advance into an agent stage: no warning" '.warnings' '[]'
+
+# no_stages_no_next_lookup: with no review stages configured, a clean, current
+# in_review card never runs review-stages.sh next and plans the old tail. A
+# copy of the scripts dir whose review-stages.sh records its call and fails
+# stands in for it.
+NEXT_STUB="$(mktemp -d)"
+CLEANUP_DIRS+=("$NEXT_STUB")
+cp -R "$SCRIPT_DIR/../scripts/." "$NEXT_STUB/"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/next-calls"\nexit 1\n' "$NEXT_STUB" > "$NEXT_STUB/review-stages.sh"
+setup_case in-review-mark-ready-human
+run_check "$NEXT_STUB/tick-plan.sh"
+assert_exit "no_stages_no_next_lookup: exit" 0
+assert_jq "no_stages_no_next_lookup: old tail" "$(card 12 action)" '"mark_ready"'
+assert_eq "no_stages_no_next_lookup: review-stages.sh not run" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" none
+# control: with stages configured the same stub is run (and its failure skips the card)
+setup_case stage-advance-from-review "$STAGES_YAML"
+run_check "$NEXT_STUB/tick-plan.sh"
+assert_jq "no_stages_no_next_lookup control: lookup failed" "$(card 12 reason)" '"lookup failed: review-stages.sh next 12"'
+assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
