@@ -272,6 +272,9 @@ assert_file_contains "log: tick 1 result text" "$LOG" "dispatchable: true"
 assert_file_contains "log: tick 2 result text" "$LOG" "dispatchable: false"
 assert_file_contains "log: stopped line" "$LOG" "fleet-board-run: stopped: nothing-dispatchable after 2 ticks, 0.00 h, cost_estimate_usd 0.7 (estimate)"
 assert_eq "log: the stopped line is last" "$(tail -1 "$LOG" 2>/dev/null)" "fleet-board-run: stopped: nothing-dispatchable after 2 ticks, 0.00 h, cost_estimate_usd 0.7 (estimate)"
+assert_file_matches "log: tick 1 start line" "$LOG" "^=== tick 1 start $ISO ===$"
+assert_true "log: tick 1 start line before the tick 1 end line" \
+  test "$(line_of "$LOG" "=== tick 1 start ")" -gt 0 -a "$(line_of "$LOG" "=== tick 1 start ")" -lt "$(line_of "$LOG" "=== tick 1 20")"
 assert_true "log: tick 1 block before tick 2 block" \
   test "$(line_of "$LOG" "=== tick 1 ")" -gt 0 -a "$(line_of "$LOG" "=== tick 1 ")" -lt "$(line_of "$LOG" "=== tick 2 ")"
 assert_eq "log: nothing under HOME" "$(find "$HOMEDIR" -type f | wc -l | tr -d ' ')" "0"
