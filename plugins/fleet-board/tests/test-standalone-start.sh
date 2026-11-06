@@ -100,6 +100,8 @@ case "$*" in
     git --git-dir="$GH_REMOTE" update-ref refs/heads/main "$sha"
     touch "$GH_STATE/merged" ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body,statusCheckRollup,mergeable')
+    if [ -e "$GH_STATE/merge-qa-race" ]; then rm "$GH_STATE/merge-qa-race"; touch "$GH_STATE/qa-flag"; fi
+    if [ -e "$GH_STATE/merge-state-race" ]; then rm "$GH_STATE/merge-state-race"; printf human_qa > "$GH_STATE/column"; fi
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
     draft=true; [ ! -e "$GH_STATE/ready" ] || draft=false
     state=OPEN; [ ! -e "$GH_STATE/merged" ] || state=MERGED
@@ -262,7 +264,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -406,6 +408,15 @@ PY_WORKER
   if ! jq -e '.outcome == "progress" and .cards[0].action == "start_review"' "$TMP/review-out" >/dev/null; then echo 'FAIL: review outcome' >&2; exit 1; fi
   [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: card did not reach review' >&2; exit 1; }
   jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: exact reviewed head missing from manager note' >&2; exit 1; }
+  if [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ]; then
+    bash "$ROOT/bin/fleet-board" tick > "$TMP/ready-out" || { echo 'FAIL: mark-ready tick failed' >&2; exit 1; }
+    touch "$TMP/state/$1"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/race-out" 2>&1; then echo 'FAIL: merge accepted changed QA or card state' >&2; exit 1; fi
+    if [ -e "$TMP/state/merged" ] || grep -q '^pr merge ' "$TMP/state/calls"; then echo 'FAIL: merge attempted after QA or state changed' >&2; exit 1; fi
+    if [ "$1" = merge-state-race ] && [ "$(cat "$TMP/state/column")" != human_qa ]; then echo 'FAIL: Human QA move lost' >&2; exit 1; fi
+    echo "PASS: $1"
+    exit 0
+  fi
   if [ "${1:-start}" = stale-head ]; then
     bash "$ROOT/bin/fleet-board" tick > "$TMP/ready-out" || { echo 'FAIL: mark-ready tick failed' >&2; exit 1; }
     touch "$TMP/state/force-merge"
