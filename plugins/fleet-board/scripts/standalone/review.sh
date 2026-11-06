@@ -93,7 +93,10 @@ check_live_card() {
     elif [ "$RECOVERING" = true ] && [ "$ACTION" = start_review ] && [ "$actual" = null ] && jq -e '.move_attempted == true and .move_source == "in_progress"' "$JOURNAL" >/dev/null; then :
     else return 1; fi
   fi
-  if [ "$(fb_cfg board.backend)" = github-projects ]; then
+  if [ "$(fb_cfg board.backend)" = local ]; then
+    [ "$actual" != null ] || return 1
+    jq -e --argjson n "$N" '.number == $n' <<<"$current" >/dev/null || return 1
+  elif [ "$(fb_cfg board.backend)" = github-projects ]; then
     [ -n "$item" ] || return 1
     if [ "$actual" = null ]; then [ "$(jq -r '.move_item_id // empty' "$JOURNAL")" = "$item" ] || return 1; fi
     jq -e --argjson n "$N" '.number == $n' <<<"$current" >/dev/null || return 1
