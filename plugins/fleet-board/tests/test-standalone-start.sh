@@ -89,6 +89,8 @@ case "$*" in
   'issue list --repo acme/toy --label fleet:review_security '*|'issue list --repo acme/toy --label fleet:review_standard '*)
     label="$6"; column="${label#fleet:}"
     if [ "$(cat "$GH_STATE/column")" = "$column" ]; then jq -n --arg label "$label" '[{number:12,title:"Add subtract",url:"https://github.com/acme/toy/issues/12",labels:[{name:$label}]}]'; else echo '[]'; fi ;;
+  'issue list --repo acme/toy --label fleet:blocked '*)
+    if [ "$(cat "$GH_STATE/column")" = blocked ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:blocked"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label needs-security-review') touch "$GH_STATE/stage-label" ;;
@@ -98,6 +100,8 @@ case "$*" in
     printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_review') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:blocked') printf blocked > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --remove-label fleet:blocked') printf none > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:ready') printf ready > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:done')
     if [ -e "$GH_STATE/fail-done-move" ]; then rm "$GH_STATE/fail-done-move"; exit 1; fi
     printf done > "$GH_STATE/column" ;;
@@ -142,6 +146,8 @@ case "$*" in
     state=OPEN; merged=null; if [ -e "$GH_STATE/merged" ]; then state=MERGED; merged='"2026-01-01T00:00:00Z"'; fi
     jq -n --arg sha "$sha" --arg state "$state" --argjson draft "$draft" --argjson merged "$merged" '{isDraft:$draft,state:$state,mergedAt:$merged,statusCheckRollup:[{__typename:"CheckRun",conclusion:"SUCCESS"}],headRefOid:$sha}' ;;
   'pr view 34 --repo acme/toy --json files,changedFiles') echo '{"files":[{"path":"source.txt"}],"changedFiles":1}' ;;
+  'pr view 44 --repo acme/toy --json state,mergedAt') echo '{"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z"}' ;;
+  'pr view 44 --repo acme/toy --json number,state,mergedAt') echo '{"number":44,"state":"MERGED","mergedAt":"2026-01-01T00:00:00Z"}' ;;
   'pr view 34 --repo acme/toy --json mergeable') echo '{"mergeable":"MERGEABLE"}' ;;
   'pr ready 34 --repo acme/toy') touch "$GH_STATE/ready" ;;
   'pr merge 34 --repo acme/toy --squash --match-head-commit '*)
@@ -236,7 +242,7 @@ WRAPPER
   [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
   if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
 fi
-if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ] || [ "${1:-start}" = continue-blocked-resume ] || [ "${1:-start}" = blocked-changed-blocker ] || [ "${1:-start}" = blocked-spoof ] || [ "${1:-start}" = blocked-report-changed ]; then
+if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ] || [ "${1:-start}" = continue-blocked-resume ] || [ "${1:-start}" = blocked-changed-blocker ] || [ "${1:-start}" = blocked-spoof ] || [ "${1:-start}" = blocked-report-changed ] || [ "${1:-start}" = blocked-cycle ]; then
   cat > "$TMP/worker.sh" <<'BLOCKED'
 #!/bin/sh
 set -eu
@@ -303,6 +309,15 @@ WRAPPER
   note="$(bash "$ROOT/plugins/fleet-board/scripts/note.sh" get 12)" || exit 1
   jq -e --argjson attempts "$ATTEMPTS" '.state == "blocked" and .blocked_from == "in_progress" and .blocking_pr == 44 and .implementor_attempts == $attempts and (.last_verified | contains("VERIFIED:"))' <<<"$note" >/dev/null || { echo 'FAIL: blocked evidence not recorded' >&2; exit 1; }
   jq -e '[.[] | select(.user.login == "fleet-bot" and (.body | contains("fleet-board:implementor-blocked:")))] | length == 1' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: authenticated blocked report missing or duplicated' >&2; exit 1; }
+  if [ "$1" = blocked-cycle ]; then
+    bash "$ROOT/bin/fleet-board" tick > "$TMP/unblock-out" || { echo 'FAIL: initial blocker did not unblock' >&2; exit 1; }
+    [ "$(cat "$GH_STATE/column")" = ready ] || { echo 'FAIL: card not ready after unblock' >&2; exit 1; }
+    sed 's/#44/#45/g' "$TMP/worker.sh" > "$TMP/worker-next" && mv "$TMP/worker-next" "$TMP/worker.sh"
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/second-blocked"; then echo 'FAIL: second blocked cycle was not reconciled' >&2; exit 1; fi
+    note="$(bash "$ROOT/plugins/fleet-board/scripts/note.sh" get 12)" || exit 1
+    jq -e '.state == "blocked" and .blocking_pr == 45 and .implementor_attempts == 1' <<<"$note" >/dev/null || { echo 'FAIL: second blocker was not recorded' >&2; exit 1; }
+    jq -e '[.[] | select(.user.login == "fleet-bot" and (.body | contains("fleet-board:implementor-blocked:")))] | length == 2' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: second blocked report missing' >&2; exit 1; }
+  fi
   echo "PASS: $1"
   exit 0
 fi
