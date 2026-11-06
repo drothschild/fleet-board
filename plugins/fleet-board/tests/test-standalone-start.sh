@@ -74,6 +74,41 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-start}" = tick-interrupt ]; then
+  cat > "$TMP/worker.sh" <<'STUBBORN'
+#!/bin/sh
+hostname > /scratch/@MARKER@
+trap '' TERM
+while :; do sleep 1; done
+STUBBORN
+  MARKER="running-$(basename "$TMP")"
+  sed "s/@MARKER@/$MARKER/" "$TMP/worker.sh" > "$TMP/worker.tmp"
+  mv "$TMP/worker.tmp" "$TMP/worker.sh"
+  TMPDIR="$TMP" bash "$ROOT/bin/fleet-board" tick > "$TMP/interrupted-out" 2>&1 & TICK_PID=$!
+  RUNNING=""
+  for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    RUNNING="$(find "${TMPDIR:-/tmp}" -name "$MARKER" -type f -print -quit 2>/dev/null)"
+    [ -n "$RUNNING" ] && break
+    if ! kill -0 "$TICK_PID" 2>/dev/null; then cat "$TMP/interrupted-out" >&2; cat "$TMP/state/calls" >&2; echo 'FAIL: tick exited before worker started' >&2; exit 1; fi
+    sleep 1
+  done
+  [ -n "$RUNNING" ] || { kill "$TICK_PID" 2>/dev/null || true; cat "$TMP/interrupted-out" >&2; echo 'FAIL: tick worker did not start' >&2; exit 1; }
+  CONTAINER="$(cat "$RUNNING")"
+  kill -TERM "$TICK_PID"
+  for unused in 1 2 3 4 5; do kill -0 "$TICK_PID" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$TICK_PID" 2>/dev/null; then
+    docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+    kill -KILL "$TICK_PID" 2>/dev/null || true
+    wait "$TICK_PID" 2>/dev/null || true
+    echo 'FAIL: interrupted top-level tick did not stop' >&2; exit 1
+  fi
+  wait "$TICK_PID" 2>/dev/null || true
+  if docker inspect "$CONTAINER" >/dev/null 2>&1; then docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; echo 'FAIL: interrupted tick left a container' >&2; exit 1; fi
+  if git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract || [ -e "$TMP/state/pr" ]; then echo 'FAIL: interrupted tick published work' >&2; exit 1; fi
+  [ "$(cat "$TMP/state/column")" = ready ] || { echo 'FAIL: interrupted tick moved card' >&2; exit 1; }
+  echo 'PASS: tick-interrupt'
+  exit 0
+fi
 if [ "${1:-start}" = push-destination ]; then
   git init -q --bare "$TMP/unexpected.git"
   git config remote.origin.pushurl "file://$TMP/unexpected.git"
