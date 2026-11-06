@@ -13,7 +13,7 @@ Tell Claude Code "Go to https://github.com/drothschild/fleet-board and follow th
 /plugin install fleet-board@fleet-board
 ```
 
-Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
+Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). The local board page and the headless run wrapper need `python3` 3.9 or later (standard library only). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
 
 ## Adding fleet-board to an existing project
 
@@ -110,9 +110,11 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 
 | Key | Default | What it does |
 |---|---|---|
-| `board.backend` | `github-labels` | `github-labels` or `github-projects` |
+| `board.backend` | `github-labels` | `github-labels`, `github-projects` or `local` (cards as files in the repo, see [Local board](#local-board)) |
 | `board.repo` | none (required) | `owner/name` of the repo the cards live in |
-| `board.project_number` | none | the Projects board number; required for `github-projects` |
+| `board.project_number` | none | the Projects board number; required for `github-projects`, not used on `local` |
+| `board.dir` | `.fleet-board` | `local` only: where the cards live, relative to the repo root; no `..`, not absolute ([details](docs/config.md#boarddir-and-boardport)) |
+| `board.port` | `8765` | `local` only: the port of the board page, 1024 to 65535 ([details](docs/config.md#boarddir-and-boardport)) |
 | `board.project_owner` | `null` | the project's owner, when it isn't the repo owner |
 | `board.states` | `{}` | maps a state to a label or column name ([details](docs/config.md#boardstates)) |
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
@@ -163,9 +165,32 @@ After each successful tick the wrapper also runs `scripts/settle.sh`, a plain sh
 
 Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Under `merge.policy: auto` an overnight run merges reviewed, non-draft, green PRs itself and moves their cards to Done; under `human` (the default) it merges nothing. Stop reasons, exit codes, the run log, cost estimates and scheduling with launchd are in [docs/overnight.md](docs/overnight.md).
 
+## Local board
+
+`board.backend: local` keeps the cards as JSON files under `<repo>/.fleet-board/` instead of GitHub issues. `board.repo` stays required, since the PRs still live there.
+
+Set it up with `/fleet-board:init` and pick Local, or run `init.sh --backend local --repo OWNER/NAME`. It creates `.fleet-board/cards`, starts the card counter at 1, adds `.fleet-board/` to `.gitignore` and creates no labels. It still checks the `gh` scope `repo`. To version the board, remove that line from `.gitignore` and commit the directory.
+
+To move an existing board, save each active card with `board-read.sh <n> > <dir>/<n>.json` while the config still names the old backend, then run `migrate-to-local.sh <dir>/*.json` from the repo root and set `board.backend: local`: cards keep their numbers, states and comments, the manager note is re-authored to the local user (`--note-author` overrides), and it refuses an existing store unless `--force`.
+
+Open the page from the repo root with the `board-web.sh` beside the wrapper (the wrapper's path is the last line of `/fleet-board:status`):
+
+```bash
+bash <directory of that path>/board-web.sh --repo .
+```
+
+It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`. It refuses a board that is not `local`.
+
+- **Cards.** Drag a card to another column, or click it to open the drawer and edit its title, body, labels and state. The state select in the drawer is the keyboard path. A card lights up while a role works on it.
+- **Start and Stop.** Start spawns the headless wrapper in its own session, so it keeps running when you close the page. Stop writes `.fleet-board.stop`, which ends the run after the current tick. A restarted page finds a live run again, and a run started from a terminal or launchd counts too: every wrapper holds a per-repo run lock, so Start never launches a second one (see [docs/overnight.md](docs/overnight.md)). The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it). `FLEET_BOARD_RUN` replaces the wrapper script.
+- **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). Dependencies show as `owner/repo#n` using `board.repo`. `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
+- **Who you are.** On `local` the author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
+- **Rate limits.** The local board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain, so you can lower `limits.tick_interval` to match your CI time.
+
 ## Known issues
 
 - **Unblocking a card re-runs the implementor.** A card moved from Blocked back to Ready goes through `start` again, so the implementor runs once more before review. Its branch and PR are reused, so no work is lost. Planned for 0.1.1.
+- **Role prompts name a GitHub command on a local board.** The role prompts give `gh issue view <n> --json body` as an example for re-reading a card. On a local board that reads an unrelated GitHub issue with the same number in `board.repo`. The manager passes the card body inline, so this only happens when a role picks that example.
 
 ## Demo
 

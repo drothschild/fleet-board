@@ -105,6 +105,8 @@ setup_case() {
     projects) board='  backend: github-projects
   repo: acme/toy
   project_number: 7' ;;
+    local) board='  backend: local
+  repo: acme/toy' ;;
     *) board='  backend: github-labels
   repo: acme/toy' ;;
   esac
@@ -311,6 +313,46 @@ setup_case labels "$CARD_PLAIN" "x"
 sed -i.bak "s#^label create \*	0	-#label create *	1	-#" "$ROUTES"; rm -f "$ROUTES.bak"
 run_stages setup
 assert_exit "setup: failed label create -> exit 1" 1
+
+# setup (local backend): stage labels are plain strings in card files; no gh call at all
+setup_case local "$CARD_PLAIN" "x"
+run_stages setup
+assert_exit "setup local: exit 0" 0
+assert_eq "setup local: no label create" "$(cnt_prefix label create)" 0
+assert_eq "setup local: no gh call at all" "$(ls "$FAKE_GH_DIR/argv" 2>/dev/null | wc -l | tr -d ' ')" 0
+
+# local_store <labels-json>: a local store holding card #12 with those labels,
+# and a routes file that answers only the PR file lookups; any other gh call
+# (an issue read or edit) has no route and exits 99
+local_store() {
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 13 > "$REPO/.fleet-board/next"
+  jq -n --argjson l "$1" '{number: 12, title: "Card", body: "## Acceptance\n- x", state: "in_progress",
+    labels: $l, next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$REPO/.fleet-board/cards/12.json"
+  cat > "$ROUTES" << ROUTESEOF
+pr view 34 --repo acme/toy --json files*	0	$FAKE_GH_DIR/files.json
+ROUTESEOF
+}
+
+# route (local backend): the label lands on the card file, never on GitHub
+setup_case local "$CARD_PLAIN" "src/auth/login.js"
+local_store '["keep"]'
+run_stages route 12 34
+assert_exit "route local: exit 0" 0
+assert_stdout_exact "route local: prints the routed names" '["security"]'
+assert_eq "route local: label on the card file" "$(jq -c .labels "$REPO/.fleet-board/cards/12.json")" '["keep","needs-security-review"]'
+assert_eq "route local: no issue edit" "$(cnt_prefix issue edit)" 0
+assert_eq "route local: the only gh call is the PR file list" "$(ls "$FAKE_GH_DIR/argv" 2>/dev/null | wc -l | tr -d ' ')" 1
+
+# route (local backend): a label-only stage's label already on the card routes, no write
+setup_case labelonly "$CARD_PLAIN" "README.md"
+sed -i.bak 's/backend: github-labels/backend: local/' "$REPO/.fleet-board.yml"; rm -f "$REPO/.fleet-board.yml.bak"
+local_store '["needs-copy-review"]'
+run_stages route 12 34
+assert_exit "route local label-only: exit 0" 0
+assert_stdout_exact "route local label-only: routed by the card's label" '["copy"]'
+assert_eq "route local label-only: labels unchanged" "$(jq -c .labels "$REPO/.fleet-board/cards/12.json")" '["needs-copy-review"]'
 
 # setup (projects backend)
 setup_case projects "$CARD_PLAIN" "x"

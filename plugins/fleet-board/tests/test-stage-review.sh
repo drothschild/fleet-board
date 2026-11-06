@@ -83,7 +83,7 @@ setup() {
   : > "$CASE/curl.log"
   : > "$CASE/replies"
   {
-    printf 'board:\n  backend: github-labels\n  repo: acme/toy\nreview:\n  stages:\n'
+    printf 'board:\n  backend: %s\n  repo: acme/toy\nreview:\n  stages:\n' "${SR_BACKEND:-github-labels}"
     printf '    - name: security\n      agent: "acme:security-reviewer"\n      model: opus\n'
     printf '    - name: compliance\n      provider: openai\n      model: gpt-test\n      price: { input: 1, output: 2 }\n'
     printf '      brief: "%s"\n' "$BRIEF"
@@ -436,6 +436,48 @@ assert_eq "codex_reask: attempts 2" "$(jq -r .attempts <<<"$LAST_OUT")" "2"
 assert_eq "codex_reask: cost 0, tokens null" "$(jq -c '[.cost_usd,.input_tokens,.output_tokens]' <<<"$LAST_OUT")" "[0,null,null]"
 assert_contains "codex_reask: second prompt carries the rejection" "$(cat "$CASE/codex.stdin")" "Your report was rejected by the checker:"
 unset SR_PATH
+
+# active marker: local backend only, present while running, gone on exit.
+# The provider call comes only after the marker is written, so a curl that
+# records whether the marker exists when it is called proves it is there while
+# the stage runs (no timing), and "gone after" then proves the trap removed it.
+printf '#!/bin/sh\nif [ -f "%s/.fleet-board/active/12" ]; then : > "%s/seen"; fi\nexec "%s" "$@"\n' "$CASE" "$CASE" "$FAKE_CURL" > "$WORK/rec-curl"
+chmod +x "$WORK/rec-curl"
+make_bin "$WORK/bin-rec" 1
+ln -sf "$WORK/rec-curl" "$WORK/bin-rec/curl"
+assert_true_file() { if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing $2"; fi; }
+active_count() { ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' '; }
+
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local: exit 0" 0
+assert_true_file "stage-review has the marker while the provider runs" "$CASE/seen"
+assert_eq "stage-review removes its marker on exit" "$(active_count)" "0"
+
+# a failing exit after the marker was written (provider failure, exit 1) removes it too
+SR_BACKEND=local setup
+printf 'curl: (28) timed out\n' > "$CASE/timeout.err"
+replies "exit 28 timeout.err"
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local provider failure: exit 1" 1
+assert_true_file "stage-review provider failure: the marker was written" "$CASE/seen"
+assert_eq "stage-review provider failure: marker gone after" "$(active_count)" "0"
+
+# exit 3 (key unset) stops before the marker: nothing is left lit
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+KEEP_KEY="$OPENAI_API_KEY"; unset OPENAI_API_KEY
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+export OPENAI_API_KEY="$KEEP_KEY"
+assert_exit "stage-review local key unset: exit 3" 3
+assert_eq "stage-review key unset: active/ is empty" "$(active_count)" "0"
+
+# a labels config never writes a marker
+setup
+replies "200 r-clean.json"
+sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_eq "stage-review labels config writes no marker" "$(ls -d "$CASE/.fleet-board" 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"

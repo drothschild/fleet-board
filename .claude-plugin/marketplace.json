@@ -4,7 +4,7 @@
     "name": "David Rothschild"
   },
   "metadata": {
-    "description": "The fleet-board Claude Code plugin: a GitHub issue board as a work queue for coding agents.",
+    "description": "The fleet-board Claude Code plugin: a GitHub issue board or a local board as a work queue for coding agents.",
     "version": "1.0.0",
     "pluginRoot": "plugins"
   },

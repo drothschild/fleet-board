@@ -147,6 +147,14 @@ review:
 | `limits.rate_limit_margin` | `5` | seconds added after the reset time before the next tick |
 | `limits.min_tick_gap` | `0` | minimum seconds between tick starts across runs sharing one token (the whole-second part is used); `0` is off |
 
+## `board.dir` and `board.port`
+
+Both apply only when `board.backend` is `local`.
+
+`board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
+
+`board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
+
 ## Finding the file
 
 `config.sh` uses `$FLEET_BOARD_CONFIG` when set, then `.fleet-board.yml` at the git root, then the one in the main checkout (for a linked worktree). Its exit codes: 3 no config, 4 the file is not valid YAML or uses YAML outside the supported subset, 5 an invalid value.

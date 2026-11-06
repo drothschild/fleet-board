@@ -706,6 +706,35 @@ invalid_field_case "command with api_key_env" "providers: { codex: { api_key_env
 invalid_field_case "command not a string" "providers: { mycmd: { command: 5 } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
 invalid_field_case "command empty" "providers: { mycmd: { command: \"\" } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
 
+# local backend: accepted, defaults filled, board.dir and board.port validated
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "local backend exit 0" "0"
+assert_key "$REPO" "board.backend" "local" "local backend kept"
+assert_key "$REPO" "board.dir" ".fleet-board" "board.dir default"
+assert_key "$REPO" "board.port" "8765" "board.port default"
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: /tmp/x\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "absolute board.dir exit 5" "5"; assert_stderr_contains "absolute board.dir named" "board.dir"
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: ../x\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "dotdot board.dir exit 5" "5"
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: a/../x\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "embedded dotdot board.dir exit 5" "5"
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: a..b/x\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "dots inside a segment name are fine" "0"
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  port: 80\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "low port exit 5" "5"; assert_stderr_contains "port named" "board.port"
+REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  port: 70000\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_exit "high port exit 5" "5"
+REPO="$(make_test_repo bad-backend.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_stderr_contains "backend list names all three" "github-labels, github-projects or local"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

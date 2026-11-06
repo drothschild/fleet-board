@@ -128,6 +128,18 @@ Alternative: write the agent prompts by hand, iterating in place, which is faste
 
 Because hand-written prompts accumulate the author's assumptions and private context, and they can quietly depend on tools or files that exist only on one machine. A spec-first process forces the behavior to be written down, and a fresh session with no local setup shows whether the spec alone is enough. It also keeps the plugin portable. What it protects against is hidden coupling: a prompt that works only because of the author's own configuration. What it cost is real: slower iteration, a ceiling on API spend for each authoring run, a rule against hand-editing the generated files, and a harder time debugging when the output is slightly off. Specs get re-authored rather than patched.
 
+## A local board instead of GitHub issues
+
+The board can live as JSON files under the repo (`board.backend: local`), with a localhost page to drag cards, start and stop the run, and import a plan.
+
+Alternative: keep GitHub issues and cache the board locally, so a tick reads the cache and only refreshes what changed.
+
+Because the quota is spent on issue reads: every tick lists columns, reads each card and its comments, and writes notes and reports. A cache keeps two copies of the truth, needs invalidation when a person edits a card on github.com, and still writes through. A backend with no remote issue side removes those calls outright. PR calls remain, so a tick still costs some quota, but much less.
+
+It costs two things. The card is no longer durable, shared state: it lives on one machine, so a lost laptop loses the board unless you commit it, and a teammate on another machine cannot see it. And the note's trust boundary weakens. On GitHub only a comment by the authenticated login counts; locally the author is `FLEET_BOARD_USER` or `$USER`, so the boundary is filesystem access, and a raw write into the store is not caught by the gate hook.
+
+The adapter seam made this cheap. Callers only run the `board-*.sh` contract scripts, which dispatch to `adapters/<backend>/<verb>.sh`, so the manager, the tick plan and the roles did not change. The new backend implements the same verbs, plus a few helpers for the page.
+
 ## What I would do next
 
 The weakest part is the gate, since a text check will always lag behind new ways of writing a command. The next step is to push more of those rules into repository settings, where they are enforced by the host, and keep the hook only as the early warning.
