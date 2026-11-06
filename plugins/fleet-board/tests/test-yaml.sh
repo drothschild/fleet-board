@@ -129,6 +129,8 @@ printf 'l:\n  - name: security\n    agent: "acme:sec"\n    paths: ["a/**", "b"]\
 printf 'review:\n  max_rounds: 3\n  stages:\n    - name: s\n      agent: a\n  mutation: true\n' \
   | ok "block list of maps followed by a sibling key" '{"review":{"max_rounds":3,"stages":[{"name":"s","agent":"a"}],"mutation":true}}'
 printf 'l:\n  - k: v\n    n:\n      - x\n      - y\n' | ok "nested block list inside a list-item map" '{"l":[{"k":"v","n":["x","y"]}]}'
+printf 'l:\n  - r: |\n      text\n    s: 1\n' | ok "block scalar then another key in a list-item map" '{"l":[{"r":"text\n","s":1}]}'
+printf 'l:\n  - r: |\n      text\n' | ok "block scalar as the last key of a list-item map" '{"l":[{"r":"text\n"}]}'
 printf 'l:\n  - k: v\n   bad: 1\n' | bad "misaligned continuation in a list-item map" 'line 3'
 
 echo ""

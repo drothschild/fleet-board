@@ -204,7 +204,11 @@ def entries:
                 elif $ind == 0 and ($text == "..." or ($text | startswith("%"))) then
                   fail($n; "document markers and directives are not supported")
                 elif ($text | test("(^|: |^- )[|>][-+]?$")) then
-                  .es += [{n: $n, ind: $ind, t: $text, block: []}] | .bs = $ind
+                  # Block content must be deeper than the owning key: for
+                  # "- key: |" that is the key's column, not the dash's.
+                  ($text | if test("^-[ \t]+[|>][-+]?$") or (startswith("- ") | not) then 0
+                           else length - (.[1:] | sub("^[ \t]+"; "") | length) end) as $off
+                  | .es += [{n: $n, ind: $ind, t: $text, block: []}] | .bs = $ind + $off
                 else .es += [{n: $n, ind: $ind, t: $text}] end
             end
         end)
