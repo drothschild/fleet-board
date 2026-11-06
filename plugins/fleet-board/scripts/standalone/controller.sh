@@ -16,11 +16,10 @@ elif [ "$#" -ne 1 ] || [ "$1" != tick ]; then
 fi
 SCRATCH="$(mktemp -d)" || exit 1
 PLAN="$SCRATCH/plan"
-LOCK="" GIT_MUTEX=""
+GIT_MUTEX=""
 cleanup() {
   local rc=$?
   [ -z "$GIT_MUTEX" ] || rmdir "$GIT_MUTEX" 2>/dev/null || true
-  [ -z "$LOCK" ] || rmdir "$LOCK" 2>/dev/null || true
   rm -rf "$SCRATCH"
   if [ "$rc" -ne 0 ] && [ "$MODE" = tick ] && [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ]; then
     jq -cn '{outcome:"failed",dispatchable:false,cost_usd:0}'
@@ -69,8 +68,15 @@ trap 'cancel 143' TERM
 if [ "$MODE" = tick ]; then
   COMMON="$(git rev-parse --git-common-dir)" || exit 1
   COMMON="$(cd "$COMMON" && pwd -P)" || exit 1
-  LOCK="$COMMON/fleet-board-standalone.lock"
-  if ! mkdir "$LOCK" 2>/dev/null; then LOCK=""; echo 'another standalone tick holds the repository lock' >&2; exit 1; fi
+  LOCK_FILE="$COMMON/fleet-board-standalone.lockfile"
+  if [ -z "${FLEET_BOARD_REPO_LOCK_FD:-}" ]; then
+    # Re-exec with the locked descriptor inherited by the controller and its
+    # descendants. The kernel releases it after the last process exits.
+    rm -rf "$SCRATCH"
+    trap - EXIT
+    exec python3 "$SCRIPTS/standalone/repo-lock.py" acquire "$LOCK_FILE" "${BASH_SOURCE[0]}" "$@"
+  fi
+  python3 "$SCRIPTS/standalone/repo-lock.py" verify "$LOCK_FILE" || exit 1
   FLEET_BOARD_GIT_LOCK_TOKEN="$(basename "$SCRATCH")-$$"
   [[ "$FLEET_BOARD_GIT_LOCK_TOKEN" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
   export FLEET_BOARD_GIT_LOCK_TOKEN
