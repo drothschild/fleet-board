@@ -3,6 +3,10 @@
 set -uo pipefail
 unset CDPATH
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "${1:-}" = worker ]; then
+  shift
+  exec bash "$SCRIPTS/standalone/worker.sh" "$@"
+fi
 if [ "$#" -ne 2 ] || [ "$1" != tick ] || [ "$2" != --plan-only ]; then
   echo 'usage: fleet-board tick --plan-only' >&2
   exit 2
