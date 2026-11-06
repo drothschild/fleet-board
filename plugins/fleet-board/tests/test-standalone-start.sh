@@ -231,7 +231,7 @@ REVIEWER
   if [ "${1:-start}" = review-human-race ]; then
     touch "$TMP/state/move-to-human"
     if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then echo 'FAIL: Human QA race accepted' >&2; exit 1; fi
-    [ "$(cat "$TMP/state/column")" = human_qa ] || { echo 'FAIL: review moved card out of Human QA' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = human_qa ] || { cat "$TMP/review-err" >&2; cat "$TMP/state/column" >&2; echo 'FAIL: review moved card out of Human QA' >&2; exit 1; }
     jq -e 'all(.[]; (.body | contains("fleet-board:standalone-review:")) | not)' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review recorded after Human QA move' >&2; exit 1; }
     echo 'PASS: review-human-race'
     exit 0

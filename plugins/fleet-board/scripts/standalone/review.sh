@@ -54,8 +54,20 @@ wait "$CHILD"; RC=$?; CHILD=""
 [ "$(jq -r .outcome "$SCRATCH/result")" = clean ] || { echo 'review findings need unsupported reconciliation' >&2; exit 1; }
 jq -r .report "$SCRATCH/result" > "$SCRATCH/reviewer-report"
 PARSED="$(bash "$SCRIPTS/parse-report.sh" --role reviewer "$SCRATCH/reviewer-report")" || exit 1
+jq -e '(.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/dev/null || { echo 'review follow-ups require reconciliation' >&2; exit 1; }
+# A concurrent move, especially into Human QA, must not be undone by a review.
+check_live_card() {
+  local current states state
+  current="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
+  states="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
+  jq -e --arg expected "$(fb_state_name in_progress)" --argjson states "$states" '
+    .state == "in_progress" and ([.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected])
+  ' <<<"$current" >/dev/null
+}
+check_live_card || { echo 'card state changed during review' >&2; exit 1; }
 INFO="$(pr_info)" || exit 1
 check_pr <<<"$INFO" && [ "$(jq -r .headRefOid <<<"$INFO")" = "$SHA" ] || { echo 'PR head changed during review' >&2; exit 1; }
+check_live_card || { echo 'card state changed during review' >&2; exit 1; }
 # Route before moving; a routing error leaves the card in its original state.
 bash "$SCRIPTS/review-stages.sh" route "$N" "$PR" >/dev/null || exit 1
 MARKER="<!-- fleet-board:standalone-review:$SHA -->"
@@ -70,5 +82,6 @@ INFO="$(pr_info)" || exit 1
 check_pr <<<"$INFO" && [ "$(jq -r .headRefOid <<<"$INFO")" = "$SHA" ] || { echo 'PR head changed before review recording' >&2; exit 1; }
 jq -n --argjson pr "$PR" --arg sha "$SHA" --argjson parsed "$PARSED" \
   '{state:"in_review",pr:$pr,round:1,last_verified:$parsed.verified.line,last_review:{round:1,sha:$sha,critical:$parsed.counts.critical,important:$parsed.counts.important,findings:$parsed.findings},action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
+check_live_card || { echo 'card state changed before review recording' >&2; exit 1; }
 bash "$SCRIPTS/board-move.sh" "$N" in_review || exit 1
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/note.json" || exit 1
