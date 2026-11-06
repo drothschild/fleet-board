@@ -30,6 +30,20 @@ if [ "$MODE" = tick ]; then
   LOCK="$COMMON/fleet-board-standalone.lock"
   if ! mkdir "$LOCK" 2>/dev/null; then LOCK=""; echo 'another standalone tick holds the repository lock' >&2; exit 1; fi
 fi
+if [ "$MODE" = tick ]; then
+  # Recover one incomplete action before planning: the card may be between
+  # labels, or its move may have succeeded before its note was written.
+  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json; do
+    [ -e "$JOURNAL" ] || continue
+    [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
+    if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
+    jq -e '.version == 1 and (.plan_card | type == "object")' "$JOURNAL" >/dev/null || { echo 'invalid action journal' >&2; exit 1; }
+    jq '.plan_card' "$JOURNAL" > "$SCRATCH/card" || exit 1
+    bash "$SCRIPTS/standalone/start.sh" "$SCRATCH/card" "$SCRATCH" || exit 1
+    jq -n --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]}'
+    exit 0
+  done
+fi
 if [ "$MODE" = plan ]; then
   FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
 else

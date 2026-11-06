@@ -33,7 +33,6 @@ WT="$(jq -r .worktree "$CARD")"; TITLE="$(jq -r .title "$CARD")"
 case "$BRANCH" in "fleet/$N-"*) ;; *) echo 'branch does not match card' >&2; exit 1 ;; esac
 [[ "$BRANCH" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]] || exit 1
 [ "$(jq -r .state "$CARD")" = ready ] || { echo 'card is not ready' >&2; exit 1; }
-[ -n "${FLEET_BOARD_WORKER_SCRIPT:-}" ] && [ -f "$FLEET_BOARD_WORKER_SCRIPT" ] && [ ! -L "$FLEET_BOARD_WORKER_SCRIPT" ] && [ -n "${FLEET_BOARD_WORKER_IMAGE:-}" ] || { echo 'standalone worker is not configured' >&2; exit 1; }
 REMOTE="$(git -C "$FLEET_ROOT" config --get remote.origin.url)" || exit 1
 case "$REMOTE" in "https://github.com/$FLEET_REPO"|"https://github.com/$FLEET_REPO.git"|"git@github.com:$FLEET_REPO"|"git@github.com:$FLEET_REPO.git") ;; *) echo 'origin does not match board repository' >&2; exit 1 ;; esac
 # A durable journal and a private ref preserve validated worker evidence across
@@ -51,6 +50,7 @@ if [ -e "$JOURNAL" ]; then
   [ "$(git -C "$FLEET_ROOT" rev-parse --verify "$EVIDENCE_REF" 2>/dev/null)" = "$HEAD_SHA" ] && GIT_NO_REPLACE_OBJECTS=1 git -C "$FLEET_ROOT" merge-base --is-ancestor "$BASE" "$HEAD_SHA" || { echo 'start evidence ref does not match journal' >&2; exit 1; }
   jq '.result' "$JOURNAL" > "$SCRATCH/result"
 else
+  [ -n "${FLEET_BOARD_WORKER_SCRIPT:-}" ] && [ -f "$FLEET_BOARD_WORKER_SCRIPT" ] && [ ! -L "$FLEET_BOARD_WORKER_SCRIPT" ] && [ -n "${FLEET_BOARD_WORKER_IMAGE:-}" ] || { echo 'standalone worker is not configured' >&2; exit 1; }
   [ -z "$REMOTE_HEAD" ] || { echo 'remote branch already exists; reconciliation required' >&2; exit 1; }
   if git -C "$FLEET_ROOT" show-ref --verify --quiet "$EVIDENCE_REF"; then echo 'orphaned start evidence requires reconciliation' >&2; exit 1; fi
   bash "$SCRIPTS/worktree.sh" create "$N" "$BRANCH" "$WT" >/dev/null || exit 1
@@ -75,7 +75,7 @@ else
   git -C "$FLEET_ROOT" -c protocol.file.allow=always fetch -q --no-tags "$SCRATCH/import.git" "$HEAD_SHA" || exit 1
   [ "$(git -C "$FLEET_ROOT" rev-parse FETCH_HEAD)" = "$HEAD_SHA" ] || exit 1
   git -C "$FLEET_ROOT" update-ref "$EVIDENCE_REF" "$HEAD_SHA" "" || exit 1
-  jq -n --argjson card "$N" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --arg head "$HEAD_SHA" --slurpfile result "$SCRATCH/result" '{version:1,card:$card,repo:$repo,branch:$branch,worktree:$wt,base:$base,head:$head,result:$result[0]}' > "$JOURNAL.tmp.$$" || exit 1
+  jq -n --argjson card "$N" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --arg head "$HEAD_SHA" --slurpfile result "$SCRATCH/result" --slurpfile plan_card "$CARD" '{version:1,card:$card,repo:$repo,branch:$branch,worktree:$wt,base:$base,head:$head,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" || exit 1
   mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
 fi
 jq -r .report "$SCRATCH/result" > "$SCRATCH/report"
@@ -123,5 +123,8 @@ if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .user.login == $me an
 fi
 jq -n --arg branch "$BRANCH" --arg wt "$WT" --argjson pr "$PR" --slurpfile card "$CARD" --arg verified "$(jq -r .verified.line <<<"$PARSED")" \
   '{state:"in_progress",branch:$branch,worktree:$wt,pr:$pr,round:0,models:$card[0].models,implementor_attempts:1,last_verified:$verified,action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
+CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
+jq -e '.state == "ready" or .state == "in_progress" or .state == null' <<<"$CURRENT" >/dev/null || { echo 'card moved to an incompatible state' >&2; exit 1; }
 bash "$SCRIPTS/board-move.sh" "$N" in_progress || exit 1
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/note.json" || exit 1
+jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
