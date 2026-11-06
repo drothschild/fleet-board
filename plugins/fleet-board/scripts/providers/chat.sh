@@ -7,6 +7,12 @@
 #   stdin: {"messages":[{"role":...,"content":...}, ...]}
 #   stdout: {"text","finish_reason","input_tokens","output_tokens","model"}
 #
+# Command mode (--command <string> --model <id> --timeout <s>; no HTTP): the
+# string runs with sh -c in the repo root, {model} replaced by --model, the
+# prompt (message contents joined by a blank line) on stdin. Stdout is the
+# reply, with null token counts; a non-zero exit, a timeout or an empty stdout
+# exits 1.
+#
 # The key is read from the environment variable named by --key-env ('-' sends
 # no Authorization header, for a loopback server). It reaches curl only through
 # a mode-600 header file (-H @file) in a private temp dir that a trap removes;
