@@ -14,7 +14,7 @@ SCRIPT="${SCRIPT_DIR}/../scripts/status.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
 # Calls that count as a board write; the read-only assertions fail on any match.
-READONLY_RE='issue (edit|comment|create|close)|label (create|edit|delete)|project item-[a-z]+|api .*(-f|-F|--field|--raw-field)[ =]|-X (POST|PATCH|PUT|DELETE)|--method'
+READONLY_RE='issue (edit|comment|create|close)|label (create|edit|delete)|project item-[a-z]+|api .*(-f|-F|--field|--raw-field|--input)[ =]|-X (POST|PATCH|PUT|DELETE)|--method'
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
 
