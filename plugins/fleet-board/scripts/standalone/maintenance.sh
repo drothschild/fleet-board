@@ -35,7 +35,7 @@ if [ "$ACTION" = file_pending ]; then
     PR="$(jq -r --slurpfile card "$CARD" '.pending_followups.pr // .pr // $card[0].pr // empty' <<<"$NOTE")"
     if [ -z "$PR" ]; then exit 0; fi
     fb_valid_number "$PR" || exit 1
-    jq -n --argjson card "$N" --arg repo "$FLEET_REPO" --argjson pr "$PR" --argjson note "$NOTE" --slurpfile plan_card "$CARD" '{version:1,card:$card,repo:$repo,action:"file_pending",pr:$pr,pending:$note.pending_followups,phase:"prepared",plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    jq -n --argjson card "$N" --arg repo "$FLEET_REPO" --argjson pr "$PR" --argjson note "$NOTE" --slurpfile plan_card "$CARD" '{version:1,card:$card,repo:$repo,action:"file_pending",pr:$pr,pending:$note.pending_followups,initial_failures:($note.action_failures // 0),phase:"prepared",plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
   fi
   PHASE="$(jq -r .phase "$JOURNAL")"
   if [ "$PHASE" = running ]; then echo 'pending filing result uncertain; reconcile before retry' >&2; exit 1; fi
@@ -60,9 +60,10 @@ if [ "$ACTION" = file_pending ]; then
     | def remaining($items; $filed): [$items[] | . as $item | select(any($filed[]; (.title | ascii_downcase) == ($item.title | ascii_downcase)) | not)];
     {out_of_scope_created:$r.out_of_scope_created,bugs_filed:$r.bugs_filed,
      pending_followups:(if $j.rc == 0 then null else $p + {out_of_scope:remaining($p.out_of_scope; $r.out_of_scope_created),bugs:remaining($p.bugs; $r.bugs_filed)} end),
-     action_failures:(if $j.rc == 0 then 0 else null end),last_action_error:(if $j.rc == 0 then null else "filing pending follow-ups failed" end)}
-    | if $j.rc == 0 then . else del(.action_failures) end' "$JOURNAL" > "$SCRATCH/patch" || exit 1
-  if jq -e --slurpfile patch "$SCRATCH/patch" '.pending_followups == $patch[0].pending_followups' <<<"$NOTE" >/dev/null; then :
+     action_failures:(if $j.rc == 0 then 0 else ($j.initial_failures + 1) end),last_action_error:(if $j.rc == 0 then null else "filing pending follow-ups failed" end)}
+    ' "$JOURNAL" > "$SCRATCH/patch" || exit 1
+  NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
+  if jq -e --slurpfile patch "$SCRATCH/patch" '.pending_followups == $patch[0].pending_followups and .action_failures == $patch[0].action_failures and .last_action_error == $patch[0].last_action_error' <<<"$NOTE" >/dev/null; then :
   elif jq -e --argjson note "$NOTE" '.pending == $note.pending_followups' "$JOURNAL" >/dev/null; then
     bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/patch" || exit 1
   else echo 'pending follow-ups changed during filing' >&2; exit 1; fi
