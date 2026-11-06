@@ -123,7 +123,13 @@ printf 'b: &x 1\nc: *x\n' | bad "anchor" 'line 1: anchors, aliases and tags are 
 printf 'c: !!str 1\n' | bad "tag" 'line 1: anchors, aliases and tags are not supported'
 printf 'a: 1\n  b: 2\n' | bad "unexpected indentation" 'line 2: unexpected indentation'
 printf 'a: 1\n---\nb: 2\n' | bad "second document" 'line 2: only one YAML document'
-printf 'l:\n  - k: v\n' | bad "map inside a block list" 'line 2: a block list item must be a scalar or a flow collection'
+printf 'l:\n  - k: v\n' | ok "map inside a block list" '{"l":[{"k":"v"}]}'
+printf 'l:\n  - name: security\n    agent: "acme:sec"\n    paths: ["a/**", "b"]\n  - name: ux\n    advisory: true\n' \
+  | ok "block list of block maps" '{"l":[{"name":"security","agent":"acme:sec","paths":["a/**","b"]},{"name":"ux","advisory":true}]}'
+printf 'review:\n  max_rounds: 3\n  stages:\n    - name: s\n      agent: a\n  mutation: true\n' \
+  | ok "block list of maps followed by a sibling key" '{"review":{"max_rounds":3,"stages":[{"name":"s","agent":"a"}],"mutation":true}}'
+printf 'l:\n  - k: v\n    n:\n      - x\n      - y\n' | ok "nested block list inside a list-item map" '{"l":[{"k":"v","n":["x","y"]}]}'
+printf 'l:\n  - k: v\n   bad: 1\n' | bad "misaligned continuation in a list-item map" 'line 3'
 
 echo ""
 [ "$HAVE_YQ" = 1 ] && echo "(cross-checked against $(yq --version))"
