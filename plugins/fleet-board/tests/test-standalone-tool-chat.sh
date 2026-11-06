@@ -2,7 +2,7 @@
 # Focused tool-chat protocol cases against an ephemeral loopback provider.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in protocol|limit|malformed|escape|hardlink|write|unapproved|test-run|test-real|test-kill-real|paid-unknown|paid-budget) ;; *) echo 'usage: test-standalone-tool-chat.sh protocol|limit|malformed' >&2; exit 2 ;; esac
+case "${1:-}" in protocol|limit|malformed|escape|hardlink|write|unapproved|test-run|test-hardlink|test-real|test-kill-real|paid-unknown|paid-budget) ;; *) echo 'usage: test-standalone-tool-chat.sh protocol|limit|malformed' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPT="$TESTS/../scripts/standalone/tool-chat.py"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; SERVER=""
 trap '[ -z "$SERVER" ] || { kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true; }; rm -rf "$TMP"' EXIT
@@ -22,7 +22,7 @@ class H(http.server.BaseHTTPRequestHandler):
   if case in ('escape','hardlink'): args='{"path":"link"}'
   if case == 'write': name='write_file'; args='{"path":"output.txt","content":"changed"}'
   if case == 'unapproved': name='run_test'; args='{"test_id":"not-approved"}'
-  if case in ('test-run','test-real','test-kill-real'): name='run_test'; args='{"test_id":"smoke"}'
+  if case in ('test-run','test-hardlink','test-real','test-kill-real'): name='run_test'; args='{"test_id":"smoke"}'
   calls=[{'id':'call-1','type':'function','function':{'name':name,'arguments':args}}]
   if case == 'limit': calls.append({'id':'call-2','type':'function','function':{'name':'read_file','arguments':'{"path":"readme.txt"}'}})
   msg={'role':'assistant','content':None,'tool_calls':calls} if n==1 else {'role':'assistant','content':'finished'}
@@ -74,7 +74,7 @@ if [ "$1" = test-real ]; then
   ln -s "$TMP/host-secret" "$TMP/work/link"
   jq '.image = "ghcr.io/home-assistant/home-assistant:stable" | .tests = {smoke:["/bin/sh","-c","test -z \"${TEST_SECRET:-}\" && test ! -e /host-secret && test ! -r /work/link && test ! -e /work/.git/config && ! grep -q '^eth' /proc/net/route && echo tested && echo isolated > /work/result.txt"]}' "$TMP/request.json" > "$TMP/new" && mv "$TMP/new" "$TMP/request.json"
 fi
-if [ "$1" = test-run ]; then
+if [ "$1" = test-run ] || [ "$1" = test-hardlink ]; then
   mkdir -p "$TMP/work/.git/objects/info" "$TMP/bin"
   cat > "$TMP/bin/docker" <<DOCKER
 #!/bin/sh
@@ -84,6 +84,7 @@ case "\$1" in create) echo fixture ;; start) echo tested ;; rm) : ;; *) exit 1 ;
 DOCKER
   chmod +x "$TMP/bin/docker"
   export PATH="$TMP/bin:$PATH" TEST_SECRET=controller-secret
+  if [ "$1" = test-hardlink ]; then echo secret > "$TMP/secret"; ln "$TMP/secret" "$TMP/work/link"; fi
   jq '.tests = {smoke:["/bin/true"]}' "$TMP/request.json" > "$TMP/new" && mv "$TMP/new" "$TMP/request.json"
 fi
 if [ "$1" = protocol ] || [ "$1" = write ] || [ "$1" = test-run ] || [ "$1" = test-real ]; then
