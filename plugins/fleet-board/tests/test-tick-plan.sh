@@ -1051,7 +1051,7 @@ assert_jq "stage-advance: action" "$(card 12 action)" '"advance_stage"'
 assert_jq "stage-advance: reason" "$(card 12 reason)" '"review clean; next stage security"'
 assert_jq "stage-advance: entering security" "$(card 12 stage.name)" '"security"'
 assert_jq "stage-advance: agent carried" "$(card 12 stage.agent)" '"acme:sec"'
-assert_eq "stage-advance: no files lookup" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 0
+assert_eq "stage-advance: one files lookup (match; no needs-human-qa)" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
 assert_jq "stage-advance: dispatchable" '.dispatchable' 'true'
 # the security column is listed
 assert_eq "stage columns listed" "$(grep -c 'issue list --repo acme/toy --label fleet:review_security' "$FAKE_GH_DIR/calls.log")" 1
@@ -1093,6 +1093,22 @@ assert_jq "stage-advance-next: reason" "$(card 12 reason)" '"review clean; next 
 # clean in security, ux label present but reviewed_stages has ux -> tail
 splan stage-skip-done
 assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
+# Re-matching: the PR's current files are matched against every stage's paths
+# at each clean, current review, so a file added after routing still routes.
+# in_review, no routing label, PR files now include src/auth/login.js
+splan stage-rematch-in-review
+assert_exit "rematch in_review: exit" 0
+assert_jq "rematch in_review: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch in_review: into security" "$(card 12 stage.name)" '"security"'
+assert_eq "rematch in_review: adds no label" "$(grep -c $'\tissue edit' "$FAKE_GH_DIR/calls.log")" 0
+# review_ux, clean, security never visited and now matched -> back to security
+splan stage-rematch-earlier
+assert_jq "rematch earlier stage: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch earlier stage: into security" "$(card 12 stage.name)" '"security"'
+assert_jq "rematch earlier stage: reason" "$(card 12 reason)" '"review clean; next stage security"'
+# review_ux, clean, security already in reviewed_stages -> not revisited
+splan stage-rematch-done
+assert_jq "rematch done stage: not revisited" "$(card 12 action)" '"mark_ready"'
 # head moved after a clean stage review -> review_stage
 splan stage-head-moved
 assert_jq "stage-head-moved: action" "$(card 12 action)" '"review_stage"'
@@ -1176,11 +1192,12 @@ setup_case in-review-mark-ready-human
 run_check "$NEXT_STUB/tick-plan.sh"
 assert_exit "no_stages_no_next_lookup: exit" 0
 assert_jq "no_stages_no_next_lookup: old tail" "$(card 12 action)" '"mark_ready"'
-assert_eq "no_stages_no_next_lookup: review-stages.sh not run" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" none
+assert_eq "no_stages_no_next_lookup: review-stages.sh (match or next) not run" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" none
 # control: with stages configured the same stub is run (and its failure skips the card)
 setup_case stage-advance-from-review "$STAGES_YAML"
 run_check "$NEXT_STUB/tick-plan.sh"
-assert_jq "no_stages_no_next_lookup control: lookup failed" "$(card 12 reason)" '"lookup failed: review-stages.sh next 12"'
+assert_jq "no_stages_no_next_lookup control: lookup failed (match runs first)" "$(card 12 reason)" '"lookup failed: review-stages.sh match 34"'
+assert_eq "no_stages_no_match_lookup: the stub ran match first" "$(sed -n 1p "$NEXT_STUB/next-calls")" "match 34"
 assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
 
 echo "-----------------------------------"

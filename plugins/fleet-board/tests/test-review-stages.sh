@@ -110,6 +110,10 @@ setup_case() {
   esac
   [ "$backend" = nostages ] || stages="review:
 $STAGES_YML"
+  # labelonly: a third stage with no paths (routed by its label only)
+  [ "$backend" = labelonly ] && stages="$stages
+    - name: copy
+      agent: copy-reviewer"
   REPO="$(mktemp -d)"
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
@@ -214,6 +218,58 @@ run_stages route 12
 assert_exit "route: missing PR -> exit 2" 2
 run_stages route x 34
 assert_exit "route: non-numeric card -> exit 2" 2
+
+# match: the stages whose globs match the PR's current files; read-only
+setup_case labels "$CARD_PLAIN" "src/auth/login.js README.md"
+run_stages match 34
+assert_exit "match: exit 0" 0
+assert_stdout_exact "match: prints the matching names" '["security"]'
+assert_eq "match: adds no label" "$(cnt_prefix issue edit)" 0
+assert_eq "match: does not read the card" "$(cnt api repos/acme/toy/issues/12)" 0
+
+# match: a stage label on the card does not count (globs only)
+setup_case labels "$CARD_UX" "README.md"
+run_stages match 34
+assert_stdout_exact "match: no glob match prints []" '[]'
+
+# match: both stages
+setup_case labels "$CARD_PLAIN" "src/auth/a.js src/ui/b.js"
+run_stages match 34
+assert_stdout_exact "match: config order" '["security","ux"]'
+
+# match: truncated list matches every stage with non-empty paths
+setup_case labelonly "$CARD_PLAIN" "README.md" 400
+run_stages match 35
+assert_exit "match: truncated exit 0" 0
+assert_stdout_exact "match: truncated skips the label-only stage" '["security","ux"]'
+assert_stderr_contains "match: truncated warning" "PR #35 changes more files than gh listed; routing it to every review stage"
+assert_eq "match: truncated adds no label" "$(cnt_prefix issue edit)" 0
+
+# match: files unreadable
+setup_case labels "$CARD_PLAIN" "src/auth/login.js"
+run_stages match 36
+assert_exit "match: files unreadable -> exit 1" 1
+assert_stdout_exact "match: files unreadable prints nothing" ''
+
+# match: no stages configured
+setup_case nostages "$CARD_PLAIN" "src/auth/login.js"
+run_stages match 34
+assert_exit "match: no stages exit 0" 0
+assert_stdout_exact "match: no stages prints []" '[]'
+assert_eq "match: no stages, no gh call at all" "$(ls "$FAKE_GH_DIR/argv" 2>/dev/null | wc -l | tr -d ' ')" 0
+
+# match: usage
+run_stages match
+assert_exit "match: missing PR -> exit 2" 2
+run_stages match x
+assert_exit "match: non-numeric PR -> exit 2" 2
+run_stages match 34 35
+assert_exit "match: extra argument -> exit 2" 2
+
+# route: truncated list still routes a label-only stage (route's own rule)
+setup_case labelonly "$CARD_PLAIN" "README.md" 400
+run_stages route 12 35
+assert_stdout_exact "route: truncated routes the label-only stage too" '["security","ux","copy"]'
 
 # next
 setup_case labels "$CARD_UX" "x"
