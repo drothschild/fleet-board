@@ -774,7 +774,15 @@ In round 2 and later the manager passes the reviewer the previous findings:
 
 In 3.6 items 4 and 5 the card has already moved when the role reports, and the plan card's `state` still says `ready` after `start`. Recording `ready` would make `accept.sh` return the card to Ready, and `start` would dispatch the implementor again on the accepted PR. So in those two items `blocked_from` = the card's state before the move: the plan card's `state`, or `in_progress` after `start`, which has already moved the card out of `ready`.
 
-## Revision 14 requirements (2026-11-03, one round 1 reference SHA)
+## Revision 14 requirements (2026-11-03: the `update_branch` action; these win over anything above)
+
+`tick-plan.sh` plans `update_branch` for a card whose open PR is conflicting with its base branch, before any dispatch for that card. The manager runs the script `update-branch.sh` itself and dispatches no role agent for it. Three changes, and nothing else in the file changes:
+
+- **Action table.** A row for `update_branch`, directly before the `block` row: `worktree.sh create N <plan branch> <plan worktree>` → `update-branch.sh N <pr> <plan branch> <plan worktree>` (the plan card's `pr`). The script merges the base branch into the PR branch with a merge commit and a plain push, and does the note write, the Blocked move and the comment itself. Dispatch no role agent. Never rebase and never force-push.
+- **Rule 2.17b**, directly after 2.17 and before 2.18 (the existing 2.17a stays where it is): `update_branch` runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge and blocks the card. When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
+- **Progress list** (the one that lists, per action, what counts as progress): a bullet directly after the `block` bullet: `update_branch`: `update-branch.sh` exited 0 (a clean merge pushed, or a conflict moved the card to `blocked`).
+
+## Revision 16 requirements (2026-11-06, one round 1 reference SHA)
 
 The manager states one round 1 reference SHA in both places: the reviewer's inputs and the
 `review` action row. In round 1 the reference SHA `prev_sha` is the `base` from `worktree.sh

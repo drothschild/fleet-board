@@ -112,9 +112,15 @@ A tick's cost is the session's `total_cost_usd`, which Claude Code computes on t
 - `--permission-mode` comes from `headless.permission_mode`, which defaults to `auto`. In `auto` mode, Claude Code approves or denies each tool call itself, with its safety classifier, so a tick can run unattended without skipping permission checks. No one is there to answer a permission prompt, so a stricter mode such as `default` leaves the tick's commands denied.
 - With `headless.permission_mode: bypassPermissions`, the wrapper prints a one-line warning, to stderr and to the log, before the first tick.
 
-## Merges stay human
+## Merges under merge.policy auto
 
-`merge.policy: auto` is not supported for headless or overnight runs. Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session ("Merge Without Review"). The wrapper adds no permission rule and does not work around the classifier. An overnight run leaves reviewed PRs to be merged by hand. Auto merges work only where they are explicitly allowed in the user's own Claude Code settings.
+Merges stay human by default: under `merge.policy: human` an overnight run merges nothing and leaves reviewed PRs to be merged by hand. Under `merge.policy: auto` the run merges them itself.
+
+**How.** Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session ("Merge Without Review"), so no tick merges. Instead, after `settle.sh` and before `cleanup-done.sh`, the wrapper runs `scripts/merge-reviewed.sh` from the repo root, as a plain shell step outside any Claude session, the same way it runs `settle.sh` and `cleanup-done.sh`. The classifier is never involved. The wrapper adds no permission rule and never uses `--dangerously-skip-permissions`.
+
+**What it merges.** It lists the in_review column and asks `tick-plan.sh --settle-merge` for a plan. It merges (`gh pr merge <pr> --squash`, never `--admin`) only a card whose review is clean for the PR head, whose PR is open, not a draft and has every check green (a failing or pending check waits), and which does not need Human QA. A card in Human QA is never listed and never merged. The gate hook G2 still applies to any merge a Claude session makes. After the merge it records `merged_pr`, runs `verify-main.sh`, moves the card to Done and writes the note. A card with an `## After merge` section is left for the manager's finish step, which runs those commands under the allowlist. A failure is logged as `warning: merge-reviewed.sh exited <rc>` and the next tick plans what is left. Set `FLEET_BOARD_MERGE_REVIEWED` to use another script.
+
+**Why not the alternatives.** A user allow rule for `gh pr merge` in their own Claude Code settings depends on personal settings, which a plugin must not assume. `gh pr merge --auto` depends on branch protection being configured on the repo.
 
 ## Worktree cleanup
 

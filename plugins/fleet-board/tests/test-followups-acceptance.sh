@@ -315,6 +315,35 @@ else
   fail "blank-span: filed in fleet:backlog" "no issue create call"
 fi
 
+# --- the escape phrase is matched on ASCII only: a Kelvin sign is not a k
+setup_case
+report "$(printf '[{"title":"Fix kelvin","detail":"no testable chec\342\204\252 and `make test`"}]')" '[]'
+run_ff
+ACC="$(all_bodies | sed -n '/^## Acceptance/,$p')"
+case "$ACC" in *'`make test`'*) pass "kelvin: Acceptance runs make test" ;; *) fail "kelvin: Acceptance runs make test" "$ACC" ;; esac
+
+# --- a span holding only U+00A0 is blank: Backlog, no Acceptance
+setup_case
+{ printf 'issue create --repo acme/toy --title Tidy nbsp *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+report "$(printf '[{"title":"Tidy nbsp","detail":"run `\302\240` to see"}]')" '[]'
+run_ff
+F="$(create_file)"
+if [ -n "$F" ]; then
+  assert_true "nbsp-span: filed in fleet:backlog" has_pair "$F" --label fleet:backlog
+else
+  fail "nbsp-span: filed in fleet:backlog" "no issue create call"
+fi
+case "$(all_bodies)" in *"## Acceptance"*) fail "nbsp-span: body has no ## Acceptance" "$(all_bodies)" ;; *) pass "nbsp-span: body has no ## Acceptance" ;; esac
+
+# --- the Backlog comment for the escape words says no testable check was stated
+setup_case
+{ printf 'issue create --repo acme/toy --title Rename the module *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+report '[{"title":"Rename the module","detail":"no testable check; a naming call"}]' '[]'
+run_ff
+C="$(bodies_of issue comment 78)"
+case "$C" in *"no testable check"*) pass "escape-comment: names that no testable check was stated" ;; *) fail "escape-comment: names that no testable check was stated" "$C" ;; esac
+case "$C" in *"no failing command and expected result"*) fail "escape-comment: does not blame a missing command" "$C" ;; *) pass "escape-comment: does not blame a missing command" ;; esac
+
 # --- spans are paired, not matched anywhere: the text between two spans is never the command
 setup_case
 report '[{"title":"Fix rounding","detail":"calc has no multiply; ` ` x `make test` exits 0"}]' '[]'
@@ -369,6 +398,9 @@ if grep -q 'followups.status' "$DOCS"; then pass "docs: config.md documents foll
 
 # docs: the key is pinned by fixed-string match (the dot is literal, not a wildcard)
 if grep -qF '## `followups.status`' "$DOCS" && grep -qF 'followups.status: backlog' "$DOCS"; then pass "docs: config.md has a literal followups.status heading and backlog example"; else fail "docs: config.md has a literal followups.status heading and backlog example" "not found in $DOCS"; fi
+
+# docs: the main-is-red card is filed in the followups.status column, not Backlog
+if grep -F 'main is red' "$DOCS" | sed 's/.*main is red//; s/\. .*//' | grep -qF 'Backlog'; then fail "docs: no sentence puts the main is red card in Backlog" "Backlog follows main is red"; else pass "docs: no sentence puts the main is red card in Backlog"; fi
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

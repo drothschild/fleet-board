@@ -421,20 +421,20 @@ assert_jq "note-worktree-outside-base: warning" '.warnings' \
 
 # ---------------------------------------------------------------------------
 # gh calls for one in_review card: one card read (api user, issue, comments),
-# the PR view, and the files lookup only when the review is clean and current.
+# the PR view, the mergeable lookup, and the files lookup only when the review is clean and current.
 # Before the note and labels were taken from the card read: 11 per card.
 per_card_calls() { echo $(( $(wc -l < "$FAKE_GH_DIR/calls.log") - $(grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log") )); }
 plan in-review-mark-ready-human
-assert_eq "gh-calls: clean current review (mark_ready): 5 per card" "$(per_card_calls)" 5
+assert_eq "gh-calls: clean current review (mark_ready): 6 per card" "$(per_card_calls)" 6
 assert_eq "gh-calls: clean current review: one card read" "$(call_count api repos/acme/toy/issues/12)" 1
 assert_eq "gh-calls: clean current review: one files lookup" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
 plan in-review-fix
-assert_eq "gh-calls: findings (fix): 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: findings (fix): 5 per card, no files lookup" "$(per_card_calls)" 5
 assert_jq "gh-calls: findings: needs_human_qa not computed" "$(card 12 needs_human_qa)" 'null'
 plan in-review-needs-review
-assert_eq "gh-calls: review not current (review): 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: review not current (review): 5 per card, no files lookup" "$(per_card_calls)" 5
 plan in-review-human-qa-label
-assert_eq "gh-calls: labelled card: 4 per card, no files lookup" "$(per_card_calls)" 4
+assert_eq "gh-calls: labelled card: 5 per card, no files lookup" "$(per_card_calls)" 5
 assert_jq "gh-calls: labelled card still -> to_human_qa" "$(card 12 action)" '"to_human_qa"'
 
 # ---------------------------------------------------------------------------
@@ -713,6 +713,39 @@ assert_jq "deps-other-card-starts: the other card starts" "$(card 14 action)" '"
 assert_jq "deps-other-card-starts: dispatchable reflects the other card" '.dispatchable' 'true'
 assert_jq "deps-other-card-starts: a card with no dependencies has waiting_on null" "$(card 14 waiting_on)" 'null'
 
+# update_branch: a PR whose mergeable state is CONFLICTING is brought up to
+# date by a merge. Routes are built at run time from an existing scenario plus
+# a "pr view <pr> --json mergeable" answer, so no fixture directory is needed.
+plan_mergeable() { # <case> <pr> <mergeable>
+  setup_case "$1"
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  printf '{"mergeable":"%s"}\n' "$3" > "$d/mergeable.json"
+  {
+    printf 'pr view %s --repo acme/toy --json mergeable\t0\t%s\n' "$2" "$d/mergeable.json"
+    sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-#	$TICK/$1/comments-#" "$TICK/$1/routes"
+  } > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+
+plan_mergeable in-review-fix 34 CONFLICTING
+assert_exit "update_branch: in review, conflicting: exit" 0
+assert_jq "update_branch: in review, conflicting PR plans update_branch, not fix" "$(card 12 action)" '"update_branch"'
+assert_jq "update_branch: in review, no dispatch action for the card" '[.cards[] | select(.action == "fix" or .action == "review" or .action == "start_review")] | length' '0'
+
+plan_mergeable in-progress-draft-pr 34 CONFLICTING
+assert_jq "update_branch: in progress, conflicting PR plans update_branch, not start_review" "$(card 12 action)" '"update_branch"'
+
+plan_mergeable in-review-fix 34 MERGEABLE
+assert_jq "update_branch: a mergeable PR keeps its action" "$(card 12 action)" '"fix"'
+
+plan_mergeable in-review-fix 34 UNKNOWN
+assert_jq "update_branch: an unknown mergeable state gets no update_branch" "$(card 12 action)" '"fix"'
+
+plan_mergeable in-progress-draft-pr 34 MERGEABLE
+assert_jq "update_branch: in progress, mergeable PR keeps start_review" "$(card 12 action)" '"start_review"'
+
 # ---------------------------------------------------------------------------
 # settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
 # settle <case> <n> [extra YAML]: set up the case and run --settle <n>
@@ -770,6 +803,74 @@ run_check "$SCRIPT" --settle abc
 assert_exit "settle: non-numeric card exits 2" 2
 run_check "$SCRIPT" --settle 12 x1
 assert_exit "settle: a non-numeric second card exits 2" 2
+
+# Merge only reviewed heads: a clean review whose head moved past last_review.
+# plan_real <kind>: builds real commits in the case repo (the plan checks them
+# with git merge-tree) and routes the fake gh to them. kind is conflict (a
+# merge of main whose conflict a person resolved), clean (a merge of main with
+# no conflict) or nonmerge (an ordinary commit).
+plan_real() {
+  local kind="$1" b0 r m h dir main_msg
+  setup_case drift-clean "$(printf 'merge:\n  policy: auto')"
+  dir="$FAKE_GH_DIR/real"; mkdir -p "$dir"
+  printf 'base\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -q -m "add f"
+  b0="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q -b feat
+  printf 'feature\n' > "$REPO/f.txt"; git -C "$REPO" commit -q -am "feature change"
+  r="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q -b mainline "$b0"
+  if [ "$kind" = conflict ]; then printf 'mainline\n' > "$REPO/f.txt"; else printf 'other\n' > "$REPO/g.txt"; git -C "$REPO" add g.txt; fi
+  git -C "$REPO" commit -q -am "change on main"
+  m="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q feat
+  case "$kind" in
+    clean) git -C "$REPO" merge -q --no-edit -m "Merge branch 'main' into feat" mainline ;;
+    conflict)
+      git -C "$REPO" merge -q --no-edit mainline >/dev/null 2>&1
+      printf 'resolved by hand\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt
+      git -C "$REPO" commit -q -m "Merge branch 'main' into feat" ;;
+    nonmerge) printf 'more\n' > "$REPO/h.txt"; git -C "$REPO" add h.txt; git -C "$REPO" commit -q -m "more work" ;;
+  esac
+  h="$(git -C "$REPO" rev-parse HEAD)"
+  if [ "$kind" = nonmerge ]; then
+    jq -n --arg h "$h" --arg r "$r" '{commits: [{sha: $h, parents: [{sha: $r}], commit: {message: "more work"}}]}' > "$dir/compare.json"
+  else
+    jq -n --arg h "$h" --arg r "$r" --arg m "$m" --arg b "$b0" \
+      '{commits: [{sha: $m, parents: [{sha: $b}], commit: {message: "change on main"}},
+                  {sha: $h, parents: [{sha: $r}, {sha: $m}], commit: {message: "Merge branch '"'"'main'"'"' into feat"}}]}' > "$dir/compare.json"
+  fi
+  printf '{"files":[{"filename":"src/calc.js"}]}\n' > "$dir/commit.json"
+  jq -n --arg h "$h" '{isDraft: false, state: "OPEN", mergedAt: null, headRefOid: $h,
+    statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}]}' > "$dir/pr.json"
+  sed -e "s/abc1234/$r/g" -e 's/\\"important\\":1/\\"important\\":0/' "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"
+  {
+    printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
+    printf 'api repos/acme/toy/issues/12\t0\t%s/common/issue-12-in_review.json\n' "$TICK"
+    printf 'api --paginate repos/acme/toy/issues/12/comments\t0\t%s/comments.json\n' "$dir"
+    printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr.json\n' "$dir"
+    printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:ready *\t0\t%s/common/empty.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:in_progress *\t0\t%s/common/empty.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s/common/list-in_review-12.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:blocked *\t0\t%s/common/empty.json\n' "$TICK"
+    printf 'api repos/acme/toy/compare/%s...%s\t0\t%s/compare.json\n' "$r" "$h" "$dir"
+    printf 'api repos/acme/toy/commits/%s\t0\t%s/commit.json\n' "$h" "$dir"
+  } > "$dir/routes"
+  FAKE_GH_ROUTES="$dir/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+
+plan_real conflict
+assert_exit "merge-only-reviewed: conflict-resolving merge: exit" 0
+assert_jq "merge-only-reviewed: conflict-resolving merge of main after last_review plans review" "$(card 12 action)" '"review"'
+
+plan_real clean
+assert_exit "merge-only-reviewed: clean merge: exit" 0
+assert_jq "merge-only-reviewed: only a clean merge of main after last_review plans merge" "$(card 12 action)" '"merge"'
+
+plan_real nonmerge
+assert_exit "merge-only-reviewed: non-merge commit: exit" 0
+assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
 
 # usage
 plan ready-start

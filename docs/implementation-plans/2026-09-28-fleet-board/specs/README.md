@@ -1767,7 +1767,41 @@ Isolation as in the first pass. Evidence: `evidence/author-manager.r13b.init.jso
 
 **Output sha256 after the second pass (16):** `agents/manager.md` `3a705d629a868fe2` → `e4e74e5d724175a9`.
 
-### Revision 14 (2026-11-03, card 111): weakened tests outside a test body, in round 1, and the SHA a finding gives
+### Revision 14 (2026-11-03, PR #63, card #134): the `update_branch` action
+
+**Cause.** PR #63 (card #40) hand-edited `agents/manager.md` to add the `update_branch` action, and left the spec and brief without it. Main's guard from PR #118 failed it: `agents/manager.md` hashed to `b1a5fa7fc685b1ab`, not the recorded `e4e74e5d724175a9`, and the ubuntu and macOS checks went red on `test-clean-room.sh` and `test-clean-room-manifest.sh`.
+
+**Process note.** The hand edit was reverted in its own commit: the file was restored byte for byte to main's clean-room output (sha256 `e4e74e5d724175a9`). The rules below were then authored by an isolated run from the spec. The spec text for the action was copied from the hand edit, so the run's output is byte-identical to it; the difference is that it now comes from the spec.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 13): `specs/manager.md` (an `update_branch` row before the `block` row, rule 2.17b after 2.17, and a progress bullet after `block`) and a "Revision 14 requirements" section in `briefs/spec-req-manager.md`. Brief sha256 (16): `be1c19ba90c89cf9` → `01f16d923f52c88e`. Spec: `c8e2a05f6397ca02` → `25ae50cd1f955690`.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `559caaf157fdccdd`, not committed) and a copy of the edited spec as `spec-manager.md` (`25ae50cd1f955690`). Prompt sha256 `6e4b0ba7b1b002f2`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 3 edits) | 7 | 0.2721 | `b1a5fa7fc685b1ab` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills, no MCP servers. The path audit found the three reads were the two inputs and the target, and all three edits were of the target. Evidence: `evidence/author-manager.r14.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: three hunks, the table row, rule 2.17b and the progress bullet. The frontmatter is unchanged. **Kept.**
+
+**Known limits, not re-run.** The limits listed under Revision 13 still hold: `specs/manager.md` is missing other rules that earlier PRs added to the agent file by hand (including `skip_card_lint`, whose rule 2.17a this run placed the new rule after).
+
+**Revision cost:** $0.2721. **Running total, all API-key charges:** ~$39.62.
+
+**Output sha256 before → after (16):** `agents/manager.md` `e4e74e5d724175a9` (main, restored) → `b1a5fa7fc685b1ab`.
+
+### Revision 15 (2026-11-03, card #152): a manager that runs in the background
+
+**Cause.** In the Claude desktop app the Agent tool has no `run_in_background` parameter, so the manager always runs in the background and the `tick` skill had no report to print; `run` had no `dispatchable:` line to read until a completion notice arrived.
+
+**Spec and brief changes** (hand edits to the text): `specs/tick.md` (step 9 and a Must never bullet: with no foreground option, wait for the completion notice and print its final message verbatim) and `specs/run.md` (step 5 and a Must never bullet: a tick is finished only once its report has arrived). A "Revision 15" bullet was added to `briefs/spec-req-tick.md` and `briefs/spec-req-run.md`.
+
+**Runs.** Two isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, only `--add-dir` a staging dir holding the revised spec. The path audit found one read of the spec and one of the target, and two edits of the target, per run. Init events listed only built-in `cc-plugin-*` plugins and the tools `Edit` and `Read`. The claude-code 2.1.x build that ran listed four `cc-plugin-*` built-ins, not the two named in the Phase 5 pre-flight. Cost: $0.0769 (`skills/tick/SKILL.md`) and $0.0723 (`skills/run/SKILL.md`).
+
+Manifest hashes were updated for both skills. Plugin version 0.8.1 to 0.8.2. Behavior in a headless run is unchanged: the skill still passes `run_in_background: false`, and a foreground manager returns its report directly.
+
+### Revision 16 (2026-11-03, card 111; renumbered on merge with main 2026-11-06): weakened tests outside a test body, in round 1, and the SHA a finding gives
 
 **Cause.** The adversarial review of PR #109 traced four gaps that predate it. The weakened-test step counted only lines inside a test body and diffed only `test_paths`, so a no-op helper, a changed fixture, a new top-level `beforeEach`, `describe.skip(` and a new `test.only(...)` block all passed. The step did nothing in round 1, and `unblock`, `start` and `start_review` reset the round to 1, so a fixer's unreviewed commit was never checked. A finding could give a SHA at which the test was already weakened, so a fixer's restore counted as Restored while the weak test stayed. And `agents/manager.md` said two things about the round 1 reference SHA (`base` in the reviewer's inputs, `note.last_review.sha` in the `review` row).
 
@@ -1792,3 +1826,5 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Revision cost:** $0.6183. **Running total, all API-key charges:** ~$39.97 (the last stated total, ~$39.35, plus this revision).
 
 **Output sha256 before → after (16):** `agents/reviewer.md` `f651a8a96074c365` → `deb4a81bde0ddc31`; `agents/fixer.md` `b5035f0e48a270f1` → `a0144525ab919728`; `agents/manager.md` `e4e74e5d724175a9` → `ca3c496c69fb9d24`.
+
+**Merge with main (2026-11-06).** This revision was written as Revision 14 on the branch while main recorded its own Revision 14 (`update_branch`, PR #63) and Revision 15. On merging `origin/main` it was renumbered 16, and its brief section in `briefs/spec-req-manager.md` became "Revision 16 requirements", after main's. `specs/reviewer.md` keeps this revision's Adapted and Weakened classes and main's "Helpers and fixtures outside test_paths" bullet (PR #131), with that bullet's `<previous-review-sha>` changed to `<reference SHA>` so it follows this revision's round 1 rule. No isolated run was made for the merge. `agents/fixer.md` (`a0144525ab919728`) and `agents/reviewer.md` (`deb4a81bde0ddc31`) are byte-identical to this revision's run outputs above. `agents/manager.md` (`8b59b7d55402d7aa`) is a git merge of main's Revision 14 output (`b1a5fa7fc685b1ab`) and this revision's output (`ca3c496c69fb9d24`). Their hunks do not overlap: main added the `update_branch` row, rule 2.17b and a progress bullet, and this revision changed the `prev_sha` input and the `review` row. No single run produced the merged file, and the manifest line says so. Plugin version 0.10.0 to 0.10.1.

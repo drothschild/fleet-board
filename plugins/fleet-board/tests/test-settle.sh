@@ -402,7 +402,7 @@ pr 34 false
 finalize
 run_settle
 assert_exit "no progress: exit 0" 0
-assert_eq "no progress: the plan did say block (it was read)" "$(cnt "pr view 34")" 1
+assert_eq "no progress: the plan did say block (it was read)" "$(cnt "pr view 34 --repo acme/toy --json isDraft,state")" 1
 assert_eq "no progress: no board, note or PR write at all" "$(all_writes)" 0
 
 # ---------------------------------------------------------------------------

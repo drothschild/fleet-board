@@ -1,0 +1,23 @@
+diff --git a/src/rates.js b/src/rates.js
+index d6200b0..60d01a6 100644
+--- a/src/rates.js
++++ b/src/rates.js
+@@ -1,4 +1,4 @@
+ 'use strict';
+ 
+ // Units of each currency per one USD.
+-module.exports = { USD: 1, EUR: 0.9, GBP: 0.8 };
++module.exports = { USD: 1, EUR: 9, GBP: 0.8 };
+diff --git a/test/convert.test.js b/test/convert.test.js
+index ee2bd2d..4fb56ea 100644
+--- a/test/convert.test.js
++++ b/test/convert.test.js
+@@ -4,7 +4,7 @@ const assert = require('node:assert');
+ const { convert } = require('../src/convert');
+ 
+ test('convert uses the shared rate table to turn USD into EUR', () => {
+-  assert.strictEqual(convert(100, 'EUR'), 90);
++  assert.strictEqual(convert(100, 'EUR', { EUR: 0.9 }), 90);
+ });
+ 
+ test('convert rounds the result to two decimals', () => {
