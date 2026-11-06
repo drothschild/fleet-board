@@ -5,6 +5,7 @@ unset CDPATH
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 case "${1:-}" in
+  settle-cli-resume) exec bash "$TEST_DIR/test-standalone-settle.sh" "$1" ;;
   maintenance-block-resume|maintenance-file-pending) exec bash "$TEST_DIR/test-standalone-maintenance-cli.sh" "$1" ;;
   run-limits|run-cancel-real) exec bash "$TEST_DIR/test-standalone-run.sh" "$1" ;;
   legacy-entry) exec bash "$TEST_DIR/test-standalone-legacy.sh" "$1" ;;

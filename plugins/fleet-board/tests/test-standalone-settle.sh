@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in move-to-review|move-resume|stage-advance|settle-pass|settle-unknown|settle-empty|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
+case "${1:-}" in move-to-review|move-resume|settle-cli-resume|stage-advance|settle-pass|settle-unknown|settle-empty|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"; ROOT="$(cd "$TESTS/../../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch" "$TMP/log"
@@ -73,14 +73,19 @@ YML
   jq -e '.stage == "security" and .round == 1' <<<"$note" >/dev/null || exit 1
   echo 'PASS: stage-advance'; exit 0
 fi
-if [ "$1" = move-to-review ] || [ "$1" = move-resume ]; then
+if [ "$1" = move-to-review ] || [ "$1" = move-resume ] || [ "$1" = settle-cli-resume ]; then
   jq -n '{number:12,state:"in_progress",action:"move_to_review",pr:34,branch:"fleet/12-example",reason:"PR exists"}' > "$TMP/card"
-  if [ "$1" = move-resume ]; then
+  if [ "$1" = move-resume ] || [ "$1" = settle-cli-resume ]; then
     touch "$GH_STATE/fail-note"
     if bash "$SCRIPTS/standalone/settle-move.sh" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: failed note accepted' >&2; exit 1; fi
     [ "$(cat "$GH_STATE/column")" = in_review ] || exit 1
   fi
-  bash "$SCRIPTS/standalone/settle-move.sh" "$TMP/card" "$TMP/scratch" || exit 1
+  if [ "$1" = settle-cli-resume ]; then
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/tick-out"; then echo 'FAIL: controller did not recover settle journal' >&2; exit 1; fi
+    jq -e '.outcome == "progress" and .cards[0].action == "move_to_review"' "$TMP/tick-out" >/dev/null || { echo 'FAIL: settled recovery outcome' >&2; exit 1; }
+  else
+    bash "$SCRIPTS/standalone/settle-move.sh" "$TMP/card" "$TMP/scratch" || exit 1
+  fi
   [ "$(cat "$GH_STATE/column")" = in_review ] || exit 1
   note="$(bash "$SCRIPTS/note.sh" get 12)" || exit 1
   jq -e '.pr == 34 and .round == 1 and .state == "in_review"' <<<"$note" >/dev/null || exit 1
