@@ -98,6 +98,11 @@ PRICE_OUT="$(jq -r .price.output <<<"$STAGE_JSON")"
 BASE_URL="$(jq -r --arg p "$PROVIDER" '.providers[$p].base_url' <<<"$FLEET_CFG")"
 KEY_ENV="$(jq -r --arg p "$PROVIDER" '.providers[$p].api_key_env // "-"' <<<"$FLEET_CFG")"
 MAX_PARAM="$(jq -r --arg p "$PROVIDER" '.providers[$p].max_tokens_param' <<<"$FLEET_CFG")"
+# A provider entry with `command` runs a local program (chat.sh --command): no
+# key, no token counts, so the stage costs 0 and its ledger tokens are null.
+PROVIDER_COMMAND="$(jq -r --arg p "$PROVIDER" '.providers[$p].command // empty' <<<"$FLEET_CFG")"
+if [ -n "$PROVIDER_COMMAND" ]; then KEY_ENV="-"; fi
+TOKENS_NULL=0
 
 if [ "$KEY_ENV" != "-" ] && [ -z "${!KEY_ENV:-}" ]; then
   die "$KEY_ENV is not set (provider $PROVIDER, stage $STAGE)" 3
@@ -159,15 +164,21 @@ ATTEMPTS=0
 REPLIED=0
 RESP_MODEL="$MODEL"
 
+tokens_json() { if [ "$TOKENS_NULL" -eq 1 ]; then printf null; else printf '%s' "$1"; fi; }
+
 write_ledger() {
   [ "$REPLIED" -eq 1 ] || return 0
   local cost run
-  cost="$(LC_ALL=C awk -v i="$IN_TOTAL" -v o="$OUT_TOTAL" -v pi="$PRICE_IN" -v po="$PRICE_OUT" 'BEGIN { printf "%.6f", (i * pi + o * po) / 1000000 }')"
+  if [ "$TOKENS_NULL" -eq 1 ]; then
+    cost=0
+  else
+    cost="$(LC_ALL=C awk -v i="$IN_TOTAL" -v o="$OUT_TOTAL" -v pi="$PRICE_IN" -v po="$PRICE_OUT" 'BEGIN { printf "%.6f", (i * pi + o * po) / 1000000 }')"
+  fi
   COST="$cost"
   run="${FLEET_BOARD_RUN_ID:-}"
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "$run" --arg repo "$FLEET_REPO" \
     --argjson card "$N" --arg stage "$STAGE" --arg provider "$PROVIDER" --arg model "$RESP_MODEL" \
-    --argjson i "$IN_TOTAL" --argjson o "$OUT_TOTAL" --argjson cost "$cost" \
+    --argjson i "$(tokens_json "$IN_TOTAL")" --argjson o "$(tokens_json "$OUT_TOTAL")" --argjson cost "$cost" \
     '{ts: $ts, run_id: (if $run == "" then null else $run end), repo: $repo, card: $card, stage: $stage,
       provider: $provider, model: $model, input_tokens: $i, output_tokens: $o, cost_usd: $cost}' \
     >> "$LEDGER" 2>/dev/null || die "cannot write ledger $LEDGER" 1
@@ -186,17 +197,26 @@ PARSED=""
 while :; do
   ATTEMPTS=$((ATTEMPTS + 1))
   rc=0
-  printf '%s' "$(jq -c '{messages: .}' <<<"$MESSAGES")" | bash "$HERE/providers/chat.sh" \
-    --base-url "$BASE_URL" --key-env "$KEY_ENV" --model "$MODEL" --max-tokens "$MAX_OUT" \
-    --max-tokens-param "$MAX_PARAM" --timeout "$TIMEOUT" > "$TMP/reply.json" 2> "$TMP/chat.err" || rc=$?
+  if [ -n "$PROVIDER_COMMAND" ]; then
+    printf '%s' "$(jq -c '{messages: .}' <<<"$MESSAGES")" | bash "$HERE/providers/chat.sh" \
+      --command "$PROVIDER_COMMAND" --model "$MODEL" --timeout "$TIMEOUT" > "$TMP/reply.json" 2> "$TMP/chat.err" || rc=$?
+  else
+    printf '%s' "$(jq -c '{messages: .}' <<<"$MESSAGES")" | bash "$HERE/providers/chat.sh" \
+      --base-url "$BASE_URL" --key-env "$KEY_ENV" --model "$MODEL" --max-tokens "$MAX_OUT" \
+      --max-tokens-param "$MAX_PARAM" --timeout "$TIMEOUT" > "$TMP/reply.json" 2> "$TMP/chat.err" || rc=$?
+  fi
   if [ "$rc" -ne 0 ]; then
     cat "$TMP/chat.err" >&2
     write_ledger
     case "$rc" in 3) exit 3 ;; *) exit 1 ;; esac
   fi
   REPLIED=1
-  IN_TOTAL=$((IN_TOTAL + $(jq -r .input_tokens "$TMP/reply.json")))
-  OUT_TOTAL=$((OUT_TOTAL + $(jq -r .output_tokens "$TMP/reply.json")))
+  if [ "$(jq -r '.input_tokens == null' "$TMP/reply.json")" = "true" ]; then
+    TOKENS_NULL=1
+  else
+    IN_TOTAL=$((IN_TOTAL + $(jq -r .input_tokens "$TMP/reply.json")))
+    OUT_TOTAL=$((OUT_TOTAL + $(jq -r .output_tokens "$TMP/reply.json")))
+  fi
   RESP_MODEL="$(jq -r .model "$TMP/reply.json")"
   jq -j .text "$TMP/reply.json" > "$TMP/reply.txt"
 
@@ -242,7 +262,7 @@ if [ "$NO_POST" -eq 0 ]; then
 fi
 
 jq -cn --arg status "$STATUS" --arg file "$REPORT_FILE" --argjson parsed "$PARSED" --arg provider "$PROVIDER" \
-  --arg model "$RESP_MODEL" --argjson i "$IN_TOTAL" --argjson o "$OUT_TOTAL" --argjson cost "$COST" \
+  --arg model "$RESP_MODEL" --argjson i "$(tokens_json "$IN_TOTAL")" --argjson o "$(tokens_json "$OUT_TOTAL")" --argjson cost "$COST" \
   --argjson attempts "$ATTEMPTS" \
   '{status: $status, report_file: $file, parsed: $parsed, provider: $provider, model: $model,
     input_tokens: $i, output_tokens: $o, cost_usd: $cost, attempts: $attempts}'
