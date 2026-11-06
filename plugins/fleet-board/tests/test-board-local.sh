@@ -166,6 +166,8 @@ assert_json "read note null" '.manager_note' null
 assert_json "read item_id null" '.item_id' null
 run_check_in "$REPO" "$SCRIPTS/board-create.sh" Second "$body" --state ready
 assert_stdout_contains "second number is 2" '"number":2'
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_json "create --state ready stores ready" '.state' ready
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
 assert_stdout_exact "list backlog" '[{"number":1,"title":"Title with \"quotes\"","url":"http://127.0.0.1:8765/cards/1"}]'
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" done
@@ -189,6 +191,30 @@ assert_exit "missing store exit 1" 1
 assert_stderr_contains "missing store says init" "/fleet-board:init"
 run_check_in "$REPO" "$SCRIPTS/board-cache-clear.sh"
 assert_exit "cache-clear no-op" 0
+
+# --- read: manager note, comments shape, unknown state ---
+setup_case
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" Noted "$body"
+MARK='<!-- fleet-board:manager-note -->'
+jq --arg m "$MARK" --arg me "$USER" '.next_comment_id = 6 | .comments = [
+  {id:1, author:$me, body:($m + "\nold note"), created_at:"2026-01-01T00:00:00Z"},
+  {id:2, author:"someone-else", body:($m + "\nforeign note"), created_at:"2026-01-02T00:00:00Z"},
+  {id:3, author:$me, body:"plain comment", created_at:"2026-01-03T00:00:00Z"},
+  {id:4, author:$me, body:($m + "\nnew note\nsecond line"), created_at:"2026-01-04T00:00:00Z"},
+  {id:5, author:"someone-else", body:($m + "\nlate foreign note"), created_at:"2026-01-05T00:00:00Z"}]' \
+  "$REPO/.fleet-board/cards/1.json" > "$REPO/card.tmp" && mv "$REPO/card.tmp" "$REPO/.fleet-board/cards/1.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_exit "read with notes exit 0" 0
+assert_json "last own note wins, marker line stripped" '.manager_note' $'new note\nsecond line'
+assert_json "manager_note_id is the last own note id" '.manager_note_id' 4
+assert_json "comments length" '.comments|length' 5
+assert_json "comment keys" '.comments[2]|keys|join(",")' 'author,body,created_at,id'
+assert_json "comment values" '.comments[2]|[.id,.author,.body,.created_at]|join("|")' "3|$USER|plain comment|2026-01-03T00:00:00Z"
+jq '.state = "bogus"' "$REPO/.fleet-board/cards/1.json" > "$REPO/card.tmp" && mv "$REPO/card.tmp" "$REPO/.fleet-board/cards/1.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_exit "unknown state still reads" 0
+assert_json "unknown state is null" '.state' null
+assert_stderr_contains "unknown state warns" "bogus"
 
 echo ""
 echo "-----------------------------------"
