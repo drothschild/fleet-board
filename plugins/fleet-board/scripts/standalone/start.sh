@@ -59,7 +59,13 @@ if [ -e "$JOURNAL" ]; then
   [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || exit 1
   jq -e --argjson n "$N" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" '.version == 1 and .card == $n and .repo == $repo and .branch == $branch and .worktree == $wt and (.base | test("^[0-9a-f]{40}$")) and (.head | test("^[0-9a-f]{40}$")) and .result.outcome == "done"' "$JOURNAL" >/dev/null || { echo 'invalid start journal' >&2; exit 1; }
   BASE="$(jq -r .base "$JOURNAL")"; HEAD_SHA="$(jq -r .head "$JOURNAL")"
-  [ "$(git -C "$FLEET_ROOT" rev-parse --verify "$EVIDENCE_REF" 2>/dev/null)" = "$HEAD_SHA" ] && GIT_NO_REPLACE_OBJECTS=1 git -C "$FLEET_ROOT" merge-base --is-ancestor "$BASE" "$HEAD_SHA" || { echo 'start evidence ref does not match journal' >&2; exit 1; }
+  GIT_NO_REPLACE_OBJECTS=1 git -C "$FLEET_ROOT" cat-file -e "$HEAD_SHA^{commit}" && GIT_NO_REPLACE_OBJECTS=1 git -C "$FLEET_ROOT" merge-base --is-ancestor "$BASE" "$HEAD_SHA" || { echo 'journal commit evidence unavailable' >&2; exit 1; }
+  CURRENT_REF="$(git -C "$FLEET_ROOT" rev-parse --verify "$EVIDENCE_REF" 2>/dev/null || true)"
+  if [ -z "$CURRENT_REF" ]; then
+    git -C "$FLEET_ROOT" update-ref "$EVIDENCE_REF" "$HEAD_SHA" "" || exit 1
+  elif [ "$CURRENT_REF" != "$HEAD_SHA" ]; then
+    echo 'start evidence ref does not match journal' >&2; exit 1
+  fi
   jq '.result' "$JOURNAL" > "$SCRATCH/result"
 else
   [ -n "${FLEET_BOARD_WORKER_SCRIPT:-}" ] && [ -f "$FLEET_BOARD_WORKER_SCRIPT" ] && [ ! -L "$FLEET_BOARD_WORKER_SCRIPT" ] && [ -n "${FLEET_BOARD_WORKER_IMAGE:-}" ] || { echo 'standalone worker is not configured' >&2; exit 1; }
@@ -89,9 +95,9 @@ else
   [ "$HEAD_SHA" != "$BASE" ] && GIT_NO_REPLACE_OBJECTS=1 git --git-dir="$SCRATCH/import.git" merge-base --is-ancestor "$BASE" "$HEAD_SHA" || { echo 'worker commit evidence is invalid' >&2; exit 1; }
   git -C "$FLEET_ROOT" -c protocol.file.allow=always fetch -q --no-tags "$SCRATCH/import.git" "$HEAD_SHA" || exit 1
   [ "$(git -C "$FLEET_ROOT" rev-parse FETCH_HEAD)" = "$HEAD_SHA" ] || exit 1
-  git -C "$FLEET_ROOT" update-ref "$EVIDENCE_REF" "$HEAD_SHA" "" || exit 1
   jq -n --argjson card "$N" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --arg head "$HEAD_SHA" --slurpfile result "$SCRATCH/result" --slurpfile plan_card "$CARD" '{version:1,card:$card,repo:$repo,branch:$branch,worktree:$wt,base:$base,head:$head,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" || exit 1
   mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+  git -C "$FLEET_ROOT" update-ref "$EVIDENCE_REF" "$HEAD_SHA" "" || exit 1
 fi
 jq -r .report "$SCRATCH/result" > "$SCRATCH/report"
 PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/report")" || exit 1
