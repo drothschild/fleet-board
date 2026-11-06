@@ -574,7 +574,7 @@ scenario_fix_block() {
 # The harness does the merge itself: Claude Code's auto-mode classifier blocks an unattended
 # "gh pr merge" in a headless session ("Merge Without Review"), so the manager's
 # merge action is not exercised here; the ticks cover the post-merge path
-# (verify_main, finish). The committed config (merge.policy: human) is used.
+# (verify_main, finish). The committed config (merge.policy: auto) is used.
 seed_merge() {
   seed_pr "$BL_FIX/card-multiply.md" "$1" 0; A="$CARD"
   seed_note "$A" 1 0 '[]'
