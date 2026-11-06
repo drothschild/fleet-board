@@ -265,6 +265,7 @@ VALIDATION_SCRIPT='
        elif (.execution.roles | type) != "object" then "execution.roles must be a map"
        else
          (.execution as $e | .providers as $providers |
+           (($e | keys_unsorted[]) as $k | if ($k | IN("profiles", "roles", "escalation") | not) then "execution.\($k) is not supported" else empty end),
            ($e.profiles | to_entries[] | .key as $name | .value as $profile |
              (if ($name | test("^[a-z][a-z0-9_-]*$") | not) then "execution.profiles.\($name) has an invalid name" else empty end),
              (if ($profile | type) != "object" then "execution.profiles.\($name) must be an object"
@@ -281,6 +282,7 @@ VALIDATION_SCRIPT='
            (if $e.escalation == null then empty
             elif ($e.escalation | type) != "object" then "execution.escalation must be an object or null"
             else
+              (($e.escalation | keys_unsorted[]) as $k | if ($k | IN("profile", "after_round") | not) then "execution.escalation.\($k) is not supported" else empty end),
               (if ($e.escalation.profile | type) != "string" or ($e.profiles | has($e.escalation.profile) | not) then "execution.escalation.profile names no execution profile" else empty end),
               (if ($e.escalation.after_round | type) != "number" or ($e.escalation.after_round | floor) != $e.escalation.after_round or $e.escalation.after_round <= 0 then "execution.escalation.after_round must be a positive integer" else empty end)
             end))
