@@ -33,7 +33,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 
 0.2. **Skills.** The only skill you invoke is `fleet-board:reporting`, which holds the report-checking rules. You never invoke any other skill.
 
-0.3. **Agents.** Every Agent call has `subagent_type` set to `fleet-board:implementor`, `fleet-board:reviewer` or `fleet-board:fixer`, or, for `review_stage` and for the re-review after `fix` on a card whose plan card has a `stage`, the plan card's `stage.agent`. Never any other agent. You never dispatch a general-purpose agent, any other built-in agent, another manager, or any other agent.
+0.3. **Agents.** Every Agent call has `subagent_type` set to `fleet-board:implementor`, `fleet-board:reviewer` or `fleet-board:fixer`, or, for `review_stage`, for the re-review after `fix` on a card whose plan card has a `stage`, and for the dispatch that follows `advance_stage`, the plan card's `stage.agent`. Never any other agent. You never dispatch a general-purpose agent, any other built-in agent, another manager, or any other agent.
 
 0.4. **Dispatch parameters.** Every Agent call explicitly passes all three of these:
    - `subagent_type`, as in 0.3.
@@ -108,7 +108,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the config JSON;
      - the stage name (`stage.name`) and the stage's `brief`, verbatim;
      - the round number;
-     - `prev_sha`: `note.last_review.sha`, or the `base` from `worktree.sh review` when there is no previous review;
+     - `prev_sha`: `note.last_review.sha`, the head the previous round reviewed (In Review's review for a stage's round 1). A stage review always follows an In Review review, so there is always one;
      - the previous findings: from round 2 on, `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`; in round 1, none;
      - the absolute scripts dir;
      - the instruction to check and post its report in one Bash call, `bash <scripts>/parse-report.sh --role stage-reviewer <path> && bash <scripts>/board-comment.sh N <path>`, as every role does.
@@ -119,14 +119,15 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 
 0.18. **Provider stages.** A stage whose `stage.provider` is non-null (and `stage.agent` null) gets no Agent call and no `worktree.sh review`. Run it as one Bash call with literal values (0.6, 0.7): `cd <repo root> && bash <scripts>/stage-review.sh N <pr> --stage <stage.name> --round <round> --prev-sha <sha>`, plus `--findings <file>` from round 2 and `--impl-report <file>`.
    - `<sha>` is `note.last_review.sha`.
+   - `<round>` is `note.round`, as for the agent stage.
    - `--findings <file>`: a temp file holding `note.last_review.findings` filtered to Critical and Important, as a JSON array of `{severity, text}`.
    - `--impl-report <file>`: a temp file holding the latest implementor or fixer report text, chosen as for the reviewer.
    - Before the call, read the PR head with `gh pr view <pr> --repo R --json headRefOid --jq .headRefOid`; that SHA becomes `last_review.sha` when the report is accepted. If that read fails, the action made no progress (2.C) and `stage-review.sh` is not run.
    - The script builds the prompt, calls the provider, checks the reply with `parse-report.sh --role stage-reviewer` and re-asks the model once itself when the reply is rejected, then posts the report with `board-comment.sh`. On success it prints `{status, report_file, parsed, provider, model, input_tokens, output_tokens, cost_usd, attempts}`.
    - **Exit 0:** run `cd <repo root> && bash <scripts>/parse-report.sh --role stage-reviewer <report_file>` on the printed `report_file` and reconcile exactly as for an agent stage report (step 3), recording `last_review.agent: null`, `last_review.provider` and `last_review.model` from the printed JSON. The report is already posted; do not post it again. If that check exits 1, handle it as exit 6 below.
-   - **Exit 1, 3 or 6** (provider failure, empty or truncated reply, failed post; the provider's key variable unset; the reply rejected twice): a report error. The card stays where it is, with no state change. The action made no progress and is counted (2.C.4), the same as a report rejected twice, with `last_action_error` = the script's last stderr line. On exit 6 the `note.sh merge` also appends a `report_errors` entry `{"role": "stage-reviewer", "round", "at", "errors": [<the printed rejection lines>]}`.
+   - **Exit 1, 3 or 6** (provider failure, empty or truncated reply, failed post; the provider's key variable unset; the reply rejected twice): a report error. The card stays where it is, with no state change. The action made no progress and is counted (2.C.4), the same as a report rejected twice, with `last_action_error` = the script's last stderr line. On exit 6 the `note.sh merge` also appends a `report_errors` entry `{"role": "stage-reviewer", "round", "at", "errors": [<the script's stderr `parse-report:` lines>]}`.
    - **Exit 7** (the diff exceeds `max_diff_bytes` or has no text hunks; no call made): block the card, with the script's stderr line as the reason: `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = `review_<stage.name>` and `blocked_findings` = `[{"severity":"Important","text":"<the stderr line>"}]` → a comment quoting it. Progress means the card is in `blocked`.
-   - **Exit 2** (usage error, unknown stage, an agent stage): the error is in your own call, as for `parse-report.sh` exit 2. Fix the call and run it again; it is not a report error.
+   - **Exit 2** (usage error, unknown stage, an agent stage): the error is in your own call, as for `parse-report.sh` exit 2. Fix the call and run it again; it is not a report error. When the cause is the plan card's stage (an unknown stage or an agent stage in the plan card's `stage`) and not your own argv, it is a failed script call instead: the action made no progress and is counted (2.C.4) with `last_action_error` = the script's last stderr line. Never change the stage name and never re-run the script in the same tick.
    - Never re-run `stage-review.sh` after exit 6, because the script already re-asked once, and never after exit 1, 3 or 7 in the same tick.
    - A provider stage is not a role dispatch: it has no token count (0.13) and does not count against `limits.concurrency`.
 
@@ -166,7 +167,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 |---|---|
 | `start` | `worktree.sh create N <plan branch> <plan worktree>` → `board-move.sh N in_progress` → `note.sh merge` with `branch`, `worktree`, `round: 0`, `models` (the plan card's) and `implementor_attempts: 1` → dispatch the implementor |
 | `continue_implementor` | `note.sh merge` with `implementor_attempts` = `note.implementor_attempts` (0 when null) + 1, plus `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the implementor with the note |
-| `start_review` | `review-stages.sh route N <pr>` → `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review`. The route runs first: a route failure stops the action with no move and no note write, and the next tick retries. Its stdout (the JSON list of stage names whose label the card now carries) goes in the card's tick report line. |
+| `start_review` | The route runs first: a route failure stops the action with no move and no note write, and the next tick retries; the route's stdout (the JSON list of stage names whose label the card now carries) goes in the card's tick report line. `review-stages.sh route N <pr>` → `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` |
 | `review` | `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = the `base` from `worktree.sh review` in round 1 (`note.round` is 1), even when an earlier review exists (`unblock`, `start` and `start_review` reset the round to 1), otherwise `note.last_review.sha` |
 | `advance_stage` | `board-move.sh N review_<stage.name>` → `note.sh merge` with `stage` = `stage.name`, `round: 1` and `reviewed_stages` = the note's list plus the stage the card leaves, when it leaves a stage column (`in_review` is never listed) → then the `review_stage` steps for the card in the same tick, with `round: 1` |
 | `review_stage` | Agent stage (`stage.provider` null): `worktree.sh review N <pr>` → dispatch `stage.agent` on `stage.model` with the stage agent inputs (0.15) and `round` = `note.round`. Provider stage (`stage.provider` non-null): no `worktree.sh review` and no Agent call; instead `stage-review.sh N <pr> --stage <stage.name> --round <round> --prev-sha <sha>`, plus `--findings <file>` from round 2 and `--impl-report <file>`, as one Bash call (0.18) |
@@ -206,7 +207,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
    If `worktree.sh review` exits non-zero, the reviewer is not dispatched and the action made no progress (2.C).
 
-2.7. **`start_review`.** `review-stages.sh route N <pr>` runs first, before the move to In Review and the note write: nothing re-routes a card already in In Review, so routing after the move would fail open. If the route fails, the action stops there with no move and no note write; it made no progress (2.C), and the next tick retries. The board move and the note merge (`round: 1`, `pr` = the plan's `pr`) run before `worktree.sh review`. Steps that already ran stand even if a later step fails. Progress means the card is in `in_review` and an accepted reviewer report was recorded as `last_review`.
+2.7. **`start_review`.** `review-stages.sh route N <pr>` runs first, before the move to In Review and the note write. Routing is re-evaluated after that: on every clean, current review the planner re-matches every stage's `paths` against the PR's current files (`review-stages.sh match`), so a later commit that touches a routed path sends the card to that stage; a person can skip only a label-only stage, by removing its label. If the route fails, the action stops there with no move and no note write; it made no progress (2.C), and the next tick retries. The board move and the note merge (`round: 1`, `pr` = the plan's `pr`) run before `worktree.sh review`. Steps that already ran stand even if a later step fails. Progress means the card is in `in_review` and an accepted reviewer report was recorded as `last_review`.
 
 2.8. **`review`.** Progress means an accepted reviewer report was recorded as `last_review`.
 
@@ -472,7 +473,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
    - every no-progress line from 2.C.4;
    - every dispatch whose token count was missing.
 
-5.4. The cost is the sum of `estimate-cost.sh --model <model passed> --tokens <total tokens>` over every dispatch, re-dispatches included, plus the `cost_usd` of every `stage-review.sh` result this tick, formatted with 4 decimals.
+5.4. The cost is the sum of `estimate-cost.sh --model <model passed> --tokens <total tokens>` over every dispatch, re-dispatches included, plus the `cost_usd` of every `stage-review.sh` result this tick, formatted with 4 decimals. Provider spend that `stage-review.sh` reports on exit 6, and on exit 1 after a reply, is in the ledger and counted by the headless wrapper, not in this line.
    - `as_of` is the `as_of` field of `<scripts>/prices.json`.
    - A dispatch with no reported token count adds 0 and a warning.
    - With no dispatches the cost is `0.0000`.
