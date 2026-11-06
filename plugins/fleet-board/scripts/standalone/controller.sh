@@ -147,15 +147,22 @@ fi
 jq -c '.cards[] | select(.action != "skip")' "$PLAN" > "$SCRATCH/actions" || exit 1
 [ -s "$SCRATCH/actions" ] || { echo 'inconsistent idle plan' >&2; exit 1; }
 FAILURES=0
+jq -c '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/starts" || exit 1
+if [ -s "$SCRATCH/starts" ]; then
+  ROOT="$(git rev-parse --show-toplevel)" || exit 1
+  LIMIT="$(bash "$SCRIPTS/config.sh" --dir "$ROOT" limits.concurrency)" || exit 1
+  [[ "$LIMIT" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid worker concurrency' >&2; exit 1; }
+  run_group bash "$SCRIPTS/standalone/start-batch.sh" "$SCRATCH/starts" "$SCRATCH" "$LIMIT" || FAILURES=$((FAILURES + 1))
+fi
 while IFS= read -r CARD_JSON; do
   [ -n "$CARD_JSON" ] || continue
   NUMBER="$(jq -r .number <<<"$CARD_JSON")"; ACTION="$(jq -r .action <<<"$CARD_JSON")"
+  [ "$ACTION" != start ] || continue
   ACTION_DIR="$SCRATCH/action-$NUMBER"
   mkdir "$ACTION_DIR" || exit 1
   printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
   case "$ACTION" in
     skip_no_acceptance) run_hold "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
-    start) run_start "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     start_review|review) run_review "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     review_stage)
       jq '.action = "stage_review"' "$ACTION_DIR/card" > "$ACTION_DIR/stage-card" || exit 1

@@ -50,6 +50,23 @@ case "$REMOTE" in "https://github.com/$FLEET_REPO"|"https://github.com/$FLEET_RE
 # A durable journal and a private ref preserve validated worker evidence across
 # interruptions, while the repository lock prevents simultaneous retries.
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
+# Parallel fixture workers share controller Git metadata. Hold this short-lived
+# mutex only around worktree/ref/push operations, never while a worker runs.
+GIT_MUTEX="$COMMON/fleet-board-standalone-git.lock"
+GIT_LOCK_HELD=false
+acquire_git() {
+  local attempts=0
+  [ "$GIT_LOCK_HELD" = false ] || return 0
+  until mkdir "$GIT_MUTEX" 2>/dev/null; do
+    [ "$attempts" -lt 600 ] || { echo 'controller Git mutex timed out' >&2; return 1; }
+    sleep 0.1; attempts=$((attempts + 1))
+  done
+  GIT_LOCK_HELD=true
+}
+release_git() {
+  if [ "$GIT_LOCK_HELD" = true ]; then rmdir "$GIT_MUTEX" 2>/dev/null || true; GIT_LOCK_HELD=false; fi
+}
+trap release_git EXIT
 JDIR="$COMMON/fleet-board-standalone"
 mkdir -p "$JDIR" || exit 1
 JOURNAL="$JDIR/start-$N.json"
@@ -71,8 +88,10 @@ else
   [ -n "${FLEET_BOARD_WORKER_SCRIPT:-}" ] && [ -f "$FLEET_BOARD_WORKER_SCRIPT" ] && [ ! -L "$FLEET_BOARD_WORKER_SCRIPT" ] && [ -n "${FLEET_BOARD_WORKER_IMAGE:-}" ] || { echo 'standalone worker is not configured' >&2; exit 1; }
   [ -z "$REMOTE_HEAD" ] || { echo 'remote branch already exists; reconciliation required' >&2; exit 1; }
   if git -C "$FLEET_ROOT" show-ref --verify --quiet "$EVIDENCE_REF"; then echo 'orphaned start evidence requires reconciliation' >&2; exit 1; fi
+  acquire_git || exit 1
   bash "$SCRIPTS/worktree.sh" create "$N" "$BRANCH" "$WT" >/dev/null || exit 1
   BASE="$(git -C "$WT" rev-parse HEAD)" || exit 1
+  release_git
   mkdir "$SCRATCH/worker" || exit 1
   cp "$FLEET_BOARD_WORKER_SCRIPT" "$SCRATCH/worker/worker.sh" || exit 1
   jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$BASE" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg prompt "$TITLE" \
@@ -93,6 +112,7 @@ else
   git -c init.templateDir= init -q --bare "$SCRATCH/import.git" || exit 1
   cp -R "$CLONE/.git/objects/." "$SCRATCH/import.git/objects/" || exit 1
   [ "$HEAD_SHA" != "$BASE" ] && GIT_NO_REPLACE_OBJECTS=1 git --git-dir="$SCRATCH/import.git" merge-base --is-ancestor "$BASE" "$HEAD_SHA" || { echo 'worker commit evidence is invalid' >&2; exit 1; }
+  acquire_git || exit 1
   git -C "$FLEET_ROOT" -c protocol.file.allow=always fetch -q --no-tags "$SCRATCH/import.git" "$HEAD_SHA" || exit 1
   [ "$(git -C "$FLEET_ROOT" rev-parse FETCH_HEAD)" = "$HEAD_SHA" ] || exit 1
   jq -n --argjson card "$N" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --arg head "$HEAD_SHA" --slurpfile result "$SCRATCH/result" --slurpfile plan_card "$CARD" '{version:1,card:$card,repo:$repo,branch:$branch,worktree:$wt,base:$base,head:$head,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" || exit 1
@@ -103,12 +123,14 @@ jq -r .report "$SCRATCH/result" > "$SCRATCH/report"
 PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/report")" || exit 1
 # Follow-up filing is not yet supported; do not publish partial reconciliation.
 jq -e '.status == "done" and (.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/dev/null || { echo 'worker report needs unsupported follow-up reconciliation' >&2; exit 1; }
+acquire_git || exit 1
 if [ -n "$REMOTE_HEAD" ]; then
   [ "${REMOTE_HEAD%%[[:space:]]*}" = "$HEAD_SHA" ] || { echo 'remote branch does not match recorded evidence' >&2; exit 1; }
 else
   validate_push_destination || { echo 'push destination changed' >&2; exit 1; }
   git -C "$FLEET_ROOT" push origin "$HEAD_SHA:refs/heads/$BRANCH" >&2 || exit 1
 fi
+release_git
 PRS="$(gh pr list --repo "$FLEET_REPO" --head "$BRANCH" --state open --json number)" || exit 1
 COUNT="$(jq 'length' <<<"$PRS")" || exit 1
 if [ "$COUNT" -eq 0 ]; then
