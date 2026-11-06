@@ -2,11 +2,32 @@
 # Targeted standalone profile cases; no provider calls.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in routing|legacy-config|preflight) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
+case "${1:-}" in routing|legacy-config|preflight|preflight-tick) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo"
 git -C "$TMP/repo" init -q
+if [[ $1 == preflight-tick ]]; then
+  mkdir -p "$TMP/bin"
+  for executable in codex docker; do
+    printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$executable"; chmod +x "$TMP/bin/$executable"
+  done
+  cat > "$TMP/repo/.fleet-board.yml" <<'YML'
+board: { repo: acme/toy }
+execution:
+  profiles: { code: { runner: codex, provider: openai, model: code-model } }
+  roles: { implementor: code, fixer: code, reviewer: code }
+YML
+  printf '#!/bin/sh\ntouch "%s"\nexit 1\n' "$TMP/planner-ran" > "$TMP/planner"
+  cd "$TMP/repo" || exit 1
+  unset OPENAI_API_KEY FLEET_BOARD_STANDALONE_FIXTURE
+  export PATH="$TMP/bin:$PATH" FLEET_BOARD_TICK_PLAN="$TMP/planner"
+  if bash "$SCRIPTS/standalone/controller.sh" tick >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing key accepted' >&2; exit 1; fi
+  [[ ! -e "$TMP/planner-ran" ]] || { echo 'FAIL: planner ran before preflight' >&2; exit 1; }
+  grep -q OPENAI_API_KEY "$TMP/err" || { echo 'FAIL: missing key not identified' >&2; exit 1; }
+  echo 'PASS: preflight-tick'
+  exit 0
+fi
 if [[ $1 == preflight ]]; then
   mkdir -p "$TMP/bin"
   for executable in codex docker; do
