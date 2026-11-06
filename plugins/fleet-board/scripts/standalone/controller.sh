@@ -124,34 +124,42 @@ if [ "$MODE" = plan ]; then
   cat "$PLAN"
   exit 0
 fi
-# Dispatch one supported action only; reject mixed plans before any effect.
+# Validate the complete plan before effects. Cards run serially under the
+# repository lock, so worker concurrency is at most one and scratch is never
+# shared between actions. Unknown or currently unsupported actions hold all.
+if ! jq -e '
+  ([.cards[].number] | length == (unique | length)) and
+  ([.cards[] | select(.action == "merge")] | length <= 1) and
+  all(.cards[]; .action | IN("skip", "start", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish"))
+' "$PLAN" >/dev/null; then
+  echo 'tick contains an unsupported or duplicate action; no actions taken' >&2
+  exit 1
+fi
 if jq -e 'all(.cards[]; .action == "skip") and .dispatchable == false' "$PLAN" >/dev/null; then
   jq '. + {outcome: "idle", cost_usd: 0}' "$PLAN"
   exit 0
 fi
-if jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start")' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/card"
-  run_start "$SCRATCH/card" "$SCRATCH" || exit 1
-elif jq -e '([.cards[] | select(.action == "start_review")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start_review")' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action == "start_review")' "$PLAN" > "$SCRATCH/card"
-  run_review "$SCRATCH/card" "$SCRATCH" || exit 1
-elif jq -e '([.cards[] | select(.action == "fix")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "fix")' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action == "fix")' "$PLAN" > "$SCRATCH/card"
-  run_fix "$SCRATCH/card" "$SCRATCH" || exit 1
-elif jq -e '([.cards[] | select(.action == "to_human_qa")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "to_human_qa")' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action == "to_human_qa")' "$PLAN" > "$SCRATCH/card"
-  run_qa "$SCRATCH/card" "$SCRATCH" || exit 1
-elif jq -e '([.cards[] | select(.action | IN("review", "review_stage"))] | length) == 1 and all(.cards[]; .action == "skip" or (.action | IN("review", "review_stage")))' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action | IN("review", "review_stage")) | if .action == "review_stage" then .action = "stage_review" else . end' "$PLAN" > "$SCRATCH/card"
-  run_review "$SCRATCH/card" "$SCRATCH" || exit 1
-elif jq -e '([.cards[] | select(.action == "advance_stage")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "advance_stage")' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action == "advance_stage")' "$PLAN" > "$SCRATCH/card"
-  run_stage "$SCRATCH/card" "$SCRATCH" || exit 1
-elif jq -e '([.cards[] | select(.action | IN("mark_ready", "merge", "verify_main", "finish"))] | length) == 1 and all(.cards[]; .action == "skip" or (.action | IN("mark_ready", "merge", "verify_main", "finish")))' "$PLAN" >/dev/null; then
-  jq '.cards[] | select(.action | IN("mark_ready", "merge", "verify_main", "finish"))' "$PLAN" > "$SCRATCH/card"
-  run_publication "$SCRATCH/card" "$SCRATCH" || exit 1
-else
-  echo 'tick contains an unsupported action; no actions taken' >&2
-  exit 1
-fi
+jq -c '.cards[] | select(.action != "skip")' "$PLAN" > "$SCRATCH/actions" || exit 1
+[ -s "$SCRATCH/actions" ] || { echo 'inconsistent idle plan' >&2; exit 1; }
+FAILURES=0
+while IFS= read -r CARD_JSON; do
+  [ -n "$CARD_JSON" ] || continue
+  NUMBER="$(jq -r .number <<<"$CARD_JSON")"; ACTION="$(jq -r .action <<<"$CARD_JSON")"
+  ACTION_DIR="$SCRATCH/action-$NUMBER"
+  mkdir "$ACTION_DIR" || exit 1
+  printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
+  case "$ACTION" in
+    start) run_start "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    start_review|review) run_review "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    review_stage)
+      jq '.action = "stage_review"' "$ACTION_DIR/card" > "$ACTION_DIR/stage-card" || exit 1
+      run_review "$ACTION_DIR/stage-card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    fix) run_fix "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    to_human_qa) run_qa "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    advance_stage) run_stage "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    mark_ready|merge|verify_main|finish) run_publication "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    *) exit 1 ;;
+  esac
+done < "$SCRATCH/actions"
+[ "$FAILURES" -eq 0 ] || { echo "$FAILURES card action(s) failed" >&2; exit 1; }
 jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" '. + {outcome: "progress"} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"
