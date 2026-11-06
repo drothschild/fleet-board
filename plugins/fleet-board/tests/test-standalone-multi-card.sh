@@ -106,6 +106,19 @@ if [ "${1:-multi-card}" = multi-card-skip ]; then export GH_SKIP13=1; fi
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-multi-card}" = multi-card-wait ] || [ "${1:-multi-card}" = multi-card-lint ]; then
+  bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/base-plan" || exit 1
+  if [ "$1" = multi-card-wait ]; then
+    jq '.cards[1].action = "wait" | .cards[1].waiting_on = ["acme/toy#3"]' "$TMP/base-plan" > "$TMP/mixed-plan"
+  else
+    jq '.cards[1].action = "skip_card_lint" | .cards[1].comment_needed = true | .cards[1].lint = ["title: too short"] | .cards[1].lint_marker = "<!-- fleet-board:card-lint:123 -->"' "$TMP/base-plan" > "$TMP/mixed-plan"
+  fi
+  cat > "$TMP/planner" <<PLAN
+#!/bin/bash
+cat "$TMP/mixed-plan"
+PLAN
+  export FLEET_BOARD_TICK_PLAN="$TMP/planner"
+fi
 if [ "${1:-multi-card}" = multi-card-provider ]; then
   bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/base-plan" || exit 1
   jq '.cards[1].action = "review_stage" | .cards[1].state = "review_security" | .cards[1].stage = {name:"security",agent:null,provider:"openai",model:"test"}' "$TMP/base-plan" > "$TMP/provider-plan"
@@ -183,7 +196,17 @@ elif [ "${1:-multi-card}" = multi-card-lock ]; then
 else
   if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: multi-card tick failed' >&2; exit 1; fi
 fi
-if [ "${1:-multi-card}" = multi-card-skip ]; then
+if [ "${1:-multi-card}" = multi-card-wait ] || [ "${1:-multi-card}" = multi-card-lint ]; then
+  if [ "$1" = multi-card-wait ]; then
+    jq -e '.outcome == "progress" and ([.cards[].action] == ["start","wait"])' "$TMP/out" >/dev/null || exit 1
+    jq -e 'any(.[]; .body | startswith("Waiting for acme/toy#3"))' "$TMP/state/comments-13" >/dev/null || { echo 'FAIL: dependency notice missing' >&2; exit 1; }
+  else
+    jq -e '.outcome == "progress" and ([.cards[].action] == ["start","skip_card_lint"])' "$TMP/out" >/dev/null || exit 1
+    jq -e 'any(.[]; .body | startswith("<!-- fleet-board:card-lint:123 -->"))' "$TMP/state/comments-13" >/dev/null || { echo 'FAIL: lint notice missing' >&2; exit 1; }
+  fi
+  [ "$(cat "$TMP/state/column-13")" = ready ] && [ ! -e "$TMP/state/pr-13" ] || { echo 'FAIL: held card progressed' >&2; exit 1; }
+  NUMBERS=12
+elif [ "${1:-multi-card}" = multi-card-skip ]; then
   jq -e '.outcome == "progress" and ([.cards[].action] == ["start","skip_no_acceptance"])' "$TMP/out" >/dev/null || { echo 'FAIL: mixed actions not reported' >&2; exit 1; }
   [ "$(cat "$TMP/state/column-13")" = ready ] && [ ! -e "$TMP/state/pr-13" ] || { echo 'FAIL: card without acceptance progressed' >&2; exit 1; }
   jq -e 'any(.[]; .body | startswith("<!-- fleet-board:skip-no-acceptance -->"))' "$TMP/state/comments-13" >/dev/null || { echo 'FAIL: missing acceptance comment' >&2; exit 1; }
