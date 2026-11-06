@@ -87,6 +87,19 @@ if [ "${1:-multi-card}" = multi-card-skip ]; then export GH_SKIP13=1; fi
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-multi-card}" = multi-card-provider ]; then
+  bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/base-plan" || exit 1
+  jq '.cards[1].action = "review_stage" | .cards[1].state = "review_security" | .cards[1].stage = {name:"security",agent:null,provider:"openai",model:"test"}' "$TMP/base-plan" > "$TMP/provider-plan"
+  cat > "$TMP/planner" <<PLAN
+#!/bin/bash
+cat "$TMP/provider-plan"
+PLAN
+  if FLEET_BOARD_TICK_PLAN="$TMP/planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/provider-out" 2> "$TMP/provider-err"; then echo 'FAIL: unsupported provider stage accepted' >&2; exit 1; fi
+  if git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract || [ -e "$TMP/state/pr-12" ]; then echo 'FAIL: earlier card published before unsupported provider rejected' >&2; exit 1; fi
+  [ "$(cat "$TMP/state/column-12")" = ready ] || { echo 'FAIL: earlier card moved before provider rejection' >&2; exit 1; }
+  echo 'PASS: multi-card-provider'
+  exit 0
+fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: multi-card tick failed' >&2; exit 1; fi
 if [ "${1:-multi-card}" = multi-card-skip ]; then
   jq -e '.outcome == "progress" and ([.cards[].action] == ["start","skip_no_acceptance"])' "$TMP/out" >/dev/null || { echo 'FAIL: mixed actions not reported' >&2; exit 1; }

@@ -4,7 +4,7 @@ set -uo pipefail
 unset CDPATH
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
-if [ "${1:-}" = multi-card ] || [ "${1:-}" = multi-card-skip ]; then
+if [ "${1:-}" = multi-card ] || [ "${1:-}" = multi-card-skip ] || [ "${1:-}" = multi-card-provider ]; then
   exec bash "$TEST_DIR/test-standalone-multi-card.sh" "$1"
 fi
 if [ "${1:-}" = card-lifecycle ]; then
