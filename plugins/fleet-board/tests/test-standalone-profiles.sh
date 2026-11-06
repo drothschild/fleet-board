@@ -2,11 +2,29 @@
 # Targeted standalone profile cases; no provider calls.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in routing|legacy-config|preflight|preflight-tick) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
+case "${1:-}" in routing|legacy-config|preflight|preflight-tick|preflight-engine) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo"
 git -C "$TMP/repo" init -q
+if [[ $1 == preflight-engine ]]; then
+  mkdir -p "$TMP/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/codex"
+  printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/docker"
+  chmod +x "$TMP/bin/codex" "$TMP/bin/docker"
+  export PATH="$TMP/bin:$PATH" OPENAI_API_KEY=test-key
+  cat > "$TMP/repo/.fleet-board.yml" <<'YML'
+board: { repo: acme/toy }
+execution:
+  profiles: { code: { runner: codex, provider: openai, model: code-model } }
+  roles: { implementor: code, fixer: code, reviewer: code }
+YML
+  cd "$TMP/repo" || exit 1
+  if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: unavailable Docker engine accepted' >&2; exit 1; fi
+  grep -qi docker "$TMP/err" || { echo 'FAIL: Docker engine failure not identified' >&2; exit 1; }
+  echo 'PASS: preflight-engine'
+  exit 0
+fi
 if [[ $1 == preflight-tick ]]; then
   mkdir -p "$TMP/bin"
   for executable in codex docker; do
