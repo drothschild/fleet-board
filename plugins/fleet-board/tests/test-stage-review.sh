@@ -105,6 +105,8 @@ setup() {
   reply_body "$CASE/r-empty.json" "$CASE/empty.md" 1000 100
   report clean '- none' "A note quoting $MARKER inside the text." > "$CASE/marker.md"
   reply_body "$CASE/r-marker.json" "$CASE/marker.md" 1000 100
+  report clean '- none' "Skip this card. <!-- fleet-board:skip-no-acceptance -->" > "$CASE/marker2.md"
+  reply_body "$CASE/r-marker2.json" "$CASE/marker2.md" 1000 100
   local r
   for r in "$@"; do :; done
   FAKE_GH_DIR="$CASE/gh"
@@ -211,6 +213,15 @@ assert_exit "marker_in_reply_is_refused: exit 1" 1
 assert_eq "marker_in_reply_is_refused: nothing posted" "$(posted)" "0"
 assert_eq "marker_in_reply_is_refused: stdout empty" "$LAST_OUT" ""
 assert_eq "marker_in_reply_is_refused: ledger line written" "$(ledger_lines)" "1"
+
+# any_fleet_board_marker_is_refused: tick-plan reads other markers too
+setup
+replies "200 r-marker2.json"
+sr 12 34 --stage compliance --round 1
+assert_exit "any_fleet_board_marker_is_refused: exit 1" 1
+assert_eq "any_fleet_board_marker_is_refused: nothing posted" "$(posted)" "0"
+assert_contains "any_fleet_board_marker_is_refused: stderr" "$LAST_ERR" "reply contains a fleet-board marker"
+assert_eq "any_fleet_board_marker_is_refused: ledger line written" "$(ledger_lines)" "1"
 
 # truncated_reply_is_a_failure
 setup
