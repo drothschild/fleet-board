@@ -400,6 +400,25 @@ if grep -q 'followups.status' "$DOCS"; then pass "docs: config.md documents foll
 if grep -qF '## `followups.status`' "$DOCS" && grep -qF 'followups.status: backlog' "$DOCS"; then pass "docs: config.md has a literal followups.status heading and backlog example"; else fail "docs: config.md has a literal followups.status heading and backlog example" "not found in $DOCS"; fi
 
 # docs: the main-is-red card is filed in the followups.status column, not Backlog
+# --- local backend: the "no testable check" item lands in Backlog on a card
+# file, with the why-comment on that card; gh answers only the PR comment
+setup_case
+printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+mkdir -p "$REPO/.fleet-board/cards"
+echo 9 > "$REPO/.fleet-board/next"
+jq -n '{number: 12, title: "The card", body: "b", state: "in_progress", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-01T00:00:00Z"}' \
+  > "$REPO/.fleet-board/cards/12.json"
+printf 'pr comment 34 *\t0\t-\n' > "$ROUTES"
+report '[{"title":"Rename the module","detail":"no testable check; a naming call, see `README.md`"}]' '[]'
+run_ff
+assert_exit "local escape-words: exit" 0
+assert_eq "local escape-words: card #9 in backlog" "$(jq -r .state "$REPO/.fleet-board/cards/9.json" 2>/dev/null)" backlog
+case "$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/9.json" 2>/dev/null)" in
+  "Filed in Backlog: the role stated that there is no testable check"*) pass "local escape-words: why-comment on card #9" ;;
+  *) fail "local escape-words: why-comment on card #9" "$LAST_ERR" ;;
+esac
+assert_eq "local escape-words: only the PR comment reached gh" "$(ls "$FAKE_GH_DIR/argv" | wc -l | tr -d ' ')" 1
+
 if grep -F 'main is red' "$DOCS" | sed 's/.*main is red//; s/\. .*//' | grep -qF 'Backlog'; then fail "docs: no sentence puts the main is red card in Backlog" "Backlog follows main is red"; else pass "docs: no sentence puts the main is red card in Backlog"; fi
 
 echo "-----------------------------------"

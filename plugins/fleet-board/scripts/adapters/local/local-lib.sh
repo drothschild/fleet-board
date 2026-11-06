@@ -22,6 +22,33 @@ fl_read_card() {
   cat "$f"
 }
 
+# fl_find_title <title> open|closed [days]: the local stand-in for a GitHub
+# title search. Prints the lowest-numbered card whose title equals <title>
+# case-insensitively, or "none". "open" is any state but done and wont_do;
+# "closed" is done or wont_do with updated_at (else created_at) within <days>
+# (default 30).
+# Fails closed (exit 1, printing nothing) when the store is missing or any card
+# file is not a JSON object.
+fl_find_title() {
+  local cards
+  fl_require_store
+  cards="$(fl_cards_dir)"
+  set -- "$1" "$2" "${3:-30}" "$cards"/*.json
+  if [ ! -e "$4" ]; then echo none; return 0; fi
+  local t="$1" which="$2" days="$3"
+  shift 3
+  jq -rs --arg t "$t" --arg w "$which" --argjson d "$days" '
+    if all(.[]; type == "object") then . else error("not a card") end
+    | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase))
+           | (.state == "done" or .state == "wont_do") as $closed
+           | select(if $w == "open" then ($closed | not)
+                    else (.updated_at // .created_at) as $u
+                         | $closed and ($u | type) == "string"
+                           and (($u | fromdateiso8601) >= (now - $d * 86400)) end)]
+    | sort_by(.number) | .[0].number // "none"' "$@" 2>/dev/null \
+    || fb_die 1 "cannot search the cards in $cards: a card file is not valid JSON"
+}
+
 # fl_write_card <n> <json-file>: atomic replace of the card file.
 fl_write_card() {
   local cards tmp

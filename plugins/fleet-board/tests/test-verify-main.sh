@@ -400,6 +400,32 @@ printf '[{"number":88,"title":"[P0] main is red after #7"}]\n' > "$FAKE_GH_DIR/s
 run_check "$SCRIPT" 12 7
 assert_eq "p0-reuse-labels: no card read" "$(calls_starting api repos/acme/toy/issues/88)" 0
 
+# local backend: the P0 search reads the card files; gh answers only the PR
+# file list, so any issue search or create has no route and exits 99
+use_local() {
+  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\ncommands:\n  typecheck: "false"\n  test_one: "sh {file}"\n' \
+    > "$REPO/.fleet-board.yml"
+  printf '.fleet-board/\n' >> "$REPO/.git/info/exclude"
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 1 > "$REPO/.fleet-board/next"
+  printf 'pr view 7 --repo acme/toy --json files\t0\t%s\n' "$FAKE_GH_DIR/files.json" > "$ROUTES"
+}
+setup_case false
+use_local
+run_check "$SCRIPT" 12 7
+assert_exit "p0-local: first run exit" 0
+assert_eq "p0-local: files local card #1" "$(jqc .p0_card)" "1"
+assert_eq "p0-local: card #1 title" "$(jq -r .title "$REPO/.fleet-board/cards/1.json" 2>/dev/null)" "[P0] main is red after #7"
+run_check "$SCRIPT" 12 7
+assert_exit "p0-local: second run exit" 0
+assert_eq "p0-local: second run reuses #1" "$(jqc .p0_card)" "1"
+assert_eq "p0-local: no second card" "$(cat "$REPO/.fleet-board/next")" "2"
+assert_eq "p0-local: no issue call reached gh" "$(calls_starting issue)" 0
+# a done P0 card is not open: a new one is filed
+jq '.state = "done"' "$REPO/.fleet-board/cards/1.json" > "$REPO/.fleet-board/cards/1.json.new" && mv "$REPO/.fleet-board/cards/1.json.new" "$REPO/.fleet-board/cards/1.json"
+run_check "$SCRIPT" 12 7
+assert_eq "p0-local: a done P0 card is not reused" "$(jqc .p0_card)" "2"
+
 # green never searches
 setup_case true
 run_check "$SCRIPT" 12 7

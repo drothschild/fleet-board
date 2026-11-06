@@ -13,7 +13,8 @@
 # Adds each missing routing label (never removes one) and prints the JSON list
 # of stage names whose label the card carries afterwards. When gh lists fewer
 # files than the PR changes, every stage is routed, with a warning. With no
-# stages configured it prints [] and calls nothing.
+# stages configured it prints [] and calls nothing. On the local backend the
+# label is added to the card file (adapters/local/label.sh), not on GitHub.
 #
 # match: read-only. Prints the JSON list of stage names, in config order, whose
 # paths globs match a file the PR changes now; the card's labels do not count
@@ -125,7 +126,11 @@ case "$MODE" in
       # route's truncation rule is wider than match's: a truncated list routes
       # every stage, a label-only one too
       if [ "$HAVE" = true ] || [ "$TRUNCATED" = true ] || paths_match "$i"; then
-        if [ "$HAVE" != true ]; then
+        if [ "$HAVE" != true ] && [ "$(fb_cfg board.backend)" = local ]; then
+          # the local card file holds the label; GitHub is never asked
+          bash "$FB_SCRIPTS/adapters/local/label.sh" "$CARD" add "$LABEL" >/dev/null \
+            || fb_die 1 "cannot add label $LABEL to card #$CARD"
+        elif [ "$HAVE" != true ]; then
           gh issue edit "$CARD" --repo "$FLEET_REPO" --add-label "$LABEL" >/dev/null \
             || fb_die 1 "cannot add label $LABEL to card #$CARD"
         fi
