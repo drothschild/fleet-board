@@ -336,6 +336,8 @@ if setup_case; then
   wait_for 'api GET /api/run; body_is .tick 2'
   api GET /api/run;                 assert_body "run reached tick 2" '.tick' 2
   assert_body "run log path parsed" '.log_path' "$FAKE_RUN_DIR/fake.log"
+  if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "start clears stale markers"; else fail "start clears stale markers" "active/2 survived the start"; fi
+  : > "$REPO/.fleet-board/active/2"   # the run's manager writes this marker
   api GET /api/board;               assert_body "marker counts while running" '.cards[]|select(.number==2)|.active' true
   assert_body "board run has no log_tail" '.run|has("log_tail")' false
   api POST /api/run/start;          assert_code 409

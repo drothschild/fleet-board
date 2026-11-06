@@ -18,7 +18,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import traceback
+from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -180,14 +182,142 @@ def is_active(dir: Path, n) -> bool:
     return run_alive() and (Path(dir) / "active" / str(n)).exists()
 
 
-# --- run state (Task 8 replaces these bodies) ---------------------------------
+# --- run state ----------------------------------------------------------------
+
+STOP_FILE = ".fleet-board.stop"
+STOPPED_RE = re.compile(
+    r"^fleet-board-run: stopped: (.+?) after \d+ ticks, ([0-9.]+) h, cost_estimate_usd (\S+)",
+    re.M,
+)
+LOG_RE = re.compile(r"^fleet-board-run: log: (.+)$", re.M)
+TICK_RE = re.compile(r"^=== tick (\d+)\b")
+LOG_TAIL_LINES = 200
+
+# proc: the Popen this server spawned (kept so it is reaped); alive: the last
+# observed liveness (None before the first look).
+_RUN: dict = {"proc": None, "alive": None}
+_RUN_LOCK = threading.RLock()
+
+
+def state_dir(root: str, cfg: dict) -> Path:
+    """<FLEET_BOARD_LOG_DIR or ~/.fleet-board>/web/<owner>-<name>/, created mode 700."""
+    base = os.environ.get("FLEET_BOARD_LOG_DIR") or os.path.join(os.path.expanduser("~"), ".fleet-board")
+    repo = (cfg.get("board") or {}).get("repo") or os.path.basename(root)
+    path = Path(base) / "web" / re.sub(r"[^A-Za-z0-9._-]", "-", repo)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(str(path), 0o700)
+    return path
+
+
+def read_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def read_pid(sdir: Path):
+    try:
+        pid = int(read_text(sdir / "run.pid").strip())
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def pid_alive(pid: int) -> bool:
+    proc = _RUN["proc"]
+    if proc is not None and proc.pid == pid:
+        return proc.poll() is None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def clear_markers(dir: Path):
+    try:
+        entries = list((Path(dir) / "active").iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() or entry.is_symlink():
+                entry.unlink()
+        except OSError:
+            pass
+
 
 def run_alive() -> bool:
-    return False
+    """Whether the wrapper is alive; the first look after it died clears the markers."""
+    cfg, dir = ctx()
+    with _RUN_LOCK:
+        pid = read_pid(state_dir(APP["root"], cfg))
+        alive = pid is not None and pid_alive(pid)
+        if _RUN["alive"] and not alive:
+            clear_markers(dir)
+        _RUN["alive"] = alive
+        return alive
+
+
+def scan_run_log(path: str):
+    """(last tick number or None, last LOG_TAIL_LINES lines) of the run log."""
+    tick, tail = None, deque(maxlen=LOG_TAIL_LINES)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.rstrip("\n")
+                tail.append(line)
+                m = TICK_RE.match(line)
+                if m:
+                    tick = int(m.group(1))
+    except OSError:
+        pass
+    return tick, list(tail)
+
+
+def to_float(s: str):
+    try:
+        return float(s)
+    except ValueError:
+        return None
 
 
 def run_status() -> dict:
-    return {"state": "idle"}
+    cfg, _ = ctx()
+    sdir = state_dir(APP["root"], cfg)
+    alive = run_alive()
+    pid = read_pid(sdir)
+    out = read_text(sdir / "run.out")
+    if pid is None:
+        state = "idle"
+    elif alive:
+        state = "stopping" if (Path(APP["root"]) / STOP_FILE).exists() else "running"
+    else:
+        state = "stopped" if out.strip() else "idle"
+    log = LOG_RE.search(out)
+    log_path = log.group(1) if log else None
+    stops = STOPPED_RE.findall(out)
+    tick, tail = scan_run_log(log_path) if log_path else (None, [])
+    return {
+        "state": state,
+        "pid": pid,
+        "tick": tick,
+        "stop_reason": stops[-1][0] if stops else None,
+        "cost": to_float(stops[-1][2]) if stops else None,
+        "hours": to_float(stops[-1][1]) if stops else None,
+        "log_path": log_path,
+        "log_tail": tail,
+    }
+
+
+def board_run_status() -> dict:
+    """run_status() without the log tail, for /api/board."""
+    status = run_status()
+    del status["log_tail"]
+    return status
 
 
 # --- script runner ------------------------------------------------------------
@@ -258,7 +388,7 @@ def get_board(params, body):
     return 200, {
         "states": states(cfg),
         "cards": [card_summary(dir, c) for c in read_cards(dir)],
-        "run": run_status(),
+        "run": board_run_status(),
         "repo": (cfg.get("board") or {}).get("repo"),
     }
 
@@ -358,8 +488,43 @@ def comment_card(params, body):
     return 200, card_detail(cfg, dir, n)
 
 
-def not_implemented(params, body):
-    raise ApiError(501, "not implemented yet")
+def get_run(params, body):
+    return 200, run_status()
+
+
+def start_run(params, body):
+    cfg, dir = ctx()
+    sdir = state_dir(APP["root"], cfg)
+    wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
+    with _RUN_LOCK:
+        if run_alive():
+            raise ApiError(409, "a run is already alive")
+        try:
+            os.remove(os.path.join(APP["root"], STOP_FILE))
+        except FileNotFoundError:
+            pass
+        clear_markers(dir)
+        fd = os.open(str(sdir / "run.out"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as out:
+            proc = subprocess.Popen(
+                ["bash", wrapper, "--repo", APP["root"]], cwd=APP["root"],
+                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        pfd = os.open(str(sdir / "run.pid"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(pfd, "w") as f:
+            f.write("%d\n" % proc.pid)
+        _RUN["proc"] = proc
+        _RUN["alive"] = True
+    return 200, {"pid": proc.pid}
+
+
+def stop_run(params, body):
+    with _RUN_LOCK:
+        if not run_alive():
+            raise ApiError(409, "no run is alive")
+        Path(APP["root"], STOP_FILE).touch()
+    return 200, {"state": "stopping"}
 
 
 # --- handler and route dispatch -----------------------------------------------
@@ -372,10 +537,11 @@ ROUTES = [
     ("PATCH", r"/api/cards/(?P<n>\d+)", edit_card),
     ("POST", r"/api/cards/(?P<n>\d+)/move", move_card),
     ("POST", r"/api/cards/(?P<n>\d+)/comments", comment_card),
-    ("GET", r"/api/run", not_implemented),
-    ("POST", r"/api/run/start", not_implemented),
-    ("POST", r"/api/run/stop", not_implemented),
+    ("GET", r"/api/run", get_run),
+    ("POST", r"/api/run/start", start_run),
+    ("POST", r"/api/run/stop", stop_run),
 ]
+NO_BODY = (start_run, stop_run)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
 
 
@@ -481,7 +647,7 @@ class Handler(BaseHTTPRequestHandler):
             route = match_route(method, path)
             if route is not None:
                 fn, params = route
-                body = read_json_body(self) if method in ("POST", "PATCH") and fn is not not_implemented else {}
+                body = read_json_body(self) if method in ("POST", "PATCH") and fn not in NO_BODY else {}
                 code, payload = fn(params, body)
                 send_json(self, code, payload)
                 return
