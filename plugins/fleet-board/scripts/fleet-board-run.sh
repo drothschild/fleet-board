@@ -329,9 +329,12 @@ ledger_count() {
 # collect_provider_spend: sets PSPEND to the cost_usd sum of the ledger lines
 # appended since LEDGER_PRE that carry this run's id (jq -s under LC_ALL=C), adds
 # it to COST, and warns about lines it cannot read (not JSON, not an object, or
-# this run's with a non-numeric cost_usd)
+# this run's with a cost_usd that is not a non-negative number). It also warns,
+# once per tick, when any object line in the window has a null or missing
+# run_id: a stage-review.sh run outside this wrapper's environment, whose
+# spend this run cannot attribute.
 collect_provider_spend() {
-  local res sum bad
+  local res sum bad nul
   PSPEND=0
   [ -e "$LEDGER" ] || return 0
   # a ledger that is not a readable regular file is unreadable (BSD tail exits 0 on a directory)
@@ -340,20 +343,23 @@ collect_provider_spend() {
     split("\n") | map(select(length > 0)) | map(try fromjson catch null) as $p
     | ($p | map(select(type == "object"))) as $objs
     | ($objs | map(select(.run_id == $run))) as $mine
-    | ($mine | map(select((.cost_usd | type) == "number"))) as $ok
+    | ($mine | map(select((.cost_usd | type) == "number" and .cost_usd >= 0))) as $ok
     | (($p | length) - ($objs | length) + ($mine | length) - ($ok | length)) as $bad
-    | "\($ok | map(.cost_usd) | add // 0) \($bad)"' 2>/dev/null)" || res=""
+    | ($objs | map(select(.run_id == null)) | length) as $nul
+    | "\($ok | map(.cost_usd) | add // 0) \($bad) \($nul)"' 2>/dev/null)" || res=""
   else
     res=""
   fi
-  sum="${res%% *}"
-  bad="${res##* }"
-  if [ -z "$res" ] || ! [[ "$bad" =~ ^[0-9]+$ ]] || ! num_ok "$(fnum "${sum:-x}")" 2>/dev/null; then
+  read -r sum bad nul <<<"$res"
+  if [ -z "$res" ] || ! [[ "$bad" =~ ^[0-9]+$ ]] || ! [[ "$nul" =~ ^[0-9]+$ ]] || ! num_ok "$(fnum "${sum:-x}")" 2>/dev/null; then
     warn "cannot read the provider ledger $LEDGER; provider spend for tick $TICK is unknown and counted as 0"
     return 0
   fi
-  if [[ "$bad" =~ ^[0-9]+$ ]] && [ "$bad" -gt 0 ]; then
+  if [ "$bad" -gt 0 ]; then
     warn "skipped $bad malformed line(s) in the provider ledger $LEDGER"
+  fi
+  if [ "$nul" -gt 0 ]; then
+    warn "ledger line without a run id in tick $TICK; provider spend may be uncounted"
   fi
   num_ok "$(fnum "${sum:-x}")" 2>/dev/null || return 0
   PSPEND="$(fnum "$sum")"
