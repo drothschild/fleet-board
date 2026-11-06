@@ -23,7 +23,8 @@ case "$CASE" in
   idle) echo '{"outcome":"idle","dispatchable":false,"cost_usd":0}' ;;
   cost) echo '{"outcome":"progress","dispatchable":true,"cost_usd":2}' ;;
   unknown) echo '{"outcome":"progress","dispatchable":true}' ;;
-  failure) exit 1 ;;
+  failure) echo '{"cost_usd":0}'; exit 1 ;;
+  failure_unknown) exit 1 ;;
   time) echo 4000 > "$FLEET_BOARD_NOW_FILE"; echo '{"outcome":"progress","dispatchable":true,"cost_usd":0}' ;;
   cancel) echo $$ > "$STATE/pid"; trap 'exit 0' TERM; while :; do sleep 1; done ;;
 esac
@@ -37,6 +38,7 @@ CASE=idle; export CASE; run || exit 1; check nothing-dispatchable
 rm -f "$TMP/count"; CASE=cost; run || exit 1; check max-cost; [ "$(cat "$TMP/count")" = 1 ] || exit 1
 rm -f "$TMP/count"; CASE=unknown; if run; then echo 'FAIL: missing cost accepted' >&2; exit 1; fi; check cost-unknown
 rm -f "$TMP/count"; CASE=failure; if run; then echo 'FAIL: failed ticks accepted' >&2; exit 1; fi; check consecutive-failures; [ "$(cat "$TMP/count")" = 2 ] || exit 1
+rm -f "$TMP/count"; CASE=failure_unknown; if run; then echo 'FAIL: failed tick with unknown cost accepted' >&2; exit 1; fi; check cost-unknown; [ "$(cat "$TMP/count")" = 1 ] || exit 1
 rm -f "$TMP/count"; CASE=time; run || exit 1; check max-hours; [ "$(cat "$TMP/count")" = 1 ] || exit 1
 echo 0 > "$TMP/now"; touch "$TMP/repo/.fleet-board.stop"; rm -f "$TMP/count"; CASE=idle; run || exit 1; check stop-file; [ ! -e "$TMP/count" ] || exit 1
 rm "$TMP/repo/.fleet-board.stop"
