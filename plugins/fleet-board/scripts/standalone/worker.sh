@@ -33,9 +33,21 @@ NAME="fleet-worker-$(basename "$SCRATCH")-$$"
 # No host credentials or controller checkout are mounted into the container.
 docker run --rm --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh > "$SCRATCH/worker.stdout" 2> "$SCRATCH/worker.stderr" &
 PID=$!
-( sleep "$SECONDS_LIMIT"; docker rm -f "$NAME" >/dev/null 2>&1 || true ) &
+(
+  sleep "$SECONDS_LIMIT" & TIMER=$!
+  trap 'kill "$TIMER" 2>/dev/null || true; wait "$TIMER" 2>/dev/null || true; exit 0' TERM INT
+  wait "$TIMER" && docker rm -f "$NAME" >/dev/null 2>&1 || true
+) </dev/null >/dev/null 2>&1 &
 WATCHDOG=$!
-trap 'kill "$WATCHDOG" 2>/dev/null || true; docker rm -f "$NAME" >/dev/null 2>&1 || true; wait "$PID" 2>/dev/null || true; wait "$WATCHDOG" 2>/dev/null || true' EXIT INT TERM
+cleanup() {
+  kill "$WATCHDOG" 2>/dev/null || true
+  docker rm -f "$NAME" >/dev/null 2>&1 || true
+  wait "$PID" 2>/dev/null || true
+  wait "$WATCHDOG" 2>/dev/null || true
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 wait "$PID"; RC=$?
 kill "$WATCHDOG" 2>/dev/null || true
 wait "$WATCHDOG" 2>/dev/null || true
