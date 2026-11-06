@@ -81,6 +81,8 @@
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
 # dispatchable false. A plan without --settle never emits move_to_review.
+# --settle-merge is --settle that also keeps a merge action (merge-reviewed.sh
+# carries it out; settle.sh never asks for it).
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle has no card or a non-numeric card.
 #
@@ -170,8 +172,13 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 
 SETTLE=false
 SETTLE_NUMS=""
+KEEP_MERGE=false
 if [ $# -gt 0 ]; then
-  [ "$1" = "--settle" ] || fb_die 2 "usage: tick-plan.sh [--settle <n>...]"
+  case "$1" in
+    --settle) ;;
+    --settle-merge) KEEP_MERGE=true ;; # merge-reviewed.sh: settle mode that also keeps merge
+    *) fb_die 2 "usage: tick-plan.sh [--settle|--settle-merge <n>...]" ;;
+  esac
   shift
   [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle <n>... (at least one card)"
   for a in "$@"; do
@@ -492,7 +499,7 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review blocked); d
   done
 done
 
-jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
+jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
@@ -590,7 +597,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE
     | decide($c; $n; $round) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0
-       elif ($d0.action == "to_human_qa" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip") then $d0
+       elif ($d0.action == "to_human_qa" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and $d0.action == "merge")) then $d0
        elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
        else act("skip"; "\($d0.action) waits for the next tick") end) as $d
     | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
