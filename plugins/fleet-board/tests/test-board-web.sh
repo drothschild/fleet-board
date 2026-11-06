@@ -408,6 +408,89 @@ if setup_case; then
   stop_server
 fi
 
+echo "Case: import API"
+# A fake claude: logs its argv, writes the two-card fixture to the --preview path
+# (or fails when $FAKE_CLAUDE_DIR/fail exists) and prints stream-json lines.
+FAKE_CLAUDE_DIR="$TMP/fake-claude"
+mkdir -p "$FAKE_CLAUDE_DIR"
+IMPORT_FIXTURE="$TMP/import-cards.json"
+cat > "$IMPORT_FIXTURE" <<'EOF'
+{"cards":[
+ {"key":"a","title":"A","repo":"acme/toy","labels":["backend"],
+  "why":"Expose the thing.","scope":["src/a.js"],
+  "acceptance":["POST /a returns 201"],"consumes":[],"produces":["POST /a"]},
+ {"key":"b","title":"B","repo":"acme/toy","labels":["frontend"],
+  "why":"Show the thing.","scope":["src/b.js"],
+  "acceptance":["GET /b returns 200"],"consumes":["POST /a"],"produces":[],"depends_on":["a"]}
+]}
+EOF
+FAKE_IMPORT_CLAUDE="$TMP/fake-import-claude.sh"
+cat > "$FAKE_IMPORT_CLAUDE" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FAKE_CLAUDE_DIR/args.log"
+prompt="${!#}"
+if [ -e "$FAKE_CLAUDE_DIR/fail" ]; then echo boom >&2; exit 1; fi
+dest="$(printf '%s' "$prompt" | sed -n 's/.*--preview \([^ ]*\).*/\1/p')"
+cp "$IMPORT_FIXTURE" "$dest"
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"grouped into 2 cards"}]}}'
+echo '{"type":"result","result":"done"}'
+EOF
+chmod +x "$FAKE_IMPORT_CLAUDE"
+export FLEET_BOARD_CLAUDE="$FAKE_IMPORT_CLAUDE" FAKE_CLAUDE_DIR IMPORT_FIXTURE
+export FLEET_BOARD_TEST_IMPORT_ID=fixed
+if setup_case; then
+  api GET /api/import/nope;         assert_code 404
+  api POST /api/import '{"status":"ready"}';  assert_code 400
+  api POST /api/import '{"plan":"","status":"ready"}';  assert_code 400
+  api POST /api/import '{"plan":"x","status":"bogus"}'; assert_code 400
+  api POST /api/import '{"plan":"# Plan\n## Task 1: A\n","status":"ready"}'; assert_code 200
+  assert_body "import id is the test override" '.import_id' fixed
+  wait_for 'api GET /api/import/fixed; body_is .state ready'
+  if grep -q -- '/fleet-board:import-plan .*plan.md --preview .*cards.json --status ready' "$FAKE_CLAUDE_DIR/args.log"; then pass "prompt names the skill, preview file and status"; else fail "prompt names the skill, preview file and status" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--permission-mode auto' "$FAKE_CLAUDE_DIR/args.log"; then pass "permission mode from config"; else fail "permission mode from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--max-turns 200' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  api GET /api/import/fixed
+  assert_body "ready import lists its cards" '.cards.cards|length' 2
+  assert_body "ready import carries the dry-run table" '.table' '*| A |*'
+  assert_body "last_text is the last assistant text" '.last_text' 'grouped into 2 cards'
+  assert_body "elapsed_s is a number" '.elapsed_s|type' number
+  assert_body "ready import has no error" '.error' null
+  if [ "$(find "$TMP/logs/web/acme-toy/imports/fixed" -name plan.md | wc -l | tr -d ' ')" = 1 ]; then pass "plan.md is kept in the import dir"; else fail "plan.md is kept in the import dir" "missing"; fi
+  api GET /api/board;               assert_body "no card created before the create request" '[.cards[]|select(.state=="ready")]|length' 0
+  api POST /api/import/fixed/create '{"embed_docs":true}';   assert_code 200
+  assert_body "create reports both card numbers" '.created|length' 2
+  assert_body "created numbers follow the seeded cards" '.created[0]' 4
+  api GET /api/board;               assert_body "created cards land in the chosen state" '[.cards[]|select(.state=="ready")]|length' 2
+  api POST /api/import/fixed/create '{}';   assert_code 409
+  assert_body "a second create says already created" '.error' '*already created*'
+  api GET /api/board;               assert_body "second create adds no cards" '.cards|length' 5
+
+  # A restarted server does not own the process: ready from the parsed cards.json.
+  stop_server
+  start_server "$REPO"
+  api GET /api/import/fixed;        assert_body "restarted server reads a finished import as ready" '.state' ready
+
+  # Failure path: the session exits 1 and writes no cards.json.
+  stop_server
+  : > "$FAKE_CLAUDE_DIR/fail"
+  export FLEET_BOARD_TEST_IMPORT_ID=fixed2
+  start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for 'api GET /api/import/fixed2; body_is .state failed'
+  assert_body "failed import reports the stderr line" '.error' boom
+  api POST /api/import/fixed2/create '{}';  assert_code 409
+  api GET /api/board;               assert_body "a failed import creates nothing" '.cards|length' 5
+  if grep -q -- 'preview .*cards.json$' "$FAKE_CLAUDE_DIR/args.log" && [ "$(grep -c -- '--status ready' "$FAKE_CLAUDE_DIR/args.log")" = 1 ]; then pass "backlog import passes no --status"; else fail "backlog import passes no --status" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  stop_server
+  start_server "$REPO"
+  api GET /api/import/fixed2;       assert_body "restarted server reads an unfinished import as failed" '.state' failed
+  if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
+  if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
+  stop_server
+fi
+unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
+
 echo "Case: review stages appear in the board states"
 STAGES_REPO="$(new_repo "$LOCAL_YML
 review:
