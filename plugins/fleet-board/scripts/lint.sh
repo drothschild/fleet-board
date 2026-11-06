@@ -18,7 +18,9 @@
 #   dependency-cycle       the card is in a cycle of "## Depends on" references
 #                          among the linted cards; the detail names every card in it.
 #   unresolved-dependency  a "## Depends on" reference is neither a linted card
-#                          nor an issue "gh issue view" finds.
+#                          nor an issue "gh issue view" finds (on the local
+#                          backend a board.repo reference is a card file
+#                          under board.dir; a missing file is unresolved).
 #   missing-file           a backticked path (dir/name.ext) is not on the default
 #                          branch. A line with create, new or add(s) is skipped:
 #                          it names a file the card makes.
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
 done
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+LCARDS="" # set on the local backend: the card files a board.repo ref resolves to
 OUT="$WORK/out"; : > "$OUT"
 EDGES="$WORK/edges"; : > "$EDGES"
 IDS=()
@@ -50,6 +53,10 @@ if [ -n "$BODIES" ]; then
   CFG="$(bash "$FB_SCRIPTS/config.sh" 2>/dev/null)" || CFG=""
   REPO=""; [ -z "$CFG" ] || REPO="$(jq -r '.board.repo // ""' <<<"$CFG")"
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  if [ -n "$CFG" ] && [ "$(jq -r '.board.backend // ""' <<<"$CFG")" = local ]; then
+    LCOMMON="$(fb_git_common_dir .)" && LROOT="$(dirname "$LCOMMON")" || LROOT="$(pwd)"
+    LCARDS="$LROOT/$(jq -r '.board.dir // ".fleet-board"' <<<"$CFG")/cards"
+  fi
   if [ ${#ARGS[@]} -gt 0 ]; then IDS=("${ARGS[@]}")
   else
     for f in "$BODIES"/*.md; do [ -e "$f" ] && { b="${f##*/}"; IDS+=("${b%.md}"); }; done
@@ -61,6 +68,7 @@ if [ -n "$BODIES" ]; then
 else
   fb_load_config
   REPO="$FLEET_REPO"; ROOT="$FLEET_ROOT"
+  [ "$(fb_cfg board.backend)" != local ] || LCARDS="$FLEET_ROOT/$(fb_cfg board.dir)/cards"
   if [ ${#ARGS[@]} -gt 0 ]; then
     IDS=("${ARGS[@]}")
   else
@@ -121,6 +129,10 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
       */*#[0-9]*) ;;
       *) emit "$id" unresolved-dependency "$tok is not a card in this set"; continue ;;
     esac
+    if [ -n "$LCARDS" ] && [ -n "$REPO" ] && [ "$drepo" = "$REPO" ]; then
+      [ -f "$LCARDS/$num.json" ] || emit "$id" unresolved-dependency "$tok does not exist"
+      continue
+    fi
     if [ -z "$drepo" ] || ! gh issue view "$num" --repo "$drepo" --json state >/dev/null 2>&1; then
       emit "$id" unresolved-dependency "$tok does not exist"
     fi

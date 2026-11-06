@@ -49,7 +49,7 @@ trap 'rm -rf "$WORK"' EXIT
 make_bin() { # dir with_gh
   mkdir -p "$1"
   local t p
-  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od; do
+  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od sh sleep kill; do
     p="$(command -v "$t" 2>/dev/null || true)"
     case "$p" in /*) ln -sf "$p" "$1/$t" ;; esac
   done
@@ -83,7 +83,7 @@ setup() {
   : > "$CASE/curl.log"
   : > "$CASE/replies"
   {
-    printf 'board:\n  backend: github-labels\n  repo: acme/toy\nreview:\n  stages:\n'
+    printf 'board:\n  backend: %s\n  repo: acme/toy\nreview:\n  stages:\n' "${SR_BACKEND:-github-labels}"
     printf '    - name: security\n      agent: "acme:security-reviewer"\n      model: opus\n'
     printf '    - name: compliance\n      provider: openai\n      model: gpt-test\n      price: { input: 1, output: 2 }\n'
     printf '      brief: "%s"\n' "$BRIEF"
@@ -377,6 +377,107 @@ printf 'x\n+{{CARD}} {{DIFF}} \\1 &\n@@ -1 +1 @@\n' > "$CASE/diff.patch"
 replies "200 r-clean.json"
 sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
 assert_contains "placeholder_text_in_diff_is_literal" "$(request_body 1 | jq -r '.messages[-1].content')" '+{{CARD}} {{DIFF}} \1 &'
+
+# ---- command provider (codex): a fake codex on PATH, no HTTP ----
+# The local board backend is not on this branch, so this uses the same offline
+# fakes as above (fake gh, fake curl) with a fake codex beside them.
+CODEX_BIN="$WORK/codexbin"
+mkdir -p "$CODEX_BIN"
+cat > "$CODEX_BIN/codex" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >> "$FAKE_CODEX_ARGV"
+cat > "$FAKE_CODEX_STDIN.$$"
+cat "$FAKE_CODEX_STDIN.$$" >> "$FAKE_CODEX_STDIN"
+rm -f "$FAKE_CODEX_STDIN.$$"
+n="$(cat "$FAKE_CODEX_COUNT" 2>/dev/null || echo 0)"
+n=$((n + 1))
+printf '%s' "$n" > "$FAKE_CODEX_COUNT"
+f="$(sed -n "${n}p" "$FAKE_CODEX_REPLIES")"
+cat "$f"
+EOF
+chmod +x "$CODEX_BIN/codex"
+codex_setup() { # replies-file-names...: the fake codex prints these files in turn
+  setup
+  printf '    - name: codexrev\n      provider: codex\n      model: gpt-6-astra\n      price: { input: 0, output: 0 }\n' >> "$CASE/cfg.yml"
+  export FAKE_CODEX_ARGV="$CASE/codex.argv" FAKE_CODEX_STDIN="$CASE/codex.stdin" FAKE_CODEX_COUNT="$CASE/codex.count" FAKE_CODEX_REPLIES="$CASE/codex.replies"
+  : > "$FAKE_CODEX_ARGV"; : > "$FAKE_CODEX_STDIN"; rm -f "$FAKE_CODEX_COUNT"; : > "$FAKE_CODEX_REPLIES"
+  local f
+  for f in "$@"; do printf '%s\n' "$CASE/$f" >> "$FAKE_CODEX_REPLIES"; done
+  SR_PATH="$CODEX_BIN:$WORK/bin"
+}
+
+# codex_stage_prints_zero_cost_and_null_tokens
+codex_setup clean.md
+FLEET_BOARD_RUN_ID=run-9 sr 12 34 --stage codexrev --round 1 --no-post
+assert_exit "codex_stage: exit 0" 0
+assert_eq "codex_stage: cost_usd 0" "$(jq -c '.cost_usd' <<<"$LAST_OUT")" "0"
+assert_eq "codex_stage: provider, model, tokens" "$(jq -c '[.provider,.model,.input_tokens,.output_tokens,.attempts]' <<<"$LAST_OUT")" '["codex","gpt-6-astra",null,null,1]'
+assert_eq "codex_stage: parsed status" "$(jq -r .parsed.status <<<"$LAST_OUT")" "clean"
+assert_eq "codex_stage: ledger tokens null" "$(ledger | jq -c '[.input_tokens,.output_tokens,.cost_usd,.provider,.model]')" '[null,null,0,"codex","gpt-6-astra"]'
+assert_eq "codex_stage: one ledger line" "$(ledger_lines)" "1"
+assert_contains "codex_stage: -m model in argv" "$(cat "$CASE/codex.argv")" "gpt-6-astra"
+assert_contains "codex_stage: prompt on stdin holds the diff" "$(cat "$CASE/codex.stdin")" "+email = user.email"
+assert_eq "codex_stage: no curl call" "$(calls)" "0"
+unset SR_PATH
+
+# codex_stage_posts_the_report
+codex_setup clean.md
+sr 12 34 --stage codexrev --round 1
+assert_exit "codex_stage_posts: exit 0" 0
+assert_eq "codex_stage_posts: status" "$(jq -r .status <<<"$LAST_OUT")" "posted"
+assert_eq "codex_stage_posts: one comment" "$(posted)" "1"
+unset SR_PATH
+
+# codex_stage_reask_sums_to_zero
+codex_setup nocard.md clean.md
+sr 12 34 --stage codexrev --round 1 --no-post
+assert_exit "codex_reask: exit 0" 0
+assert_eq "codex_reask: attempts 2" "$(jq -r .attempts <<<"$LAST_OUT")" "2"
+assert_eq "codex_reask: cost 0, tokens null" "$(jq -c '[.cost_usd,.input_tokens,.output_tokens]' <<<"$LAST_OUT")" "[0,null,null]"
+assert_contains "codex_reask: second prompt carries the rejection" "$(cat "$CASE/codex.stdin")" "Your report was rejected by the checker:"
+unset SR_PATH
+
+# active marker: local backend only, present while running, gone on exit.
+# The provider call comes only after the marker is written, so a curl that
+# records whether the marker exists when it is called proves it is there while
+# the stage runs (no timing), and "gone after" then proves the trap removed it.
+printf '#!/bin/sh\nif [ -f "%s/.fleet-board/active/12" ]; then : > "%s/seen"; fi\nexec "%s" "$@"\n' "$CASE" "$CASE" "$FAKE_CURL" > "$WORK/rec-curl"
+chmod +x "$WORK/rec-curl"
+make_bin "$WORK/bin-rec" 1
+ln -sf "$WORK/rec-curl" "$WORK/bin-rec/curl"
+assert_true_file() { if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing $2"; fi; }
+active_count() { ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' '; }
+
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local: exit 0" 0
+assert_true_file "stage-review has the marker while the provider runs" "$CASE/seen"
+assert_eq "stage-review removes its marker on exit" "$(active_count)" "0"
+
+# a failing exit after the marker was written (provider failure, exit 1) removes it too
+SR_BACKEND=local setup
+printf 'curl: (28) timed out\n' > "$CASE/timeout.err"
+replies "exit 28 timeout.err"
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local provider failure: exit 1" 1
+assert_true_file "stage-review provider failure: the marker was written" "$CASE/seen"
+assert_eq "stage-review provider failure: marker gone after" "$(active_count)" "0"
+
+# exit 3 (key unset) stops before the marker: nothing is left lit
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+KEEP_KEY="$OPENAI_API_KEY"; unset OPENAI_API_KEY
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+export OPENAI_API_KEY="$KEEP_KEY"
+assert_exit "stage-review local key unset: exit 3" 3
+assert_eq "stage-review key unset: active/ is empty" "$(active_count)" "0"
+
+# a labels config never writes a marker
+setup
+replies "200 r-clean.json"
+sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_eq "stage-review labels config writes no marker" "$(ls -d "$CASE/.fleet-board" 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"

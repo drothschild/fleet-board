@@ -1134,6 +1134,88 @@ assert_stderr_contains "unreadable_ledger_warns: stderr names the ledger and unk
 assert_file_contains "unreadable_ledger_warns: the log has it" "$LOG" "provider spend for tick 1 is unknown and counted as 0"
 assert_stdout_contains "unreadable_ledger_warns: cost counts Claude only" "cost_estimate_usd 0.7 (estimate)"
 
+# ---------------------------------------------------------------------------
+echo "local board: the wrapper clears the active markers after each tick's session"
+new_case "max_consecutive_failures: 1"
+printf 'board: { backend: local, repo: acme/toy }\nlimits: { tick_interval: 0, max_consecutive_failures: 1 }\n' > "$REPO/.fleet-board.yml"
+mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
+echo 1 > "$REPO/.fleet-board/next"
+: > "$REPO/.fleet-board/active/3"
+seq_fixture 1 tick-error
+run_wrapper --repo "$REPO"
+assert_exit "active-cleared: a failed tick stops the run" 1
+assert_false "active-cleared: a role that crashed without a report is not left lit" test -e "$REPO/.fleet-board/active/3"
+assert_true "active-cleared: the directory stays" test -d "$REPO/.fleet-board/active"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$REPO/.fleet-board/active"
+: > "$REPO/.fleet-board/active/3"
+run_wrapper --repo "$REPO"
+assert_exit "active-github: exit 0" 0
+assert_true "active-github: a GitHub backend leaves the directory alone" test -e "$REPO/.fleet-board/active/3"
+
+# ---------------------------------------------------------------------------
+echo "run lock: one wrapper per repo"
+# lstart_of <pid>: the start time the lock records (ps lstart, C locale, UTC)
+lstart_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" | awk '{ $1 = $1; print }'; }
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+# Hold the claim guard while another wrapper attempts stale-owner recovery.
+# Run the wrapper directly as a subprocess so the guard is held throughout.
+(
+  case_env
+  python3 - "$LOGS/acme-toy.lock.guard" "$BASH_EXE" "$SCRIPT" --repo "$REPO" <<'PYTEST'
+import fcntl
+import subprocess
+import sys
+
+with open(sys.argv[1], "a") as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    sys.exit(subprocess.run(sys.argv[2:], stdin=subprocess.DEVNULL, timeout=15).returncode)
+PYTEST
+) > "$T/guard.out" 2> "$T/guard.err"
+LAST_EXIT=$?
+assert_exit "run-lock: another claimant cannot recover a stale lock" 1
+assert_eq "run-lock: claim contention runs no tick" "$(count)" "absent"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock: a live holder refuses the start" 1
+assert_stderr_contains "run-lock: names the lock and the pid" "another run holds $LOGS/acme-toy.lock (pid $$)"
+assert_eq "run-lock: no tick ran" "$(count)" "absent"
+assert_eq "run-lock: the holder's lock is untouched" "$(sed -n 1p "$LOGS/acme-toy.lock")" "$$"
+assert_eq "run-lock: no run log" "$(find "$LOGS" -name '*.log' | wc -l | tr -d ' ')" "0"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock: a reused pid (other start time) is stale" 0
+assert_false "run-lock: the lock is removed on exit" test -e "$LOGS/acme-toy.lock"
+
+new_case
+seq_fixture 1 tick-idle
+FC_LOCKSEEN="$T/lockseen"
+printf '#!/bin/sh\ncat "%s/acme-toy.lock" > "%s"\nexec "%s" "$@"\n' "$LOGS" "$FC_LOCKSEEN" "$FAKE_CLAUDE" > "$T/claude-peek"
+chmod +x "$T/claude-peek"
+SAVED_FAKE_CLAUDE="$FAKE_CLAUDE"; FAKE_CLAUDE="$T/claude-peek"
+run_wrapper --repo "$REPO"
+FAKE_CLAUDE="$SAVED_FAKE_CLAUDE"
+assert_exit "run-lock: exit 0" 0
+assert_eq "run-lock: the tick saw two lines in the lock" "$(wc -l < "$FC_LOCKSEEN" 2>/dev/null | tr -d ' ')" "2"
+case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
+  *[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) pass "run-lock: line 2 is a ps start time" ;;
+  *) fail "run-lock: line 2 is a ps start time" "$(cat "$FC_LOCKSEEN" 2>/dev/null)" ;;
+esac
+assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
