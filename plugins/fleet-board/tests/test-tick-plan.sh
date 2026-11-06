@@ -1136,15 +1136,18 @@ COMPLIANCE_WARN='stage compliance: OPENAI_API_KEY is not set; provider reviews w
 # review_stage_plan_card_has_provider
 splan stage-provider-review
 assert_exit "review_stage_plan_card_has_provider: exit" 0
-assert_jq "review_stage_plan_card_has_provider: action" "$(card 12 action)" '"review_stage"'
 assert_jq "review_stage_plan_card_has_provider: provider" "$(card 12 stage.provider)" '"openai"'
 assert_jq "review_stage_plan_card_has_provider: agent null" "$(card 12 stage.agent)" 'null'
 assert_jq "review_stage_plan_card_has_provider: model" "$(card 12 stage.model)" '"gpt-test"'
-assert_jq "review_stage_plan_card_has_provider: dispatchable" '.dispatchable' 'true'
+assert_jq "review_stage_plan_card_has_provider: key unset holds as wait" "$(card 12 action)" '"wait"'
+assert_jq "review_stage_plan_card_has_provider: hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "review_stage_plan_card_has_provider: nothing else dispatchable" '.dispatchable' 'false'
 assert_jq "review_stage_plan_card_has_provider: key unset warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
 # unset_key_warns_once: card 12 review_stage and card 13 fix, both in review_compliance
 splan stage-provider-two
-assert_jq "unset_key_warns_once: card 12 review_stage" "$(card 12 action)" '"review_stage"'
+assert_jq "unset_key_warns_once: card 12 review_stage held" "$(card 12 action)" '"wait"'
+assert_jq "unset_key_warns_once: card 12 hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "unset_key_warns_once: dispatchable through the fix" '.dispatchable' 'true'
 assert_jq "unset_key_warns_once: card 13 fix" "$(card 13 action)" '"fix"'
 assert_jq "unset_key_warns_once: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
 # set_key_no_warning
@@ -1152,6 +1155,7 @@ setup_case stage-provider-two "$STAGES_YAML"
 OPENAI_API_KEY=x; export OPENAI_API_KEY
 run_check "$SCRIPT"
 unset OPENAI_API_KEY
+assert_jq "set_key_no_warning: review_stage planned" "$(card 12 action)" '"review_stage"'
 assert_jq "set_key_no_warning: actions unchanged" '[.cards[].action]' '["review_stage","fix"]'
 assert_jq "set_key_no_warning: no warning" '.warnings' '[]'
 # an empty variable counts as unset
@@ -1179,6 +1183,13 @@ OPENAI_API_KEY=x; export OPENAI_API_KEY
 run_check "$SCRIPT"
 unset OPENAI_API_KEY
 assert_jq "advance_into_provider_stage_warns: key set, no warning" '.warnings' '[]'
+# a failed preflight holds a stage action too (advance_stage into a provider stage)
+rm -f "$PRE_DIR/ran"
+plan stage-advance-to-provider "$STAGES_YAML
+$(printf 'commands:\n  preflight: bash %s/fail.sh' "$PRE_DIR")"
+assert_jq "preflight-fail stage-advance-to-provider: held as wait" "$(card 12 action)" '"wait"'
+assert_jq "preflight-fail stage-advance-to-provider: dispatchable is false" '.dispatchable' 'false'
+assert_jq "preflight-fail stage-advance-to-provider: one preflight warning" '[.warnings[] | select(startswith("preflight failed:"))] | length' 1
 # advance into an agent stage never warns
 splan stage-advance-from-review
 assert_jq "advance into an agent stage: no warning" '.warnings' '[]'
