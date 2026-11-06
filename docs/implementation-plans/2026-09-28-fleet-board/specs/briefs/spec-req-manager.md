@@ -810,3 +810,10 @@ Provider stages:
 17. **Must never** gains: "Call a provider by any means other than `stage-review.sh`, re-run `stage-review.sh` after it exits 6, or post a provider stage's report again", and "Move a card to In Review before `review-stages.sh route` has succeeded for it". The model and agent Must-never lines name `stage.model` and `stage.agent`.
 18. **5.4.** The cost line adds each `stage-review.sh` result's `cost_usd`.
 19. **Rejection table copy.** Where the file carries its own copy of the reporting rule table, its rows `role <role> does not allow status: <word>`, `role <role> requires ## <section>`, `status clean needs ...` and `status findings needs ...` match `specs/reporting.md` Revision 17 (the stage-reviewer uses `clean` and `findings` and has no role sections).
+## Revision 18 requirements (2026-11-06, one round 1 reference SHA)
+
+The manager states one round 1 reference SHA in both places: the reviewer's inputs and the
+`review` action row. In round 1 the reference SHA `prev_sha` is the `base` from `worktree.sh
+review` (the merge-base), even when an earlier review exists, because `unblock`, `start` and
+`start_review` reset the round to 1. In round 2 and later it is `note.last_review.sha`. No line
+says round 1 uses `base` only when there is no previous review.
