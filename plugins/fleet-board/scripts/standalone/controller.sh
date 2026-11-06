@@ -7,14 +7,21 @@ if [ "${1:-}" = worker ]; then
   shift
   exec bash "$SCRIPTS/standalone/worker.sh" "$@"
 fi
-if [ "$#" -ne 2 ] || [ "$1" != tick ] || [ "$2" != --plan-only ]; then
-  echo 'usage: fleet-board tick --plan-only' >&2
+MODE=tick
+if [ "$#" -eq 2 ] && [ "$1" = tick ] && [ "$2" = --plan-only ]; then
+  MODE=plan
+elif [ "$#" -ne 1 ] || [ "$1" != tick ]; then
+  echo 'usage: fleet-board tick [--plan-only]' >&2
   exit 2
 fi
 SCRATCH="$(mktemp -d)" || exit 1
 PLAN="$SCRATCH/plan"
 trap 'rm -rf "$SCRATCH"' EXIT
-FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+if [ "$MODE" = plan ]; then
+  FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+else
+  bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+fi
 # Enumerate every action emitted by tick-plan, including settle-only actions.
 # Unknown actions and malformed envelopes are rejected before any effect.
 if ! jq -e -s '
@@ -40,4 +47,13 @@ if ! jq -e -s '
   echo 'invalid tick plan or unknown action' >&2
   exit 1
 fi
-cat "$PLAN"
+if [ "$MODE" = plan ]; then
+  cat "$PLAN"
+  exit 0
+fi
+# Until handlers are implemented, reject the entire tick before any effect.
+if ! jq -e 'all(.cards[]; .action == "skip") and .dispatchable == false' "$PLAN" >/dev/null; then
+  echo 'tick contains an unsupported action; no actions taken' >&2
+  exit 1
+fi
+jq '. + {outcome: "idle"}' "$PLAN"
