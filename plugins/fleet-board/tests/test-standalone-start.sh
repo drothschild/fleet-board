@@ -33,8 +33,11 @@ case "$*" in
   'api --paginate repos/acme/toy/issues/12/comments') cat "$GH_STATE/comments" ;;
   'issue list --repo acme/toy --label fleet:ready '*)
     if [ "$(cat "$GH_STATE/column")" = ready ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:ready"}]}]\n'; else echo '[]'; fi ;;
+  'issue list --repo acme/toy --label fleet:in_progress '*)
+    if [ "$(cat "$GH_STATE/column")" = in_progress ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
-  'issue edit 12 --repo acme/toy --remove-label fleet:ready') printf none > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:in_review') printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_progress')
     if [ -e "$GH_STATE/fail-move" ]; then rm "$GH_STATE/fail-move"; exit 1; fi
     printf in_progress > "$GH_STATE/column" ;;
@@ -45,6 +48,9 @@ case "$*" in
     if [ -e "$GH_STATE/fail-note" ]; then rm "$GH_STATE/fail-note"; exit 1; fi
     body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"fleet-bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments"; mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{"id":555}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
+  'api -X PATCH repos/acme/toy/issues/comments/555 --input -')
+    body="$(cat)"; jq --argjson x "$body" 'map(if .id == 555 then .body = $x.body else . end)' "$GH_STATE/comments" > "$GH_STATE/new-comments" || exit 1
+    mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{}' ;;
   'pr list '*) if [ -e "$GH_STATE/pr" ]; then echo '[{"number":34}]'; else echo '[]'; fi ;;
   'pr create '*)
     if [ -e "$GH_STATE/slow-pr" ]; then
@@ -53,7 +59,14 @@ case "$*" in
       printf '%s %s\n' "$$" "$child" > "$GH_STATE/pr-pids"
       wait "$child"
     fi
-    touch "$GH_STATE/pr"; echo 'https://github.com/acme/toy/pull/34' ;;
+    touch "$GH_STATE/pr"
+    sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
+    git --git-dir="$GH_REMOTE" update-ref refs/pull/34/head "$sha"
+    echo 'https://github.com/acme/toy/pull/34' ;;
+  'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid')
+    sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
+    jq -n --arg sha "$sha" '{isDraft:true,state:"OPEN",mergedAt:null,statusCheckRollup:[],headRefOid:$sha}' ;;
+  'pr view 34 --repo acme/toy --json mergeable') echo '{"mergeable":"MERGEABLE"}' ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)" || exit 1
     jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
@@ -193,6 +206,18 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
+if [ "${1:-start}" = clean-review ]; then
+  SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
+  cat > "$TMP/worker.sh" <<'REVIEWER'
+#!/bin/sh
+set -eu
+printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed the implementation.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+REVIEWER
+  if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out"; then echo 'FAIL: clean review tick failed' >&2; exit 1; fi
+  if ! jq -e '.outcome == "progress" and .cards[0].action == "start_review"' "$TMP/review-out" >/dev/null; then echo 'FAIL: review outcome' >&2; exit 1; fi
+  [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: card did not reach review' >&2; exit 1; }
+  jq -e --arg sha "$SHA" 'any(.[]; .body | contains($sha))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: exact reviewed head missing from evidence' >&2; exit 1; }
+fi
 if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ] || [ "${1:-start}" = resume-ref ]; then
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: report duplicated' >&2; exit 1; }
   [ "$(grep -c '^pr create ' "$TMP/state/calls")" = 1 ] || { echo 'FAIL: draft PR duplicated' >&2; exit 1; }
