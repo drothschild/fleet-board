@@ -2,11 +2,35 @@
 # Targeted standalone profile cases; no provider calls.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in routing|legacy-config|preflight|preflight-tick|preflight-engine) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
+case "${1:-}" in routing|legacy-config|preflight|preflight-tick|preflight-engine|malformed) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo"
 git -C "$TMP/repo" init -q
+if [[ $1 == malformed ]]; then
+  cd "$TMP/repo" || exit 1
+  cat > .fleet-board.yml <<'YML'
+board: { repo: acme/toy }
+execution:
+  profiles: { code: { runner: codex, provider: [openai], model: code-model } }
+  roles: { implementor: [code], fixer: code, reviewer: code }
+YML
+  if bash "$SCRIPTS/config.sh" --check >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: malformed types accepted' >&2; exit 1; fi
+  grep -q 'execution.profiles.code.provider' "$TMP/err" || { echo 'FAIL: missing provider validation message' >&2; exit 1; }
+  grep -q 'execution.roles.implementor' "$TMP/err" || { echo 'FAIL: missing role validation message' >&2; exit 1; }
+  if grep -q 'jq: error' "$TMP/err"; then echo 'FAIL: jq crashed on invalid types' >&2; exit 1; fi
+  cat > .fleet-board.yml <<'YML'
+board: { repo: acme/toy }
+execution:
+  profiles: { code: { runner: codex, provider: openai, model: code-model } }
+  roles: { implementor: code, fixer: code, reviewer: code }
+  escalaton: { profile: code, after_round: 3 }
+YML
+  if bash "$SCRIPTS/config.sh" --check >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: unknown execution key accepted' >&2; exit 1; fi
+  grep -q 'execution.escalaton' "$TMP/err" || exit 1
+  echo 'PASS: malformed'
+  exit 0
+fi
 if [[ $1 == preflight-engine ]]; then
   mkdir -p "$TMP/bin"
   printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/codex"
