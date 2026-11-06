@@ -288,3 +288,14 @@ under test), a `.skip` marker on a suite (`describe.skip(`) and an `.only` marke
 against the merge-base. The `CHECKED` rule and the step give the reference SHA only when the
 test at it is not already weakened against the merge-base, and otherwise give the merge-base
 SHA.
+
+## Revision 19 requirements (2026-11-06, helpers and fixtures outside test_paths)
+
+The weakened-test step carries the spec's "Helpers and fixtures outside test_paths" bullet. The
+step's diff reads only files matching `test_paths`, so a helper, fixture or shared setup file
+outside test_paths is not seen by it. When that diff shows a pre-existing test now calls,
+imports or reads such a file, the reviewer also runs `git diff <reference SHA>..HEAD --stat` and
+reads the diff of every changed file outside test_paths that a pre-existing test depends on. A
+change there that makes a pre-existing assertion easier to satisfy (a stubbed return value, a
+loosened fixture, a skipped check) is classified Weakened, with the helper's path in the finding
+alongside the test it affects.
