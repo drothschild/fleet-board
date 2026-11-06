@@ -44,7 +44,43 @@
 <pre id="log" class="log" hidden></pre>
 <main id="board" aria-label="Board"></main>
 <section id="import" hidden></section>
-<aside id="drawer" hidden></aside>
+<div id="drawer-dim" class="drawer-dim" hidden></div>
+<aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Card" hidden>
+  <div class="dr-head">
+    <span id="dr-num" class="dr-num"></span>
+    <input id="dr-title" class="dr-title" type="text" aria-label="Title" placeholder="Card title" autocomplete="off">
+    <select id="dr-state" class="dr-state" aria-label="State"></select>
+    <button type="button" id="dr-close" class="dr-close" aria-label="Close">
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+    </button>
+  </div>
+  <p id="dr-meta" class="dr-meta"></p>
+  <div class="dr-scroll">
+    <section class="dr-section" aria-labelledby="dr-body-h">
+      <h3 id="dr-body-h" class="dr-h"><label for="dr-body">Body</label></h3>
+      <div class="dr-editor">
+        <textarea id="dr-body" class="dr-body" spellcheck="false"></textarea>
+        <div id="dr-preview" class="dr-preview md" aria-label="Preview"></div>
+      </div>
+    </section>
+    <section class="dr-section" aria-labelledby="dr-labels-h">
+      <h3 id="dr-labels-h" class="dr-h">Labels</h3>
+      <div class="dr-labels-row">
+        <ul id="dr-labels" class="labels dr-labels"></ul>
+        <input id="dr-label-input" class="dr-label-input" type="text" placeholder="add label" aria-label="Add label" autocomplete="off">
+        <button type="button" id="dr-save" class="btn dr-save">Save</button>
+      </div>
+    </section>
+    <section id="dr-comments-sec" class="dr-section" aria-labelledby="dr-comments-h">
+      <h3 id="dr-comments-h" class="dr-h">Comments</h3>
+      <ol id="dr-comments" class="dr-comments"></ol>
+      <div class="dr-comment-box">
+        <textarea id="dr-comment" class="dr-comment" placeholder="Comment on this card" aria-label="Comment on this card"></textarea>
+        <button type="button" id="dr-comment-btn" class="btn">Comment</button>
+      </div>
+    </section>
+  </div>
+</aside>
 <div id="toast" role="status" aria-live="polite" hidden></div>
 <script src="/static/board.js"></script>
 </body>

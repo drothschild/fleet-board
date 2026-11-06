@@ -259,6 +259,7 @@ async function fetchBoard(force) {
     S.board = r.data;
     renderBoard(r.data, force);
     renderHeader(r.data.run);
+    syncDrawer();
     if (isAlive(r.data.run) && !S.runFast) pollRun();
   } catch (e) {
     if (my !== S.boardSeq) return;
@@ -511,6 +512,10 @@ function renderCard(c, repo) {
       openCard(n);
     }
   });
+  li.addEventListener("click", function (e) {
+    if (e.target.closest("a, select, button")) return;
+    openCard(n);
+  });
   li.addEventListener("dragstart", function (e) {
     S.dragging = n;
     e.dataTransfer.effectAllowed = "move";
@@ -706,15 +711,494 @@ function hideToast() {
   $("toast").hidden = true;
 }
 
-// --- hooks for the card drawer (Task 11) and the import view (Task 12) -------
+// --- card drawer -------------------------------------------------------------
+
+const NOTE_MARKER = "<!-- fleet-board:manager-note -->";
+const NEW_CARD_BODY = "## Acceptance\n- ";
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+// S.drawer while open: {n (null = new card), card (the last GET reply),
+// base: {title, body, labels, state} as saved, labels: the edited label list,
+// opener: the element to refocus on close, seq, busy}.
+S.drawer = null;
 
 function openCard(n) {
-  // Task 11 opens the card drawer here.
+  return openDrawer(n);
 }
 
 function openNewCard() {
-  // Task 11 opens the drawer on a new card here.
+  return openDrawer(null);
 }
+
+// openDrawer(n | null): shows the drawer for card n, or empty for a new card.
+async function openDrawer(n, opener) {
+  const prev = S.drawer;
+  const d = {
+    n: n,
+    card: null,
+    base: null,
+    labels: [],
+    opener: opener || (prev ? prev.opener : document.activeElement),
+    seq: prev ? prev.seq + 1 : 1,
+    busy: false,
+  };
+  S.drawer = d;
+  showDrawer();
+  if (n === null) {
+    renderDrawer(null);
+    history.replaceState(null, "", "/");
+    $("dr-title").focus();
+    return;
+  }
+  history.replaceState(null, "", "/cards/" + n);
+  const card = await fetchCard(n);
+  if (S.drawer !== d) return;
+  if (!card) {
+    closeDrawer();
+    return;
+  }
+  renderDrawer(card);
+  $("dr-title").focus();
+}
+
+async function fetchCard(n) {
+  let r;
+  try {
+    r = await api("GET", "/api/cards/" + n);
+  } catch (e) {
+    r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
+  }
+  if (!r.ok) {
+    showToast("Could not open #" + n + ": " + errorText(r), "error");
+    return null;
+  }
+  return r.data;
+}
+
+function showDrawer() {
+  $("drawer").hidden = false;
+  $("drawer-dim").hidden = false;
+  $("board").inert = true;
+  $("top").inert = true;
+}
+
+// closeDrawer(): hides the drawer and returns focus to what opened it.
+function closeDrawer() {
+  const d = S.drawer;
+  S.drawer = null;
+  $("drawer").hidden = true;
+  $("drawer-dim").hidden = true;
+  $("board").inert = false;
+  $("top").inert = false;
+  if (location.pathname !== "/") history.replaceState(null, "", "/");
+  if (!d) return;
+  let target = d.opener === document.body ? null : d.opener;
+  if (target && target.closest && target.closest(".card")) {
+    // The column may have re-rendered since: find the card by number.
+    const n = target.closest(".card").dataset.n;
+    target = document.querySelector('.card[data-n="' + n + '"]');
+  } else if (d.n !== null && !(target && document.contains(target))) {
+    target = document.querySelector('.card[data-n="' + d.n + '"]');
+  }
+  if (!target || !document.contains(target)) target = $("new-card-btn");
+  target.focus({ preventScroll: true });
+}
+
+// renderDrawer(card | null): fills every field from card (or a blank new
+// card). Only called on open and after Save, never from a poll, so unsaved
+// edits survive the board refreshing behind the drawer.
+function renderDrawer(card) {
+  const d = S.drawer;
+  const isNew = card === null;
+  d.card = card;
+  d.base = isNew
+    ? { title: "", body: NEW_CARD_BODY, labels: [], state: "backlog" }
+    : { title: card.title || "", body: card.body || "", labels: (card.labels || []).slice(), state: card.state };
+  d.labels = d.base.labels.slice();
+
+  const drawer = $("drawer");
+  drawer.classList.toggle("new", isNew);
+  drawer.setAttribute("aria-label", isNew ? "New card" : "Card #" + card.number);
+  $("dr-num").textContent = isNew ? "New card" : "#" + card.number;
+  $("dr-title").value = d.base.title;
+  $("dr-body").value = d.base.body;
+  fillStateSelect(d.base.state);
+  renderLabels();
+  renderPreview();
+  renderDrawerMeta();
+  $("dr-comments-sec").hidden = isNew;
+  if (isNew) {
+    $("dr-comments").replaceChildren();
+  } else {
+    renderComments(card);
+  }
+  updateDirty();
+}
+
+function fillStateSelect(current) {
+  const sel = $("dr-state");
+  const frag = document.createDocumentFragment();
+  for (const s of (S.board && S.board.states) || [{ key: current, name: current }]) {
+    const opt = el("option", null, s.name);
+    opt.value = s.key;
+    frag.appendChild(opt);
+  }
+  sel.replaceChildren(frag);
+  sel.value = current;
+}
+
+function renderPreview() {
+  $("dr-preview").replaceChildren(md($("dr-body").value));
+}
+
+function renderLabels() {
+  const d = S.drawer;
+  const ul = $("dr-labels");
+  const frag = document.createDocumentFragment();
+  d.labels.forEach(function (name, i) {
+    const li = el("li", "label");
+    li.appendChild(el("span", null, name));
+    const x = el("button", "label-x", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", "Remove label " + name);
+    x.addEventListener("click", function () {
+      d.labels.splice(i, 1);
+      renderLabels();
+      updateDirty();
+      $("dr-label-input").focus();
+    });
+    li.appendChild(x);
+    frag.appendChild(li);
+  });
+  ul.replaceChildren(frag);
+}
+
+function addLabel() {
+  const d = S.drawer;
+  const input = $("dr-label-input");
+  const name = input.value.trim();
+  if (!d || !name) return;
+  if (d.labels.indexOf(name) === -1) d.labels.push(name);
+  input.value = "";
+  renderLabels();
+  updateDirty();
+}
+
+// boardCard(n): the card's summary in the last board poll, or null.
+function boardCard(n) {
+  return (S.board && S.board.cards.find(function (c) { return c.number === n; })) || null;
+}
+
+// noteJson(text): the manager note's fenced JSON object, or null.
+function noteJson(text) {
+  if (typeof text !== "string") return null;
+  const m = /^```json\n([\s\S]*?)\n```\s*$/m.exec(text);
+  if (!m) return null;
+  try {
+    const v = JSON.parse(m[1]);
+    return v && typeof v === "object" && !Array.isArray(v) ? v : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// renderDrawerMeta(): `round r · PR #p · models (escalated) · agent working
+// now`. Called on render and after every board poll (the active part is live).
+function renderDrawerMeta() {
+  const d = S.drawer;
+  const meta = $("dr-meta");
+  if (!d || d.n === null || !d.card) {
+    meta.replaceChildren(document.createTextNode(d && d.n === null ? "Not created yet" : ""));
+    return;
+  }
+  const note = noteJson(d.card.manager_note) || {};
+  const parts = [];
+  if (note.round != null) parts.push(document.createTextNode("round " + note.round));
+  if (note.pr != null) {
+    const label = "PR #" + note.pr;
+    if (d.card.pr_url) {
+      const a = el("a", null, label);
+      a.href = d.card.pr_url;
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      parts.push(a);
+    } else {
+      parts.push(document.createTextNode(label));
+    }
+  }
+  const models = formatModels(note.models);
+  if (models) {
+    const span = el("span", null, models.text + (note.escalated ? " (escalated)" : ""));
+    span.title = models.title;
+    parts.push(span);
+  }
+  const live = boardCard(d.n);
+  const active = live ? live.active : d.card.active;
+  if (active) parts.push(el("span", "dr-now", "agent working now"));
+  if (!parts.length) parts.push(document.createTextNode("No manager note yet"));
+  const frag = document.createDocumentFragment();
+  parts.forEach(function (p, i) {
+    if (i) frag.appendChild(document.createTextNode(" · "));
+    frag.appendChild(p);
+  });
+  meta.replaceChildren(frag);
+}
+
+// formatTime(iso): HH:MM today, else MMM D HH:MM, in local time.
+function formatTime(iso) {
+  const t = new Date(iso);
+  if (!iso || isNaN(t.getTime())) return "";
+  const pad = function (x) { return (x < 10 ? "0" : "") + x; };
+  const hm = pad(t.getHours()) + ":" + pad(t.getMinutes());
+  const now = new Date();
+  if (t.toDateString() === now.toDateString()) return hm;
+  return MONTHS[t.getMonth()] + " " + t.getDate() + " " + hm;
+}
+
+// noteCommentIndex(card): the index in card.comments of the manager note the
+// server trusts (the last marker comment whose body matches manager_note), or -1.
+function noteCommentIndex(card) {
+  const list = card.comments || [];
+  if (card.manager_note == null) return -1;
+  for (let i = list.length - 1; i >= 0; i--) {
+    const b = list[i] && list[i].body;
+    if (typeof b !== "string" || b.indexOf(NOTE_MARKER) !== 0) continue;
+    const rest = b.indexOf("\n") === -1 ? "" : b.slice(b.indexOf("\n") + 1);
+    if (rest === card.manager_note) return i;
+  }
+  return -1;
+}
+
+function renderComments(card) {
+  const list = Array.isArray(card.comments) ? card.comments : [];
+  const noteAt = noteCommentIndex(card);
+  const frag = document.createDocumentFragment();
+  list.forEach(function (c, i) {
+    if (!c || typeof c !== "object") return;
+    const li = el("li", "dr-comment-item");
+    const when = formatTime(c.created_at);
+    if (i === noteAt) {
+      li.appendChild(renderNoteComment(c, card.manager_note, when));
+    } else {
+      const head = el("div", "dr-c-head", [c.author || "unknown", when].filter(Boolean).join(" · "));
+      if (c.created_at) head.title = c.created_at;
+      li.appendChild(head);
+      const body = el("div", "dr-c-body md");
+      body.appendChild(md(c.body));
+      li.appendChild(body);
+    }
+    frag.appendChild(li);
+  });
+  $("dr-comments").replaceChildren(frag);
+}
+
+// renderNoteComment: one line `author · manager note · time ▸ {...}` that
+// toggles the pretty-printed JSON (the raw body when the fence does not parse).
+function renderNoteComment(c, noteBody, when) {
+  const wrap = document.createDocumentFragment();
+  const obj = noteJson(noteBody);
+  const pre = el("pre", "note-json", obj ? JSON.stringify(obj, null, 2) : noteBody);
+  pre.id = "note-json-" + c.id;
+  pre.hidden = true;
+  const btn = el("button", "note-toggle");
+  btn.type = "button";
+  btn.setAttribute("aria-expanded", "false");
+  btn.setAttribute("aria-controls", pre.id);
+  btn.appendChild(el("span", "note-head", [c.author || "unknown", "manager note", when].filter(Boolean).join(" · ")));
+  btn.appendChild(chevron());
+  const peek = obj ? JSON.stringify(obj) : String(noteBody).replace(/\s+/g, " ").trim();
+  btn.appendChild(el("span", "note-peek", peek.length > 80 ? peek.slice(0, 80) + "…" : peek));
+  btn.addEventListener("click", function () {
+    const open = btn.getAttribute("aria-expanded") !== "true";
+    btn.setAttribute("aria-expanded", String(open));
+    pre.hidden = !open;
+  });
+  wrap.appendChild(btn);
+  wrap.appendChild(pre);
+  return wrap;
+}
+
+function drawerEdits() {
+  const d = S.drawer;
+  return {
+    title: $("dr-title").value,
+    body: $("dr-body").value,
+    labels: d.labels.slice(),
+    state: $("dr-state").value,
+  };
+}
+
+function isDirty() {
+  const d = S.drawer;
+  if (!d || !d.base) return false;
+  if (d.n === null) return true;
+  const e = drawerEdits();
+  return e.title !== d.base.title || e.body !== d.base.body || e.state !== d.base.state ||
+    JSON.stringify(e.labels) !== JSON.stringify(d.base.labels);
+}
+
+// updateDirty(): Save is the page's one filled button only while there is
+// something to save.
+function updateDirty() {
+  const save = $("dr-save");
+  const dirty = isDirty();
+  save.classList.toggle("primary", dirty && !(S.drawer && S.drawer.busy));
+  save.disabled = !!(S.drawer && S.drawer.busy) || !dirty;
+}
+
+function setDrawerBusy(on) {
+  if (S.drawer) S.drawer.busy = on;
+  updateDirty();
+  $("dr-comment-btn").disabled = on;
+}
+
+async function writeApi(method, path, body) {
+  try {
+    return await api(method, path, body);
+  } catch (e) {
+    return { ok: false, status: 0, data: { error: "the board server did not answer" } };
+  }
+}
+
+// saveDrawer(): PATCH title, body and labels, then a changed state through the
+// move route. A new card is created with POST /api/cards and then opened.
+async function saveDrawer() {
+  const d = S.drawer;
+  if (!d || d.busy) return;
+  if ($("dr-label-input").value.trim()) addLabel(); // a typed label counts
+  if (!isDirty()) return;
+  const e = drawerEdits();
+  if (!e.title.trim()) {
+    showToast("Give the card a title before saving.", "error");
+    $("dr-title").focus();
+    return;
+  }
+  setDrawerBusy(true);
+  if (d.n === null) {
+    const r = await writeApi("POST", "/api/cards", { title: e.title, body: e.body, labels: e.labels, state: e.state });
+    if (S.drawer !== d) return;
+    setDrawerBusy(false);
+    fetchBoard(true);
+    if (r.ok && Number.isInteger(r.data.number)) {
+      showToast("Created #" + r.data.number + ".");
+      openDrawer(r.data.number);
+      return;
+    }
+    showToast("Card not created: " + errorText(r), "error");
+    const made = /created card #(\d+)/.exec(errorText(r));
+    if (made) openDrawer(Number(made[1]));
+    return;
+  }
+
+  const n = d.n;
+  const fields = e.title !== d.base.title || e.body !== d.base.body ||
+    JSON.stringify(e.labels) !== JSON.stringify(d.base.labels);
+  if (fields) {
+    const r = await writeApi("PATCH", "/api/cards/" + n, { title: e.title, body: e.body, labels: e.labels });
+    if (S.drawer !== d) return;
+    if (!r.ok) {
+      setDrawerBusy(false);
+      showToast("#" + n + " not saved: " + errorText(r), "error");
+      return;
+    }
+  }
+  if (e.state !== d.base.state) {
+    const r = await writeApi("POST", "/api/cards/" + n + "/move", { state: e.state });
+    if (S.drawer !== d) return;
+    if (!r.ok) {
+      showToast("#" + n + " stayed in " + stateName(d.base.state) + ": " + errorText(r), "error");
+    }
+  }
+  const card = await fetchCard(n);
+  fetchBoard(true);
+  if (S.drawer !== d) return;
+  d.busy = false;
+  $("dr-comment-btn").disabled = false;
+  if (!card) {
+    updateDirty();
+    return;
+  }
+  // Everything was saved or nothing changed but a refused state, so a fresh
+  // render loses no edit and resets a refused select to the stored state.
+  renderDrawer(card);
+}
+
+// submitComment(): posts the comment box, then reloads only the comments and
+// the meta line, so unsaved edits above it stay.
+async function submitComment() {
+  const d = S.drawer;
+  const box = $("dr-comment");
+  const text = box.value;
+  if (!d || d.n === null || d.busy || !text.trim()) return;
+  setDrawerBusy(true);
+  const r = await writeApi("POST", "/api/cards/" + d.n + "/comments", { body: text });
+  if (S.drawer !== d) return;
+  if (!r.ok) {
+    setDrawerBusy(false);
+    showToast("Comment not posted: " + errorText(r), "error");
+    return;
+  }
+  box.value = "";
+  const card = await fetchCard(d.n);
+  fetchBoard(true);
+  if (S.drawer !== d) return;
+  setDrawerBusy(false);
+  if (card) {
+    d.card = card;
+    renderComments(card);
+    renderDrawerMeta();
+  }
+}
+
+// syncDrawer(): after a board poll, refresh the live parts of the drawer.
+function syncDrawer() {
+  if (S.drawer && S.drawer.card) renderDrawerMeta();
+}
+
+function bindDrawer() {
+  $("dr-close").addEventListener("click", closeDrawer);
+  $("drawer-dim").addEventListener("click", closeDrawer);
+  $("dr-save").addEventListener("click", saveDrawer);
+  $("dr-comment-btn").addEventListener("click", submitComment);
+  $("dr-title").addEventListener("input", updateDirty);
+  $("dr-state").addEventListener("change", updateDirty);
+  $("dr-body").addEventListener("input", function () {
+    renderPreview();
+    updateDirty();
+  });
+  $("dr-label-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addLabel();
+    }
+  });
+  $("dr-title").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveDrawer();
+    }
+  });
+  $("dr-comment").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      submitComment();
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && S.drawer && !e.defaultPrevented) {
+      e.preventDefault();
+      closeDrawer();
+    }
+  });
+}
+
+// drawerFromUrl(): /cards/<n> opens that card's drawer on load.
+function drawerFromUrl() {
+  const m = /^\/cards\/(\d+)$/.exec(location.pathname);
+  if (m) openDrawer(Number(m[1]), null);
+}
+
+// --- hooks for the import view (Task 12) ------------------------------------
 
 function openImport() {
   // Task 12 shows the import view here.
@@ -735,7 +1219,8 @@ function init() {
       pollRun();
     }
   });
-  fetchBoard();
+  bindDrawer();
+  fetchBoard().then(drawerFromUrl);
   pollRun();
 }
 
