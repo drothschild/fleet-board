@@ -84,7 +84,7 @@ if [ "$MODE" = tick ]; then
       merge-*) run_publication "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       *) exit 1 ;;
     esac
-    jq -n --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]}'
+    jq -n --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]} + (if $fixture then {cost_usd:0} else {} end)'
     exit 0
   done
 fi
