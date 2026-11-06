@@ -65,6 +65,7 @@ chmod +x "$TMP/host-hook"
 sed "s|@HOOK@|$TMP/host-hook|" "$TMP/worker.sh" > "$TMP/worker.tmp"
 mv "$TMP/worker.tmp" "$TMP/worker.sh"
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
+export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi

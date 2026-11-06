@@ -16,7 +16,20 @@ elif [ "$#" -ne 1 ] || [ "$1" != tick ]; then
 fi
 SCRATCH="$(mktemp -d)" || exit 1
 PLAN="$SCRATCH/plan"
-trap 'rm -rf "$SCRATCH"' EXIT
+LOCK=""
+cleanup() {
+  [ -z "$LOCK" ] || rmdir "$LOCK" 2>/dev/null || true
+  rm -rf "$SCRATCH"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [ "$MODE" = tick ]; then
+  COMMON="$(git rev-parse --git-common-dir)" || exit 1
+  COMMON="$(cd "$COMMON" && pwd -P)" || exit 1
+  LOCK="$COMMON/fleet-board-standalone.lock"
+  if ! mkdir "$LOCK" 2>/dev/null; then LOCK=""; echo 'another standalone tick holds the repository lock' >&2; exit 1; fi
+fi
 if [ "$MODE" = plan ]; then
   FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
 else
@@ -51,9 +64,15 @@ if [ "$MODE" = plan ]; then
   cat "$PLAN"
   exit 0
 fi
-# Until handlers are implemented, reject the entire tick before any effect.
-if ! jq -e 'all(.cards[]; .action == "skip") and .dispatchable == false' "$PLAN" >/dev/null; then
+# Only one start may run; reject the entire plan before effects otherwise.
+if jq -e 'all(.cards[]; .action == "skip") and .dispatchable == false' "$PLAN" >/dev/null; then
+  jq '. + {outcome: "idle"}' "$PLAN"
+  exit 0
+fi
+if ! jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start")' "$PLAN" >/dev/null; then
   echo 'tick contains an unsupported action; no actions taken' >&2
   exit 1
 fi
-jq '. + {outcome: "idle"}' "$PLAN"
+jq '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/card"
+bash "$SCRIPTS/standalone/start.sh" "$SCRATCH/card" "$SCRATCH" || exit 1
+jq '. + {outcome: "progress"}' "$PLAN"
