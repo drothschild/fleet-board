@@ -586,7 +586,11 @@ invalid_field_case "stage label duplicate" 'review: { stages: [ { name: s, agent
 invalid_field_case "stage advisory" 'review: { stages: [ { name: s, agent: a, advisory: yes_please } ] }' "review.stages[0].advisory must be boolean"
 invalid_field_case "stage max_rounds" 'review: { stages: [ { name: s, agent: a, max_rounds: 0 } ] }' "review.stages[0].max_rounds must be a positive integer"
 invalid_field_case "stage brief" 'review: { stages: [ { name: s, agent: a, brief: 7 } ] }' "review.stages[0].brief must be a string"
-invalid_field_case "board.states names no stage" 'board: { states: { review_x: "X Review" } }' "board.states key review_x names no stage"
+# (board is already a key in invalid_field_case's base, so this one builds its own repo)
+REPO="$(printf 'board:\n  repo: a/b\n  states: { review_x: "X Review" }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "field-validation board.states names no stage: exit 5" "5"
+assert_stderr_contains "field-validation board.states names no stage: names the field" "board.states key review_x names no stage"
 REPO="$(printf 'board:\n  repo: a/b\n  states: { review_security: "Sec" }\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages: board.states may map a stage" 0
