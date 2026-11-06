@@ -12,6 +12,9 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nlimits:\n  concurrency: 2\n' > "$TMP/repo/.fleet-board.yml"
+if [ "${1:-multi-card}" = multi-card-limit ]; then
+  sed 's/concurrency: 2/concurrency: 1/' "$TMP/repo/.fleet-board.yml" > "$TMP/repo/config.tmp" && mv "$TMP/repo/config.tmp" "$TMP/repo/.fleet-board.yml"
+fi
 git -C "$TMP/repo" add .fleet-board.yml
 git -C "$TMP/repo" commit -qm initial
 git -C "$TMP/repo" remote add origin https://github.com/acme/toy.git
@@ -86,7 +89,7 @@ git add "card-$n.txt"
 git -c user.name=Fixture -c user.email=fixture@example.com commit -qm implement
 printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#1\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 WORKER
-if [ "${1:-multi-card}" = multi-card-parallel ]; then
+if [ "${1:-multi-card}" = multi-card-parallel ] || [ "${1:-multi-card}" = multi-card-limit ]; then
   MARKER="fixture-ready-$(basename "$TMP")"
   python3 - "$TMP/worker.sh" "$MARKER" <<'PY_WORKER'
 import sys
@@ -116,7 +119,32 @@ PLAN
   echo 'PASS: multi-card-provider'
   exit 0
 fi
-if [ "${1:-multi-card}" = multi-card-parallel ]; then
+if [ "${1:-multi-card}" = multi-card-limit ]; then
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/out" 2> "$TMP/first-err" & TICK_PID=$!
+  READY=""
+  for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    READY="$(find "${TMPDIR:-/tmp}" -name "$MARKER-*" -type f -print 2>/dev/null)"
+    [ -n "$READY" ] && break
+    sleep 1
+  done
+  if [ -z "$READY" ]; then kill -TERM "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true; echo 'FAIL: first worker did not start' >&2; exit 1; fi
+  sleep 3
+  READY="$(find "${TMPDIR:-/tmp}" -name "$MARKER-*" -type f -print 2>/dev/null)"
+  if [ "$(printf '%s\n' "$READY" | sed '/^$/d' | wc -l | tr -d ' ')" != 1 ]; then
+    kill -TERM "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true; echo 'FAIL: concurrency limit exceeded' >&2; exit 1
+  fi
+  touch "$(dirname "$READY")/release"
+  for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    READY="$(find "${TMPDIR:-/tmp}" -name "$MARKER-*" -type f -print 2>/dev/null)"
+    [ "$(printf '%s\n' "$READY" | sed '/^$/d' | wc -l | tr -d ' ')" -ge 2 ] && break
+    sleep 1
+  done
+  if [ "$(printf '%s\n' "$READY" | sed '/^$/d' | wc -l | tr -d ' ')" -lt 2 ]; then
+    kill -TERM "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true; echo 'FAIL: second worker did not start' >&2; exit 1
+  fi
+  while IFS= read -r path; do [ -n "$path" ] || continue; touch "$(dirname "$path")/release"; done <<<"$READY"
+  wait "$TICK_PID" || { cat "$TMP/first-err" >&2; echo 'FAIL: limited tick failed' >&2; exit 1; }
+elif [ "${1:-multi-card}" = multi-card-parallel ]; then
   bash "$ROOT/bin/fleet-board" tick > "$TMP/out" 2> "$TMP/first-err" & TICK_PID=$!
   READY=""
   for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
