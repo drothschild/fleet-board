@@ -9,10 +9,10 @@
 # branch, where <base> is the PR's baseRefName. Then:
 #   clean merge     push origin <branch> (when the merge moved HEAD); the card
 #                   stays where it is, and the manager note gains last_update
-#                   {sha, base, changed}. When the merge changed files, the
-#                   note's last_review is also set to null, so the reviewed-sha
-#                   baseline no longer covers the head and the next tick plans
-#                   a review round.
+#                   {sha, base, changed}. last_review is left as it is: the
+#                   next tick plans merge when this clean merge of the base is
+#                   the only change since the review, and review otherwise
+#                   (tick-plan.sh, review-drift.sh).
 #   conflict        the merge is aborted (nothing is pushed), a comment names
 #                   the conflicted files, and the card moves to blocked. A
 #                   conflict is never resolved here: a person resolves it.
@@ -78,6 +78,5 @@ if [ "$AFTER" != "$BEFORE" ]; then
 fi
 
 jq -n --arg sha "$AFTER" --arg base "$BASE" --argjson changed "$CHANGED" \
-  '{last_update: {sha: $sha, base: $base, changed: $changed}}
-   + (if $changed then {last_review: null} else {} end)' > "$TMP"
+  '{last_update: {sha: $sha, base: $base, changed: $changed}}' > "$TMP"
 bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$TMP" || fb_die 1 "cannot update the note on #$N"
