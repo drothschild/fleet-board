@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
-[ "${1:-}" = run-limits ] || { echo 'usage: test-standalone-run.sh run-limits' >&2; exit 2; }
+[ "${1:-}" = run-limits ] || [ "${1:-}" = run-cancel-real ] || { echo 'usage: test-standalone-run.sh run-limits|run-cancel-real' >&2; exit 2; }
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir "$TMP/repo" "$TMP/log"
@@ -32,6 +32,24 @@ esac
 TICK
 chmod +x "$TMP/tick"
 export STATE="$TMP" FLEET_BOARD_STANDALONE_TICK="$TMP/tick" FLEET_BOARD_LOG_DIR="$TMP/log" FLEET_BOARD_NOW_FILE="$TMP/now"
+if [ "$1" = run-cancel-real ]; then
+  cat > "$TMP/planner" <<'PLANNER'
+#!/usr/bin/env bash
+echo $$ > "$STATE/planner-pid"
+trap '' TERM INT
+while :; do sleep 1; done
+PLANNER
+  unset FLEET_BOARD_STANDALONE_TICK
+  export FLEET_BOARD_TICK_PLAN="$TMP/planner"
+  echo 0 > "$TMP/now"
+  (cd "$TMP/repo"; exec bash "$ROOT/bin/fleet-board" run) > "$TMP/out" 2> "$TMP/err" & runner=$!
+  for i in 1 2 3 4 5; do [ -s "$TMP/planner-pid" ] && break; sleep 1; done
+  [ -s "$TMP/planner-pid" ] || { kill "$runner"; echo 'FAIL: planner did not start' >&2; exit 1; }
+  kill -TERM "$runner"; wait "$runner"; rc=$?
+  [ "$rc" = 143 ] || { echo "FAIL: interruption status $rc" >&2; exit 1; }
+  if kill -0 "$(cat "$TMP/planner-pid")" 2>/dev/null; then echo 'FAIL: planner survived interruption' >&2; exit 1; fi
+  echo 'PASS: run-cancel-real'; exit 0
+fi
 run() { (cd "$TMP/repo" && bash "$ROOT/bin/fleet-board" run) > "$TMP/out" 2> "$TMP/err"; }
 check() { grep -q "$1" "$TMP/out" || { cat "$TMP/out" "$TMP/err" >&2; echo "FAIL: $1" >&2; exit 1; }; }
 echo 0 > "$TMP/now"
