@@ -2,7 +2,7 @@
 # Focused tool-chat protocol cases against an ephemeral loopback provider.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in protocol|limit|malformed|escape|write|unapproved|test-run|test-real|test-kill-real|paid-unknown|paid-budget) ;; *) echo 'usage: test-standalone-tool-chat.sh protocol|limit|malformed' >&2; exit 2 ;; esac
+case "${1:-}" in protocol|limit|malformed|escape|hardlink|write|unapproved|test-run|test-real|test-kill-real|paid-unknown|paid-budget) ;; *) echo 'usage: test-standalone-tool-chat.sh protocol|limit|malformed' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPT="$TESTS/../scripts/standalone/tool-chat.py"
 TMP="$(mktemp -d)"; TMP="$(cd "$TMP" && pwd -P)"; SERVER=""
 trap '[ -z "$SERVER" ] || { kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true; }; rm -rf "$TMP"' EXIT
@@ -19,7 +19,7 @@ class H(http.server.BaseHTTPRequestHandler):
   (root/f'request-{n}.json').write_text(json.dumps(req))
   name='read_file'; args='{"path":"readme.txt"}'
   if case == 'malformed': args='{bad'
-  if case == 'escape': args='{"path":"link"}'
+  if case in ('escape','hardlink'): args='{"path":"link"}'
   if case == 'write': name='write_file'; args='{"path":"output.txt","content":"changed"}'
   if case == 'unapproved': name='run_test'; args='{"test_id":"not-approved"}'
   if case in ('test-run','test-real','test-kill-real'): name='run_test'; args='{"test_id":"smoke"}'
@@ -51,6 +51,7 @@ if [ "$1" = paid-unknown ]; then
   echo 'PASS: paid-unknown'; exit 0
 fi
 if [ "$1" = escape ]; then ln -s "$TMP/secret" "$TMP/work/link"; echo secret > "$TMP/secret"; fi
+if [ "$1" = hardlink ]; then echo secret > "$TMP/secret"; ln "$TMP/secret" "$TMP/work/link"; fi
 if [ "$1" = test-kill-real ]; then
   mkdir -p "$TMP/work/.git/objects/info"
   jq '.image = "ghcr.io/home-assistant/home-assistant:stable" | .tests = {smoke:["/bin/sh","-c","echo ready > /work/ready; exec sleep 30"]}' "$TMP/request.json" > "$TMP/new" && mv "$TMP/new" "$TMP/request.json"
