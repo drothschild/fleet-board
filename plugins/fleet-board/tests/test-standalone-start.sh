@@ -39,16 +39,16 @@ case "$*" in
     if [ -e "$GH_STATE/fail-move" ]; then rm "$GH_STATE/fail-move"; exit 1; fi
     printf in_progress > "$GH_STATE/column" ;;
   'issue comment 12 --repo acme/toy --body-file '*)
-    jq --rawfile body "$6" '. + [{id:556,user:{login:"fleet-bot"},body:$body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments"
+    jq --rawfile body "$7" '. + [{id:556,user:{login:"fleet-bot"},body:$body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments" || exit 1
     mv "$GH_STATE/new-comments" "$GH_STATE/comments" ;;
   'api -X POST repos/acme/toy/issues/12/comments --input -')
     body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"fleet-bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments"; mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{"id":555}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'pr list '*) if [ -e "$GH_STATE/pr" ]; then echo '[{"number":34}]'; else echo '[]'; fi ;;
   'pr create '*) touch "$GH_STATE/pr"; echo 'https://github.com/acme/toy/pull/34' ;;
-  'pr view '*)
+  'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)" || exit 1
-    jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"}}' ;;
+    jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
   *) echo "unexpected gh: $*" >&2; exit 1 ;;
 esac
 GH
@@ -75,9 +75,9 @@ export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.
 cd "$TMP/repo"
 if [ "${1:-start}" = resume ]; then
   touch "$TMP/state/fail-move"
-  if bash "$ROOT/bin/fleet-board" tick > "$TMP/first-out" 2>/dev/null; then echo 'FAIL: simulated interruption succeeded' >&2; exit 1; fi
+  if bash "$ROOT/bin/fleet-board" tick > "$TMP/first-out" 2>"$TMP/first-err"; then echo 'FAIL: simulated interruption succeeded' >&2; exit 1; fi
   [ -e "$TMP/state/pr" ] || { echo 'FAIL: interruption preceded PR creation' >&2; exit 1; }
-  jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: official report missing before interruption' >&2; exit 1; }
+  jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { cat "$TMP/first-err" >&2; cat "$TMP/state/comments" >&2; echo 'FAIL: official report missing before interruption' >&2; exit 1; }
 fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
 [ ! -e "$TMP/hook-ran" ] || { echo 'FAIL: worker Git config executed on controller' >&2; exit 1; }
