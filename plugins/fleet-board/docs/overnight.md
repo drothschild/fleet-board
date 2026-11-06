@@ -106,6 +106,12 @@ A successful tick's block is a header line (`=== tick <n> <time> rc=0 cost_estim
 
 A tick's cost is the session's `total_cost_usd`, which Claude Code computes on the client. When a session reports none, the wrapper prices its `modelUsage` with `scripts/prices.json`, a dated price snapshot. The figure is not a bill. On a subscription, it measures usage, not money. A failed tick's cost counts too, when its session reports one. A failed tick whose session ends without a `result` event, or whose result carries no cost, adds $0 and is logged `cost_estimate_usd=unknown`, even though it may have spent money.
 
+### Provider spend counts toward `max_cost_usd`
+
+A review stage that runs on a provider model (not a Claude subagent) is billed by that provider, outside the Claude session. `stage-review.sh` appends each call's cost to a ledger, `provider-spend.jsonl`, in `FLEET_BOARD_LOG_DIR` (default `$HOME/.fleet-board`, so not the `runs` subdirectory). The wrapper exports `FLEET_BOARD_RUN_ID` (`<epoch>-<pid>`) before the first tick, and each ledger line carries it. After each tick the wrapper adds the `cost_usd` of the lines appended during that tick with this run's id to the tick's cost, so `max_cost_usd` holds on the combined total, and two runs sharing one ledger never count each other's spend. When the provider part is non-zero the log line reads `cost_estimate_usd=<total> (estimate; provider <x>)`. A missing ledger counts as zero, and a malformed line is skipped with a warning. Like the Claude figure, the provider figure is an estimate: the stage's `price` settings times the token counts the provider reports.
+
+The provider key variables (for example `OPENAI_API_KEY`) must be exported in the environment that starts the wrapper. A tick inherits the wrapper's environment, and nothing else supplies them; with a variable unset, its stage fails (`stage-review.sh` exits 3) and is counted as an action failure in the tick report, like any report error.
+
 ## Permissions
 
 - The wrapper never passes `--dangerously-skip-permissions`.
