@@ -229,7 +229,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -245,7 +245,7 @@ REVIEWER
     echo 'PASS: review-move-race'
     exit 0
   fi
-  if [ "${1:-start}" = findings-review ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ]; then
+  if [ "${1:-start}" = findings-review ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ]; then
     python3 - "$TMP/worker.sh" <<'PY_WORKER'
 import sys
 p = sys.argv[1]
@@ -270,13 +270,29 @@ else
   printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nRe-reviewed.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 fi
 FIXER
+    if [ "$1" = fix-two-rounds ]; then
+      cat > "$TMP/worker.sh" <<'FIXER_TWO'
+#!/bin/sh
+set -eu
+if grep -q '"role": "fixer"' /scratch/request.json; then
+  if grep -q fixed-1 source.txt; then printf 'fixed-2\n' > source.txt; else printf 'fixed-1\n' > source.txt; fi
+  git add source.txt
+  git -c user.name=Fixture -c user.email=fixture@example.com commit -qm fix
+  printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nFixed.\n## PR\n#34\n## Resolutions\n- Incorrect result :: fixed\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+elif grep -q fixed-1 source.txt; then
+  printf '%s\n' '{"version":1,"outcome":"findings","report":"## Status\nfindings\n## Findings\n- [Important] Incorrect result\n## For the card\nStill wrong.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+else
+  printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nRe-reviewed.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+fi
+FIXER_TWO
+    fi
     if [ "$1" = fix-resume-note ]; then
       REAL_JQ="$(command -v jq)"
       touch "$TMP/state/fail-fix-complete"
       cat > "$TMP/bin/jq" <<WRAPPER
 #!/bin/bash
 for arg in "\$@"; do
-  case "\$arg" in */fix-12.json) if [ -e "$TMP/state/fail-fix-complete" ] && [ "\$1" = '.completed = true' ]; then rm "$TMP/state/fail-fix-complete"; exit 1; fi ;; esac
+  case "\$arg" in */fix-12*.json) if [ -e "$TMP/state/fail-fix-complete" ] && [ "\$1" = '.completed = true' ]; then rm "$TMP/state/fail-fix-complete"; exit 1; fi ;; esac
 done
 exec "$REAL_JQ" "\$@"
 WRAPPER
@@ -289,6 +305,13 @@ WRAPPER
     if [ "$1" = fix-resume-note ]; then
       [ "$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)" = "$FIRST_SHA" ] || { echo 'FAIL: fix repeated on resume' >&2; exit 1; }
       jq -e '[.[] | select(.body | contains("fleet-board:standalone-fix:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: fix report duplicated' >&2; exit 1; }
+    fi
+    if [ "$1" = fix-two-rounds ]; then
+      jq -e 'any(.[]; .id == 555 and (.body | contains("\"round\": 2")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: second-round findings missing' >&2; exit 1; }
+      if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/second-fix-out"; then echo 'FAIL: second fix tick failed' >&2; exit 1; fi
+      jq -e 'any(.[]; .id == 555 and (.body | contains("\"round\": 3")) and (.body | contains("\"important\": 0")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: third-round clean verdict missing' >&2; exit 1; }
+      echo 'PASS: fix-two-rounds'
+      exit 0
     fi
     NEW_SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
     [ "$NEW_SHA" != "$SHA" ] || { echo 'FAIL: fix did not advance branch' >&2; exit 1; }
