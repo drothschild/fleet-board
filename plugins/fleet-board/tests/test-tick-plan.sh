@@ -884,12 +884,15 @@ scope_issue() {
     > "$dir/issue-$n.json"
 }
 
-# scope_routes <dir> <ready numbers> <in_review numbers>: routes for those cards
+# scope_routes <dir> <ready numbers> <in_review numbers> [<stage columns>]:
+# routes for those cards. <stage columns> is "review_<name>:<numbers> ...",
+# one word per configured stage (cards in a stage column get PR routes too).
 scope_routes() {
-  local dir="$1" n pr
+  local dir="$1" n pr stage_nums="" sc
+  for sc in ${4:-}; do stage_nums="$stage_nums ${sc#*:}"; done
   {
     printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
-    for n in $2 $3; do
+    for n in $2 $3 $stage_nums; do
       printf 'api repos/acme/toy/issues/%s\t0\t%s/issue-%s.json\n' "$n" "$dir" "$n"
       if [ -f "$dir/comments-$n.json" ]; then
         printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/comments-%s.json\n' "$n" "$dir" "$n"
@@ -897,12 +900,12 @@ scope_routes() {
         printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/common/empty.json\n' "$n" "$TICK"
       fi
     done
-    for n in $3; do
+    for n in $3 $stage_nums; do
       pr=$((n + 22))
       printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/common/pr-34-open-green.json\n' "$pr" "$TICK"
       printf 'pr view %s --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$pr" "$TICK"
     done
-    for st in ready:"$2" in_progress: in_review:"$3" blocked:; do
+    for st in ready:"$2" in_progress: in_review:"$3" ${4:-} blocked:; do
       local col="${st%%:*}" nums="${st#*:}" arr="[]" x
       arr="$(for x in $nums; do jq -cn --argjson n "$x" --arg l "fleet:$col" '{number: $n, title: "Card \($n)", url: "u", labels: [{name: $l}]}'; done | jq -cs '.')"
       printf '%s\n' "$arr" > "$dir/list-$col.json"
@@ -1075,6 +1078,210 @@ assert_jq "in-review-note-state: action stays fix" "$(card 12 action)" '"fix"'
 plan ready-start
 run_check "$SCRIPT" extra
 assert_exit "usage: arguments rejected" 2
+
+# ---------------------------------------------------------------------------
+# Review stages: stage columns, advance_stage and review_stage. The config has
+# the three stages of fixtures/config/stages.yml (security with max_rounds 2).
+STAGES_YAML="$(printf '%s\n' \
+  'review:' \
+  '  stages:' \
+  '    - name: security' \
+  '      agent: "acme:sec"' \
+  '      model: opus' \
+  '      paths: ["src/auth/**"]' \
+  '      max_rounds: 2' \
+  '    - name: ux' \
+  '      agent: ux-reviewer' \
+  '      model: sonnet' \
+  '      advisory: true' \
+  '    - name: compliance' \
+  '      provider: openai' \
+  '      model: gpt-test' \
+  '      price: { input: 1, output: 2 }')"
+unset OPENAI_API_KEY || true
+splan() { plan "$1" "$STAGES_YAML"; }
+ssettle() { settle "$1" "$2" "$STAGES_YAML"; }
+
+# in_review, clean current review, label needs-security-review -> advance_stage
+splan stage-advance-from-review
+assert_exit "stage-advance: exit" 0
+assert_jq "stage-advance: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "stage-advance: reason" "$(card 12 reason)" '"review clean; next stage security"'
+assert_jq "stage-advance: entering security" "$(card 12 stage.name)" '"security"'
+assert_jq "stage-advance: agent carried" "$(card 12 stage.agent)" '"acme:sec"'
+assert_eq "stage-advance: one files lookup (match; no needs-human-qa)" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
+assert_jq "stage-advance: dispatchable" '.dispatchable' 'true'
+# the security column is listed
+assert_eq "stage columns listed" "$(grep -c 'issue list --repo acme/toy --label fleet:review_security' "$FAKE_GH_DIR/calls.log")" 1
+# in review_security, note stage security round 1, no last_review -> review_stage
+splan stage-review-needed
+assert_exit "stage-review: exit" 0
+assert_jq "stage-review: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-review: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+assert_jq "stage-review: model" "$(card 12 stage.model)" '"opus"'
+assert_jq "stage-review: dispatchable" '.dispatchable' 'true'
+# agent_stage_plan_card_has_null_provider
+assert_jq "agent_stage_plan_card_has_null_provider: provider" "$(card 12 stage.provider)" 'null'
+assert_jq "agent_stage_plan_card_has_null_provider: agent" "$(card 12 stage.agent)" '"acme:sec"'
+assert_jq "stage-review: stage object is the config stage whole" "$(card 12 stage) | keys" \
+  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","price","provider","timeout"]'
+# no_warning_when_stage_not_acted_on: no card in the provider stage
+assert_jq "no_warning_when_stage_not_acted_on: no card in the stage" '.warnings' '[]'
+# last_review from in_review (stage null, round 1) does not count
+splan stage-stale-record
+assert_jq "stage-stale: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-stale: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+# findings in round 1 of 2 -> fix with stage
+splan stage-fix
+assert_jq "stage-fix: action" "$(card 12 action)" '"fix"'
+assert_jq "stage-fix: stage present" "$(card 12 stage.name)" '"security"'
+# findings in round 2 of 2 -> block at the stage's max
+splan stage-block
+assert_jq "stage-block: action" "$(card 12 action)" '"block"'
+assert_jq "stage-block: reason" "$(card 12 reason)" '"1 Critical/Important findings survive round 2 of 2 in security"'
+# advisory stage with findings and no later label -> tail (draft PR -> mark_ready)
+splan stage-advisory-tail
+assert_jq "stage-advisory: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "stage-advisory: stage ux" "$(card 12 stage.name)" '"ux"'
+# clean in security, ux label present -> advance to ux
+splan stage-advance-next
+assert_jq "stage-advance-next: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "stage-advance-next: ux" "$(card 12 stage.name)" '"ux"'
+assert_jq "stage-advance-next: reason" "$(card 12 reason)" '"review clean; next stage ux"'
+# clean in security, ux label present but reviewed_stages has ux -> tail
+splan stage-skip-done
+assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
+# Re-matching: the PR's current files are matched against every stage's paths
+# at each clean, current review, so a file added after routing still routes.
+# in_review, no routing label, PR files now include src/auth/login.js
+splan stage-rematch-in-review
+assert_exit "rematch in_review: exit" 0
+assert_jq "rematch in_review: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch in_review: into security" "$(card 12 stage.name)" '"security"'
+assert_eq "rematch in_review: adds no label" "$(grep -c $'\tissue edit' "$FAKE_GH_DIR/calls.log")" 0
+# review_ux, clean, security never visited and now matched -> back to security
+splan stage-rematch-earlier
+assert_jq "rematch earlier stage: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch earlier stage: into security" "$(card 12 stage.name)" '"security"'
+assert_jq "rematch earlier stage: reason" "$(card 12 reason)" '"review clean; next stage security"'
+# review_ux, clean, security already in reviewed_stages -> not revisited
+splan stage-rematch-done
+assert_jq "rematch done stage: not revisited" "$(card 12 action)" '"mark_ready"'
+# head moved after a clean stage review -> review_stage
+splan stage-head-moved
+assert_jq "stage-head-moved: action" "$(card 12 action)" '"review_stage"'
+# a card labelled fleet:review_legacy with no such stage in the config: settle plan by number
+ssettle stage-not-configured 12
+assert_exit "stage-missing: exit 0" 0
+assert_jq "stage-missing: action skip" "$(card 12 action)" '"skip"'
+assert_jq "stage-missing: not dispatchable" '.dispatchable' 'false'
+# settle keeps advance_stage, drops review_stage
+ssettle stage-advance-from-review 12
+assert_jq "settle: advance_stage kept" "$(card 12 action)" '"advance_stage"'
+ssettle stage-review-needed 12
+assert_jq "settle: review_stage skipped" "$(card 12 action)" '"skip"'
+assert_jq "settle: review_stage waits" "$(card 12 reason)" '"review_stage waits for the next tick"'
+# action_failures rule covers a stage column (note action_failures 3, review.max_rounds 3)
+splan stage-action-failures-3
+assert_jq "stage failures: block" "$(card 12 action)" '"block"'
+assert_jq "stage failures: reason" "$(card 12 reason)" '"no progress after 3 attempts: fleet-board: cannot fetch the head of PR #34"'
+
+# Provider stages
+COMPLIANCE_WARN='stage compliance: OPENAI_API_KEY is not set; provider reviews will fail'
+# review_stage_plan_card_has_provider
+splan stage-provider-review
+assert_exit "review_stage_plan_card_has_provider: exit" 0
+assert_jq "review_stage_plan_card_has_provider: provider" "$(card 12 stage.provider)" '"openai"'
+assert_jq "review_stage_plan_card_has_provider: agent null" "$(card 12 stage.agent)" 'null'
+assert_jq "review_stage_plan_card_has_provider: model" "$(card 12 stage.model)" '"gpt-test"'
+assert_jq "review_stage_plan_card_has_provider: key unset holds as wait" "$(card 12 action)" '"wait"'
+assert_jq "review_stage_plan_card_has_provider: hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "review_stage_plan_card_has_provider: nothing else dispatchable" '.dispatchable' 'false'
+assert_jq "review_stage_plan_card_has_provider: key unset warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# unset_key_warns_once: card 12 review_stage and card 13 fix, both in review_compliance
+splan stage-provider-two
+assert_jq "unset_key_warns_once: card 12 review_stage held" "$(card 12 action)" '"wait"'
+assert_jq "unset_key_warns_once: card 12 hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "unset_key_warns_once: dispatchable through the fix" '.dispatchable' 'true'
+assert_jq "unset_key_warns_once: card 13 fix" "$(card 13 action)" '"fix"'
+assert_jq "unset_key_warns_once: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# set_key_no_warning
+setup_case stage-provider-two "$STAGES_YAML"
+OPENAI_API_KEY=x; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "set_key_no_warning: review_stage planned" "$(card 12 action)" '"review_stage"'
+assert_jq "set_key_no_warning: actions unchanged" '[.cards[].action]' '["review_stage","fix"]'
+assert_jq "set_key_no_warning: no warning" '.warnings' '[]'
+# an empty variable counts as unset
+setup_case stage-provider-two "$STAGES_YAML"
+OPENAI_API_KEY=; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "empty key warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# no_warning_when_stage_not_acted_on: a clean provider review plans the tail
+splan stage-provider-clean
+assert_jq "no_warning_when_stage_not_acted_on: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "no_warning_when_stage_not_acted_on: no warning" '.warnings' '[]'
+# settle: review_stage is skipped there, so no warning
+ssettle stage-provider-review 12
+assert_jq "no_warning_when_stage_not_acted_on: settle skip" '.warnings' '[]'
+# advance_into_provider_stage_warns: the manager runs review_stage right after
+# advance_stage, so entering a provider stage with its key unset warns once
+splan stage-advance-to-provider
+assert_exit "advance_into_provider_stage_warns: exit" 0
+assert_jq "advance_into_provider_stage_warns: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "advance_into_provider_stage_warns: stage" "$(card 12 stage.name)" '"compliance"'
+assert_jq "advance_into_provider_stage_warns: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+setup_case stage-advance-to-provider "$STAGES_YAML"
+OPENAI_API_KEY=x; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "advance_into_provider_stage_warns: key set, no warning" '.warnings' '[]'
+# a failed preflight holds a stage action too (advance_stage into a provider stage)
+rm -f "$PRE_DIR/ran"
+plan stage-advance-to-provider "$STAGES_YAML
+$(printf 'commands:\n  preflight: bash %s/fail.sh' "$PRE_DIR")"
+assert_jq "preflight-fail stage-advance-to-provider: held as wait" "$(card 12 action)" '"wait"'
+assert_jq "preflight-fail stage-advance-to-provider: dispatchable is false" '.dispatchable' 'false'
+assert_jq "preflight-fail stage-advance-to-provider: one preflight warning" '[.warnings[] | select(startswith("preflight failed:"))] | length' 1
+# advance into an agent stage never warns
+splan stage-advance-from-review
+assert_jq "advance into an agent stage: no warning" '.warnings' '[]'
+
+# scope overlap covers stage columns: a Ready card whose Scope names a path a
+# card in review_security names waits, as it does for an in_review card
+setup_case ready-start "$STAGES_YAML"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+scope_issue "$dir" 12 review_security '- Modify `src/a.sh`: the change'
+scope_issue "$dir" 14 ready '- Modify `src/a.sh`: another change'
+scope_review_note "$dir" 12
+scope_routes "$dir" "14" "" "review_security:12 review_ux: review_compliance:"
+run_check "$SCRIPT"
+assert_exit "scope-overlap stage column: exit" 0
+assert_jq "scope-overlap stage column: the review_security card is planned" "$(card 12 action) != null" 'true'
+assert_jq "scope-overlap stage column: the Ready card waits" "$(card 14 action)" '"wait"'
+assert_jq "scope-overlap stage column: the reason names the stage card" "$(card 14 reason)" '"Scope overlaps #12 on src/a.sh"'
+
+# no_stages_no_next_lookup: with no review stages configured, a clean, current
+# in_review card never runs review-stages.sh next and plans the old tail. A
+# copy of the scripts dir whose review-stages.sh records its call and fails
+# stands in for it.
+NEXT_STUB="$(mktemp -d)"
+CLEANUP_DIRS+=("$NEXT_STUB")
+cp -R "$SCRIPT_DIR/../scripts/." "$NEXT_STUB/"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/next-calls"\nexit 1\n' "$NEXT_STUB" > "$NEXT_STUB/review-stages.sh"
+setup_case in-review-mark-ready-human
+run_check "$NEXT_STUB/tick-plan.sh"
+assert_exit "no_stages_no_next_lookup: exit" 0
+assert_jq "no_stages_no_next_lookup: old tail" "$(card 12 action)" '"mark_ready"'
+assert_eq "no_stages_no_next_lookup: review-stages.sh (match or next) not run" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" none
+# control: with stages configured the same stub is run (and its failure skips the card)
+setup_case stage-advance-from-review "$STAGES_YAML"
+run_check "$NEXT_STUB/tick-plan.sh"
+assert_jq "no_stages_no_next_lookup control: lookup failed (match runs first)" "$(card 12 reason)" '"lookup failed: review-stages.sh match 34"'
+assert_eq "no_stages_no_match_lookup: the stub ran match first" "$(sed -n 1p "$NEXT_STUB/next-calls")" "match 34"
+assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml/badge.svg)](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml)
 
-Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. Cards are written with an `## Acceptance` section and marked ready by hand. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review; merging stays manual. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
+Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. Cards are written with an `## Acceptance` section and marked ready by hand. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), optional extra review stages (security, UX, whatever you configure) check it again with their own agent or a model from another provider, and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review; merging stays manual. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
 
 ## Install
 
@@ -56,6 +56,8 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
    | tick 3 | `fleet:human_qa`, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
    | tick 4 | unchanged | `dispatchable: false` |
 
+   With `review.stages` configured and a PR that matches a stage, the clean In Review card goes to `fleet:review_<name>` instead of Human QA, and the stage's report appears on it in that same tick. Each stage adds at least one tick; Human QA or the ready PR follows once every stage is clean ([details](docs/config.md#reviewstages)).
+
 8. **Release Human QA by hand** in the GitHub UI: check the change, merge the PR, and move the card to `fleet:done` (or back to `fleet:ready`). No agent can do this; the gate blocks it.
 
 ## The board
@@ -66,7 +68,7 @@ Backlog → Ready → In Progress → In Review → Human QA → Done
                      Blocked       Blocked
 ```
 
-Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on a Projects board it is the Status column.
+Each entry in `review.stages` adds a column after In Review. Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on a Projects board it is the Status column.
 
 **Who moves what.** Only a person moves cards from Backlog to Ready, and out of Human QA. The manager makes every other move. Role agents never move cards; they post reports as comments.
 
@@ -75,7 +77,7 @@ Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on
 - **`## Acceptance` lists only what a test can check**, one `- ` bullet per behavior. The reviewer maps each bullet to a test; a bullet with no test is a finding.
 - **Put on-device and manual checks under `## Human QA`**, not in Acceptance. No agent can test them, so in Acceptance they only get the card blocked.
 - **Hold a card until another finishes with `## Depends on`**, one bullet per dependency: `- #22` for an issue in `board.repo`, or `- owner/repo#22` for another repo. While any dependency is unmet, the card stays in Ready, `/fleet-board:status` shows what it waits for, and the manager comments `Waiting for ...` once (again only when the set of unmet dependencies changes). A dependency is met when its issue is closed as completed, or, on a Projects board, when it is an item on the board's project in the Done column (in any repo; on a labels board only the issue state counts). Closed as not planned, or Won't Do, never counts as met and adds a tick warning. You still move the card from Backlog to Ready yourself; the gate only holds a Ready card back, and never one already in progress. See [Dependencies](docs/config.md#how-the-board-works-in-detail).
-- **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress or In review card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. The plan also gives `merge` to at most one card per tick, the lowest card number; the others wait for the next tick.
+- **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress, In review or review-stage card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. The plan also gives `merge` to at most one card per tick, the lowest card number; the others wait for the next tick.
 - **Move the whole chain to Ready; each card starts on the first tick after its dependencies are Done.** That is the safe way to set up an overnight run. Nothing promotes a Backlog card when its dependencies finish, so a card left in Backlog stays there.
 
 **Lint command.** `/fleet-board:lint [card...]` (`scripts/lint.sh`) runs `card-lint.sh` on Ready and Backlog cards, or on the cards you name, and adds `untestable-bullet`, `dependency-cycle`, `unresolved-dependency` and `missing-file`. It exits 1 when any card fails. `/fleet-board:import-plan` runs it on its generated cards and creates nothing while one fails.
@@ -127,6 +129,9 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
+| `review.stages` | `[]` | extra review columns after In Review, each with its own agent or provider model, routed by path globs or a label ([details](docs/config.md#reviewstages)) |
+| `review.stages[].provider` | none | runs the review stage on a model from a provider instead of a Claude `agent`; set exactly one of the two, plus `model` and `price` ([details](docs/config.md#providers)) |
+| `providers` | `{}` | provider connections by name: `base_url`, `api_key_env`, `max_tokens_param`; built-in presets `openai`, `gemini`, `openrouter`, `ollama` need no entry ([details](docs/config.md#providers)) |
 | `models.manager` / `implementor` / `reviewer` / `fixer` | `sonnet` / `sonnet` / `opus` / `sonnet` | each role's model |
 | `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.escalation` |
 | `models.escalation` | unset | model for escalated implementor and fixer; unset means `models.reviewer`. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |

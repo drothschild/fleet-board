@@ -11,13 +11,15 @@
 #
 # What it does:
 #   1. merge.policy other than auto: exits 0 and makes no call at all.
-#   2. Lists the in_review column (a card in Human QA is never listed). A
+#   2. Lists the in_review column and every review stage column (a card in
+#      Human QA is never listed). A
 #      listing that fails ends the run with exit 1 before anything is written.
 #   3. Runs tick-plan.sh --settle-merge on those cards. The planner plans
 #      `merge` only for a card whose review is clean for the current head,
 #      whose PR is open, non-draft and has all checks green, and which does
 #      not need Human QA. Every other card is left alone.
-#   4. For each card planned `merge` that is still in_review:
+#   4. For each card planned `merge` that is still in_review or in a review
+#      stage (review_<name>):
 #        gh pr merge <pr> --repo <board.repo> --squash   (never --admin, never --auto)
 #        note.sh merge: merged_pr
 #        verify-main.sh N <pr> (a failure is left for the next tick)
@@ -49,11 +51,15 @@ VERIFY="${FLEET_BOARD_VERIFY_MAIN:-$FLEET_SCRIPTS/verify-main.sh}"
 TMPD="$(mktemp -d)" || fb_die 1 "mktemp failed"
 trap 'rm -rf "$TMPD"' EXIT
 
-LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" in_review </dev/null)" || fb_die 1 "cannot list the in_review column; nothing merged"
-NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
-  || fb_die 1 "cannot parse the in_review column; nothing merged"
-for n in $NUMS; do
-  fb_valid_number "$n" || fb_die 1 "the in_review column lists a non-numeric card: $n"
+NUMS=""
+for st in in_review $(fb_stage_states); do
+  LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st" </dev/null)" || fb_die 1 "cannot list the $st column; nothing merged"
+  COL="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
+    || fb_die 1 "cannot parse the $st column; nothing merged"
+  for n in $COL; do
+    fb_valid_number "$n" || fb_die 1 "the $st column lists a non-numeric card: $n"
+    case " $NUMS " in *" $n "*) ;; *) NUMS="$NUMS $n" ;; esac
+  done
 done
 [ -n "$NUMS" ] || exit 0
 
@@ -75,7 +81,7 @@ while IFS= read -r card; do
   pr="$(jq -r '.pr' <<<"$card")"
   fb_valid_number "$n" || { warn "the plan names a non-numeric card: $n"; RC=1; continue; }
   # Never merge a card that is not in review (G1: Human QA stays with a person)
-  [ "$(jq -r '.state' <<<"$card")" = in_review ] || continue
+  case "$(jq -r '.state' <<<"$card")" in in_review|review_*) ;; *) continue ;; esac
   fb_valid_number "$pr" || { fail "$n" "the plan has no PR to merge"; continue; }
 
   gh pr merge "$pr" --repo "$FLEET_REPO" --squash </dev/null >/dev/null || { fail "$n" "gh pr merge $pr failed"; continue; }

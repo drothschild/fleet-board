@@ -236,6 +236,7 @@ ERR="$(FLEET_BOARD_CONFIG="$TMP" bash "$HERE/config.sh" --check 2>&1 >/dev/null)
   exit 1
 }
 FLEET_CFG="$(FLEET_BOARD_CONFIG="$TMP" bash "$HERE/config.sh")" || die 1 "cannot read the rendered config"
+fb_set_states
 
 # --- Step 6: backend setup -------------------------------------------------
 state_color() {
@@ -244,6 +245,7 @@ state_color() {
     ready) echo 0e8a16 ;;
     in_progress) echo 1d76db ;;
     in_review) echo 5319e7 ;;
+    review_*) echo 5319e7 ;;
     human_qa) echo fbca04 ;;
     blocked) echo b60205 ;;
     done) echo 0e8a16 ;;
@@ -317,3 +319,4 @@ fi
 # --- Step 7: write ---------------------------------------------------------
 mv -f "$TMP" "$TARGET" || die 1 "cannot write $TARGET"
 printf 'wrote %s\n' "$TARGET"
+printf 'fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash %s/review-stages.sh setup\n' "$HERE"

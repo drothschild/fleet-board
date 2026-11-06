@@ -118,7 +118,7 @@ trap '[ -n "$TMP" ] && rm -f "$TMP"' EXIT
 DEFAULTS='{"state":null,"branch":null,"worktree":null,"pr":null,"round":null,"models":null,
   "escalated":null,"escalated_at_round":null,"last_verified":null,"last_review":null,
   "blocked_findings":[],"blocking_pr":null,"merged_pr":null,"main_check":null,
-  "out_of_scope_created":[],"bugs_filed":[],"pending_followups":null,"report_errors":[],
+  "out_of_scope_created":[],"bugs_filed":[],"stage":null,"reviewed_stages":[],"pending_followups":null,"report_errors":[],
   "implementor_attempts":0,"action_failures":0,"last_action_error":null,"deps_commented":null,"updated_at":null}'
 
 # legacy: maps the pre-rename keys setup_failures and last_setup_error to
@@ -147,7 +147,12 @@ invalid_field() {
     elif (.implementor_attempts | nint | not) then "implementor_attempts"
     elif (.action_failures | . == null or (int and . >= 0) | not) then "action_failures"
     elif (.last_action_error | . == null or (type == "string" and clean) | not) then "last_action_error"
-    elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review" | not) then "blocked_from"
+    elif (.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z")) | not) then "stage"
+    elif (.reviewed_stages | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "reviewed_stages"
+    elif (.last_review | . == null or type != "object" or (.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "last_review.stage"
+    elif (.last_review | . == null or type != "object" or (.provider | . == null or (type == "string" and test("\\A[a-z][a-z0-9_-]*\\z"))) | not) then "last_review.provider"
+    elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review"
+            or (type == "string" and test("\\Areview_[a-z][a-z0-9_]*\\z")) | not) then "blocked_from"
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
             and (.at | type == "string" and clean) and (.sha | type == "string" and test("\\A[0-9a-f]+\\z"))) | not) then "accepted"
     elif (.deps_commented | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+\\z"))) | not) then "deps_commented"

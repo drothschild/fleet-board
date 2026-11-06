@@ -149,6 +149,7 @@ merge:
   policy: ${1#labels-}
 YML
       ;;
+    stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
     bad-backend) cp "$CONFIG_FIXTURES/bad-backend.yml" "$REPO/.fleet-board.yml" ;;
     *) echo "setup_case: unknown config $1" >&2; exit 1 ;;
@@ -1701,6 +1702,27 @@ assert_blocked "merge-only-reviewed: gh pr merge blocked under auto for a confli
 reviewed_head_case clean
 run_hook bash.json "gh pr merge 4 --squash"
 assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
+
+# ---------------------------------------------------------------------------
+# review stage columns under the existing rules. The gate's state list comes
+# from the config (STATE_NAMES), so a stage's label is a state label only with
+# the stages config: label edits on the human_qa card 14 prove it (G1), and a
+# routing label (needs-security-review) is no state.
+setup_case stages
+card_routes > "$ROUTES"
+# gate_move never checks the target name; card 12 is ready in the fixture
+run_hook bash.json "board-move.sh 12 review_security"
+assert_silent_allow "stage-move: board-move.sh 12 (ready) review_security"
+run_hook bash.json "board-move.sh 14 review_security"
+assert_blocked "stage-move: board-move.sh 14 review_security from human_qa" "Human QA"
+run_hook bash.json "gh issue edit 14 --add-label fleet:review_security"
+assert_blocked "stage-label: add fleet:review_security on the human_qa card" "Human QA"
+run_hook bash.json "gh issue edit 14 --add-label needs-security-review"
+assert_silent_allow "stage-label: routing label needs-security-review is no state move"
+run_hook bash.json "gh label delete fleet:review_security"
+assert_blocked "stage-label: deleting fleet:review_security" "state label"
+run_hook bash.json "gh label delete needs-security-review"
+assert_silent_allow "stage-label: deleting a routing label"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

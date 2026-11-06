@@ -2,14 +2,14 @@
 
 ## Purpose
 
-Every fleet-board role agent (implementor, reviewer, fixer) ends its work with one report in a fixed shape. The report is posted on the card and returned as the role's final reply. This spec defines that report and describes how the fleet-board manager checks it with `parse-report.sh`, quotes a rule back to a role, and handles a rejected report. The manager is the reader of this spec and of the reporting skill written from it. Role agents cannot load skills. Each role's own prompt carries the report shape, so this spec is not a role's instructions.
+Every fleet-board role agent (implementor, reviewer, fixer, and a review stage's reviewer, checked as the role `stage-reviewer`) ends its work with one report in a fixed shape. The report is posted on the card and returned as the role's final reply. This spec defines that report and describes how the fleet-board manager checks it with `parse-report.sh`, quotes a rule back to a role, and handles a rejected report. The manager is the reader of this spec and of the reporting skill written from it. Role agents cannot load skills. Each role's own prompt carries the report shape, so this spec is not a role's instructions.
 
 ## Inputs
 
 What the manager has when it handles a role's report:
 
 - **The role's final report text.** This is the role's final reply, and the role has also posted the same text on the card as a comment.
-- **The role name.** One of `implementor`, `reviewer` or `fixer`, meaning the role the manager dispatched for this report.
+- **The role name.** One of `implementor`, `reviewer`, `fixer` or `stage-reviewer`, meaning the role the manager dispatched for this report. `stage-reviewer` is the role for a review stage's report: the report of the stage's own agent, or the `report_file` that `stage-review.sh` printed for a provider-backed stage.
 - **The fleet-board scripts directory.** This is where `parse-report.sh` and `board-comment.sh` live.
 - **The role's original dispatch inputs.** These are the card number, the worktree, the project config, the model the role ran on and any role-specific inputs, such as the findings given to a fixer. The manager needs them for a re-dispatch.
 
@@ -33,6 +33,7 @@ All example test commands in this spec assume `commands.test_one` is `node --tes
    ```
 
    For each stderr line, the manager also includes the Report shape rule that message enforces, quoted from the rule table below.
+   A provider-backed stage is never re-dispatched: `stage-review.sh` already re-asked its model once, and the manager handles its exit code instead (the manager spec).
 6. **Second rejection.** The manager checks the re-dispatched role's report the same way (item 3). If that report is also rejected (exit 1), the manager records a report error for the card in its manager note, naming the role and quoting the second run's stderr lines. The card stays in its current state. There is never a third dispatch for the same report.
 7. **Nothing acts on a rejected report.** Until a report exits 0, the manager does not move the card and does not open or mark a PR because of it. It does not file Out of scope or Bugs found entries from it, and it does not copy its VERIFIED line into the note.
 8. **Exit 2 (usage error).** The messages are `unknown flag: <flag>`, `unknown role: <role>`, `cannot read file: <file>` or the usage line. The fault is in the manager's own call, not in the report. The manager corrects its call (flag, role name, file path) and runs the checker again. It never re-dispatches a role because of exit 2, and never counts it as a rejection.
@@ -67,11 +68,11 @@ Every rejection message, the Report shape rule it enforces, and one valid form. 
 | `missing section: ## Findings` | Every report contains `## Findings`. | `## Findings` followed by `- none` |
 | `missing section: ## For the card` | Every report contains `## For the card`. | `## For the card` followed by a line of free text |
 | `unknown status: <word>` | `## Status` is one word: `done`, `blocked`, `clean` or `findings`. | `blocked` |
-| `role <role> does not allow status: <word>` | `done` and `blocked` are for the implementor and fixer; `clean` and `findings` are for the reviewer. | `clean` (reviewer) |
+| `role <role> does not allow status: <word>` | `done` and `blocked` are for the implementor and fixer; `clean` and `findings` are for the reviewer and the stage-reviewer. | `clean` (reviewer or stage-reviewer) |
 | `expected exactly one VERIFIED: line, found <N>` | There is exactly one `VERIFIED:` line. | `` VERIFIED: `node --test test/calc.test.js` -> 3 passing tests `` |
 | `VERIFIED line needs a backticked command and an integer after ->` | The command sits between backticks, the arrow is `->` or `→`, and the first token after the arrow is an integer ending at whitespace or the line end. | `` VERIFIED: `node --test test/calc.test.js` → 3 passing tests `` |
 | `bug entry needs title, repro, expected, observed` | Each Bugs found line has all four parts. | `` - parse drops trailing zero :: repro: `node --test test/parse.test.js` :: expected: ok 2 :: observed: not ok 2 `` |
-| `role <role> requires ## <section>` | Role sections: implementor `## PR`; fixer `## PR` and `## Resolutions`; reviewer `## Acceptance map`, `## Mutation` and `## Claim check`. | `## Resolutions` (fixer) |
+| `role <role> requires ## <section>` | Role sections: implementor `## PR`; fixer `## PR` and `## Resolutions`; reviewer `## Acceptance map`, `## Mutation` and `## Claim check`. The stage-reviewer has no role sections, so this message never names it. | `## Resolutions` (fixer) |
 | `duplicate section: ## <heading>` | Any heading appears at most once. | a single `## Findings` heading |
 | `## Status must be one line, extra line: <line>` | `## Status` holds exactly one non-blank line. | `findings` |
 | `malformed finding line: <line>` | Every non-blank `## Findings` line is `- [Critical] <text>`, `- [Important] <text>` or `- [Minor] <text>`, with that exact spelling and one space after `-`, or exactly `- none`. | `- [Important] add() returns NaN for empty input` |
@@ -92,8 +93,8 @@ Every rejection message, the Report shape rule it enforces, and one valid form. 
 | `## Claim check needs one each of claim:, command:, result: and matches:, or only "skipped: review.verify_claim is off"` | Claim check has each of the four keys once, or only the skipped line. | `skipped: review.verify_claim is off` |
 | `malformed ## Resolutions line (want - <finding> :: fixed \| not fixed: <why>): <line>` | One line per input finding. The finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, and `<why>` is non-empty. | `- [Minor] rename helper :: not fixed: the rename reaches files outside this card` |
 | `role <role> requires a PR number (#<n>) in ## PR unless status is blocked` | The implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked`. | `Draft PR #7 opened.` |
-| `status clean needs zero Critical and Important findings, found <n>` | The reviewer's `clean` means zero Critical and zero Important findings. | `clean` with Findings `- none` |
-| `status findings needs at least one Critical or Important finding` | The reviewer's `findings` means at least one Critical or Important finding. | `findings` with `- [Critical] mutant in add() survived test/calc.test.js::adds two numbers` |
+| `status clean needs zero Critical and Important findings, found <n>` | The reviewer's and the stage-reviewer's `clean` means zero Critical and zero Important findings. | `clean` with Findings `- none` |
+| `status findings needs at least one Critical or Important finding` | The reviewer's and the stage-reviewer's `findings` means at least one Critical or Important finding. | `findings` with `- [Critical] mutant in add() survived test/calc.test.js::adds two numbers` |
 | `role reviewer requires at least one ## Acceptance map entry` | The reviewer's Acceptance map has at least one entry. | `- rejects empty input -> UNMAPPED` |
 | `role fixer requires at least one ## Resolutions entry` | The fixer's Resolutions has at least one entry. | `- [Important] add() ignores negatives :: fixed` |
 
@@ -157,7 +158,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
     - A bug inside the card's own diff is a Finding, never a Bug found.
 - **Status values by role:**
   - `done` and `blocked` are for the implementor and fixer.
-  - `clean` and `findings` are for the reviewer.
+  - `clean` and `findings` are for the reviewer and the stage-reviewer.
 - **The `VERIFIED:` line:**
   - There is exactly one.
   - The command sits between backticks.
@@ -170,6 +171,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
     - **Acceptance map:** each line is `- <item text> -> <test file>::<test name>`, `- <item text> -> UNMAPPED`, ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>`.
     - **Mutation:** either the line `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`.
     - **Claim check:** either the lines `claim: <text>`, `command: \`<cmd>\``, `result: <observed>` and `matches: yes|no`, or `skipped: review.verify_claim is off`.
+  - **stage-reviewer:** none. Its report is `## Status`, `## Findings`, `## For the card` and one `VERIFIED:` line, with no `## Acceptance map`, `## Mutation` or `## Claim check`.
 - **Line rules** (review cycle 1; `parse-report.sh` rejects every violation, one `parse-report: `-prefixed stderr line each):
   - Any heading appears at most once. `## Status` holds exactly one non-blank line.
   - Every non-blank `## Findings` line is `- [Critical|Important|Minor] <text>` (that exact spelling, one space after `-`) or exactly `- none`. The section needs one of the two forms, never both.
@@ -178,11 +180,11 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
   - Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
   - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
   - CRLF line endings, tabs and padded headings (`##  Status `) are accepted.
-- **With `--role`:** the role's sections are required; Status must be one of the role's two values; the implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked` (no PR may exist yet); the reviewer's `clean` means zero Critical and Important findings and `findings` at least one; the reviewer's Acceptance map and the fixer's Resolutions have at least one entry.
+- **With `--role`:** the role's sections are required; Status must be one of the role's two values; the implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked` (no PR may exist yet); the reviewer's and the stage-reviewer's `clean` means zero Critical and Important findings and `findings` at least one; the reviewer's Acceptance map and the fixer's Resolutions have at least one entry.
 
 ### Rejection messages (verbatim, complete)
 
-`scripts/parse-report.sh [--role implementor|reviewer|fixer] <file>` is the enforced definition of the Report shape. Each message below appears after `parse-report: ` (`<...>` is filled in from the report):
+`scripts/parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer] <file>` is the enforced definition of the Report shape. Each message below appears after `parse-report: ` (`<...>` is filled in from the report):
 
 - `missing section: ## Status` (likewise `## Findings`, `## For the card`)
 - `unknown status: <word>`
@@ -224,6 +226,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 | implementor | `done`, `blocked` | `## PR` | Holds `#<number>` unless Status is `blocked` |
 | fixer | `done`, `blocked` | `## PR`, `## Resolutions` (at least one entry, one per input finding) | Holds `#<number>` unless Status is `blocked` |
 | reviewer | `clean` (zero Critical and Important), `findings` (at least one Critical or Important) | `## Acceptance map` (at least one entry), `## Mutation`, `## Claim check` | none |
+| stage-reviewer | `clean` (zero Critical and Important), `findings` (at least one Critical or Important) | none | none |
 
 - In `## PR`, the first `#<digits>` is the PR number. Any other `#<digits>` there (a card number, an example) would be read as the PR.
 - A blocked implementor that stopped before any test or PR (for example, on a card without an Acceptance section) has a `## PR` stating that no PR exists. Its `VERIFIED:` line counts something it checked, such as `-> 0` Acceptance sections.

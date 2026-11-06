@@ -1,0 +1,9 @@
+board:
+  backend: github-labels
+  repo: acme/toy
+review:
+  stages:
+    - name: security
+      provider: openai
+      model: gpt-test
+      price: { input: 1.25, output: 10 }

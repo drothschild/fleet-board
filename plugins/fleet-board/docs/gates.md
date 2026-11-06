@@ -14,7 +14,7 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 ## settle.sh runs outside the gate
 
-`scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress and in_review, and its only move into human_qa is the hand-off after a clean review). A person's interactive `/fleet-board:tick` does not run it.
+`scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress, in_review and every review stage column; besides the move into human_qa after a clean review it moves cards between review columns, `advance_stage`, and adds routing labels with `review-stages.sh route`, before the move). A person's interactive `/fleet-board:tick` does not run it.
 
 ## The cards.sh helper
 

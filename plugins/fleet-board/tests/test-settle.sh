@@ -108,6 +108,7 @@ setup_case() {
   : > "$R_MAIN"
   INPROG=()
   INREV=()
+  INSTG=()
   # Writes every case allows (a failing route is added before these)
   route 'issue edit *' 0 -
   route 'issue comment *' 0 -
@@ -137,8 +138,21 @@ finalize() {
     done
     printf '%s\n' "$items" > "$FX/list-$col.json"
   done
+  # The stage columns (review_<name>); entries of INSTG are "<column>:<n>"
+  local e
+  for col in review_security review_ux review_compliance; do
+    local items='[]'
+    for e in ${INSTG[@]+"${INSTG[@]}"}; do
+      [ "${e%%:*}" = "$col" ] || continue
+      items="$(jq -c --argjson n "${e#*:}" '. + [{number:$n, title:"Add subtract", url:"u", labels:[{name:"fleet:'"$col"'"}]}]' <<<"$items")"
+    done
+    printf '%s\n' "$items" > "$FX/list-$col.json"
+  done
   {
     cat "$R_FIRST"
+    for col in review_security review_ux review_compliance; do
+      printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s\n' "$col" "$FX/list-$col.json"
+    done
     printf 'issue list --repo acme/toy --label fleet:in_progress *\t0\t%s\n' "$FX/list-in_progress.json"
     printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s\n' "$FX/list-in_review.json"
     cat "$R_MAIN"
@@ -166,14 +180,15 @@ card() {
   case "$col" in
     in_progress) INPROG+=("$n") ;;
     in_review) INREV+=("$n") ;;
+    review_*) INSTG+=("$col:$n") ;;
   esac
 }
 
-# pr <pr number> <draft true|false>: the PR's reads (plan, files, hand-off)
+# pr <pr number> <draft true|false> [changed file]: the PR's reads (plan, files, hand-off)
 pr() {
-  local p="$1" draft="$2"
+  local p="$1" draft="$2" file="${3:-src/calc.js}"
   printf '{"isDraft":%s,"state":"OPEN","mergedAt":null,"statusCheckRollup":[{"conclusion":"SUCCESS"}],"headRefOid":"abc1234"}\n' "$draft" > "$FX/pr-$p.json"
-  printf '{"files":[{"path":"src/calc.js"},{"path":"test/calc.test.js"}],"changedFiles":2}\n' > "$FX/files-$p.json"
+  printf '{"files":[{"path":"%s"},{"path":"test/calc.test.js"}],"changedFiles":2}\n' "$file" > "$FX/files-$p.json"
   printf '{"isDraft":%s,"mergeable":"MERGEABLE","statusCheckRollup":[{"conclusion":"SUCCESS"}]}\n' "$draft" > "$FX/handoff-$p.json"
   route "pr view $p --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid" 0 "$FX/pr-$p.json"
   route "pr view $p --repo acme/toy --json files*" 0 "$FX/files-$p.json"
@@ -208,6 +223,10 @@ last_note() {
 bodies() {
   local f
   for f in "$FAKE_GH_DIR"/bodies/*; do [ -f "$f" ] && { cat "$f"; echo "-----"; }; done
+}
+# count of calls.log lines that start with the given words
+cnt_prefix() {
+  if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -cE -- "^[0-9]+$(printf "\t")$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
 }
 handoffs() { bodies | grep -c 'What to check in Human QA' || true; }
 
@@ -274,6 +293,114 @@ assert_exit "plan after settle: exit 0" 0
 assert_eq "plan after settle: the card gets the review action" "$(jq -r '.cards[0].action' <<<"$LAST_OUT")" "review"
 assert_eq "plan after settle: round 1" "$(jq -r '.cards[0].round' <<<"$LAST_OUT")" 1
 assert_eq "plan after settle: pr 34" "$(jq -r '.cards[0].pr' <<<"$LAST_OUT")" 34
+
+# ---------------------------------------------------------------------------
+STAGES_CFG='review:
+  stages:
+    - name: security
+      agent: "acme:security-reviewer"
+      model: opus
+      paths: ["src/auth/**"]
+    - name: ux
+      agent: ux-reviewer
+      model: sonnet
+      advisory: true
+    - name: compliance
+      provider: openai
+      model: gpt-test
+      price: { input: 1, output: 2 }'
+
+echo "advance_stage from in_review: the card enters the next stage"
+setup_case "$STAGES_CFG"
+card 12 in_review '{"state":"in_review","round":1,"pr":34,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0}}' needs-security-review
+pr 34 false
+finalize
+run_settle
+assert_exit "advance: exit 0" 0
+assert_eq "advance: moved to review_security" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:review_security")" 1
+NOTE="$(last_note)"
+assert_eq "advance: note stage" "$(jq -c .stage <<<"$NOTE")" '"security"'
+assert_eq "advance: note round 1" "$(jq -c .round <<<"$NOTE")" 1
+assert_eq "advance: reviewed_stages unchanged from in_review" "$(jq -c .reviewed_stages <<<"$NOTE")" '[]'
+assert_eq "advance: state" "$(jq -c .state <<<"$NOTE")" '"review_security"'
+assert_eq "advance: lists review_security" "$(cnt_prefix "issue list --repo acme/toy --label fleet:review_security")" 1
+assert_eq "advance: no merge" "$(cnt "pr merge")" 0
+
+echo "advance_stage from a stage to the next appends the stage left"
+setup_case "$STAGES_CFG"
+card 12 review_security '{"state":"review_security","stage":"security","round":1,"pr":34,"last_review":{"round":1,"stage":"security","sha":"abc1234","critical":0,"important":0}}' needs-ux-review
+pr 34 false
+finalize
+run_settle
+assert_exit "advance 2: exit 0" 0
+assert_eq "advance 2: moved to review_ux" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:review_ux")" 1
+NOTE="$(last_note)"
+assert_eq "advance 2: reviewed_stages" "$(jq -c .reviewed_stages <<<"$NOTE")" '["security"]'
+assert_eq "advance 2: note stage ux" "$(jq -c .stage <<<"$NOTE")" '"ux"'
+assert_eq "advance 2: round reset to 1" "$(jq -c .round <<<"$NOTE")" 1
+assert_eq "advance 2: state" "$(jq -c .state <<<"$NOTE")" '"review_ux"'
+
+echo "advance_stage keeps the stages already reviewed"
+setup_case "$STAGES_CFG"
+card 12 review_security '{"state":"review_security","stage":"security","reviewed_stages":["ux"],"round":1,"pr":34,"last_review":{"round":1,"stage":"security","sha":"abc1234","critical":0,"important":0}}' needs-compliance-review
+pr 34 false
+finalize
+run_settle
+assert_eq "advance 3: reviewed_stages appended" "$(jq -c .reviewed_stages <<<"$(last_note)")" '["ux","security"]'
+
+echo "a failed board move for advance_stage writes no note"
+setup_case "$STAGES_CFG"
+card 12 in_review '{"state":"in_review","round":1,"pr":34,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0}}' needs-security-review
+pr 34 false
+route_first "issue edit 12 --repo acme/toy --add-label fleet:review_security" 1 -
+finalize
+run_settle
+assert_exit "advance fails: exit 1" 1
+assert_eq "advance fails: no note write" "$(cnt "api -X")" 0
+
+echo "move_to_review routes the card to its review stages"
+setup_case "$STAGES_CFG"
+card 12 in_progress '{"state":"in_progress","branch":"fleet/12-add-subtract","round":0,"implementor_attempts":1}'
+route "pr list --repo acme/toy --head fleet/12-add-subtract --state open --json number" 0 "$FX/prlist.json"
+printf '[{"number":34}]\n' > "$FX/prlist.json"
+pr 34 true src/auth/login.js
+finalize
+run_settle
+assert_exit "move_to_review routes: exit 0" 0
+assert_eq "move_to_review: route adds the label" "$(cnt "issue edit 12 --repo acme/toy --add-label needs-security-review")" 1
+assert_eq "move_to_review: the note was written" "$(jq -c .state <<<"$(last_note)")" '"in_review"'
+assert_eq "move_to_review: the label moves to in_review" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:in_review")" 1
+
+echo "move_to_review: a route failure is a failure before the move: no move, no note"
+setup_case "$STAGES_CFG"
+card 12 in_progress '{"state":"in_progress","branch":"fleet/12-add-subtract","round":0,"implementor_attempts":1}'
+route "pr list --repo acme/toy --head fleet/12-add-subtract --state open --json number" 0 "$FX/prlist.json"
+printf '[{"number":34}]\n' > "$FX/prlist.json"
+pr 34 true src/auth/login.js
+route_first "issue edit 12 --repo acme/toy --add-label needs-security-review" 1 -
+finalize
+run_settle
+assert_exit "route fails: exit 1" 1
+assert_contains "route fails: says so" "$LAST_ERR" "#12"
+assert_eq "route fails: no move to in_review" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:in_review")" 0
+assert_eq "route fails: no note write" "$(cnt "api -X")" 0
+
+echo "provider_review_stage_is_skipped_by_settle"
+setup_case "$STAGES_CFG"
+STUB_DIR="$(mktemp -d)"
+CLEANUP_DIRS+=("$STUB_DIR")
+printf '#!/usr/bin/env bash\necho "stage-review.sh $*" >> "%s/stage-review-calls.log"\nexit 9\n' "$STUB_DIR" > "$STUB_DIR/stage-review.sh"
+chmod +x "$STUB_DIR/stage-review.sh"
+PATH="$STUB_DIR:$PATH"
+card 12 review_compliance '{"state":"review_compliance","stage":"compliance","round":1,"pr":34}'
+pr 34 false
+finalize
+run_settle
+assert_exit "provider stage: exit 0" 0
+assert_eq "provider stage: lists the compliance column" "$(cnt_prefix "issue list --repo acme/toy --label fleet:review_compliance")" 1
+assert_eq "provider stage: no board, note or PR write at all" "$(all_writes)" 0
+assert_eq "provider stage: stage-review.sh never ran" "$([ -f "$STUB_DIR/stage-review-calls.log" ] && wc -l < "$STUB_DIR/stage-review-calls.log" | tr -d ' ' || echo 0)" 0
+PATH="$FAKE_GH_DIR/bin:$ORIG_PATH"
 
 # ---------------------------------------------------------------------------
 echo "clean review where needs-human-qa is true: human_qa, hand-off once"
