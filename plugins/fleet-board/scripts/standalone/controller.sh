@@ -130,7 +130,11 @@ fi
 if ! jq -e '
   ([.cards[].number] | length == (unique | length)) and
   ([.cards[] | select(.action == "merge")] | length <= 1) and
-  all(.cards[]; .action | IN("skip", "start", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish"))
+  all(.cards[]; .action | IN("skip", "start", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
+  all(.cards[];
+    if (.action | IN("advance_stage", "review_stage")) or (.action == "fix" and .stage != null)
+    then (.stage | type == "object" and .provider == null and (.agent | type == "string" and length > 0) and (.model | type == "string" and length > 0))
+    else true end)
 ' "$PLAN" >/dev/null; then
   echo 'tick contains an unsupported or duplicate action; no actions taken' >&2
   exit 1
