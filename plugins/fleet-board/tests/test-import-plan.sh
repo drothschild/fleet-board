@@ -335,7 +335,7 @@ check "local board: card 2 body has a Depends on section" "$(jq -r .body "$ROOT_
 check "local board: card 1 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-board/cards/1.json" 2>/dev/null)" "ready"
 check "local board: card 2 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" "ready"
 check "local board: card labels are stored" "$(jq -c .labels "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" '["frontend"]'
-check "local board: no gh issue create is called" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null)" "0"
+check "local board: no gh issue create is called" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
 ROOT="$ROOT_SAVED"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

@@ -144,7 +144,8 @@ case "$BACKEND" in
     PN="$(fb_cfg board.project_number)"
     PO="$(fp_get_owner)" ;;
   github-labels) ;;
-  *) fb_die 1 "import-plan needs board.backend github-projects or github-labels" ;;
+  local) ;;
+  *) fb_die 1 "import-plan needs board.backend github-projects, github-labels or local" ;;
 esac
 
 # Docs referenced from a card's why or acceptance (scope lists files the card will
@@ -228,8 +229,15 @@ $text
   largs=()
   [ "$BACKEND" = "github-labels" ] && largs+=(--label "$(fb_state_name "$STATUS")")
   while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
-  URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
-  num="${URL##*/}"
+  if [ "$BACKEND" = "local" ]; then
+    OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" ${largs[@]+"${largs[@]}"} --state "$STATUS")" || fb_die 1 "failed to create: $title"
+    num="$(jq -r .number <<<"$OUT")"
+    CREATED="#$num"
+  else
+    URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
+    num="${URL##*/}"
+    CREATED="$repo#$num"
+  fi
   if [ "$BACKEND" = "github-projects" ]; then
   ITEM="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json | jq -r '.id // empty')"
   [ -n "$ITEM" ] || fb_die 1 "failed to add $URL to project $PN"
@@ -237,5 +245,5 @@ $text
     --field-id "$(jq -r .field_id "$CACHE")" --single-select-option-id "$OPT" >/dev/null || fb_die 1 "failed to set status of $URL"
   fi
   REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "$repo#$num" '. + {($k): $r}' <<<"$REFS")"
-  echo "Created $repo#$num: $title"
+  echo "Created $CREATED: $title"
 done
