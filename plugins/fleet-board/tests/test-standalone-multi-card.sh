@@ -43,6 +43,10 @@ case "$1 $2" in
     case "$branch" in fleet/12-*) n=12; pr=34 ;; fleet/13-*) n=13; pr=35 ;; *) exit 1 ;; esac
     if [ -e "$GH_STATE/pr-$n" ]; then printf '[{"number":%s}]\n' "$pr"; else echo '[]'; fi ;;
   'pr create')
+    if [ "${GH_HOLD_CREATE:-}" = 1 ] && [ ! -e "$GH_STATE/held-once" ]; then
+      touch "$GH_STATE/held-once" "$GH_STATE/create-blocked"
+      while [ ! -e "$GH_STATE/release-create" ]; do sleep 1; done
+    fi
     branch=''; while [ "$#" -gt 0 ]; do if [ "$1" = --head ]; then branch="$2"; break; fi; shift; done
     case "$branch" in fleet/12-*) n=12; pr=34 ;; fleet/13-*) n=13; pr=35 ;; *) exit 1 ;; esac
     touch "$GH_STATE/pr-$n"; printf 'https://github.com/acme/toy/pull/%s\n' "$pr" ;;
@@ -100,7 +104,28 @@ PLAN
   echo 'PASS: multi-card-provider'
   exit 0
 fi
-if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: multi-card tick failed' >&2; exit 1; fi
+if [ "${1:-multi-card}" = multi-card-lock ]; then
+  export GH_HOLD_CREATE=1
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/out" 2> "$TMP/first-err" & TICK_PID=$!
+  for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ -e "$TMP/state/create-blocked" ] && break; sleep 1; done
+  if [ ! -e "$TMP/state/create-blocked" ]; then
+    touch "$TMP/state/release-create"; kill -TERM "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true
+    cat "$TMP/first-err" >&2; echo 'FAIL: first tick did not reach held publication' >&2; exit 1
+  fi
+  if bash "$ROOT/bin/fleet-board" tick > "$TMP/second-out" 2> "$TMP/second-err"; then
+    touch "$TMP/state/release-create"; wait "$TICK_PID" 2>/dev/null || true
+    echo 'FAIL: concurrent tick acquired repository lock' >&2; exit 1
+  fi
+  if ! grep -q 'another standalone tick holds the repository lock' "$TMP/second-err"; then
+    touch "$TMP/state/release-create"; wait "$TICK_PID" 2>/dev/null || true
+    echo 'FAIL: concurrent tick did not fail on repository lock' >&2; exit 1
+  fi
+  [ "$(grep -c '^pr create ' "$TMP/state/calls")" = 1 ] || { touch "$TMP/state/release-create"; wait "$TICK_PID" 2>/dev/null || true; echo 'FAIL: duplicate dispatch during lock' >&2; exit 1; }
+  touch "$TMP/state/release-create"
+  wait "$TICK_PID" || { cat "$TMP/first-err" >&2; echo 'FAIL: first tick failed after release' >&2; exit 1; }
+else
+  if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: multi-card tick failed' >&2; exit 1; fi
+fi
 if [ "${1:-multi-card}" = multi-card-skip ]; then
   jq -e '.outcome == "progress" and ([.cards[].action] == ["start","skip_no_acceptance"])' "$TMP/out" >/dev/null || { echo 'FAIL: mixed actions not reported' >&2; exit 1; }
   [ "$(cat "$TMP/state/column-13")" = ready ] && [ ! -e "$TMP/state/pr-13" ] || { echo 'FAIL: card without acceptance progressed' >&2; exit 1; }
