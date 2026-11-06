@@ -79,7 +79,7 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json "$COMMON"/fleet-board-standalone/maintenance-file_pending-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
@@ -140,7 +140,7 @@ fi
 if ! jq -e '
   ([.cards[].number] | length == (unique | length)) and
   ([.cards[] | select(.action == "merge")] | length <= 1) and
-  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "skip_card_lint", "wait", "block", "unblock", "start", "continue_implementor", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
+  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "skip_card_lint", "wait", "block", "unblock", "file_pending", "start", "continue_implementor", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
   all(.cards[];
     if (.action | IN("advance_stage", "review_stage")) or (.action == "fix" and .stage != null)
     then (.stage | type == "object" and .provider == null and (.agent | type == "string" and length > 0) and (.model | type == "string" and length > 0))
@@ -155,7 +155,22 @@ if jq -e 'all(.cards[]; .action == "skip" or (.action == "skip_no_acceptance" an
 fi
 jq -c '.cards[] | select(.action != "skip")' "$PLAN" > "$SCRATCH/actions" || exit 1
 [ -s "$SCRATCH/actions" ] || { echo 'inconsistent idle plan' >&2; exit 1; }
-FAILURES=0
+FAILURES=0 FILED=false
+# Pending follow-ups are reconciled before starting new work.
+jq -c '.cards[] | select(.action == "file_pending")' "$PLAN" > "$SCRATCH/pending-actions" || exit 1
+while IFS= read -r CARD_JSON; do
+  [ -n "$CARD_JSON" ] || continue
+  NUMBER="$(jq -r .number <<<"$CARD_JSON")"
+  ACTION_DIR="$SCRATCH/action-$NUMBER"
+  mkdir "$ACTION_DIR" || exit 1
+  printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
+  if run_maintenance "$ACTION_DIR/card" "$ACTION_DIR"; then
+    JOURNAL="$COMMON/fleet-board-standalone/maintenance-file_pending-$NUMBER.json"
+    if [ -f "$JOURNAL" ] && jq -e '.completed == true and .rc == 0' "$JOURNAL" >/dev/null; then FILED=true; fi
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+done < "$SCRATCH/pending-actions"
 jq -c '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/starts" || exit 1
 if [ -s "$SCRATCH/starts" ]; then
   ROOT="$(git rev-parse --show-toplevel)" || exit 1
@@ -166,7 +181,7 @@ fi
 while IFS= read -r CARD_JSON; do
   [ -n "$CARD_JSON" ] || continue
   NUMBER="$(jq -r .number <<<"$CARD_JSON")"; ACTION="$(jq -r .action <<<"$CARD_JSON")"
-  [ "$ACTION" != start ] || continue
+  [ "$ACTION" != start ] && [ "$ACTION" != file_pending ] || continue
   ACTION_DIR="$SCRATCH/action-$NUMBER"
   mkdir "$ACTION_DIR" || exit 1
   printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
@@ -186,4 +201,4 @@ while IFS= read -r CARD_JSON; do
   esac
 done < "$SCRATCH/actions"
 [ "$FAILURES" -eq 0 ] || { echo "$FAILURES card action(s) failed" >&2; exit 1; }
-jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" '. + {outcome: (if .dispatchable then "progress" else "idle" end)} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"
+jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" --argjson filed "$FILED" '(.dispatchable = (.dispatchable or $filed)) | . + {outcome: (if .dispatchable then "progress" else "idle" end)} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"
