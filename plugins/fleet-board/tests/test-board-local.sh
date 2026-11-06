@@ -297,7 +297,20 @@ if [ -e "$REPO/.fleet-board/active/1" ]; then pass "note leaves the active marke
 run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$c"
 assert_exit "comment with a marker exit 0" 0
 if [ -e "$REPO/.fleet-board/active/1" ]; then pass "ordinary comment leaves the active marker"; else fail "ordinary comment leaves the active marker" "removed"; fi
-FLEET_BOARD_ROLE_REPORT=1 run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$c"
+report="$(mktemp)"
+cat > "$report" <<'REPORT'
+## Status
+clean
+## Findings
+- none
+## For the card
+Review complete.
+VERIFIED: `true` -> 0 failures
+REPORT
+FLEET_BOARD_ROLE_REPORT=0 run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$report"
+if [ -e "$REPO/.fleet-board/active/1" ]; then pass "explicit ordinary comment leaves marker even with report text"; else fail "explicit ordinary comment leaves marker even with report text" "removed"; fi
+run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$report"
+rm -f "$report"
 assert_exit "report comment exit 0" 0
 if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "comment removes the active marker"; else fail "comment removes the active marker" "still present"; fi
 if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card's marker"; else fail "comment leaves another card's marker" "removed"; fi
