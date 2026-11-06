@@ -73,8 +73,8 @@ while :; do
   # Account for every attempt, including failures, before another tick can run.
   if ! jq -e -s 'length == 1 and (.[0].cost_usd | type == "number" and . >= 0)' "$WORK/tick" >/dev/null 2>&1; then stop cost-unknown 1; fi
   COST="$(add "$COST" "$(jq -r .cost_usd "$WORK/tick")")"
-  greater "$COST" "$MAX_COST" && stop max-cost 0
   if [ "$RC" -ne 0 ] || ! jq -e -s 'length == 1 and (.[0] | type == "object" and (.outcome | IN("idle", "progress")) and (.dispatchable | type == "boolean") and (if .outcome == "idle" then .dispatchable == false else true end))' "$WORK/tick" >/dev/null 2>&1; then
+    greater "$COST" "$MAX_COST" && stop max-cost 0
     FAILS=$((FAILS + 1))
     [ "$FAILS" -ge "$MAX_FAILS" ] && stop consecutive-failures 1
     if greater "$INTERVAL" 0; then run_group "$SLEEP_CMD" "$INTERVAL" || exit 1; fi
