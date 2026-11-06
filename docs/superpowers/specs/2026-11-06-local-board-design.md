@@ -123,7 +123,8 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
   instead. So `stage-review.sh` writes the same marker when it starts and removes it on
   exit (an `EXIT` trap), on the `local` backend only.
 - The local `comment` verb removes `active/<n>` for role reports only. Every role ends by
-  posting its report with `FLEET_BOARD_ROLE_REPORT=1 bash .../board-comment.sh`, and the manager posts no comment between `worktree.sh` and the
+  posting its report with `board-comment.sh`. The local adapter recognizes the report format
+  with `parse-report.sh`. The manager posts no comment between `worktree.sh` and the
   dispatch. The `note` verb leaves the marker alone: on `start` the manager writes the note
   after `worktree.sh create` and before the dispatch, so a note that cleared the marker
   would leave the implementor's whole first run unlit. A provider stage's report is posted
@@ -131,7 +132,7 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 - `fleet-board-run.sh` removes every `<board.dir>/active/*` marker after each tick's
   session exits, whatever the outcome (local backend only; a failure is a warning), so a
   role that crashed without a report does not stay lit into the next tick.
-- Ordinary comments leave the card's active marker in place.
+- The web route always posts ordinary comments, so they leave the card's active marker in place.
 - The page shows a card as active only while its marker exists **and** a run is alive. A
   marker left behind by a killed tick stops counting the moment the run is gone. The
   server also deletes every marker when it observes the run go from alive to gone.

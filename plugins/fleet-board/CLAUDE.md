@@ -34,8 +34,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   the backend default (`fleet:review_<name>` labels, `Review: <name>` columns). A new backend implements the same verbs.
 - **Active marker** (`fb_mark_active` in `board-lib.sh`). On `local` only, `worktree.sh create|review`
   and `stage-review.sh` write `<board.dir>/active/<n>`; the `local` `comment` verb removes it
-  for role reports marked with `FLEET_BOARD_ROLE_REPORT=1`. Ordinary comments and notes
-  leave it in place. The manager writes the note
+  for validated CLI role reports. Web comments and notes leave it in place. The manager writes the note
   between `worktree.sh` and the dispatch on `start`. `stage-review.sh` also removes its marker
   in its EXIT trap, and `fleet-board-run.sh` removes every marker after each tick's session. The
   page lights a card while its marker exists and a run is alive; Start clears stale markers and

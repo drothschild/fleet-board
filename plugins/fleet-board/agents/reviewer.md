@@ -122,7 +122,7 @@ Run every command inside the review worktree at the PR head unless a step says o
     - Run `mktemp` in a Bash call and note the absolute path it prints. Create the report file with `mktemp` only, never at a self-chosen path.
     - Write the report to exactly that path with the Write tool. Never put the report text inside a Bash command (no heredoc, `echo`, `printf` or `cat`), because the gate reads Bash command text and blocks a report that quotes a gated command.
     - If the Write tool refuses the file because it has not been read, read it once with the Read tool and write it again (still never a heredoc, `echo`, `printf` or `cat`, and never a different path).
-    - Check and post in ONE Bash call that names that literal path: `bash <scripts dir>/parse-report.sh --role reviewer <path> && FLEET_BOARD_ROLE_REPORT=1 bash <scripts dir>/board-comment.sh <card number> <path>`. The post runs only when the check exits 0. Running the checker only reads the report; it is not a board action.
+    - Check and post in ONE Bash call that names that literal path: `bash <scripts dir>/parse-report.sh --role reviewer <path> && bash <scripts dir>/board-comment.sh <card number> <path>`. The post runs only when the check exits 0. Running the checker only reads the report; it is not a board action.
     - If the check exits non-zero, fix the file as the `parse-report: ` lines say with Edit or Write and repeat the check-and-post Bash call. Post only once the check exits 0.
     - Your final reply is the same report text, byte for byte.
 

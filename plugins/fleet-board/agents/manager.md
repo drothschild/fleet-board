@@ -111,7 +111,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - `prev_sha`: `note.last_review.sha`, the head the previous round reviewed (In Review's review for a stage's round 1). A stage review always follows an In Review review, so there is always one;
      - the previous findings: from round 2 on, `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`; in round 1, none;
      - the absolute scripts dir;
-     - the instruction to check and post its report in one Bash call, `bash <scripts>/parse-report.sh --role stage-reviewer <path> && FLEET_BOARD_ROLE_REPORT=1 bash <scripts>/board-comment.sh N <path>`, as every role does.
+     - the instruction to check and post its report in one Bash call, `bash <scripts>/parse-report.sh --role stage-reviewer <path> && bash <scripts>/board-comment.sh N <path>`, as every role does.
 
 0.16. **Adversarial review before merge.** The fleet-board flow always includes an adversarial code review step before a merge. Never skip it: do not run `gh pr merge` for a PR the reviewer has not reviewed.
 

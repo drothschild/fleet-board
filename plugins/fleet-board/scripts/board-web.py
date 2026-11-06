@@ -750,7 +750,7 @@ def comment_card(params, body):
     read_card(dir, n)
     path = temp_text(text)
     try:
-        board_write(["bash", script("board-comment.sh"), str(n), path])
+        board_write(["env", "FLEET_BOARD_ROLE_REPORT=0", "bash", script("board-comment.sh"), str(n), path])
     finally:
         os.unlink(path)
     return 200, card_detail(cfg, dir, n)
