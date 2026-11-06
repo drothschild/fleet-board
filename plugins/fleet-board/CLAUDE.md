@@ -87,7 +87,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - **Settle step** (`scripts/settle.sh`): after each successful tick, and before
   `cleanup-done.sh`, the wrapper runs it from the repo root, outside any Claude session. It
   lists in_progress, in_review and every review stage column, runs `tick-plan.sh --settle`, and carries out only the
-  steps that start no agent (`move_to_review` then `review-stages.sh route`, `advance_stage`, `to_human_qa`, `mark_ready`, `block`),
+  steps that start no agent (`move_to_review` (routes via `review-stages.sh route` before the move, so a route failure leaves the card in in_progress), `advance_stage`, `to_human_qa`, `mark_ready`, `block`),
   mirroring the manager's action table. It acts on the manager note, never merges, never
   moves a card out of human_qa, and writes no `action_failures`; a `block` whose reason
   starts with `no progress after` is left to the manager (2.D). A person's interactive

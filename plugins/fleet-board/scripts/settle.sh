@@ -15,9 +15,12 @@
 #   2. Runs tick-plan.sh --settle <those cards> once.
 #   3. Carries out each planned action, as the manager's action table does
 #      (agents/manager.md 2.2, 2.10, 2.11):
-#        move_to_review  board-move.sh N in_review; note.sh merge with round 1,
-#                        pr and state in_review; then review-stages.sh route N <pr>
-#                        (a failure is a failed step)
+#        move_to_review  review-stages.sh route N <pr> first (a failure ends the
+#                        card's action with no move and no note, so the card
+#                        stays in in_progress and the next tick retries: nothing
+#                        re-routes a card once it is in in_review); then
+#                        board-move.sh N in_review; note.sh merge with round 1,
+#                        pr and state in_review
 #        advance_stage   board-move.sh N review_<stage>; note.sh merge with stage,
 #                        round 1, reviewed_stages (the old list plus the stage left,
 #                        only when the card was in a stage column) and state
@@ -95,11 +98,13 @@ merge_note() {
 do_move_to_review() { # <n> <pr>
   local n="$1" pr="$2"
   [ "$pr" != null ] || { fail "$n" "move_to_review has no PR"; return; }
+  # Route first: nothing re-routes a card once it is in in_review, so a failure
+  # here leaves it in in_progress for the next tick to retry
+  bash "$FLEET_SCRIPTS/review-stages.sh" route "$n" "$pr" </dev/null >/dev/null \
+    || { fail "$n" "routing the card to its review stages failed"; return; }
   bash "$FLEET_SCRIPTS/board-move.sh" "$n" in_review </dev/null >/dev/null || { fail "$n" "board-move to in_review failed"; return; }
   merge_note "$n" "$(jq -cn --argjson pr "$pr" '{round: 1, pr: $pr, state: "in_review"}')" \
-    || { fail "$n" "the manager note write failed"; return; }
-  bash "$FLEET_SCRIPTS/review-stages.sh" route "$n" "$pr" </dev/null >/dev/null \
-    || fail "$n" "routing the card to its review stages failed"
+    || fail "$n" "the manager note write failed"
 }
 
 do_advance_stage() { # <n> <stage object json> <from-state>
