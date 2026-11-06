@@ -1704,15 +1704,25 @@ run_hook bash.json "gh pr merge 4 --squash"
 assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
 
 # ---------------------------------------------------------------------------
-# review stage columns move under the existing rules (G1 sees the config's
-# stage states): in_review -> review_security is allowed, human_qa -> any
-# stage state is blocked
+# review stage columns under the existing rules. The gate's state list comes
+# from the config (STATE_NAMES), so a stage's label is a state label only with
+# the stages config: label edits on the human_qa card 14 prove it (G1), and a
+# routing label (needs-security-review) is no state.
 setup_case stages
 card_routes > "$ROUTES"
+# gate_move never checks the target name; card 12 is ready in the fixture
 run_hook bash.json "board-move.sh 12 review_security"
-assert_silent_allow "stage-move: board-move.sh 12 review_security from in_review"
+assert_silent_allow "stage-move: board-move.sh 12 (ready) review_security"
 run_hook bash.json "board-move.sh 14 review_security"
 assert_blocked "stage-move: board-move.sh 14 review_security from human_qa" "Human QA"
+run_hook bash.json "gh issue edit 14 --add-label fleet:review_security"
+assert_blocked "stage-label: add fleet:review_security on the human_qa card" "Human QA"
+run_hook bash.json "gh issue edit 14 --add-label needs-security-review"
+assert_silent_allow "stage-label: routing label needs-security-review is no state move"
+run_hook bash.json "gh label delete fleet:review_security"
+assert_blocked "stage-label: deleting fleet:review_security" "state label"
+run_hook bash.json "gh label delete needs-security-review"
+assert_silent_allow "stage-label: deleting a routing label"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
