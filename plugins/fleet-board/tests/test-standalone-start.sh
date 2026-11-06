@@ -12,7 +12,7 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
-if [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ]; then
+if [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ] || [ "${1:-start}" = stage-standard ]; then
   cat >> "$TMP/repo/.fleet-board.yml" <<'YML'
 review:
   stages:
@@ -24,6 +24,7 @@ review:
       advisory: true
 YML
   if [ "${1:-start}" = stage-fix ]; then sed 's/advisory: true/advisory: false/' "$TMP/repo/.fleet-board.yml" > "$TMP/repo/config.tmp" && mv "$TMP/repo/config.tmp" "$TMP/repo/.fleet-board.yml"; fi
+  if [ "${1:-start}" = stage-standard ]; then sed 's/name: security/name: standard/' "$TMP/repo/.fleet-board.yml" > "$TMP/repo/config.tmp" && mv "$TMP/repo/config.tmp" "$TMP/repo/.fleet-board.yml"; fi
 fi
 printf 'before\n' > "$TMP/repo/source.txt"
 git -C "$TMP/repo" add .
@@ -58,12 +59,13 @@ case "$*" in
     if [ "$(cat "$GH_STATE/column")" = in_progress ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label fleet:in_review '*)
     if [ "$(cat "$GH_STATE/column")" = in_review ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_review"}]}]\n'; else echo '[]'; fi ;;
-  'issue list --repo acme/toy --label fleet:review_security '*)
-    if [ "$(cat "$GH_STATE/column")" = review_security ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:review_security"}]}]\n'; else echo '[]'; fi ;;
+  'issue list --repo acme/toy --label fleet:review_security '*|'issue list --repo acme/toy --label fleet:review_standard '*)
+    label="$6"; column="${label#fleet:}"
+    if [ "$(cat "$GH_STATE/column")" = "$column" ]; then jq -n --arg label "$label" '[{number:12,title:"Add subtract",url:"https://github.com/acme/toy/issues/12",labels:[{name:$label}]}]'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label needs-security-review') touch "$GH_STATE/stage-label" ;;
-  'issue edit 12 --repo acme/toy --add-label fleet:review_security') printf review_security > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:review_security'|'issue edit 12 --repo acme/toy --add-label fleet:review_standard') printf '%s' "${6#fleet:}" > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_review')
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
@@ -286,7 +288,7 @@ if [ "${1:-start}" = resume-ref ] && ! jq -e '.cost_usd == 0' "$TMP/out" >/dev/n
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ] || [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ] || [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ] || [ "${1:-start}" = stage-standard ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -439,7 +441,8 @@ PY_WORKER
     echo "PASS: $1"
     exit 0
   fi
-  if [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ]; then
+  if [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ] || [ "${1:-start}" = stage-standard ]; then
+    STAGE=security; [ "$1" != stage-standard ] || STAGE=standard
     [ -e "$TMP/state/stage-label" ] || { echo 'FAIL: stage routing label missing before review movement' >&2; exit 1; }
     cat > "$TMP/worker.sh" <<'STAGE'
 #!/bin/sh
@@ -449,8 +452,8 @@ printf '%s\n' '{"version":1,"outcome":"findings","report":"## Status\nfindings\n
 STAGE
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/stage-out"; then echo 'FAIL: stage advance and review failed' >&2; exit 1; fi
     jq -e '.outcome == "progress" and .cards[0].action == "advance_stage"' "$TMP/stage-out" >/dev/null || { echo 'FAIL: stage outcome' >&2; exit 1; }
-    [ "$(cat "$TMP/state/column")" = review_security ] || { echo 'FAIL: stage move missing' >&2; exit 1; }
-    jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"stage\": \"security\"")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: stage finding not recorded' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = "review_$STAGE" ] || { echo 'FAIL: stage move missing' >&2; exit 1; }
+    jq -e --arg sha "$SHA" --arg stage "$STAGE" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"stage\": \"" + $stage + "\"")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: stage finding not recorded' >&2; exit 1; }
     if [ "$1" = stage-fix ]; then
       cat > "$TMP/worker.sh" <<'STAGE_FIX'
 #!/bin/sh
@@ -475,7 +478,7 @@ STAGE_FIX
     fi
     bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/stage-next" || exit 1
     jq -e '.cards[0].action == "mark_ready"' "$TMP/stage-next" >/dev/null || { echo 'FAIL: advisory finding incorrectly blocked progress' >&2; exit 1; }
-    echo 'PASS: advisory-stage'
+    echo "PASS: $1"
     exit 0
   fi
   if [ "${1:-start}" = stale-head ]; then
