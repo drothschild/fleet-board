@@ -21,3 +21,7 @@ review:
       agent: ux-reviewer
       model: sonnet
       advisory: true
+    - name: compliance
+      provider: openai
+      model: gpt-test
+      price: { input: 1, output: 2 }
