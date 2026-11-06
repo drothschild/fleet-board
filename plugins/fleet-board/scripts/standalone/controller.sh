@@ -9,7 +9,7 @@ if [ "$#" -ne 2 ] || [ "$1" != tick ] || [ "$2" != --plan-only ]; then
 fi
 PLAN="$(mktemp)" || exit 1
 trap 'rm -f "$PLAN"' EXIT
-bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+FLEET_BOARD_PLAN_READ_ONLY=1 bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
 # Enumerate every action emitted by tick-plan, including settle-only actions.
 # Unknown actions and malformed envelopes are rejected before any effect.
 if ! jq -e -s '

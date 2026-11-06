@@ -277,7 +277,7 @@ HAS_STAGES=false
 [ -n "$(fb_stage_states)" ] && HAS_STAGES=true
 
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
-BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
+BASE="$(fb_worktrees_base "$WT_DIR")" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 
 # Preflight: commands.preflight runs once before planning (never in settle mode,
@@ -285,7 +285,7 @@ BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resol
 # warning below; the plan changes no card's state or action_failures.
 PREFLIGHT_WARNING=""
 PRE_CMD="$(fb_cfg commands.preflight)"
-if [ "$SETTLE" != true ] && [ -n "$PRE_CMD" ]; then
+if [ "$SETTLE" != true ] && [ "${FLEET_BOARD_PLAN_READ_ONLY:-}" != 1 ] && [ -n "$PRE_CMD" ]; then
   PRE_OUT="$(cd "$FLEET_ROOT" && bash -c "$PRE_CMD" 2>&1 </dev/null)"
   PRE_RC=$?
   if [ "$PRE_RC" -ne 0 ]; then
