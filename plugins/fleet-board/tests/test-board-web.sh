@@ -297,7 +297,7 @@ if setup_case; then
     fail "card 4 stored with title, labels, backlog" "got $(cat "$REPO/.fleet-board/cards/4.json" 2>/dev/null)"
   fi
 
-  api POST /api/cards/4/move '{"state":"backlog"}'
+  api POST /api/cards/4/move '{"state":"ready"}'
   assert_code 200
   [ "$(card_json 4 .state)" = ready ] && pass "card 4 moved to ready" || fail "card 4 moved to ready" "state $(card_json 4 .state)"
 
@@ -612,9 +612,7 @@ if setup_case; then
   assert_body "unknown card is listed" '.cards[]|select(.number==4)|.title' "Lost card"
   assert_body "unknown card keeps its stored state" '.cards[]|select(.number==4)|.state' bogus
   assert_body "unknown card has known false" '.cards[]|select(.number==4)|.known' false
-  assert_body "every other card has known true" '[.cards[]|select(.number!=4)|.known]|unique' '[
-  true
-]'
+  assert_body "every other card has known true" '[.cards[]|select(.number!=4)|.known]|unique|join(",")' true
   cp "$BODY_FILE" "$TMP/board.json"
   DOM_OUT="$(node "$SCRIPT_DIR/board-dom-harness.js" "$SCRIPTS/board-web/static/board.js" "$TMP/board.json" bogus 2>&1)"
   got="$(printf '%s' "$DOM_OUT" | jq -r '[.groups[]|select(.heading|contains("Unknown state"))|.cards[]]|join("|")' 2>/dev/null)"
