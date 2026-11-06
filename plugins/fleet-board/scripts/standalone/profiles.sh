@@ -5,6 +5,7 @@ SCRIPTS="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ ${1:-} == preflight ]]; then
   [[ $# == 1 ]] || { echo 'profiles: preflight accepts no options' >&2; exit 2; }
   config=$(bash "$SCRIPTS/config.sh") || exit 1
+  docker_checked=0
   check_profile() {
     local result="$1" purpose="$2" runner provider key
     runner=$(jq -r '.runner' <<<"$result") || return 1
@@ -18,6 +19,12 @@ if [[ ${1:-} == preflight ]]; then
       diff-chat) command -v curl >/dev/null || { echo 'profiles: curl executable unavailable' >&2; return 1; } ;;
       *) echo "profiles: unsupported runner $runner" >&2; return 1 ;;
     esac
+    if [[ $runner != diff-chat && $docker_checked == 0 ]]; then
+      if [[ $(docker info --format '{{.OSType}}' 2>/dev/null) != linux ]]; then
+        echo 'profiles: a running Linux Docker engine is required' >&2; return 1
+      fi
+      docker_checked=1
+    fi
     key=$(jq -r --arg p "$provider" '.providers[$p].api_key_env // empty' <<<"$config") || return 1
     if [[ -n $key ]] && ! printenv "$key" | grep -q .; then
       echo "profiles: missing credential environment variable $key" >&2; return 1

@@ -22,6 +22,8 @@ YML
   cd "$TMP/repo" || exit 1
   if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: unavailable Docker engine accepted' >&2; exit 1; fi
   grep -qi docker "$TMP/err" || { echo 'FAIL: Docker engine failure not identified' >&2; exit 1; }
+  printf '#!/bin/sh\necho windows\n' > "$TMP/bin/docker"
+  if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: non-Linux Docker accepted' >&2; exit 1; fi
   echo 'PASS: preflight-engine'
   exit 0
 fi
@@ -30,6 +32,7 @@ if [[ $1 == preflight-tick ]]; then
   for executable in codex docker; do
     printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$executable"; chmod +x "$TMP/bin/$executable"
   done
+  printf '#!/bin/sh\necho linux\n' > "$TMP/bin/docker"
   cat > "$TMP/repo/.fleet-board.yml" <<'YML'
 board: { repo: acme/toy }
 execution:
@@ -52,6 +55,7 @@ if [[ $1 == preflight ]]; then
     printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$executable"
     chmod +x "$TMP/bin/$executable"
   done
+  printf '#!/bin/sh\necho linux\n' > "$TMP/bin/docker"
   export PATH="$TMP/bin:$PATH" OPENAI_API_KEY=test-key OPENROUTER_API_KEY=test-key
   cat > "$TMP/repo/.fleet-board.yml" <<'YML'
 board: { repo: acme/toy }
