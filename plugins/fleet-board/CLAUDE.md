@@ -88,7 +88,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   re-asks once on a rejection, posts the report with `board-comment.sh` and prints
   `{status, report_file, parsed, provider, model, input_tokens, output_tokens, cost_usd,
   attempts}`. Exit codes: 0 posted (or checked, with `--no-post`); 1 provider failure,
-  empty or truncated reply, a reply holding `FB_MARKER`, or a failed post; 2 usage, unknown
+  empty or truncated reply, a reply holding any `<!-- fleet-board:` marker, or a failed post; 2 usage, unknown
   stage or an agent stage; 3 the key variable is unset or holds a control character (no call); 6 the reply was
   rejected twice; 7 the diff exceeds `max_diff_bytes` or has no text hunks (no call; the
   manager blocks the card). The manager counts 1, 3 and 6 as report errors and records

@@ -22,8 +22,9 @@
 #
 # Exit codes:
 #   0 - posted (or checked, with --no-post)
-#   1 - provider failure, empty or truncated reply, a reply holding the
-#       manager-note marker, or a failed post; nothing posted by the script
+#   1 - provider failure, empty or truncated reply, a reply holding any
+#       "<!-- fleet-board:" marker (the manager note's or any other tick-plan.sh
+#       reads), or a failed post; nothing posted by the script
 #       before the failure
 #   2 - usage error, unknown stage, or an agent stage
 #   3 - the provider's key variable is unset or holds a control character (no
@@ -203,8 +204,10 @@ while :; do
   if ! grep -q '[^[:space:]]' "$TMP/reply.txt"; then
     fail_after_reply "empty reply" 1
   fi
-  if grep -qF -- "$FB_MARKER" "$TMP/reply.txt"; then
-    fail_after_reply "reply contains the manager-note marker" 1
+  # Any fleet-board marker (the manager note's, skip-no-acceptance, card-lint,
+  # ...): tick-plan.sh reads them from card comments
+  if grep -qE -- '<!--[[:space:]]*fleet-board:' "$TMP/reply.txt"; then
+    fail_after_reply "reply contains a fleet-board marker" 1
   fi
 
   cp "$TMP/reply.txt" "$REPORT_FILE" 2>/dev/null || fail_after_reply "cannot write report file $REPORT_FILE" 1
