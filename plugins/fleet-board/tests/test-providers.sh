@@ -1,0 +1,212 @@
+#!/usr/bin/env bash
+#
+# Plain-bash tests for providers/chat.sh (offline: a fake curl on PATH).
+# No framework, no dependencies beyond POSIX tools and jq.
+#
+# Usage: bash plugins/fleet-board/tests/test-providers.sh
+
+set -uo pipefail
+unset CDPATH
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+CHAT="${SCRIPT_DIR}/../scripts/providers/chat.sh"
+FIX="${SCRIPT_DIR}/../fixtures/providers"
+FAKE_CURL="${SCRIPT_DIR}/fake-curl.sh"
+
+PASS=0
+FAIL=0
+LAST_OUT=""
+LAST_ERR=""
+LAST_EXIT=0
+
+if [ -x /bin/bash ]; then BASH_EXE="/bin/bash"; else BASH_EXE="bash"; fi
+
+pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
+fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2"; }
+
+assert_eq() {
+  if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi
+}
+assert_exit() {
+  if [ "$LAST_EXIT" = "$2" ]; then pass "$1"; else fail "$1" "expected exit $2, got $LAST_EXIT (stderr: $LAST_ERR)"; fi
+}
+assert_contains() { # name haystack needle
+  case "$2" in *"$3"*) pass "$1" ;; *) fail "$1" "expected to find '$3' in: '$2'" ;; esac
+}
+assert_lacks() { # name haystack needle
+  case "$2" in *"$3"*) fail "$1" "did not expect '$3' in: '$2'" ;; *) pass "$1" ;; esac
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+mkdir -p "$WORK/bin"
+ln -s "$FAKE_CURL" "$WORK/bin/curl"
+cat > "$WORK/sleep.sh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SLEEP_LOG"
+EOF
+chmod +x "$WORK/sleep.sh"
+
+export TEST_KEY=sk-test-123
+REQ='{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"review this"}]}'
+
+# setup <replies-line>...  (fresh state per case)
+setup() {
+  rm -rf "$WORK/case"
+  mkdir -p "$WORK/case/tmp"
+  : > "$WORK/case/curl.log"
+  : > "$WORK/case/sleep.log"
+  : > "$WORK/case/replies"
+  local r
+  for r in "$@"; do printf '%s\n' "$r" >> "$WORK/case/replies"; done
+  cp "$FIX"/*.json "$WORK/case/"
+}
+
+# chat [args...]  (stdin: $REQ unless CHAT_IN is set)
+chat() {
+  local in="${CHAT_IN-$REQ}"
+  printf '%s' "$in" | env PATH="$WORK/bin:$PATH" \
+    FAKE_CURL_LOG="$WORK/case/curl.log" FAKE_CURL_REPLIES="$WORK/case/replies" \
+    TMPDIR="$WORK/case/tmp" FB_SLEEP="$WORK/sleep.sh" SLEEP_LOG="$WORK/case/sleep.log" \
+    "$BASH_EXE" "$CHAT" "$@" > "$WORK/case/out" 2> "$WORK/case/err"
+  LAST_EXIT=$?
+  LAST_OUT="$(cat "$WORK/case/out")"
+  LAST_ERR="$(cat "$WORK/case/err")"
+}
+
+BASE=(--base-url https://api.example.test/v1 --model gpt-test --max-tokens 800 --max-tokens-param max_completion_tokens --timeout 30)
+
+calls() { grep -c '^CALL ' "$WORK/case/curl.log"; }
+curl_log() { cat "$WORK/case/curl.log"; }
+tmp_left() { ls -A "$WORK/case/tmp" | wc -l | tr -d ' '; }
+
+echo "Test: providers/chat.sh"
+echo ""
+
+# ok_reply_is_normalized
+setup "200 ok.json"
+
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "ok_reply_is_normalized: exit 0" 0
+assert_eq "ok_reply_is_normalized: exactly the five keys" \
+  "$(printf '%s' "$LAST_OUT" | jq -c 'keys')" '["finish_reason","input_tokens","model","output_tokens","text"]'
+assert_eq "ok_reply_is_normalized: values" \
+  "$(printf '%s' "$LAST_OUT" | jq -c '[.text,.finish_reason,.input_tokens,.output_tokens,.model]')" \
+  '["Status: clean","stop",1234,56,"gpt-test-2026"]'
+assert_contains "ok_reply_is_normalized: url" "$(curl_log)" "ARG https://api.example.test/v1/chat/completions"
+
+# request body shape
+assert_contains "request body carries messages and model" "$(curl_log)" 'DATA {"model":"gpt-test"'
+
+# key_never_in_argv
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+argv_lines="$(grep '^ARG ' "$WORK/case/curl.log")"
+assert_lacks "key_never_in_argv: no argv element holds the key" "$argv_lines" "sk-test-123"
+assert_contains "key_never_in_argv: header goes through -H @file" "$argv_lines" "ARG @"
+assert_contains "key_never_in_argv: header file holds the bearer line" "$(curl_log)" "DATA Authorization: Bearer sk-test-123"
+hdr_mode="$(grep '^MODE ' "$WORK/case/curl.log" | head -1 | awk '{print $3}')"
+assert_eq "key_never_in_argv: header file mode is 600" "$hdr_mode" "600"
+
+# temp_files_removed
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_eq "temp_files_removed: after exit 0" "$(tmp_left)" "0"
+setup "500 500.json" "500 500.json" "500 500.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "temp_files_removed: failing run exits 1" 1
+assert_eq "temp_files_removed: after exit 1" "$(tmp_left)" "0"
+
+# error_body_echoing_key_is_redacted
+setup "401 401-echoing-key.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "error_body_echoing_key_is_redacted: exit 1" 1
+assert_contains "error_body_echoing_key_is_redacted: stderr says [redacted]" "$LAST_ERR" "[redacted]"
+assert_lacks "error_body_echoing_key_is_redacted: stderr lacks the key" "$LAST_ERR" "sk-test-123"
+assert_contains "error_body_echoing_key_is_redacted: prefix" "$LAST_ERR" "provider: HTTP 401"
+assert_eq "error_body_echoing_key_is_redacted: no retry on 401" "$(calls)" "1"
+
+# stderr truncated to 300 characters of provider text
+setup "400 long.json"
+printf '{"error":{"message":"%s"}}\n' "$(printf 'x%.0s' $(seq 1 600))" > "$WORK/case/long.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "long error body: exit 1" 1
+if [ "${#LAST_ERR}" -le 330 ]; then pass "long error body: stderr truncated"; else fail "long error body: stderr truncated" "length ${#LAST_ERR}"; fi
+
+# retries_429_then_succeeds
+setup "429 429.json 2" "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "retries_429_then_succeeds: exit 0" 0
+assert_eq "retries_429_then_succeeds: two calls" "$(calls)" "2"
+assert_eq "retries_429_then_succeeds: Retry-After honoured" "$(head -1 "$WORK/case/sleep.log")" "2"
+
+# retry_cap
+setup "500 500.json" "500 500.json" "500 500.json" "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "retry_cap: exit 1" 1
+assert_eq "retry_cap: three calls" "$(calls)" "3"
+assert_contains "retry_cap: message" "$LAST_ERR" "provider: HTTP 500 after 3 attempts"
+
+# retry_after_capped_at_60
+setup "429 429.json 900" "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "retry_after_capped_at_60: exit 0" 0
+assert_eq "retry_after_capped_at_60: sleep 60" "$(head -1 "$WORK/case/sleep.log")" "60"
+
+# missing_key_env_makes_no_call
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env NOPE_KEY_UNSET_XYZ
+assert_exit "missing_key_env_makes_no_call: exit 3" 3
+assert_contains "missing_key_env_makes_no_call: stderr" "$LAST_ERR" "provider: NOPE_KEY_UNSET_XYZ is not set"
+assert_eq "missing_key_env_makes_no_call: no curl call" "$(calls)" "0"
+EMPTY_KEY="" chat "${BASE[@]}" --key-env EMPTY_KEY
+assert_exit "missing_key_env_makes_no_call: empty value exits 3" 3
+
+# loopback_without_key
+setup "200 ok.json"
+chat --base-url http://localhost:11434/v1 --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env -
+assert_exit "loopback_without_key: exit 0" 0
+assert_lacks "loopback_without_key: no Authorization header" "$(curl_log)" "Authorization"
+assert_lacks "loopback_without_key: no header file" "$(curl_log)" "ARG @"
+
+# max_tokens_param_used
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+data_line="$(grep '^DATA {' "$WORK/case/curl.log" | head -1 | sed 's/^DATA //')"
+assert_eq "max_tokens_param_used: max_completion_tokens set" "$(printf '%s' "$data_line" | jq -c '.max_completion_tokens')" "800"
+assert_eq "max_tokens_param_used: max_tokens absent" "$(printf '%s' "$data_line" | jq -c 'has("max_tokens")')" "false"
+setup "200 ok.json"
+chat --base-url https://api.example.test/v1 --model m --max-tokens 321 --max-tokens-param max_tokens --timeout 30 --key-env TEST_KEY
+data_line="$(grep '^DATA {' "$WORK/case/curl.log" | head -1 | sed 's/^DATA //')"
+assert_eq "max_tokens_param_used: max_tokens set" "$(printf '%s' "$data_line" | jq -c '.max_tokens')" "321"
+assert_eq "max_tokens_param_used: max_completion_tokens absent" "$(printf '%s' "$data_line" | jq -c 'has("max_completion_tokens")')" "false"
+
+# stdout_never_holds_key
+setup "401 401-echoing-key.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_lacks "stdout_never_holds_key: failing run" "$LAST_OUT" "sk-test-123"
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_lacks "stdout_never_holds_key: ok run" "$LAST_OUT" "sk-test-123"
+
+# truncated and empty replies are normalized, not rejected here
+setup "200 length.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_eq "length reply: finish_reason passed through" "$(printf '%s' "$LAST_OUT" | jq -r .finish_reason)" "length"
+setup "200 empty-content.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_eq "empty reply: empty text passed through" "$(printf '%s' "$LAST_OUT" | jq -r .text)" ""
+
+# usage errors
+setup "200 ok.json"
+chat --model m
+assert_exit "usage: missing flags exit 2" 2
+CHAT_IN='not json' chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "usage: bad stdin exit 2" 2
+assert_eq "usage: bad stdin makes no call" "$(calls)" "0"
+chat "${BASE[@]}" --key-env 'bad name'
+assert_exit "usage: bad key-env name exit 2" 2
+
+echo "-----------------------------------"
+printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
+[ "$FAIL" -eq 0 ] || exit 1
