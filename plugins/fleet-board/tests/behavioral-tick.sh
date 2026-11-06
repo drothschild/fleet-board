@@ -19,8 +19,8 @@
 #                 dispatches, the second quoting the rejection (AC5.4)
 #   fix-block     seeded round-1 Critical review, max_rounds 2, escalation after
 #                 round 1: escalated fixer, then Blocked (AC1.7, AC6.2)
-#   merge-auto    seeded clean review; the harness merges the PR itself (merges
-#                 stay human); ticks verify main, then finish (AC4.7); the
+#   merge-auto    seeded clean review; the harness merges the PR itself (the
+#                 manager's merge is not exercised); ticks verify main, then finish (AC4.7); the
 #                 harness then runs cleanup-done.sh, as the wrapper does; the
 #                 merge is reverted on cleanup
 #   merge-red     the same with a patch that turns main red: a P0 card (AC4.8)
