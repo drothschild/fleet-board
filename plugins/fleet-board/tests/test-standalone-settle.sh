@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in move-to-review|move-resume|settle-cli-resume|stage-advance|settle-pass|settle-unknown|settle-empty|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
+case "${1:-}" in move-to-review|move-resume|settle-cli-resume|stage-advance|settle-pass|settle-unknown|settle-empty|settle-lock|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"; ROOT="$(cd "$TESTS/../../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch" "$TMP/log"
@@ -30,6 +30,25 @@ GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 cd "$TMP/repo" || exit 1
+if [ "$1" = settle-lock ]; then
+  printf done > "$GH_STATE/column"
+  cat > "$TMP/slow-plan" <<'SLOW'
+#!/bin/sh
+echo $$ > "$GH_STATE/planner-pid"
+exec sleep 30
+SLOW
+  export FLEET_BOARD_TICK_PLAN="$TMP/slow-plan"
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/tick.out" 2> "$TMP/tick.err" & tick=$!
+  for i in 1 2 3 4 5; do [ -s "$GH_STATE/planner-pid" ] && break; sleep 1; done
+  [ -s "$GH_STATE/planner-pid" ] || { kill "$tick" 2>/dev/null || true; echo 'FAIL: tick did not start' >&2; exit 1; }
+  planner="$(cat "$GH_STATE/planner-pid")"
+  if bash "$SCRIPTS/standalone/settle.sh"; then kill -KILL "$tick" "$planner" 2>/dev/null || true; echo 'FAIL: settle overlapped live tick' >&2; exit 1; fi
+  kill -KILL "$tick"; wait "$tick" 2>/dev/null || true
+  if bash "$SCRIPTS/standalone/settle.sh"; then kill -KILL "$planner" 2>/dev/null || true; echo 'FAIL: settle overlapped tick descendant' >&2; exit 1; fi
+  kill -KILL "$planner" 2>/dev/null || true
+  for i in 1 2 3 4 5; do if bash "$SCRIPTS/standalone/settle.sh" 2>/dev/null; then echo 'PASS: settle-lock'; exit 0; fi; sleep 1; done
+  echo 'FAIL: repository lock remained held' >&2; exit 1
+fi
 if [ "$1" = settle-empty ]; then
   printf done > "$GH_STATE/column"
   bash "$SCRIPTS/standalone/settle.sh" || exit 1
