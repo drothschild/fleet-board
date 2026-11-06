@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in update-branch|update-stale|update-conflict|update-resume|update-cycle) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
+case "${1:-}" in update-branch|update-stale|update-conflict|update-resume|update-cycle|update-rewind) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/update-branch.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -38,12 +38,31 @@ case "$*" in
 esac
 GH
 chmod +x "$TMP/bin/gh"
+REAL_GIT="$(command -v git)"; export REAL_GIT
+cat > "$TMP/bin/git" <<'GIT'
+#!/usr/bin/env bash
+case " $* " in
+  *' push '*) if [ -e "$GH_STATE/rewind" ]; then
+    rm "$GH_STATE/rewind"
+    "$REAL_GIT" --git-dir="$GH_REMOTE" update-ref refs/heads/fleet/12-example "$REWIND_SHA" || exit 1
+  fi ;;
+esac
+exec "$REAL_GIT" "$@"
+GIT
+chmod +x "$TMP/bin/git"
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git" FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 cd "$TMP/repo" || exit 1
 jq -n --arg sha "$BEFORE" '{pr:34,round:1,last_review:{sha:$sha,round:1,critical:0,important:0,findings:[]}}' > "$TMP/patch"
 bash "$TESTS/../scripts/note.sh" merge 12 "$TMP/patch" || exit 1
 jq -n '{number:12,state:"in_review",action:"update_branch",pr:34,branch:"fleet/12-example",worktree:"/unused",reason:"conflicts"}' > "$TMP/card"
-if [ "$1" = update-stale ]; then
+if [ "$1" = update-rewind ]; then
+  export REWIND_SHA="$(git --git-dir="$GH_REMOTE" rev-parse "$BEFORE^")"
+  touch "$GH_STATE/rewind"
+  if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: branch rewind accepted' >&2; exit 1; fi
+  [ "$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)" = "$REWIND_SHA" ] || { echo 'FAIL: rewound remote branch overwritten' >&2; exit 1; }
+  note="$(bash "$TESTS/../scripts/note.sh" get 12)" || exit 1
+  jq -e --arg sha "$BEFORE" '.last_review.sha == $sha' <<<"$note" >/dev/null || exit 1
+elif [ "$1" = update-stale ]; then
   touch "$GH_STATE/stale"
   if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: stale PR accepted' >&2; exit 1; fi
   [ "$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)" = "$BEFORE" ] || exit 1
