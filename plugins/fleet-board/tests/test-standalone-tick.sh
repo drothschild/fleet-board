@@ -99,6 +99,41 @@ WRAPPER
     echo 'FAIL: container survived interrupted startup' >&2; exit 1
   fi
   if [ -e "$TMP/delayed/result.json" ]; then echo 'FAIL: worker ran after interrupted startup' >&2; exit 1; fi
+  # TERM must stop even a worker that ignores TERM.
+  mkdir "$TMP/stubborn"
+  cat > "$TMP/stubborn/worker.sh" <<'WORKER'
+#!/bin/sh
+trap '' TERM
+: > /scratch/running
+while :; do sleep 1; done
+WORKER
+  mkdir "$TMP/stubborn-wrapper"
+  cat > "$TMP/stubborn-wrapper/docker" <<WRAPPER
+#!/bin/bash
+if [ "\$1" = start ]; then
+  trap '' TERM
+  "$REAL_DOCKER" "\$@" & child=\$!
+  wait "\$child"
+else
+  exec "$REAL_DOCKER" "\$@"
+fi
+WRAPPER
+  chmod +x "$TMP/stubborn-wrapper/docker"
+  PATH="$TMP/stubborn-wrapper:$PATH" bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/stubborn" > "$TMP/stubborn.out" 2>&1 & WORKER_PID=$!
+  for unused in 1 2 3 4 5; do [ -e "$TMP/stubborn/running" ] && break; sleep 1; done
+  [ -e "$TMP/stubborn/running" ] || { kill "$WORKER_PID" 2>/dev/null || true; echo 'FAIL: stubborn worker did not start' >&2; exit 1; }
+  kill -TERM "$WORKER_PID"
+  for unused in 1 2 3 4 5; do kill -0 "$WORKER_PID" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$WORKER_PID" 2>/dev/null; then
+    docker ps -aq --filter "name=fleet-worker-$(basename "$TMP/stubborn")-" | xargs docker rm -f >/dev/null 2>&1 || true
+    kill -KILL "$WORKER_PID" 2>/dev/null || true
+    wait "$WORKER_PID" 2>/dev/null || true
+    echo 'FAIL: interrupted stubborn worker did not stop' >&2; exit 1
+  fi
+  wait "$WORKER_PID" 2>/dev/null || true
+  if docker ps -a --filter "name=fleet-worker-$(basename "$TMP/stubborn")-" --format '{{.Names}}' | grep -q .; then
+    echo 'FAIL: stubborn worker container survived' >&2; exit 1
+  fi
   if PATH=/nonexistent /bin/bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch" >/dev/null 2>&1; then
     echo 'FAIL: unavailable isolation accepted' >&2; exit 1
   fi
