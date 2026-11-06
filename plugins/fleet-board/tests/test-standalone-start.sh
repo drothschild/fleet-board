@@ -97,6 +97,7 @@ case "$*" in
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_review') printf none > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:blocked') printf blocked > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:done')
     if [ -e "$GH_STATE/fail-done-move" ]; then rm "$GH_STATE/fail-done-move"; exit 1; fi
     printf done > "$GH_STATE/column" ;;
@@ -207,7 +208,7 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
-if [ "${1:-start}" = continue-implementor ] || [ "${1:-start}" = continue-resume ]; then
+if [ "${1:-start}" = continue-implementor ] || [ "${1:-start}" = continue-resume ] || [ "${1:-start}" = continue-blocked ]; then
   printf in_progress > "$TMP/state/column"
   cat > "$TMP/existing-note" <<'NOTE'
 <!-- fleet-board:manager-note -->
@@ -233,6 +234,23 @@ WRAPPER
   if bash "$ROOT/bin/fleet-board" tick > "$TMP/ref-out" 2>&1; then echo 'FAIL: simulated ref failure succeeded' >&2; exit 1; fi
   [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
   if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
+fi
+if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ]; then
+  cat > "$TMP/worker.sh" <<'BLOCKED'
+#!/bin/sh
+set -eu
+printf '%s\n' '{"version":1,"outcome":"blocked","report":"## Status\nblocked\n## Findings\n- none\n## For the card\nCannot proceed.\nBlocked by: #44\n## PR\nNone\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
+BLOCKED
+  if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/blocked-out"; then echo 'FAIL: blocked implementor was not reconciled' >&2; exit 1; fi
+  if [ "$1" = continue-blocked ]; then ACTION=continue_implementor; ATTEMPTS=3; else ACTION=start; ATTEMPTS=1; fi
+  jq -e --arg action "$ACTION" '.outcome == "progress" and .cards[0].action == $action' "$TMP/blocked-out" >/dev/null || { echo 'FAIL: blocked outcome malformed' >&2; exit 1; }
+  [ "$(cat "$GH_STATE/column")" = blocked ] || { echo 'FAIL: blocked card did not move' >&2; exit 1; }
+  [ ! -e "$GH_STATE/pr" ] && ! git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract || { echo 'FAIL: blocked worker published a branch or PR' >&2; exit 1; }
+  note="$(bash "$ROOT/plugins/fleet-board/scripts/note.sh" get 12)" || exit 1
+  jq -e --argjson attempts "$ATTEMPTS" '.state == "blocked" and .blocked_from == "in_progress" and .blocking_pr == 44 and .implementor_attempts == $attempts and (.last_verified | contains("VERIFIED:"))' <<<"$note" >/dev/null || { echo 'FAIL: blocked evidence not recorded' >&2; exit 1; }
+  jq -e '[.[] | select(.body | contains("fleet-board:implementor-blocked:"))] | length == 1' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: blocked report missing or duplicated' >&2; exit 1; }
+  echo "PASS: $1"
+  exit 0
 fi
 if [ "${1:-start}" = continue-resume ]; then
   printf 2 > "$GH_STATE/fail-patch-at"
