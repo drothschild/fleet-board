@@ -42,7 +42,7 @@ if [ "$ACTION" = file_pending ]; then
   if [ "$PHASE" = prepared ]; then
     jq -e --argjson note "$NOTE" '.pending == $note.pending_followups' "$JOURNAL" >/dev/null || { echo 'pending follow-ups changed' >&2; exit 1; }
     jq '.pending' "$JOURNAL" > "$SCRATCH/pending" || exit 1
-    jq '.phase = "running"' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    jq --argjson note "$NOTE" '.phase = "running" | .initial_failures = ($note.action_failures // 0)' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
     PR="$(jq -r .pr "$JOURNAL")"
     bash "$SCRIPTS/file-followups.sh" "$N" "$PR" "$SCRATCH/pending" > "$SCRATCH/filed"; RC=$?
     if [ ! -s "$SCRATCH/filed" ]; then
