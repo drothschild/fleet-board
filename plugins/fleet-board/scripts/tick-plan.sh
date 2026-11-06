@@ -29,9 +29,15 @@
 # max_rounds bounds fix, and block reads "<ci> Critical/Important findings
 # survive round <r> of <max> in <stage>". An advisory stage's findings count as
 # clean. In in_review and every stage column, a clean, current review whose
-# next stage (review-stages.sh next) is set plans advance_stage, reason
+# next stage is set plans advance_stage, reason
 # "review clean; next stage <name>", before the human-QA tail; with no next
-# stage the tail is unchanged. A card whose state label names a stage that is
+# stage the tail is unchanged. The next stage is the first stage in config
+# order, other than the column's own, that is not in note.reviewed_stages and
+# is routed: its label is on the card, or its paths match the PR's current
+# files (review-stages.sh match; read-only, the plan adds no label). So a
+# stage whose paths a later push touches cannot be skipped, even one before
+# the current column; a label-only stage (empty paths) is skipped by removing
+# its label. A card whose state label names a stage that is
 # not configured reads with no canonical state and gets skip ("state <state>
 # is not planned"). For a provider stage whose providers.<name>.api_key_env is
 # unset or empty, the plan warns "stage <name>: <ENV> is not set; provider
@@ -53,12 +59,20 @@
 #   gh pr view <pr> --json mergeable
 #       in_progress/review column, when the PR is open. Best effort: a failed or
 #       unparsable answer reads as "unknown" and plans nothing (no skip).
-#   review-stages.sh next --labels <card labels> --after <state> --done <note.reviewed_stages> <n>
+#   review-stages.sh match <pr>
 #       review column, when the PR is open and the review is clean and current
 #       (last_review.round >= note.round, last_review.stage is the column's
 #       stage, null in in_review, and no Critical or Important finding unless
 #       the stage is advisory), and only when review.stages is not empty (with
-#       no stages, no next stage and no call); a failure is
+#       no stages, no match, no next stage and no call); read-only, adds no
+#       label; a failure is "review-stages.sh match <pr>"
+#   review-stages.sh next --labels <labels> --after in_review --done <done> <n>
+#       under the same condition, after match: <labels> is the card's labels
+#       plus the label of every matched stage, so a file pushed after routing
+#       (by a fixer, say) still routes the card; <done> is
+#       note.reviewed_stages plus the column's own stage, and --after is always
+#       in_review, so a stage before the current column that now matches and
+#       was never visited is the next stage too. A failure is
 #       "review-stages.sh next <n>"
 #   needs-human-qa.sh --labels <card labels> <n> <pr>
 #       review column, under the same condition, only when review-stages.sh
@@ -360,7 +374,7 @@ card_input() {
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
   local drift=null scope='[]'
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
-  local stage=null next_stage=null nxt done_stages review_col=false
+  local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
 
   # A review column: in_review, or the column of a configured review stage
   # (a review_<name> state whose stage is not configured stays unplanned)
@@ -442,10 +456,21 @@ card_input() {
                         and ($stage.advisory == true or ((($lr.critical // 0) + ($lr.important // 0)) == 0))' <<<"$note")" = true ]; then
       labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
       done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings]' <<<"$note" 2>/dev/null)" || done_stages='[]'
-      # With no stages configured there is no next stage, and no call
+      # With no stages configured there is no next stage, and no call. Else
+      # the PR's current files are matched first (routing ran once, at the
+      # move to in_review; a later push may touch a stage's paths), and every
+      # stage before or after this column that is routed and not yet visited
+      # counts.
       if [ "$HAS_STAGES" = false ]; then
         :
-      elif nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$labels" --after "$st" --done "$done_stages" "$n")"; then
+      elif ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+        failed="review-stages.sh match $pr"
+      elif ! next_labels="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" \
+             '(. + [$cfg.review.stages[] | select(.name as $s | $m | index($s) != null) | .label]) | unique' <<<"$labels" 2>/dev/null)"; then
+        failed="review-stages.sh match $pr (unexpected answer)"
+      elif ! done_stages="$(jq -c --argjson stage "$stage" 'if $stage == null then . else . + [$stage.name] end' <<<"$done_stages")"; then
+        failed="note.sh parse $n (unparsable)"
+      elif nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$next_labels" --after in_review --done "$done_stages" "$n")"; then
         if [ -n "$nxt" ]; then
           if [ "$(jq -r --arg s "$nxt" 'any((.review.stages // [])[]; .name == $s)' <<<"$FLEET_CFG")" = true ]; then
             next_stage="$(jq -cn --arg s "$nxt" '$s')"

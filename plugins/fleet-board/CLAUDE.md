@@ -59,12 +59,19 @@ no file here. The gate's residual bypasses and false positives are listed in the
   is a merge of the base whose tree equals the `git merge-tree` result for its parents
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
-- **Review stages** (`scripts/review-stages.sh route|next|setup`). `route <n> <pr>` adds
+- **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The manager and
   `settle.sh` run it BEFORE the move to in_review, so a route failure leaves the card in
-  in_progress and the next tick retries; nothing re-routes a card already in in_review.
-  `next` prints the next stage after `--after` that the card's labels route to and
+  in_progress and the next tick retries. `match <pr>` is read-only: it prints the stages
+  whose `paths` match the PR's current files (a truncated file list matches every stage
+  with non-empty `paths`), adds no label; exit 1 on a failed read. At every clean,
+  current review in in_review or a stage column, `tick-plan.sh` runs `match` and then
+  `next` with the card's labels plus the matched stages' labels, `--after in_review` and
+  `--done` = `reviewed_stages` plus the column's stage; so a stage whose paths a later
+  push touches cannot be skipped by removing its label, even one before the current
+  column, while a label-only stage (empty `paths`) still can. A failed `match` is
+  `lookup failed: review-stages.sh match <pr>`. `next` prints the next stage after `--after` that the card's labels route to and
   `--done` does not list. `setup` creates labels (both backends; state labels on
   github-labels) or checks Projects columns (exit 1 naming the missing ones). Tick plan:
   a clean, current review with a next stage plans `advance_stage` (move to
