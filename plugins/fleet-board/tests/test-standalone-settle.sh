@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in move-to-review|move-resume|settle-cli-resume|stage-advance|settle-pass|settle-unknown|settle-empty|settle-lock|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
+case "${1:-}" in move-to-review|move-resume|settle-cli-resume|stage-advance|settle-pass|settle-unknown|settle-empty|settle-lock|settle-provider|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"; ROOT="$(cd "$TESTS/../../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch" "$TMP/log"
@@ -12,7 +12,7 @@ cat > "$TMP/bin/gh" <<'GH'
 #!/usr/bin/env bash
 case "$*" in
   'api user') echo '{"login":"bot"}' ;;
-  'issue list --repo acme/toy --label fleet:in_progress '*) if [ "$(cat "$GH_STATE/column")" = in_progress ]; then echo '[{"number":12,"title":"test","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]}]'; else echo '[]'; fi ;;
+  'issue list --repo acme/toy --label fleet:in_progress '*) if [ "$(cat "$GH_STATE/column")" = in_progress ]; then if [ -e "$GH_STATE/two-cards" ]; then echo '[{"number":12,"title":"test","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]},{"number":13,"title":"other","url":"https://github.com/acme/toy/issues/13","labels":[{"name":"fleet:in_progress"}]}]'; else echo '[{"number":12,"title":"test","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]}]'; fi; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label fleet:in_review '*) echo '[]' ;;
   'api repos/acme/toy/issues/12') col="$(cat "$GH_STATE/column")"; jq -n --arg col "$col" '{number:12,title:"test",body:"## Acceptance\n- test",html_url:"https://github.com/acme/toy/issues/12",labels:(if $col == "none" then [] else [{name:("fleet:"+$col)}] end)}' ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$GH_STATE/comments" ;;
@@ -48,6 +48,15 @@ SLOW
   kill -KILL "$planner" 2>/dev/null || true
   for i in 1 2 3 4 5; do if bash "$SCRIPTS/standalone/settle.sh" 2>/dev/null; then echo 'PASS: settle-lock'; exit 0; fi; sleep 1; done
   echo 'FAIL: repository lock remained held' >&2; exit 1
+fi
+if [ "$1" = settle-provider ]; then
+  touch "$GH_STATE/two-cards"
+  jq -n '{dispatchable:false,warnings:[],cards:[{number:12,state:"in_progress",action:"move_to_review",pr:34,branch:"fleet/12-example",reason:"PR exists"},{number:13,state:"in_review",action:"advance_stage",pr:35,branch:"fleet/13-example",reason:"stage",stage:{name:"security",provider:"openrouter",agent:null,model:"x"}}]}' > "$TMP/plan"
+  printf '#!/bin/sh\ncat "$PLAN_FIXTURE"\n' > "$TMP/plan-command"
+  export PLAN_FIXTURE="$TMP/plan" FLEET_BOARD_TICK_PLAN="$TMP/plan-command"
+  if bash "$SCRIPTS/standalone/settle.sh"; then echo 'FAIL: unsupported provider accepted' >&2; exit 1; fi
+  [ "$(cat "$GH_STATE/column")" = in_progress ] || { echo 'FAIL: earlier card moved before provider rejection' >&2; exit 1; }
+  echo 'PASS: settle-provider'; exit 0
 fi
 if [ "$1" = settle-empty ]; then
   printf done > "$GH_STATE/column"
