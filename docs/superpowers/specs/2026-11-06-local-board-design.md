@@ -107,7 +107,13 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 
 - `worktree.sh create` and `worktree.sh review` write `<board.dir>/active/<n>` when the
   backend is `local` (an empty file; the directory is created as needed; a failure to
-  write it is a warning, never an error).
+  write it is a warning, never an error). That covers the implementor (`start`,
+  `continue_implementor`), the fixer (`fix`), the reviewer (`start_review`, `review`) and
+  an agent-backed stage reviewer (`review_stage`), so a card lights up in In Progress, In
+  Review and any `Review: <stage>` column alike.
+- A provider-backed stage gets no `worktree.sh` call: the manager runs `stage-review.sh`
+  instead. So `stage-review.sh` writes the same marker when it starts and removes it on
+  exit (an `EXIT` trap), on the `local` backend only.
 - The local `note` verb removes `active/<n>`.
 - The page shows a card as active only while its marker exists **and** a run is alive. A
   marker left behind by a killed tick stops counting the moment the run is gone. The
@@ -232,7 +238,9 @@ a run is alive, otherwise every fifteen.
   collapsed to a count with a toggle to expand.
 - A card shows `#n`, title, labels, review round, PR number as a link to GitHub, and the
   models, the fields `status.sh` prints. An active card has an accent border and a pulsing
-  dot.
+  dot, in whichever column it sits: an implementor on an In Progress card, a reviewer on an
+  In Review card, a stage reviewer (agent or provider) on a `Review: <stage>` card, and a
+  fixer on an In Review card during a `fix` action all light the card.
 - Cards drag between columns (HTML5 drag and drop). Each card also has a "Move to" menu,
   for keyboards and for moves the drag misses. A refused move (for example to Ready without
   `## Acceptance`) shows the script's message and the card snaps back.
@@ -280,6 +288,7 @@ calls, never `innerHTML` from card text, so a hostile card body cannot script th
 | `scripts/deps.sh` | `#n` on `local` reads `cards/<n>.json` (state `done` means met; a missing file is a failed lookup); `owner/repo#n` through `gh` as now |
 | `scripts/import-plan.sh` | the `local` case above |
 | `scripts/worktree.sh` | the active marker on `create` and `review` |
+| `scripts/stage-review.sh` | the active marker for the run's duration (provider stages) |
 | `scripts/status.sh` | the `Board page:` line |
 | `hooks/gate.sh` | add `local` to the policy/backend case at line 761; the Projects item lookups (873, 965) return as for `github-labels` |
 | `skills/import-plan/SKILL.md` | `--preview` |
