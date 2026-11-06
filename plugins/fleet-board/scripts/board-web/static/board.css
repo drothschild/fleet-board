@@ -675,6 +675,8 @@ button, select, input, textarea { font: inherit; color: inherit; }
 
 .imp-arrow { width: 32px; height: 16px; margin-top: 107px; color: var(--line-strong); }
 .imp[data-phase="ready"] .imp-arrow { color: var(--muted); }
+.imp[data-phase="failed"] .imp-sheet, .imp[data-phase="failed"] .imp-arrow { display: none; }
+.imp[data-phase="failed"] .imp-stage { grid-template-columns: minmax(0, 1fr); }
 
 .imp-grid {
   list-style: none;

@@ -1449,7 +1449,7 @@ function showImportFailed(error) {
 // from depends_on (a card key, or an owner/repo#n ref kept as written) and from
 // consumes/produces (consuming a name another card produces).
 function cardDeps(card, cards) {
-  const byKey = {};
+  const byKey = Object.create(null); // a key named "constructor" is just a key
   for (const c of cards) if (typeof c.key === "string") byKey[c.key] = c;
   const out = [];
   const add = function (text) {
