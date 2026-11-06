@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in update-branch|update-stale|update-conflict) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
+case "${1:-}" in update-branch|update-stale|update-conflict|update-resume) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/update-branch.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -31,7 +31,7 @@ case "$*" in
   'issue comment 12 --repo acme/toy --body-file '*) jq --rawfile body "$7" '. + [{id:556,user:{login:"bot"},body:$body}]' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments" ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$GH_STATE/comments" ;;
   'api -X POST repos/acme/toy/issues/12/comments --input -') body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments"; echo '{"id":555}' ;;
-  'api -X PATCH repos/acme/toy/issues/comments/555 --input -') body="$(cat)"; jq --argjson x "$body" 'map(if .id == 555 then .body = $x.body else . end)' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments"; echo '{}' ;;
+  'api -X PATCH repos/acme/toy/issues/comments/555 --input -') if [ -e "$GH_STATE/fail-patch" ]; then rm "$GH_STATE/fail-patch"; exit 1; fi; body="$(cat)"; jq --argjson x "$body" 'map(if .id == 555 then .body = $x.body else . end)' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments"; echo '{}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'pr view 34 --repo acme/toy --json number,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body') sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)"; [ ! -f "$GH_STATE/stale" ] || sha=0000000000000000000000000000000000000000; jq -n --arg sha "$sha" '{number:34,state:"OPEN",headRefName:"fleet/12-example",headRefOid:$sha,baseRefName:"main",headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"<!-- fleet-board:card:12 -->"}' ;;
   *) echo "unexpected gh $*" >&2; exit 1 ;;
@@ -53,7 +53,14 @@ elif [ "$1" = update-conflict ]; then
   [ "$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)" = "$BEFORE" ] || exit 1
   jq -e 'any(.[]; .body | contains("base"))' "$GH_STATE/comments" >/dev/null || exit 1
 else
+  if [ "$1" = update-resume ]; then
+    touch "$GH_STATE/fail-patch"
+    if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: failed note accepted' >&2; exit 1; fi
+    first="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)"
+    [ "$first" != "$BEFORE" ] || exit 1
+  fi
   bash "$HANDLER" "$TMP/card" "$TMP/scratch" || exit 1
+  if [ "$1" = update-resume ]; then [ "$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)" = "$first" ] || exit 1; fi
   AFTER="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)"
   [ "$AFTER" != "$BEFORE" ] && git --git-dir="$GH_REMOTE" merge-base --is-ancestor "$BEFORE" "$AFTER" || exit 1
   note="$(bash "$TESTS/../scripts/note.sh" get 12)" || exit 1
