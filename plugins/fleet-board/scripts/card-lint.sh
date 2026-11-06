@@ -13,6 +13,10 @@
 #                 agent can run (on device, on a device, verify on, by hand,
 #                 Human QA, simulator, any case); it belongs under "## Human QA".
 #                 The detail is the bullet's text.
+#   bad-dependency a line under "## Depends on" that "deps.sh parse" reports as
+#                 unrecognized (anything but a bare "- #N" or "- owner/repo#N"
+#                 bullet), which the tick would drop, starting the card before
+#                 its dependency is done. The detail is the line.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 the card could not be read.
 
@@ -67,6 +71,19 @@ while IFS= read -r line; do
     FOUND=1
   fi
 done <<<"$BULLETS"
+
+# Lines under "## Depends on" that deps.sh parse cannot read
+DEPFILE="$(mktemp)"
+printf '%s\n' "$BODY" > "$DEPFILE"
+DEPS_JSON="$(bash "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/deps.sh" parse "$DEPFILE" 2>/dev/null)" || DEPS_JSON=""
+rm -f "$DEPFILE"
+if [ -n "$DEPS_JSON" ]; then
+  while IFS= read -r w; do
+    [ -n "$w" ] || continue
+    printf 'bad-dependency: %s\n' "${w#unrecognized dependency line: }"
+    FOUND=1
+  done < <(jq -r '.warnings[]? | select(startswith("unrecognized dependency line: "))' <<<"$DEPS_JSON" 2>/dev/null)
+fi
 
 [ "$FOUND" -eq 0 ] || exit 1
 exit 0
