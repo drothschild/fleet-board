@@ -53,6 +53,7 @@ set -eu
 [ ! -e /var/run/docker.sock ]
 [ -z "${GH_TOKEN:-}" ]
 if [ ! -f /scratch/request.json ] || ! grep -q '"role": "implementor"' /scratch/request.json; then exit 1; fi
+if printf changed > /scratch/request.json 2>/dev/null; then exit 1; fi
 [ -d .git ] && [ ! -L .git ]
 [ ! -e .git/controller-secret ]
 [ ! -e .git/objects/info/alternates ]

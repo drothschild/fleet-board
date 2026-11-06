@@ -23,7 +23,8 @@ IMAGE="$(jq -r .image "$REQUEST")"; SECONDS_LIMIT="$(jq -r .limits.seconds "$REQ
 MEMORY="$(jq -r .limits.memory_mb "$REQUEST")"; PIDS="$(jq -r .limits.pids "$REQUEST")"
 SCRATCH="$(cd "$SCRATCH" && pwd -P)" || exit 1
 case "$SCRATCH" in *,*|*$'\n'*) echo 'invalid scratch path' >&2; exit 1 ;; esac
-[ ! -e "$SCRATCH/checkout" ] && [ ! -e "$SCRATCH/result.json" ] || { echo 'scratch is not fresh' >&2; exit 1; }
+[ ! -e "$SCRATCH/checkout" ] && [ ! -e "$SCRATCH/result.json" ] && [ ! -e "$SCRATCH/request.json" ] && [ ! -L "$SCRATCH/request.json" ] || { echo 'scratch is not fresh' >&2; exit 1; }
+cp "$REQUEST" "$SCRATCH/request.json" || exit 1
 # Do not share linked worktree metadata, hard links, object alternates or remotes.
 git clone -q --no-local --no-hardlinks -- "$SOURCE" "$SCRATCH/checkout" || exit 1
 git -C "$SCRATCH/checkout" remote remove origin || exit 1
@@ -48,7 +49,7 @@ case "$(jq -r .role "$REQUEST")" in
   reviewer|stage-reviewer) REVIEW_MOUNT=(--mount "type=bind,src=$SCRATCH/checkout,dst=/scratch/checkout,readonly") ;;
 esac
 # No host credentials or controller checkout are mounted into the container.
-docker create --pull never --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" ${REVIEW_MOUNT[@]+"${REVIEW_MOUNT[@]}"} --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh >/dev/null || { echo 'cannot create isolated worker' >&2; exit 1; }
+docker create --pull never --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" --mount "type=bind,src=$SCRATCH/request.json,dst=/scratch/request.json,readonly" ${REVIEW_MOUNT[@]+"${REVIEW_MOUNT[@]}"} --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh >/dev/null || { echo 'cannot create isolated worker' >&2; exit 1; }
 docker start -a "$NAME" > "$SCRATCH/worker.stdout" 2> "$SCRATCH/worker.stderr" &
 PID=$!
 (
