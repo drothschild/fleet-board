@@ -6,8 +6,27 @@ TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
 if [ "${1:-}" = worker-boundary ]; then
   TMP="$(mktemp -d)"
-  trap 'rm -rf "$TMP"' EXIT
+  SERVER_PID=""
+  trap '[ -z "$SERVER_PID" ] || { kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; }; rm -rf "$TMP"' EXIT
   mkdir -p "$TMP/source" "$TMP/scratch" "$TMP/home"
+  cat > "$TMP/server.py" <<'PY_SERVER'
+import http.server, pathlib, sys
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        pathlib.Path(sys.argv[2]).write_text("mutation")
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args): pass
+server = http.server.HTTPServer(("0.0.0.0", 0), Handler)
+pathlib.Path(sys.argv[1]).write_text(str(server.server_port))
+server.serve_forever()
+PY_SERVER
+  python3 "$TMP/server.py" "$TMP/scratch/port" "$TMP/mutated" & SERVER_PID=$!
+  for unused in 1 2 3 4 5; do [ -s "$TMP/scratch/port" ] && break; sleep 1; done
+  [ -s "$TMP/scratch/port" ] || { echo 'FAIL: endpoint did not start' >&2; exit 1; }
+  curl --noproxy '*' -fsS -X POST "http://127.0.0.1:$(cat "$TMP/scratch/port")/mutation" >/dev/null || exit 1
+  [ -e "$TMP/mutated" ] || { echo 'FAIL: endpoint positive control failed' >&2; exit 1; }
+  rm "$TMP/mutated"
   git -C "$TMP/source" init -q
   git -C "$TMP/source" config user.email test@example.com
   git -C "$TMP/source" config user.name 'Test User'
@@ -28,7 +47,8 @@ set -eu
 [ ! -e /var/run/docker.sock ]
 [ -z "${GH_TOKEN:-}" ]
 [ ! -e .git/objects/info/alternates ]
-! git ls-remote https://github.com/example/nonexistent.git >/dev/null 2>&1
+! curl --noproxy '*' -fsS --max-time 2 -X POST "http://host.docker.internal:$(cat /scratch/port)/mutation" >/dev/null 2>&1
+! grep -q '^eth' /proc/net/route
 printf 'edited\n' > file.txt
 [ "$(cat file.txt)" = edited ]
 printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#34\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
@@ -46,6 +66,7 @@ WORKER
   if ! jq -e '.version == 1 and .outcome == "done" and (.report | contains("## Status"))' "$TMP/out" >/dev/null; then
     echo 'FAIL: worker result was not validated' >&2; exit 1
   fi
+  [ ! -e "$TMP/mutated" ] || { echo 'FAIL: worker reached mutation endpoint' >&2; exit 1; }
   [ "$(cat "$TMP/source/file.txt")" = original ] || { echo 'FAIL: controller checkout changed' >&2; exit 1; }
   [ "$(cat "$TMP/scratch/checkout/file.txt")" = edited ] || { echo 'FAIL: worker checkout not edited' >&2; exit 1; }
   mkdir "$TMP/invalid"
