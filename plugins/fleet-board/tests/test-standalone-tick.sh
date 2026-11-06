@@ -157,7 +157,7 @@ WRAPPER
   exit 0
 fi
 case "${1:-}" in
-  plan-only|tick-holds) ;;
+  plan-only|tick-holds|interrupt-planner) ;;
   *) echo "usage: $0 plan-only|tick-holds|worker-boundary" >&2; exit 2 ;;
 esac
 TMP="$(mktemp -d)"
@@ -174,6 +174,33 @@ export PATH="$TMP/bin:$PATH" FAKE_GH_DIR="$TMP/gh" FAKE_GH_ROUTES="$ROOT/plugins
 cd "$TMP/repo"
 bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/expected" || exit 1
 rm -rf "$TMP/repo/.fw" "$TMP/repo/preflight-ran"
+if [ "$1" = interrupt-planner ]; then
+  cat > "$TMP/slow-planner" <<PLANNER
+#!/bin/bash
+trap '' TERM
+sleep 30 & child=\$!
+printf '%s %s\n' \$$ \$child > "$TMP/planner-pids"
+wait \$child
+PLANNER
+  FLEET_BOARD_TICK_PLAN="$TMP/slow-planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/interrupted" 2>&1 & TICK_PID=$!
+  for unused in 1 2 3 4 5; do [ -s "$TMP/planner-pids" ] && break; sleep 1; done
+  [ -s "$TMP/planner-pids" ] || { kill -KILL "$TICK_PID" 2>/dev/null || true; echo 'FAIL: planner did not start' >&2; exit 1; }
+  read -r PLANNER_PID PLANNER_CHILD < "$TMP/planner-pids"
+  kill -TERM "$TICK_PID"
+  for unused in 1 2 3 4 5 6 7 8; do kill -0 "$TICK_PID" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$TICK_PID" 2>/dev/null; then
+    kill -KILL "$PLANNER_CHILD" "$PLANNER_PID" "$TICK_PID" 2>/dev/null || true
+    wait "$TICK_PID" 2>/dev/null || true
+    echo 'FAIL: interrupted planner did not stop' >&2; exit 1
+  fi
+  wait "$TICK_PID" 2>/dev/null || true
+  if kill -0 "$PLANNER_PID" 2>/dev/null || kill -0 "$PLANNER_CHILD" 2>/dev/null; then
+    kill -KILL "$PLANNER_CHILD" "$PLANNER_PID" 2>/dev/null || true
+    echo 'FAIL: interrupted planner left children' >&2; exit 1
+  fi
+  echo 'PASS: interrupt-planner'
+  exit 0
+fi
 if [ "$1" = tick-holds ]; then
   jq '.cards[0].action = "skip" | .dispatchable = false' "$TMP/expected" > "$TMP/idle.json"
   cat > "$TMP/planner" <<PLAN
