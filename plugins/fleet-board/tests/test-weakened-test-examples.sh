@@ -58,6 +58,11 @@ check_manager() {
   else
     ok "$who: start_review row never uses note.last_review as prev_sha"
   fi
+  # The review row does name last_review (for rounds after 1), so pin its round 1 clause word for
+  # word: the base wins in round 1 even when an earlier review exists, last_review.sha is the else.
+  row="$(grep -E '^\| `review` ' "$f" | head -1)"
+  if [ -z "$row" ]; then bad "$who: review row found"; return; fi
+  block_has "$who: review row sets prev_sha to the base in round 1, even after an earlier review" "$row" '`prev_sha` = the `base` from `worktree.sh review` in round 1 (`note.round` is 1), even when an earlier review exists (`unblock`, `start` and `start_review` reset the round to 1), otherwise `note.last_review.sha` |'
 }
 
 check_reviewer agent "$AGENTS/reviewer.md"
