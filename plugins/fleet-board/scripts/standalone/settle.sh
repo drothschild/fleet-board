@@ -4,7 +4,7 @@ set -uo pipefail
 unset CDPATH
 SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPTS/board-lib.sh"
-[ "$#" -eq 0 ] || exit 2
+if [ "$#" -ne 0 ]; then [ "$#" -eq 1 ] && [ "$1" = --locked ] && [ "${FLEET_BOARD_REPO_LOCK_OWNER:-}" = "$$" ] || exit 2; fi
 fb_load_config
 [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && [ -n "${FLEET_BOARD_FIXTURE_ROOT:-}" ] || { echo 'standalone settle is available only in local fixtures' >&2; exit 1; }
 FIXTURE_ROOT="$(cd "$FLEET_BOARD_FIXTURE_ROOT" && pwd -P)" || exit 1
@@ -14,10 +14,13 @@ GH_BIN="$(command -v gh)" || exit 1
 GH_DIR="$(cd "$(dirname "$GH_BIN")" && pwd -P)" || exit 1
 case "$GH_DIR/" in "$FIXTURE_ROOT"/*) ;; *) exit 1 ;; esac
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
-LOCK="$COMMON/fleet-board-standalone.lock"
-mkdir "$LOCK" 2>/dev/null || { echo 'another standalone tick holds the repository lock' >&2; exit 1; }
-TMP="$(mktemp -d)" || { rmdir "$LOCK"; exit 1; }
-cleanup() { rm -rf "$TMP"; rmdir "$LOCK" 2>/dev/null || true; }
+LOCK_FILE="$COMMON/fleet-board-standalone.lockfile"
+if [ -z "${FLEET_BOARD_REPO_LOCK_FD:-}" ] || [ "${FLEET_BOARD_REPO_LOCK_OWNER:-}" != "$$" ]; then
+  exec python3 "$SCRIPTS/standalone/repo-lock.py" acquire "$LOCK_FILE" "${BASH_SOURCE[0]}" --locked
+fi
+python3 "$SCRIPTS/standalone/repo-lock.py" verify "$LOCK_FILE" || exit 1
+TMP="$(mktemp -d)" || exit 1
+cleanup() { rm -rf "$TMP"; }
 CHILD=""
 cancel() {
   local code="$1" target="$CHILD" watchdog=""
