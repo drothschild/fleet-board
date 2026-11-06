@@ -2,7 +2,7 @@
 # Targeted standalone profile cases; no provider calls.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in routing|legacy-config|preflight|preflight-tick|preflight-engine|malformed) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
+case "${1:-}" in routing|legacy-config|preflight|preflight-tick|preflight-engine|preflight-command|malformed) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo"
@@ -30,6 +30,41 @@ YML
   grep -q 'execution.escalaton' "$TMP/err" || exit 1
   echo 'PASS: malformed'
   exit 0
+fi
+if [[ $1 == preflight-command ]]; then
+  mkdir -p "$TMP/bin"
+  for executable in bash git jq dirname basename sed tr grep awk head tail mktemp python3 cat rm mv; do
+    path="$(command -v "$executable")" || exit 1
+    ln -s "$path" "$TMP/bin/$executable"
+  done
+  printf '#!/bin/sh\necho linux\n' > "$TMP/bin/docker"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/fake-review"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/codex"
+  chmod +x "$TMP/bin/docker" "$TMP/bin/fake-review" "$TMP/bin/codex"
+  cat > "$TMP/repo/.fleet-board.yml" <<'YML'
+board: { repo: acme/toy }
+providers:
+  localcmd: { command: 'fake-review --model {model}' }
+execution:
+  profiles:
+    code: { runner: tool-chat, provider: ollama, model: code-model }
+    review: { runner: diff-chat, provider: localcmd, model: review-model }
+  roles: { implementor: code, fixer: code, reviewer: review }
+review:
+  stages:
+    - { name: legacy, provider: codex, model: review-model, price: { input: 0, output: 0 } }
+YML
+  cd "$TMP/repo" || exit 1
+  export PATH="$TMP/bin"
+  if ! bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then cat "$TMP/err" >&2; echo 'FAIL: command providers should not require curl' >&2; exit 1; fi
+  rm "$TMP/bin/fake-review"
+  if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing command accepted' >&2; exit 1; fi
+  grep -q 'fake-review' "$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: missing executable not identified' >&2; exit 1; }
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/fake-review"; chmod +x "$TMP/bin/fake-review"
+  sed 's/runner: tool-chat, provider: ollama/runner: tool-chat, provider: localcmd/' .fleet-board.yml > "$TMP/next" && mv "$TMP/next" .fleet-board.yml
+  if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: tool-chat command provider accepted' >&2; exit 1; fi
+  grep -qi 'command' "$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: incompatibility not identified' >&2; exit 1; }
+  echo 'PASS: preflight-command'; exit 0
 fi
 if [[ $1 == preflight-engine ]]; then
   mkdir -p "$TMP/bin"
