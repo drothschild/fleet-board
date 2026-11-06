@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in wait|wait-resume|lint|block|block-resume|unblock|unblock-race|file-pending|file-partial) ;; *) echo 'usage: test-standalone-maintenance.sh wait|wait-resume|lint' >&2; exit 2 ;; esac
+case "${1:-}" in wait|wait-resume|lint|block|block-resume|unblock|unblock-race|file-pending|file-partial|file-race) ;; *) echo 'usage: test-standalone-maintenance.sh wait|wait-resume|lint' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/maintenance.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -14,7 +14,7 @@ cat > "$TMP/bin/gh" <<'GH'
 case "$*" in
   'api user') echo '{"login":"bot"}' ;;
   'issue list --repo acme/toy --state open --search '*) case "$*" in *first*) echo '[{"number":77,"title":"first"}]' ;; *second*) echo '[{"number":78,"title":"second"}]' ;; *) exit 1 ;; esac ;;
-  'issue comment 77 --repo acme/toy --body '*) : ;;
+  'issue comment 77 --repo acme/toy --body '*) if [ -e "$STATE/change-pending" ]; then rm "$STATE/change-pending"; bash "$NOTE_SCRIPT" merge 12 "$STATE/new-pending" || exit 1; fi ;;
   'issue comment 78 --repo acme/toy --body '*) exit 1 ;;
   'pr comment 34 --repo acme/toy --body '*) : ;;
   'api repos/acme/toy/issues/12') column="$(cat "$STATE/column")"; jq -n --arg col "$column" '{number:12,title:"test",body:"## Acceptance\n- test",html_url:"https://github.com/acme/toy/issues/12",labels:(if $col == "none" then [] else [{name:("fleet:"+$col)}] end)}' ;;
@@ -30,8 +30,20 @@ case "$*" in
 esac
 GH
 chmod +x "$TMP/bin/gh"
+export NOTE_SCRIPT="$TESTS/../scripts/note.sh"
 export PATH="$TMP/bin:$PATH" STATE="$TMP/state" FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 cd "$TMP/repo" || exit 1
+if [ "$1" = file-race ]; then
+  printf '%s\n' '{"pr":34,"pending_followups":{"out_of_scope":[{"title":"first","detail":"no testable check"}],"bugs":[],"pr":34}}' > "$TMP/patch"
+  bash "$NOTE_SCRIPT" merge 12 "$TMP/patch" || exit 1
+  printf '%s\n' '{"pending_followups":{"out_of_scope":[{"title":"first","detail":"no testable check"},{"title":"second","detail":"no testable check"}],"bugs":[],"pr":34}}' > "$STATE/new-pending"
+  touch "$STATE/change-pending"
+  jq -n '{number:12,state:"ready",action:"file_pending",pr:34,reason:"pending follow-ups"}' > "$TMP/card"
+  if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: concurrent pending change ignored' >&2; exit 1; fi
+  note="$(bash "$NOTE_SCRIPT" get 12)" || exit 1
+  jq -e '.pending_followups.out_of_scope | length == 2' <<<"$note" >/dev/null || { echo 'FAIL: new pending item lost' >&2; exit 1; }
+  echo 'PASS: file-race'; exit 0
+fi
 if [ "$1" = file-partial ]; then
   printf '%s\n' '{"pr":34,"pending_followups":{"out_of_scope":[{"title":"first","detail":"no testable check"},{"title":"second","detail":"no testable check"}],"bugs":[],"pr":34}}' > "$TMP/patch"
   bash "$TESTS/../scripts/note.sh" merge 12 "$TMP/patch" || exit 1
