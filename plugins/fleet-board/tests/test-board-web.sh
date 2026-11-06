@@ -178,10 +178,12 @@ start_server() {
   done
   if [ -z "$PORT" ] && [ "${EXPECT_START_FAIL:-0}" = 1 ]; then
     pass "a start that never listens is reported as failed"
+    stop_server
     return 1
   fi
   if [ -z "$PORT" ]; then
     fail "server starts" "no 'listening on' line in 5 s; stderr: $(cat "$TMP/server.err" 2>/dev/null)"
+    stop_server
     return 1
   fi
   pass "server starts and prints its port"
