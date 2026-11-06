@@ -241,7 +241,7 @@ is_test_path() {
 # Prints null when there is no reviewed sha, the head has not moved, or a
 # lookup fails.
 drift_lookup() {
-  local from head cmp chain sha files f merge=false tedit=false
+  local from head cmp chain sha files f merge=false tedit=false unrev=true verdict
   from="$(jq -r '.last_review.sha // empty | strings' <<<"$1" 2>/dev/null)" || return 1
   head="$(jq -r '.headRefOid // empty | strings' <<<"$2" 2>/dev/null)" || return 1
   [ -n "$from" ] && [ -n "$head" ] || { echo null; return 0; }
@@ -269,8 +269,12 @@ drift_lookup() {
       done <<<"$files"
     fi
   done <<<"$chain"
-  jq -cn --argjson m "$merge" --argjson t "$tedit" --arg from "$from" --arg head "$head" \
-    '{merge: $m, test_edit: $t, from: $from, head: $head}'
+  # Reviewed unless a commit since is something other than a clean merge of main
+  # (review-drift.sh); a failed check reads as unreviewed
+  verdict="$(bash "$FLEET_SCRIPTS/review-drift.sh" "$from" "$head" 2>/dev/null)" || verdict=unreviewed
+  [ "$verdict" = reviewed ] && unrev=false
+  jq -cn --argjson m "$merge" --argjson t "$tedit" --argjson u "$unrev" --arg from "$from" --arg head "$head" \
+    '{merge: $m, test_edit: $t, unreviewed: $u, from: $from, head: $head}'
 }
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
@@ -557,6 +561,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE
             then act("review"; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
           elif $ci > 0 and head_moved($c; $lr)
             then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
+          # A clean review covers a later head only when every commit since is a
+          # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
+          elif $ci == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
+            then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) has commits after the round \($round) review at \($lr.sha[0:7]) that are not clean merges of the base; review them before merging")
           elif $ci > 0 and $round >= $max then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($max)")
           elif $ci > 0 then act("fix"; "\($ci) Critical/Important findings in round \($round)")
           elif $c.needs_human_qa == true then act("to_human_qa"; "no Critical/Important findings; needs human QA")

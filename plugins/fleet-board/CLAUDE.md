@@ -49,6 +49,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `to_human_qa`, `block` and `mark_ready` stay, `start_review` becomes `move_to_review`
   (move the card, record `round: 1` and `pr`, no dispatch; only `--settle` emits it), and
   every other action is a `skip`. A settle plan is never dispatchable.
+  Reviewed heads only: an in_review PR whose head moved past `last_review.sha` plans
+  `review`, not `mark_ready`, `to_human_qa` or `merge`, unless every commit since
+  is a merge of the base whose tree equals the `git merge-tree` result for its parents
+  (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
+  a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
 - **Dependency gate** (`scripts/deps.sh parse|check`). `parse` reads a card body's
   `## Depends on` bullets (`#n` or `owner/repo#n`); `check` looks each up and prints
   `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as
@@ -58,7 +63,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - **Gate hook** (`hooks/gate.sh`, lexer `hooks/gate-lex.awk`). PreToolUse(Bash); exit 2
   blocks; inert without `.fleet-board.yml` in the command's effective cwd. G1: nothing
   moves a card out of human_qa. G2: `gh pr merge` blocked under `merge.policy: human`;
-  under `auto` only explicit, non-draft, green, non-`--admin`. G3: moving to ready needs an
+  under `auto` only explicit, non-draft, green, non-`--admin`, and, for a `fleet/<n>-*`
+  branch, a head whose commits after the note's `last_review.sha` are all clean merges of
+  main (`review-drift.sh`; otherwise blocked as unreviewed). G3: moving to ready needs an
   `## Acceptance` section. Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
