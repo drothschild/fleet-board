@@ -286,7 +286,12 @@ elif grep -Eq '^(merge|worktrees|typecheck|qa_build):|^  (typecheck|qa_build|set
 else
   pass "labels-writes-valid-config: no keys for omitted flags"
 fi
-assert_stdout_exact "labels-writes-valid-config: stdout" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml"
+SCRIPTS_ABS="$(cd "$(dirname "$SCRIPT")" && pwd)"
+HINT_LINE="fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash $SCRIPTS_ABS/review-stages.sh setup"
+assert_stdout_exact "labels-writes-valid-config: stdout" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml
+$HINT_LINE"
+assert_stdout_contains "labels-writes-valid-config: stage hint names review-stages.sh setup" "then run: bash "
+assert_stdout_contains "labels-writes-valid-config: stage hint script path" "/review-stages.sh setup"
 assert_dir_listing "labels-writes-valid-config: no stray temp files" ".fleet-board.yml "
 
 # ---------------------------------------------------------------------------
@@ -910,7 +915,8 @@ else
   fail "cdpath-relative-dir: written in the relative --dir" "no $TARGET/parent/proj/.fleet-board.yml"
 fi
 assert_count "cdpath-relative-dir: CDPATH directory untouched" "$(ls -A "$TARGET/decoy/proj" | count_lines)" 0
-assert_stdout_exact "cdpath-relative-dir: stdout" "wrote $(cd "$TARGET/parent/proj" && pwd)/.fleet-board.yml"
+assert_stdout_exact "cdpath-relative-dir: stdout" "wrote $(cd "$TARGET/parent/proj" && pwd)/.fleet-board.yml
+$HINT_LINE"
 
 # cdpath-relative-script: init.sh run by a relative path still finds its own
 # directory when CDPATH holds a same-named "scripts" directory

@@ -37,7 +37,15 @@ bash run.sh --runs 3 --mutation on  --model sonnet   # repeat for each candidate
 bash run.sh --defect off-by-one --runs 1             # one defect, one run
 ```
 
-Flags: `--runs N` (default 3), `--mutation on|off`, `--model <name>`, `--defect <id>`, `--out <dir>`, `--dry-run`. An unknown flag exits 2. The runner prints a catch-rate table per class and keeps each run's report, transcript and cost in `--out`, with one row per run in `results.tsv` (id, class, run, model, mutation, verdict, cost in USD). The verdict is `caught`, `missed` or `error`. A run is an `error` when its transcript shows no dispatch of the reviewer or its report has no `## Findings` section; errored runs are left out of the catch rate and make the runner exit 1.
+To measure a provider-backed stage reviewer instead of the Claude reviewer, use `run.sh --provider`:
+
+```bash
+bash run.sh --provider openai --model <id> --price-in <P> --price-out <P> --runs 3
+```
+
+With `OPENAI_API_KEY` exported in your shell, each run calls `scripts/stage-review.sh` (no `claude -p`) with a temporary `.fleet-board.yml` holding one blocking stage on that provider and model, so it needs the price in USD per million tokens. It sends each fixture's card and diff to the provider, and it costs that provider's money. `results.tsv` records the model as `<provider>:<id>`; the ledger and each report land under `--out`.
+
+Flags: `--runs N` (default 3), `--mutation on|off`, `--model <name>`, `--defect <id>`, `--out <dir>`, `--dry-run`, `--provider <name>`, `--price-in <p>`, `--price-out <p>`. An unknown flag exits 2. The runner prints a catch-rate table per class and keeps each run's report, transcript and cost in `--out`, with one row per run in `results.tsv` (id, class, run, model, mutation, verdict, cost in USD). The verdict is `caught`, `missed` or `error`. A run is an `error` when its transcript shows no dispatch of the reviewer or its report has no `## Findings` section (for provider runs, a failed `stage-review.sh` call also counts); errored runs are left out of the catch rate and make the runner exit 1.
 
 The runner gives the reviewer the card body, the PR diff and a made-up implementor report; there is no GitHub PR, so the reviewer is told not to call `gh` or `board-comment.sh`.
 
@@ -59,8 +67,14 @@ Catch rate is caught runs over total runs. A run counts as caught only when the 
 | mocked-dependency | opus | off | 3 | 3 | 100% | 0.55 |
 | happy-path-only | opus | on | 3 | 3 | 100% | 0.59 |
 | happy-path-only | opus | off | 3 | 3 | 100% | 0.46 |
+| off-by-one | openai:<id> | n/a | not run | not run | not run | not run |
+| source-text-assertion | openai:<id> | n/a | not run | not run | not run | not run |
+| weakened-assertion | openai:<id> | n/a | not run | not run | not run | not run |
+| untested-bullet | openai:<id> | n/a | not run | not run | not run | not run |
+| mocked-dependency | openai:<id> | n/a | not run | not run | not run | not run |
+| happy-path-only | openai:<id> | n/a | not run | not run | not run | not run |
 
-Add the same rows for each candidate model (for example sonnet).
+Add the same rows for each candidate model (for example sonnet). The `openai:<id>` rows are for a provider-backed review stage (the stage reviewer, which sees the card and the diff but runs no tests and no mutation, so `review.mutation` does not apply); they read `not run` until someone runs `run.sh --provider` with a real key.
 
 Every report was also scored by hand against the defect's patch, and the hand score agreed with the automated score on all 18 runs: each report named the seeded defect at Critical or Important. In one run (`weakened-assertion` run 2) the weak assertion itself was only Minor, but the wrong return value it hides and the surviving mutant were both Critical, so it counts as caught.
 

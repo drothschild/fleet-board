@@ -1,0 +1,1 @@
+{"id":"c1","model":"gpt-test-2026","choices":[{"index":0,"message":{"role":"assistant","content":"Status: clean"},"finish_reason":"stop"}],"usage":{"prompt_tokens":"12","completion_tokens":56,"total_tokens":1290}}

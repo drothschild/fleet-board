@@ -60,7 +60,26 @@ usage_exit2 "add with a non-numeric card" add abc
 usage_exit2 "move without a state" move 12
 usage_exit2 "move with a bad flag" move 12 ready --bogus
 usage_exit2 "move with a non-numeric card" move abc ready
-usage_exit2 "move with an invalid state" move 12 sideways
+CFGDIR_BAD="$(mktemp -d)"; printf 'board:\n  repo: acme/toy\n' > "$CFGDIR_BAD/.fleet-board.yml"
+# the state check runs after the config loads (valid states include its review stages)
+LAST_ERR="$(cd "$CFGDIR_BAD" && bash "$CARDS" move 12 sideways 2>&1 >/dev/null </dev/null)"; LAST_EXIT=$?
+if [ "$LAST_EXIT" = 2 ]; then pass "move with an invalid state: exit 2"; else fail "move with an invalid state: exit 2" "got $LAST_EXIT ($LAST_ERR)"; fi
+rm -rf "$CFGDIR_BAD"
+
+# a configured review stage is a valid target for move (fake gh, labels backend)
+STG="$(mktemp -d)"
+git init -q "$STG"
+printf 'board:\n  repo: acme/toy\nreview: { stages: [ { name: security, agent: a } ] }\n' > "$STG/.fleet-board.yml"
+printf '{"number":12,"title":"t","html_url":"u","body":"b","labels":[{"name":"fleet:in_review"}]}\n' > "$STG/issue-12.json"
+printf '[]\n' > "$STG/comments.json"
+printf '{"login":"me"}\n' > "$STG/user.json"
+printf 'api user\t0\t%s/user.json\napi repos/acme/toy/issues/12\t0\t%s/issue-12.json\napi --paginate repos/acme/toy/issues/12/comments\t0\t%s/comments.json\nissue edit*\t0\t-\n' "$STG" "$STG" "$STG" > "$STG/routes.txt"
+mkdir -p "$STG/bin"
+ln -s "$SCRIPT_DIR/fake-gh.sh" "$STG/bin/gh"
+LAST_ERR="$(cd "$STG" && PATH="$STG/bin:$PATH" FAKE_GH_DIR="$STG" FAKE_GH_ROUTES="$STG/routes.txt" bash "$CARDS" move 12 review_security 2>&1 >/dev/null </dev/null)"; LAST_EXIT=$?
+if [ "$LAST_EXIT" = 0 ]; then pass "move to a configured stage: exit 0"; else fail "move to a configured stage: exit 0" "got $LAST_EXIT ($LAST_ERR)"; fi
+if grep -q -- "--add-label fleet:review_security" "$STG/calls.log" 2>/dev/null; then pass "move to a configured stage: adds fleet:review_security"; else fail "move to a configured stage: adds fleet:review_security" "calls.log: $(cat "$STG/calls.log" 2>/dev/null)"; fi
+rm -rf "$STG"
 
 for sub in create add move; do
   run "$sub" --help

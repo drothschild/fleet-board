@@ -556,6 +556,134 @@ run_config "$REPO"
 assert_exit "field-validation valid values: exit 0" "0"
 assert_key "$REPO" "worktrees.dir" "../wt" "field-validation valid values: relative dir with .. kept"
 
+# review.stages: defaults fill in
+REPO="$(printf 'board:\n  repo: a/b\nmodels: { reviewer: opus }\nreview: { max_rounds: 4, stages: [ { name: security, agent: "acme:sec" } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: minimal stage is valid" 0
+assert_stdout_exact_jq() { # NAME JQ_FILTER EXPECTED (against LAST_OUT)
+  local got; got="$(jq -c "$2" <<<"$LAST_OUT")"
+  if [ "$got" = "$3" ]; then pass "$1"; else fail "$1" "expected: '$3', got: '$got'"; fi
+}
+assert_stdout_exact_jq "stages: defaults filled" '.review.stages[0]' \
+  '{"name":"security","agent":"acme:sec","provider":null,"model":"opus","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":4,"brief":null,"price":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+# explicit values kept
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: ux, agent: ux-reviewer, model: sonnet, paths: ["src/ui/**"], label: ux-pls, advisory: true, max_rounds: 1, brief: "Check copy." } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "stages: explicit values kept" '.review.stages[0]' \
+  '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"brief":"Check copy.","price":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "stages: empty by default" '.review.stages' '[]'
+invalid_field_case "stages not a list" 'review: { stages: 3 }' "review.stages must be a list"
+invalid_field_case "stage bad name" 'review: { stages: [ { name: "Sec-1", agent: a } ] }' "review.stages[0].name must match ^[a-z][a-z0-9_]*$"
+invalid_field_case "stage duplicate name" 'review: { stages: [ { name: s, agent: a }, { name: s, agent: b } ] }' "review.stages[1].name s is not unique"
+invalid_field_case "stage missing agent" 'review: { stages: [ { name: s } ] }' "review.stages[0] must set exactly one of agent and provider"
+invalid_field_case "stage bad agent" 'review: { stages: [ { name: s, agent: "a b" } ] }' "review.stages[0].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$"
+invalid_field_case "stage empty model" 'review: { stages: [ { name: s, agent: a, model: "" } ] }' "review.stages[0].model must be a non-empty string"
+invalid_field_case "stage paths" 'review: { stages: [ { name: s, agent: a, paths: [""] } ] }' "review.stages[0].paths must be a list of non-empty strings"
+invalid_field_case "stage label reserved" 'review: { stages: [ { name: s, agent: a, label: needs-human-qa } ] }' "review.stages[0].label must be a non-empty string"
+invalid_field_case "stage label duplicate" 'review: { stages: [ { name: s, agent: a, label: x }, { name: t, agent: a, label: x } ] }' "review.stages[1].label must be a non-empty string"
+invalid_field_case "stage advisory" 'review: { stages: [ { name: s, agent: a, advisory: yes_please } ] }' "review.stages[0].advisory must be boolean"
+invalid_field_case "stage max_rounds" 'review: { stages: [ { name: s, agent: a, max_rounds: 0 } ] }' "review.stages[0].max_rounds must be a positive integer"
+invalid_field_case "stage brief" 'review: { stages: [ { name: s, agent: a, brief: 7 } ] }' "review.stages[0].brief must be a string"
+# (board is already a key in invalid_field_case's base, so this one builds its own repo)
+REPO="$(printf 'board:\n  repo: a/b\n  states: { review_x: "X Review" }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "field-validation board.states names no stage: exit 5" "5"
+assert_stderr_contains "field-validation board.states names no stage: names the field" "board.states key review_x names no stage"
+REPO="$(printf 'board:\n  repo: a/b\n  states: { review_security: "Sec" }\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: board.states may map a stage" 0
+REPO="$(printf 'board:\n  repo: a/b\nreview:\n  stages:\n    - name: security\n      agent: "acme:sec"\n      paths: ["src/auth/**"]\n    - name: ux\n      agent: ux-reviewer\n      advisory: true\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: block list of block maps parses" 0
+assert_stdout_exact_jq "stages: block form names" '.review.stages | map(.name)' '["security","ux"]'
+
+# providers map and provider-backed stages
+REPO="$(make_test_repo provider-stage.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "provider stage: valid" 0
+assert_stdout_exact_jq "provider stage merges preset" '.providers.openai' \
+  '{"base_url":"https://api.openai.com/v1","api_key_env":"OPENAI_API_KEY","max_tokens_param":"max_completion_tokens"}'
+assert_stdout_exact_jq "provider stage: filled stage object" '.review.stages[0]' \
+  '{"name":"security","agent":null,"provider":"openai","model":"gpt-test","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":3,"brief":null,"price":{"input":1.25,"output":10},"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+SP='{ name: s, provider: PROV, model: m, price: { input: 1, output: 2 } }'
+for prov in gemini openrouter ollama; do
+  REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ %s ] }\n' "${SP/PROV/$prov}" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+  assert_exit "preset $prov: valid" 0
+  case "$prov" in
+    gemini) want='{"base_url":"https://generativelanguage.googleapis.com/v1beta/openai","api_key_env":"GEMINI_API_KEY","max_tokens_param":"max_tokens"}' ;;
+    openrouter) want='{"base_url":"https://openrouter.ai/api/v1","api_key_env":"OPENROUTER_API_KEY","max_tokens_param":"max_tokens"}' ;;
+    ollama) want='{"base_url":"http://localhost:11434/v1","api_key_env":null,"max_tokens_param":"max_tokens"}' ;;
+  esac
+  assert_stdout_exact_jq "preset $prov values" ".providers.$prov" "$want"
+done
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { openai: { api_key_env: WORK_OPENAI } }\nreview: { stages: [ %s ] }\n' "${SP/PROV/openai}" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "user provider overrides preset key by key" '.providers.openai' \
+  '{"base_url":"https://api.openai.com/v1","api_key_env":"WORK_OPENAI","max_tokens_param":"max_completion_tokens"}'
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { corp: { base_url: "https://llm.corp.example/v1", api_key_env: CORP_KEY } }\nreview: { stages: [ %s ] }\n' "${SP/PROV/corp}" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "custom provider: valid" 0
+assert_stdout_exact_jq "custom provider: max_tokens_param defaults" '.providers.corp.max_tokens_param' '"max_completion_tokens"'
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, agent: a } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "agent stage: providers stays empty" '.providers' '{}'
+assert_stdout_exact_jq "agent stage: provider null, price null" '.review.stages[0] | [.provider, .price]' '[null,null]'
+REPO="$(make_test_repo stages.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages.yml fixture: valid" 0
+assert_stdout_exact_jq "stages.yml: three stages" '.review.stages | map(.name)' '["security","ux","compliance"]'
+assert_stdout_exact_jq "stages.yml: compliance is a provider stage" '.review.stages[2] | [.agent, .provider, .model, .price]' '[null,"openai","gpt-test",{"input":1,"output":2}]'
+
+BASE_CORP='providers: { corp: { base_url: "https://llm.corp.example/v1", api_key_env: CORP_KEY } }'
+CORP_STAGE='review: { stages: [ { name: s, provider: corp, model: m, price: { input: 1, output: 2 } } ] }'
+invalid_field_case "stage both agent and provider" 'review: { stages: [ { name: s, agent: a, provider: openai, model: m, price: { input: 1, output: 2 } } ] }' "review.stages[0] must set exactly one of agent and provider"
+invalid_field_case "stage bad provider name" 'review: { stages: [ { name: s, provider: "Open AI", model: m, price: { input: 1, output: 2 } } ] }' "review.stages[0].provider must match ^[a-z][a-z0-9_-]*\$"
+invalid_field_case "stage unknown provider" 'review: { stages: [ { name: s, provider: foo, model: m, price: { input: 1, output: 2 } } ] }' "review.stages[0].provider foo names no provider"
+invalid_field_case "provider stage no model" 'review: { stages: [ { name: s, provider: openai, price: { input: 1, output: 2 } } ] }' "review.stages[0].model must be set when provider is set"
+invalid_field_case "provider stage no price" 'review: { stages: [ { name: s, provider: openai, model: m } ] }' "review.stages[0].price is required when provider is set"
+invalid_field_case "provider stage price input" 'review: { stages: [ { name: s, provider: openai, model: m, price: { input: -1, output: 2 } } ] }' "review.stages[0].price.input must be a non-negative number"
+invalid_field_case "provider stage price output" 'review: { stages: [ { name: s, provider: openai, model: m, price: { input: 1, output: cheap } } ] }' "review.stages[0].price.output must be a non-negative number"
+for k in timeout max_output_tokens max_diff_bytes; do
+  invalid_field_case "stage $k" "review: { stages: [ { name: s, provider: openai, model: m, price: { input: 1, output: 2 }, $k: 0 } ] }" "review.stages[0].$k must be a positive integer"
+done
+invalid_field_case "provider base_url http" "providers: { corp: { base_url: \"http://llm.corp.example/v1\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must start with https:// or a loopback http:// address"
+invalid_field_case "provider base_url lookalike" "providers: { corp: { base_url: \"http://localhost.evil.example/v1\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must start with https:// or a loopback http:// address"
+# userinfo in the authority sends the request (and the key) to the host after '@'
+for u in 'http://localhost:@evil.example/v1' 'http://127.0.0.1:1@evil.example/v1' 'http://[::1]:x@evil.example/v1' 'http://localhost:123@example.com/v1' 'https://user@x.example/v1'; do
+  invalid_field_case "provider base_url userinfo $u" "providers: { corp: { base_url: \"$u\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must not contain userinfo"
+done
+invalid_field_case "provider base_url loopback bad port" "providers: { corp: { base_url: \"http://localhost:abc/v1\", api_key_env: CORP_KEY } }"$'\n'"$CORP_STAGE" "providers.corp.base_url must start with https:// or a loopback http:// address"
+for u in 'http://localhost:11434/v1' 'http://[::1]:8080/' 'http://127.0.0.1/v1' 'http://localhost' 'https://x.example/v1?a=b@c'; do
+  REPO="$(printf 'board:\n  repo: a/b\nproviders: { corp: { base_url: "%s", api_key_env: null } }\n%s\n' "$u" "$CORP_STAGE" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+  case "$u" in
+    https://*) assert_stderr_not_contains "provider base_url $u: '@' after the authority is not userinfo" "userinfo" ;;
+    *) assert_exit "provider base_url $u: loopback accepted" 0 ;;
+  esac
+done
+invalid_field_case "provider api_key_env bad" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: sk_lower } }"$'\n'"$CORP_STAGE" "providers.corp.api_key_env must match ^[A-Z_][A-Z0-9_]*\$"
+invalid_field_case "provider api_key_env null remote" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: null } }"$'\n'"$CORP_STAGE" "providers.corp.api_key_env may be null only for a loopback base_url"
+invalid_field_case "provider max_tokens_param" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: K, max_tokens_param: limit } }"$'\n'"$CORP_STAGE" "providers.corp.max_tokens_param must be max_tokens or max_completion_tokens"
+for k in api_key key token secret; do
+  invalid_field_case "provider $k not allowed" "providers: { corp: { base_url: \"https://x.example/v1\", api_key_env: K, $k: topsecretvalue } }"$'\n'"$CORP_STAGE" "providers.corp.$k is not allowed; name an environment variable in api_key_env"
+done
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { corp: { base_url: "https://x.example/v1", api_key_env: K, api_key: topsecretvalue } }\n%s\n' "$CORP_STAGE" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+case "$LAST_ERR$LAST_OUT" in
+  *topsecretvalue*) fail "provider key value never echoed" "value appeared in output" ;;
+  *) pass "provider key value never echoed" ;;
+esac
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { corp: { base_url: "https://x.example/v1", api_key_env: K } }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "unused provider: still exit 0" 0
+assert_stderr_contains "unused provider: warns" "providers.corp is not used by any stage"
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, provider: openai, price: { input: 1, output: 2 } } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stderr_exact "provider stage no model: exactly one message" "config.sh: invalid config: review.stages[0].model must be set when provider is set"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

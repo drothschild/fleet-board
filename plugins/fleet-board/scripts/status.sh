@@ -50,16 +50,21 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-STATES="ready in_progress in_review human_qa blocked"
+ALL=""
 FORECAST=""
 case "$#:${1:-}" in
   0:) ;;
   1:--forecast) FORECAST=1 ;;
-  1:--all) STATES="$STATES backlog done wont_do" ;;
+  1:--all) ALL=1 ;;
   *) fb_die 2 "usage: status.sh [--all | --forecast]" ;;
 esac
 
 fb_load_config
+
+# The review stage columns (config order) sit between in_review and human_qa.
+STAGE_STATES="$(fb_stage_states | tr '\n' ' ')"
+STATES="ready in_progress in_review ${STAGE_STATES}human_qa blocked"
+[ -z "$ALL" ] || STATES="$STATES backlog done wont_do"
 
 DEPS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
 EDGES_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
@@ -115,7 +120,7 @@ forecast_card() {
 }
 
 if [ -n "$FORECAST" ]; then
-  for st in ready in_progress in_review human_qa blocked backlog; do
+  for st in ready in_progress in_review $STAGE_STATES human_qa blocked backlog; do
     LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
     ROWS="$(jq -c 'if type == "array" then .[] | {number, title} else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
       || fb_die 1 "cannot parse the $st column"
@@ -193,10 +198,20 @@ for st in $STATES; do
         suffix=" · dependencies unreadable"; RC=1
       fi
     fi
-    jq -r --arg n "$n" --arg t "$title" --arg sfx "$suffix" '
+    stage="$(fb_stage_of_state "$st")"
+    sagent=""; sprov=""; smodel=""
+    if [ -n "$stage" ]; then
+      sagent="$(jq -r '.agent // ""' <<<"$stage")"
+      sprov="$(jq -r '.provider // ""' <<<"$stage")"
+      smodel="$(jq -r '.model // ""' <<<"$stage")"
+    fi
+    jq -r --arg n "$n" --arg t "$title" --arg sfx "$suffix" --arg stage "$stage" \
+      --arg sagent "$sagent" --arg sprov "$sprov" --arg smodel "$smodel" '
       def v: if . == null then "—" else tostring | gsub("[[:cntrl:]]"; " ") end;
       def m($k): if type == "object" then .[$k] | v else "—" end;
-      "  #\($n) \($t) · round \(.round | v) · PR \(if .pr == null then "—" else "#\(.pr)" end) · \(.models | m("implementor"))/\(.models | m("reviewer"))\($sfx)"' \
+      "  #\($n) \($t) · round \(.round | v) · PR \(if .pr == null then "—" else "#\(.pr)" end) · \(if $stage == "" then "\(.models | m("implementor"))/\(.models | m("reviewer"))"
+        elif $sprov != "" then "\(.models | m("fixer"))/\($sprov):\($smodel)"
+        else "\(.models | m("fixer"))/\($sagent)@\($smodel)" end)\($sfx)"' \
       <<<"$note" || { printf '  #%s %s · note unreadable\n' "$n" "$title"; RC=1; }
   done <<<"$ROWS"
 done

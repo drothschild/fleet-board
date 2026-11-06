@@ -57,7 +57,7 @@ BACK="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }
     on && $0 == "```" { exit }
     on { print }' | jq -r '.blocked_from // empty' 2>/dev/null)"
-case "$BACK" in ready|in_progress|in_review) ;; *) BACK=in_review ;; esac
+case "$BACK" in ready|in_progress|in_review|review_?*) ;; *) BACK=in_review ;; esac
 
 PR="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }
@@ -72,7 +72,7 @@ ROUND="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
 fb_valid_number "$ROUND" || ROUND=0
 # Round 0 has nothing below it to mark unreviewed, so In Review would take the
 # clean path; from In Progress the plan starts a review of the PR.
-[ "$ROUND" -eq 0 ] && [ "$BACK" = in_review ] && BACK=in_progress
+case "$BACK" in in_review|review_?*) [ "$ROUND" -eq 0 ] && BACK=in_progress ;; esac
 
 OUT="$(gh pr view "$PR" --repo "$FLEET_REPO" --json headRefOid)" || fb_die 1 "cannot read the PR head of #$PR; nothing accepted"
 HEAD_SHA="$(jq -r '.headRefOid // empty' <<<"$OUT" 2>/dev/null)"
