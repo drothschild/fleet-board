@@ -185,7 +185,7 @@ WRAPPER
   exit 0
 fi
 case "${1:-}" in
-  plan-only|tick-holds|interrupt-planner) ;;
+  plan-only|tick-holds|tick-cost|interrupt-planner) ;;
   *) echo "usage: $0 plan-only|tick-holds|worker-boundary" >&2; exit 2 ;;
 esac
 TMP="$(mktemp -d)"
@@ -229,7 +229,8 @@ PLANNER
   echo 'PASS: interrupt-planner'
   exit 0
 fi
-if [ "$1" = tick-holds ]; then
+if [ "$1" = tick-holds ] || [ "$1" = tick-cost ]; then
+  if [ "$1" = tick-cost ]; then export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"; fi
   jq '.cards[0].action = "skip" | .dispatchable = false' "$TMP/expected" > "$TMP/idle.json"
   cat > "$TMP/planner" <<PLAN
 #!/usr/bin/env bash
@@ -242,16 +243,21 @@ PLAN
   if ! jq -e '.outcome == "idle" and .dispatchable == false and .cards[0].action == "skip"' "$TMP/idle-out" >/dev/null; then
     echo 'FAIL: idle tick outcome malformed' >&2; exit 1
   fi
+  if [ "$1" = tick-cost ]; then
+    jq -e '.cost_usd == 0' "$TMP/idle-out" >/dev/null || { echo 'FAIL: idle tick cost missing' >&2; exit 1; }
+  fi
   cp "$TMP/expected" "$TMP/idle.json"
   if FLEET_BOARD_TICK_PLAN="$TMP/planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/held-out" 2>/dev/null; then
     echo 'FAIL: unsupported start action accepted' >&2; exit 1
   fi
-  if [ -s "$TMP/held-out" ]; then echo 'FAIL: held action reported success' >&2; exit 1; fi
+  if [ "$1" = tick-cost ]; then
+    jq -e '.outcome == "failed" and .cost_usd == 0' "$TMP/held-out" >/dev/null || { echo 'FAIL: failed fixture tick cost missing' >&2; exit 1; }
+  elif [ -s "$TMP/held-out" ]; then echo 'FAIL: held action reported success' >&2; exit 1; fi
   for call in "$FAKE_GH_DIR"/argv/*; do
     [ -f "$call" ] || continue
     if grep -Eq '^(create|edit|comment|close|merge)$' "$call"; then echo 'FAIL: held tick wrote to board' >&2; exit 1; fi
   done
-  echo 'PASS: tick-holds'
+  echo "PASS: $1"
   exit 0
 fi
 if ! bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/actual"; then
