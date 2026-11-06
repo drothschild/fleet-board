@@ -256,7 +256,9 @@ if setup_case; then
   assert_body "card 2 manager_note is a string" '.manager_note|type' string
   assert_body "card 2 manager_note drops the marker line" '.manager_note' '## Manager note*'
   assert_body "card 2 pr_url" '.pr_url' 'https://github.com/acme/toy/pull/41'
+  assert_body "card 2 manager_note_id is the marker comment's id" '.manager_note_id' 1
   api GET /api/cards/1
+  assert_body "card 1 manager_note_id null" '.manager_note_id' null
   assert_body "card 1 manager_note null" '.manager_note' null
   assert_body "card 1 pr_url null" '.pr_url' null
 
