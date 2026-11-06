@@ -19,6 +19,15 @@ EFFECTIVE_REMOTE="$(git -C "$FLEET_ROOT" remote get-url origin)" || exit 1
 case "$EFFECTIVE_REMOTE" in file://*) REMOTE_DIR="${EFFECTIVE_REMOTE#file://}" ;; *) echo 'fixture remote must be local' >&2; exit 1 ;; esac
 REMOTE_DIR="$(cd "$REMOTE_DIR" && pwd -P)" || exit 1
 case "$REMOTE_DIR/" in "$FIXTURE_ROOT"/*) ;; *) echo 'fixture remote outside fixture root' >&2; exit 1 ;; esac
+validate_push_destination() {
+  local push_urls push_dir
+  push_urls="$(git -C "$FLEET_ROOT" remote get-url --push --all origin)" || return 1
+  case "$push_urls" in *$'\n'*|file://*) ;; *) return 1 ;; esac
+  case "$push_urls" in *$'\n'*) return 1 ;; esac
+  push_dir="$(cd "${push_urls#file://}" && pwd -P)" || return 1
+  [ "$push_dir" = "$REMOTE_DIR" ]
+}
+validate_push_destination || { echo 'push destination does not match fixture remote' >&2; exit 1; }
 N="$(jq -r .number "$CARD")"; BRANCH="$(jq -r .branch "$CARD")"
 WT="$(jq -r .worktree "$CARD")"; TITLE="$(jq -r .title "$CARD")"
 case "$BRANCH" in "fleet/$N-"*) ;; *) echo 'branch does not match card' >&2; exit 1 ;; esac
@@ -76,6 +85,7 @@ jq -e '.status == "done" and (.out_of_scope | length == 0) and (.bugs | length =
 if [ -n "$REMOTE_HEAD" ]; then
   [ "${REMOTE_HEAD%%[[:space:]]*}" = "$HEAD_SHA" ] || { echo 'remote branch does not match recorded evidence' >&2; exit 1; }
 else
+  validate_push_destination || { echo 'push destination changed' >&2; exit 1; }
   git -C "$FLEET_ROOT" push origin "$HEAD_SHA:refs/heads/$BRANCH" >&2 || exit 1
 fi
 PRS="$(gh pr list --repo "$FLEET_REPO" --head "$BRANCH" --state open --json number)" || exit 1
