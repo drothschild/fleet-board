@@ -51,6 +51,7 @@ run_group() {
 }
 run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
 run_review() { run_group bash "$SCRIPTS/standalone/review.sh" "$@"; }
+run_fix() { run_group bash "$SCRIPTS/standalone/fix.sh" "$@"; }
 trap cleanup EXIT
 trap 'cancel 130' INT
 trap 'cancel 143' TERM
@@ -63,13 +64,17 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/fix-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
     jq -e '.version == 1 and (.plan_card | type == "object")' "$JOURNAL" >/dev/null || { echo 'invalid action journal' >&2; exit 1; }
     jq '.plan_card' "$JOURNAL" > "$SCRATCH/card" || exit 1
-    run_start "$SCRATCH/card" "$SCRATCH" || exit 1
+    case "$(basename "$JOURNAL")" in
+      start-*) run_start "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      fix-*) run_fix "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      *) exit 1 ;;
+    esac
     jq -n --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]}'
     exit 0
   done
@@ -119,6 +124,9 @@ if jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.cards
 elif jq -e '([.cards[] | select(.action == "start_review")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start_review")' "$PLAN" >/dev/null; then
   jq '.cards[] | select(.action == "start_review")' "$PLAN" > "$SCRATCH/card"
   run_review "$SCRATCH/card" "$SCRATCH" || exit 1
+elif jq -e '([.cards[] | select(.action == "fix")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "fix")' "$PLAN" >/dev/null; then
+  jq '.cards[] | select(.action == "fix")' "$PLAN" > "$SCRATCH/card"
+  run_fix "$SCRATCH/card" "$SCRATCH" || exit 1
 else
   echo 'tick contains an unsupported action; no actions taken' >&2
   exit 1
