@@ -144,10 +144,14 @@ setup_case() {
 - yes" "$(jq -n --arg b "$note_body" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
   seed_card 3 human_qa "Third" "No acceptance here."
   : > "$REPO/.fleet-board/active/2"
+  start_server "$REPO"
+}
 
+# start_server <repo>: starts board-web.py on an ephemeral port (PORT).
+start_server() {
   local out="$TMP/server.out"
   : > "$out"
-  FLEET_BOARD_LOG_DIR="$TMP/logs" python3 "$SCRIPTS/board-web.py" --root "$REPO" --port 0 --scripts "$SCRIPTS" \
+  FLEET_BOARD_LOG_DIR="$TMP/logs" python3 "$SCRIPTS/board-web.py" --root "$1" --port 0 --scripts "$SCRIPTS" \
     > "$out" 2> "$TMP/server.err" < /dev/null &
   SERVER_PID=$!
   PORT=""
@@ -284,6 +288,15 @@ if setup_case; then
   assert_code 200
   [ "$(card_json 6 .state)" = blocked ] && pass "create with state blocked moves it" || fail "create with state blocked moves it" "state $(card_json 6 .state)"
 
+  api POST /api/cards '{"title":"Typo","body":"b","state":"bogus"}'
+  assert_code 400
+  assert_body "bogus state error names it" '.error' '*bogus*'
+  if [ ! -f "$REPO/.fleet-board/cards/7.json" ] && [ "$(tr -d '[:space:]' < "$REPO/.fleet-board/next")" = 7 ]; then
+    pass "bogus state created no card"
+  else
+    fail "bogus state created no card" "cards: $(ls "$REPO/.fleet-board/cards" | tr '\n' ' '); next: $(cat "$REPO/.fleet-board/next")"
+  fi
+
   api POST /api/cards '{"title":"x"}'
   assert_code 400
   api POST /api/cards 'not json'
@@ -312,6 +325,24 @@ if setup_case; then
 
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "server stdout holds only the listening line"; else fail "server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr"; fi
+  stop_server
+fi
+
+echo "Case: review stages appear in the board states"
+STAGES_REPO="$(new_repo "$LOCAL_YML
+review:
+  stages:
+    - name: security
+      agent: reviewer
+      label: review-security")"
+mkdir -p "$STAGES_REPO/.fleet-board/cards"
+echo 1 > "$STAGES_REPO/.fleet-board/next"
+if start_server "$STAGES_REPO"; then
+  api GET /api/board
+  assert_code 200
+  assert_body "stages repo has 9 states" '.states|length' 9
+  assert_body "review_security follows in_review" '[.states[].key]|index("in_review") as $i|.[$i+1]' review_security
+  assert_body "review_security display name" '.states[]|select(.key=="review_security")|.name' 'Review: security'
   stop_server
 fi
 

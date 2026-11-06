@@ -291,6 +291,10 @@ def create_card(params, body):
     text = require_str(body, "body")
     labels = require_labels(body) or []
     state = require_str(body, "state", required=False)
+    if state is not None:
+        cfg, _ = ctx()
+        if state not in [s["key"] for s in states(cfg)]:
+            raise ApiError(400, "invalid state: %s" % state)
     path = temp_text(text)
     try:
         argv = ["bash", script("board-create.sh"), title, path]
@@ -302,7 +306,11 @@ def create_card(params, body):
     finally:
         os.unlink(path)
     if state not in (None, "ready", "backlog"):
-        board_write(["bash", script("board-move.sh"), str(created["number"]), state])
+        try:
+            board_write(["bash", script("board-move.sh"), str(created["number"]), state])
+        except ApiError as exc:
+            raise ApiError(409, "created card #%s in backlog, but the move to %s failed: %s"
+                           % (created["number"], state, exc.msg))
     return 200, created
 
 
