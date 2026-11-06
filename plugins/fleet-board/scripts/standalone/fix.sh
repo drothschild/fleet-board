@@ -62,11 +62,12 @@ check_state() {
 check_state || { echo 'card is no longer in review' >&2; exit 1; }
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
 JDIR="$COMMON/fleet-board-standalone"; mkdir -p "$JDIR" || exit 1
-JOURNAL="$JDIR/fix-$N.json"; EVIDENCE_REF="refs/fleet-board/standalone/fix-$N-$ROUND"
+JOURNAL="$JDIR/fix-$N-$ROUND.json"; EVIDENCE_REF="refs/fleet-board/standalone/fix-$N-$ROUND"
 NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
-OLD_SHA="$(jq -r .last_review.sha <<<"$NOTE")"
+NOTE_SHA="$(jq -r .last_review.sha <<<"$NOTE")"
+NOTE_ROUND="$(jq -r .round <<<"$NOTE")"
+if [ -e "$JOURNAL" ]; then OLD_SHA="$(jq -r .base "$JOURNAL")"; else OLD_SHA="$NOTE_SHA"; fi
 [[ "$OLD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
-[ "$(jq -r .round <<<"$NOTE")" = "$ROUND" ] || exit 1
 INFO="$(pr_info)" || exit 1
 check_pr <<<"$INFO" || exit 1
 LIVE_SHA="$(jq -r .headRefOid <<<"$INFO")"
@@ -79,7 +80,20 @@ if [ -e "$JOURNAL" ]; then
   if [ -z "$CURRENT_REF" ]; then git -C "$FLEET_ROOT" update-ref "$EVIDENCE_REF" "$HEAD_SHA" "" || exit 1
   elif [ "$CURRENT_REF" != "$HEAD_SHA" ]; then exit 1; fi
   jq '.result' "$JOURNAL" > "$SCRATCH/result"
+  if [ "$NOTE_ROUND" = "$((ROUND + 1))" ] && [ "$NOTE_SHA" = "$HEAD_SHA" ] && [ "$(jq -r .last_review.round <<<"$NOTE")" = "$((ROUND + 1))" ]; then
+    [ "$LIVE_SHA" = "$HEAD_SHA" ] || exit 1
+    REMOTE_HEAD="$(git -C "$FLEET_ROOT" ls-remote --heads origin "refs/heads/$BRANCH")" || exit 1
+    [ "${REMOTE_HEAD%%[[:space:]]*}" = "$HEAD_SHA" ] || exit 1
+    COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
+    ME="$(fb_login)" || exit 1
+    jq -e --arg marker "<!-- fleet-board:standalone-review:$HEAD_SHA -->" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null || exit 1
+    check_state || exit 1
+    jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    exit 0
+  fi
+  [ "$NOTE_ROUND" = "$ROUND" ] && [ "$NOTE_SHA" = "$OLD_SHA" ] || exit 1
 else
+  [ "$NOTE_ROUND" = "$ROUND" ] || exit 1
   [ "$LIVE_SHA" = "$OLD_SHA" ] || { echo 'PR head changed since review' >&2; exit 1; }
   FINDINGS="$(jq -c '[.last_review.findings[] | select(.severity == "Critical" or .severity == "Important")]' <<<"$NOTE")" || exit 1
   [ "$(jq length <<<"$FINDINGS")" -gt 0 ] || exit 1
