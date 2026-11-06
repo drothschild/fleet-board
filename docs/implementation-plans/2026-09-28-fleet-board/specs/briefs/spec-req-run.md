@@ -52,6 +52,8 @@ Clarifications (the spec must carry each):
 - Unlike the headless wrapper, the in-session loop has no hour or cost limit of its own; the user interrupts it, or creates the stop file.
 - A plain request to process or work the board once is the `tick` skill, not this one; this skill is only for requests to keep going until the board has nothing left to do.
 
+- **Revision 15 (card 152): a tick finishes when its report arrives.** The `tick` skill may have to wait for a background manager's completion notice, so the Skill tool can return before the report exists. The spec must say a tick is finished only once its report has arrived, and that the loop never starts the next tick, reads a stop signal, or prints the summary before then. A launch acknowledgement is a tick still in progress, not a failed tick.
+
 ## Acceptance criteria
 
 None directly. (The headless wrapper, not this skill, carries AC6.5.)

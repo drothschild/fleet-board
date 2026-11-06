@@ -37,6 +37,7 @@ The skill takes no arguments. Ignore any words after `/fleet-board:run` for cont
 4. **Check the stop file before every tick, including the first.** Test whether `<repo root>/.fleet-board.stop` exists, for example with `test -e "<repo root>/.fleet-board.stop"`. If it exists, print `stopped: stop file after <i> ticks` (with `<i>` the number of ticks completed so far) and stop. Leave the file where it is.
 
 5. **Run exactly one tick.** Increment `i`, then invoke the Skill tool with `fleet-board:tick`. Only one tick runs at a time: never start the next tick until the current one has returned, and run nothing alongside it.
+   - A tick is finished only once its report has arrived. The `tick` skill may have to wait for the manager's completion notice (the runtime may have no foreground option), so the Skill tool can return before the report exists. Until the report has arrived, never start the next tick, never read a stop signal, and never print a summary or a `stopped:` line for that tick. Wait for the report by ending your turn, not by sleeping or polling.
 
 6. **Read the stop signal.** Take the last non-blank line of the tick's report.
    - If it is exactly `dispatchable: true` or `dispatchable: false` (ignoring trailing whitespace), that is the tick's signal.
@@ -116,6 +117,7 @@ stopped: nothing dispatchable after 2 ticks
   - Never create worktrees.
   - Never dispatch any agent (manager, implementor, reviewer or fixer). Your only way to do work is the Skill tool with `fleet-board:tick`.
 - Never run two ticks at once, or start a tick while a previous one is still running.
+- Never start the next tick, or read a stop signal, before the current tick's report has arrived. A launch acknowledgement or a message saying the manager is running is not a report, and is not a failed tick either: it is a tick still in progress.
 - Never guess, infer or default the stop signal when a tick's report lacks a final `dispatchable: true|false` line, and never keep looping after such a tick.
 - Never retry a failed tick.
 - Never sleep longer than 540 seconds in one Bash call, never sleep without a 600000 ms timeout, and never run the sleep in the background.

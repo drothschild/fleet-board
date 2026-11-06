@@ -43,6 +43,7 @@ Frontmatter holds exactly `name: run`, the `description` above, and `user-invoca
 3. **Keep a tick counter `i`.** It starts at 0.
 4. **Check the stop file before every tick, including the first.** Test whether `<repo root>/.fleet-board.stop` exists, for example with `test -e`. If it exists, print `stopped: stop file after <i> ticks`, where `<i>` is the number of ticks completed so far, and stop. The file is left where it is.
 5. **Run exactly one tick.** Increment `i`, then invoke the Skill tool with `fleet-board:tick`. Only one tick runs at a time: the next tick is never started until the current one has returned. Nothing else runs alongside it.
+   - A tick is finished only once its report has arrived. The `tick` skill may have to wait for the manager's completion notice (the runtime may have no foreground option), so the Skill tool can return before the report exists. Until the report has arrived, the loop never starts the next tick, never reads a stop signal, and never prints a summary or a `stopped:` line for that tick. It waits for the report by ending its turn, not by sleeping or polling.
 6. **Read the stop signal.** Take the last non-blank line of the tick's report.
    - Exactly `dispatchable: true` or `dispatchable: false` (trailing whitespace ignored): that is the tick's signal.
    - Anything else, including a Skill tool error, an empty result, or a `dispatchable:` line that is not the last line: the tick has failed. Print `stopped: tick <i> gave no stop signal` and stop. The skill does not guess a value, does not retry the tick, and does not start another tick.
@@ -78,6 +79,7 @@ Frontmatter holds exactly `name: run`, the `description` above, and `user-invoca
   - It never creates worktrees.
   - It never dispatches any agent (manager, implementor, reviewer or fixer) itself. Its only way to do work is the Skill tool with `fleet-board:tick`.
 - Run two ticks at once, or start a tick while a previous one is still running.
+- Start the next tick, or read a stop signal, before the current tick's report has arrived. A launch acknowledgement or a message saying the manager is running is not a report, and is not a failed tick either: it is a tick still in progress.
 - Guess, infer or default the stop signal when a tick's report lacks a final `dispatchable: true|false` line, or keep looping after such a tick.
 - Retry a failed tick.
 - Sleep longer than 540 seconds in one Bash call. Sleep without a 600000 ms timeout. Run the sleep in the background.
