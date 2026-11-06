@@ -26,7 +26,7 @@
 ## Review Focus
 
 1. A stage named in `board.states` after it was removed from `review.stages` must be rejected at config load, not silently ignored (Task 1 test `board.states key review_x names no stage`).
-2. A card in a stage column whose stage no longer exists in the config (stage removed while a card sat in it) must plan `skip` with reason `stage <name> is not configured` and a warning, never crash the plan (Task 5).
+2. A card still labelled with a stage state that was removed from `review.stages` has no canonical state; `tick-plan.sh --settle <n>` must plan `skip` for it and exit 0, never crash (Task 5 `stage-not-configured`).
 3. A stage label added by hand for a stage already in `reviewed_stages` must not send the card back (Task 2 `next` test, Task 5 `stage-skip-done`).
 4. `review-stages.sh route` on a PR with more changed files than `gh` lists must add every stage label and warn, so a large PR never skips a review by accident (Task 2).
 5. The labels adapter `move` must strip a stage state label when moving to any other state, so a card never carries two state labels (Task 1 `test-board-labels.sh`).
@@ -369,7 +369,7 @@ git push
 
 **Interfaces:**
 - Consumes: Task 1 `fb_stage_states`, `fb_stage_of_state`; Task 2 `review-stages.sh next`; Task 3 note fields.
-- Produces plan card fields: `stage` = for `advance_stage` the stage being entered, for a card in a stage column that column's stage object `{name, agent, model, advisory, brief, max_rounds}`, else `null`. Actions `advance_stage` (reason `review clean; next stage <name>`), `review_stage` (reasons as `review`'s, with `round <r> of <stage> not reviewed yet` for the fresh case), `fix` and `block` in a stage column (block reason `<ci> Critical/Important findings survive round <r> of <max> in <stage>`), `skip` with reason `stage <name> is not configured` (and the warning `#<n>: stage <name> is not configured; fix the config or move the card by hand`).
+- Produces plan card fields: `stage` = for `advance_stage` the stage being entered, for a card in a stage column that column's stage object `{name, agent, model, advisory, brief, max_rounds}`, else `null`. Actions `advance_stage` (reason `review clean; next stage <name>`), `review_stage` (reasons as `review`'s, with `round <r> of <stage> not reviewed yet` for the fresh case), `fix` and `block` in a stage column (block reason `<ci> Critical/Important findings survive round <r> of <max> in <stage>`). A card whose label names a removed stage reads with no canonical state and gets the table's existing `skip` (`state <state> is not planned`).
 - Lookups: for `in_review` and every stage column, when the review is clean and current, `review-stages.sh next --labels <labels> --after <state> --done <reviewed_stages> <n>` runs first; `needs-human-qa.sh` runs only when it prints nothing. A failed `next` is `lookup failed: review-stages.sh next <n>`.
 - Settle mode: `advance_stage` kept; `review_stage` → `skip`, reason `review_stage waits for the next tick`.
 
@@ -414,10 +414,11 @@ assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
 # head moved after a clean stage review -> review_stage
 plan stage-head-moved
 assert_jq "stage-head-moved: action" "$(card 12 action)" '"review_stage"'
-# a card in review_legacy, stage not configured -> skip + warning
-plan stage-not-configured
-assert_jq "stage-missing: action" "$(card 12 action)" '"skip"'
-assert_jq "stage-missing: warning" '.warnings' '["#12: stage legacy is not configured; fix the config or move the card by hand"]'
+# a card labelled fleet:review_legacy with no such stage in the config: settle plan by number
+plan_settle stage-not-configured 12
+assert_exit "stage-missing: exit 0" 0
+assert_jq "stage-missing: action skip" "$(card 12 action)" '"skip"'
+assert_jq "stage-missing: not dispatchable" '.dispatchable' 'false'
 # settle keeps advance_stage, drops review_stage
 plan_settle stage-advance-from-review 12
 assert_jq "settle: advance_stage kept" "$(card 12 action)" '"advance_stage"'
@@ -427,7 +428,6 @@ assert_jq "settle: review_stage waits" "$(card 12 reason)" '"review_stage waits 
 plan stage-action-failures-3     # note action_failures 3, review.max_rounds 3
 assert_jq "stage failures: block" "$(card 12 action)" '"block"'
 ```
-(`stage-not-configured` lists a `fleet:review_legacy` column only through a config that still names `legacy`? No: the card is read from a settle plan by number, `tick-plan.sh --settle 12`, with the card's label `fleet:review_legacy` and a config without that stage; `board-read.sh` reports the state as unknown. Assert the skip from the settle plan.)
 
 - [ ] **Step 2: Run the suite, expect the new cases to fail; commit tests and fixtures**
 
@@ -488,6 +488,7 @@ assert_eq "move_to_review: route adds the label" "$(cnt "issue edit 12 --repo ac
 # stage columns are listed
 assert_eq "lists review_security" "$(cnt_prefix "issue list --repo acme/toy --label fleet:review_security")" 1
 ```
+(`cnt_prefix` counts calls whose argv starts with the given words; add it beside the suite's `cnt` if absent.)
 In `test-merge-reviewed.sh`: a card in `review_security` with a clean stage review, non-draft green PR under `merge.policy: auto` is merged; the `fleet:review_security` column is listed.
 
 - [ ] **Step 2: Run both suites, expect the new cases to fail; commit**
@@ -514,21 +515,19 @@ git push
 
 ---
 
-### Task 7: `init.sh` stage states (fresh and `--force` runs)
+### Task 7: `init.sh` names the stage setup step
 
 **Files:**
-- Modify: `plugins/fleet-board/scripts/init.sh:30,241-252,266-293`
+- Modify: `plugins/fleet-board/scripts/init.sh:241-252` (`state_color`), after step 5 (`fb_set_states`), end of the script (hint line)
 - Test: `plugins/fleet-board/tests/test-init.sh`
 
 **Interfaces:**
-- Consumes: Task 1 `fb_set_states`, `fb_stage_states`.
-- Produces: after `FLEET_CFG` is set (step 5), `init.sh` calls `fb_set_states`; `state_color review_*` → `5319e7`; on `github-labels` the state loop creates `fleet:review_<name>` labels; on Projects the option check names missing stage columns; stage routing labels are created through `review-stages.sh setup` (the one call site). Since `init.sh` renders a fresh config with no stages, this matters only for `--force` on a config… which it overwrites. So: `init.sh` gains no flag; it calls `review-stages.sh setup` after `create_routing_labels` so a config that *already* holds stages (re-rendered with `--force` from the same flags) still gets them. Test the direct effect: with `FLEET_BOARD_CONFIG` pointing at a rendered config containing stages, the labels are created.
+- Consumes: Task 1 `fb_set_states`; Task 2 `review-stages.sh setup`.
+- Produces: `init.sh` always renders a config without stages, so it creates no stage labels itself. It ends its success output with the line `fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash <scripts>/review-stages.sh setup` (`<scripts>` the absolute scripts dir). `state_color review_*` → `5319e7`, and `fb_set_states` runs after `FLEET_CFG` is set, so a later change that keeps a config's stages creates their labels through the existing state loop.
 
-- [ ] **Step 1: Write the failing init test**: in `test-init.sh`'s labels-backend run, pre-create a `.fleet-board.yml` holding Task 1's two stages and run `init.sh --force ...`; assert `label create fleet:review_security ... --color 5319e7` and `label create needs-security-review ... --color d93f0b` calls happen once each. On the Projects run with options lacking `Review: security`, assert exit 1 and the stderr `Status field lacks option(s): Review: security`.
+- [ ] **Step 1: Write the failing init test**: in `test-init.sh`'s labels-backend success case, assert stdout contains `then run: bash ` and `/review-stages.sh setup` on one line.
 
-   Note: `init.sh --force` re-renders the config from its flags, dropping `stages`. So the test instead asserts the *Projects* check and label creation through `review-stages.sh setup` being invoked by init: assert `calls.log` shows the stage label creates only when the rendered config has stages. If `init.sh` cannot carry stages, the minimal change is: `init.sh` prints, at the end, `fleet-board init: after adding review.stages, run: bash <scripts>/review-stages.sh setup` and this task's test asserts that line. **Choose this minimal form**; the `state_color` arm and the `fb_set_states` call still land so a future `--keep-config` run creates the labels.
-
-- [ ] **Step 2: Run `test-init.sh`, expect the new case to fail; commit the test**
+- [ ] **Step 2: Run `bash plugins/fleet-board/tests/test-init.sh`, expect the new case to fail; commit the test**
 
 - [ ] **Step 3: Implement** the hint line, the `state_color` arm and the `fb_set_states` call.
 
@@ -668,7 +667,7 @@ git push
 
 - [ ] **Step 3: Run** `bash plugins/fleet-board/tests/test-readme-claims.sh && bash plugins/fleet-board/tests/test-version.sh && bash plugins/fleet-board/tests/test-clean-room.sh`. Expected: pass.
 
-- [ ] **Step 4: Commit, push, mark the PR ready for review is NOT done here (the user merges); open it**
+- [ ] **Step 4: Commit, push and open the PR in the browser** (it stays a draft; the user marks it ready and merges)
 
 ```bash
 git add plugins/fleet-board/README.md plugins/fleet-board/docs/config.md docs/design.md plugins/fleet-board/CLAUDE.md plugins/fleet-board/.claude-plugin/plugin.json .claude-plugin/marketplace.json plugins/fleet-board/tests/test-readme-claims.sh
