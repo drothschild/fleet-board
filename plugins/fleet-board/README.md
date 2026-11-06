@@ -123,6 +123,8 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
+| `review.stages[].provider` | none | runs the review stage on a model from a provider instead of a Claude `agent`; set exactly one of the two, plus `model` and `price` ([details](docs/config.md#providers)) |
+| `providers` | `{}` | provider connections by name: `base_url`, `api_key_env`, `max_tokens_param`; built-in presets `openai`, `gemini`, `openrouter`, `ollama` need no entry ([details](docs/config.md#providers)) |
 | `models.manager` / `implementor` / `reviewer` / `fixer` | `sonnet` / `sonnet` / `opus` / `sonnet` | each role's model |
 | `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.escalation` |
 | `models.escalation` | unset | model for escalated implementor and fixer; unset means `models.reviewer`. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |

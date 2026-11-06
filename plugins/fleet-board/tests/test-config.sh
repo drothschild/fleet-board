@@ -612,13 +612,13 @@ for prov in gemini openrouter ollama; do
   REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ %s ] }\n' "${SP/PROV/$prov}" | make_inline_repo)"
   CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
   assert_exit "preset $prov: valid" 0
+  case "$prov" in
+    gemini) want='{"base_url":"https://generativelanguage.googleapis.com/v1beta/openai","api_key_env":"GEMINI_API_KEY","max_tokens_param":"max_tokens"}' ;;
+    openrouter) want='{"base_url":"https://openrouter.ai/api/v1","api_key_env":"OPENROUTER_API_KEY","max_tokens_param":"max_tokens"}' ;;
+    ollama) want='{"base_url":"http://localhost:11434/v1","api_key_env":null,"max_tokens_param":"max_tokens"}' ;;
+  esac
+  assert_stdout_exact_jq "preset $prov values" ".providers.$prov" "$want"
 done
-assert_stdout_exact_jq "preset gemini" '.providers.gemini' \
-  '{"base_url":"https://generativelanguage.googleapis.com/v1beta/openai","api_key_env":"GEMINI_API_KEY","max_tokens_param":"max_tokens"}'
-assert_stdout_exact_jq "preset openrouter" '.providers.openrouter' \
-  '{"base_url":"https://openrouter.ai/api/v1","api_key_env":"OPENROUTER_API_KEY","max_tokens_param":"max_tokens"}'
-assert_stdout_exact_jq "preset ollama" '.providers.ollama' \
-  '{"base_url":"http://localhost:11434/v1","api_key_env":null,"max_tokens_param":"max_tokens"}'
 REPO="$(printf 'board:\n  repo: a/b\nproviders: { openai: { api_key_env: WORK_OPENAI } }\nreview: { stages: [ %s ] }\n' "${SP/PROV/openai}" | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stdout_exact_jq "user provider overrides preset key by key" '.providers.openai' \

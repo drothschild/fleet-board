@@ -34,5 +34,14 @@ r=bad
 printf '%s\n' "$section" | grep -E "Backlog.*promotes|promotes.*Backlog" | grep -qi "nothing" && r=ok
 check "card-writing section says nothing promotes a Backlog card" "$r"
 
+# The key table has rows for the providers map and a stage's provider key.
+r=bad
+grep -qE '^\| `providers` \|' "$README" && r=ok
+check "key table has a providers row" "$r"
+
+r=bad
+grep -qF '| `review.stages[].provider` |' "$README" && r=ok
+check "key table has a review.stages[].provider row" "$r"
+
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -122,15 +122,22 @@ STAGE_DEFAULTS='
         if type == "object" then
           . as $s | {
             name: $s.name,
-            agent: $s.agent,
-            model: (if $s | has("model") then $s.model else $root.models.reviewer end),
+            agent: ($s.agent // null),
+            provider: ($s.provider // null),
+            model: (if $s | has("model") then $s.model
+                    elif ($s.provider // null) != null then null
+                    else $root.models.reviewer end),
             paths: (if $s | has("paths") then $s.paths else [] end),
             label: (if $s | has("label") then $s.label
                     elif ($s.name | type) == "string" then "needs-\($s.name)-review"
                     else null end),
             advisory: (if $s | has("advisory") then $s.advisory else false end),
             max_rounds: (if $s | has("max_rounds") then $s.max_rounds else $root.review.max_rounds end),
-            brief: (if $s | has("brief") then $s.brief else null end)
+            brief: (if $s | has("brief") then $s.brief else null end),
+            price: ($s.price // null),
+            timeout: ($s.timeout // 600),
+            max_output_tokens: ($s.max_output_tokens // 16000),
+            max_diff_bytes: ($s.max_diff_bytes // 400000)
           }
         else . end)
     else . end
@@ -140,8 +147,38 @@ MERGED="$(jq -c "$STAGE_DEFAULTS" <<<"$MERGED")" || {
   exit 5
 }
 
+# Fill the providers map: an entry for every provider a stage names (a built-in
+# preset) and every provider the file defines, the preset under the file's keys.
+# A non-object entry is left as it is, for validation to name.
+PROVIDER_DEFAULTS='
+  def stage_providers:
+    if (.review | type) == "object" and (.review.stages | type) == "array"
+    then [.review.stages[] | select(type == "object") | .provider | select(type == "string")]
+    else [] end;
+  . as $root
+  | $presets[0] as $p
+  | if (.providers | type) == "object" then
+      .providers = (
+        ([($root.providers | keys[]), ($root | stage_providers[] | . as $sp | select($p | has($sp)))] | unique)
+        | map(. as $n | ($root.providers[$n]) as $u
+            | {key: $n,
+               value: (if $u != null and ($u | type) != "object" then $u
+                       else {base_url: null, api_key_env: null, max_tokens_param: "max_completion_tokens"}
+                            * ($p[$n] // {}) * ($u // {}) end)})
+        | from_entries)
+    else . end
+'
+MERGED="$(jq -c --slurpfile presets "$HERE/providers/presets.json" "$PROVIDER_DEFAULTS" <<<"$MERGED")" || {
+  echo "config.sh: invalid config: failed to fill providers" >&2
+  exit 5
+}
+
 # Validate config
 VALIDATION_SCRIPT='
+  def stage_providers:
+    if (.review | type) == "object" and (.review.stages | type) == "array"
+    then [.review.stages[] | select(type == "object") | .provider | select(type == "string")]
+    else [] end;
   def stage_names:
     if (.review | type) == "object" and (.review.stages | type) == "array"
     then [.review.stages[] | select(type == "object") | .name | select(type == "string")]
@@ -178,14 +215,30 @@ VALIDATION_SCRIPT='
       (if (.review | type) == "object" then
         (if (.review.stages | type) != "array" then "review.stages must be a list"
          else
-          (.review.stages as $stages | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
+          (.review.stages as $stages | .providers as $provs | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
             | if ($s | type) != "object" then "review.stages[\($i)] must be an object"
               else
                 (if ($s.name | type) != "string" or ($s.name | test("^[a-z][a-z0-9_]*$") | not) then "review.stages[\($i)].name must match ^[a-z][a-z0-9_]*$"
                  elif (($stages[0:$i] | map(select(type == "object") | .name)) | index($s.name)) != null then "review.stages[\($i)].name \($s.name) is not unique"
                  else empty end),
-                (if ($s.agent | type) != "string" or ($s.agent | test("^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$") | not) then "review.stages[\($i)].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$" else empty end),
-                (if ($s.model | type) != "string" or $s.model == "" then "review.stages[\($i)].model must be a non-empty string" else empty end),
+                (if ($s.agent == null) == ($s.provider == null) then "review.stages[\($i)] must set exactly one of agent and provider" else empty end),
+                (if $s.provider == null and $s.agent != null and (($s.agent | type) != "string" or ($s.agent | test("^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$") | not)) then "review.stages[\($i)].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$" else empty end),
+                (if $s.provider != null then
+                  (if ($s.provider | type) != "string" or ($s.provider | test("^[a-z][a-z0-9_-]*$") | not) then "review.stages[\($i)].provider must match ^[a-z][a-z0-9_-]*$"
+                   elif (($presets[0] | has($s.provider)) or (($provs | type) == "object" and ($provs | has($s.provider)))) | not then "review.stages[\($i)].provider \($s.provider) names no provider"
+                   else empty end)
+                else empty end),
+                (if $s.provider != null and $s.model == null then "review.stages[\($i)].model must be set when provider is set"
+                 elif ($s.model | type) != "string" or $s.model == "" then "review.stages[\($i)].model must be a non-empty string" else empty end),
+                (if $s.provider != null then
+                  (if $s.price == null then "review.stages[\($i)].price is required when provider is set"
+                   else
+                    (("input", "output") as $k | ($s.price | if type == "object" then .[$k] else null end) as $v
+                      | if ($v | type) != "number" or $v < 0 then "review.stages[\($i)].price.\($k) must be a non-negative number" else empty end)
+                   end)
+                else empty end),
+                (("timeout", "max_output_tokens", "max_diff_bytes") as $k
+                  | if ($s[$k] | type) != "number" or ($s[$k] | floor) != $s[$k] or $s[$k] <= 0 then "review.stages[\($i)].\($k) must be a positive integer" else empty end),
                 (if ($s.paths | type) != "array" or ($s.paths | map(type != "string" or . == "") | any) then "review.stages[\($i)].paths must be a list of non-empty strings" else empty end),
                 (if ($s.label | type) != "string" or $s.label == "" or $s.label == "needs-human-qa" or $s.label == "needs-manual-step"
                       or (($stages[0:$i] | map(select(type == "object") | .label)) | index($s.label)) != null
@@ -196,6 +249,23 @@ VALIDATION_SCRIPT='
               end)
          end)
       else empty end),
+      (if (.providers | type) != "object" then "providers must be an object"
+       else
+        (.providers | to_entries[] | . as $e | $e.key as $n | $e.value as $v
+          | if ($n | test("^[a-z][a-z0-9_-]*$") | not) then "providers.\($n) name must match ^[a-z][a-z0-9_-]*$"
+            elif ($v | type) != "object" then "providers.\($n) must be an object"
+            else
+              (("api_key", "key", "token", "secret") as $k
+                | if $v | has($k) then "providers.\($n).\($k) is not allowed; name an environment variable in api_key_env" else empty end),
+              ((($v.base_url | type) == "string" and ($v.base_url | test("^(https://.|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])([:/]|$))"))) as $url_ok
+                | (if $url_ok | not then "providers.\($n).base_url must start with https:// or a loopback http:// address" else empty end),
+                  (if $v.api_key_env == null then
+                    (if ($url_ok and ($v.base_url | startswith("http://"))) | not then "providers.\($n).api_key_env may be null only for a loopback base_url" else empty end)
+                   elif ($v.api_key_env | type) != "string" or ($v.api_key_env | test("^[A-Z_][A-Z0-9_]*$") | not) then "providers.\($n).api_key_env must match ^[A-Z_][A-Z0-9_]*$"
+                   else empty end)),
+              (if $v.max_tokens_param != "max_tokens" and $v.max_tokens_param != "max_completion_tokens" then "providers.\($n).max_tokens_param must be max_tokens or max_completion_tokens" else empty end)
+            end)
+       end),
       (if (.merge | type) == "object" then
         (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end)
       else empty end),
@@ -236,19 +306,28 @@ VALIDATION_SCRIPT='
       else empty end)
     ] | map(select(. != null))
   ;
-  errors | .[]
+  def warnings:
+    if (.providers | type) == "object" then
+      (stage_providers as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
+    else [] end;
+  (errors | .[]), (warnings | .[])
 '
 
-VALIDATION_ERRORS="$(echo "$MERGED" | jq -r "$VALIDATION_SCRIPT" 2>&1)" || {
+VALIDATION_ERRORS="$(echo "$MERGED" | jq -r --slurpfile presets "$HERE/providers/presets.json" "$VALIDATION_SCRIPT" 2>&1)" || {
   echo "config.sh: invalid config: validation script failed" >&2
   exit 5
 }
 
+# Lines starting "warning: " are warnings (exit stays 0); the rest are errors.
 if [ -n "$VALIDATION_ERRORS" ]; then
+  HAD_ERROR=0
   while IFS= read -r line; do
-    echo "config.sh: invalid config: $line" >&2
+    case "$line" in
+      "warning: "*) echo "config.sh: $line" >&2 ;;
+      *) echo "config.sh: invalid config: $line" >&2; HAD_ERROR=1 ;;
+    esac
   done <<< "$VALIDATION_ERRORS"
-  exit 5
+  [ "$HAD_ERROR" = "0" ] || exit 5
 fi
 
 # Output

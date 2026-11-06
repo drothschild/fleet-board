@@ -41,6 +41,39 @@ board:
 
 Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with a `## Acceptance` section drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). The Acceptance command is the first backticked span with a non-blank character; spans are paired single backticks, so a detail with an odd number of backticks or a double backtick has none. An out-of-scope item with no such span, or whose detail holds the words `no testable check` (even beside a backticked path, and even when quoted), gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. Roles are told to write the check command before any other backticked text; a backticked file path written first is taken as the command, and invisible characters inside a span are not checked. A follow-up whose detail says "depends on this card" carries `## Depends on` naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
 
+## `providers`
+
+A review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). A stage sets exactly one; `config.sh` exits 5 with `review.stages[<i>] must set exactly one of agent and provider` otherwise.
+
+```yaml
+providers:                       # optional; a preset name needs no entry
+  corp:
+    base_url: <an https address>
+    api_key_env: CORP_LLM_KEY
+    max_tokens_param: max_tokens # or max_completion_tokens (the default)
+review:
+  stages:
+    - name: security
+      provider: openai
+      model: <model id, passed verbatim>
+      price: { input: 1.25, output: 10 }   # USD per million tokens
+```
+
+Built-in presets are `openai`, `gemini`, `openrouter` and `ollama`; their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider a stage names or the file defines. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
+
+| Key | Rule |
+|---|---|
+| provider name | matches `^[a-z][a-z0-9_-]*$` |
+| `base_url` | an https address, or an http address whose host is `localhost`, `127.0.0.1` or `[::1]` |
+| `api_key_env` | the name of an environment variable, matching `^[A-Z_][A-Z0-9_]*$`; `null` only for a loopback `base_url` |
+| `max_tokens_param` | `max_tokens` or `max_completion_tokens` |
+
+Config never holds a key. `api_key`, `key`, `token` and `secret` under a provider are rejected, and the message does not repeat the value.
+
+A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and keeps `model` defaulting to `models.reviewer`.
+
+**Data egress.** A provider stage sends the card body and the PR diff to that provider. Use a provider only for repos whose code you may send to it.
+
 ## `limits` for the headless wrapper
 
 `fleet-board-run.sh` reads `limits.max_hours`, `max_cost_usd`, `tick_interval`, `max_consecutive_failures` and `max_turns` (see [overnight.md](overnight.md)). Three more keys deal with the GitHub quota. `config.sh` exits 5 when any of them is not a non-negative number.
