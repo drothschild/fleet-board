@@ -34,7 +34,7 @@ case "$*" in
   'issue list --repo acme/toy --label fleet:ready '*)
     if [ "$(cat "$GH_STATE/column")" = ready ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:ready"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
-  'issue edit 12 --repo acme/toy --remove-label fleet:ready') : ;;
+  'issue edit 12 --repo acme/toy --remove-label fleet:ready') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_progress')
     if [ -e "$GH_STATE/fail-move" ]; then rm "$GH_STATE/fail-move"; exit 1; fi
     printf in_progress > "$GH_STATE/column" ;;
@@ -42,6 +42,7 @@ case "$*" in
     jq --rawfile body "$7" '. + [{id:556,user:{login:"fleet-bot"},body:$body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments" || exit 1
     mv "$GH_STATE/new-comments" "$GH_STATE/comments" ;;
   'api -X POST repos/acme/toy/issues/12/comments --input -')
+    if [ -e "$GH_STATE/fail-note" ]; then rm "$GH_STATE/fail-note"; exit 1; fi
     body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"fleet-bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments"; mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{"id":555}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'pr list '*) if [ -e "$GH_STATE/pr" ]; then echo '[{"number":34}]'; else echo '[]'; fi ;;
@@ -87,8 +88,8 @@ if [ "${1:-start}" = push-destination ]; then
   echo 'PASS: push-destination'
   exit 0
 fi
-if [ "${1:-start}" = resume ]; then
-  touch "$TMP/state/fail-move"
+if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ]; then
+  if [ "$1" = resume ]; then touch "$TMP/state/fail-move"; else touch "$TMP/state/fail-note"; fi
   if bash "$ROOT/bin/fleet-board" tick > "$TMP/first-out" 2>"$TMP/first-err"; then echo 'FAIL: simulated interruption succeeded' >&2; exit 1; fi
   [ -e "$TMP/state/pr" ] || { echo 'FAIL: interruption preceded PR creation' >&2; exit 1; }
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { cat "$TMP/first-err" >&2; cat "$TMP/state/comments" >&2; echo 'FAIL: official report missing before interruption' >&2; exit 1; }
@@ -100,7 +101,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = resume ]; then
+if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ]; then
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: report duplicated' >&2; exit 1; }
   [ "$(grep -c '^pr create ' "$TMP/state/calls")" = 1 ] || { echo 'FAIL: draft PR duplicated' >&2; exit 1; }
 fi
