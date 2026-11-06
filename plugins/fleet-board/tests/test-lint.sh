@@ -136,6 +136,22 @@ newset; card 1 "$GOOD\n## Scope\n- edit \`src/real.js\`\n"
 run_lint
 check "existing file passes" "$RC" "0"
 
+echo "# missing-file: ## Creates heading, not create/new/add wording"
+newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+run_lint
+check "path under ## Creates without create wording exits 0" "$RC" "0"
+hasnt "path under ## Creates is not flagged" "$OUT" "src/fresh.js"
+newset; card 1 "$GOOD\n## Scope\n- we will create \`src/fresh.js\`\n"
+run_lint
+check "create wording outside ## Creates no longer skips the check" "$RC" "1"
+newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n\n## Scope\n- edit \`src/gone.js\`\n"
+run_lint
+check "path outside ## Creates exits 1" "$RC" "1"
+has "path outside ## Creates is flagged with the path" "$OUT" "src/gone.js is not on main"
+hasnt "## Creates path still not flagged beside a flagged one" "$OUT" "src/fresh.js"
+check "lint.sh has no create/new/add word-list skip" "$(grep -cE 'create\|new\|add' "$SCRIPT")" "0"
+check "lint.sh missing-file check names no create/new/adds word list" "$(grep -cE '\(create|\|new\||adds\?' "$SCRIPT")" "0"
+
 echo "# card arguments"
 newset
 card 1 "## Acceptance\n- the slider looks right\n"
