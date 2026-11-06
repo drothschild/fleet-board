@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in update-branch|update-stale|update-conflict|update-resume|update-cycle|update-rewind) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
+case "${1:-}" in update-branch|update-stale|update-conflict|update-resume|update-cycle|update-rewind|update-cli) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/update-branch.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -55,6 +55,20 @@ cd "$TMP/repo" || exit 1
 jq -n --arg sha "$BEFORE" '{pr:34,round:1,last_review:{sha:$sha,round:1,critical:0,important:0,findings:[]}}' > "$TMP/patch"
 bash "$TESTS/../scripts/note.sh" merge 12 "$TMP/patch" || exit 1
 jq -n '{number:12,state:"in_review",action:"update_branch",pr:34,branch:"fleet/12-example",worktree:"/unused",reason:"conflicts"}' > "$TMP/card"
+if [ "$1" = update-cli ]; then
+  jq '. + {title:"test",round:1,models:{implementor:"x",reviewer:"x",fixer:"x"},escalated:false,stage:null,needs_human_qa:false}' "$TMP/card" > "$TMP/cli-card"
+  jq -n --slurpfile c "$TMP/cli-card" '{dispatchable:true,warnings:[],cards:[$c[0]]}' > "$TMP/plan"
+  printf '#!/bin/sh\ncat "$PLAN_FIXTURE"\n' > "$TMP/plan-command"
+  export FLEET_BOARD_TICK_PLAN="$TMP/plan-command" PLAN_FIXTURE="$TMP/plan"
+  ROOT="$(cd "$TESTS/../../.." && pwd)"
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/result" || { echo 'FAIL: CLI update failed' >&2; exit 1; }
+  AFTER="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)"
+  [ "$AFTER" != "$BEFORE" ] || exit 1
+  jq -e '.outcome == "progress" and .dispatchable == true and .cost_usd == 0' "$TMP/result" >/dev/null || exit 1
+  note="$(bash "$TESTS/../scripts/note.sh" get 12)" || exit 1
+  jq -e --arg sha "$AFTER" '.last_review == null and .last_update.sha == $sha' <<<"$note" >/dev/null || exit 1
+  echo 'PASS: update-cli'; exit 0
+fi
 if [ "$1" = update-rewind ]; then
   export REWIND_SHA="$(git --git-dir="$GH_REMOTE" rev-parse "$BEFORE^")"
   touch "$GH_STATE/rewind"
