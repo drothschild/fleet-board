@@ -12,6 +12,10 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
+if [ "${1:-start}" = projects-review ] || [ "${1:-start}" = projects-qa-race ]; then
+  printf 'board:\n  backend: github-projects\n  repo: acme/toy\n  project_number: 1\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
+  export GH_PROJECT=1
+fi
 if [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ] || [ "${1:-start}" = stage-standard ]; then
   cat >> "$TMP/repo/.fleet-board.yml" <<'YML'
 review:
@@ -41,6 +45,28 @@ set -uo pipefail
 printf '%s\n' "$*" >> "$GH_STATE/calls"
 case "$*" in
   'api user') printf '{"login":"fleet-bot"}\n' ;;
+  'auth status') echo authenticated ;;
+  'project view 1 --owner acme --format json') echo '{"id":"PVT_fixture"}' ;;
+  'project field-list 1 --owner acme --format json --limit 100')
+    jq -n '{fields:[{name:"Status",id:"field",options:[{name:"Backlog",id:"backlog"},{name:"Ready",id:"ready"},{name:"In Progress",id:"in_progress"},{name:"In Review",id:"in_review"},{name:"Human QA",id:"human_qa"},{name:"Blocked",id:"blocked"},{name:"Done",id:"done"},{name:"Wont Do",id:"wont_do"}]}]}' ;;
+  'project item-list 1 --owner acme --format json --limit '*)
+    column="$(cat "$GH_STATE/column")"
+    case "$column" in ready) status=Ready ;; in_progress) status='In Progress' ;; in_review) status='In Review' ;; human_qa) status='Human QA' ;; done) status=Done ;; *) status='' ;; esac
+    jq -n --arg status "$status" '{items:[{status:$status,content:{type:"Issue",repository:"acme/toy",number:12,title:"Add subtract",url:"https://github.com/acme/toy/issues/12"}}]}' ;;
+  'api graphql '*)
+    if [ -e "$GH_STATE/project-move-race" ] && jq -e 'any(.[]; .body | contains("fleet-board:standalone-review:"))' "$GH_STATE/comments" >/dev/null; then
+      count=0; [ ! -e "$GH_STATE/project-reads" ] || count="$(cat "$GH_STATE/project-reads")"
+      count=$((count + 1)); printf '%s' "$count" > "$GH_STATE/project-reads"
+      if [ "$count" -eq 2 ]; then printf human_qa > "$GH_STATE/column"; fi
+    fi
+    column="$(cat "$GH_STATE/column")"
+    case "$column" in ready) status=Ready ;; in_progress) status='In Progress' ;; in_review) status='In Review' ;; human_qa) status='Human QA' ;; done) status=Done ;; *) status='' ;; esac
+    jq -n --arg status "$status" '{data:{repository:{issue:{projectItems:{nodes:[{id:"ITEM_fixture",project:{number:1},fieldValueByName:{name:$status}}]}}}}}' ;;
+  'project item-edit '*)
+    for value in "$@"; do :; done
+    case "$value" in ready|in_progress|in_review|human_qa|done) printf '%s' "$value" > "$GH_STATE/column" ;; *) exit 1 ;; esac
+    echo '{}' ;;
+
   'api repos/acme/toy/compare/'*) echo '{"commits":[]}' ;;
   'api repos/acme/toy/issues/12')
     if [ -e "$GH_STATE/move-at-adapter" ] && jq -e 'any(.[]; .body | contains("fleet-board:standalone-review:"))' "$GH_STATE/comments" >/dev/null; then
@@ -51,7 +77,8 @@ case "$*" in
     column="$(cat "$GH_STATE/column")"
     qa=false; [ ! -e "$GH_STATE/qa-flag" ] || qa=true
     stage=false; [ ! -e "$GH_STATE/stage-label" ] || stage=true
-    jq -n --arg label "fleet:$column" --argjson qa "$qa" --argjson stage "$stage" '{number:12,title:"Add subtract",html_url:"https://github.com/acme/toy/issues/12",body:"Subtract.\n\n## Acceptance\n- subtract two numbers\n",labels:([{name:$label}] + (if $qa then [{name:"needs-human-qa"}] else [] end) + (if $stage then [{name:"needs-security-review"}] else [] end))}' ;;
+    project=false; [ "${GH_PROJECT:-}" != 1 ] || project=true
+    jq -n --arg label "fleet:$column" --argjson qa "$qa" --argjson stage "$stage" --argjson project "$project" '{number:12,title:"Add subtract",html_url:"https://github.com/acme/toy/issues/12",body:"Subtract.\n\n## Acceptance\n- subtract two numbers\n",labels:((if $project then [] else [{name:$label}] end) + (if $qa then [{name:"needs-human-qa"}] else [] end) + (if $stage then [{name:"needs-security-review"}] else [] end))}' ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$GH_STATE/comments" ;;
   'issue list --repo acme/toy --label fleet:ready '*)
     if [ "$(cat "$GH_STATE/column")" = ready ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:ready"}]}]\n'; else echo '[]'; fi ;;
@@ -288,7 +315,7 @@ if [ "${1:-start}" = resume-ref ] && ! jq -e '.cost_usd == 0' "$TMP/out" >/dev/n
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ] || [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ] || [ "${1:-start}" = stage-standard ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ] || [ "${1:-start}" = advisory-stage ] || [ "${1:-start}" = stage-fix ] || [ "${1:-start}" = stage-standard ] || [ "${1:-start}" = projects-review ] || [ "${1:-start}" = projects-qa-race ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -395,6 +422,14 @@ PY_WORKER
     jq -e 'any(.[]; .id == 555 and (.body | contains("\"important\": 1")) and (.body | contains("Original finding")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review verdict changed on retry' >&2; exit 1; }
     jq -e '[.[] | select(.body | contains("fleet-board:standalone-review:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review report duplicated' >&2; exit 1; }
     echo "PASS: $1"
+    exit 0
+  fi
+  if [ "${1:-start}" = projects-qa-race ]; then
+    touch "$TMP/state/project-move-race"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then echo 'FAIL: Projects Human QA race accepted' >&2; exit 1; fi
+    grep -q 'refusing to move.*Human QA' "$TMP/review-err" || { cat "$TMP/review-err" >&2; echo 'FAIL: Projects adapter gate not reached' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = human_qa ] || { echo 'FAIL: Projects Human QA state lost' >&2; exit 1; }
+    echo 'PASS: projects-qa-race'
     exit 0
   fi
   if [ "${1:-start}" = review-human-race ]; then
