@@ -77,7 +77,7 @@ else
   [ "$RC" -eq 0 ] || exit "$RC"
   [ "$(jq -r .outcome "$SCRATCH/result")" = done ] || { echo 'worker did not complete implementation' >&2; exit 1; }
   CLONE="$SCRATCH/worker/checkout"
-  [ -d "$CLONE" ] && [ ! -L "$CLONE" ] || exit 1
+  [ -d "$CLONE" ] && [ ! -L "$CLONE" ] || { echo 'unsafe worker checkout root' >&2; exit 1; }
   # Read only objects and the detached HEAD, never the worker's Git config.
   [ -d "$CLONE/.git" ] && [ ! -L "$CLONE/.git" ] && [ -f "$CLONE/.git/HEAD" ] && [ ! -L "$CLONE/.git/HEAD" ] && [ -d "$CLONE/.git/objects" ] && [ ! -L "$CLONE/.git/objects" ] || exit 1
   [ ! -e "$CLONE/.git/objects/info/alternates" ] && [ ! -e "$CLONE/.git/objects/info/http-alternates" ] || exit 1
