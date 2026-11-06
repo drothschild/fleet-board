@@ -65,7 +65,10 @@ case "$1 $2" in
   'api repos/acme/toy/issues/'*)
     n="${2##*/}"; column="$(cat "$GH_STATE/column-$n")"
     if [ "$n" = 12 ]; then title='Add subtract'; else title='Add multiply'; fi
-    jq -n --argjson n "$n" --arg title "$title" --arg label "fleet:$column" '{number:$n,title:$title,html_url:("https://github.com/acme/toy/issues/" + ($n|tostring)),body:"## Acceptance\n- complete the card\n",labels:[{name:$label}]}' ;;
+    body='## Acceptance
+- complete the card'
+    if [ "$n" = 13 ] && [ "${GH_SKIP13:-}" = 1 ]; then body='No acceptance section yet.'; fi
+    jq -n --argjson n "$n" --arg title "$title" --arg label "fleet:$column" --arg body "$body" '{number:$n,title:$title,html_url:("https://github.com/acme/toy/issues/" + ($n|tostring)),body:$body,labels:[{name:$label}]}' ;;
   *) echo "unexpected gh: $*" >&2; exit 1 ;;
 esac
 GH
@@ -80,14 +83,23 @@ git -c user.name=Fixture -c user.email=fixture@example.com commit -qm implement
 printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#1\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 WORKER
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
+if [ "${1:-multi-card}" = multi-card-skip ]; then export GH_SKIP13=1; fi
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: multi-card tick failed' >&2; exit 1; fi
-jq -e '.outcome == "progress" and ([.cards[].action] == ["start","start"])' "$TMP/out" >/dev/null || { echo 'FAIL: both actions not reported' >&2; exit 1; }
-for n in 12 13; do
+if [ "${1:-multi-card}" = multi-card-skip ]; then
+  jq -e '.outcome == "progress" and ([.cards[].action] == ["start","skip_no_acceptance"])' "$TMP/out" >/dev/null || { echo 'FAIL: mixed actions not reported' >&2; exit 1; }
+  [ "$(cat "$TMP/state/column-13")" = ready ] && [ ! -e "$TMP/state/pr-13" ] || { echo 'FAIL: card without acceptance progressed' >&2; exit 1; }
+  jq -e 'any(.[]; .body | startswith("<!-- fleet-board:skip-no-acceptance -->"))' "$TMP/state/comments-13" >/dev/null || { echo 'FAIL: missing acceptance comment' >&2; exit 1; }
+  NUMBERS=12
+else
+  jq -e '.outcome == "progress" and ([.cards[].action] == ["start","start"])' "$TMP/out" >/dev/null || { echo 'FAIL: both actions not reported' >&2; exit 1; }
+  NUMBERS='12 13'
+fi
+for n in $NUMBERS; do
   [ "$(cat "$TMP/state/column-$n")" = in_progress ] && [ -e "$TMP/state/pr-$n" ] || { echo "FAIL: card $n did not progress" >&2; exit 1; }
   if [ "$n" = 12 ]; then branch=fleet/12-add-subtract; else branch=fleet/13-add-multiply; fi
   git --git-dir="$TMP/remote.git" cat-file -e "$branch:card-$n.txt" || { echo "FAIL: card $n commit missing" >&2; exit 1; }
 done
-echo 'PASS: multi-card'
+echo "PASS: ${1:-multi-card}"
