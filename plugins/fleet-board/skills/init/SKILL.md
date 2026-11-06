@@ -37,6 +37,7 @@ Ask the user which board to use:
 - **Labels** (`github-labels`): a new board. fleet-board creates one `fleet:<state>` label
   per state.
 - **Projects v2** (`github-projects`): an existing GitHub project board.
+- **Local** (`local`): cards in `.fleet-board/` in this repo, served by the board page; no labels or project needed
 
 If they choose Projects v2:
 
@@ -78,7 +79,7 @@ Run it from the repository root, with the flags gathered above:
 
 ```bash
 bash "<this skill's base directory>/../../scripts/init.sh" \
-  --backend <github-labels|github-projects> --repo <OWNER/NAME> [flags...]
+  --backend <github-labels|github-projects|local> --repo <OWNER/NAME> [flags...]
 ```
 
 Map each answer to exactly one flag. Leave a flag out when the user gave no answer for
@@ -86,7 +87,7 @@ it, so the default applies:
 
 | Answer | Flag |
 |---|---|
-| Backend | `--backend github-labels` or `--backend github-projects` |
+| Backend | `--backend github-labels`, `--backend github-projects` or `--backend local` |
 | Repository | `--repo <OWNER/NAME>` |
 | Project number (Projects only, required) | `--project <N>` |
 | Project owner, when it is not the repo owner | `--owner <OWNER>` |

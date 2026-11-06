@@ -26,6 +26,8 @@
 #      Otherwise it creates the card through board-create.sh (its body names
 #      the commit, the failing commands, "Merged PR: #<pr>" and the card).
 #      A failed or unexpected search exits 1: it never files blind.
+#      On the local backend the search reads the card files instead (any
+#      state but done and wont_do is open); no issue is searched.
 #      Limits of the reuse:
 #      - GitHub search is eventually consistent. A new issue can take a while
 #        to appear in search results, so a retry within seconds of a run that
@@ -174,14 +176,21 @@ OUT="$(jq -s -c --arg c "$COMMIT" '{commit: $c, ok: all(.[]; .exit == 0), result
 if [ "$(jq -r .ok <<<"$OUT")" != true ]; then
   TITLE="[P0] main is red after #$PR"
   CREATED="" # set only when this run files the card; never inherited
-  TERMS="$(jq -rn --arg t "$TITLE" '$t | gsub("[^A-Za-z0-9 _-]"; " ")')" || fb_die 1 "cannot build the P0 search terms"
-  ROWS="$(gh issue list --repo "$FLEET_REPO" --state open --search "$TERMS in:title" --json number,title --limit 50 </dev/null)" \
-    || fb_die 1 "main is red at $COMMIT, and the search for an open P0 card failed; nothing filed"
-  P0="$(jq -r --arg t "$TITLE" '
-    if type != "array" then error("not a list") else . end
-    | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase))]
-    | .[0].number // "none"' <<<"$ROWS" 2>/dev/null)" \
-    || fb_die 1 "main is red at $COMMIT, and the P0 search returned an unexpected answer; nothing filed"
+  if [ "$(fb_cfg board.backend)" = local ]; then
+    # the local P0 card is a card file, never a GitHub issue
+    . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
+    P0="$(fl_find_title "$TITLE" open)" \
+      || fb_die 1 "main is red at $COMMIT, and the search for an open P0 card failed; nothing filed"
+  else
+    TERMS="$(jq -rn --arg t "$TITLE" '$t | gsub("[^A-Za-z0-9 _-]"; " ")')" || fb_die 1 "cannot build the P0 search terms"
+    ROWS="$(gh issue list --repo "$FLEET_REPO" --state open --search "$TERMS in:title" --json number,title --limit 50 </dev/null)" \
+      || fb_die 1 "main is red at $COMMIT, and the search for an open P0 card failed; nothing filed"
+    P0="$(jq -r --arg t "$TITLE" '
+      if type != "array" then error("not a list") else . end
+      | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase))]
+      | .[0].number // "none"' <<<"$ROWS" 2>/dev/null)" \
+      || fb_die 1 "main is red at $COMMIT, and the P0 search returned an unexpected answer; nothing filed"
+  fi
   if [ "$P0" = none ]; then
     BODY="$(mktemp)" || fb_die 1 "cannot create a temp file"
     {
