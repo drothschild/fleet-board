@@ -40,11 +40,13 @@
 # its label. A card whose state label names a stage that is
 # not configured reads with no canonical state and gets skip ("state <state>
 # is not planned"). For a provider stage whose providers.<name>.api_key_env is
-# unset or empty, the plan warns "stage <name>: <ENV> is not set; provider
-# reviews will fail", once per stage, only when a card in the plan has action
-# review_stage or fix in that stage, or advance_stage into it (the manager
-# runs review_stage in the same tick); the check runs in bash, and jq never
-# reads the environment. review_stage stays dispatchable either way.
+# unset or empty, review_stage is planned as wait with the reason "stage <name>:
+# <ENV> is not set" (stage-review.sh would exit 3 every tick), and the plan warns
+# "stage <name>: <ENV> is not set; provider reviews will fail", once per stage,
+# when a card in the plan has a held review_stage or fix in that stage, or
+# advance_stage into it (the move is kept; the next tick's review_stage waits).
+# fix is not held: the fixer still runs usefully. The check runs in bash, and jq
+# never reads the environment.
 #
 # branch and worktree are always set: the note's when it has them, else the
 # defaults fleet/<n>-<slug> and <base>/<n>-<slug> (slug from the title, "card"
@@ -782,7 +784,15 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
     | (if $pre != "" and $d.action != "skip"
        then act("wait"; "preflight failed; nothing is planned until the environment works")
        else $d end) as $d
-    | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
+    # A provider stage whose key variable is unset holds review_stage: the call
+    # would exit 3 every tick. fix and advance_stage are unaffected.
+    | (if $d.action == "review_stage" and $c.stage != null and $c.stage.provider != null
+          and ($c.stage.name as $sn | any($unset[]; . == $sn))
+       then act("wait"; "stage \($c.stage.name): \($cfg.providers[$c.stage.provider].api_key_env) is not set")
+       else $d end) as $d2
+    | ($d2.action != $d.action) as $keyheld
+    | $d2 as $d
+    | {key_held: $keyheld, number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
        pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
@@ -831,12 +841,12 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
        + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]
-       # Once per provider stage acted on whose key is unset: review_stage or fix
-       # in it, or advance_stage into it (the manager reviews in the same tick)
-       + ([$cards[] | select((.action == "review_stage" or .action == "fix" or .action == "advance_stage")
+       # Once per provider stage acted on whose key is unset: a held review_stage,
+       # fix in it, or advance_stage into it (the following review_stage waits)
+       + ([$cards[] | select((.key_held or .action == "fix" or .action == "advance_stage")
                              and .stage != null and .stage.provider != null
                              and (.stage.name as $s | any($unset[]; . == $s)))
            | "stage \(.stage.name): \($cfg.providers[.stage.provider].api_key_env) is not set; provider reviews will fail"]
           | reduce .[] as $w ([]; if any(.[]; . == $w) then . else . + [$w] end))),
-     cards: [$cards[] | del(.pending_wait, .outside_warning, .deps_warnings, .drift)]}
+     cards: [$cards[] | del(.key_held, .pending_wait, .outside_warning, .deps_warnings, .drift)]}
 ' "$CARDS_FILE" || fb_die 1 "cannot build the tick plan"
