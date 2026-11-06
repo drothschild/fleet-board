@@ -113,8 +113,39 @@ MERGED="$(jq -c -n --slurpfile d "$HERE/config-defaults.json" '$d[0] * input' <(
   exit 5
 }
 
+# Fill each review stage's defaults so no reader re-derives them. A stage that is
+# not an object is left as it is, for validation to name.
+STAGE_DEFAULTS='
+  . as $root
+  | if (.review | type) == "object" and (.review.stages | type) == "array" then
+      .review.stages |= map(
+        if type == "object" then
+          . as $s | {
+            name: $s.name,
+            agent: $s.agent,
+            model: (if $s | has("model") then $s.model else $root.models.reviewer end),
+            paths: (if $s | has("paths") then $s.paths else [] end),
+            label: (if $s | has("label") then $s.label
+                    elif ($s.name | type) == "string" then "needs-\($s.name)-review"
+                    else null end),
+            advisory: (if $s | has("advisory") then $s.advisory else false end),
+            max_rounds: (if $s | has("max_rounds") then $s.max_rounds else $root.review.max_rounds end),
+            brief: (if $s | has("brief") then $s.brief else null end)
+          }
+        else . end)
+    else . end
+'
+MERGED="$(jq -c "$STAGE_DEFAULTS" <<<"$MERGED")" || {
+  echo "config.sh: invalid config: failed to fill review stage defaults" >&2
+  exit 5
+}
+
 # Validate config
 VALIDATION_SCRIPT='
+  def stage_names:
+    if (.review | type) == "object" and (.review.stages | type) == "array"
+    then [.review.stages[] | select(type == "object") | .name | select(type == "string")]
+    else [] end;
   def errors:
     [
       (("board", "commands", "worktrees", "merge", "review", "models", "limits", "headless") as $s
@@ -137,7 +168,33 @@ VALIDATION_SCRIPT='
         (if (.board.project_owner | type) as $t | $t != "null" and $t != "string" then "board.project_owner must be null or a string" else empty end)
       else empty end),
       (if (.board | type) == "object" and (.board.states | type) == "object" then
-        (.board.states | to_entries | map(if (.key | test("^(backlog|ready|in_progress|in_review|human_qa|blocked|done|wont_do)$") | not) then "board.states key \(.key) is not canonical" else empty end)[])
+        (stage_names as $names
+          | .board.states | to_entries | map(
+              if (.key | test("^(backlog|ready|in_progress|in_review|human_qa|blocked|done|wont_do)$")) then empty
+              elif (.key | startswith("review_")) then (.key | ltrimstr("review_")) as $n |
+                (if ($names | index($n)) != null then empty else "board.states key \(.key) names no stage" end)
+              else "board.states key \(.key) is not canonical" end)[])
+      else empty end),
+      (if (.review | type) == "object" then
+        (if (.review.stages | type) != "array" then "review.stages must be a list"
+         else
+          (.review.stages as $stages | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
+            | if ($s | type) != "object" then "review.stages[\($i)] must be an object"
+              else
+                (if ($s.name | type) != "string" or ($s.name | test("^[a-z][a-z0-9_]*$") | not) then "review.stages[\($i)].name must match ^[a-z][a-z0-9_]*$"
+                 elif (($stages[0:$i] | map(select(type == "object") | .name)) | index($s.name)) != null then "review.stages[\($i)].name \($s.name) is not unique"
+                 else empty end),
+                (if ($s.agent | type) != "string" or ($s.agent | test("^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$") | not) then "review.stages[\($i)].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$" else empty end),
+                (if ($s.model | type) != "string" or $s.model == "" then "review.stages[\($i)].model must be a non-empty string" else empty end),
+                (if ($s.paths | type) != "array" or ($s.paths | map(type != "string" or . == "") | any) then "review.stages[\($i)].paths must be a list of non-empty strings" else empty end),
+                (if ($s.label | type) != "string" or $s.label == "" or $s.label == "needs-human-qa" or $s.label == "needs-manual-step"
+                      or (($stages[0:$i] | map(select(type == "object") | .label)) | index($s.label)) != null
+                 then "review.stages[\($i)].label must be a non-empty string" else empty end),
+                (if ($s.advisory | type) != "boolean" then "review.stages[\($i)].advisory must be boolean" else empty end),
+                (if ($s.max_rounds | type) != "number" or ($s.max_rounds | floor) != $s.max_rounds or $s.max_rounds <= 0 then "review.stages[\($i)].max_rounds must be a positive integer" else empty end),
+                (if ($s.brief | type) != "null" and ($s.brief | type) != "string" then "review.stages[\($i)].brief must be a string" else empty end)
+              end)
+         end)
       else empty end),
       (if (.merge | type) == "object" then
         (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end)

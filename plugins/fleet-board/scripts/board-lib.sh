@@ -5,7 +5,8 @@
 # Exports: FLEET_CFG, FLEET_ROOT, FLEET_REPO, FLEET_SCRIPTS (set by fb_load_config)
 # FB_LOCK is set by fb_lock and used with trap EXIT to clean up
 
-FB_STATES="backlog ready in_progress in_review human_qa blocked done wont_do"
+FB_STATES_FIXED="backlog ready in_progress in_review human_qa blocked done wont_do"
+FB_STATES="$FB_STATES_FIXED"
 FB_MARKER='<!-- fleet-board:manager-note -->'
 # With CDPATH exported, a relative cd can land in a CDPATH directory and echo
 # its path, which $(cd ... && pwd) would capture as a second line. Each entry
@@ -25,6 +26,28 @@ fb_load_config() {
   FLEET_REPO="$(jq -r .board.repo <<<"$FLEET_CFG")"
   FLEET_SCRIPTS="$FB_SCRIPTS"
   export FLEET_CFG FLEET_ROOT FLEET_REPO FLEET_SCRIPTS
+  fb_set_states
+}
+
+# fb_set_states: sets FB_STATES to the fixed states with review_<name> for each
+# review stage of $FLEET_CFG inserted after in_review, in config order.
+fb_set_states() {
+  local extra; extra="$(fb_stage_states | tr '\n' ' ')"
+  extra="${extra% }"
+  if [ -z "$extra" ]; then FB_STATES="$FB_STATES_FIXED"; return 0; fi
+  FB_STATES="${FB_STATES_FIXED/in_review/in_review $extra}"
+}
+
+# fb_stage_states: the stage states of $FLEET_CFG, one per line, in config order.
+fb_stage_states() {
+  [ -n "${FLEET_CFG:-}" ] || return 0
+  jq -r '(.review.stages // [])[] | "review_" + .name' <<<"$FLEET_CFG"
+}
+
+# fb_stage_of_state <review_x>: prints that stage's JSON object, or nothing.
+fb_stage_of_state() {
+  [ -n "${FLEET_CFG:-}" ] || return 0
+  jq -c --arg s "$1" '(.review.stages // [])[] | select("review_" + .name == $s)' <<<"$FLEET_CFG"
 }
 
 # fb_git_common_dir <dir>: prints the absolute path of the git common dir of
@@ -114,6 +137,15 @@ fb_valid_state() { case " $FB_STATES " in *" $1 "*) return 0 ;; esac; return 1; 
 
 fb_default_name() {
   # Backend-specific default board name for a canonical state
+  case "$1" in
+    review_*)
+      case "$(fb_cfg board.backend)" in
+        github-projects) echo "Review: ${1#review_}" ;;
+        *) echo "fleet:$1" ;;
+      esac
+      return 0
+      ;;
+  esac
   case "$(fb_cfg board.backend)" in
     github-projects)
       case "$1" in
@@ -192,3 +224,7 @@ fb_lock() {
   echo $$ > "$FB_LOCK/pid"
   trap 'rm -rf "$FB_LOCK"' EXIT
 }
+
+# Adapter scripts are exec'd with FLEET_CFG exported and never call fb_load_config;
+# derive the stage states for them at load.
+[ -z "${FLEET_CFG:-}" ] || fb_set_states
