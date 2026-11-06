@@ -7,9 +7,10 @@ if [ "$#" -ne 2 ] || [ "$1" != tick ] || [ "$2" != --plan-only ]; then
   echo 'usage: fleet-board tick --plan-only' >&2
   exit 2
 fi
-PLAN="$(mktemp)" || exit 1
-trap 'rm -f "$PLAN"' EXIT
-FLEET_BOARD_PLAN_READ_ONLY=1 bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+SCRATCH="$(mktemp -d)" || exit 1
+PLAN="$SCRATCH/plan"
+trap 'rm -rf "$SCRATCH"' EXIT
+FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
 # Enumerate every action emitted by tick-plan, including settle-only actions.
 # Unknown actions and malformed envelopes are rejected before any effect.
 if ! jq -e -s '
