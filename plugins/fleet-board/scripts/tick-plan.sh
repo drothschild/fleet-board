@@ -750,7 +750,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
         else act("skip"; "state \($c.state) is not planned") end;
 
   . as $all
-  # Open cards (in_progress, in_review) and the lowest card number whose table
+  # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
   | [$all[] | select(.state == "in_progress" or is_review(.))] as $open
   | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger

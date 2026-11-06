@@ -572,6 +572,9 @@ assert_stdout_exact "stages: sections after in_review in config order, both card
   review_compliance '  #15 Audit log · round 2 · PR #41 · sonnet/openai:gpt-test' \
   human_qa '  (none)' \
   blocked '  (none)')"
+if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then
+  fail "stages: read-only" "a mutating gh call was made"
+else pass "stages: read-only (no mutating gh call)"; fi
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

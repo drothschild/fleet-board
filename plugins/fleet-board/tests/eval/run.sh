@@ -130,7 +130,7 @@ write_stage_config() {
     echo "    - name: eval"
     echo "      provider: $PROVIDER"
     echo "      model: \"$MODEL\""
-    echo "      blocking: true"
+    echo "      advisory: false"
     echo "      price: { input: $PRICE_IN, output: $PRICE_OUT }"
     echo "      brief: \"Judge whether the tests prove the Acceptance bullets.\""
   } > "$1"
