@@ -242,9 +242,10 @@ a run is alive, otherwise every fifteen.
   dot, in whichever column it sits: an implementor on an In Progress card, a reviewer on an
   In Review card, a stage reviewer (agent or provider) on a `Review: <stage>` card, and a
   fixer on an In Review card during a `fix` action all light the card.
-- Cards drag between columns (HTML5 drag and drop). Each card also has a "Move to" menu,
-  for keyboards and for moves the drag misses. A refused move (for example to Ready without
-  `## Acceptance`) shows the script's message and the card snaps back.
+- Cards drag between columns (HTML5 drag and drop). There is no per-card move menu;
+  keyboard users change a card's state from the state select in its drawer. A refused move
+  (for example to Ready without `## Acceptance`) shows the script's message and the card
+  snaps back.
 - A "New card" button opens the drawer empty.
 
 ### Card drawer
