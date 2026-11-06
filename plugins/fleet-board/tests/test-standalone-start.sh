@@ -49,6 +49,7 @@ case "$*" in
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_review') printf none > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:done') printf done > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:human_qa')
     if [ -e "$GH_STATE/fail-qa-move" ]; then rm "$GH_STATE/fail-qa-move"; exit 1; fi
     printf human_qa > "$GH_STATE/column" ;;
@@ -80,8 +81,21 @@ case "$*" in
     echo 'https://github.com/acme/toy/pull/34' ;;
   'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid')
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
-    jq -n --arg sha "$sha" '{isDraft:true,state:"OPEN",mergedAt:null,statusCheckRollup:[],headRefOid:$sha}' ;;
+    draft=true; [ ! -e "$GH_STATE/ready" ] || draft=false
+    state=OPEN; merged=null; if [ -e "$GH_STATE/merged" ]; then state=MERGED; merged='"2026-01-01T00:00:00Z"'; fi
+    jq -n --arg sha "$sha" --arg state "$state" --argjson draft "$draft" --argjson merged "$merged" '{isDraft:$draft,state:$state,mergedAt:$merged,statusCheckRollup:[{__typename:"CheckRun",conclusion:"SUCCESS"}],headRefOid:$sha}' ;;
   'pr view 34 --repo acme/toy --json mergeable') echo '{"mergeable":"MERGEABLE"}' ;;
+  'pr ready 34 --repo acme/toy') touch "$GH_STATE/ready" ;;
+  'pr merge 34 --repo acme/toy --squash --match-head-commit '*)
+    sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
+    [ "$7" = "$sha" ] && [ -e "$GH_STATE/ready" ] || exit 1
+    git --git-dir="$GH_REMOTE" update-ref refs/heads/main "$sha"
+    touch "$GH_STATE/merged" ;;
+  'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body,statusCheckRollup,mergeable')
+    sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
+    draft=true; [ ! -e "$GH_STATE/ready" ] || draft=false
+    state=OPEN; [ ! -e "$GH_STATE/merged" ] || state=MERGED
+    jq -n --arg sha "$sha" --arg state "$state" --argjson draft "$draft" '{number:34,isDraft:$draft,state:$state,headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->",statusCheckRollup:[{__typename:"CheckRun",conclusion:"SUCCESS"}],mergeable:"MERGEABLE"}' ;;
   'pr view 34 --repo acme/toy --json isDraft,mergeable,statusCheckRollup') echo '{"isDraft":true,"mergeable":"MERGEABLE","statusCheckRollup":[]}' ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
     if [ -e "$GH_STATE/force-review" ]; then
@@ -101,7 +115,9 @@ case "$*" in
     fi
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)" || exit 1
     git --git-dir="$GH_REMOTE" update-ref refs/pull/34/head "$sha"
-    jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
+    draft=true; [ ! -e "$GH_STATE/ready" ] || draft=false
+    state=OPEN; [ ! -e "$GH_STATE/merged" ] || state=MERGED
+    jq -n --arg sha "$sha" --arg state "$state" --argjson draft "$draft" '{number:34,isDraft:$draft,state:$state,headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
   *) echo "unexpected gh: $*" >&2; exit 1 ;;
 esac
 GH
@@ -238,7 +254,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -382,6 +398,33 @@ PY_WORKER
   if ! jq -e '.outcome == "progress" and .cards[0].action == "start_review"' "$TMP/review-out" >/dev/null; then echo 'FAIL: review outcome' >&2; exit 1; fi
   [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: card did not reach review' >&2; exit 1; }
   jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: exact reviewed head missing from manager note' >&2; exit 1; }
+  if [ "${1:-start}" = merge-verification ]; then
+    cat > "$TMP/verify-main" <<'VERIFY'
+#!/bin/bash
+mode="$(cat "$GH_STATE/verify-mode")"
+[ "$mode" != infra ] || exit 1
+sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/main)"
+if [ "$mode" = false ]; then ok=false; else ok=true; fi
+jq -n --arg sha "$sha" --argjson ok "$ok" '{commit:$sha,ok:$ok,results:[]}'
+VERIFY
+    export FLEET_BOARD_VERIFY_MAIN="$TMP/verify-main"
+    printf infra > "$TMP/state/verify-mode"
+    bash "$ROOT/bin/fleet-board" tick > "$TMP/ready-out" || { echo 'FAIL: mark-ready tick failed' >&2; exit 1; }
+    [ -e "$TMP/state/ready" ] || { echo 'FAIL: draft was not marked ready' >&2; exit 1; }
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/merge-out" 2>&1; then echo 'FAIL: verification infrastructure failure accepted' >&2; exit 1; fi
+    [ -e "$TMP/state/merged" ] || { echo 'FAIL: eligible PR was not merged' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: infra failure moved card' >&2; exit 1; }
+    printf false > "$TMP/state/verify-mode"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/false-out" 2>&1; then echo 'FAIL: semantic verification failure accepted' >&2; exit 1; fi
+    [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: false verification moved card' >&2; exit 1; }
+    jq -e 'any(.[]; .id == 555 and (.body | contains("\"ok\": false")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: false verification not recorded' >&2; exit 1; }
+    printf true > "$TMP/state/verify-mode"
+    bash "$ROOT/bin/fleet-board" tick > "$TMP/verified-out" || { echo 'FAIL: successful verification failed' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = done ] || { echo 'FAIL: verified card not done' >&2; exit 1; }
+    grep -q -- '--match-head-commit' "$TMP/state/calls" || { echo 'FAIL: merge omitted reviewed SHA precondition' >&2; exit 1; }
+    echo 'PASS: merge-verification'
+    exit 0
+  fi
   if [ "${1:-start}" = human-qa ] || [ "${1:-start}" = human-qa-resume-label ]; then
     touch "$TMP/state/qa-flag"
     if [ "$1" = human-qa-resume-label ]; then
