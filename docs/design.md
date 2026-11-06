@@ -92,6 +92,8 @@ Reason for the choice: the board is the only shared, human-visible state, so a c
 
 Accepted trade-off: a stage's fix is reviewed again by that stage only. The evidence reviewer, which ran tests and mutation in In Review, does not see a later stage's fix, and neither does an earlier stage. I chose this because re-running every earlier reviewer after every later fix multiplies cost and can loop (a security fix breaks a UX finding, whose fix reopens security). What still holds is the reviewed-heads rule: a PR merges only at a head some reviewer saw. What it does not give you is a fresh evidence review of the final tree.
 
+Routing labels are added once, at the move to In Review, but each clean review matches the stage globs against the PR's current files again (`review-stages.sh match`, read-only), because a fixer's commit can touch a stage's paths after routing and a stage evaluated once could then be skipped on the way to a merge; the cost is that removing a label no longer skips a stage whose globs match the current diff (a label-only stage can still be skipped that way).
+
 ## Provider stages are a script, not an agent
 
 A stage can name a `provider` instead of an `agent`, to get a review from a model family that does not share the writer's blind spots. It is not an Agent dispatch. The manager runs one script, `stage-review.sh`, which builds a prompt from the card, the stage brief and the PR diff, calls an OpenAI-compatible chat endpoint through `providers/chat.sh`, and posts the reply as the stage's report.
@@ -100,7 +102,7 @@ Alternative: run an external agent CLI (Codex, Gemini) in a worktree, so the ext
 
 Reason for the choice: a plugin cannot assume either CLI is installed, and a one-shot API call needs only `curl` and `jq`. With no tools and no worktree the reviewer cannot change anything, which makes it safe to run unattended, and diff-only input makes its cost bounded and predictable (`max_diff_bytes`, `max_output_tokens`, a required `price`). The reply goes through the same check as every other report, `parse-report.sh --role stage-reviewer`, with one re-ask on a rejection, so there is one code path for what counts as a valid report, and a provider cannot post anything an agent could not. Spend is appended to a ledger that the headless wrapper adds to each tick's cost, so `limits.max_cost_usd` still holds. The key stays in an environment variable, reaches `curl` only through a private header file, and is redacted from anything the script prints.
 
-The trade-off, named plainly: a provider stage runs no tests. It reads a diff, so it cannot confirm that code does what it claims, and it can miss anything that needs the rest of the repo. It also sends the card body and the diff to a third party. It complements the evidence reviewer; it does not replace it.
+The trade-off, named plainly: a provider stage runs no tests. It reads a diff, so it cannot confirm that code does what it claims, and it can miss anything that needs the rest of the repo. It also sends the card body, the stage brief, the previous round's findings, the latest implementor or fixer report and the diff to a third party. It complements the evidence reviewer; it does not replace it.
 
 ## Escalation and shared blind spots
 

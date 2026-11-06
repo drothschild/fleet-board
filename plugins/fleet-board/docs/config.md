@@ -65,9 +65,9 @@ review:
       provider: openai                # instead of agent
       model: <model id, passed verbatim>
       price: { input: 1.25, output: 10 }   # USD per million tokens; required
-      timeout: 600                    # seconds
-      max_output_tokens: 16000
-      max_diff_bytes: 400000
+      timeout: 600                    # seconds; default 600
+      max_output_tokens: 16000        # default 16000
+      max_diff_bytes: 400000          # default 400000
 ```
 
 A stage is the state `review_<name>`, in config order between `in_review` and `human_qa`. On the labels backend its column is the label `fleet:review_<name>`; on Projects it is the Status option `Review: <name>`. `board.states.review_<name>` renames it; a `review_` key naming no stage is rejected.
@@ -80,11 +80,11 @@ A stage is the state `review_<name>`, in config order between `in_review` and `h
 
 **Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there in the same tick. Critical or Important findings go to the fixer and the same stage re-reviews, up to the stage's `max_rounds`; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
 
-**Advisory.** An `advisory: true` stage posts its report and its findings are read as clean: it never fixes and never blocks the card.
+**Advisory.** An `advisory: true` stage posts its report and its findings are read as clean: its findings never send the card to a fixer or block it. A provider stage fails closed even when advisory: a diff over `max_diff_bytes` or with no text hunks (`stage-review.sh` exit 7) blocks the card, and repeated provider failures (exits 1, 3 and 6 count as report errors) block it under the `action_failures` rule like any other stage.
 
 **Trade-off.** A finding is fixed and re-reviewed in its own stage only. Earlier stages are not re-run, so a later stage's fix is not seen again by the evidence reviewer or by an earlier stage. The reviewed-heads rule still applies: a PR is merged only at a head some reviewer saw, so a fix that lands after the last review is reviewed again before it merges.
 
-**A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body and the PR diff to that provider, and only those: it has no tools and no worktree, so it runs no tests.
+**A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider, and nothing else from the repo: it has no tools and no worktree, so it runs no tests.
 
 ## `providers`
 
@@ -117,7 +117,7 @@ Config never holds a key. `api_key`, `key`, `token` and `secret` under a provide
 
 A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and keeps `model` defaulting to `models.reviewer`.
 
-**Data egress.** A provider stage sends the card body and the PR diff to that provider. Use a provider only for repos whose code you may send to it.
+**Data egress.** A provider stage sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider. Use a provider only for repos whose code and cards you may send to it.
 
 ## `limits` for the headless wrapper
 
