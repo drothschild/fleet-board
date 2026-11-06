@@ -38,6 +38,22 @@ fb_set_states() {
   FB_STATES="${FB_STATES_FIXED/in_review/in_review $extra}"
 }
 
+# fb_mark_active <n>: on the local backend only, touches <board.dir>/active/<n>
+# (the web board lights the card while a role works on it) and sets
+# FB_ACTIVE_FILE to it. A failure is a warning, never an error. Needs the
+# config loaded.
+fb_mark_active() {
+  [ "$(fb_cfg board.backend)" = local ] || return 0
+  . "$FB_SCRIPTS/adapters/local/local-lib.sh"
+  local d; d="$(fl_active_dir)"
+  if mkdir -p "$d" 2>/dev/null && : > "$d/$1" 2>/dev/null; then
+    FB_ACTIVE_FILE="$d/$1"
+  else
+    printf 'fleet-board: warning: cannot write the active marker for #%s\n' "$1" >&2
+  fi
+  return 0
+}
+
 # fb_stage_states: the stage states of $FLEET_CFG, one per line, in config order.
 fb_stage_states() {
   [ -n "${FLEET_CFG:-}" ] || return 0

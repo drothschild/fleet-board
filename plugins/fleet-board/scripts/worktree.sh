@@ -125,6 +125,7 @@ case "$CMD" in
     g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
     if [ -e "$P" ]; then
       if is_our_worktree "$P" && [ "$(git -C "$P" symbolic-ref -q --short HEAD 2>/dev/null)" = "$B" ]; then
+        fb_mark_active "$N"
         printf '%s\n' "$P"
         exit 0
       fi
@@ -156,6 +157,7 @@ case "$CMD" in
       NEW_BRANCH="$B"
     fi
     run_setup "$P" "$NEW_BRANCH"
+    fb_mark_active "$N"
     printf '%s\n' "$P"
     ;;
 
@@ -183,6 +185,7 @@ case "$CMD" in
       COPY="$RC"
     fi
     MB="$(g merge-base origin/main "$SHA")" || fb_die 1 "cannot compute merge-base origin/main $SHA"
+    fb_mark_active "$N"
     jq -nc --arg p "$RV" --arg c "$COPY" --arg s "$SHA" --arg b "$MB" \
       '{path: $p, copy: (if $c == "null" then null else $c end), sha: $s, base: $b}'
     ;;

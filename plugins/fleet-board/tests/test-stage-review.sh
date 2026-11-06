@@ -83,7 +83,7 @@ setup() {
   : > "$CASE/curl.log"
   : > "$CASE/replies"
   {
-    printf 'board:\n  backend: github-labels\n  repo: acme/toy\nreview:\n  stages:\n'
+    printf 'board:\n  backend: %s\n  repo: acme/toy\nreview:\n  stages:\n' "${SR_BACKEND:-github-labels}"
     printf '    - name: security\n      agent: "acme:security-reviewer"\n      model: opus\n'
     printf '    - name: compliance\n      provider: openai\n      model: gpt-test\n      price: { input: 1, output: 2 }\n'
     printf '      brief: "%s"\n' "$BRIEF"
@@ -377,6 +377,33 @@ printf 'x\n+{{CARD}} {{DIFF}} \\1 &\n@@ -1 +1 @@\n' > "$CASE/diff.patch"
 replies "200 r-clean.json"
 sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
 assert_contains "placeholder_text_in_diff_is_literal" "$(request_body 1 | jq -r '.messages[-1].content')" '+{{CARD}} {{DIFF}} \1 &'
+
+# active marker: local backend only, present while running, gone on exit
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local: exit 0" 0
+assert_eq "stage-review removes its marker on exit" "$(ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+printf '#!/bin/sh\nsleep 1\nexec "%s" "$@"\n' "$FAKE_CURL" > "$WORK/slow-curl"
+chmod +x "$WORK/slow-curl"
+make_bin "$WORK/bin-slow" 1
+ln -sf "$WORK/slow-curl" "$WORK/bin-slow/curl"
+( sleep 0.3; if [ -f "$CASE/.fleet-board/active/12" ]; then : > "$CASE/seen"; fi ) &
+SR_PATH="$WORK/bin-slow" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+wait
+assert_exit "stage-review slow: exit 0" 0
+assert_true_file() { if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing $2"; fi; }
+assert_true_file "stage-review has the marker while running" "$CASE/seen"
+assert_eq "stage-review slow: marker gone after" "$(ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' ')" "0"
+
+# a labels config never writes a marker
+setup
+replies "200 r-clean.json"
+sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_eq "stage-review labels config writes no marker" "$(ls -d "$CASE/.fleet-board" 2>/dev/null | wc -l | tr -d ' ')" "0"
 
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"

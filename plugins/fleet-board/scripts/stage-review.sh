@@ -110,7 +110,9 @@ LOG_DIR_ABS="$(cd "$LOG_DIR" 2>/dev/null && pwd)" && [ -n "$LOG_DIR_ABS" ] && [ 
 LOG_DIR="$LOG_DIR_ABS"
 LEDGER="$LOG_DIR/provider-spend.jsonl"
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+FB_ACTIVE_FILE=""
+fb_mark_active "$N"
+trap 'rm -rf "$TMP"; [ -z "$FB_ACTIVE_FILE" ] || rm -f "$FB_ACTIVE_FILE"' EXIT
 
 # Inputs: card body and diff
 if [ -n "$CARD_FILE" ]; then
