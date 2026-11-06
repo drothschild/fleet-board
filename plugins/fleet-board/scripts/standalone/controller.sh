@@ -141,6 +141,9 @@ elif jq -e '([.cards[] | select(.action == "fix")] | length) == 1 and all(.cards
 elif jq -e '([.cards[] | select(.action == "to_human_qa")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "to_human_qa")' "$PLAN" >/dev/null; then
   jq '.cards[] | select(.action == "to_human_qa")' "$PLAN" > "$SCRATCH/card"
   run_qa "$SCRATCH/card" "$SCRATCH" || exit 1
+elif jq -e '([.cards[] | select(.action | IN("review", "review_stage"))] | length) == 1 and all(.cards[]; .action == "skip" or (.action | IN("review", "review_stage")))' "$PLAN" >/dev/null; then
+  jq '.cards[] | select(.action | IN("review", "review_stage")) | if .action == "review_stage" then .action = "stage_review" else . end' "$PLAN" > "$SCRATCH/card"
+  run_review "$SCRATCH/card" "$SCRATCH" || exit 1
 elif jq -e '([.cards[] | select(.action == "advance_stage")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "advance_stage")' "$PLAN" >/dev/null; then
   jq '.cards[] | select(.action == "advance_stage")' "$PLAN" > "$SCRATCH/card"
   run_stage "$SCRATCH/card" "$SCRATCH" || exit 1

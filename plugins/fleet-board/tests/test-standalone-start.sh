@@ -466,6 +466,8 @@ if grep -q '"role": "fixer"' /scratch/request.json; then
   printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nFixed.\n## PR\n#34\n## Resolutions\n- Advisory issue :: fixed\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 else
   grep -q '"role": "stage-reviewer"' /scratch/request.json
+  grep -q 'Advisory issue' /scratch/request.json
+  grep -q '## Resolutions' /scratch/request.json
   printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nStage re-reviewed.\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 fi
 STAGE_FIX

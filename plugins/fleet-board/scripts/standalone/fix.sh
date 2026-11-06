@@ -37,10 +37,15 @@ check_push() {
   [ "$path" = "$REMOTE_DIR" ]
 }
 check_push || { echo 'push destination does not match fixture remote' >&2; exit 1; }
-N="$(jq -r .number "$CARD")"; PR="$(jq -r .pr "$CARD")"; BRANCH="$(jq -r .branch "$CARD")"; ROUND="$(jq -r .round "$CARD")"
+N="$(jq -r .number "$CARD")"; PR="$(jq -r .pr "$CARD")"; BRANCH="$(jq -r .branch "$CARD")"; ROUND="$(jq -r .round "$CARD")"; STATE="$(jq -r .state "$CARD")"
 fb_valid_number "$N" && fb_valid_number "$PR" && [[ "$ROUND" =~ ^[1-9][0-9]*$ ]] || exit 1
 case "$BRANCH" in "fleet/$N-"*) ;; *) exit 1 ;; esac
-[ "$(jq -r .state "$CARD")" = in_review ] || exit 1
+STAGE_NAME=""; JOURNAL_KIND=core
+case "$STATE" in
+  in_review) ;;
+  review_*) STAGE_NAME="${STATE#review_}"; [[ "$STAGE_NAME" =~ ^[a-z][a-z0-9_]*$ ]] && [ "$(jq -r '.stage.name // empty' "$CARD")" = "$STAGE_NAME" ] && jq -e '.stage.provider == null and (.stage.agent | type == "string" and length > 0)' "$CARD" >/dev/null || exit 1; JOURNAL_KIND="stage-$STAGE_NAME" ;;
+  *) exit 1 ;;
+esac
 [ -n "${FLEET_BOARD_WORKER_SCRIPT:-}" ] && [ -f "$FLEET_BOARD_WORKER_SCRIPT" ] && [ ! -L "$FLEET_BOARD_WORKER_SCRIPT" ] && [ -n "${FLEET_BOARD_WORKER_IMAGE:-}" ] || exit 1
 OWNER="${FLEET_REPO%/*}" REPO="${FLEET_REPO#*/}"
 pr_info() { gh pr view "$PR" --repo "$FLEET_REPO" --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body; }
@@ -53,17 +58,18 @@ check_state() {
   local current states state
   current="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
   if [ "$(fb_cfg board.backend)" = github-projects ]; then
-    jq -e --argjson n "$N" '.number == $n and .state == "in_review" and (.item_id | type == "string" and length > 0)' <<<"$current" >/dev/null
+    jq -e --argjson n "$N" --arg state "$STATE" '.number == $n and .state == $state and (.item_id | type == "string" and length > 0)' <<<"$current" >/dev/null
     return $?
   fi
   states="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
-  jq -e --arg expected "$(fb_state_name in_review)" --argjson states "$states" '.state == "in_review" and ([.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected])' <<<"$current" >/dev/null
+  jq -e --arg expected "$(fb_state_name "$STATE")" --arg state "$STATE" --argjson states "$states" '.state == $state and ([.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected])' <<<"$current" >/dev/null
 }
 check_state || { echo 'card is no longer in review' >&2; exit 1; }
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
 JDIR="$COMMON/fleet-board-standalone"; mkdir -p "$JDIR" || exit 1
-JOURNAL="$JDIR/fix-$N-$ROUND.json"; EVIDENCE_REF="refs/fleet-board/standalone/fix-$N-$ROUND"
+JOURNAL="$JDIR/fix-$N-$JOURNAL_KIND-$ROUND.json"; EVIDENCE_REF="refs/fleet-board/standalone/fix-$N-$JOURNAL_KIND-$ROUND"
 NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
+jq -e --arg stage "$STAGE_NAME" '(.last_review.stage // "") == $stage' <<<"$NOTE" >/dev/null || exit 1
 NOTE_SHA="$(jq -r .last_review.sha <<<"$NOTE")"
 NOTE_ROUND="$(jq -r .round <<<"$NOTE")"
 if [ -e "$JOURNAL" ]; then OLD_SHA="$(jq -r .base "$JOURNAL")"; else OLD_SHA="$NOTE_SHA"; fi
@@ -86,7 +92,8 @@ if [ -e "$JOURNAL" ]; then
     [ "${REMOTE_HEAD%%[[:space:]]*}" = "$HEAD_SHA" ] || exit 1
     COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
     ME="$(fb_login)" || exit 1
-    jq -e --arg marker "<!-- fleet-board:standalone-review:$HEAD_SHA -->" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null || exit 1
+    if [ -n "$STAGE_NAME" ]; then REVIEW_MARKER="<!-- fleet-board:standalone-stage-review:$STAGE_NAME:$((ROUND + 1)):$HEAD_SHA -->"; else REVIEW_MARKER="<!-- fleet-board:standalone-review:$HEAD_SHA -->"; fi
+    jq -e --arg marker "$REVIEW_MARKER" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null || exit 1
     check_state || exit 1
     jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
     exit 0
@@ -143,7 +150,9 @@ if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .user.login == $me an
 fi
 # Review the fix within this same action; never leave a new head approved by
 # the old verdict. The journal remains pending if re-review is interrupted.
-jq --argjson round "$((ROUND + 1))" '.action = "re_review" | .round = $round' "$CARD" > "$SCRATCH/re-review-card"
+REVIEW_ACTION=re_review
+[ -z "$STAGE_NAME" ] || REVIEW_ACTION=stage_review
+jq --argjson round "$((ROUND + 1))" --arg action "$REVIEW_ACTION" --arg old "$OLD_SHA" --argjson findings "$(jq -c '.last_review.findings // []' <<<"$NOTE")" --rawfile fix_report "$SCRATCH/fixer-report" '.action = $action | .round = $round | .review_context = {previous_sha:$old,findings:$findings,fix_report:$fix_report}' "$CARD" > "$SCRATCH/re-review-card"
 mkdir "$SCRATCH/re-review" || exit 1
 run_child bash "$SCRIPTS/standalone/review.sh" "$SCRATCH/re-review-card" "$SCRATCH/re-review" || exit 1
 jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1

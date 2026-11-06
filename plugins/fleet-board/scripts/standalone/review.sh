@@ -10,7 +10,7 @@ ACTION="$(jq -r .action "$CARD")"
 ROLE=reviewer STAGE_NAME="" STAGE_AGENT="" STAGE_MODEL=""
 case "$ACTION" in
   start_review) EXPECTED_STATE=in_progress; ROUND=1 ;;
-  re_review) EXPECTED_STATE=in_review; ROUND="$(jq -r .round "$CARD")" ;;
+  re_review|review) EXPECTED_STATE=in_review; ROUND="$(jq -r .round "$CARD")" ;;
   stage_review)
     STAGE_NAME="$(jq -r '.stage.name // empty' "$CARD")"; STAGE_AGENT="$(jq -r '.stage.agent // empty' "$CARD")"; STAGE_MODEL="$(jq -r '.stage.model // empty' "$CARD")"
     [[ "$STAGE_NAME" =~ ^[a-z][a-z0-9_]*$ ]] && [ -n "$STAGE_AGENT" ] && [ -n "$STAGE_MODEL" ] && jq -e '.stage.provider == null' "$CARD" >/dev/null || exit 1
@@ -71,8 +71,9 @@ else
   WT="$(jq -r .path <<<"$REVIEW")"
   mkdir "$SCRATCH/worker" || exit 1
   cp "$FLEET_BOARD_WORKER_SCRIPT" "$SCRATCH/worker/worker.sh" || exit 1
-  jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$SHA" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg role "$ROLE" --arg stage "$STAGE_NAME" --arg agent "$STAGE_AGENT" \
-    '{version:1,card:$card,action:"review",role:$role,worktree:$wt,expected_ref:$ref,prompt:("Review the requested change. Stage: " + $stage + "; agent: " + $agent),limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
+  CONTEXT="$(jq -c '.review_context // null' "$CARD")" || exit 1
+  jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$SHA" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg role "$ROLE" --arg stage "$STAGE_NAME" --arg agent "$STAGE_AGENT" --arg context "$CONTEXT" \
+    '{version:1,card:$card,action:"review",role:$role,worktree:$wt,expected_ref:$ref,prompt:("Review the requested change. Stage: " + $stage + "; agent: " + $agent + "; previous review and fix: " + $context),limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
   bash "$SCRIPTS/standalone/worker.sh" --request "$SCRATCH/request.json" --scratch "$SCRATCH/worker" > "$SCRATCH/result" & CHILD=$!
   wait "$CHILD"; RC=$?; CHILD=""
   [ "$RC" -eq 0 ] || exit "$RC"
