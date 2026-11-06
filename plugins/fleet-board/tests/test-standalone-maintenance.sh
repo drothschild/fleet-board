@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in wait|wait-resume|lint|block|block-resume|unblock|file-pending) ;; *) echo 'usage: test-standalone-maintenance.sh wait|wait-resume|lint' >&2; exit 2 ;; esac
+case "${1:-}" in wait|wait-resume|lint|block|block-resume|unblock|unblock-race|file-pending) ;; *) echo 'usage: test-standalone-maintenance.sh wait|wait-resume|lint' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/maintenance.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -38,14 +38,25 @@ if [ "$1" = file-pending ]; then
   jq -e '.pending_followups == null and .action_failures == 0' <<<"$note" >/dev/null || { echo 'FAIL: pending not cleared' >&2; exit 1; }
   echo 'PASS: file-pending'; exit 0
 fi
-if [ "$1" = block ] || [ "$1" = block-resume ] || [ "$1" = unblock ]; then
-  if [ "$1" = unblock ]; then
+if [ "$1" = block ] || [ "$1" = block-resume ] || [ "$1" = unblock ] || [ "$1" = unblock-race ]; then
+  if [ "$1" = unblock ] || [ "$1" = unblock-race ]; then
     printf blocked > "$STATE/column"
     printf '%s\n' '{"blocking_pr":34,"blocked_from":"ready","blocked_findings":[{"severity":"Important","text":"old"}],"action_failures":2,"last_action_error":"old"}' > "$TMP/patch"
     bash "$TESTS/../scripts/note.sh" merge 12 "$TMP/patch" || exit 1
     jq -n '{number:12,state:"blocked",action:"unblock",reason:"blocking PR #34 merged"}' > "$TMP/card"
   else
     jq -n '{number:12,state:"ready",action:"block",reason:"no progress after 3 attempts: failed"}' > "$TMP/card"
+  fi
+  if [ "$1" = unblock-race ]; then
+    touch "$STATE/fail-add"
+    if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: interrupted unblock succeeded' >&2; exit 1; fi
+    printf '%s\n' '{"blocking_pr":35}' > "$TMP/patch"
+    bash "$TESTS/../scripts/note.sh" merge 12 "$TMP/patch" || exit 1
+    if bash "$HANDLER" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: changed blocker was ignored' >&2; exit 1; fi
+    note="$(bash "$TESTS/../scripts/note.sh" get 12)" || exit 1
+    jq -e '.blocking_pr == 35' <<<"$note" >/dev/null || exit 1
+    [ "$(cat "$STATE/column")" = none ] || exit 1
+    echo 'PASS: unblock-race'; exit 0
   fi
   if [ "$1" = block-resume ]; then
     touch "$STATE/fail-add"
