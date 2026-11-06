@@ -1090,6 +1090,27 @@ assert_file_contains "malformed_ledger_line_is_skipped_with_warning: the good li
 new_case
 seq_fixture 1 tick-busy
 seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":-1}' '{"run_id":"@RUN@","cost_usd":0.10}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "negative_cost_line_is_malformed: exit 0" 0
+assert_file_contains "negative_cost_line_is_malformed: warns" "$LOG" "fleet-board-run: warning: skipped 1 malformed line(s)"
+assert_file_contains "negative_cost_line_is_malformed: only the good line counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":null,"cost_usd":3.00}' '{"cost_usd":1.00}' '{"run_id":"@RUN@","cost_usd":0.10}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "ledger_line_without_run_id_warns: exit 0" 0
+assert_eq "ledger_line_without_run_id_warns: once for tick 1" "$(grep -c 'warning: ledger line without a run id in tick 1; provider spend may be uncounted' "$LOG")" "1"
+assert_eq "ledger_line_without_run_id_warns: not for tick 2" "$(grep -c 'ledger line without a run id in tick 2' "$LOG")" "0"
+assert_file_contains "ledger_line_without_run_id_warns: this run's line still counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
 ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.25}'
 mkdir -p "$T/other"
 C_CWD="$T/other"
