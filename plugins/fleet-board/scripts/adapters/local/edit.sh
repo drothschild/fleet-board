@@ -4,7 +4,8 @@
 # Local-only, called by the web server. Every flag is optional; an omitted flag
 # (or an empty file argument, or --labels-json null) leaves that field unchanged.
 # A body with "## Acceptance" / "## Depends on" sections is split into the card
-# fields unless --acceptance-file / --blocked-by-json is given. --pr-url sets
+# fields unless --acceptance-file / --blocked-by-json is given; a body without
+# a section clears that field (the body is the whole truth about its sections). --pr-url sets
 # pr_url with source "person"; an empty U clears both.
 set -uo pipefail
 unset CDPATH
@@ -49,8 +50,8 @@ if [ -n "$ACC_FILE" ]; then ACC="$(fl_acceptance_json "$ACC_FILE")" || exit 1; f
 if [ -n "$BODY_FILE" ]; then
   SPLIT="$(fl_split_body "$BODY_FILE")" || exit 1
   fl_fold_outside "$SPLIT" "#$N" > "$BODYTMP" || exit 1
-  [ "$ACC" != null ] || ACC="$(jq -c 'if (.acceptance | length) > 0 then .acceptance else null end' <<<"$SPLIT")"
-  [ "$BLOCKED" != null ] || BLOCKED="$(jq -c 'if (.blocked_by | length) > 0 then .blocked_by else null end' <<<"$SPLIT")"
+  [ "$ACC" != null ] || ACC="$(jq -c .acceptance <<<"$SPLIT")"
+  [ "$BLOCKED" != null ] || BLOCKED="$(jq -c .blocked_by <<<"$SPLIT")"
 fi
 if [ "$BLOCKED" != null ]; then
   BLOCKED="$(fl_uniq_json <<<"$BLOCKED")"

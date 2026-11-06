@@ -415,6 +415,30 @@ assert_stderr_contains "edit names the missing ref" "#99"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[2]'
 assert_exit "edit blocked by itself exits 2" 2
 assert_card_json 2 '.blocked_by|length' 0
+# a body edit is the whole truth about the sections: removing one clears its field
+jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+printf 'Why\n\n## Acceptance\n- a1\n\n## Depends on\n- #1\n' > "$bf"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
+assert_exit "body edit keeping the sections exit 0" 0
+assert_card_json 2 '.acceptance|join("|")' a1
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+printf 'Why\n' > "$bf"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
+assert_exit "body edit without sections exit 0" 0
+assert_card_json 2 '.acceptance|length' 0
+assert_card_json 2 '.blocked_by|length' 0
+assert_card_json 2 '.body|rtrimstr("\n")' Why
+jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+printf -- '- from flag\n' > "$REPO/acc3.txt"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf" --acceptance-file "$REPO/acc3.txt"
+assert_card_json 2 '.acceptance|join("|")' 'from flag'
+assert_card_json 2 '.blocked_by|length' 0
+jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf" --blocked-by-json '[1]'
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 2 '.acceptance|length' 0
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --title-file "$tf"
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 # migration
 setup_case
 seed_card 1 backlog 'Old one' $'Why\n\n## Acceptance\n- a1\n- a2\n\n## Depends on\n- #2\n- other/repo#3\n'
