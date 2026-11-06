@@ -22,8 +22,11 @@
 #   - the tick's cost is total_cost_usd, or, when that is absent, modelUsage
 #     priced by estimate-cost.sh --model-usage; either way an estimate. A
 #     failed tick's cost counts when its result carries one.
-#   - after each successful tick, cleanup-done.sh runs from the repo root,
-#     outside any Claude session; its failure is logged as a warning only
+#   - after each successful tick, settle.sh and then cleanup-done.sh run from
+#     the repo root, outside any Claude session (settle.sh moves the cards
+#     whose next step starts no agent, so the board changes now and not a whole
+#     tick later); the failure of either is logged as a warning only: it never
+#     stops the run or changes its stop reason or exit code
 #
 # Stops (checked before each tick, and after it where noted):
 #   stop-file             <root>/.fleet-board.stop exists              exit 0
@@ -40,7 +43,7 @@
 # tick runs; it does not count as a failed tick. With limits.min_tick_gap > 0,
 # tick starts of runs sharing FLEET_BOARD_TOKEN_LOCK are that far apart.
 #   cost-unknown          a successful tick gives no cost at all       exit 1
-#   interrupted (<sig>)   INT or TERM: the running claude, cleanup or sleep
+#   interrupted (<sig>)   INT or TERM: the running claude, settle, cleanup or sleep
 #                         (every background job) gets TERM, then KILL if it is
 #                         still running 5 s later; the run stops   exit 130 / 143
 # On stop it prints, and appends to the log:
@@ -63,6 +66,8 @@
 #   FLEET_BOARD_ISOLATE      unset or 0 by default: no role-isolation mechanism
 #                            is recorded for this plugin, so 1 is refused (exit 2)
 #   FLEET_BOARD_CLEANUP      the cleanup script (default: cleanup-done.sh here)
+#   FLEET_BOARD_SETTLE       the settle script (default: settle.sh here)
+#   FLEET_BOARD_MERGE_REVIEWED  the merge script (default: merge-reviewed.sh here)
 #   FLEET_BOARD_TEST_BGJOB   tests only: a file; when set, the wrapper starts one
 #                            extra background `sleep` and writes its pid there
 #
@@ -117,6 +122,8 @@ esac
 CLAUDE="${FLEET_BOARD_CLAUDE:-claude}"
 PROMPT="${FLEET_BOARD_TICK_PROMPT:-/fleet-board:tick}"
 CLEANUP="${FLEET_BOARD_CLEANUP:-$HERE/cleanup-done.sh}"
+SETTLE="${FLEET_BOARD_SETTLE:-$HERE/settle.sh}"
+MERGE_REVIEWED="${FLEET_BOARD_MERGE_REVIEWED:-$HERE/merge-reviewed.sh}"
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
 case "$LOG_DIR" in
   /*) ;;
@@ -309,6 +316,33 @@ run_cleanup() {
   logfile "$WORK/cleanup.err"
 }
 
+# run_settle: settle.sh from the repo root; a failure is only a warning
+run_settle() {
+  local rc
+  run_bg bash "$SETTLE" </dev/null >"$WORK/settle.out" 2>"$WORK/settle.err"
+  rc=$?
+  log "--- settle.sh ---"
+  logfile "$WORK/settle.out"
+  if [ "$rc" -ne 0 ]; then
+    log "warning: settle.sh exited $rc"
+  fi
+  logfile "$WORK/settle.err"
+}
+
+# run_merge_reviewed: merge-reviewed.sh from the repo root (it merges only under
+# merge.policy: auto); a failure is only a warning
+run_merge_reviewed() {
+  local rc
+  run_bg bash "$MERGE_REVIEWED" </dev/null >"$WORK/merge.out" 2>"$WORK/merge.err"
+  rc=$?
+  log "--- merge-reviewed.sh ---"
+  logfile "$WORK/merge.out"
+  if [ "$rc" -ne 0 ]; then
+    log "warning: merge-reviewed.sh exited $rc"
+  fi
+  logfile "$WORK/merge.err"
+}
+
 if [ -n "${FLEET_BOARD_TEST_BGJOB:-}" ]; then
   sleep 60 </dev/null >/dev/null 2>&1 3>&- &
   printf '%s\n' "$!" > "$FLEET_BOARD_TEST_BGJOB"
@@ -497,6 +531,8 @@ while :; do
     log "=== tick $TICK $(iso) rc=0 cost_estimate_usd=unknown ==="
   fi
   jq -r '.result' <<<"$RESULT" > "$WORK/result.txt" && logfile "$WORK/result.txt"
+  run_settle
+  run_merge_reviewed
   run_cleanup
 
   [ -n "$TC" ] || stop cost-unknown 1

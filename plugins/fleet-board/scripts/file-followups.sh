@@ -172,7 +172,7 @@ while IFS= read -r item; do
     # without one there is no testable bullet, so the card goes to Backlog
     # The words "no testable check" mean Backlog even when the detail also backticks a path.
     # Spans pair up as in parse-report.sh: an even number of backticks, none adjacent, and the first span with a non-blank character is the command.
-    cmd="$(jq -r 'if (.detail | test("(^|[^a-z])no testable check([^a-z]|$)"; "i")) or (.detail | contains("``")) then empty else (.detail | split("`")) as $p | if ($p | length) % 2 == 0 then empty else ([$p | to_entries[] | select(.key % 2 == 1) | .value | select(test("[^ \\t]"))] | first) // empty end end' <<<"$item" 2>/dev/null)"
+    cmd="$(jq -r 'if (.detail | ascii_downcase | test("(^|[^a-z])no testable check([^a-z]|$)")) or (.detail | contains("``")) then empty else (.detail | split("`")) as $p | if ($p | length) % 2 == 0 then empty else ([$p | to_entries[] | select(.key % 2 == 1) | .value | select(gsub("[\u00a0\u200b]"; "") | test("[^ \\t]"))] | first) // empty end end' <<<"$item" 2>/dev/null)"
     jq -r --arg c "$CARD" --arg p "$PR" --arg cmd "$cmd" '
       (if .detail == "" then "" else "\(.detail)\n\n" end)
       + (if $cmd == "" then "" else "## Acceptance\n- `\($cmd)` gives the result the description above expects\n\n" end)
@@ -192,7 +192,12 @@ while IFS= read -r item; do
     pr_comment "Bug found outside this card, filed as #$new: $title" "$new"
   else
     if [ -z "$cmd" ]; then
-      gh issue comment "$new" --repo "$FLEET_REPO" --body "Filed in Backlog: the finding gave no testable Acceptance bullet (no failing command and expected result), so a person must write criteria and move it to Ready." </dev/null >/dev/null \
+      if jq -e '.detail | ascii_downcase | test("(^|[^a-z])no testable check([^a-z]|$)")' <<<"$item" >/dev/null 2>&1; then
+        backlog_msg="Filed in Backlog: the role stated that there is no testable check, so a person must write criteria and move it to Ready."
+      else
+        backlog_msg="Filed in Backlog: the finding gave no testable Acceptance bullet (no failing command and expected result), so a person must write criteria and move it to Ready."
+      fi
+      gh issue comment "$new" --repo "$FLEET_REPO" --body "$backlog_msg" </dev/null >/dev/null \
         || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
     fi
     pr_comment "Out of scope, tracked as #$new: $title" "$new"

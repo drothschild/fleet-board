@@ -8,3 +8,5 @@ commands:
   test_one: "bash {file}"
 merge:
   policy: "auto"
+limits:
+  max_cost_usd: 80
