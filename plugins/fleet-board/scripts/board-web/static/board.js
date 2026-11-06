@@ -1222,8 +1222,25 @@ function openImport() {
   $("imp-plan").focus();
 }
 
-// closeImport(): back to the board. Nothing is created; a grouping session
-// still running on the server is left to finish on its own.
+// cancelImportSession(id): asks the server to stop a grouping session; errors are ignored.
+function cancelImportSession(id) {
+  return writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/cancel").catch(function () {});
+}
+
+// discardImport(): Discard / Escape. While grouping, cancels the server session
+// first, then closes.
+async function discardImport() {
+  const imp = S.imp;
+  if (imp && imp.phase === "running" && imp.id && !imp.cancelling) {
+    imp.cancelling = true;
+    clearTimeout(imp.timer);
+    await cancelImportSession(imp.id);
+  }
+  if (S.imp === imp) closeImport();
+}
+
+// closeImport(): back to the board. Nothing is created; it does not cancel a
+// session (discardImport does that).
 function closeImport() {
   const imp = S.imp;
   if (!imp) return;
@@ -1312,7 +1329,10 @@ async function startImport() {
   showImportProgress(0, "");
   $("imp-discard").focus();
   const r = await writeApi("POST", "/api/import", { plan: plan, status: $("imp-target").value });
-  if (S.imp !== imp) return;
+  if (S.imp !== imp) { // discarded while the start was in flight
+    if (r.ok && typeof r.data.import_id === "string") cancelImportSession(r.data.import_id);
+    return;
+  }
   if (!r.ok || typeof r.data.import_id !== "string") {
     showToast("Grouping did not start: " + errorText(r), "error");
     setImportPhase("edit");
@@ -1567,7 +1587,7 @@ function bindImport() {
     }
   });
   $("imp-group").addEventListener("click", startImport);
-  $("imp-discard").addEventListener("click", closeImport);
+  $("imp-discard").addEventListener("click", discardImport);
   $("imp-create").addEventListener("click", function () {
     if (S.imp) createImport(S.imp.id);
   });
@@ -1589,9 +1609,9 @@ function bindImport() {
     readPlanFile(e.dataTransfer.files[0]);
   });
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && S.imp && S.imp.phase === "edit" && !S.drawer && !e.defaultPrevented) {
+    if (e.key === "Escape" && S.imp && (S.imp.phase === "edit" || S.imp.phase === "running") && !S.drawer && !e.defaultPrevented) {
       e.preventDefault();
-      closeImport();
+      discardImport();
     }
   });
 }
