@@ -110,6 +110,15 @@ worktrees:
 YML
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 1 > "$REPO/.fleet-board/next"
+}
+
+# assert_json <desc> <jq filter> <expected>: jq -r of LAST_OUT must equal expected.
+assert_json() {
+  local got
+  got="$(printf '%s' "$LAST_OUT" | jq -r "$2" 2>/dev/null)"
+  if [ "$got" = "$3" ]; then pass "$1"; else fail "$1" "filter $2: expected '$3', got '$got'"; fi
 }
 
 echo "Test: local board backend"
@@ -140,6 +149,46 @@ review:
 YML
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name review_security'
 assert_stdout_exact "local review stage name" "Review: security"
+
+# --- create, read, list, cache-clear ---
+setup_case
+body="$(mktemp)"; CLEANUP_DIRS+=("$body"); printf '## Why\nx\n\n## Acceptance\n- a "quoted" \\ thing\n' > "$body"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Title with "quotes"' "$body" --label bug
+assert_exit "create exit 0" 0
+assert_stdout_exact "create prints number and url" '{"number":1,"url":"http://127.0.0.1:8765/cards/1"}'
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_exit "read exit 0" 0
+assert_json "read title round-trips" '.title' 'Title with "quotes"'
+assert_json "read body round-trips" '.body' "$(cat "$body")"
+assert_json "read state backlog" '.state' backlog
+assert_json "read labels" '.labels|join(",")' bug
+assert_json "read note null" '.manager_note' null
+assert_json "read item_id null" '.item_id' null
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" Second "$body" --state ready
+assert_stdout_contains "second number is 2" '"number":2'
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
+assert_stdout_exact "list backlog" '[{"number":1,"title":"Title with \"quotes\"","url":"http://127.0.0.1:8765/cards/1"}]'
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" done
+assert_stdout_exact "list empty column" '[]'
+echo '{' > "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
+assert_exit "list fails closed on a corrupt card" 1
+assert_stderr_contains "list names the file" "2.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_exit "read fails on a corrupt card" 1
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 77
+assert_exit "read missing card" 1
+assert_stderr_contains "read names the card" "card #77"
+echo abc > "$REPO/.fleet-board/next"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" Third "$body"
+assert_exit "corrupt next fails create" 1
+assert_stderr_contains "corrupt next named" "next"
+rm "$REPO/.fleet-board/next"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
+assert_exit "missing store exit 1" 1
+assert_stderr_contains "missing store says init" "/fleet-board:init"
+run_check_in "$REPO" "$SCRIPTS/board-cache-clear.sh"
+assert_exit "cache-clear no-op" 0
 
 echo ""
 echo "-----------------------------------"
