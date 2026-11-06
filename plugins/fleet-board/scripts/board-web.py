@@ -638,6 +638,22 @@ def card_summary(dir: Path, card: dict, alive: bool) -> dict:
     }
 
 
+def render_body(card: dict) -> str:
+    """The body with the Acceptance and Depends on sections put back from the
+    fields (mirrors fl_render_card_json; transitional, as there)."""
+    body = card.get("body") if isinstance(card.get("body"), str) else ""
+    acc = [a for a in (card.get("acceptance") or []) if isinstance(a, str)]
+    blk = [b for b in (card.get("blocked_by") or []) if isinstance(b, int)]
+    if not acc and not blk:
+        return body
+    parts = [body.rstrip("\n")] if body.rstrip("\n") else []
+    if acc:
+        parts.append("## Acceptance\n" + "\n".join("- " + a for a in acc))
+    if blk:
+        parts.append("## Depends on\n" + "\n".join("- #%d" % b for b in blk))
+    return "\n\n".join(parts) + "\n"
+
+
 def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     alive = run_alive()
     card = read_card(dir, n)
@@ -645,6 +661,7 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     pr = note.get("pr") if note else None
     repo = (cfg.get("board") or {}).get("repo")
     out = dict(card)
+    out["body"] = render_body(card)
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
     ok = isinstance(pr, int) and not isinstance(pr, bool) and repo
@@ -726,7 +743,14 @@ def edit_card(params, body):
             tpath = temp_text(title)
         if text is not None:
             bpath = temp_text(text)
-        board_write(["bash", script("adapters/local/edit.sh"), str(n), tpath, bpath, json.dumps(labels)])
+        args = ["bash", script("adapters/local/edit.sh"), str(n)]
+        if tpath:
+            args += ["--title-file", tpath]
+        if bpath:
+            args += ["--body-file", bpath]
+        if labels is not None:
+            args += ["--labels-json", json.dumps(labels)]
+        board_write(args)
     finally:
         for path in (tpath, bpath):
             if path:

@@ -14,7 +14,10 @@ if [ "$IN" = 0 ]; then
   STATE=null
 fi
 
-jq -c --arg m "$FB_MARKER" --arg me "$ME" --arg s "$STATE" --arg url "$(fl_url "$1")" '
+RENDERED="$(printf '%s' "$CARD" | fl_render_card_json; printf x)"
+RENDERED="${RENDERED%x}"
+
+jq -c --arg rb "$RENDERED" --arg m "$FB_MARKER" --arg me "$ME" --arg s "$STATE" --arg url "$(fl_url "$1")" '
   def find_note:
     [(.comments // [])[] | select(.body | startswith($m)) | select(.author == $me)] | last;
   (find_note) as $n |
@@ -23,7 +26,10 @@ jq -c --arg m "$FB_MARKER" --arg me "$ME" --arg s "$STATE" --arg url "$(fl_url "
     title: .title,
     url: $url,
     state: ($s | if . == "null" then null else . end),
-    body: .body,
+    body: $rb,
+    acceptance: (.acceptance // []),
+    blocked_by: (.blocked_by // []),
+    pr_url: (.pr_url // null),
     labels: (.labels // []),
     manager_note: (if $n then ($n.body | sub("^[^\n]*\n"; "")) else null end),
     manager_note_id: (if $n then $n.id else null end),

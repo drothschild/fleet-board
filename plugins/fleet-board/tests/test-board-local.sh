@@ -323,7 +323,7 @@ S="$REPO/sample.md"
 printf 'Intro\n\nMore prose\n\n## Acceptance\n- one\n- two `code`\n\n## Depends on\n- #3\n- #7\n' > "$S"
 split_of "$S"
 assert_exit "split exit 0" 0
-assert_json "split body is the prose" '.body' $'Intro\n\nMore prose\n'
+assert_json "split body is the prose" '.body+"|"' $'Intro\n\nMore prose\n|'
 assert_json "split acceptance bullets" '.acceptance|join("|")' 'one|two `code`'
 assert_json "split blocked_by numbers" '.blocked_by|map(tostring)|join(",")' '3,7'
 assert_json "split outside empty" '.outside|length' 0
@@ -337,22 +337,22 @@ printf '## Depends on\n- #4\n- acme/toy#5\n- other/repo#9\n- not a ref\n- #4\n\n
 split_of "$S"
 assert_json "split maps board.repo refs to numbers, dedupes" '.blocked_by|map(tostring)|join(",")' '4,5'
 assert_json "split sends other refs to outside" '.outside|join("|")' 'other/repo#9|not a ref'
-assert_json "split keeps the other sections" '.body' $'## Why\nx\n'
+assert_json "split keeps the other sections" '.body+"|"' $'## Why\nx\n|'
 # review-focus 1: first real heading wins
 printf 'Top\n\n## Acceptance\n- first\n\n## Notes\nn\n\n## Acceptance\n- second\n' > "$S"
 split_of "$S"
 assert_json "two Acceptance headings: first one is split" '.acceptance|join("|")' first
-assert_json "two Acceptance headings: second stays in the body" '.body' $'Top\n\n## Notes\nn\n\n## Acceptance\n- second\n'
+assert_json "two Acceptance headings: second stays in the body" '.body+"|"' $'Top\n\n## Notes\nn\n\n## Acceptance\n- second\n|'
 printf 'Top\n\n```\n## Acceptance\n- fenced\n```\n\n## Acceptance\n- real\n' > "$S"
 split_of "$S"
 assert_json "fenced Acceptance heading is not split" '.acceptance|join("|")' real
-assert_json "fenced Acceptance heading stays in the body" '.body' $'Top\n\n```\n## Acceptance\n- fenced\n```\n'
+assert_json "fenced Acceptance heading stays in the body" '.body+"|"' $'Top\n\n```\n## Acceptance\n- fenced\n```\n|'
 printf '```\n## Acceptance\n- fenced\n```\n' > "$S"
 split_of "$S"
 assert_json "only a fenced heading: nothing split" '.acceptance|length' 0
 # create with the fields; read returns them and the rendered body
 setup_case
-seed_card 1 backlog 'Dep card' 'dep'
+seed_card 1 backlog 'Dep card' 'dep'; echo 2 > "$REPO/.fleet-board/next"
 af="$REPO/acc.txt"; printf -- '- alpha\n- beta "q"\n' > "$af"
 bf="$REPO/body.md"; printf 'Prose only\n' > "$bf"
 run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'With fields' "$bf" --acceptance-file "$af" --blocked-by 1 --label l1
@@ -361,17 +361,17 @@ assert_card_json 2 '.acceptance|join("|")' 'alpha|beta "q"'
 assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 assert_card_json 2 '.pr_url' null
 assert_card_json 2 '.pr_url_source' null
-assert_card_json 2 '.body' 'Prose only'
+assert_card_json 2 '.body|rtrimstr("\n")' 'Prose only'
 run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
 assert_json "read returns acceptance" '.acceptance|join("|")' 'alpha|beta "q"'
 assert_json "read returns blocked_by" '.blocked_by|map(tostring)|join(",")' 1
 assert_json "read returns pr_url" '.pr_url' null
-assert_json "read body renders the sections" '.body' $'Prose only\n\n## Acceptance\n- alpha\n- beta "q"\n\n## Depends on\n- #1\n'
+assert_json "read body renders the sections" '.body+"|"' $'Prose only\n\n## Acceptance\n- alpha\n- beta "q"\n\n## Depends on\n- #1\n|'
 printf 'Why\n\n## Acceptance\n- from body\n\n## Depends on\n- #1\n' > "$bf"
 run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Old style body' "$bf"
 assert_card_json 3 '.acceptance|join("|")' 'from body'
 assert_card_json 3 '.blocked_by|map(tostring)|join(",")' 1
-assert_card_json 3 '.body' $'Why'
+assert_card_json 3 '.body|rtrimstr("\n")' 'Why'
 # review-focus 2: blocked_by must name another existing card
 run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Dangling' "$bf" --blocked-by 99
 assert_exit "create blocked-by a missing card exits 2" 2
@@ -392,7 +392,7 @@ assert_card_json 2 '.acceptance|join("|")' only
 assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 assert_card_json 2 '.title' 'With fields'
 assert_card_json 2 '.labels|join(",")' l1
-assert_card_json 2 '.body' 'Prose only'
+assert_card_json 2 '.body|rtrimstr("\n")' 'Prose only'
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[]'
 assert_exit "edit blocked_by exit 0" 0
 assert_card_json 2 '.blocked_by|length' 0
@@ -408,7 +408,7 @@ assert_card_json 2 '.pr_url' 'https://github.com/acme/toy/pull/9'
 printf 'Body\n\n## Acceptance\n- via body\n' > "$bf"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
 assert_card_json 2 '.acceptance|join("|")' 'via body'
-assert_card_json 2 '.body' 'Body'
+assert_card_json 2 '.body|rtrimstr("\n")' 'Body'
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[99]'
 assert_exit "edit blocked by a missing card exits 2" 2
 assert_stderr_contains "edit names the missing ref" "#99"
@@ -418,7 +418,7 @@ assert_card_json 2 '.blocked_by|length' 0
 # migration
 setup_case
 seed_card 1 backlog 'Old one' $'Why\n\n## Acceptance\n- a1\n- a2\n\n## Depends on\n- #2\n- other/repo#3\n'
-seed_card 2 in_review 'Old two' 'Prose only'
+seed_card 2 in_review 'Old two' 'Prose only'; echo 3 > "$REPO/.fleet-board/next"
 jq --arg m '<!-- fleet-board:manager-note -->' '.comments = [{id:1, author:"x", body:($m + "\n### note\n\n```json\n{\"state\":\"in_review\",\"pr\":12}\n```\n"), created_at:"2026-01-01T00:00:00Z"}] | .next_comment_id = 2' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.before"
 run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh" --dry-run
