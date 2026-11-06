@@ -877,6 +877,134 @@ plan ready-start
 run_check "$SCRIPT" extra
 assert_exit "usage: arguments rejected" 2
 
+# ---------------------------------------------------------------------------
+# Review stages: stage columns, advance_stage and review_stage. The config has
+# the three stages of fixtures/config/stages.yml (security with max_rounds 2).
+STAGES_YAML="$(printf '%s\n' \
+  'review:' \
+  '  stages:' \
+  '    - name: security' \
+  '      agent: "acme:sec"' \
+  '      model: opus' \
+  '      paths: ["src/auth/**"]' \
+  '      max_rounds: 2' \
+  '    - name: ux' \
+  '      agent: ux-reviewer' \
+  '      model: sonnet' \
+  '      advisory: true' \
+  '    - name: compliance' \
+  '      provider: openai' \
+  '      model: gpt-test' \
+  '      price: { input: 1, output: 2 }')"
+unset OPENAI_API_KEY || true
+splan() { plan "$1" "$STAGES_YAML"; }
+ssettle() { settle "$1" "$2" "$STAGES_YAML"; }
+
+# in_review, clean current review, label needs-security-review -> advance_stage
+splan stage-advance-from-review
+assert_exit "stage-advance: exit" 0
+assert_jq "stage-advance: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "stage-advance: reason" "$(card 12 reason)" '"review clean; next stage security"'
+assert_jq "stage-advance: entering security" "$(card 12 stage.name)" '"security"'
+assert_jq "stage-advance: agent carried" "$(card 12 stage.agent)" '"acme:sec"'
+assert_eq "stage-advance: no files lookup" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 0
+assert_jq "stage-advance: dispatchable" '.dispatchable' 'true'
+# the security column is listed
+assert_eq "stage columns listed" "$(grep -c 'issue list --repo acme/toy --label fleet:review_security' "$FAKE_GH_DIR/calls.log")" 1
+# in review_security, note stage security round 1, no last_review -> review_stage
+splan stage-review-needed
+assert_exit "stage-review: exit" 0
+assert_jq "stage-review: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-review: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+assert_jq "stage-review: model" "$(card 12 stage.model)" '"opus"'
+assert_jq "stage-review: dispatchable" '.dispatchable' 'true'
+# agent_stage_plan_card_has_null_provider
+assert_jq "agent_stage_plan_card_has_null_provider: provider" "$(card 12 stage.provider)" 'null'
+assert_jq "agent_stage_plan_card_has_null_provider: agent" "$(card 12 stage.agent)" '"acme:sec"'
+assert_jq "stage-review: stage object is the config stage whole" "$(card 12 stage) | keys" \
+  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","price","provider","timeout"]'
+# no_warning_when_stage_not_acted_on: no card in the provider stage
+assert_jq "no_warning_when_stage_not_acted_on: no card in the stage" '.warnings' '[]'
+# last_review from in_review (stage null, round 1) does not count
+splan stage-stale-record
+assert_jq "stage-stale: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-stale: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+# findings in round 1 of 2 -> fix with stage
+splan stage-fix
+assert_jq "stage-fix: action" "$(card 12 action)" '"fix"'
+assert_jq "stage-fix: stage present" "$(card 12 stage.name)" '"security"'
+# findings in round 2 of 2 -> block at the stage's max
+splan stage-block
+assert_jq "stage-block: action" "$(card 12 action)" '"block"'
+assert_jq "stage-block: reason" "$(card 12 reason)" '"1 Critical/Important findings survive round 2 of 2 in security"'
+# advisory stage with findings and no later label -> tail (draft PR -> mark_ready)
+splan stage-advisory-tail
+assert_jq "stage-advisory: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "stage-advisory: stage ux" "$(card 12 stage.name)" '"ux"'
+# clean in security, ux label present -> advance to ux
+splan stage-advance-next
+assert_jq "stage-advance-next: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "stage-advance-next: ux" "$(card 12 stage.name)" '"ux"'
+assert_jq "stage-advance-next: reason" "$(card 12 reason)" '"review clean; next stage ux"'
+# clean in security, ux label present but reviewed_stages has ux -> tail
+splan stage-skip-done
+assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
+# head moved after a clean stage review -> review_stage
+splan stage-head-moved
+assert_jq "stage-head-moved: action" "$(card 12 action)" '"review_stage"'
+# a card labelled fleet:review_legacy with no such stage in the config: settle plan by number
+ssettle stage-not-configured 12
+assert_exit "stage-missing: exit 0" 0
+assert_jq "stage-missing: action skip" "$(card 12 action)" '"skip"'
+assert_jq "stage-missing: not dispatchable" '.dispatchable' 'false'
+# settle keeps advance_stage, drops review_stage
+ssettle stage-advance-from-review 12
+assert_jq "settle: advance_stage kept" "$(card 12 action)" '"advance_stage"'
+ssettle stage-review-needed 12
+assert_jq "settle: review_stage skipped" "$(card 12 action)" '"skip"'
+assert_jq "settle: review_stage waits" "$(card 12 reason)" '"review_stage waits for the next tick"'
+# action_failures rule covers a stage column (note action_failures 3, review.max_rounds 3)
+splan stage-action-failures-3
+assert_jq "stage failures: block" "$(card 12 action)" '"block"'
+assert_jq "stage failures: reason" "$(card 12 reason)" '"no progress after 3 attempts: fleet-board: cannot fetch the head of PR #34"'
+
+# Provider stages
+COMPLIANCE_WARN='stage compliance: OPENAI_API_KEY is not set; provider reviews will fail'
+# review_stage_plan_card_has_provider
+splan stage-provider-review
+assert_exit "review_stage_plan_card_has_provider: exit" 0
+assert_jq "review_stage_plan_card_has_provider: action" "$(card 12 action)" '"review_stage"'
+assert_jq "review_stage_plan_card_has_provider: provider" "$(card 12 stage.provider)" '"openai"'
+assert_jq "review_stage_plan_card_has_provider: agent null" "$(card 12 stage.agent)" 'null'
+assert_jq "review_stage_plan_card_has_provider: model" "$(card 12 stage.model)" '"gpt-test"'
+assert_jq "review_stage_plan_card_has_provider: dispatchable" '.dispatchable' 'true'
+assert_jq "review_stage_plan_card_has_provider: key unset warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# unset_key_warns_once: card 12 review_stage and card 13 fix, both in review_compliance
+splan stage-provider-two
+assert_jq "unset_key_warns_once: card 12 review_stage" "$(card 12 action)" '"review_stage"'
+assert_jq "unset_key_warns_once: card 13 fix" "$(card 13 action)" '"fix"'
+assert_jq "unset_key_warns_once: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# set_key_no_warning
+setup_case stage-provider-two "$STAGES_YAML"
+OPENAI_API_KEY=x; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "set_key_no_warning: actions unchanged" '[.cards[].action]' '["review_stage","fix"]'
+assert_jq "set_key_no_warning: no warning" '.warnings' '[]'
+# an empty variable counts as unset
+setup_case stage-provider-two "$STAGES_YAML"
+OPENAI_API_KEY=; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "empty key warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# no_warning_when_stage_not_acted_on: a clean provider review plans the tail
+splan stage-provider-clean
+assert_jq "no_warning_when_stage_not_acted_on: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "no_warning_when_stage_not_acted_on: no warning" '.warnings' '[]'
+# settle: review_stage is skipped there, so no warning
+ssettle stage-provider-review 12
+assert_jq "no_warning_when_stage_not_acted_on: settle skip" '.warnings' '[]'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
