@@ -86,6 +86,18 @@ git add "card-$n.txt"
 git -c user.name=Fixture -c user.email=fixture@example.com commit -qm implement
 printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#1\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 WORKER
+if [ "${1:-multi-card}" = multi-card-parallel ]; then
+  MARKER="fixture-ready-$(basename "$TMP")"
+  python3 - "$TMP/worker.sh" "$MARKER" <<'PY_WORKER'
+import sys
+p, marker = sys.argv[1:]
+s = open(p).read()
+needle = 'git add "card-$n.txt"'
+assert needle in s
+s = s.replace(needle, 'hostname > "/scratch/' + marker + '-$n"\nwhile [ ! -e /scratch/release ]; do sleep 1; done\n' + needle)
+open(p, 'w').write(s)
+PY_WORKER
+fi
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 if [ "${1:-multi-card}" = multi-card-skip ]; then export GH_SKIP13=1; fi
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
@@ -104,7 +116,24 @@ PLAN
   echo 'PASS: multi-card-provider'
   exit 0
 fi
-if [ "${1:-multi-card}" = multi-card-lock ]; then
+if [ "${1:-multi-card}" = multi-card-parallel ]; then
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/out" 2> "$TMP/first-err" & TICK_PID=$!
+  READY=""
+  for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    READY="$(find "${TMPDIR:-/tmp}" -name "$MARKER-*" -type f -print 2>/dev/null)"
+    [ "$(printf '%s\n' "$READY" | sed '/^$/d' | wc -l | tr -d ' ')" -ge 2 ] && break
+    sleep 1
+  done
+  if [ "$(printf '%s\n' "$READY" | sed '/^$/d' | wc -l | tr -d ' ')" -lt 2 ]; then
+    kill -TERM "$TICK_PID" 2>/dev/null || true
+    for unused in 1 2 3 4 5 6 7 8 9 10 11 12; do kill -0 "$TICK_PID" 2>/dev/null || break; sleep 1; done
+    kill -KILL "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true
+    while IFS= read -r path; do [ -n "$path" ] && [ -f "$path" ] || continue; docker rm -f "$(cat "$path")" >/dev/null 2>&1 || true; done <<<"$READY"
+    cat "$TMP/first-err" >&2; echo 'FAIL: two workers did not overlap' >&2; exit 1
+  fi
+  while IFS= read -r path; do [ -n "$path" ] || continue; touch "$(dirname "$path")/release"; done <<<"$READY"
+  wait "$TICK_PID" || { cat "$TMP/first-err" >&2; echo 'FAIL: parallel tick failed after release' >&2; exit 1; }
+elif [ "${1:-multi-card}" = multi-card-lock ]; then
   export GH_HOLD_CREATE=1
   bash "$ROOT/bin/fleet-board" tick > "$TMP/out" 2> "$TMP/first-err" & TICK_PID=$!
   for unused in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do [ -e "$TMP/state/create-blocked" ] && break; sleep 1; done
