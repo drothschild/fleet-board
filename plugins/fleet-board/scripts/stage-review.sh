@@ -102,8 +102,11 @@ if [ "$KEY_ENV" != "-" ] && [ -z "${!KEY_ENV:-}" ]; then
 fi
 
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}"
-mkdir -p "$LOG_DIR/stage-reports"
-LOG_DIR="$(cd "$LOG_DIR" && pwd)"
+mkdir -p "$LOG_DIR/stage-reports" 2>/dev/null || die "cannot create log dir $LOG_DIR" 1
+LOG_DIR_ABS="$(cd "$LOG_DIR" 2>/dev/null && pwd)" && [ -n "$LOG_DIR_ABS" ] && [ -w "$LOG_DIR_ABS" ] \
+  && [ -w "$LOG_DIR_ABS/stage-reports" ] || die "cannot create log dir $LOG_DIR" 1
+LOG_DIR="$LOG_DIR_ABS"
+LEDGER="$LOG_DIR/provider-spend.jsonl"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -163,7 +166,7 @@ write_ledger() {
     --argjson i "$IN_TOTAL" --argjson o "$OUT_TOTAL" --argjson cost "$cost" \
     '{ts: $ts, run_id: (if $run == "" then null else $run end), repo: $repo, card: $card, stage: $stage,
       provider: $provider, model: $model, input_tokens: $i, output_tokens: $o, cost_usd: $cost}' \
-    >> "$LOG_DIR/provider-spend.jsonl"
+    >> "$LEDGER" 2>/dev/null || die "cannot write ledger $LEDGER" 1
 }
 
 fail_after_reply() { # message code
@@ -203,9 +206,16 @@ while :; do
     fail_after_reply "reply contains the manager-note marker" 1
   fi
 
-  cp "$TMP/reply.txt" "$REPORT_FILE"
-  if PARSED="$(bash "$HERE/parse-report.sh" --role stage-reviewer "$REPORT_FILE" 2> "$TMP/parse.err")"; then
+  cp "$TMP/reply.txt" "$REPORT_FILE" 2>/dev/null || fail_after_reply "cannot write report file $REPORT_FILE" 1
+  prc=0
+  PARSED="$(bash "$HERE/parse-report.sh" --role stage-reviewer "$REPORT_FILE" 2> "$TMP/parse.err")" || prc=$?
+  if [ "$prc" -eq 0 ]; then
     break
+  fi
+  if [ "$prc" -ne 1 ]; then
+    cat "$TMP/parse.err" >&2
+    write_ledger
+    exit 1
   fi
   if [ "$ATTEMPTS" -ge 2 ]; then
     cat "$TMP/parse.err" >&2

@@ -128,7 +128,7 @@ replies() {
 sr() {
   local path="$WORK/bin"
   if [ -n "${SR_PATH:-}" ]; then path="$SR_PATH"; fi
-  ( cd "$CASE" && env PATH="$path" FLEET_BOARD_CONFIG="$CASE/cfg.yml" FLEET_BOARD_LOG_DIR="$CASE/log" \
+  ( cd "$CASE" && env PATH="$path" FLEET_BOARD_CONFIG="$CASE/cfg.yml" FLEET_BOARD_LOG_DIR="${SR_LOG:-$CASE/log}" \
       FAKE_CURL_LOG="$CASE/curl.log" FAKE_CURL_REPLIES="$CASE/replies" \
       "$BASH_EXE" "$SCRIPT" "$@" > "$CASE/out" 2> "$CASE/err" )
   LAST_EXIT=$?
@@ -266,6 +266,27 @@ assert_exit "missing_key_env_makes_no_call: exit 3" 3
 assert_contains "missing_key_env_makes_no_call: stderr names the variable" "$LAST_ERR" "OPENAI_API_KEY"
 assert_eq "missing_key_env_makes_no_call: no curl call" "$(calls)" "0"
 assert_eq "missing_key_env_makes_no_call: no ledger line" "$(ledger_lines)" "0"
+
+# unwritable_log_dir_makes_no_call
+setup
+replies "200 r-clean.json"
+printf 'file\n' > "$CASE/afile"
+SR_LOG="$CASE/afile/sub" sr 12 34 --stage compliance --round 1
+assert_exit "unwritable_log_dir_makes_no_call: exit 1" 1
+assert_contains "unwritable_log_dir_makes_no_call: stderr" "$LAST_ERR" "stage-review: cannot create log dir $CASE/afile/sub"
+assert_eq "unwritable_log_dir_makes_no_call: no curl call" "$(calls)" "0"
+assert_eq "unwritable_log_dir_makes_no_call: nothing posted" "$(posted)" "0"
+unset SR_LOG
+
+# failed_ledger_append_posts_nothing
+setup
+replies "200 r-clean.json"
+mkdir "$CASE/log/provider-spend.jsonl"
+sr 12 34 --stage compliance --round 1
+assert_exit "failed_ledger_append_posts_nothing: exit 1" 1
+assert_contains "failed_ledger_append_posts_nothing: stderr" "$LAST_ERR" "stage-review: cannot write ledger"
+assert_eq "failed_ledger_append_posts_nothing: curl called once" "$(calls)" "1"
+assert_eq "failed_ledger_append_posts_nothing: nothing posted" "$(posted)" "0"
 
 # agent_stage_is_usage_error
 setup
