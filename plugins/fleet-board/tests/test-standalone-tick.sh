@@ -69,6 +69,29 @@ for call in "$FAKE_GH_DIR"/argv/*; do
     echo 'FAIL: board or GitHub write during plan-only' >&2; exit 1
   fi
 done
+# A changed reviewed head must not fetch or create merge-tree objects.
+mkdir -p "$TMP/drift"
+sed 's/\\"important\\":1/\\"important\\":0/' "$ROOT/plugins/fleet-board/fixtures/gh/tick/drift-merge/comments-12.json" > "$TMP/drift/comments.json"
+while IFS="$(printf '\t')" read -r key status file; do
+  case "$key" in ''|\#*) continue ;; esac
+  case "$file" in comments-12.json) file="$TMP/drift/comments.json" ;; *) file="$ROOT/plugins/fleet-board/fixtures/gh/tick/drift-merge/$file" ;; esac
+  printf '%s\t%s\t%s\n' "$key" "$status" "$file"
+done < "$ROOT/plugins/fleet-board/fixtures/gh/tick/drift-merge/routes" > "$TMP/drift/routes"
+REAL_GIT="$(command -v git)"
+cat > "$TMP/bin/git" <<GIT
+#!/usr/bin/env bash
+case "\$1" in fetch|merge-tree) printf '%s\n' "\$1" >> "$TMP/git-writes" ;; esac
+exec "$REAL_GIT" "\$@"
+GIT
+chmod +x "$TMP/bin/git"
+export FAKE_GH_ROUTES="$TMP/drift/routes"
+if ! bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/drift-out"; then
+  echo 'FAIL: drift plan failed' >&2; exit 1
+fi
+if [ -e "$TMP/git-writes" ]; then echo 'FAIL: drift check wrote to Git' >&2; exit 1; fi
+if ! jq -e '.cards[0].action == "review"' "$TMP/drift-out" >/dev/null; then
+  echo 'FAIL: moved head was not held for review' >&2; exit 1
+fi
 # Projects cache must stay outside the checkout even on a cold cache.
 cat > "$TMP/repo/.fleet-board.yml" <<'YML'
 board:
