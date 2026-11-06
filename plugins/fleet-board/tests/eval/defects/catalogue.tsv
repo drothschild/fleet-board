@@ -1,0 +1,7 @@
+# id	class	pr	patch	report pattern (ERE, case-insensitive; a Critical or Important finding must match)
+off-by-one	off-by-one	pr-paginate	off-by-one.patch	pageCount|off-by-one|floor
+source-text-assertion	source-text-assertion	pr-slug	source-text-assertion.patch	source text|readFileSync|includes\(|comment
+weakened-assertion	weakened-assertion	pr-clamp	weakened-assertion.patch	weaken|<= 10|return lo|above hi
+untested-bullet	untested-bullet	pr-slug	untested-bullet.patch	truncat|max|UNMAPPED
+mocked-dependency	mocked-dependency	pr-convert	mocked-dependency.patch	mock|rates\.js|EUR: 9|rate table
+happy-path-only	happy-path-only	pr-paginate	happy-path-only.patch	short last page|last page|edge case|happy

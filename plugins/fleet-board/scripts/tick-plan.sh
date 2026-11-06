@@ -81,6 +81,8 @@
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
 # dispatchable false. A plan without --settle never emits move_to_review.
+# --settle-merge is --settle that also keeps a merge action (merge-reviewed.sh
+# carries it out; settle.sh never asks for it).
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle has no card or a non-numeric card.
 #
@@ -170,8 +172,13 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 
 SETTLE=false
 SETTLE_NUMS=""
+KEEP_MERGE=false
 if [ $# -gt 0 ]; then
-  [ "$1" = "--settle" ] || fb_die 2 "usage: tick-plan.sh [--settle <n>...]"
+  case "$1" in
+    --settle) ;;
+    --settle-merge) KEEP_MERGE=true ;; # merge-reviewed.sh: settle mode that also keeps merge
+    *) fb_die 2 "usage: tick-plan.sh [--settle|--settle-merge <n>...]" ;;
+  esac
   shift
   [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle <n>... (at least one card)"
   for a in "$@"; do
@@ -241,7 +248,7 @@ is_test_path() {
 # Prints null when there is no reviewed sha, the head has not moved, or a
 # lookup fails.
 drift_lookup() {
-  local from head cmp chain sha files f merge=false tedit=false
+  local from head cmp chain sha files f merge=false tedit=false unrev=true verdict
   from="$(jq -r '.last_review.sha // empty | strings' <<<"$1" 2>/dev/null)" || return 1
   head="$(jq -r '.headRefOid // empty | strings' <<<"$2" 2>/dev/null)" || return 1
   [ -n "$from" ] && [ -n "$head" ] || { echo null; return 0; }
@@ -269,8 +276,12 @@ drift_lookup() {
       done <<<"$files"
     fi
   done <<<"$chain"
-  jq -cn --argjson m "$merge" --argjson t "$tedit" --arg from "$from" --arg head "$head" \
-    '{merge: $m, test_edit: $t, from: $from, head: $head}'
+  # Reviewed unless a commit since is something other than a clean merge of main
+  # (review-drift.sh); a failed check reads as unreviewed
+  verdict="$(bash "$FLEET_SCRIPTS/review-drift.sh" "$from" "$head" 2>/dev/null)" || verdict=unreviewed
+  [ "$verdict" = reviewed ] && unrev=false
+  jq -cn --argjson m "$merge" --argjson t "$tedit" --argjson u "$unrev" --arg from "$from" --arg head "$head" \
+    '{merge: $m, test_edit: $t, unreviewed: $u, from: $from, head: $head}'
 }
 
 # card_input <state> <n> <title-json>: prints one JSON object holding every
@@ -488,7 +499,7 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review blocked); d
   done
 done
 
-jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
+jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
@@ -557,6 +568,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE
             then act("review"; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
           elif $ci > 0 and head_moved($c; $lr)
             then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
+          # A clean review covers a later head only when every commit since is a
+          # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
+          elif $ci == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
+            then act("review"; "PR head \($c.pr_info.headRefOid[0:7]) has commits after the round \($round) review at \($lr.sha[0:7]) that are not clean merges of the base; review them before merging")
           elif $ci > 0 and $round >= $max then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($max)")
           elif $ci > 0 then act("fix"; "\($ci) Critical/Important findings in round \($round)")
           elif $c.needs_human_qa == true then act("to_human_qa"; "no Critical/Important findings; needs human QA")
@@ -582,7 +597,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson cfg "$FLEET_CFG" --arg base "$BASE
     | decide($c; $n; $round) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0
-       elif ($d0.action == "to_human_qa" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip") then $d0
+       elif ($d0.action == "to_human_qa" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and $d0.action == "merge")) then $d0
        elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
        else act("skip"; "\($d0.action) waits for the next tick") end) as $d
     | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,

@@ -782,7 +782,7 @@ In 3.6 items 4 and 5 the card has already moved when the role reports, and the p
 - **Rule 2.17b**, directly after 2.17 and before 2.18 (the existing 2.17a stays where it is): `update_branch` runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge and blocks the card. When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
 - **Progress list** (the one that lists, per action, what counts as progress): a bullet directly after the `block` bullet: `update_branch`: `update-branch.sh` exited 0 (a clean merge pushed, or a conflict moved the card to `blocked`).
 
-## Revision 15 requirements (2026-11-03: rules that were added to the agent file by hand; these win over anything above)
+## Revision 17 requirements (2026-11-03: rules that were added to the agent file by hand; these win over anything above)
 
 These rules were added to `agents/manager.md` by later PRs, by hand. The spec must carry each, so a regeneration keeps them:
 

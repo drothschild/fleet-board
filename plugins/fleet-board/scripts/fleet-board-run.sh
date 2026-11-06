@@ -67,6 +67,7 @@
 #                            is recorded for this plugin, so 1 is refused (exit 2)
 #   FLEET_BOARD_CLEANUP      the cleanup script (default: cleanup-done.sh here)
 #   FLEET_BOARD_SETTLE       the settle script (default: settle.sh here)
+#   FLEET_BOARD_MERGE_REVIEWED  the merge script (default: merge-reviewed.sh here)
 #   FLEET_BOARD_TEST_BGJOB   tests only: a file; when set, the wrapper starts one
 #                            extra background `sleep` and writes its pid there
 #
@@ -122,6 +123,7 @@ CLAUDE="${FLEET_BOARD_CLAUDE:-claude}"
 PROMPT="${FLEET_BOARD_TICK_PROMPT:-/fleet-board:tick}"
 CLEANUP="${FLEET_BOARD_CLEANUP:-$HERE/cleanup-done.sh}"
 SETTLE="${FLEET_BOARD_SETTLE:-$HERE/settle.sh}"
+MERGE_REVIEWED="${FLEET_BOARD_MERGE_REVIEWED:-$HERE/merge-reviewed.sh}"
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
 case "$LOG_DIR" in
   /*) ;;
@@ -327,6 +329,20 @@ run_settle() {
   logfile "$WORK/settle.err"
 }
 
+# run_merge_reviewed: merge-reviewed.sh from the repo root (it merges only under
+# merge.policy: auto); a failure is only a warning
+run_merge_reviewed() {
+  local rc
+  run_bg bash "$MERGE_REVIEWED" </dev/null >"$WORK/merge.out" 2>"$WORK/merge.err"
+  rc=$?
+  log "--- merge-reviewed.sh ---"
+  logfile "$WORK/merge.out"
+  if [ "$rc" -ne 0 ]; then
+    log "warning: merge-reviewed.sh exited $rc"
+  fi
+  logfile "$WORK/merge.err"
+}
+
 if [ -n "${FLEET_BOARD_TEST_BGJOB:-}" ]; then
   sleep 60 </dev/null >/dev/null 2>&1 3>&- &
   printf '%s\n' "$!" > "$FLEET_BOARD_TEST_BGJOB"
@@ -516,6 +532,7 @@ while :; do
   fi
   jq -r '.result' <<<"$RESULT" > "$WORK/result.txt" && logfile "$WORK/result.txt"
   run_settle
+  run_merge_reviewed
   run_cleanup
 
   [ -n "$TC" ] || stop cost-unknown 1

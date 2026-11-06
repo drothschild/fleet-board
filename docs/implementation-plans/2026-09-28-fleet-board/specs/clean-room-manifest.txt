@@ -8,6 +8,6 @@ b5035f0e48a270f1f2a336ae345fb4e1b21521962d11214dd4714fa760f86098  agents/fixer.m
 b1a5fa7fc685b1ab75dcb91d39e2ada01e6911b9faeb197907556cc33517c470  agents/manager.md
 f651a8a96074c365a27db5945573d5dce93d135f9f083fd4f2e8a3e984a93f81  agents/reviewer.md
 bbcc25fe440ad71ffb9b6ee5be9153784d162c6f2ddb83a0c3ab41af02db74ad  skills/reporting/SKILL.md
-0c56f165db5b62d7bafe17b300b2b4aaa487ce84e55bd1ab7ec15550be9dc189  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
-607506d57700d8b1fa62ecffbee5b0134aa819b63b0675761dc2fc60b38bfd93  skills/run/SKILL.md
+e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
+6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md
 ca185e305e5782020ee7c17fe8a4b3b4024efe482d6ed92bf55356f98f8c6f68  skills/status/SKILL.md
