@@ -41,4 +41,11 @@ kill "$WATCHDOG" 2>/dev/null || true
 wait "$WATCHDOG" 2>/dev/null || true
 [ "$RC" -eq 0 ] || { echo 'isolated worker failed' >&2; exit 1; }
 [ -f "$SCRATCH/result.json" ] && [ ! -L "$SCRATCH/result.json" ] && jq -e -s 'length == 1 and (.[0] | .version == 1 and (.outcome | IN("done", "blocked", "clean", "findings")) and (.report | type == "string" and length > 0))' "$SCRATCH/result.json" >/dev/null 2>&1 || { echo 'invalid worker result' >&2; exit 1; }
+REPORT="$(mktemp)" || exit 1
+jq -r .report "$SCRATCH/result.json" > "$REPORT" || { rm -f "$REPORT"; exit 1; }
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROLE="$(jq -r .role "$REQUEST")"
+PARSED="$(bash "$SCRIPTS/parse-report.sh" --role "$ROLE" "$REPORT")" || { rm -f "$REPORT"; echo 'invalid worker report' >&2; exit 1; }
+rm -f "$REPORT"
+[ "$(jq -r .status <<<"$PARSED")" = "$(jq -r .outcome "$SCRATCH/result.json")" ] || { echo 'worker outcome does not match report' >&2; exit 1; }
 cat "$SCRATCH/result.json"

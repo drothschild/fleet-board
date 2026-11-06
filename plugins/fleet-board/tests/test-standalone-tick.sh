@@ -31,7 +31,7 @@ set -eu
 ! git ls-remote https://github.com/example/nonexistent.git >/dev/null 2>&1
 printf 'edited\n' > file.txt
 [ "$(cat file.txt)" = edited ]
-printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\\ndone\\n## Findings\\n- none\\n## For the card\\nImplemented\\n## PR\\n#34\\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
+printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#34\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 WORKER
   jq -n --arg source "$TMP/source" --arg scratch "$TMP/scratch" --arg ref "$REF" \
     '{version:1,card:12,action:"start",role:"implementor",worktree:$source,expected_ref:$ref,prompt:"fixture",limits:{seconds:30,memory_mb:256,pids:64},permissions:{network:false},image:"ghcr.io/home-assistant/home-assistant:stable"}' > "$TMP/request.json"
