@@ -89,7 +89,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `{status, report_file, parsed, provider, model, input_tokens, output_tokens, cost_usd,
   attempts}`. Exit codes: 0 posted (or checked, with `--no-post`); 1 provider failure,
   empty or truncated reply, a reply holding `FB_MARKER`, or a failed post; 2 usage, unknown
-  stage or an agent stage; 3 the key variable is unset (no call); 6 the reply was
+  stage or an agent stage; 3 the key variable is unset or holds a control character (no call); 6 the reply was
   rejected twice; 7 the diff exceeds `max_diff_bytes` or has no text hunks (no call; the
   manager blocks the card). The manager counts 1, 3 and 6 as report errors and records
   `last_review.provider` and `last_review.model`; its `last_review.sha` is the PR head read
@@ -106,7 +106,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   never argv; provider text on stderr has the key replaced by `[redacted]` and is cut to
   300 characters. Retries HTTP 429 and 5xx twice. Exit 0 reply; 1 HTTP or transport
   failure; 2 usage, or a `--base-url` with userinfo, a control character or a non-loopback
-  plain-http host (the same rule `config.sh` applies; no curl call); 3 key variable unset (no curl call). Config: `providers` (name ->
+  plain-http host (the same rule `config.sh` applies; no curl call); 3 key variable unset or holding
+  a control character (no file written, no curl call). curl runs with `-q` first (no
+  `~/.curlrc`) and `--max-filesize 20971520`; `usage` token counts must be non-negative
+  integers, else exit 1 `provider: reply has no usage`. Config: `providers` (name ->
   `base_url`, `api_key_env`, `max_tokens_param`) merged over `providers/presets.json`
   (`openai`, `gemini`, `openrouter`, `ollama`); config never holds a key value. A stage
   sets exactly one of `agent` and `provider`; a provider stage needs `model` and `price`.

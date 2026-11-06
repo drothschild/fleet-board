@@ -13,14 +13,20 @@
 # it never appears in argv, stdout or stderr. Provider text printed to stderr
 # has the key replaced by [redacted] and is cut to 300 characters.
 # Retries: HTTP 429 and 5xx only, 1 try + 2 retries, honouring Retry-After
-# seconds (capped at 60) through ${FB_SLEEP:-sleep}.
+# seconds (capped at 60) through ${FB_SLEEP:-sleep}. curl runs with -q first
+# (no ~/.curlrc, which could add --trace or -k) and --max-filesize 20971520.
+# usage.prompt_tokens and usage.completion_tokens must be non-negative
+# integers, else the reply is refused ("provider: reply has no usage").
 #
 # Exit codes:
 #   0 - reply printed
-#   1 - HTTP or transport failure (stderr: "provider: <reason>")
+#   1 - HTTP or transport failure, or a reply without valid usage
+#       (stderr: "provider: <reason>")
 #   2 - usage error, or a --base-url with userinfo, a control character, or a
 #       plain-http host that is not loopback ("provider: base_url ..."; no curl call)
-#   3 - --key-env names an unset or empty variable (no curl call)
+#   3 - --key-env names an unset or empty variable, or one holding a control
+#       character ("provider: <NAME> holds a control character"); no file is
+#       written and no curl call is made
 
 set -eu
 unset CDPATH
@@ -75,6 +81,8 @@ KEY=""
 if [ "$KEY_ENV" != "-" ]; then
   KEY="${!KEY_ENV:-}"
   [ -n "$KEY" ] || die "$KEY_ENV is not set" 3
+  # A CR or LF in the key would end the Authorization line and inject headers
+  case "$KEY" in *[[:cntrl:]]*) die "$KEY_ENV holds a control character" 3 ;; esac
 fi
 
 umask 077
@@ -111,10 +119,10 @@ while :; do
   attempt=$((attempt + 1))
   rc=0
   if [ -n "$HDR_ARGS" ]; then
-    code="$(curl -sS --max-time "$TIMEOUT" -w '%{http_code}' -D "$TMP/resp.hdr" -o "$TMP/resp.json" \
+    code="$(curl -q -sS --max-time "$TIMEOUT" --max-filesize 20971520 -w '%{http_code}' -D "$TMP/resp.hdr" -o "$TMP/resp.json" \
       -H "@$TMP/auth" -H 'Content-Type: application/json' --data-binary "@$TMP/body.json" "$URL" 2> "$TMP/curl.err")" || rc=$?
   else
-    code="$(curl -sS --max-time "$TIMEOUT" -w '%{http_code}' -D "$TMP/resp.hdr" -o "$TMP/resp.json" \
+    code="$(curl -q -sS --max-time "$TIMEOUT" --max-filesize 20971520 -w '%{http_code}' -D "$TMP/resp.hdr" -o "$TMP/resp.json" \
       -H 'Content-Type: application/json' --data-binary "@$TMP/body.json" "$URL" 2> "$TMP/curl.err")" || rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
@@ -148,8 +156,8 @@ jq -ce --arg m "$MODEL" '
   if (.choices | type) == "array" and (.choices | length) > 0 then
     { text: (.choices[0].message.content // "" | if type == "string" then . else tojson end),
       finish_reason: (.choices[0].finish_reason // ""),
-      input_tokens: (.usage.prompt_tokens | if type == "number" then . else error("no usage") end),
-      output_tokens: (.usage.completion_tokens | if type == "number" then . else error("no usage") end),
+      input_tokens: (.usage.prompt_tokens | if type == "number" and . >= 0 and floor == . then . else error("no usage") end),
+      output_tokens: (.usage.completion_tokens | if type == "number" and . >= 0 and floor == . then . else error("no usage") end),
       model: (.model // $m) }
   else error("no choices") end' "$TMP/resp.json" > "$TMP/norm.json" 2> "$TMP/norm.err" \
   || {

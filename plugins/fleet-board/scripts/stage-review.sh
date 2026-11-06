@@ -26,7 +26,8 @@
 #       manager-note marker, or a failed post; nothing posted by the script
 #       before the failure
 #   2 - usage error, unknown stage, or an agent stage
-#   3 - the provider's key variable is unset (no call made)
+#   3 - the provider's key variable is unset or holds a control character (no
+#       call made)
 #   6 - the reply was rejected twice (the second rejection is printed)
 #   7 - the diff exceeds max_diff_bytes or has no text hunks (no call made)
 #
