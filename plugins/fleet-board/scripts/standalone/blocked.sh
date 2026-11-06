@@ -17,6 +17,8 @@ case "$GH_DIR/" in "$FIXTURE_ROOT"/*) ;; *) exit 1 ;; esac
 N="$(jq -r .number "$CARD")"; BRANCH="$(jq -r .branch "$CARD")"; WT="$(jq -r .worktree "$CARD")"; ATTEMPT="$(jq -r '.continuation_attempt // 1' "$CARD")"
 fb_valid_number "$N" && [[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
 case "$BRANCH" in "fleet/$N-"*) ;; *) exit 1 ;; esac
+SOURCE=ready
+if jq -e 'has("continuation_attempt")' "$CARD" >/dev/null; then SOURCE=in_progress; fi
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
 JDIR="$COMMON/fleet-board-standalone"; mkdir -p "$JDIR" || exit 1
 if [ "$#" -eq 4 ]; then
@@ -27,17 +29,38 @@ if [ "$#" -eq 4 ]; then
   jq -r .report "$RESULT" > "$SCRATCH/blocked-report" || exit 1
   PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/blocked-report")" || exit 1
   [ "$(jq -r .status <<<"$PARSED")" = blocked ] || exit 1
+  # A fresh Ready cycle may reuse the same base and attempt. Preserve the
+  # completed evidence, then allocate a distinct stable cycle marker.
+  if [ -e "$JOURNAL" ] && jq -e '.completed == true' "$JOURNAL" >/dev/null; then
+    [ "$SOURCE" = ready ] || { echo 'completed blocked outcome needs reconciliation' >&2; exit 1; }
+    FRESH_CARD="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
+    FRESH_NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
+    jq -e '.state == "ready"' <<<"$FRESH_CARD" >/dev/null && jq -e '.blocking_pr == null' <<<"$FRESH_NOTE" >/dev/null || { echo 'blocked cycle was not released' >&2; exit 1; }
+    OLD_CYCLE="$(jq -r '.cycle // 0' "$JOURNAL")"
+    [[ "$OLD_CYCLE" =~ ^[0-9]+$ ]] || exit 1
+    ARCHIVE="$JDIR/blocked-history-$N-$ATTEMPT-$BASE-$OLD_CYCLE.json"
+    [ ! -e "$ARCHIVE" ] && [ ! -L "$ARCHIVE" ] || exit 1
+    mv "$JOURNAL" "$ARCHIVE" || exit 1
+  fi
   if [ ! -e "$JOURNAL" ]; then
+    CYCLE=0
+    for HISTORY in "$JDIR"/blocked-history-"$N"-"$ATTEMPT"-"$BASE"-*.json; do
+      [ -f "$HISTORY" ] && [ ! -L "$HISTORY" ] || continue
+      OLD_CYCLE="$(jq -r '.cycle // 0' "$HISTORY")"
+      [[ "$OLD_CYCLE" =~ ^[0-9]+$ ]] || exit 1
+      [ "$CYCLE" -gt "$OLD_CYCLE" ] || CYCLE=$((OLD_CYCLE + 1))
+    done
     BEFORE_NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
     PRIOR_BLOCKER="$(jq -c '.blocking_pr // null' <<<"$BEFORE_NOTE")" || exit 1
-    jq -n --argjson prior_blocker "$PRIOR_BLOCKER" --argjson card "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --slurpfile result "$RESULT" --slurpfile plan_card "$CARD" '{version:1,card:$card,attempt:$attempt,repo:$repo,branch:$branch,worktree:$wt,base:$base,prior_blocking_pr:$prior_blocker,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    jq -n --argjson prior_blocker "$PRIOR_BLOCKER" --argjson cycle "$CYCLE" --argjson card "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --slurpfile result "$RESULT" --slurpfile plan_card "$CARD" '{version:1,card:$card,attempt:$attempt,cycle:$cycle,repo:$repo,branch:$branch,worktree:$wt,base:$base,prior_blocking_pr:$prior_blocker,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
   fi
 else
   JOURNAL="$3"
 fi
 [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || exit 1
 jq -e --argjson n "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" '.version == 1 and .card == $n and .attempt == $attempt and .repo == $repo and .branch == $branch and .worktree == $wt and (.base | test("^[0-9a-f]{40}$")) and has("prior_blocking_pr") and .result.outcome == "blocked"' "$JOURNAL" >/dev/null || exit 1
-BASE="$(jq -r .base "$JOURNAL")"
+BASE="$(jq -r .base "$JOURNAL")"; CYCLE="$(jq -r '.cycle // 0' "$JOURNAL")"
+[[ "$CYCLE" =~ ^[0-9]+$ ]] || exit 1
 [ "$JOURNAL" = "$JDIR/blocked-$N-$ATTEMPT-$BASE.json" ] || exit 1
 jq -r .result.report "$JOURNAL" > "$SCRATCH/blocked-report" || exit 1
 PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/blocked-report")" || exit 1
@@ -59,8 +82,6 @@ check_blocker() {
 check_blocker || { echo 'blocker changed while blocked result was pending' >&2; exit 1; }
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 ACTUAL="$(jq -r .state <<<"$CURRENT")"
-SOURCE=ready
-if jq -e 'has("continuation_attempt")' "$CARD" >/dev/null; then SOURCE=in_progress; fi
 BLOCK_JOURNAL="$JDIR/maintenance-block-$N.json"
 case "$ACTUAL" in
   ready)
@@ -99,7 +120,7 @@ bash "$SCRIPTS/standalone/maintenance.sh" "$SCRATCH/block-card" "$SCRATCH/block-
 jq -e '.blocker_written == true' "$JOURNAL" >/dev/null && check_blocker || { echo 'blocker changed before final blocked note' >&2; exit 1; }
 jq -n --argjson parsed "$PARSED" '{state:"blocked",blocked_from:"in_progress",blocking_pr:$parsed.blocked_by,last_verified:$parsed.verified.line,blocked_findings:([$parsed.findings[] | select(.severity == "Critical" or .severity == "Important")] | if length == 0 then [{severity:"Important",text:$parsed.for_the_card}] else . end)}' > "$SCRATCH/blocked-final" || exit 1
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/blocked-final" || exit 1
-MARKER="<!-- fleet-board:implementor-blocked:$N:$ATTEMPT:$BASE -->"
+if [ "$CYCLE" = 0 ]; then MARKER="<!-- fleet-board:implementor-blocked:$N:$ATTEMPT:$BASE -->"; else MARKER="<!-- fleet-board:implementor-blocked:$N:$ATTEMPT:$BASE:$CYCLE -->"; fi
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 [ "$(jq -r .state <<<"$CURRENT")" = blocked ] || exit 1
 ME="$(fb_login)" || exit 1
