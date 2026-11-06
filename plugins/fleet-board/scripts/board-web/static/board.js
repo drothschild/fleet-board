@@ -1069,10 +1069,12 @@ async function saveDrawer() {
   }
 
   const n = d.n;
-  const fields = e.title !== d.base.title || e.body !== d.base.body ||
-    JSON.stringify(e.labels) !== JSON.stringify(d.base.labels);
-  if (fields) {
-    const r = await writeApi("PATCH", "/api/cards/" + n, { title: e.title, body: e.body, labels: e.labels });
+  const patch = {};
+  if (e.title !== d.base.title) patch.title = e.title;
+  if (e.body !== d.base.body) patch.body = e.body;
+  if (JSON.stringify(e.labels) !== JSON.stringify(d.base.labels)) patch.labels = e.labels;
+  if (Object.keys(patch).length) {
+    const r = await writeApi("PATCH", "/api/cards/" + n, patch);
     if (S.drawer !== d) return;
     if (!r.ok) {
       setDrawerBusy(false);

@@ -13,7 +13,7 @@ Tell Claude Code "Go to https://github.com/drothschild/fleet-board and follow th
 /plugin install fleet-board@fleet-board
 ```
 
-Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). The local board page also needs `python3` 3.9 or later (standard library only); nothing else does. `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
+Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). The local board page and the headless run wrapper need `python3` 3.9 or later (standard library only). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
 
 ## Adding fleet-board to an existing project
 

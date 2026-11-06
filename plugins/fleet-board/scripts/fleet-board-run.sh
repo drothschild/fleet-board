@@ -284,32 +284,15 @@ trap 'on_signal TERM 143' TERM
 # A lock naming a live pid with that start time refuses this run (exit 1); any
 # other lock is stale and replaced. The EXIT trap removes the lock when its
 # first line is still this pid.
-lstart() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | LC_ALL=C awk '{ $1 = $1; print }'; }
 release_run_lock() {
   [ -n "$RUN_LOCK" ] || return 0
   [ "$(sed -n 1p "$RUN_LOCK" 2>/dev/null)" = "$$" ] && rm -f "$RUN_LOCK"
   return 0
 }
-take_run_lock() {
-  local lock="$1" i pid started now
-  for i in 1 2; do
-    if ( umask 077; set -C; printf '%s\n%s\n' "$$" "$(lstart $$)" > "$lock" ) 2>/dev/null; then
-      RUN_LOCK="$lock"
-      return 0
-    fi
-    pid="$(sed -n 1p "$lock" 2>/dev/null)"
-    started="$(sed -n 2p "$lock" 2>/dev/null)"
-    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
-      now="$(lstart "$pid")"
-      if [ -n "$now" ] && { [ -z "$started" ] || [ "$now" = "$started" ]; }; then
-        die 1 "another run holds $lock (pid $pid)"
-      fi
-    fi
-    rm -f "$lock"
-  done
-  die 1 "cannot create the run lock $lock"
-}
-take_run_lock "$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+command -v python3 >/dev/null 2>&1 || die 1 "python3 is required for the run lock"
+LOCK_PATH="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+python3 "$HERE/claim-run-lock.py" "$LOCK_PATH" "$$" || exit 1
+RUN_LOCK="$LOCK_PATH"
 LOG="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-')-$(date +%Y%m%d-%H%M%S).log"
 [ -e "$LOG" ] && LOG="${LOG%.log}-$$.log"
 ( umask 077; set -C; : > "$LOG" ) 2>/dev/null || die 1 "cannot create the run log $LOG"

@@ -716,22 +716,21 @@ def create_card(params, body):
 def edit_card(params, body):
     cfg, dir = ctx()
     n = params["n"]
-    card = read_card(dir, n)
+    read_card(dir, n)
     title = require_str(body, "title", required=False)
     text = require_str(body, "body", required=False)
     labels = require_labels(body)
-    if title is None:
-        title = card.get("title") or ""
-    if text is None:
-        text = card.get("body") or ""
-    if labels is None:
-        labels = card.get("labels") or []
-    tpath, bpath = temp_text(title), temp_text(text)
+    tpath = bpath = ""
     try:
+        if title is not None:
+            tpath = temp_text(title)
+        if text is not None:
+            bpath = temp_text(text)
         board_write(["bash", script("adapters/local/edit.sh"), str(n), tpath, bpath, json.dumps(labels)])
     finally:
-        os.unlink(tpath)
-        os.unlink(bpath)
+        for path in (tpath, bpath):
+            if path:
+                os.unlink(path)
     return 200, card_detail(cfg, dir, n)
 
 

@@ -237,7 +237,7 @@ write_ledger
 
 STATUS=checked
 if [ "$NO_POST" -eq 0 ]; then
-  bash "$HERE/board-comment.sh" "$N" "$REPORT_FILE" >&2 || die "cannot post the report on #$N" 1
+  FLEET_BOARD_ROLE_REPORT=1 bash "$HERE/board-comment.sh" "$N" "$REPORT_FILE" >&2 || die "cannot post the report on #$N" 1
   STATUS=posted
 fi
 

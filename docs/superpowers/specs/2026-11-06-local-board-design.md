@@ -122,8 +122,8 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 - A provider-backed stage gets no `worktree.sh` call: the manager runs `stage-review.sh`
   instead. So `stage-review.sh` writes the same marker when it starts and removes it on
   exit (an `EXIT` trap), on the `local` backend only.
-- The local `comment` verb removes `active/<n>`. Every role ends by posting its report with
-  `board-comment.sh`, and the manager posts no comment between `worktree.sh` and the
+- The local `comment` verb removes `active/<n>` for role reports only. Every role ends by
+  posting its report with `FLEET_BOARD_ROLE_REPORT=1 bash .../board-comment.sh`, and the manager posts no comment between `worktree.sh` and the
   dispatch. The `note` verb leaves the marker alone: on `start` the manager writes the note
   after `worktree.sh create` and before the dispatch, so a note that cleared the marker
   would leave the implementor's whole first run unlit. A provider stage's report is posted
@@ -131,8 +131,7 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 - `fleet-board-run.sh` removes every `<board.dir>/active/*` marker after each tick's
   session exits, whatever the outcome (local backend only; a failure is a warning), so a
   role that crashed without a report does not stay lit into the next tick.
-- A comment a person posts from the page also clears the card's marker; the next role
-  dispatch lights it again.
+- Ordinary comments leave the card's active marker in place.
 - The page shows a card as active only while its marker exists **and** a run is alive. A
   marker left behind by a killed tick stops counting the moment the run is gone. The
   server also deletes every marker when it observes the run go from alive to gone.
@@ -331,7 +330,7 @@ calls, never `innerHTML` from card text, so a hostile card body cannot script th
 | `scripts/import-plan.sh` | the `local` case above |
 | `scripts/worktree.sh` | the active marker on `create` and `review` |
 | `scripts/stage-review.sh` | the active marker for the run's duration (provider stages) |
-| `scripts/adapters/local/comment.sh` | clears the active marker (not `note.sh`) |
+| `scripts/adapters/local/comment.sh` | clears the active marker for role reports |
 | `hooks/gate.sh` | add `local` to the policy/backend case at line 761; the Projects item lookups (873, 965) return as for `github-labels` |
 | `skills/import-plan/SKILL.md` | `--preview` |
 | `skills/init/SKILL.md` | offer Local as a third backend |
@@ -378,8 +377,8 @@ is trusted (break the script, watch the assertion fail, restore it):
 
 - `test-board-local.sh`: the six verbs and `edit` against a temp repo; the Ready refusal;
   atomic write (a reader during a write sees old or new, never partial); eight concurrent
-  `comment` calls lose nothing; `note` replaces rather than appends; `comment` clears the
-  active marker and `note` leaves it; `list` fails closed on a corrupt file; `fb_login` with and without
+  `comment` calls lose nothing; `note` replaces rather than appends; report comments clear the
+  active marker, and ordinary comments and notes leave it; `list` fails closed on a corrupt file; `fb_login` with and without
   `FLEET_BOARD_USER`.
 - `test-config.sh`, `test-init.sh`, `test-gate.sh`, `test-deps.sh`, `test-import-plan.sh`,
   `test-review-stages.sh`, `test-worktree.sh`, `test-stage-review.sh`: new `local` cases.
