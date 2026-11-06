@@ -43,14 +43,17 @@ else
   fail "README 'tools exactly' count did not rise (main $base, now $now)"
 fi
 
-# The last revision section is this card's: heading names single backticks and
-# its Isolation line reads built-in plugins only, tools exactly Edit and Read.
-last_head="$(grep -n '^### Revision' "$SPECS_DIR/README.md" | tail -1)"
-case "$last_head" in
-  *'single backtick'*) pass "README has a new revision section about single backticks" ;;
-  *) fail "last README revision heading does not mention single backticks: $last_head" ;;
-esac
-iso="$(grep '^Isolation:' "$SPECS_DIR/README.md" | tail -1)"
+# This card's revision section: a heading that names single backticks, whose
+# Isolation line reads built-in plugins only, tools exactly Edit and Read.
+# Found by name, not position, so later revisions do not break this check.
+rev_line="$(grep -n '^### Revision' "$SPECS_DIR/README.md" | grep 'single backtick' | tail -1 | cut -d: -f1)"
+if [ -n "$rev_line" ]; then
+  pass "README has a revision section about single backticks"
+else
+  fail "no README revision heading mentions single backticks"
+fi
+# The first Isolation line after that heading (empty when the heading is missing).
+iso="$(awk -v start="${rev_line:-0}" 'NR > start && /^Isolation:/ { print; exit }' "$SPECS_DIR/README.md")"
 case "$iso" in
   *'cc-plugin-*@builtin'*'tools exactly `Edit` and `Read`'*) pass "README isolation line: built-in plugins only, tools Edit and Read" ;;
   *) fail "README isolation line wrong: $iso" ;;
