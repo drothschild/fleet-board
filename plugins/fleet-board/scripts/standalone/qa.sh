@@ -45,7 +45,20 @@ else
 fi
 case "$ACTUAL" in
   human_qa) ;;
-  "$STATE")
+  "$STATE"|null)
+    if [ "$ACTUAL" = null ]; then
+      jq -e --arg source "$STATE" '.move_attempted == true and .move_source == $source' "$JOURNAL" >/dev/null || { echo 'unverified partial Human QA move' >&2; exit 1; }
+      if [ "$(fb_cfg board.backend)" = github-projects ]; then
+        ITEM="$(jq -r '.item_id // empty' <<<"$CURRENT")"
+        [ -n "$ITEM" ] && [ "$(jq -r '.move_item_id // empty' "$JOURNAL")" = "$ITEM" ] || exit 1
+      else
+        STATES="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || exit 1
+        jq -e --argjson states "$STATES" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == []' <<<"$CURRENT" >/dev/null || exit 1
+      fi
+    else
+      ITEM="$(jq -r '.item_id // empty' <<<"$CURRENT")"
+      jq --arg source "$STATE" --arg item "$ITEM" '.move_attempted = true | .move_source = $source | .move_item_id = $item' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    fi
     INFO="$(pr_info)" || exit 1
     check_pr <<<"$INFO" || exit 1
     FLEET_BOARD_ENFORCE_QA=1 bash "$SCRIPTS/board-move.sh" "$N" human_qa || exit 1 ;;
