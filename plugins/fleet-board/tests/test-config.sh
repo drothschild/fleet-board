@@ -684,6 +684,28 @@ REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, provider: op
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stderr_exact "provider stage no model: exactly one message" "config.sh: invalid config: review.stages[0].model must be set when provider is set"
 
+# command providers (the codex preset)
+CODEX_STAGE='review: { stages: [ { name: s, provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } } ] }'
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { codex: {} }\n%s\n' "$CODEX_STAGE" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "codex preset with providers: {codex: {}}: valid" 0
+assert_stdout_exact_jq "codex preset: command from presets.json" '.providers.codex.command' '"codex exec --skip-git-repo-check -s read-only -m {model}"'
+assert_stdout_exact_jq "codex preset: no key variable, no base_url" '.providers.codex | [.base_url, .api_key_env]' '[null,null]'
+REPO="$(printf 'board:\n  repo: a/b\n%s\n' "$CODEX_STAGE" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "codex preset named only by a stage: valid" 0
+assert_stdout_exact_jq "codex preset named only by a stage: command present" '.providers.codex.command | type' '"string"'
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ %s ] }\n' "${SP/PROV/openai}" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "http preset has no command key" '.providers.openai | has("command")' 'false'
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { mycmd: { command: "mytool --model {model}" } }\nreview: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "custom command provider: valid" 0
+invalid_field_case "command with base_url" "providers: { codex: { base_url: \"https://x.example/v1\" } }"$'\n'"$CODEX_STAGE" "providers.codex sets both command and base_url"
+invalid_field_case "command with api_key_env" "providers: { codex: { api_key_env: SOME_KEY } }"$'\n'"$CODEX_STAGE" "providers.codex.api_key_env must be null when command is set"
+invalid_field_case "command not a string" "providers: { mycmd: { command: 5 } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
+invalid_field_case "command empty" "providers: { mycmd: { command: \"\" } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
