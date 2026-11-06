@@ -233,6 +233,7 @@ $text
     OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" ${largs[@]+"${largs[@]}"} --state "$STATUS")" || fb_die 1 "failed to create: $title"
     num="$(jq -r .number <<<"$OUT")"
     CREATED="#$num"
+    repo="$FLEET_REPO" # a ref must name the board repo: deps.sh reads the local store only for it
   else
     URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
     num="${URL##*/}"

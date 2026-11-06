@@ -336,6 +336,21 @@ check "local board: card 1 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-bo
 check "local board: card 2 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" "ready"
 check "local board: card labels are stored" "$(jq -c .labels "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" '["frontend"]'
 check "local board: no gh issue create is called" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+cat > "$SB/cards-local-x.json" <<'EOF'
+{"cards":[
+ {"key":"b","title":"B2","repo":"acme/toy","labels":[],
+  "why":"Use the thing.","scope":["src/b.js"],
+  "acceptance":["B uses the thing"],"consumes":["the thing"],"produces":[]},
+ {"key":"a","title":"A2","repo":"other/repo","labels":[],
+  "why":"Make the thing.","scope":["src/a.js"],
+  "acceptance":["A makes the thing"],"consumes":[],"produces":["the thing"]}
+]}
+EOF
+reset_gh
+run_import "y" "$SB/cards-local-x.json" --status ready
+check "local board, other repo: exits 0" "$RC" "0"
+check "local board, other repo: dependent card cites the board repo, acme/toy#3" "$(jq -r .body "$ROOT_L/.fleet-board/cards/4.json" 2>/dev/null | grep -c -- '^- acme/toy#3')" "1"
+check "local board, other repo: no ref names other/repo" "$(jq -r .body "$ROOT_L/.fleet-board/cards/4.json" 2>/dev/null | grep -c 'other/repo#')" "0"
 ROOT="$ROOT_SAVED"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
