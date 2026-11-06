@@ -78,6 +78,8 @@ Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on
 - **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress or In review card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. The plan also gives `merge` to at most one card per tick, the lowest card number; the others wait for the next tick.
 - **Move the whole chain to Ready; each card starts on the first tick after its dependencies are Done.** That is the safe way to set up an overnight run. Nothing promotes a Backlog card when its dependencies finish, so a card left in Backlog stays there.
 
+**Lint command.** `/fleet-board:lint [card...]` (`scripts/lint.sh`) runs `card-lint.sh` on Ready and Backlog cards, or on the cards you name, and adds `untestable-bullet`, `dependency-cycle`, `unresolved-dependency` and `missing-file`. It exits 1 when any card fails. `/fleet-board:import-plan` runs it on its generated cards and creates nothing while one fails.
+
 **Card lint.** Before a Ready card is dispatched, `scripts/card-lint.sh` checks its body. A failing card stays in Ready, the manager posts one comment naming the rule and the bullet (again only when the lint result changes), and no implementor runs until you fix the card. The rules:
 
 - [`no-heading`](#card-lint-no-heading): the card has no `## Acceptance` heading.

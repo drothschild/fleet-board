@@ -43,13 +43,14 @@ else
   fail "README 'tools exactly' count did not rise (main $base, now $now)"
 fi
 
-# A revision section is this card's: heading names single backticks and the
-# last Isolation line reads built-in plugins only, tools exactly Edit and Read.
-# (Any revision heading counts, so a later revision does not break this.)
-last_head="$(grep -n '^### Revision' "$SPECS_DIR/README.md" | grep 'single backtick' | tail -1)"
-case "$last_head" in
+# The last revision section is this card's: heading names single backticks and
+# its Isolation line reads built-in plugins only, tools exactly Edit and Read.
+# Revision 16 is this change. Find it by number: a later revision appended
+# after it must not make this check fail.
+r16_head="$(grep -n '^### Revision 16 ' "$SPECS_DIR/README.md")"
+case "$r16_head" in
   *'single backtick'*) pass "README has a new revision section about single backticks" ;;
-  *) fail "no README revision heading mentions single backticks: $last_head" ;;
+  *) fail "README Revision 16 heading does not mention single backticks: $r16_head" ;;
 esac
 iso="$(grep '^Isolation:' "$SPECS_DIR/README.md" | tail -1)"
 case "$iso" in
