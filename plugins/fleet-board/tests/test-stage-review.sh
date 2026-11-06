@@ -49,7 +49,7 @@ trap 'rm -rf "$WORK"' EXIT
 make_bin() { # dir with_gh
   mkdir -p "$1"
   local t p
-  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od; do
+  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od sh sleep kill; do
     p="$(command -v "$t" 2>/dev/null || true)"
     case "$p" in /*) ln -sf "$p" "$1/$t" ;; esac
   done
