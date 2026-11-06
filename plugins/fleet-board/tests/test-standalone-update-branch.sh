@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in update-branch|update-stale|update-conflict|update-resume) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
+case "${1:-}" in update-branch|update-stale|update-conflict|update-resume|update-cycle) ;; *) echo 'usage: test-standalone-update-branch.sh update-branch|update-stale' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; HANDLER="$TESTS/../scripts/standalone/update-branch.sh"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch"
@@ -62,6 +62,13 @@ else
   bash "$HANDLER" "$TMP/card" "$TMP/scratch" || exit 1
   if [ "$1" = update-resume ]; then [ "$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)" = "$first" ] || exit 1; fi
   AFTER="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)"
+  if [ "$1" = update-cycle ]; then
+    first="$AFTER"
+    printf second > "$TMP/repo/main-again"; git -C "$TMP/repo" add main-again; git -C "$TMP/repo" commit -qm second; git -C "$TMP/repo" push -q origin main
+    bash "$HANDLER" "$TMP/card" "$TMP/scratch" || exit 1
+    AFTER="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-example)"
+    [ "$AFTER" != "$first" ] || { echo 'FAIL: second branch update ignored' >&2; exit 1; }
+  fi
   [ "$AFTER" != "$BEFORE" ] && git --git-dir="$GH_REMOTE" merge-base --is-ancestor "$BEFORE" "$AFTER" || exit 1
   note="$(bash "$TESTS/../scripts/note.sh" get 12)" || exit 1
   jq -e --arg sha "$AFTER" '.last_review == null and .last_update.sha == $sha' <<<"$note" >/dev/null || { echo 'FAIL: updated head was not sent for re-review' >&2; exit 1; }
