@@ -28,6 +28,8 @@ mode, path = sys.argv[1:3]
 if mode == "verify":
     try:
         fd = int(os.environ["FLEET_BOARD_REPO_LOCK_FD"])
+        if int(os.environ["FLEET_BOARD_REPO_LOCK_OWNER"]) != os.getppid():
+            fail("invalid standalone repository lock owner")
     except (KeyError, ValueError):
         fail("invalid standalone repository lock")
     checked_fd(fd, path)
@@ -39,6 +41,7 @@ elif mode == "acquire" and len(sys.argv) >= 5:
         os.set_inheritable(fd, True)
         env = os.environ.copy()
         env["FLEET_BOARD_REPO_LOCK_FD"] = str(fd)
+        env["FLEET_BOARD_REPO_LOCK_OWNER"] = str(os.getpid())
         os.execve("/bin/bash", ["bash", *sys.argv[3:]], env)
     except OSError as error:
         fail("cannot acquire standalone repository lock: " + str(error))

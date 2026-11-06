@@ -69,7 +69,7 @@ if [ "$MODE" = tick ]; then
   COMMON="$(git rev-parse --git-common-dir)" || exit 1
   COMMON="$(cd "$COMMON" && pwd -P)" || exit 1
   LOCK_FILE="$COMMON/fleet-board-standalone.lockfile"
-  if [ -z "${FLEET_BOARD_REPO_LOCK_FD:-}" ]; then
+  if [ -z "${FLEET_BOARD_REPO_LOCK_FD:-}" ] || [ "${FLEET_BOARD_REPO_LOCK_OWNER:-}" != "$$" ]; then
     # Re-exec with the locked descriptor inherited by the controller and its
     # descendants. The kernel releases it after the last process exits.
     rm -rf "$SCRATCH"
