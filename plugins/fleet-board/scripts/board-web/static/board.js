@@ -18,6 +18,7 @@ const S = {
   dragging: null,     // number of the card being dragged
   pendingBoard: null, // a board that arrived mid-drag, rendered on dragend
   pendingMove: null,  // number of the card whose move is in flight
+  selectOpen: null,   // {el, at}: a Move to select the user is choosing in
   logOpen: false,
   busy: false,        // a start/stop request is in flight
   offline: false,
@@ -360,9 +361,9 @@ function renderColumn(state, cards, repo, force) {
   col.count.textContent = String(cards.length);
   const sig = JSON.stringify([repo, cards]);
   if (!force && sig === col.sig) return;
-  // A native select that is open would close under a re-render: wait for the next poll.
-  const active = document.activeElement;
-  if (!force && active && active.tagName === "SELECT" && col.list.contains(active)) return;
+  // A native select that is open would close under a re-render: skip this
+  // poll. col.sig stays old, so the column re-renders once the select closes.
+  if (!force && selectHeld(col.list)) return;
   const top = col.list.scrollTop;
   const frag = document.createDocumentFragment();
   if (!cards.length) frag.appendChild(el("li", "col-empty", "Drop a card here"));
@@ -376,17 +377,45 @@ function focusedCard() {
   const active = document.activeElement;
   const card = active && active.closest ? active.closest(".card") : null;
   if (!card) return null;
-  return { n: card.dataset.n, select: active.tagName === "SELECT" };
+  return { n: card.dataset.n };
 }
 
+// restoreFocus puts focus back on the card itself, never its select, so a
+// focused-but-closed select cannot hold a column's re-render.
 function restoreFocus(focus) {
   if (!focus) return;
   const active = document.activeElement;
   if (active && active !== document.body && document.contains(active)) return;
   const card = document.querySelector('.card[data-n="' + focus.n + '"]');
-  if (!card) return;
-  const target = focus.select ? card.querySelector("select") : card;
-  (target || card).focus({ preventScroll: true });
+  if (card) card.focus({ preventScroll: true });
+}
+
+// The select the user is choosing in: set from pointerdown or an opening key
+// until change, blur or Escape, and for at most SELECT_HOLD_MS (a native popup
+// closed some other way cannot hold a column stale for longer).
+const SELECT_HOLD_MS = 10000;
+
+function holdSelect(sel) {
+  S.selectOpen = { el: sel, at: Date.now() };
+}
+
+function selectHeld(list) {
+  const h = S.selectOpen;
+  if (!h) return false;
+  if (Date.now() - h.at > SELECT_HOLD_MS || !document.contains(h.el)) {
+    S.selectOpen = null;
+    return false;
+  }
+  return list.contains(h.el);
+}
+
+// releaseSelect: ends the hold and re-renders any column a poll skipped.
+function releaseSelect(sel) {
+  if (!S.selectOpen || S.selectOpen.el !== sel) return;
+  S.selectOpen = null;
+  setTimeout(function () {
+    if (S.board && S.pendingMove === null) renderBoard(S.board);
+  }, 0);
 }
 
 // renderCard(card, repo) -> <li>: DOM calls only.
@@ -463,7 +492,14 @@ function renderCard(c, repo) {
     if (s.key === c.state) opt.disabled = true;
     sel.appendChild(opt);
   }
+  sel.addEventListener("pointerdown", function () { holdSelect(sel); });
+  sel.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" || e.key === "Tab") releaseSelect(sel);
+    else if (e.key === " " || e.key === "Enter" || e.key === "ArrowDown" || e.key === "ArrowUp") holdSelect(sel);
+  });
+  sel.addEventListener("blur", function () { releaseSelect(sel); });
   sel.addEventListener("change", function () {
+    releaseSelect(sel);
     if (sel.value) moveCard(n, sel.value);
   });
   foot.appendChild(sel);
