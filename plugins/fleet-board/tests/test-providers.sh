@@ -103,7 +103,7 @@ setup "200 ok.json"
 chat "${BASE[@]}" --key-env TEST_KEY
 argv_lines="$(grep '^ARG ' "$WORK/case/curl.log")"
 assert_lacks "key_never_in_argv: no argv element holds the key" "$argv_lines" "sk-test-123"
-assert_contains "key_never_in_argv: header goes through -H @file" "$argv_lines" "ARG @"
+assert_eq "key_never_in_argv: header goes through -H @file" "$(printf "%s\n" "$argv_lines" | grep -c "^ARG @.*/auth$")" "1"
 assert_contains "key_never_in_argv: header file holds the bearer line" "$(curl_log)" "DATA Authorization: Bearer sk-test-123"
 hdr_mode="$(grep '^MODE ' "$WORK/case/curl.log" | head -1 | awk '{print $3}')"
 assert_eq "key_never_in_argv: header file mode is 600" "$hdr_mode" "600"
@@ -167,7 +167,7 @@ setup "200 ok.json"
 chat --base-url http://localhost:11434/v1 --model m --max-tokens 10 --max-tokens-param max_tokens --timeout 30 --key-env -
 assert_exit "loopback_without_key: exit 0" 0
 assert_lacks "loopback_without_key: no Authorization header" "$(curl_log)" "Authorization"
-assert_lacks "loopback_without_key: no header file" "$(curl_log)" "ARG @"
+assert_eq "loopback_without_key: no header file" "$(curl_log | grep -c "^ARG @.*/auth$")" "0"
 
 # max_tokens_param_used
 setup "200 ok.json"
