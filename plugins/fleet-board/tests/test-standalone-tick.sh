@@ -34,11 +34,15 @@ printf 'edited\n' > file.txt
 printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#34\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 WORKER
   jq -n --arg source "$TMP/source" --arg scratch "$TMP/scratch" --arg ref "$REF" \
-    '{version:1,card:12,action:"start",role:"implementor",worktree:$source,expected_ref:$ref,prompt:"fixture",limits:{seconds:30,memory_mb:256,pids:64},permissions:{network:false},image:"ghcr.io/home-assistant/home-assistant:stable"}' > "$TMP/request.json"
+    '{version:1,card:12,action:"start",role:"implementor",worktree:$source,expected_ref:$ref,prompt:"fixture",limits:{seconds:8,memory_mb:256,pids:64},permissions:{network:false},image:"ghcr.io/home-assistant/home-assistant:stable"}' > "$TMP/request.json"
   export GH_TOKEN=controller-secret
-  if ! bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch" > "$TMP/out"; then
+  START_TIME="$(date +%s)"
+  if ! OUTPUT="$(bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch")"; then
     echo 'FAIL: isolated worker should succeed' >&2; exit 1
   fi
+  END_TIME="$(date +%s)"
+  if [ "$((END_TIME - START_TIME))" -ge 7 ]; then echo 'FAIL: worker left a timer holding output open' >&2; exit 1; fi
+  printf '%s\n' "$OUTPUT" > "$TMP/out"
   if ! jq -e '.version == 1 and .outcome == "done" and (.report | contains("## Status"))' "$TMP/out" >/dev/null; then
     echo 'FAIL: worker result was not validated' >&2; exit 1
   fi
