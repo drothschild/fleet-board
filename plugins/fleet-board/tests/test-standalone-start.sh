@@ -68,6 +68,16 @@ case "$*" in
     jq -n --arg sha "$sha" '{isDraft:true,state:"OPEN",mergedAt:null,statusCheckRollup:[],headRefOid:$sha}' ;;
   'pr view 34 --repo acme/toy --json mergeable') echo '{"mergeable":"MERGEABLE"}' ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
+    if [ -e "$GH_STATE/force-review" ]; then
+      count=0; [ ! -e "$GH_STATE/review-views" ] || count="$(cat "$GH_STATE/review-views")"
+      count=$((count + 1)); printf '%s' "$count" > "$GH_STATE/review-views"
+      if [ "$count" -eq 2 ]; then
+        old="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
+        tree="$(git --git-dir="$GH_REMOTE" rev-parse "$old^{tree}")"
+        new="$(printf 'force push\n' | GIT_AUTHOR_NAME=Fixture GIT_AUTHOR_EMAIL=fixture@example.com GIT_COMMITTER_NAME=Fixture GIT_COMMITTER_EMAIL=fixture@example.com git --git-dir="$GH_REMOTE" commit-tree "$tree" -p "$old")"
+        git --git-dir="$GH_REMOTE" update-ref refs/heads/fleet/12-add-subtract "$new"
+      fi
+    fi
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)" || exit 1
     jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
   *) echo "unexpected gh: $*" >&2; exit 1 ;;
@@ -206,13 +216,22 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
 set -eu
 printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed the implementation.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 REVIEWER
+  if [ "${1:-start}" = review-stale ]; then
+    touch "$TMP/state/force-review"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then echo 'FAIL: changed review head accepted' >&2; exit 1; fi
+    grep -q 'PR head changed during review' "$TMP/review-err" || { cat "$TMP/review-err" >&2; echo 'FAIL: stale head was not detected' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = in_progress ] || { echo 'FAIL: stale review moved the card' >&2; exit 1; }
+    jq -e 'all(.[]; (.body | contains("fleet-board:standalone-review:")) | not)' "$TMP/state/comments" >/dev/null || { echo 'FAIL: stale review was recorded' >&2; exit 1; }
+    echo 'PASS: review-stale'
+    exit 0
+  fi
   if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out"; then echo 'FAIL: clean review tick failed' >&2; exit 1; fi
   if ! jq -e '.outcome == "progress" and .cards[0].action == "start_review"' "$TMP/review-out" >/dev/null; then echo 'FAIL: review outcome' >&2; exit 1; fi
   [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: card did not reach review' >&2; exit 1; }
