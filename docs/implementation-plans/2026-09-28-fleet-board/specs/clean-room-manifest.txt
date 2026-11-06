@@ -3,10 +3,10 @@
 # Format: <sha256>  <path under plugins/fleet-board>  [# note]
 # A line whose note starts with "exception:" is a named exception, not a
 # clean-room output. Update this file whenever a revision is recorded in README.md.
-ab7b0d220bc9b92f2217add8326270da445f15d3494c2cc428ee25d44bfcdcc3  agents/fixer.md
+2d122bed1ab906b0f762b73d84ec900417f0770db7ba7a416785b19d5272e4ad  agents/fixer.md  # merge: git merge of the Revision 16 and Revision 18 run outputs, disjoint hunks; no single run produced this file
 913b1f6ad549f65b598464099454da6c621689253e5df618830bac68f1749b81  agents/implementor.md
-b1a5fa7fc685b1ab75dcb91d39e2ada01e6911b9faeb197907556cc33517c470  agents/manager.md
-f549da78e4813abfb6b59d7cee63ae621aaff89a8687b81f767c5ceaf84b0b5d  agents/reviewer.md
+8b59b7d55402d7aace272da2f6d1532fae8f9242627c28d878d9415bc2342913  agents/manager.md  # merge: git merge of the Revision 14 and Revision 18 run outputs, disjoint hunks; no single run produced this file
+76c0e6bc7627a537abab8c32bde35fa5afcf7fdcca0b5e96cc5064ab5bfda243  agents/reviewer.md  # merge: git merge of the Revision 16 and Revision 18 run outputs, disjoint hunks; no single run produced this file
 aa83f0da1e35a2339de519189ebbe0ee7e660b1f808728a06c5402ae843f21c7  skills/reporting/SKILL.md
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
 6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md
