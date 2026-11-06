@@ -2,6 +2,42 @@
 # Resolve standalone execution profiles without launching a worker.
 set -euo pipefail
 SCRIPTS="$(cd "$(dirname "$0")/.." && pwd)"
+if [[ ${1:-} == preflight ]]; then
+  [[ $# == 1 ]] || { echo 'profiles: preflight accepts no options' >&2; exit 2; }
+  config=$(bash "$SCRIPTS/config.sh") || exit 1
+  check_profile() {
+    local result="$1" purpose="$2" runner provider key
+    runner=$(jq -r '.runner' <<<"$result") || return 1
+    provider=$(jq -r '.provider' <<<"$result") || return 1
+    if [[ $purpose != reviewer && $runner == diff-chat ]]; then
+      echo "profiles: $purpose requires a tool-capable runner" >&2; return 1
+    fi
+    case "$runner" in
+      codex) command -v codex >/dev/null || { echo 'profiles: codex executable unavailable' >&2; return 1; }; command -v docker >/dev/null || { echo 'profiles: docker executable unavailable' >&2; return 1; } ;;
+      tool-chat) command -v docker >/dev/null || { echo 'profiles: docker executable unavailable' >&2; return 1; } ;;
+      diff-chat) command -v curl >/dev/null || { echo 'profiles: curl executable unavailable' >&2; return 1; } ;;
+      *) echo "profiles: unsupported runner $runner" >&2; return 1 ;;
+    esac
+    key=$(jq -r --arg p "$provider" '.providers[$p].api_key_env // empty' <<<"$config") || return 1
+    if [[ -n $key ]] && ! printenv "$key" | grep -q .; then
+      echo "profiles: missing credential environment variable $key" >&2; return 1
+    fi
+  }
+  for role in implementor fixer reviewer; do
+    result=$(bash "$0" resolve --role "$role" --round 1) || exit 1
+    check_profile "$result" "$role" || exit 1
+  done
+  escalation=$(jq -r '.execution.escalation.after_round // empty' <<<"$config") || exit 1
+  if [[ -n $escalation ]]; then
+    result=$(bash "$0" resolve --role implementor --round "$escalation") || exit 1
+    check_profile "$result" implementor || exit 1
+  fi
+  while IFS= read -r stage; do
+    result=$(bash "$0" resolve --stage "$stage" --round 1) || exit 1
+    check_profile "$result" reviewer || exit 1
+  done < <(jq -r '.review.stages[].name' <<<"$config")
+  exit 0
+fi
 [[ ${1:-} == resolve ]] || { echo 'profiles: expected resolve' >&2; exit 2; }
 shift
 role= stage= round=

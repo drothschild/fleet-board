@@ -36,7 +36,7 @@ YML
   rm "$TMP/bin/codex"
   PATH="$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin"; export PATH
   if check >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing codex accepted' >&2; exit 1; fi
-  rg -q 'codex' "$TMP/err" || exit 1
+  grep -q 'codex' "$TMP/err" || exit 1
   echo 'PASS: preflight'
   exit 0
 fi
