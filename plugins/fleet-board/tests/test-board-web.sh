@@ -93,6 +93,12 @@ TMP="$(mktemp -d)"
 CLEANUP_DIRS+=("$TMP")
 BODY_FILE="$TMP/body"
 
+# The run routes spawn this stand-in instead of the headless wrapper.
+FAKE_RUN_DIR="$TMP/fake-run"
+mkdir -p "$FAKE_RUN_DIR"
+FLEET_BOARD_RUN="$SCRIPT_DIR/fake-run.sh"
+export FAKE_RUN_DIR FLEET_BOARD_RUN
+
 # new_repo <yml>: prints a fresh git repo path holding <yml> as .fleet-board.yml
 # (no config when <yml> is empty).
 new_repo() {
@@ -197,6 +203,21 @@ assert_body() {
     $3) pass "$1" ;;
     *) fail "$1" "filter $2: expected '$3', got '$got' (body: $(head -c 300 "$BODY_FILE"))" ;;
   esac
+}
+
+# body_is <jq filter> <expected>: true when jq -r on the body equals expected.
+body_is() { [ "$(jq -r "$1" "$BODY_FILE" 2>/dev/null)" = "$2" ]; }
+
+# wait_for <shell condition>: polls up to 5 s at 0.2 s; passes or fails on the condition.
+wait_for() {
+  local i=0
+  while [ $i -lt 25 ]; do
+    if eval "$1"; then pass "became true: $1"; return 0; fi
+    sleep 0.2
+    i=$((i + 1))
+  done
+  fail "became true: $1" "not true in 5 s (last body: $(head -c 300 "$BODY_FILE" 2>/dev/null))"
+  return 1
 }
 
 card_json() { jq -r "$2" "$REPO/.fleet-board/cards/$1.json" 2>/dev/null; }
@@ -306,8 +327,41 @@ if setup_case; then
   api POST /api/cards/4/comments '{}'
   assert_code 400
 
+  api GET /api/run;                 assert_body "run starts idle" '.state' idle
+  api POST /api/run/stop;           assert_code 409
+  api POST /api/run/start;          assert_code 200
+  assert_body "start returns a pid" '.pid|type' number
+  if grep -q -- "--repo $REPO" "$FAKE_RUN_DIR/args.log"; then pass "wrapper got --repo root"; else fail "wrapper got --repo root" "args: $(cat "$FAKE_RUN_DIR/args.log" 2>/dev/null)"; fi
+  api GET /api/run;                 assert_body "run is running" '.state' running
+  wait_for 'api GET /api/run; body_is .tick 2'
+  api GET /api/run;                 assert_body "run reached tick 2" '.tick' 2
+  assert_body "run log path parsed" '.log_path' "$FAKE_RUN_DIR/fake.log"
+  api GET /api/board;               assert_body "marker counts while running" '.cards[]|select(.number==2)|.active' true
+  assert_body "board run has no log_tail" '.run|has("log_tail")' false
+  api POST /api/run/start;          assert_code 409
+  api POST /api/run/stop;           assert_code 200
+  if [ -e "$REPO/.fleet-board.stop" ]; then pass "stop file written"; else fail "stop file written" "no $REPO/.fleet-board.stop"; fi
+  api GET /api/run;                 assert_body "run is stopping" '.state' stopping
+  api POST /api/run/start;          assert_code 409
+  wait_for 'api GET /api/run; body_is .state stopped'
   api GET /api/run
-  assert_code 501
+  assert_body "run state stopped" '.state' stopped
+  assert_body "stop reason" '.stop_reason' stop-file
+  assert_body "run cost" '.cost' 0.42
+  assert_body "run hours" '.hours' 0.01
+  assert_body "log tail has the two tick lines" '.log_tail|length' 2
+  if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "markers cleared when the run ended"; else fail "markers cleared when the run ended" "active/2 still exists"; fi
+  api GET /api/board;               assert_body "no card active after the run" '.cards[]|select(.number==2)|.active' false
+  api POST /api/run/start;          assert_code 200
+  if [ ! -e "$REPO/.fleet-board.stop" ]; then pass "start removes the stale stop file"; else fail "start removes the stale stop file" "stop file still there"; fi
+  api GET /api/run;                 assert_body "restarted run is running" '.state' running
+  stop_server
+  start_server "$REPO"
+  api GET /api/run;                 assert_body "restarted server reattaches to the live run" '.state' running
+  api POST /api/run/stop;           assert_code 200
+  wait_for 'api GET /api/run; body_is .state stopped'
+  api GET /api/run;                 assert_body "reattached run stopped" '.state' stopped
+
   api GET /api/nothing
   assert_code 404
   assert_body "unknown route error is JSON" '.error|type' string
