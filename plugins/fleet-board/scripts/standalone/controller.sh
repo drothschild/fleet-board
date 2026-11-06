@@ -16,9 +16,10 @@ elif [ "$#" -ne 1 ] || [ "$1" != tick ]; then
 fi
 SCRATCH="$(mktemp -d)" || exit 1
 PLAN="$SCRATCH/plan"
-LOCK=""
+LOCK="" GIT_MUTEX=""
 cleanup() {
   local rc=$?
+  [ -z "$GIT_MUTEX" ] || rmdir "$GIT_MUTEX" 2>/dev/null || true
   [ -z "$LOCK" ] || rmdir "$LOCK" 2>/dev/null || true
   rm -rf "$SCRATCH"
   if [ "$rc" -ne 0 ] && [ "$MODE" = tick ] && [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ]; then
@@ -69,6 +70,10 @@ if [ "$MODE" = tick ]; then
   COMMON="$(cd "$COMMON" && pwd -P)" || exit 1
   LOCK="$COMMON/fleet-board-standalone.lock"
   if ! mkdir "$LOCK" 2>/dev/null; then LOCK=""; echo 'another standalone tick holds the repository lock' >&2; exit 1; fi
+  FLEET_BOARD_GIT_LOCK_TOKEN="$(basename "$SCRATCH")-$$"
+  [[ "$FLEET_BOARD_GIT_LOCK_TOKEN" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+  export FLEET_BOARD_GIT_LOCK_TOKEN
+  GIT_MUTEX="$COMMON/fleet-board-standalone-git-$FLEET_BOARD_GIT_LOCK_TOKEN.lock"
 fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between

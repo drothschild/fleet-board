@@ -52,7 +52,8 @@ case "$REMOTE" in "https://github.com/$FLEET_REPO"|"https://github.com/$FLEET_RE
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
 # Parallel fixture workers share controller Git metadata. Hold this short-lived
 # mutex only around worktree/ref/push operations, never while a worker runs.
-GIT_MUTEX="$COMMON/fleet-board-standalone-git.lock"
+[[ "${FLEET_BOARD_GIT_LOCK_TOKEN:-}" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+GIT_MUTEX="$COMMON/fleet-board-standalone-git-$FLEET_BOARD_GIT_LOCK_TOKEN.lock"
 GIT_LOCK_HELD=false
 acquire_git() {
   local attempts=0
