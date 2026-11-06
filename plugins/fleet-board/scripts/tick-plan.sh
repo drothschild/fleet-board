@@ -36,8 +36,9 @@
 # is not planned"). For a provider stage whose providers.<name>.api_key_env is
 # unset or empty, the plan warns "stage <name>: <ENV> is not set; provider
 # reviews will fail", once per stage, only when a card in the plan has action
-# review_stage or fix in that stage (the check runs in bash; jq never reads the
-# environment). review_stage stays dispatchable either way.
+# review_stage or fix in that stage, or advance_stage into it (the manager
+# runs review_stage in the same tick); the check runs in bash, and jq never
+# reads the environment. review_stage stays dispatchable either way.
 #
 # branch and worktree are always set: the note's when it has them, else the
 # defaults fleet/<n>-<slug> and <base>/<n>-<slug> (slug from the title, "card"
@@ -56,7 +57,9 @@
 #       review column, when the PR is open and the review is clean and current
 #       (last_review.round >= note.round, last_review.stage is the column's
 #       stage, null in in_review, and no Critical or Important finding unless
-#       the stage is advisory); a failure is "review-stages.sh next <n>"
+#       the stage is advisory), and only when review.stages is not empty (with
+#       no stages, no next stage and no call); a failure is
+#       "review-stages.sh next <n>"
 #   needs-human-qa.sh --labels <card labels> <n> <pr>
 #       review column, under the same condition, only when review-stages.sh
 #       next printed nothing; otherwise needs_human_qa is null, since the
@@ -246,6 +249,10 @@ trap finish EXIT
 
 fb_load_config
 
+# No configured stage: no stage column and no review-stages.sh next lookup
+HAS_STAGES=false
+[ -n "$(fb_stage_states)" ] && HAS_STAGES=true
+
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
@@ -414,7 +421,10 @@ card_input() {
                         and ($stage.advisory == true or ((($lr.critical // 0) + ($lr.important // 0)) == 0))' <<<"$note")" = true ]; then
       labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
       done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings]' <<<"$note" 2>/dev/null)" || done_stages='[]'
-      if nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$labels" --after "$st" --done "$done_stages" "$n")"; then
+      # With no stages configured there is no next stage, and no call
+      if [ "$HAS_STAGES" = false ]; then
+        :
+      elif nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$labels" --after "$st" --done "$done_stages" "$n")"; then
         if [ -n "$nxt" ]; then
           if [ "$(jq -r --arg s "$nxt" 'any((.review.stages // [])[]; .name == $s)' <<<"$FLEET_CFG")" = true ]; then
             next_stage="$(jq -cn --arg s "$nxt" '$s')"
@@ -770,8 +780,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
        + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]
-       # Once per provider stage acted on (review_stage or fix) whose key is unset
-       + ([$cards[] | select((.action == "review_stage" or .action == "fix") and .stage != null
+       # Once per provider stage acted on whose key is unset: review_stage or fix
+       # in it, or advance_stage into it (the manager reviews in the same tick)
+       + ([$cards[] | select((.action == "review_stage" or .action == "fix" or .action == "advance_stage")
+                             and .stage != null and .stage.provider != null
                              and (.stage.name as $s | any($unset[]; . == $s)))
            | "stage \(.stage.name): \($cfg.providers[.stage.provider].api_key_env) is not set; provider reviews will fail"]
           | reduce .[] as $w ([]; if any(.[]; . == $w) then . else . + [$w] end))),
