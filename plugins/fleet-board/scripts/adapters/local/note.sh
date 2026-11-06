@@ -28,4 +28,3 @@ jq --arg m "$FB_MARKER" --arg me "$ME" --rawfile b "$BODY" --arg now "$(fl_now)"
   | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
-rm -f "$(fl_active_dir)/$N"

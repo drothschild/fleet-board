@@ -17,3 +17,6 @@ jq --arg me "$ME" --rawfile b "$2" --arg now "$(fl_now)" '
   | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
+# A role ends by posting its report, so the comment ends the card's active
+# marker (worktree.sh and stage-review.sh write it); never an error.
+rm -f "$(fl_active_dir)/$N" 2>/dev/null || true
