@@ -53,8 +53,10 @@ PID=$!
 ) </dev/null >/dev/null 2>&1 &
 WATCHDOG=$!
 wait "$PID"; RC=$?
+PID=""
 kill "$WATCHDOG" 2>/dev/null || true
 wait "$WATCHDOG" 2>/dev/null || true
+WATCHDOG=""
 [ "$RC" -eq 0 ] || { echo 'isolated worker failed' >&2; exit 1; }
 [ -f "$SCRATCH/result.json" ] && [ ! -L "$SCRATCH/result.json" ] && jq -e -s 'length == 1 and (.[0] | .version == 1 and (.outcome | IN("done", "blocked", "clean", "findings")) and (.report | type == "string" and length > 0))' "$SCRATCH/result.json" >/dev/null 2>&1 || { echo 'invalid worker result' >&2; exit 1; }
 REPORT="$(mktemp)" || exit 1
