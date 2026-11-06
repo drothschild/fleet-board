@@ -54,12 +54,21 @@ set -eu
 printf 'after\n' > source.txt
 git add source.txt
 git -c user.name=Fixture -c user.email=fixture@example.com commit -qm implement
+git config core.fsmonitor '@HOOK@'
 printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#34\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 WORKER
+cat > "$TMP/host-hook" <<HOOK
+#!/bin/sh
+touch "$TMP/hook-ran"
+HOOK
+chmod +x "$TMP/host-hook"
+sed "s|@HOOK@|$TMP/host-hook|" "$TMP/worker.sh" > "$TMP/worker.tmp"
+mv "$TMP/worker.tmp" "$TMP/worker.sh"
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
+[ ! -e "$TMP/hook-ran" ] || { echo 'FAIL: worker Git config executed on controller' >&2; exit 1; }
 if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >/dev/null; then echo 'FAIL: start outcome' >&2; exit 1; fi
 [ "$(cat "$TMP/state/column")" = in_progress ] || { echo 'FAIL: card did not move' >&2; exit 1; }
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
