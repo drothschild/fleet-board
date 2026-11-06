@@ -235,7 +235,7 @@ assert_exit "put-fills-defaults: exit" 0
 BODY="$(posted_body)"
 assert_eq "put-fills-defaults: every key with its default" \
   "$(jq -S -c 'del(.updated_at)' <<<"$(block_json "$BODY")" 2>/dev/null)" \
-  '{"action_failures":0,"blocked_findings":[],"blocking_pr":null,"branch":null,"bugs_filed":[],"deps_commented":null,"escalated":null,"escalated_at_round":null,"implementor_attempts":0,"last_action_error":null,"last_review":null,"last_verified":null,"main_check":null,"merged_pr":null,"models":null,"out_of_scope_created":[],"pending_followups":null,"pr":null,"report_errors":[],"round":null,"state":"ready","worktree":null}'
+  '{"action_failures":0,"blocked_findings":[],"blocking_pr":null,"branch":null,"bugs_filed":[],"deps_commented":null,"escalated":null,"escalated_at_round":null,"implementor_attempts":0,"last_action_error":null,"last_review":null,"last_verified":null,"main_check":null,"merged_pr":null,"models":null,"out_of_scope_created":[],"pending_followups":null,"pr":null,"report_errors":[],"reviewed_stages":[],"round":null,"stage":null,"state":"ready","worktree":null}'
 assert_eq "put-fills-defaults: summary line with nothing set" "$(printf '%s\n' "$BODY" | sed -n 3p)" \
   'State: ready · Round: — · PR: — · Branch: —'
 
@@ -768,6 +768,51 @@ clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bf1.json"; assert_exit "blocked-fr
 clear_inputs; run_note merge 12 "$FAKE_GH_DIR/bf2.json"; assert_exit "blocked-from: second merge exit" 0
 assert_eq "blocked-from: merge keeps blocked_from across a merge that does not mention it" \
   "$(jq -c .blocked_from <<<"$(block_json "$(posted_body)")" 2>/dev/null)" '"in_progress"'
+
+# ---------------------------------------------------------------------------
+# review stages: stage, reviewed_stages, last_review.stage, last_review.provider
+setup_case
+set_note_json '{"state":"review_security","stage":"security","reviewed_stages":["ux"]}'
+run_note get 12
+assert_eq "stage: kept" "$(jq -c .stage <<<"$LAST_OUT")" '"security"'
+assert_eq "reviewed_stages: kept" "$(jq -c .reviewed_stages <<<"$LAST_OUT")" '["ux"]'
+printf '{"state":"in_review"}\n' > "$FAKE_GH_DIR/stg.json"
+clear_inputs; run_note put 12 "$FAKE_GH_DIR/stg.json"
+assert_eq "stage: put defaults null" "$(jq -c .stage <<<"$(block_json "$(posted_body)")")" 'null'
+assert_eq "reviewed_stages: put defaults []" "$(jq -c .reviewed_stages <<<"$(block_json "$(posted_body)")")" '[]'
+set_note_json '{"stage":"Sec"}';            run_note get 12; assert_stdout_exact "stage: bad name rejected" "{}"
+assert_stderr_contains "stage: names the field" "ignoring invalid manager note on #12: stage"
+set_note_json '{"stage":7}';                run_note get 12; assert_stdout_exact "stage: non-string rejected" "{}"
+set_note_json '{"reviewed_stages":"ux"}';   run_note get 12; assert_stdout_exact "reviewed_stages: not a list rejected" "{}"
+assert_stderr_contains "reviewed_stages: names the field" "ignoring invalid manager note on #12: reviewed_stages"
+set_note_json '{"reviewed_stages":["ux","Bad"]}'; run_note get 12; assert_stdout_exact "reviewed_stages: bad entry rejected" "{}"
+set_note_json '{"blocked_from":"review_security"}'; run_note get 12
+assert_eq "blocked_from: a stage state is accepted" "$(jq -c .blocked_from <<<"$LAST_OUT")" '"review_security"'
+set_note_json '{"blocked_from":"review_"}'; run_note get 12; assert_stdout_exact "blocked_from: review_ alone rejected" "{}"
+set_note_json '{"blocked_from":"review_Sec"}'; run_note get 12; assert_stdout_exact "blocked_from: review_ with a bad name rejected" "{}"
+
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"compliance"}}'
+run_note get 12
+assert_eq "last_review.stage: kept" "$(jq -c .last_review.stage <<<"$LAST_OUT")" '"compliance"'
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":null}}'
+run_note get 12
+assert_eq "last_review.stage: null kept" "$(jq -c .last_review.stage <<<"$LAST_OUT")" 'null'
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"Bad Stage"}}'
+run_note get 12; assert_stdout_exact "last_review.stage: bad name rejected" "{}"
+assert_stderr_contains "last_review.stage: names the field" "ignoring invalid manager note on #12: last_review.stage"
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0}}'
+run_note get 12
+assert_eq "last_review.stage: absent accepted" "$(jq -c '.last_review.round' <<<"$LAST_OUT")" '1'
+
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"compliance","provider":"openai"}}'
+run_note get 12
+assert_eq "last_review.provider: kept" "$(jq -c .last_review.provider <<<"$LAST_OUT")" '"openai"'
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"compliance","provider":null}}'
+run_note get 12
+assert_eq "last_review.provider: null kept" "$(jq -c .last_review.provider <<<"$LAST_OUT")" 'null'
+set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"compliance","provider":"Open AI"}}'
+run_note get 12; assert_stdout_exact "last_review.provider: bad name rejected" "{}"
+assert_stderr_contains "last_review.provider: names the field" "ignoring invalid manager note on #12: last_review.provider"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
