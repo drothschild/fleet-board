@@ -33,7 +33,7 @@ YML
 fi
 if [[ $1 == preflight-command ]]; then
   mkdir -p "$TMP/bin"
-  for executable in bash git jq dirname basename sed tr grep awk head tail mktemp python3 cat rm mv; do
+  for executable in bash git jq dirname basename sed tr grep awk head tail mktemp python3 cat rm mv chmod mkdir env; do
     path="$(command -v "$executable")" || exit 1
     ln -s "$path" "$TMP/bin/$executable"
   done
@@ -57,13 +57,30 @@ YML
   cd "$TMP/repo" || exit 1
   export PATH="$TMP/bin"
   if ! bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then cat "$TMP/err" >&2; echo 'FAIL: command providers should not require curl' >&2; exit 1; fi
+  mkdir "$TMP/path with spaces"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/path with spaces/review"; chmod +x "$TMP/path with spaces/review"
+  sed "s|fake-review --model|\"$TMP/path with spaces/review\" --model|" .fleet-board.yml > "$TMP/quoted"
+  cat .fleet-board.yml > "$TMP/original"; cat "$TMP/quoted" > .fleet-board.yml
+  bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: quoted executable path rejected' >&2; exit 1; }
+  sed 's/fake-review --model/env FOO=x fake-review --model/' "$TMP/original" > .fleet-board.yml
+  bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: env-wrapped command rejected' >&2; exit 1; }
+  cat "$TMP/original" > .fleet-board.yml
   rm "$TMP/bin/fake-review"
   if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing command accepted' >&2; exit 1; fi
   grep -q 'fake-review' "$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: missing executable not identified' >&2; exit 1; }
   printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/fake-review"; chmod +x "$TMP/bin/fake-review"
+  rm "$TMP/bin/codex"
+  if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing legacy stage command accepted' >&2; exit 1; fi
+  grep -q 'codex' "$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: legacy stage executable not identified' >&2; exit 1; }
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/codex"; chmod +x "$TMP/bin/codex"
   sed 's/runner: tool-chat, provider: ollama/runner: tool-chat, provider: localcmd/' .fleet-board.yml > "$TMP/next" && mv "$TMP/next" .fleet-board.yml
   if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: tool-chat command provider accepted' >&2; exit 1; fi
   grep -qi 'command' "$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: incompatibility not identified' >&2; exit 1; }
+  sed 's/provider: localcmd, model: code-model/provider: ollama, model: code-model/; s/provider: localcmd, model: review-model/provider: ollama, model: review-model/' .fleet-board.yml > "$TMP/next" && mv "$TMP/next" .fleet-board.yml
+  if bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: HTTP review without curl accepted' >&2; exit 1; fi
+  grep -q 'curl' "$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: missing curl not identified' >&2; exit 1; }
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/curl"; chmod +x "$TMP/bin/curl"
+  bash "$SCRIPTS/standalone/profiles.sh" preflight >"$TMP/out" 2>"$TMP/err" || { cat "$TMP/err" >&2; echo 'FAIL: HTTP provider with curl rejected' >&2; exit 1; }
   echo 'PASS: preflight-command'; exit 0
 fi
 if [[ $1 == preflight-engine ]]; then

@@ -7,16 +7,71 @@ if [[ ${1:-} == preflight ]]; then
   config=$(bash "$SCRIPTS/config.sh") || exit 1
   docker_checked=0
   check_profile() {
-    local result="$1" purpose="$2" runner provider key
+    local result="$1" purpose="$2" runner provider key provider_command executables executable path
     runner=$(jq -r '.runner' <<<"$result") || return 1
     provider=$(jq -r '.provider' <<<"$result") || return 1
+    provider_command=$(jq -r --arg p "$provider" '.providers[$p].command // empty' <<<"$config") || return 1
+    if [[ $runner == tool-chat && -n $provider_command ]]; then
+      echo "profiles: tool-chat does not support command provider $provider" >&2; return 1
+    fi
     if [[ $purpose != reviewer && $runner == diff-chat ]]; then
       echo "profiles: $purpose requires a tool-capable runner" >&2; return 1
     fi
     case "$runner" in
       codex) command -v codex >/dev/null || { echo 'profiles: codex executable unavailable' >&2; return 1; }; command -v docker >/dev/null || { echo 'profiles: docker executable unavailable' >&2; return 1; } ;;
       tool-chat) command -v docker >/dev/null || { echo 'profiles: docker executable unavailable' >&2; return 1; } ;;
-      diff-chat) command -v curl >/dev/null || { echo 'profiles: curl executable unavailable' >&2; return 1; } ;;
+      diff-chat)
+        if [[ -z $provider_command ]]; then
+          command -v curl >/dev/null || { echo 'profiles: curl executable unavailable' >&2; return 1; }
+        else
+          # Parse without evaluating: a command provider is later run by sh,
+          # but preflight must never execute the configured shell text.
+          if ! executables=$(printf '%s' "$provider_command" | python3 -c '
+import re, shlex, sys
+try:
+    text = sys.stdin.read()
+    if any(ord(c) < 32 or ord(c) == 127 for c in text):
+        raise ValueError()
+    words = shlex.split(text, posix=True)
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words.pop(0)
+    if not words:
+        raise ValueError()
+    first = words.pop(0)
+    result = [first]
+    if first == "env" or first.endswith("/env"):
+        while words:
+            if words[0] in ("-i", "--ignore-environment"):
+                words.pop(0)
+            elif words[0] in ("-u", "--unset") and len(words) > 1:
+                del words[:2]
+            elif words[0].startswith("--unset="):
+                words.pop(0)
+            elif words[0] == "--":
+                words.pop(0)
+                break
+            elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+                words.pop(0)
+            else:
+                break
+        if not words:
+            raise ValueError()
+        result.append(words[0])
+    if any(not item or re.search(r"[\$`;&|()<>*?{}\[\]\\]", item) for item in result):
+        raise ValueError()
+    print("\n".join(result))
+except (ValueError, TypeError):
+    sys.exit(1)
+'); then
+            echo "profiles: cannot determine executable for command provider $provider" >&2; return 1
+          fi
+          while IFS= read -r executable; do
+            path=$(type -P -- "$executable") || path=""
+            if [[ -z $path || ! -f $path || ! -x $path ]]; then
+              echo "profiles: command provider $provider executable unavailable: $executable" >&2; return 1
+            fi
+          done <<<"$executables"
+        fi ;;
       *) echo "profiles: unsupported runner $runner" >&2; return 1 ;;
     esac
     if [[ $runner != diff-chat && $docker_checked == 0 ]]; then
