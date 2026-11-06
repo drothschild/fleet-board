@@ -571,7 +571,7 @@ scenario_fix_block() {
 
 # seed_merge PATCH: a non-draft PR with a clean current review, merged by the
 # HARNESS from its own shell (as the human would), outside any claude session.
-# The harness merges, not the manager: Claude Code's auto-mode classifier blocks an unattended
+# The harness does the merge itself: Claude Code's auto-mode classifier blocks an unattended
 # "gh pr merge" in a headless session ("Merge Without Review"), so the manager's
 # merge action is not exercised here; the ticks cover the post-merge path
 # (verify_main, finish). The committed config (merge.policy: human) is used.

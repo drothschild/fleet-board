@@ -144,11 +144,12 @@ assert_eq "clean merge: the note records the update" "$(written_note | jq -c '.l
 assert_eq "clean merge: the reviewed sha is kept" "$(written_note | jq -c '.last_review.sha')" '"abc1234"'
 assert_eq "clean merge: state unchanged in the note" "$(written_note | jq -c '.state')" '"in_review"'
 
-# A merge that changed files: the reviewed-sha baseline is dropped
+# A clean merge that changed files: the reviewed-sha baseline is kept; the plan
+# decides from the commits whether the merge needs a review
 setup "src/calc.js" "" 0
 run_update
 assert_exit "changed merge: exit 0" 0
-assert_eq "changed merge: last_review cleared so the next tick reviews" "$(written_note | jq -c '.last_review')" 'null'
+assert_eq "changed merge: last_review.sha unchanged" "$(written_note | jq -c '.last_review.sha')" '"abc1234"'
 assert_eq "changed merge: the note records changed code" "$(written_note | jq -c '.last_update.changed')" 'true'
 assert_eq "changed merge: still pushed" "$(count_lines '^push ' "$GIT_LOG")" 1
 
