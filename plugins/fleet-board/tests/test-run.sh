@@ -155,7 +155,8 @@ default_fixture() { cp "$FX/$1.jsonl" "$FC/default.jsonl"; }
 # wrapper (umask 022 so the log-mode checks do not depend on the caller's umask)
 case_env() {
   unset FLEET_BOARD_LOG_DIR FLEET_BOARD_PLUGIN_DIR FLEET_BOARD_TICK_PROMPT FLEET_BOARD_ISOLATE \
-    FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB || true
+    FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB FLEET_BOARD_RUN_ID FAKE_CLAUDE_LEDGER || true
+  export FAKE_CLAUDE_LEDGER="$LOGS/provider-spend.jsonl"
   export HOME="$HOMEDIR" PATH="$BIN:$ORIG_PATH" FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" FAKE_CLAUDE_DIR="$FC"
   [ -n "$C_LOG_DIR" ] && export FLEET_BOARD_LOG_DIR="$C_LOG_DIR"
   [ -n "$C_PLUGIN_DIR" ] && export FLEET_BOARD_PLUGIN_DIR="$C_PLUGIN_DIR"
@@ -1028,6 +1029,62 @@ seq_fixture 2 tick-idle
 run_wrapper --repo "$REPO"
 assert_exit "children-without-fd3: exit 0" 0
 assert_eq "children-without-fd3: claude never had fd 3 open" "$(sort -u "$FC/fd3.log" 2>/dev/null)" "closed"
+
+# ---------------------------------------------------------------------------
+echo "provider spend: the ledger counts toward the tick cost"
+# ledger_fixture <n> <line>...: invocation n appends these ledger lines (@RUN@ = the run id)
+ledger_fixture() { local n="$1"; shift; printf '%s\n' "$@" > "$FC/$n.ledger"; }
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.10}' '{"run_id":"@RUN@","cost_usd":0.05}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "provider_spend_added_to_tick_cost: exit 0" 0
+assert_file_contains "provider_spend_added_to_tick_cost: tick 1 header carries the total and the provider part" "$LOG" "cost_estimate_usd=0.75 (estimate; provider 0.15) ==="
+assert_file_matches "provider_spend_added_to_tick_cost: tick 2 (no spend) header is plain" "$LOG" "^=== tick 2 $ISO rc=0 cost_estimate_usd=0\.1 \(estimate\) ===$"
+assert_stdout_contains "provider_spend_added_to_tick_cost: the stop line total" "cost_estimate_usd 0.85 (estimate)"
+RID="$(head -1 "$FC/runid.log" 2>/dev/null)"
+assert_true "run_id: exported to the tick as <epoch>-<pid>" sh -c 'printf "%s" "$1" | grep -qE "^[0-9]+-[0-9]+$"' _ "$RID"
+assert_eq "run_id: the same id on every tick" "$(sort -u "$FC/runid.log" | wc -l | tr -d ' ')" "1"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"1-2","cost_usd":5.00}' '{"run_id":null,"cost_usd":3.00}' '{"run_id":"@RUN@","cost_usd":0.20}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_file_contains "ledger_lines_from_other_runs_are_ignored: only this run's 0.20 counts" "$LOG" "cost_estimate_usd=0.8 (estimate; provider 0.2) ==="
+assert_stdout_contains "ledger_lines_from_other_runs_are_ignored: stop total" "cost_estimate_usd 0.9 (estimate)"
+
+new_case "max_cost_usd: 1"
+default_fixture tick-busy
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.50}'
+run_wrapper --repo "$REPO"
+assert_exit "provider_spend_trips_max_cost: exit 0" 0
+assert_stdout_contains "provider_spend_trips_max_cost: stops after 1 tick (0.6 alone would not)" "stopped: max-cost after 1 ticks"
+assert_stdout_contains "provider_spend_trips_max_cost: the combined total" "cost_estimate_usd 1.1 (estimate)"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+run_wrapper --repo "$REPO"
+assert_exit "missing_ledger_is_zero: exit 0" 0
+assert_stdout_contains "missing_ledger_is_zero: totals unchanged" "cost_estimate_usd 0.7 (estimate)"
+assert_false "missing_ledger_is_zero: no ledger created" test -e "$LOGS/provider-spend.jsonl"
+assert_stderr_not_contains "missing_ledger_is_zero: no warning" "provider-spend"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 'not json at all' '{"run_id":"@RUN@","cost_usd":"x"}' '{"run_id":"@RUN@","cost_usd":0.10}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "malformed_ledger_line_is_skipped_with_warning: exit 0" 0
+assert_stderr_contains "malformed_ledger_line_is_skipped_with_warning: warns on stderr" "provider-spend.jsonl"
+assert_file_contains "malformed_ledger_line_is_skipped_with_warning: warns in the log" "$LOG" "fleet-board-run: warning: skipped 2 malformed line(s)"
+assert_file_contains "malformed_ledger_line_is_skipped_with_warning: the good line still counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
 
 echo ""
 echo "-----------------------------------"
