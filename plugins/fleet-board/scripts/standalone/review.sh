@@ -72,20 +72,29 @@ PARSED="$(bash "$SCRIPTS/parse-report.sh" --role reviewer "$SCRATCH/reviewer-rep
 jq -e '(.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/dev/null || { echo 'review follow-ups require reconciliation' >&2; exit 1; }
 # A concurrent move, especially into Human QA, must not be undone by a review.
 check_live_card() {
-  local current states state actual expected
+  local current states state actual expected item
   current="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
   actual="$(jq -r .state <<<"$current")" || return 1
+  item="$(jq -r '.item_id // empty' <<<"$current")" || return 1
   if [ "$actual" != "$EXPECTED_STATE" ]; then
-    [ "$RECOVERING" = true ] && [ "$ACTION" = start_review ] && [ "$actual" = in_review ] || return 1
+    if [ "$RECOVERING" = true ] && [ "$ACTION" = start_review ] && [ "$actual" = in_review ]; then :
+    elif [ "$RECOVERING" = true ] && [ "$ACTION" = start_review ] && [ "$actual" = null ] && jq -e '.move_attempted == true and .move_source == "in_progress"' "$JOURNAL" >/dev/null; then :
+    else return 1; fi
   fi
   if [ "$(fb_cfg board.backend)" = github-projects ]; then
-    jq -e --argjson n "$N" '.number == $n and (.item_id | type == "string" and length > 0)' <<<"$current" >/dev/null || return 1
+    [ -n "$item" ] || return 1
+    if [ "$actual" = null ]; then [ "$(jq -r '.move_item_id // empty' "$JOURNAL")" = "$item" ] || return 1; fi
+    jq -e --argjson n "$N" '.number == $n' <<<"$current" >/dev/null || return 1
   else
     states="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
-    expected="$(fb_state_name "$actual")"
-    jq -e --arg expected "$expected" --argjson states "$states" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected]' <<<"$current" >/dev/null || return 1
+    if [ "$actual" = null ]; then
+      jq -e --argjson states "$states" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == []' <<<"$current" >/dev/null || return 1
+    else
+      expected="$(fb_state_name "$actual")"
+      jq -e --arg expected "$expected" --argjson states "$states" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected]' <<<"$current" >/dev/null || return 1
+    fi
   fi
-  LIVE_STATE="$actual"
+  LIVE_STATE="$actual"; LIVE_ITEM="$item"
 }
 check_live_card || { echo 'card state changed during review' >&2; exit 1; }
 INFO="$(pr_info)" || exit 1
@@ -114,7 +123,10 @@ check_pr <<<"$INFO" && [ "$(jq -r .headRefOid <<<"$INFO")" = "$SHA" ] || { echo 
 jq -n --argjson pr "$PR" --arg sha "$SHA" --argjson round "$ROUND" --argjson parsed "$PARSED" \
   '{state:"in_review",pr:$pr,round:$round,last_verified:$parsed.verified.line,last_review:{round:$round,sha:$sha,critical:$parsed.counts.critical,important:$parsed.counts.important,findings:$parsed.findings},action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
 check_live_card || { echo 'card state changed before review recording' >&2; exit 1; }
-if [ "$ACTION" = start_review ] && [ "$LIVE_STATE" = in_progress ]; then
+if [ "$ACTION" = start_review ] && { [ "$LIVE_STATE" = in_progress ] || [ "$LIVE_STATE" = null ]; }; then
+  if [ "$LIVE_STATE" = in_progress ]; then
+    jq --arg item "$LIVE_ITEM" '.move_attempted = true | .move_source = "in_progress" | .move_item_id = $item' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+  fi
   FLEET_BOARD_ENFORCE_QA=1 bash "$SCRIPTS/board-move.sh" "$N" in_review || exit 1
 fi
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/note.json" || exit 1
