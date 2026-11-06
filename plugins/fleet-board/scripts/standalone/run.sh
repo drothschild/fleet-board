@@ -34,7 +34,9 @@ cancel() {
   trap '' INT TERM
   if [ -n "$target" ]; then
     kill -TERM -- "-$target" 2>/dev/null || true
-    (sleep 5; kill -KILL -- "-$target" 2>/dev/null || true) </dev/null >/dev/null 2>&1 & watchdog=$!
+    # The controller has a five-second grace period for its own child group.
+    # Give it time to kill and reap that group before forcing the controller.
+    (sleep 12; kill -KILL -- "-$target" 2>/dev/null || true) </dev/null >/dev/null 2>&1 & watchdog=$!
     wait "$target" 2>/dev/null || true
     kill -KILL -- "-$target" 2>/dev/null || true
     kill "$watchdog" 2>/dev/null || true; wait "$watchdog" 2>/dev/null || true
@@ -68,6 +70,10 @@ while :; do
   LAST="$(now)"; TICKS=$((TICKS + 1))
   run_group bash "$TICK_CMD" tick </dev/null > "$WORK/tick" 2> "$WORK/err"; RC=$?
   cat "$WORK/tick" "$WORK/err" >> "$LOG" || exit 1
+  # Account for every attempt, including failures, before another tick can run.
+  if ! jq -e -s 'length == 1 and (.[0].cost_usd | type == "number" and . >= 0)' "$WORK/tick" >/dev/null 2>&1; then stop cost-unknown 1; fi
+  COST="$(add "$COST" "$(jq -r .cost_usd "$WORK/tick")")"
+  greater "$COST" "$MAX_COST" && stop max-cost 0
   if [ "$RC" -ne 0 ] || ! jq -e -s 'length == 1 and (.[0] | type == "object" and (.outcome | IN("idle", "progress")) and (.dispatchable | type == "boolean") and (if .outcome == "idle" then .dispatchable == false else true end))' "$WORK/tick" >/dev/null 2>&1; then
     FAILS=$((FAILS + 1))
     [ "$FAILS" -ge "$MAX_FAILS" ] && stop consecutive-failures 1
@@ -75,8 +81,6 @@ while :; do
     continue
   fi
   FAILS=0
-  if ! jq -e '.cost_usd | type == "number" and . >= 0' "$WORK/tick" >/dev/null 2>&1; then stop cost-unknown 1; fi
-  COST="$(add "$COST" "$(jq -r .cost_usd "$WORK/tick")")"
   # The standalone tick itself performs safe transitions. Cleanup does not merge.
   run_group bash "$CLEANUP" </dev/null >> "$LOG" 2>&1 || printf 'warning: cleanup failed\n' >> "$LOG"
   [ "$(jq -r .outcome "$WORK/tick")" = idle ] && stop nothing-dispatchable 0
