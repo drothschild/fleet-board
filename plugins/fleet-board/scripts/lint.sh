@@ -20,8 +20,8 @@
 #   unresolved-dependency  a "## Depends on" reference is neither a linted card
 #                          nor an issue "gh issue view" finds.
 #   missing-file           a backticked path (dir/name.ext) is not on the default
-#                          branch. A line with create, new or add(s) is skipped:
-#                          it names a file the card makes.
+#                          branch. Lines under a "## Creates" heading are skipped:
+#                          they name files the card makes.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 a card could not be read.
 
@@ -132,8 +132,12 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
 
   # missing-file
   if [ -n "$DEFBR" ]; then
+    inc=0
     while IFS= read -r line; do
-      grep -Eiq '(^|[^[:alpha:]])(create[sd]?|new|adds?)([^[:alpha:]]|$)' <<<"$line" && continue
+      case "$line" in
+        '##'*) if grep -Eiq '^##[ \t]+Creates[ \t]*$' <<<"$line"; then inc=1; else inc=0; fi; continue ;;
+      esac
+      [ "$inc" -eq 1 ] && continue
       while IFS= read -r span; do
         p="${span#\`}"; p="${p%\`}"
         grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
