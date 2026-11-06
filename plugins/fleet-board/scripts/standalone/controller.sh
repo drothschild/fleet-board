@@ -18,8 +18,12 @@ SCRATCH="$(mktemp -d)" || exit 1
 PLAN="$SCRATCH/plan"
 LOCK=""
 cleanup() {
+  local rc=$?
   [ -z "$LOCK" ] || rmdir "$LOCK" 2>/dev/null || true
   rm -rf "$SCRATCH"
+  if [ "$rc" -ne 0 ] && [ "$MODE" = tick ] && [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ]; then
+    jq -cn '{outcome:"failed",dispatchable:false,cost_usd:0}'
+  fi
 }
 CHILD=""
 cancel() {
@@ -120,7 +124,7 @@ if [ "$MODE" = plan ]; then
 fi
 # Dispatch one supported action only; reject mixed plans before any effect.
 if jq -e 'all(.cards[]; .action == "skip") and .dispatchable == false' "$PLAN" >/dev/null; then
-  jq '. + {outcome: "idle"}' "$PLAN"
+  jq '. + {outcome: "idle", cost_usd: 0}' "$PLAN"
   exit 0
 fi
 if jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start")' "$PLAN" >/dev/null; then
@@ -142,4 +146,4 @@ else
   echo 'tick contains an unsupported action; no actions taken' >&2
   exit 1
 fi
-jq '. + {outcome: "progress"}' "$PLAN"
+jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" '. + {outcome: "progress"} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"
