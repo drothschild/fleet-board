@@ -781,3 +781,11 @@ In 3.6 items 4 and 5 the card has already moved when the role reports, and the p
 - **Action table.** A row for `update_branch`, directly before the `block` row: `worktree.sh create N <plan branch> <plan worktree>` → `update-branch.sh N <pr> <plan branch> <plan worktree>` (the plan card's `pr`). The script merges the base branch into the PR branch with a merge commit and a plain push, and does the note write, the Blocked move and the comment itself. Dispatch no role agent. Never rebase and never force-push.
 - **Rule 2.17b**, directly after 2.17 and before 2.18 (the existing 2.17a stays where it is): `update_branch` runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge and blocks the card. When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
 - **Progress list** (the one that lists, per action, what counts as progress): a bullet directly after the `block` bullet: `update_branch`: `update-branch.sh` exited 0 (a clean merge pushed, or a conflict moved the card to `blocked`).
+
+## Revision 18 requirements (2026-11-06, one round 1 reference SHA)
+
+The manager states one round 1 reference SHA in both places: the reviewer's inputs and the
+`review` action row. In round 1 the reference SHA `prev_sha` is the `base` from `worktree.sh
+review` (the merge-base), even when an earlier review exists, because `unblock`, `start` and
+`start_review` reset the round to 1. In round 2 and later it is `note.last_review.sha`. No line
+says round 1 uses `base` only when there is no previous review.

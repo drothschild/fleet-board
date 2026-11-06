@@ -872,6 +872,150 @@ plan_real nonmerge
 assert_exit "merge-only-reviewed: non-merge commit: exit" 0
 assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
 
+# Scope overlap and one merge per tick. Fixtures are built at run time.
+# scope_issue <dir> <n> <label> <scope section text, or NONE>: writes the issue
+scope_issue() {
+  local dir="$1" n="$2" label="$3" scope="$4" body
+  body="Work."$'\n\n'
+  if [ "$scope" != NONE ]; then body="$body## Scope"$'\n'"$scope"$'\n\n'; fi
+  body="$body## Acceptance"$'\n'"- it works"$'\n'
+  jq -n --argjson n "$n" --arg l "fleet:$label" --arg b "$body" \
+    '{number: $n, title: "Card \($n)", html_url: "https://github.com/acme/toy/issues/\($n)", body: $b, labels: [{name: $l}]}' \
+    > "$dir/issue-$n.json"
+}
+
+# scope_routes <dir> <ready numbers> <in_review numbers>: routes for those cards
+scope_routes() {
+  local dir="$1" n pr
+  {
+    printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
+    for n in $2 $3; do
+      printf 'api repos/acme/toy/issues/%s\t0\t%s/issue-%s.json\n' "$n" "$dir" "$n"
+      if [ -f "$dir/comments-$n.json" ]; then
+        printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/comments-%s.json\n' "$n" "$dir" "$n"
+      else
+        printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/common/empty.json\n' "$n" "$TICK"
+      fi
+    done
+    for n in $3; do
+      pr=$((n + 22))
+      printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/common/pr-34-open-green.json\n' "$pr" "$TICK"
+      printf 'pr view %s --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$pr" "$TICK"
+    done
+    for st in ready:"$2" in_progress: in_review:"$3" blocked:; do
+      local col="${st%%:*}" nums="${st#*:}" arr="[]" x
+      arr="$(for x in $nums; do jq -cn --argjson n "$x" --arg l "fleet:$col" '{number: $n, title: "Card \($n)", url: "u", labels: [{name: $l}]}'; done | jq -cs '.')"
+      printf '%s\n' "$arr" > "$dir/list-$col.json"
+      printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s/list-%s.json\n' "$col" "$dir" "$col"
+    done
+  } > "$dir/routes"
+  FAKE_GH_ROUTES="$dir/routes"; export FAKE_GH_ROUTES
+}
+
+# scope_review_note <dir> <n>: a clean round 1 review note for card n, PR n+22
+scope_review_note() {
+  sed -e "s/fleet\\/12-add-subtract/fleet\\/$2-card/" -e "s/\\\\\"pr\\\\\":34/\\\\\"pr\\\\\":$(($2 + 22))/" \
+    "$TICK/in-review-merge-auto/comments-12.json" > "$1/comments-$2.json"
+}
+
+# plan_scope <ready card's scope text or NONE>: ready card 14, in_review card 12 naming src/a.sh
+plan_scope() {
+  setup_case ready-start
+  local dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+  scope_issue "$dir" 12 in_review '- Modify `src/a.sh`: the change'
+  scope_issue "$dir" 14 ready "$1"
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "14" "12"
+  run_check "$SCRIPT"
+}
+
+plan_scope '- Modify `src/a.sh`: another change'
+assert_exit "scope-overlap: exit" 0
+assert_jq "scope-overlap: a Ready card sharing a path with an in_review card waits" "$(card 14 action)" '"wait"'
+assert_jq "scope-overlap: the reason names the other card" "$(card 14 reason | sed 's/^/(/; s/$/ | contains("#12"))/')" 'true'
+
+plan_scope '- Modify `src/b.sh`: another change'
+assert_exit "scope-disjoint: exit" 0
+assert_jq "scope-disjoint: cards naming different paths start" "$(card 14 action)" '"start"'
+
+plan_scope 'Everything in the card, no file named here.'
+assert_exit "scope-none: exit" 0
+assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
+
+# Three cards eligible to merge: exactly one merge, lowest number first
+setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto')"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+for n in 12 13 15; do
+  scope_issue "$dir" "$n" in_review NONE
+  scope_review_note "$dir" "$n"
+done
+scope_routes "$dir" "" "15 12 13"
+run_check "$SCRIPT"
+assert_exit "merge-one: exit" 0
+assert_jq "merge-one: exactly one of three eligible cards is merge" '[.cards[] | select(.action == "merge")] | length' 1
+assert_jq "merge-one: the merge is the lowest card number" '[.cards[] | select(.action == "merge") | .number]' '[12]'
+assert_jq "merge-one: the others wait" '[.cards[] | select(.action == "wait") | .number] | sort' '[13,15]'
+
+# commands.preflight: one board-level alert instead of a failure on each card
+PRE_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$PRE_DIR")
+printf '#!/usr/bin/env bash\necho ran >> "%s/ran"\nfor i in $(seq 1 25); do echo "preflight line $i"; done\nexit 1\n' "$PRE_DIR" > "$PRE_DIR/fail.sh"
+printf '#!/usr/bin/env bash\necho ran >> "%s/ran"\necho fine\nexit 0\n' "$PRE_DIR" > "$PRE_DIR/ok.sh"
+
+# mutating_calls: gh calls that edit, comment or write (a plan only reads)
+mutating_calls() {
+  local f n=0
+  for f in "$FAKE_GH_DIR"/argv/*; do
+    [ -f "$f" ] || continue
+    grep -qxE 'edit|comment|create|close|-X|--method|--input' "$f" && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+for pcase in ready-start in-review-needs-review action-failures-ready-3; do
+  plan "$pcase"
+  UNSET_OUT="$LAST_OUT"
+  rm -f "$PRE_DIR/ran"
+  plan "$pcase" "$(printf 'commands:\n  preflight: bash %s/fail.sh' "$PRE_DIR")"
+  assert_exit "preflight-fail $pcase: exit" 0
+  assert_jq "preflight-fail $pcase: no start, review, fix or other dispatch action" \
+    '[.cards[] | select(.action | IN("start","continue_implementor","start_review","review","fix","merge","block","unblock","file_pending","verify_main","finish","update_branch","mark_ready","to_human_qa"))] | length' 0
+  assert_jq "preflight-fail $pcase: exactly one warning starts with 'preflight failed:'" \
+    '[.warnings[] | select(startswith("preflight failed:"))] | length' 1
+  assert_jq "preflight-fail $pcase: the warning holds the command" \
+    '[.warnings[] | select(startswith("preflight failed:") and contains("fail.sh"))] | length' 1
+  assert_jq "preflight-fail $pcase: the warning holds the last 20 lines of output" \
+    '.warnings[] | select(startswith("preflight failed:")) | [contains("preflight line 25"), contains("preflight line 6"), contains("preflight line 5")]' '[true,true,false]'
+  assert_jq "preflight-fail $pcase: dispatchable is false" '.dispatchable' 'false'
+  assert_eq "preflight-fail $pcase: every card keeps its state" \
+    "$(jq -c '[.cards[] | [.number, .state, .round]]' <<<"$LAST_OUT")" \
+    "$(jq -c '[.cards[] | [.number, .state, .round]]' <<<"$UNSET_OUT")"
+  assert_eq "preflight-fail $pcase: nothing is written to the board" "$(mutating_calls)" "0"
+  assert_eq "preflight-fail $pcase: the preflight ran once" "$(wc -l < "$PRE_DIR/ran" | tr -d ' ')" "1"
+done
+
+# exit 0: the plan equals the plan with the key unset
+for pcase in ready-start in-review-needs-review; do
+  plan "$pcase"
+  UNSET_OUT="${LAST_OUT//$BASE/BASE}" # the worktree base differs per run
+  rm -f "$PRE_DIR/ran"
+  plan "$pcase" "$(printf 'commands:\n  preflight: bash %s/ok.sh' "$PRE_DIR")"
+  assert_exit "preflight-ok $pcase: exit" 0
+  assert_eq "preflight-ok $pcase: plan equals the plan with the key unset" "${LAST_OUT//$BASE/BASE}" "$UNSET_OUT"
+  assert_eq "preflight-ok $pcase: the preflight ran once" "$(wc -l < "$PRE_DIR/ran" | tr -d ' ')" "1"
+done
+
+# key unset: no preflight command runs (another commands key must not be run)
+rm -f "$PRE_DIR/ran"
+plan ready-start "$(printf 'commands:\n  test_one: bash %s/ok.sh {file}' "$PRE_DIR")"
+assert_exit "preflight-unset: exit" 0
+assert_eq "preflight-unset: no command ran" "$([ -e "$PRE_DIR/ran" ] && echo ran || echo none)" "none"
+assert_jq "preflight-unset: no preflight warning" '[.warnings[] | select(startswith("preflight"))] | length' 0
+
+# the docs name the key
+grep -qF 'commands.preflight' "$SCRIPT_DIR/../docs/config.md" \
+  && pass "preflight-docs: docs/config.md names commands.preflight" \
+  || fail "preflight-docs: docs/config.md names commands.preflight" "grep -F found nothing"
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra

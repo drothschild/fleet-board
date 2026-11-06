@@ -267,3 +267,24 @@ A `CHECKED` finding that an existing test was weakened contains the file path, s
 gives one SHA per test, in the same order as step 7: a previous finding's SHA, then the reference
 SHA when the test changed since it, then the merge-base. The reviewer reads the base branch with
 `gh pr view`. The statements of what the reviewer judges from name the previous findings.
+
+## Revision 16 requirements (2026-11-03, single backticks for the check command)
+
+The check command in an `Out of scope:` entry is written in single backticks with no backtick
+inside it. A markdown double-backtick span, or an odd number of backticks, gives no command,
+because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
+command were present. When the command cannot be written that way, the entry uses the words
+`no testable check`. The entry rule says so.
+
+## Revision 18 requirements (2026-11-03, weakening outside a test body and in round 1)
+
+The weakened-test step runs in every round, not only round 2 and later. In round 1 its reference
+SHA is the merge-base, so its diff covers every commit on the PR branch, including a fixer's
+commit reached through `unblock`, `start` and `start_review`, which reset the round to 1. The
+step also covers weakening outside a test's body: a test helper (a no-op `assertEqual`), a
+fixture or expected-output file, a top-level setup hook (a new `beforeEach` that stubs the code
+under test), a `.skip` marker on a suite (`describe.skip(`) and an `.only` marker (a new
+`test.only(...)` block). A finding never gives a SHA at which the test is already weakened
+against the merge-base. The `CHECKED` rule and the step give the reference SHA only when the
+test at it is not already weakened against the merge-base, and otherwise give the merge-base
+SHA.
