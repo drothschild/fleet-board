@@ -28,18 +28,35 @@ if [ "$#" -eq 4 ]; then
   PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/blocked-report")" || exit 1
   [ "$(jq -r .status <<<"$PARSED")" = blocked ] || exit 1
   if [ ! -e "$JOURNAL" ]; then
-    jq -n --argjson card "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --slurpfile result "$RESULT" --slurpfile plan_card "$CARD" '{version:1,card:$card,attempt:$attempt,repo:$repo,branch:$branch,worktree:$wt,base:$base,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    BEFORE_NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
+    PRIOR_BLOCKER="$(jq -c '.blocking_pr // null' <<<"$BEFORE_NOTE")" || exit 1
+    jq -n --argjson prior_blocker "$PRIOR_BLOCKER" --argjson card "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" --arg base "$BASE" --slurpfile result "$RESULT" --slurpfile plan_card "$CARD" '{version:1,card:$card,attempt:$attempt,repo:$repo,branch:$branch,worktree:$wt,base:$base,prior_blocking_pr:$prior_blocker,result:$result[0],plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
   fi
 else
   JOURNAL="$3"
 fi
 [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || exit 1
-jq -e --argjson n "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" '.version == 1 and .card == $n and .attempt == $attempt and .repo == $repo and .branch == $branch and .worktree == $wt and (.base | test("^[0-9a-f]{40}$")) and .result.outcome == "blocked"' "$JOURNAL" >/dev/null || exit 1
+jq -e --argjson n "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" '.version == 1 and .card == $n and .attempt == $attempt and .repo == $repo and .branch == $branch and .worktree == $wt and (.base | test("^[0-9a-f]{40}$")) and has("prior_blocking_pr") and .result.outcome == "blocked"' "$JOURNAL" >/dev/null || exit 1
 BASE="$(jq -r .base "$JOURNAL")"
 [ "$JOURNAL" = "$JDIR/blocked-$N-$ATTEMPT-$BASE.json" ] || exit 1
 jq -r .result.report "$JOURNAL" > "$SCRATCH/blocked-report" || exit 1
 PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/blocked-report")" || exit 1
 jq -e '.status == "blocked" and (.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/dev/null || { echo 'blocked report needs unsupported follow-up reconciliation' >&2; exit 1; }
+# Do not overwrite a blocker a person changed while this action was pending.
+check_blocker() {
+  local live prior expected
+  live="$(bash "$SCRIPTS/note.sh" get "$N")" || return 1
+  prior="$(jq -c .prior_blocking_pr "$JOURNAL")" || return 1
+  expected="$(jq -c .blocked_by <<<"$PARSED")" || return 1
+  if jq -e '.blocker_written == true' "$JOURNAL" >/dev/null; then
+    jq -e --argjson expected "$expected" '.blocking_pr == $expected' <<<"$live" >/dev/null
+  elif jq -e '.blocker_write_attempted == true' "$JOURNAL" >/dev/null; then
+    jq -e --argjson prior "$prior" --argjson expected "$expected" '.blocking_pr == $prior or .blocking_pr == $expected' <<<"$live" >/dev/null
+  else
+    jq -e --argjson prior "$prior" '.blocking_pr == $prior' <<<"$live" >/dev/null
+  fi
+}
+check_blocker || { echo 'blocker changed while blocked result was pending' >&2; exit 1; }
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 ACTUAL="$(jq -r .state <<<"$CURRENT")"
 SOURCE=ready
@@ -69,13 +86,17 @@ esac
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 ACTUAL="$(jq -r .state <<<"$CURRENT")"
 if [ "$ACTUAL" = in_progress ]; then
+  check_blocker || { echo 'blocker changed before blocked note' >&2; exit 1; }
+  jq '.blocker_write_attempted = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
   jq -n --arg branch "$BRANCH" --arg wt "$WT" --argjson attempt "$ATTEMPT" --argjson parsed "$PARSED" --slurpfile card "$CARD" '{state:"in_progress",branch:$branch,worktree:$wt,round:0,models:$card[0].models,implementor_attempts:$attempt,blocking_pr:$parsed.blocked_by,last_verified:$parsed.verified.line}' > "$SCRATCH/blocked-note" || exit 1
   bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/blocked-note" || exit 1
+  jq '.blocker_written = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
 fi
 REASON="$(jq -r '.for_the_card | if length > 0 then . else "Implementor is blocked" end' <<<"$PARSED")"
 jq --arg reason "$REASON" '.action = "block" | .state = "in_progress" | .reason = $reason' "$CARD" > "$SCRATCH/block-card" || exit 1
 mkdir "$SCRATCH/block-maintenance" || exit 1
 bash "$SCRIPTS/standalone/maintenance.sh" "$SCRATCH/block-card" "$SCRATCH/block-maintenance" || exit 1
+jq -e '.blocker_written == true' "$JOURNAL" >/dev/null && check_blocker || { echo 'blocker changed before final blocked note' >&2; exit 1; }
 jq -n --argjson parsed "$PARSED" '{state:"blocked",blocked_from:"in_progress",blocking_pr:$parsed.blocked_by,last_verified:$parsed.verified.line,blocked_findings:([$parsed.findings[] | select(.severity == "Critical" or .severity == "Important")] | if length == 0 then [{severity:"Important",text:$parsed.for_the_card}] else . end)}' > "$SCRATCH/blocked-final" || exit 1
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/blocked-final" || exit 1
 MARKER="<!-- fleet-board:implementor-blocked:$N:$ATTEMPT:$BASE -->"

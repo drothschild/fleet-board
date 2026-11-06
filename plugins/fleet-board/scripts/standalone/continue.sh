@@ -51,6 +51,23 @@ if [ -n "$PR" ]; then
   exit 0
 fi
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
+if [ "$(jq -r .state <<<"$CURRENT")" = blocked ]; then
+  MATCH="" COUNT=0
+  for BLOCKED in "$JDIR"/blocked-"$N"-"$ATTEMPT"-*.json; do
+    [ -f "$BLOCKED" ] && [ ! -L "$BLOCKED" ] || continue
+    if jq -e --argjson n "$N" --argjson attempt "$ATTEMPT" --arg repo "$FLEET_REPO" --arg branch "$BRANCH" --arg wt "$WT" '.completed == true and .card == $n and .attempt == $attempt and .repo == $repo and .branch == $branch and .worktree == $wt and .result.outcome == "blocked" and .plan_card.continuation_attempt == $attempt' "$BLOCKED" >/dev/null; then MATCH="$BLOCKED"; COUNT=$((COUNT + 1)); fi
+  done
+  [ "$COUNT" = 1 ] || { echo 'blocked continuation evidence is missing or ambiguous' >&2; exit 1; }
+  jq -r .result.report "$MATCH" > "$SCRATCH/blocked-report" || exit 1
+  PARSED="$(bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/blocked-report")" || exit 1
+  jq -e --arg branch "$BRANCH" --arg wt "$WT" --argjson attempt "$ATTEMPT" --argjson parsed "$PARSED" '.state == "blocked" and .blocked_from == "in_progress" and .branch == $branch and .worktree == $wt and .implementor_attempts == $attempt and .blocking_pr == $parsed.blocked_by and .last_verified == $parsed.verified.line' <<<"$NOTE" >/dev/null || { echo 'blocked continuation note changed' >&2; exit 1; }
+  BASE="$(jq -r .base "$MATCH")"; MARKER="<!-- fleet-board:implementor-blocked:$N:$ATTEMPT:$BASE -->"
+  ME="$(fb_login)" || exit 1
+  { printf '%s\n\n' "$MARKER"; cat "$SCRATCH/blocked-report"; } > "$SCRATCH/blocked-expected"
+  jq -e --arg me "$ME" --rawfile body "$SCRATCH/blocked-expected" 'any(.comments[]; .author == $me and .body == $body)' <<<"$CURRENT" >/dev/null || { echo 'blocked continuation report missing or changed' >&2; exit 1; }
+  jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+  exit 0
+fi
 [ "$(jq -r .state <<<"$CURRENT")" = in_progress ] || { echo 'card is no longer in progress' >&2; exit 1; }
 COUNT="$(jq -r '.implementor_attempts // 0' <<<"$NOTE")"
 if [ "$COUNT" = "$((ATTEMPT - 1))" ]; then
