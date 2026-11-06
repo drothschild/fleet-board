@@ -49,6 +49,19 @@ if FLEET_BOARD_TICK_PLAN="$TMP/malformed-plan" bash "$ROOT/bin/fleet-board" tick
   echo 'FAIL: malformed card accepted' >&2; exit 1
 fi
 if [ -s "$TMP/malformed-out" ]; then echo 'FAIL: malformed plan emitted' >&2; exit 1; fi
+# A known action with invalid typed data must also fail closed.
+cat > "$TMP/typed-plan" <<PLAN
+#!/usr/bin/env bash
+cat "$TMP/typed.json"
+PLAN
+chmod +x "$TMP/typed-plan"
+for mutation in '.cards[0].pr = "12"' '.cards[0].round = "1"' '.cards[0].stage = 7' '.cards[0].needs_human_qa = "yes"' '.cards[0].models.implementor = 42'; do
+  jq "$mutation" "$TMP/expected" > "$TMP/typed.json"
+  if FLEET_BOARD_TICK_PLAN="$TMP/typed-plan" bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/typed-out" 2>/dev/null; then
+    echo "FAIL: invalid field accepted: $mutation" >&2; exit 1
+  fi
+  if [ -s "$TMP/typed-out" ]; then echo 'FAIL: invalid typed plan emitted' >&2; exit 1; fi
+done
 for call in "$FAKE_GH_DIR"/argv/*; do
   [ -f "$call" ] || continue
   if grep -Eq '^(create|edit|comment|close|merge)$' "$call"; then
