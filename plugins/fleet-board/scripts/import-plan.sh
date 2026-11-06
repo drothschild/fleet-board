@@ -111,11 +111,13 @@ BODY="$(mktemp)"; trap 'rm -rf "$LINTDIR" "$BODY"' EXIT
 n=0
 while [ "$n" -lt "$N" ]; do
   jq -c --argjson i "$n" '.cards[$i]' <<<"$PLAN" > "$LINTDIR/.card"
-  render_body '{}' < "$LINTDIR/.card" > "$LINTDIR/$(jq -r '.key | gsub("[^A-Za-z0-9_.-]"; "_")' "$LINTDIR/.card").md"
+  lkey="$(jq -r '.key | gsub("[^A-Za-z0-9_.-]"; "_")' "$LINTDIR/.card")"
+  render_body '{}' < "$LINTDIR/.card" > "$LINTDIR/$lkey.md"
+  jq -r '.repo // ""' "$LINTDIR/.card" > "$LINTDIR/$lkey.repo"
   n=$((n + 1))
 done
 rm -f "$LINTDIR/.card"
-LINTOUT="$(bash "$FLEET_SCRIPTS_DIR/lint.sh" --bodies "$LINTDIR" --no-file-check)" || {
+LINTOUT="$(bash "$FLEET_SCRIPTS_DIR/lint.sh" --bodies "$LINTDIR")" || {
   printf '%s\n' "$LINTOUT" >&2
   fb_die 1 "card lint failed; nothing was created"
 }
