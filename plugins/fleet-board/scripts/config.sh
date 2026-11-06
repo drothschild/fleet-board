@@ -138,7 +138,7 @@ STAGE_DEFAULTS='
             timeout: ($s.timeout // 600),
             max_output_tokens: ($s.max_output_tokens // 16000),
             max_diff_bytes: ($s.max_diff_bytes // 400000)
-          }
+          } + (if $s | has("profile") then {profile: $s.profile} else {} end)
         else . end)
     else . end
 '
@@ -155,11 +155,15 @@ PROVIDER_DEFAULTS='
     if (.review | type) == "object" and (.review.stages | type) == "array"
     then [.review.stages[] | select(type == "object") | .provider | select(type == "string")]
     else [] end;
+  def profile_providers:
+    if (.execution.profiles | type) == "object"
+    then [.execution.profiles[] | objects | .provider | select(type == "string")]
+    else [] end;
   . as $root
   | $presets[0] as $p
   | if (.providers | type) == "object" then
       .providers = (
-        ([($root.providers | keys[]), ($root | stage_providers[] | . as $sp | select($p | has($sp)))] | unique)
+        ([($root.providers | keys[]), ($root | stage_providers[] | . as $sp | select($p | has($sp))), ($root | profile_providers[] | . as $sp | select($p | has($sp)))] | unique)
         | map(. as $n | ($root.providers[$n]) as $u
             | {key: $n,
                value: (if $u != null and ($u | type) != "object" then $u
@@ -215,13 +219,20 @@ VALIDATION_SCRIPT='
       (if (.review | type) == "object" then
         (if (.review.stages | type) != "array" then "review.stages must be a list"
          else
-          (.review.stages as $stages | .providers as $provs | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
+          (.review.stages as $stages | .providers as $provs | .execution as $execution | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
             | if ($s | type) != "object" then "review.stages[\($i)] must be an object"
               else
                 (if ($s.name | type) != "string" or ($s.name | test("^[a-z][a-z0-9_]*$") | not) then "review.stages[\($i)].name must match ^[a-z][a-z0-9_]*$"
                  elif (($stages[0:$i] | map(select(type == "object") | .name)) | index($s.name)) != null then "review.stages[\($i)].name \($s.name) is not unique"
                  else empty end),
-                (if ($s.agent == null) == ($s.provider == null) then "review.stages[\($i)] must set exactly one of agent and provider" else empty end),
+                (if $s.agent != null and $s.provider != null then "review.stages[\($i)] must not set both agent and provider"
+                 elif $s.provider != null and $s.profile != null then "review.stages[\($i)] cannot combine provider and profile"
+                 elif $s.agent == null and $s.provider == null and $s.profile == null and (($execution.profiles // {}) | length) == 0 then "review.stages[\($i)] must set exactly one of agent and provider"
+                 else empty end),
+                (if $s.profile != null then
+                  (if ($s.profile | type) != "string" or $s.profile == "" then "review.stages[\($i)].profile must be a non-empty string"
+                   elif (($execution.profiles | type) != "object" or ($execution.profiles | has($s.profile) | not)) then "review.stages[\($i)].profile names no execution profile" else empty end)
+                 else empty end),
                 (if $s.provider == null and $s.agent != null and (($s.agent | type) != "string" or ($s.agent | test("^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$") | not)) then "review.stages[\($i)].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$" else empty end),
                 (if $s.provider != null then
                   (if ($s.provider | type) != "string" or ($s.provider | test("^[a-z][a-z0-9_-]*$") | not) then "review.stages[\($i)].provider must match ^[a-z][a-z0-9_-]*$"
@@ -249,6 +260,31 @@ VALIDATION_SCRIPT='
               end)
          end)
       else empty end),
+      (if (.execution | type) != "object" then "execution must be an object"
+       elif (.execution.profiles | type) != "object" then "execution.profiles must be a map"
+       elif (.execution.roles | type) != "object" then "execution.roles must be a map"
+       else
+         (.execution as $e | .providers as $providers |
+           ($e.profiles | to_entries[] | .key as $name | .value as $profile |
+             (if ($name | test("^[a-z][a-z0-9_-]*$") | not) then "execution.profiles.\($name) has an invalid name" else empty end),
+             (if ($profile | type) != "object" then "execution.profiles.\($name) must be an object"
+              else
+                (if ($profile.runner | IN("codex", "tool-chat", "diff-chat") | not) then "execution.profiles.\($name).runner is unsupported" else empty end),
+                (if ($profile.provider | type) != "string" or ($profile.provider | test("^[a-z][a-z0-9_-]*$") | not) then "execution.profiles.\($name).provider is invalid"
+                 elif (($providers | type) != "object" or ($providers | has($profile.provider) | not)) then "execution.profiles.\($name).provider names no configured provider" else empty end),
+                (if ($profile.model | type) != "string" or $profile.model == "" or ($profile.model | test("[\u0000-\u001f]")) then "execution.profiles.\($name).model must be a non-empty string without control characters" else empty end),
+                (($profile | keys_unsorted[]) as $k | if ($k | IN("runner", "provider", "model") | not) then "execution.profiles.\($name).\($k) is not supported" else empty end)
+              end)),
+           ($e.roles | to_entries[] | .key as $role | .value as $profile |
+             (if ($role | IN("implementor", "fixer", "reviewer") | not) then "execution.roles.\($role) is not a role" else empty end),
+             (if ($profile | type) != "string" or ($e.profiles | has($profile) | not) then "execution.roles.\($role) names no execution profile" else empty end)),
+           (if $e.escalation == null then empty
+            elif ($e.escalation | type) != "object" then "execution.escalation must be an object or null"
+            else
+              (if ($e.escalation.profile | type) != "string" or ($e.profiles | has($e.escalation.profile) | not) then "execution.escalation.profile names no execution profile" else empty end),
+              (if ($e.escalation.after_round | type) != "number" or ($e.escalation.after_round | floor) != $e.escalation.after_round or $e.escalation.after_round <= 0 then "execution.escalation.after_round must be a positive integer" else empty end)
+            end))
+       end),
       (if (.providers | type) != "object" then "providers must be an object"
        else
         (.providers | to_entries[] | . as $e | $e.key as $n | $e.value as $v
@@ -315,7 +351,7 @@ VALIDATION_SCRIPT='
   ;
   def warnings:
     if (.providers | type) == "object" then
-      (stage_providers as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
+      ((stage_providers + (if (.execution.profiles | type) == "object" then [.execution.profiles[] | objects | .provider | select(type == "string")] else [] end)) as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
     else [] end;
   (errors | .[]), (warnings | .[])
 '
