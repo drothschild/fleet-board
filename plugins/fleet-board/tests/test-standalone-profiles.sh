@@ -2,18 +2,47 @@
 # Targeted standalone profile cases; no provider calls.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in routing) ;; *) echo 'usage: test-standalone-profiles.sh routing' >&2; exit 2 ;; esac
+case "${1:-}" in routing|legacy-config) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo"
 git -C "$TMP/repo" init -q
+if [[ $1 == legacy-config ]]; then
+  cat > "$TMP/repo/.fleet-board.yml" <<'YML'
+board: { repo: acme/toy }
+review:
+  stages:
+    - { name: security, provider: openrouter, model: model-review, price: { input: 1, output: 2 }, timeout: 91 }
+    - { name: architecture, agent: 'fleet:architecture' }
+YML
+  cd "$TMP/repo" || exit 1
+  bash "$SCRIPTS/config.sh" --check || exit 1
+  out="$(bash "$SCRIPTS/standalone/profiles.sh" resolve --stage security --round 1)" || exit 1
+  jq -e '.source == "legacy-provider" and .provider == "openrouter" and .model == "model-review" and .price.input == 1 and .timeout == 91' <<<"$out" >/dev/null || exit 1
+  if bash "$SCRIPTS/standalone/profiles.sh" resolve --stage architecture --round 1 >"$TMP/out" 2>"$TMP/err"; then
+    echo 'FAIL: unmapped agent was accepted' >&2; exit 1
+  fi
+  rg -q 'architecture.*profile' "$TMP/err" || { echo 'FAIL: migration error was not actionable' >&2; exit 1; }
+  # Explicit profile and legacy provider are ambiguous, even when each is valid.
+  cat > .fleet-board.yml <<'YML'
+board: { repo: acme/toy }
+execution:
+  profiles: { review: { runner: diff-chat, provider: openrouter, model: model-review, price: { input: 1, output: 2 }, timeout: 91 } }
+review:
+  stages:
+    - { name: security, provider: openrouter, model: model-review, profile: review }
+YML
+  if bash "$SCRIPTS/config.sh" --check >/dev/null 2>&1; then echo 'FAIL: conflicting stage bindings accepted' >&2; exit 1; fi
+  echo 'PASS: legacy-config'
+  exit 0
+fi
 cat > "$TMP/repo/.fleet-board.yml" <<'YML'
 board: { repo: acme/toy }
 execution:
   profiles:
     coding: { runner: codex, provider: openai, model: model-code }
     stronger: { runner: codex, provider: openai, model: model-strong }
-    independent: { runner: diff-chat, provider: openrouter, model: model-review }
+    independent: { runner: diff-chat, provider: openrouter, model: model-review, price: { input: 1, output: 2 }, timeout: 91 }
   roles: { implementor: coding, fixer: coding, reviewer: independent }
   escalation: { profile: stronger, after_round: 3 }
 review:
@@ -32,7 +61,7 @@ jq -e '.profile == "coding" and .runner == "codex" and .provider == "openai" and
 out="$(resolve --role fixer --round 3)" || exit 1
 jq -e '.profile == "stronger" and .model == "model-strong" and .escalated == true' <<<"$out" >/dev/null || exit 1
 out="$(resolve --stage security --round 1)" || exit 1
-jq -e '.profile == "independent" and .runner == "diff-chat" and .provider == "openrouter" and .model == "model-review"' <<<"$out" >/dev/null || exit 1
+jq -e '.profile == "independent" and .runner == "diff-chat" and .provider == "openrouter" and .model == "model-review" and .price.input == 1 and .timeout == 91' <<<"$out" >/dev/null || exit 1
 sed 's/implementor: coding/implementor: absent/' .fleet-board.yml > "$TMP/invalid" && mv "$TMP/invalid" .fleet-board.yml
 if bash "$SCRIPTS/config.sh" --check >/dev/null 2>&1; then echo 'FAIL: missing referenced profile accepted' >&2; exit 1; fi
 echo 'PASS: routing'
