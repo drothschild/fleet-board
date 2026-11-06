@@ -25,21 +25,39 @@ case "$BRANCH" in "fleet/$N-"*) ;; *) exit 1 ;; esac
 NOTE="$(bash "$SCRIPTS/note.sh" get "$N")" || exit 1
 SHA="$(jq -r .last_review.sha <<<"$NOTE")"
 [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
+JDIR="$COMMON/fleet-board-standalone"
+JOURNAL="$JDIR/merge-$N-$SHA.json"
 jq -e --slurpfile card "$CARD" '.last_review.round >= .round and ((.last_review.critical == 0 and .last_review.important == 0) or $card[0].stage.advisory == true) and (.last_review.stage // null) == ($card[0].stage.name // null)' <<<"$NOTE" >/dev/null || { echo 'no clean current review' >&2; exit 1; }
 OWNER="${FLEET_REPO%/*}" REPO="${FLEET_REPO#*/}"
 pr_info() { gh pr view "$PR" --repo "$FLEET_REPO" --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body,statusCheckRollup,mergeable; }
 check_identity() { jq -e --argjson n "$PR" --arg branch "$BRANCH" --arg sha "$SHA" --arg owner "$OWNER" --arg repo "$REPO" --arg marker "<!-- fleet-board:card:$N -->" '.number == $n and .headRefName == $branch and .headRefOid == $sha and .baseRefName == "main" and .headRepositoryOwner.login == $owner and .headRepository.name == $repo and (.body | contains($marker))' >/dev/null; }
 read_card() {
+  local states state item
   CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
   ACTUAL="$(jq -r .state <<<"$CURRENT")" || return 1
-  if [ "$ACTUAL" != "$STATE" ] && [ "$ACTUAL" != done ]; then return 1; fi
-  if [ "$(fb_cfg board.backend)" = github-projects ]; then
-    jq -e --argjson n "$N" '.number == $n and (.item_id | type == "string" and length > 0)' <<<"$CURRENT" >/dev/null || return 1
-  else
-    local states state
-    states="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
-    jq -e --arg expected "$(fb_state_name "$ACTUAL")" --argjson states "$states" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected]' <<<"$CURRENT" >/dev/null || return 1
+  item="$(jq -r '.item_id // empty' <<<"$CURRENT")" || return 1
+  if [ "$ACTUAL" = null ]; then
+    [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || return 1
+    jq -e --argjson n "$N" --arg source "$STATE" --arg sha "$SHA" '.card == $n and .sha == $sha and .move_attempted == true and .move_source == $source' "$JOURNAL" >/dev/null || return 1
+  elif [ "$ACTUAL" = done ]; then
+    [ -f "$JOURNAL" ] && jq -e '.move_attempted == true' "$JOURNAL" >/dev/null || return 1
+  elif [ "$ACTUAL" != "$STATE" ]; then
+    return 1
   fi
+  if [ "$(fb_cfg board.backend)" = github-projects ]; then
+    [ -n "$item" ] || return 1
+    if [ "$ACTUAL" = null ]; then [ "$(jq -r '.move_item_id // empty' "$JOURNAL")" = "$item" ] || return 1; fi
+    jq -e --argjson n "$N" '.number == $n' <<<"$CURRENT" >/dev/null || return 1
+  else
+    states="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
+    if [ "$ACTUAL" = null ]; then
+      jq -e --argjson states "$states" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == []' <<<"$CURRENT" >/dev/null || return 1
+    else
+      jq -e --arg expected "$(fb_state_name "$ACTUAL")" --argjson states "$states" '[.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected]' <<<"$CURRENT" >/dev/null || return 1
+    fi
+  fi
+  LIVE_ITEM="$item"
 }
 read_card || { echo 'card state changed before publication' >&2; exit 1; }
 LABELS="$(jq -c .labels <<<"$CURRENT")"
@@ -53,9 +71,7 @@ if [ "$ACTION" = mark_ready ]; then
   check_identity <<<"$INFO" && jq -e '.state == "OPEN" and .isDraft == false' <<<"$INFO" >/dev/null || exit 1
   exit 0
 fi
-COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
-JDIR="$COMMON/fleet-board-standalone"; mkdir -p "$JDIR" || exit 1
-JOURNAL="$JDIR/merge-$N-$SHA.json"
+mkdir -p "$JDIR" || exit 1
 if [ -e "$JOURNAL" ]; then
   [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || exit 1
   jq -e --argjson n "$N" --arg repo "$FLEET_REPO" --arg sha "$SHA" '.version == 1 and .card == $n and .repo == $repo and .sha == $sha' "$JOURNAL" >/dev/null || exit 1
@@ -97,8 +113,10 @@ bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/check-note" || exit 1
 [ "$(jq -r .ok <<<"$CHECK")" = true ] || { echo 'main verification was not successful' >&2; exit 1; }
 read_card || { echo 'card state changed before Done' >&2; exit 1; }
 if printf '%s\n' "$(jq -r '.body // ""' <<<"$CURRENT")" | grep -q '^## After merge'; then echo 'after-merge commands require reconciliation' >&2; exit 1; fi
-if [ "$ACTUAL" = "$STATE" ]; then
-  jq --arg source "$STATE" '.move_attempted = true | .move_source = $source' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+if [ "$ACTUAL" = "$STATE" ] || [ "$ACTUAL" = null ]; then
+  if [ "$ACTUAL" = "$STATE" ]; then
+    jq --arg source "$STATE" --arg item "$LIVE_ITEM" '.move_attempted = true | .move_source = $source | .move_item_id = $item' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+  fi
   FLEET_BOARD_ENFORCE_QA=1 bash "$SCRIPTS/board-move.sh" "$N" done || exit 1
 fi
 printf '%s\n' '{"state":"done","action_failures":0,"last_action_error":null}' > "$SCRATCH/done-note"
