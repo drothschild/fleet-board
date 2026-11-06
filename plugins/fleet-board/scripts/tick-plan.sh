@@ -196,6 +196,13 @@
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
 #
+# Preflight: when commands.preflight is set, it runs once before planning (not
+# in settle mode). When it exits non-zero the plan holds every card (action
+# wait, reason "preflight failed; ..."; a skip stays a skip), dispatchable is
+# false, and the one warning "preflight failed: <command> (exit <n>)" followed
+# by the last 20 lines of its output. No card's state or
+# action_failures changes. A zero exit leaves the plan as if the key were unset.
+#
 # Rate limit failures: when the script fails and its stderr names a GitHub rate
 # limit, it asks gh api rate_limit for the reset time and adds the line
 # "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
@@ -256,6 +263,20 @@ HAS_STAGES=false
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
+
+# Preflight: commands.preflight runs once before planning (never in settle mode,
+# which starts no agent). A non-zero exit holds every card and adds the one
+# warning below; the plan changes no card's state or action_failures.
+PREFLIGHT_WARNING=""
+PRE_CMD="$(fb_cfg commands.preflight)"
+if [ "$SETTLE" != true ] && [ -n "$PRE_CMD" ]; then
+  PRE_OUT="$(cd "$FLEET_ROOT" && bash -c "$PRE_CMD" 2>&1 </dev/null)"
+  PRE_RC=$?
+  if [ "$PRE_RC" -ne 0 ]; then
+    PREFLIGHT_WARNING="preflight failed: $PRE_CMD (exit $PRE_RC)
+$(printf '%s\n' "$PRE_OUT" | tail -n 20)"
+  fi
+fi
 
 TEST_GLOBS="$(jq -r '.test_paths[]' <<<"$FLEET_CFG")" || fb_die 1 "cannot read test_paths"
 
@@ -604,7 +625,7 @@ while IFS="$(printf '\t')" read -r sname kenv; do
 done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
   | ($c.providers[.provider].api_key_env // empty) as $k | "\(.name)\t\($k)"' <<<"$FLEET_CFG")"
 
-jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
+jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
@@ -732,6 +753,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        elif ($d0.action == "to_human_qa" or $d0.action == "advance_stage" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and $d0.action == "merge")) then $d0
        elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
        else act("skip"; "\($d0.action) waits for the next tick") end) as $d
+    # A failed preflight holds every card: no role runs, nothing is recorded
+    | (if $pre != "" and $d.action != "skip"
+       then act("wait"; "preflight failed; nothing is planned until the environment works")
+       else $d end) as $d
     | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
@@ -751,11 +776,12 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
-  | {dispatchable: (($settle | not) and any($cards[];
+  | {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
-       (if $m.implementor == $m.reviewer
+       (if $pre != "" then [$pre] else [] end)
+       + (if $m.implementor == $m.reviewer
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)
        + (if $m.escalation != null and $m.escalation == $m.reviewer

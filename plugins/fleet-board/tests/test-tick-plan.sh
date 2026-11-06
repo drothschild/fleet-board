@@ -956,6 +956,66 @@ assert_jq "merge-one: exactly one of three eligible cards is merge" '[.cards[] |
 assert_jq "merge-one: the merge is the lowest card number" '[.cards[] | select(.action == "merge") | .number]' '[12]'
 assert_jq "merge-one: the others wait" '[.cards[] | select(.action == "wait") | .number] | sort' '[13,15]'
 
+# commands.preflight: one board-level alert instead of a failure on each card
+PRE_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$PRE_DIR")
+printf '#!/usr/bin/env bash\necho ran >> "%s/ran"\nfor i in $(seq 1 25); do echo "preflight line $i"; done\nexit 1\n' "$PRE_DIR" > "$PRE_DIR/fail.sh"
+printf '#!/usr/bin/env bash\necho ran >> "%s/ran"\necho fine\nexit 0\n' "$PRE_DIR" > "$PRE_DIR/ok.sh"
+
+# mutating_calls: gh calls that edit, comment or write (a plan only reads)
+mutating_calls() {
+  local f n=0
+  for f in "$FAKE_GH_DIR"/argv/*; do
+    [ -f "$f" ] || continue
+    grep -qxE 'edit|comment|create|close|-X|--method|--input' "$f" && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+for pcase in ready-start in-review-needs-review action-failures-ready-3; do
+  plan "$pcase"
+  UNSET_OUT="$LAST_OUT"
+  rm -f "$PRE_DIR/ran"
+  plan "$pcase" "$(printf 'commands:\n  preflight: bash %s/fail.sh' "$PRE_DIR")"
+  assert_exit "preflight-fail $pcase: exit" 0
+  assert_jq "preflight-fail $pcase: no start, review, fix or other dispatch action" \
+    '[.cards[] | select(.action | IN("start","continue_implementor","start_review","review","fix","merge","block","unblock","file_pending","verify_main","finish","update_branch","mark_ready","to_human_qa"))] | length' 0
+  assert_jq "preflight-fail $pcase: exactly one warning starts with 'preflight failed:'" \
+    '[.warnings[] | select(startswith("preflight failed:"))] | length' 1
+  assert_jq "preflight-fail $pcase: the warning holds the command" \
+    '[.warnings[] | select(startswith("preflight failed:") and contains("fail.sh"))] | length' 1
+  assert_jq "preflight-fail $pcase: the warning holds the last 20 lines of output" \
+    '.warnings[] | select(startswith("preflight failed:")) | [contains("preflight line 25"), contains("preflight line 6"), contains("preflight line 5")]' '[true,true,false]'
+  assert_jq "preflight-fail $pcase: dispatchable is false" '.dispatchable' 'false'
+  assert_eq "preflight-fail $pcase: every card keeps its state" \
+    "$(jq -c '[.cards[] | [.number, .state, .round]]' <<<"$LAST_OUT")" \
+    "$(jq -c '[.cards[] | [.number, .state, .round]]' <<<"$UNSET_OUT")"
+  assert_eq "preflight-fail $pcase: nothing is written to the board" "$(mutating_calls)" "0"
+  assert_eq "preflight-fail $pcase: the preflight ran once" "$(wc -l < "$PRE_DIR/ran" | tr -d ' ')" "1"
+done
+
+# exit 0: the plan equals the plan with the key unset
+for pcase in ready-start in-review-needs-review; do
+  plan "$pcase"
+  UNSET_OUT="${LAST_OUT//$BASE/BASE}" # the worktree base differs per run
+  rm -f "$PRE_DIR/ran"
+  plan "$pcase" "$(printf 'commands:\n  preflight: bash %s/ok.sh' "$PRE_DIR")"
+  assert_exit "preflight-ok $pcase: exit" 0
+  assert_eq "preflight-ok $pcase: plan equals the plan with the key unset" "${LAST_OUT//$BASE/BASE}" "$UNSET_OUT"
+  assert_eq "preflight-ok $pcase: the preflight ran once" "$(wc -l < "$PRE_DIR/ran" | tr -d ' ')" "1"
+done
+
+# key unset: no preflight command runs (another commands key must not be run)
+rm -f "$PRE_DIR/ran"
+plan ready-start "$(printf 'commands:\n  test_one: bash %s/ok.sh {file}' "$PRE_DIR")"
+assert_exit "preflight-unset: exit" 0
+assert_eq "preflight-unset: no command ran" "$([ -e "$PRE_DIR/ran" ] && echo ran || echo none)" "none"
+assert_jq "preflight-unset: no preflight warning" '[.warnings[] | select(startswith("preflight"))] | length' 0
+
+# the docs name the key
+grep -qF 'commands.preflight' "$SCRIPT_DIR/../docs/config.md" \
+  && pass "preflight-docs: docs/config.md names commands.preflight" \
+  || fail "preflight-docs: docs/config.md names commands.preflight" "grep -F found nothing"
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra

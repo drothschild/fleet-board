@@ -8,6 +8,10 @@ The default `test_paths` are `test/**`, `tests/**`, `__tests__/**`, `**/*.test.*
 
 When `models.implementor` and `models.reviewer` are the same, every tick warns that the reviewer shares the writer's blind spots.
 
+## `commands.preflight`
+
+Unset by default. A command that checks the environment works, for example that a generated client is current or a service answers. `tick-plan.sh` runs it once per tick, from the repo root, before planning. When it exits non-zero, the plan holds every card (no start, review, fix or other action), `dispatchable` is false so the loop stops, and the plan carries one warning, `preflight failed: <command> (exit <n>)`, followed by the last 20 lines of the output. No card's state or `action_failures` changes. When it exits 0 the plan is the same as with the key unset. Settle plans never run it.
+
 ## `merge.policy`
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the manager merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA. Headless runs merge too: `scripts/merge-reviewed.sh` runs after each tick, outside any Claude session, and merges the same PRs (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
