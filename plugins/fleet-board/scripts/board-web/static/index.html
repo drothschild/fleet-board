@@ -43,7 +43,48 @@
 </header>
 <pre id="log" class="log" hidden></pre>
 <main id="board" aria-label="Board"></main>
-<section id="import" hidden></section>
+<section id="import" class="imp" aria-labelledby="imp-h" data-phase="edit" hidden>
+  <div class="imp-head">
+    <h2 id="imp-h" class="imp-title">Import plan</h2>
+    <span id="imp-status" class="imp-status"></span>
+    <label class="imp-target">
+      <span class="sr-only">Create the cards in</span>
+      <select id="imp-target" class="dr-state">
+        <option value="backlog">Backlog</option>
+        <option value="ready">Ready</option>
+      </select>
+    </label>
+  </div>
+  <div class="imp-main">
+    <div id="imp-drop" class="imp-drop">
+      <textarea id="imp-plan" class="imp-plan" spellcheck="false" aria-label="Plan" placeholder="Paste a plan here, or drop a .md or .txt file"></textarea>
+    </div>
+    <div id="imp-stage" class="imp-stage" hidden>
+      <div id="imp-sheet" class="imp-sheet" aria-hidden="true"><pre class="imp-sheet-text"></pre></div>
+      <svg class="imp-arrow" viewBox="0 0 32 16" aria-hidden="true"><path d="M2 8h26M22 3l6 5-6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <div class="imp-result">
+        <ol id="imp-grid" class="imp-grid" aria-label="Cards to create"></ol>
+        <p id="imp-error" class="imp-error" role="alert" hidden></p>
+      </div>
+    </div>
+    <details id="imp-dry" class="imp-dry" hidden>
+      <summary class="imp-dry-sum">
+        <svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Dry run
+      </summary>
+      <pre id="imp-table" class="imp-table"></pre>
+    </details>
+  </div>
+  <div class="imp-foot">
+    <label id="imp-embed-row" class="imp-embed" hidden><input type="checkbox" id="imp-embed" checked> embed referenced doc sections</label>
+    <div class="imp-actions">
+      <button type="button" id="imp-discard" class="btn">Discard</button>
+      <span id="imp-progress" class="imp-progress" role="status" hidden><span class="active-dot" aria-hidden="true"></span><span id="imp-elapsed" class="imp-elapsed"></span><span id="imp-last" class="imp-last"></span></span>
+      <button type="button" id="imp-group" class="btn" disabled>Group with Claude</button>
+      <button type="button" id="imp-create" class="btn primary" hidden>Create cards</button>
+    </div>
+  </div>
+</section>
 <div id="drawer-dim" class="drawer-dim" hidden></div>
 <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Card" hidden>
   <div class="dr-head">

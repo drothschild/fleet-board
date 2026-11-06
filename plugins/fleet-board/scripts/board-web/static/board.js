@@ -641,7 +641,7 @@ function renderHeader(run) {
   const stop = $("stop-btn");
   start.disabled = S.offline || S.busy || isAlive(run);
   stop.disabled = S.offline || S.busy || run.state !== "running";
-  start.classList.toggle("primary", !start.disabled);
+  start.classList.toggle("primary", !start.disabled && !S.imp); // one filled button per page
 
   if (S.logOpen && run.log_tail) renderLog(run.log_tail);
 }
@@ -804,6 +804,7 @@ function showDrawer() {
   $("drawer").hidden = false;
   $("drawer-dim").hidden = false;
   $("board").inert = true;
+  $("import").inert = true;
   $("top").inert = true;
 }
 
@@ -814,6 +815,7 @@ function closeDrawer() {
   $("drawer").hidden = true;
   $("drawer-dim").hidden = true;
   $("board").inert = false;
+  $("import").inert = false;
   $("top").inert = false;
   if (location.pathname !== "/") history.replaceState(null, "", "/");
   if (!d) return;
@@ -850,7 +852,7 @@ function renderDrawer(card) {
   $("dr-body").value = d.base.body;
   fillStateSelect(d.base.state);
   renderLabels();
-  renderPreview();
+  renderBodyPreview();
   renderDrawerMeta();
   $("dr-comments-sec").hidden = isNew;
   if (isNew) {
@@ -873,7 +875,7 @@ function fillStateSelect(current) {
   sel.value = current;
 }
 
-function renderPreview() {
+function renderBodyPreview() {
   $("dr-preview").replaceChildren(md($("dr-body").value));
 }
 
@@ -1189,7 +1191,7 @@ function bindDrawer() {
   $("dr-title").addEventListener("input", updateDirty);
   $("dr-state").addEventListener("change", updateDirty);
   $("dr-body").addEventListener("input", function () {
-    renderPreview();
+    renderBodyPreview();
     updateDirty();
   });
   $("dr-label-input").addEventListener("keydown", function (e) {
@@ -1224,10 +1226,422 @@ function drawerFromUrl() {
   if (m) openDrawer(Number(m[1]), null);
 }
 
-// --- hooks for the import view (Task 12) ------------------------------------
+// --- import ------------------------------------------------------------------
+
+const IMPORT_POLL_MS = 1000;
+const SPLIT_FOLD_MS = 180;   // the sheet scales down and tilts
+const SPLIT_FLY_MS = 420;    // one strip's flight into its slot
+const SPLIT_STAGGER_MS = 60;
+const SPLIT_STAGGER_MAX = 8; // strips after the ninth leave with the ninth
+const SPLIT_TEXT_HOLD_MS = 200; // a strip shows its band of the plan this long in flight
+const SHEET_CHARS = 4000;    // the sheet only ever shows the top of the plan
+
+// S.imp while the view is open: {phase: edit|running|splitting|ready|failed|
+// creating, id (the import id once started), fileName (a dropped file), cards,
+// timer (the next poll)}. Every await checks S.imp is still the same object,
+// so a closed view stops polling and ignores late replies.
+S.imp = null;
 
 function openImport() {
-  // Task 12 shows the import view here.
+  if (S.imp) {
+    if (S.imp.phase === "edit") $("imp-plan").focus();
+    return;
+  }
+  if (S.drawer) return;
+  S.imp = { phase: "edit", id: null, fileName: null, cards: [], timer: null };
+  $("imp-plan").value = "";
+  $("imp-target").value = "backlog";
+  $("imp-embed").checked = true;
+  $("imp-grid").replaceChildren();
+  $("imp-error").hidden = true;
+  $("imp-error").textContent = "";
+  $("imp-table").textContent = "";
+  $("imp-dry").open = false;
+  $("imp-sheet").className = "imp-sheet";
+  $("imp-sheet").firstElementChild.textContent = "";
+  $("imp-drop").classList.remove("over");
+  setImportPhase("edit");
+  setImportStatus("");
+  updateGroupButton();
+  $("board").hidden = true;
+  $("import").hidden = false;
+  $("import-btn").setAttribute("aria-expanded", "true");
+  renderHeader();
+  $("imp-plan").focus();
+}
+
+// closeImport(): back to the board. Nothing is created; a grouping session
+// still running on the server is left to finish on its own.
+function closeImport() {
+  const imp = S.imp;
+  if (!imp) return;
+  clearTimeout(imp.timer);
+  S.imp = null;
+  const fly = $("imp-fly");
+  if (fly) fly.remove();
+  const inside = $("import").contains(document.activeElement);
+  $("import").hidden = true;
+  $("board").hidden = false;
+  $("import-btn").setAttribute("aria-expanded", "false");
+  renderHeader();
+  if (inside || document.activeElement === document.body) $("import-btn").focus({ preventScroll: true });
+}
+
+// setImportPhase(phase): shows the parts of the view that phase has.
+function setImportPhase(phase) {
+  const imp = S.imp;
+  if (imp) imp.phase = phase;
+  const ready = phase === "ready" || phase === "creating";
+  $("import").dataset.phase = phase;
+  $("imp-drop").hidden = phase !== "edit";
+  $("imp-stage").hidden = phase === "edit";
+  $("imp-group").hidden = phase !== "edit";
+  $("imp-progress").hidden = phase !== "running";
+  $("imp-create").hidden = !ready;
+  $("imp-embed-row").hidden = !ready;
+  $("imp-dry").hidden = !ready || !$("imp-table").textContent;
+  $("imp-target").disabled = phase !== "edit";
+  const busy = phase === "creating";
+  $("imp-create").disabled = busy;
+  $("imp-embed").disabled = busy;
+  $("imp-discard").disabled = busy;
+}
+
+// setImportStatus(text): the muted header line, after the dropped file's name.
+function setImportStatus(text) {
+  const imp = S.imp;
+  const parts = [];
+  if (text && imp && imp.fileName) parts.push(imp.fileName);
+  if (text) parts.push(text);
+  $("imp-status").textContent = parts.join(" · ");
+}
+
+function updateGroupButton() {
+  const btn = $("imp-group");
+  const empty = !$("imp-plan").value.trim();
+  btn.disabled = empty;
+  btn.classList.toggle("primary", !empty);
+}
+
+// readPlanFile(file): a dropped .md or .txt file replaces the textarea.
+function readPlanFile(file) {
+  const imp = S.imp;
+  if (!imp || imp.phase !== "edit" || !file) return;
+  if (!/\.(md|markdown|txt)$/i.test(file.name) && !/^text\//.test(file.type)) {
+    showToast("Drop a .md or .txt file; " + file.name + " is not one.", "error");
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = function () {
+    if (S.imp !== imp || imp.phase !== "edit") return;
+    $("imp-plan").value = String(reader.result || "");
+    imp.fileName = file.name;
+    updateGroupButton();
+    $("imp-plan").focus();
+  };
+  reader.onerror = function () {
+    showToast("Could not read " + file.name + ".", "error");
+  };
+  reader.readAsText(file);
+}
+
+function hasFiles(e) {
+  const types = e.dataTransfer && e.dataTransfer.types;
+  return !!types && Array.prototype.indexOf.call(types, "Files") !== -1;
+}
+
+// startImport(): sends the plan to Claude for grouping, then polls.
+async function startImport() {
+  const imp = S.imp;
+  const plan = $("imp-plan").value;
+  if (!imp || imp.phase !== "edit" || !plan.trim()) return;
+  $("imp-sheet").firstElementChild.textContent = plan.slice(0, SHEET_CHARS);
+  setImportPhase("running");
+  showImportProgress(0, "");
+  $("imp-discard").focus();
+  const r = await writeApi("POST", "/api/import", { plan: plan, status: $("imp-target").value });
+  if (S.imp !== imp) return;
+  if (!r.ok || typeof r.data.import_id !== "string") {
+    showToast("Grouping did not start: " + errorText(r), "error");
+    setImportPhase("edit");
+    setImportStatus("");
+    $("imp-plan").focus();
+    return;
+  }
+  imp.id = r.data.import_id;
+  imp.timer = setTimeout(function () { pollImport(imp.id); }, IMPORT_POLL_MS);
+}
+
+function showImportProgress(elapsed, lastText) {
+  setImportStatus("grouping · " + elapsed + " s");
+  $("imp-elapsed").textContent = elapsed + " s";
+  const line = String(lastText || "").replace(/\s+/g, " ").trim();
+  $("imp-last").textContent = line || "Claude is reading the plan";
+  $("imp-last").title = line;
+}
+
+// pollImport(id): one GET a second while running; ready plays the split.
+async function pollImport(id) {
+  const imp = S.imp;
+  if (!imp || imp.id !== id || imp.phase !== "running") return;
+  let r;
+  try {
+    r = await api("GET", "/api/import/" + encodeURIComponent(id));
+  } catch (e) {
+    r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
+  }
+  if (S.imp !== imp || imp.phase !== "running") return;
+  if (!r.ok) {
+    if (r.status === 404) {
+      showImportFailed(errorText(r));
+      return;
+    }
+    // A blip: keep the last progress and ask again.
+    imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
+    return;
+  }
+  const d = r.data;
+  const elapsed = Number.isInteger(d.elapsed_s) ? d.elapsed_s : 0;
+  if (d.state === "running") {
+    showImportProgress(elapsed, d.last_text);
+    imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
+    return;
+  }
+  if (d.state !== "ready") {
+    showImportFailed(d.error || "Grouping failed.");
+    return;
+  }
+  const cards = d.cards && Array.isArray(d.cards.cards) ? d.cards.cards.filter(function (c) {
+    return c && typeof c === "object";
+  }) : [];
+  if (!cards.length) {
+    showImportFailed("Claude finished without grouping the plan into any cards.");
+    return;
+  }
+  imp.cards = cards;
+  setImportPhase("splitting");
+  setImportStatus("grouped by Claude in " + elapsed + " s");
+  $("imp-table").textContent = typeof d.table === "string" ? d.table.replace(/\s+$/, "") : "";
+  renderPreview(cards);
+  await playSplit(cards);
+  if (S.imp !== imp) return;
+  const create = $("imp-create");
+  create.textContent = "Create " + cards.length + (cards.length === 1 ? " card" : " cards");
+  setImportPhase("ready");
+  create.focus({ preventScroll: true });
+}
+
+// showImportFailed(error): the error in place of the grid; Discard only. (No
+// elapsed time: for a failed session the server measures it only to the
+// session log's last write.)
+function showImportFailed(error) {
+  setImportPhase("failed");
+  setImportStatus("grouping failed");
+  $("imp-grid").replaceChildren();
+  $("imp-sheet").classList.add("spent");
+  const box = $("imp-error");
+  box.textContent = String(error);
+  box.hidden = false;
+  $("imp-discard").focus({ preventScroll: true });
+}
+
+// cardDeps(card, cards) -> [text]: the titles of the cards this one depends on,
+// from depends_on (a card key, or an owner/repo#n ref kept as written) and from
+// consumes/produces (consuming a name another card produces).
+function cardDeps(card, cards) {
+  const byKey = {};
+  for (const c of cards) if (typeof c.key === "string") byKey[c.key] = c;
+  const out = [];
+  const add = function (text) {
+    if (text && out.indexOf(text) === -1) out.push(text);
+  };
+  const titleOf = function (c) { return c.title || c.key; };
+  for (const d of Array.isArray(card.depends_on) ? card.depends_on : []) {
+    if (typeof d !== "string" || d === card.key) continue;
+    add(byKey[d] ? titleOf(byKey[d]) : d);
+  }
+  const consumes = Array.isArray(card.consumes) ? card.consumes : [];
+  for (const other of cards) {
+    if (other === card || !Array.isArray(other.produces)) continue;
+    if (other.produces.some(function (p) { return consumes.indexOf(p) !== -1; })) add(titleOf(other));
+  }
+  return out;
+}
+
+// renderPreview(cards): one card per entry in the two-column grid.
+function renderPreview(cards) {
+  const frag = document.createDocumentFragment();
+  for (const c of cards) {
+    const li = el("li", "imp-card");
+    li.appendChild(el("div", "imp-card-title", c.title || c.key || "(untitled)"));
+    const meta = el("div", "imp-card-meta");
+    const n = Array.isArray(c.acceptance) ? c.acceptance.length : 0;
+    meta.appendChild(document.createTextNode(n + " acceptance"));
+    const deps = cardDeps(c, cards);
+    const produces = (Array.isArray(c.produces) ? c.produces : []).filter(function (p) { return typeof p === "string"; });
+    if (deps.length) {
+      meta.appendChild(document.createTextNode(" · "));
+      meta.appendChild(el("span", "imp-dep", "depends on " + deps.join(", ")));
+    } else if (produces.length) {
+      meta.appendChild(document.createTextNode(" · produces " + produces.join(", ")));
+    }
+    li.appendChild(meta);
+    const labels = (Array.isArray(c.labels) ? c.labels : []).filter(function (l) { return typeof l === "string"; });
+    if (labels.length) {
+      const ul = el("ul", "labels");
+      for (const l of labels) ul.appendChild(el("li", "label", l));
+      li.appendChild(ul);
+    }
+    frag.appendChild(li);
+  }
+  $("imp-grid").replaceChildren(frag);
+}
+
+// playSplit(cards) -> Promise: the sheet tilts back, is cut into one strip
+// per card (each a clone of the sheet showing its own band of the plan), and
+// the strips fly into their grid slots with a stagger, turning into cards on
+// the way. CSS transitions only; resolves when the last strip lands (or at a
+// timeout); reduced motion goes straight to the end state.
+function playSplit(cards) {
+  return new Promise(function (resolve) {
+    const sheet = $("imp-sheet");
+    const items = Array.prototype.slice.call($("imp-grid").children, 0, cards.length);
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce || !items.length) {
+      sheet.classList.add("split", "spent");
+      resolve();
+      return;
+    }
+    for (const item of items) item.classList.add("landing");
+    const R = sheet.getBoundingClientRect();
+    sheet.classList.add("split");
+    const imp = S.imp;
+
+    let done = false;
+    let fly = null;
+    function finish() {
+      if (done) return;
+      done = true;
+      for (const item of items) item.classList.remove("landing");
+      if (fly) fly.remove();
+      resolve();
+    }
+
+    setTimeout(function () {
+      if (S.imp !== imp) return finish();
+      fly = el("div", "imp-fly");
+      fly.id = "imp-fly";
+      fly.setAttribute("aria-hidden", "true");
+      const band = R.height / items.length;
+      const strips = items.map(function (item, i) {
+        const delay = Math.min(i, SPLIT_STAGGER_MAX) * SPLIT_STAGGER_MS + "ms";
+        const s = el("div", "imp-strip");
+        s.style.left = R.left + "px";
+        s.style.top = R.top + i * band + "px";
+        s.style.width = R.width + "px";
+        s.style.height = band + "px";
+        // Pivot on the sheet's centre so the strips start exactly where the
+        // tilted sheet is.
+        s.style.transformOrigin = R.width / 2 + "px " + (R.height / 2 - i * band) + "px";
+        s.style.transform = "translate(0px, 0px) scale(0.9) rotate(-3deg)";
+        s.style.transitionDelay = delay;
+        const copy = sheet.cloneNode(true);
+        copy.removeAttribute("id");
+        copy.className = "imp-sheet";
+        copy.style.width = R.width + "px";
+        copy.style.height = R.height + "px";
+        copy.style.top = -i * band - 1 + "px";
+        // The strip carries its band of the plan for most of the flight.
+        copy.style.transitionDelay = Math.min(i, SPLIT_STAGGER_MAX) * SPLIT_STAGGER_MS + SPLIT_TEXT_HOLD_MS + "ms";
+        s.appendChild(copy);
+        fly.appendChild(s);
+        return s;
+      });
+      document.body.appendChild(fly);
+      sheet.classList.add("spent");
+      void fly.offsetWidth; // commit the start positions before the end ones
+
+      items.forEach(function (item, i) {
+        const T = item.getBoundingClientRect();
+        const s = strips[i];
+        s.classList.add("flown");
+        s.style.transform = "translate(" + (T.left - R.left) + "px, " + (T.top - R.top - i * band) + "px) scale(1) rotate(0deg)";
+        s.style.width = T.width + "px";
+        s.style.height = T.height + "px";
+      });
+      const last = strips[strips.length - 1];
+      last.addEventListener("transitionend", function (e) {
+        if (e.target === last && e.propertyName === "transform") finish();
+      });
+      const total = SPLIT_FLY_MS + Math.min(items.length - 1, SPLIT_STAGGER_MAX) * SPLIT_STAGGER_MS;
+      setTimeout(finish, total + 200);
+    }, SPLIT_FOLD_MS);
+  });
+}
+
+// createImport(id): creates the previewed cards, then back to the board.
+async function createImport(id) {
+  const imp = S.imp;
+  if (!imp || imp.id !== id || imp.phase !== "ready") return;
+  setImportPhase("creating");
+  const r = await writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/create", { embed_docs: $("imp-embed").checked });
+  if (S.imp !== imp) return;
+  const created = Array.isArray(r.data.created) ? r.data.created.filter(Number.isInteger) : [];
+  const nums = created.map(function (n) { return "#" + n; }).join(", ");
+  if (r.ok && created.length) {
+    closeImport();
+    showToast("Created " + nums);
+    fetchBoard(true);
+    return;
+  }
+  if (created.length) { // a create that failed partway: those cards exist now
+    closeImport();
+    showToast("Created " + nums + ", then stopped: " + errorText(r), "error");
+    fetchBoard(true);
+    return;
+  }
+  showToast("No cards created: " + errorText(r), "error");
+  setImportPhase("ready");
+}
+
+function bindImport() {
+  const sec = $("import");
+  const plan = $("imp-plan");
+  plan.addEventListener("input", updateGroupButton);
+  plan.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      startImport();
+    }
+  });
+  $("imp-group").addEventListener("click", startImport);
+  $("imp-discard").addEventListener("click", closeImport);
+  $("imp-create").addEventListener("click", function () {
+    if (S.imp) createImport(S.imp.id);
+  });
+  // A file dropped anywhere on the view is read, never opened by the browser.
+  sec.addEventListener("dragover", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    const ok = !!S.imp && S.imp.phase === "edit";
+    e.dataTransfer.dropEffect = ok ? "copy" : "none";
+    $("imp-drop").classList.toggle("over", ok);
+  });
+  sec.addEventListener("dragleave", function (e) {
+    if (!sec.contains(e.relatedTarget)) $("imp-drop").classList.remove("over");
+  });
+  sec.addEventListener("drop", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    $("imp-drop").classList.remove("over");
+    readPlanFile(e.dataTransfer.files[0]);
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && S.imp && S.imp.phase === "edit" && !S.drawer && !e.defaultPrevented) {
+      e.preventDefault();
+      closeImport();
+    }
+  });
 }
 
 // --- start -------------------------------------------------------------------
@@ -1246,6 +1660,7 @@ function init() {
     }
   });
   bindDrawer();
+  bindImport();
   fetchBoard().then(drawerFromUrl);
   pollRun();
 }
