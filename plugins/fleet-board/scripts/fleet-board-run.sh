@@ -32,6 +32,8 @@
 #     ledger is zero; a malformed line is skipped with a warning. The log line
 #     reads cost_estimate_usd=<total> (estimate; provider <x>) when the
 #     provider part is non-zero. A tick cut short by a signal counts nothing.
+#   - on the local backend, every <board.dir>/active/ marker is removed once
+#     the tick's session exits (whatever its outcome); a failure is a warning
 #   - after each successful tick, settle.sh and then cleanup-done.sh run from
 #     the repo root, outside any Claude session (settle.sh moves the cards
 #     whose next step starts no agent, so the board changes now and not a whole
@@ -60,6 +62,11 @@
 #   fleet-board-run: stopped: <reason> after <n> ticks, <h.hh> h, cost_estimate_usd <x> (estimate)
 # (<n> counts the tick an interrupt cut short.) The limits are checked between
 # ticks only: one tick can overrun max-hours or max-cost; --max-turns bounds it.
+#
+# Run lock: $FLEET_BOARD_LOG_DIR/<owner>-<name>.lock (pid, then its ps lstart
+# in the C locale and UTC) is created before the run log and removed on exit.
+# While it names a live process with that start time, a second wrapper for the
+# repo exits 1 with "another run holds <lock> (pid N)"; a stale lock is replaced.
 #
 # Every tick is appended to one run log per run:
 #   $FLEET_BOARD_LOG_DIR/<owner>-<name>-<YYYYmmdd-HHMMSS>.log
@@ -97,7 +104,7 @@
 # Exit codes:
 #   0 - stopped: nothing-dispatchable, stop-file, max-hours or max-cost
 #   1 - stopped: consecutive-failures, cost-unknown or permission-mode-mismatch;
-#       or a setup failure
+#       or a setup failure, including another run holding the run lock
 #   2 - usage error, or FLEET_BOARD_ISOLATE=1
 #   3, 4, 5 - config.sh --check failed (3: no .fleet-board.yml); 5 also for
 #       a limit that is not a valid number
@@ -169,6 +176,16 @@ MAX_TURNS="$(cfg limits.max_turns)" || exit 1
 RL_MAX_WAIT="$(cfg limits.rate_limit_max_wait)" || exit 1
 RL_MARGIN="$(cfg limits.rate_limit_margin)" || exit 1
 MIN_GAP="$(cfg limits.min_tick_gap)" || exit 1
+BACKEND="$(cfg board.backend)" || exit 1
+# On the local backend, the card store's active/ directory (under the main
+# checkout, found through the git common dir as board-lib.sh does)
+ACTIVE_DIR=""
+if [ "$BACKEND" = local ]; then
+  BOARD_DIR="$(cfg board.dir)" || exit 1
+  STORE_ROOT="$(. "$HERE/board-lib.sh" && c="$(fb_git_common_dir "$ROOT")" && dirname "$c")" || STORE_ROOT=""
+  [ -n "$STORE_ROOT" ] || STORE_ROOT="$ROOT"
+  ACTIVE_DIR="$STORE_ROOT/$BOARD_DIR/active"
+fi
 
 num_ok "$MAX_HOURS" || die 5 "invalid config: limits.max_hours must be a non-negative number, got: $MAX_HOURS"
 num_ok "$MAX_COST" || die 5 "invalid config: limits.max_cost_usd must be a non-negative number, got: $MAX_COST"
@@ -252,13 +269,30 @@ on_signal() {
 
 WORK="$(mktemp -d)" || die 1 "mktemp failed"
 LOCK_HELD=""
-trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null' EXIT
+RUN_LOCK=""
+trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null; [ -z "$RUN_LOCK" ] || release_run_lock' EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
 # The logs hold tick reports and raw session output: umask 077, in subshells
 # only, so claude and cleanup keep the caller's umask
 ( umask 077; mkdir -p "$LOG_DIR" ) 2>/dev/null || die 1 "cannot create the log directory $LOG_DIR"
+
+# The run lock: one wrapper per repo. <LOG_DIR>/<owner>-<name>.lock holds this
+# wrapper's pid and, on line 2, its ps start time (lstart, C locale, UTC): the
+# format of the board page's run.pid, so the page sees a run it did not start.
+# A lock naming a live pid with that start time refuses this run (exit 1); any
+# other lock is stale and replaced. The EXIT trap removes the lock when its
+# first line is still this pid.
+release_run_lock() {
+  [ -n "$RUN_LOCK" ] || return 0
+  [ "$(sed -n 1p "$RUN_LOCK" 2>/dev/null)" = "$$" ] && rm -f "$RUN_LOCK"
+  return 0
+}
+command -v python3 >/dev/null 2>&1 || die 1 "python3 is required for the run lock"
+LOCK_PATH="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+python3 "$HERE/claim-run-lock.py" "$LOCK_PATH" "$$" || exit 1
+RUN_LOCK="$LOCK_PATH"
 LOG="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-')-$(date +%Y%m%d-%H%M%S).log"
 [ -e "$LOG" ] && LOG="${LOG%.log}-$$.log"
 ( umask 077; set -C; : > "$LOG" ) 2>/dev/null || die 1 "cannot create the run log $LOG"
@@ -422,6 +456,14 @@ run_merge_reviewed() {
   logfile "$WORK/merge.err"
 }
 
+# clear_active: on the local backend, removes every active marker once a
+# tick's session has exited, so a role that crashed without posting its report
+# does not stay lit; a failure is only a warning
+clear_active() {
+  [ -n "$ACTIVE_DIR" ] && [ -d "$ACTIVE_DIR" ] || return 0
+  rm -f "$ACTIVE_DIR"/* 2>/dev/null || warn "cannot clear the active markers in $ACTIVE_DIR"
+}
+
 if [ -n "${FLEET_BOARD_TEST_BGJOB:-}" ]; then
   sleep 60 </dev/null >/dev/null 2>&1 3>&- &
   printf '%s\n' "$!" > "$FLEET_BOARD_TEST_BGJOB"
@@ -499,6 +541,7 @@ while :; do
     --permission-mode "$MODE" --output-format stream-json --verbose \
     --max-turns "$MAX_TURNS" </dev/null >"$OUT" 2>"$ERR"
   RC=$?
+  clear_active
   collect_provider_spend
 
   # The session's init event: a different permission mode would deny the

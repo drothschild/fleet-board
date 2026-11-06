@@ -1,6 +1,6 @@
 ---
 name: import-plan
-description: Use when the user has a spec and one or more implementation plans and wants them turned into fleet-board cards - groups plan tasks into PR-sized cards, infers dependencies across repos, shows a dry-run table, and after confirmation creates the issues in dependency order on the project. Invoke as /fleet-board:import-plan <spec> <plan...> [--status ready].
+description: Use when the user has a spec and one or more implementation plans and wants them turned into fleet-board cards - groups plan tasks into PR-sized cards, infers dependencies across repos, shows a dry-run table, and after confirmation creates the issues in dependency order on the project. Invoke as /fleet-board:import-plan <spec> <plan...> [--status ready] [--preview <file>].
 user-invocable: true
 ---
 
@@ -21,7 +21,8 @@ Substitute the real base directory announced when the skill loaded.
 ## Step 1: Read the inputs
 
 Read the spec and every plan named in the arguments. Note each plan's repo (`owner/repo`).
-`--status ready` in the arguments is passed through; the default is Backlog.
+`--status ready` in the arguments is passed through; the default is Backlog. `--preview <file>`
+in the arguments makes the run stop after the dry run (see Step 3).
 
 Read each plan whatever its shape. `import-plan.sh parse` is an optional shortcut, not a
 requirement: it applies only to plans with `## Task N: <title>` headings and `Files:` /
@@ -53,6 +54,9 @@ bash <scripts>/import-plan.sh <cards file> --dry-run
 Show the user the table (title, repo, depends on, labels). Fix the cards file and rerun
 if a dependency or title is wrong. Nothing is created in this step.
 
+With `--preview <file>`, copy the cards file to `<file>` after a clean dry run, print the table,
+and stop: do not run Step 4, do not ask.
+
 ## Step 4: Confirm and create
 
 Ask the user whether to create the cards. Only on a yes, run:
@@ -61,7 +65,7 @@ Ask the user whether to create the cards. Only on a yes, run:
 echo y | bash <scripts>/import-plan.sh <cards file> [--status ready]
 ```
 
-On no, run nothing. Report the `Created owner/repo#N` lines the script prints. Before the table the script lints every card (the same rules as `/fleet-board:lint`) and
+On no, run nothing. Report the `Created owner/repo#N` lines the script prints (`Created #N` on a local board). Before the table the script lints every card (the same rules as `/fleet-board:lint`) and
 creates nothing while one fails: fix the card in the cards file and rerun. A failure
 (cycle, unknown dependency, lint, missing project option) exits 1 with the reason; relay it.
 

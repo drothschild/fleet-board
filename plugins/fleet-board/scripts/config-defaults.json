@@ -1,5 +1,5 @@
 {
-  "board": { "backend": "github-labels", "project_owner": null, "states": {} },
+  "board": { "backend": "github-labels", "project_owner": null, "states": {}, "dir": ".fleet-board", "port": 8765 },
   "commands": {},
   "worktrees": { "dir": "../.fleet-worktrees", "mutate_on_copy": false },
   "test_paths": ["test/**", "tests/**", "__tests__/**", "**/*.test.*", "**/*.spec.*", "**/*_test.*", "**/test_*"],
