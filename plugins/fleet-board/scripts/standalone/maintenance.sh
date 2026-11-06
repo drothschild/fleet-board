@@ -73,6 +73,8 @@ if [ "$ACTION" = file_pending ]; then
 fi
 if [ "$ACTION" = block ] || [ "$ACTION" = unblock ]; then
   SOURCE="$(jq -r .state "$CARD")"; REASON="$(jq -r '.reason | strings' "$CARD")"
+  KIND="$(jq -r '.block_kind // "planner"' "$CARD")"
+  case "$KIND" in planner|worker) ;; *) exit 1 ;; esac
   [ -n "$REASON" ] || exit 1
   if [ "$ACTION" = block ]; then
     case "$SOURCE" in ready|in_progress|in_review|review_*) ;; *) exit 1 ;; esac
@@ -96,7 +98,7 @@ if [ "$ACTION" = block ] || [ "$ACTION" = unblock ]; then
   fi
   if [ -e "$JOURNAL" ]; then
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || exit 1
-    jq -e --argjson n "$N" --arg action "$ACTION" --arg source "$SOURCE" --arg repo "$FLEET_REPO" --arg reason "$REASON" '.version == 1 and .card == $n and .action == $action and .source == $source and .repo == $repo and .reason == $reason' "$JOURNAL" >/dev/null || exit 1
+    jq -e --argjson n "$N" --arg action "$ACTION" --arg source "$SOURCE" --arg repo "$FLEET_REPO" --arg reason "$REASON" --arg kind "$KIND" '.version == 1 and .card == $n and .action == $action and .source == $source and .repo == $repo and .reason == $reason and (.block_kind // "planner") == $kind' "$JOURNAL" >/dev/null || exit 1
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then [ "$ACTUAL" = "$TARGET" ] || exit 1; exit 0; fi
   else
     [ "$ACTUAL" = "$SOURCE" ] || { echo 'card state changed before maintenance' >&2; exit 1; }
@@ -105,8 +107,8 @@ if [ "$ACTION" = block ] || [ "$ACTION" = unblock ]; then
       INFO="$(gh pr view "$PR" --repo "$FLEET_REPO" --json number,state,mergedAt)" || exit 1
       jq -e --argjson pr "$PR" '.number == $pr and .state == "MERGED" and (.mergedAt | type == "string" and length > 0)' <<<"$INFO" >/dev/null || exit 1
     else PR=""; fi
-    FINDINGS="$(jq -c --arg reason "$REASON" '[.last_review.findings[]? | select(.severity == "Critical" or .severity == "Important") | {severity,text}] | if length == 0 or ($reason | startswith("no progress after ")) then [{severity:"Important",text:$reason}] else . end' <<<"$NOTE")" || exit 1
-    jq -n --argjson card "$N" --arg action "$ACTION" --arg source "$SOURCE" --arg repo "$FLEET_REPO" --arg reason "$REASON" --arg pr "$PR" --argjson findings "$FINDINGS" --slurpfile plan_card "$CARD" '{version:1,card:$card,action:$action,source:$source,repo:$repo,reason:$reason,pr:$pr,findings:$findings,plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
+    FINDINGS="$(jq -c --arg reason "$REASON" --arg kind "$KIND" '[.last_review.findings[]? | select(.severity == "Critical" or .severity == "Important") | {severity,text}] | if length == 0 or ($kind == "planner" and ($reason | startswith("no progress after "))) then [{severity:"Important",text:$reason}] else . end' <<<"$NOTE")" || exit 1
+    jq -n --argjson card "$N" --arg action "$ACTION" --arg source "$SOURCE" --arg repo "$FLEET_REPO" --arg reason "$REASON" --arg pr "$PR" --arg kind "$KIND" --argjson findings "$FINDINGS" --slurpfile plan_card "$CARD" '{version:1,card:$card,action:$action,source:$source,repo:$repo,reason:$reason,block_kind:$kind,pr:$pr,findings:$findings,plan_card:$plan_card[0],completed:false}' > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
   fi
   if [ "$ACTION" = unblock ]; then
     PR="$(jq -r .pr "$JOURNAL")"; fb_valid_number "$PR" || exit 1
@@ -117,7 +119,7 @@ if [ "$ACTION" = block ] || [ "$ACTION" = unblock ]; then
     INFO="$(gh pr view "$PR" --repo "$FLEET_REPO" --json number,state,mergedAt)" || exit 1
     jq -e --argjson pr "$PR" '.number == $pr and .state == "MERGED" and (.mergedAt | type == "string" and length > 0)' <<<"$INFO" >/dev/null || exit 1
   fi
-  if [ "$ACTION" = block ] && [[ "$REASON" = 'no progress after '* ]] && ! jq -e '.cleared_pr == true' "$JOURNAL" >/dev/null; then
+  if [ "$ACTION" = block ] && [ "$KIND" = planner ] && [[ "$REASON" = 'no progress after '* ]] && ! jq -e '.cleared_pr == true' "$JOURNAL" >/dev/null; then
     printf '%s\n' '{"blocking_pr":null}' > "$SCRATCH/patch"; bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/patch" || exit 1
     jq '.cleared_pr = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
   fi

@@ -114,7 +114,7 @@ if [ "$ACTUAL" = in_progress ]; then
   jq '.blocker_written = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
 fi
 REASON="$(jq -r '.for_the_card | if length > 0 then . else "Implementor is blocked" end' <<<"$PARSED")"
-jq --arg reason "$REASON" '.action = "block" | .state = "in_progress" | .reason = $reason' "$CARD" > "$SCRATCH/block-card" || exit 1
+jq --arg reason "$REASON" '.action = "block" | .state = "in_progress" | .reason = $reason | .block_kind = "worker"' "$CARD" > "$SCRATCH/block-card" || exit 1
 mkdir "$SCRATCH/block-maintenance" || exit 1
 bash "$SCRIPTS/standalone/maintenance.sh" "$SCRATCH/block-card" "$SCRATCH/block-maintenance" || exit 1
 jq -e '.blocker_written == true' "$JOURNAL" >/dev/null && check_blocker || { echo 'blocker changed before final blocked note' >&2; exit 1; }
