@@ -43,6 +43,11 @@ r=bad
 grep -qF '| `review.stages[].provider` |' "$README" && r=ok
 check "key table has a review.stages[].provider row" "$r"
 
+# The Config section's key table has a row for the review stages list.
+r=bad
+awk '/^## Config/{f=1;next} f && /^## /{exit} f' "$README" | grep -qF '| `review.stages` |' && r=ok
+check "config table has a review.stages row" "$r"
+
 # --- settle.sh docs claims (it runs outside the gate, so these are safety claims) ---
 DOCS_DIR="${SCRIPT_DIR}/../docs"
 GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
