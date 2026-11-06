@@ -178,8 +178,8 @@ def parse_note(card: dict):
     return None
 
 
-def is_active(dir: Path, n) -> bool:
-    return run_alive() and (Path(dir) / "active" / str(n)).exists()
+def is_active(dir: Path, n, alive: bool) -> bool:
+    return alive and (Path(dir) / "active" / str(n)).exists()
 
 
 # --- run state ----------------------------------------------------------------
@@ -236,7 +236,7 @@ def ps_start(pid: int):
     """The process start time from ps ('' when no such process), or None when ps is unusable."""
     try:
         proc = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
-                              capture_output=True, text=True, env=dict(os.environ, LC_ALL="C"))
+                              capture_output=True, text=True, env=dict(os.environ, LC_ALL="C", TZ="UTC"))
     except OSError:
         return None
     if proc.returncode not in (0, 1):
@@ -310,10 +310,12 @@ def to_float(s: str):
         return None
 
 
-def run_status() -> dict:
+def run_status(alive=None) -> dict:
+    """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
     sdir = state_dir(APP["root"], cfg)
-    alive = run_alive()
+    if alive is None:
+        alive = run_alive()
     pid = read_pid(sdir)
     out = read_text(sdir / "run.out")
     if pid is None:
@@ -338,9 +340,9 @@ def run_status() -> dict:
     }
 
 
-def board_run_status() -> dict:
+def board_run_status(alive: bool) -> dict:
     """run_status() without the log tail, for /api/board."""
-    status = run_status()
+    status = run_status(alive)
     del status["log_tail"]
     return status
 
@@ -382,7 +384,7 @@ def ctx():
     return cfg, store_dir(APP["root"], cfg)
 
 
-def card_summary(dir: Path, card: dict) -> dict:
+def card_summary(dir: Path, card: dict, alive: bool) -> dict:
     note = parse_note(card)
     return {
         "number": card.get("number"),
@@ -390,18 +392,19 @@ def card_summary(dir: Path, card: dict) -> dict:
         "state": card.get("state"),
         "labels": card.get("labels") or [],
         "updated_at": card.get("updated_at"),
-        "active": is_active(dir, card.get("number")),
+        "active": is_active(dir, card.get("number"), alive),
         "note": None if note is None else {k: note.get(k) for k in NOTE_FIELDS},
     }
 
 
 def card_detail(cfg: dict, dir: Path, n: int) -> dict:
+    alive = run_alive()
     card = read_card(dir, n)
     note = parse_note(card)
     pr = note.get("pr") if note else None
     repo = (cfg.get("board") or {}).get("repo")
     out = dict(card)
-    out["active"] = is_active(dir, n)
+    out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
     ok = isinstance(pr, int) and not isinstance(pr, bool) and repo
     out["pr_url"] = "https://github.com/%s/pull/%d" % (repo, pr) if ok else None
@@ -410,10 +413,11 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
 
 def get_board(params, body):
     cfg, dir = ctx()
+    alive = run_alive()  # one liveness check per request
     return 200, {
         "states": states(cfg),
-        "cards": [card_summary(dir, c) for c in read_cards(dir)],
-        "run": board_run_status(),
+        "cards": [card_summary(dir, c, alive) for c in read_cards(dir)],
+        "run": board_run_status(alive),
         "repo": (cfg.get("board") or {}).get("repo"),
     }
 

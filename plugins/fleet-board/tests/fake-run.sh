@@ -18,7 +18,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-rm -f "$FAKE_RUN_DIR/release"
 LOG="$FAKE_RUN_DIR/fake.log"
 : > "$LOG"
 echo "fleet-board-run: log: $LOG"

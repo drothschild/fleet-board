@@ -335,6 +335,7 @@ if setup_case; then
 
   api GET /api/run;                 assert_body "run starts idle" '.state' idle
   api POST /api/run/stop;           assert_code 409
+  rm -f "$FAKE_RUN_DIR/release"
   api POST /api/run/start;          assert_code 200
   assert_body "start returns a pid" '.pid|type' number
   if grep -q -- "--repo $REPO" "$FAKE_RUN_DIR/args.log"; then pass "wrapper got --repo root"; else fail "wrapper got --repo root" "args: $(cat "$FAKE_RUN_DIR/args.log" 2>/dev/null)"; fi
@@ -361,6 +362,7 @@ if setup_case; then
   assert_body "log tail has the two tick lines" '.log_tail|length' 2
   if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "markers cleared when the run ended"; else fail "markers cleared when the run ended" "active/2 still exists"; fi
   api GET /api/board;               assert_body "no card active after the run" '.cards[]|select(.number==2)|.active' false
+  rm -f "$FAKE_RUN_DIR/release"
   api POST /api/run/start;          assert_code 200
   if [ ! -e "$REPO/.fleet-board.stop" ]; then pass "start removes the stale stop file"; else fail "start removes the stale stop file" "stop file still there"; fi
   api GET /api/run;                 assert_body "restarted run is running" '.state' running
@@ -380,6 +382,7 @@ if setup_case; then
   start_server "$REPO"
   api GET /api/run;                 assert_body "reused pid with another start time is idle" '.state' idle
   api POST /api/run/stop;           assert_code 409
+  rm -f "$FAKE_RUN_DIR/release"
   api POST /api/run/start;          assert_code 200
   api POST /api/run/stop;           assert_code 200
   : > "$FAKE_RUN_DIR/release"
