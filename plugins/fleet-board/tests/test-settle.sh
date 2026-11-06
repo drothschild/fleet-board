@@ -368,9 +368,10 @@ finalize
 run_settle
 assert_exit "move_to_review routes: exit 0" 0
 assert_eq "move_to_review: route adds the label" "$(cnt "issue edit 12 --repo acme/toy --add-label needs-security-review")" 1
+assert_eq "move_to_review: the note was written" "$(jq -c .state <<<"$(last_note)")" '"in_review"'
 assert_eq "move_to_review: the label moves to in_review" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:in_review")" 1
 
-echo "move_to_review: a route failure is a failure, after the move and the note"
+echo "move_to_review: a route failure is a failure before the move: no move, no note"
 setup_case "$STAGES_CFG"
 card 12 in_progress '{"state":"in_progress","branch":"fleet/12-add-subtract","round":0,"implementor_attempts":1}'
 route "pr list --repo acme/toy --head fleet/12-add-subtract --state open --json number" 0 "$FX/prlist.json"
@@ -381,7 +382,8 @@ finalize
 run_settle
 assert_exit "route fails: exit 1" 1
 assert_contains "route fails: says so" "$LAST_ERR" "#12"
-assert_eq "route fails: the move had happened" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:in_review")" 1
+assert_eq "route fails: no move to in_review" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:in_review")" 0
+assert_eq "route fails: no note write" "$(cnt "api -X")" 0
 
 echo "provider_review_stage_is_skipped_by_settle"
 setup_case "$STAGES_CFG"
