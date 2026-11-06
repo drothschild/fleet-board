@@ -471,6 +471,52 @@ assert_exit "second migrate exit 0" 0
 assert_stdout_exact "second migrate changes nothing" ""
 cmp -s "$REPO/c1.after" "$REPO/.fleet-board/cards/1.json" && cmp -s "$REPO/c2.after" "$REPO/.fleet-board/cards/2.json" && pass "second migrate leaves the files identical" || fail "second migrate leaves the files identical" "a card changed"
 
+echo "Test: pr_url from the manager note"
+setup_case; seed_card 1 in_progress 'Note PR' 'body'
+npr="$(mktemp)"; CLEANUP_DIRS+=("$npr")
+note_with() { printf '```json\n%s\n```\n' "$1" > "$npr"; run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"; }
+note_with '{"round":1,"pr":41}'
+assert_exit "note with pr exit 0" 0
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/41'
+assert_card_json 1 '.pr_url_source' note
+assert_card_json 1 '.comments|length' 1
+note_with '{"round":2,"pr":42}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/42'
+assert_card_json 1 '.pr_url_source' note
+note_with '{"round":3}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/42'
+assert_card_json 1 '.pr_url_source' note
+note_with '{"round":4,"pr":null}'
+assert_card_json 1 '.pr_url' null
+assert_card_json 1 '.pr_url_source' null
+note_with '{"pr":43}'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --pr-url 'https://github.com/acme/toy/pull/50'
+note_with '{"pr":null}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/50'
+assert_card_json 1 '.pr_url_source' person
+note_with '{"pr":50}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/50'
+assert_card_json 1 '.pr_url_source' person
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --pr-url 'https://example.com/other/pr/7'
+note_with '{"pr":50}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/50'
+assert_card_json 1 '.pr_url_source' note
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --pr-url 'https://github.com/acme/toy/pull/9'
+note_with '{"pr":51}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
+assert_card_json 1 '.pr_url_source' note
+printf 'no fence at all\n' > "$npr"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
+assert_exit "unparsable note still written" 0
+assert_stderr_contains "unparsable note warns" "warning"
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
+assert_card_json 1 '.pr_url_source' note
+assert_card_json 1 '.comments[0].body|contains("no fence at all")' true
+printf '```json\n{bad json\n```\n' > "$npr"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
+assert_stderr_contains "bad json note warns" "warning"
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
