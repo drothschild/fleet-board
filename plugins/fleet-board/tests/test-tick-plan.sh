@@ -884,12 +884,15 @@ scope_issue() {
     > "$dir/issue-$n.json"
 }
 
-# scope_routes <dir> <ready numbers> <in_review numbers>: routes for those cards
+# scope_routes <dir> <ready numbers> <in_review numbers> [<stage columns>]:
+# routes for those cards. <stage columns> is "review_<name>:<numbers> ...",
+# one word per configured stage (cards in a stage column get PR routes too).
 scope_routes() {
-  local dir="$1" n pr
+  local dir="$1" n pr stage_nums="" sc
+  for sc in ${4:-}; do stage_nums="$stage_nums ${sc#*:}"; done
   {
     printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
-    for n in $2 $3; do
+    for n in $2 $3 $stage_nums; do
       printf 'api repos/acme/toy/issues/%s\t0\t%s/issue-%s.json\n' "$n" "$dir" "$n"
       if [ -f "$dir/comments-$n.json" ]; then
         printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/comments-%s.json\n' "$n" "$dir" "$n"
@@ -897,12 +900,12 @@ scope_routes() {
         printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/common/empty.json\n' "$n" "$TICK"
       fi
     done
-    for n in $3; do
+    for n in $3 $stage_nums; do
       pr=$((n + 22))
       printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/common/pr-34-open-green.json\n' "$pr" "$TICK"
       printf 'pr view %s --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$pr" "$TICK"
     done
-    for st in ready:"$2" in_progress: in_review:"$3" blocked:; do
+    for st in ready:"$2" in_progress: in_review:"$3" ${4:-} blocked:; do
       local col="${st%%:*}" nums="${st#*:}" arr="[]" x
       arr="$(for x in $nums; do jq -cn --argjson n "$x" --arg l "fleet:$col" '{number: $n, title: "Card \($n)", url: "u", labels: [{name: $l}]}'; done | jq -cs '.')"
       printf '%s\n' "$arr" > "$dir/list-$col.json"
@@ -1179,6 +1182,20 @@ assert_jq "advance_into_provider_stage_warns: key set, no warning" '.warnings' '
 # advance into an agent stage never warns
 splan stage-advance-from-review
 assert_jq "advance into an agent stage: no warning" '.warnings' '[]'
+
+# scope overlap covers stage columns: a Ready card whose Scope names a path a
+# card in review_security names waits, as it does for an in_review card
+setup_case ready-start "$STAGES_YAML"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+scope_issue "$dir" 12 review_security '- Modify `src/a.sh`: the change'
+scope_issue "$dir" 14 ready '- Modify `src/a.sh`: another change'
+scope_review_note "$dir" 12
+scope_routes "$dir" "14" "" "review_security:12 review_ux: review_compliance:"
+run_check "$SCRIPT"
+assert_exit "scope-overlap stage column: exit" 0
+assert_jq "scope-overlap stage column: the review_security card is planned" "$(card 12 action) != null" 'true'
+assert_jq "scope-overlap stage column: the Ready card waits" "$(card 14 action)" '"wait"'
+assert_jq "scope-overlap stage column: the reason names the stage card" "$(card 14 reason)" '"Scope overlaps #12 on src/a.sh"'
 
 # no_stages_no_next_lookup: with no review stages configured, a clean, current
 # in_review card never runs review-stages.sh next and plans the old tail. A
