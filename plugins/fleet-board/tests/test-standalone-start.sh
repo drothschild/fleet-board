@@ -73,6 +73,20 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-start}" = push-destination ]; then
+  git init -q --bare "$TMP/unexpected.git"
+  git config remote.origin.pushurl "file://$TMP/unexpected.git"
+  if bash "$ROOT/bin/fleet-board" tick > "$TMP/bad-out" 2>/dev/null; then echo 'FAIL: mismatched push destination accepted' >&2; exit 1; fi
+  if git --git-dir="$TMP/unexpected.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then
+    echo 'FAIL: pushed to mismatched remote' >&2; exit 1
+  fi
+  if git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then
+    echo 'FAIL: published despite mismatched push destination' >&2; exit 1
+  fi
+  [ "$(cat "$TMP/state/column")" = ready ] || { echo 'FAIL: board changed' >&2; exit 1; }
+  echo 'PASS: push-destination'
+  exit 0
+fi
 if [ "${1:-start}" = resume ]; then
   touch "$TMP/state/fail-move"
   if bash "$ROOT/bin/fleet-board" tick > "$TMP/first-out" 2>"$TMP/first-err"; then echo 'FAIL: simulated interruption succeeded' >&2; exit 1; fi
