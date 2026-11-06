@@ -34,9 +34,9 @@ NAME="fleet-worker-$(basename "$SCRATCH")-$$"
 PID="" WATCHDOG=""
 cleanup() {
   [ -z "$WATCHDOG" ] || kill "$WATCHDOG" 2>/dev/null || true
-  [ -z "$PID" ] || kill "$PID" 2>/dev/null || true
-  [ -z "$PID" ] || wait "$PID" 2>/dev/null || true
+  [ -z "$PID" ] || kill -KILL "$PID" 2>/dev/null || true
   docker rm -f "$NAME" >/dev/null 2>&1 || true
+  [ -z "$PID" ] || wait "$PID" 2>/dev/null || true
   [ -z "$WATCHDOG" ] || wait "$WATCHDOG" 2>/dev/null || true
 }
 trap cleanup EXIT
