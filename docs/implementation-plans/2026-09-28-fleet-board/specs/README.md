@@ -1823,7 +1823,7 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 
 **Known limits, not re-run.** No behavioral run exercised the round 1 check or the new weakening classes. A helper or fixture outside `test_paths` is not in the diff the step reads. `specs/manager.md` still lacks the other rules that earlier PRs added to the agent file by hand (see Revision 13), so a full regeneration would drop them.
 
-**Revision cost:** $0.6183. **Running total, all API-key charges:** ~$39.97 (the last stated total, ~$39.35, plus this revision).
+**Revision cost:** $0.6183. **Running total, all API-key charges:** ~$40.39 (the last stated total, ~$39.62 at Revision 14, plus Revision 15's $0.1492 and this revision).
 
 **Output sha256 before → after (16):** `agents/reviewer.md` `f651a8a96074c365` → `deb4a81bde0ddc31`; `agents/fixer.md` `b5035f0e48a270f1` → `a0144525ab919728`; `agents/manager.md` `e4e74e5d724175a9` → `ca3c496c69fb9d24`.
 
