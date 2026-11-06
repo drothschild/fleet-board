@@ -31,9 +31,10 @@ fi
 if ! cmp -s "$TMP/expected" "$TMP/actual"; then
   echo 'FAIL: standalone plan differs from planner' >&2; exit 1
 fi
-cat > "$TMP/unknown-plan" <<'PLAN'
+jq '.cards[0].action = "surprise"' "$TMP/expected" > "$TMP/unknown.json"
+cat > "$TMP/unknown-plan" <<PLAN
 #!/usr/bin/env bash
-printf '%s\n' '{"dispatchable":true,"warnings":[],"cards":[{"number":12,"action":"surprise"}]}'
+cat "$TMP/unknown.json"
 PLAN
 chmod +x "$TMP/unknown-plan"
 if FLEET_BOARD_TICK_PLAN="$TMP/unknown-plan" bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/unknown-out" 2> "$TMP/unknown-err"; then
@@ -68,4 +69,25 @@ for call in "$FAKE_GH_DIR"/argv/*; do
     echo 'FAIL: board or GitHub write during plan-only' >&2; exit 1
   fi
 done
+# Projects cache must stay outside the checkout even on a cold cache.
+cat > "$TMP/repo/.fleet-board.yml" <<'YML'
+board:
+  backend: github-projects
+  repo: drothschild/HMBWorkout
+  project_number: 1
+worktrees:
+  dir: .fw
+YML
+printf '{"items":[]}\n' > "$TMP/items.json"
+cat > "$TMP/routes" <<ROUTES
+auth status	0	$ROOT/plugins/fleet-board/fixtures/gh/projects/auth-status-ok.txt
+project view 1 --owner drothschild --format json	0	$ROOT/plugins/fleet-board/fixtures/gh/projects/project-view.json
+project field-list 1 --owner drothschild --format json*	0	$ROOT/plugins/fleet-board/fixtures/gh/projects/field-list.json
+project item-list 1 --owner drothschild --format json --limit *	0	$TMP/items.json
+ROUTES
+export FAKE_GH_ROUTES="$TMP/routes"
+if ! bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/projects-out"; then
+  echo 'FAIL: projects plan failed' >&2; exit 1
+fi
+if [ -e "$TMP/repo/.fw" ]; then echo 'FAIL: projects cache wrote to checkout' >&2; exit 1; fi
 echo 'PASS: plan-only'
