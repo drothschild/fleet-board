@@ -250,3 +250,13 @@ inside it. A markdown double-backtick span, or an odd number of backticks, gives
 because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
 command were present. When the command cannot be written that way, the entry uses the words
 `no testable check`. The entry rule says so.
+
+## Revision 17 requirements (2026-11-06, a finding the fixer cannot reproduce)
+
+A fixer that re-runs what a finding describes and cannot reproduce it, with no commit made,
+reports Status `not_reproducible` instead of `blocked`, so the card is reviewed again rather than
+sent back to the fixer on the same stale finding. The status is the fixer's only; the reviewer and
+implementor are rejected for it. It is valid only when the branch has no commit past the reviewed
+head: the manager passes `--commits-since-review <n>` to the checker. Each Resolutions line reads
+`not fixed: not reproducible` with the command run and what it printed. It is never used after a
+commit, or without a command the fixer ran.

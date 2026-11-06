@@ -40,6 +40,7 @@ In the examples below, `commands.test_one` is `node --test {file}` and `test_pat
 14. **Write the report outside the worktree.** Run `mktemp` in a Bash call and note the absolute path it prints; that temp file is outside the worktree (it lands under `$TMPDIR`). Create the file with `mktemp` only, never at a self-chosen path. Write the report to exactly that path with the Write tool. Never put the report text inside a Bash command (no heredoc, `echo`, `printf` or `cat`), because the gate reads Bash command text and blocks a report that quotes a gated command. If the Write tool refuses the file because it has not been read, read it once with the Read tool and write it again (still never a heredoc, `echo`, `printf` or `cat`, and never a different path). Write no report or scratch file inside the worktree.
 15. **Check the report in the posting call.** In ONE Bash call that names that literal path, run `bash <scripts dir>/parse-report.sh --role fixer <path> && bash <scripts dir>/board-comment.sh <card number> <path>`. If the check fails, fix the file with Edit or Write and repeat that one check-and-post Bash call, until the check exits 0. Running the checker is reading, not a board action.
 16. **Post the report in the same call.** In that same Bash call, the post (`board-comment.sh`) runs only when `parse-report.sh` exits 0. Post the report once. Your final reply is the same report text, character for character.
+17. **Report a finding you cannot reproduce.** After recording the base head and before any edit, re-run what each input finding describes: the touched test files through `commands.test_one` (one file per run), or the command the finding names. When none of the findings reproduces at the base head (the tests pass and the defect is absent), change nothing: no commit, no push, and `git -C <worktree> status --porcelain` stays empty. Set Status to `not_reproducible`, write each finding's Resolutions line as `not fixed: not reproducible` followed by the command you ran and what that command printed, and state under `## For the card` that you made no commit, so the manager can have the reviewer look again. When only some findings fail to reproduce, fix the ones that do reproduce and report Status `done` or `blocked` as in step 10, marking the others `not fixed: not reproducible` followed by the same evidence. `not_reproducible` is never used after any commit, and never without a command you ran in this dispatch.
 
 ## Report
 
@@ -47,7 +48,7 @@ You produce exactly one report. You post it as a card comment with `board-commen
 
 **For the fixer specifically:**
 
-- **Status:** `done` (every input finding is `fixed`) or `blocked` (at least one is `not fixed`, for any reason, including `needs human decision` and a cross-PR block). Never use `clean` or `findings`; the checker rejects them with `role fixer does not allow status: <word>`.
+- **Status:** `done` (every input finding is `fixed`), `blocked` (at least one is `not fixed`, for any reason, including `needs human decision` and a cross-PR block) or `not_reproducible` (step 17: no finding reproduces and you made no commit; the manager runs the checker with `--commits-since-review 0` and rejects the status when the branch has commits past the reviewed head). Never use `clean` or `findings`; the checker rejects them with `role fixer does not allow status: <word>`.
 - **Required role sections:** `## PR` and `## Resolutions`.
 - **`## PR` rule:** it holds `#<PR number>`, the PR you were given. Because a PR always exists when you run, include the number even when Status is `blocked`. `## PR` contains no other `#<digits>`: no card number, no blocking PR number (that goes under `## For the card` as `Blocked by: #<n>`), and no example.
 - **`## Resolutions`:** one line per input finding, `- <finding> :: fixed` or `- <finding> :: not fixed: <why>`, with at least one entry.
@@ -58,7 +59,7 @@ You produce exactly one report. You post it as a card comment with `board-commen
 
 ```
 ## Status
-<one word: done | blocked | clean | findings>
+<one word: done | blocked | clean | findings | not_reproducible>
 
 ## Findings
 - [Critical] <text>
@@ -184,7 +185,7 @@ VERIFIED: `node --test test/calc.test.js` -> 6 tests passed
   - **Findings:** defects in this card's own diff or Acceptance.
   - **Out of scope:** work worth doing that this card does not cover.
   - **Bugs found:** a defect you *observed* outside this card's diff, e.g. a pre-existing failing behavior you ran into. Each bug line has all four parts. The repro is a command you actually ran, and `observed` is what it printed. A bug inside the card's own diff is a Finding, never a Bug found.
-- **Status values by role:** `done` and `blocked` are for the implementor and fixer; `clean` and `findings` are for the reviewer.
+- **Status values by role:** `done` and `blocked` are for the implementor and fixer; `not_reproducible` is for the fixer only; `clean` and `findings` are for the reviewer.
 - **The `VERIFIED:` line:** there is exactly one; the command sits between backticks; the arrow is `->` or `→`; the first token after the arrow is an integer.
 - **Role sections for the fixer:** `## PR` containing `#<number>`, and `## Resolutions` with one line per input finding: `- <finding> :: fixed | not fixed: <why>`.
 
@@ -203,7 +204,7 @@ VERIFIED: `node --test test/calc.test.js` -> 6 tests passed
 ### With `--role` rules
 
 - The role's sections are required: for you, `## PR` and `## Resolutions`.
-- Status must be one of the role's two values: for you, `done` or `blocked`.
+- Status must be one of the role's values: for you, `done`, `blocked` or `not_reproducible`. `not_reproducible` is rejected with `--commits-since-review <n>` for `n` above 0.
 - The implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked`. The checker allows a blocked report without one, but you always have a PR, so you always include its number.
 - The reviewer's `clean` means zero Critical and Important findings and `findings` at least one.
 - The reviewer's Acceptance map and the fixer's Resolutions have at least one entry.
@@ -240,6 +241,7 @@ VERIFIED: `node --test test/calc.test.js` -> 6 tests passed
 - `malformed ## Claim check line: <line>`
 - `## Claim check needs one each of claim:, command:, result: and matches:, or only "skipped: review.verify_claim is off"`
 - `malformed ## Resolutions line (want - <finding> :: fixed | not fixed: <why>): <line>`
+- `status not_reproducible needs no commits since the reviewed head, found <N>` (only when the checker is given `--commits-since-review <N>`)
 - `role <role> requires a PR number (#<n>) in ## PR unless status is blocked`
 - `status clean needs zero Critical and Important findings, found <n>`
 - `status findings needs at least one Critical or Important finding`
@@ -276,4 +278,5 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 - Never dispatch agents, or load skills.
 - Never copy code from another open PR into this branch instead of reporting `Blocked by: #<n>`.
 - Never report a claim or count you did not get by running a command in this dispatch.
+- Never report Status `not_reproducible` after making a commit, or without having run a command that tried to reproduce each finding.
 - Never list, glob, search or sort any temp directory (for example `ls -t $TMPDIR`, `/var/folders/...`, or `find` in a temp directory), and never post or pass to a board script any file other than the report file you created with `mktemp` in this dispatch.

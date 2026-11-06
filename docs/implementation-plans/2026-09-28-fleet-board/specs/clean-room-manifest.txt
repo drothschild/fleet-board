@@ -3,7 +3,7 @@
 # Format: <sha256>  <path under plugins/fleet-board>  [# note]
 # A line whose note starts with "exception:" is a named exception, not a
 # clean-room output. Update this file whenever a revision is recorded in README.md.
-ab7b0d220bc9b92f2217add8326270da445f15d3494c2cc428ee25d44bfcdcc3  agents/fixer.md
+d6f9fc4ee37b1716a409cd0f769ab423be0cf3b960b0e8f727f130b5efe2eee0  agents/fixer.md
 913b1f6ad549f65b598464099454da6c621689253e5df618830bac68f1749b81  agents/implementor.md
 b1a5fa7fc685b1ab75dcb91d39e2ada01e6911b9faeb197907556cc33517c470  agents/manager.md
 f549da78e4813abfb6b59d7cee63ae621aaff89a8687b81f767c5ceaf84b0b5d  agents/reviewer.md
