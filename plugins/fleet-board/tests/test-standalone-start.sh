@@ -50,7 +50,9 @@ case "$*" in
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_review') printf none > "$GH_STATE/column" ;;
-  'issue edit 12 --repo acme/toy --add-label fleet:done') printf done > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:done')
+    if [ -e "$GH_STATE/fail-done-move" ]; then rm "$GH_STATE/fail-done-move"; exit 1; fi
+    printf done > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:human_qa')
     if [ -e "$GH_STATE/fail-qa-move" ]; then rm "$GH_STATE/fail-qa-move"; exit 1; fi
     printf human_qa > "$GH_STATE/column" ;;
@@ -264,7 +266,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -431,7 +433,7 @@ PY_WORKER
     echo 'PASS: stale-head'
     exit 0
   fi
-  if [ "${1:-start}" = merge-verification ]; then
+  if [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = merge-done-resume ]; then
     cat > "$TMP/verify-main" <<'VERIFY'
 #!/bin/bash
 mode="$(cat "$GH_STATE/verify-mode")"
@@ -452,6 +454,11 @@ VERIFY
     [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: false verification moved card' >&2; exit 1; }
     jq -e 'any(.[]; .id == 555 and (.body | contains("\"ok\": false")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: false verification not recorded' >&2; exit 1; }
     printf true > "$TMP/state/verify-mode"
+    if [ "$1" = merge-done-resume ]; then
+      touch "$TMP/state/fail-done-move"
+      if bash "$ROOT/bin/fleet-board" tick > "$TMP/done-first" 2>&1; then echo 'FAIL: simulated Done move interruption succeeded' >&2; exit 1; fi
+      [ "$(cat "$TMP/state/column")" = none ] || { echo 'FAIL: Done move did not remove source label' >&2; exit 1; }
+    fi
     bash "$ROOT/bin/fleet-board" tick > "$TMP/verified-out" || { echo 'FAIL: successful verification failed' >&2; exit 1; }
     [ "$(cat "$TMP/state/column")" = done ] || { echo 'FAIL: verified card not done' >&2; exit 1; }
     grep -q -- '--match-head-commit' "$TMP/state/calls" || { echo 'FAIL: merge omitted reviewed SHA precondition' >&2; exit 1; }
