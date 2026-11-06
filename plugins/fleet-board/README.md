@@ -114,6 +114,7 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
 | `commands.typecheck` | none | run by roles, and on `main` after a merge |
 | `commands.lint` | none | run by roles |
+| `commands.preflight` | none | checks the environment once per tick; a non-zero exit holds every card and warns with the last 20 lines of output |
 | `commands.qa_build` | none | run before a card goes to Human QA; the last 20 lines go in its comment |
 | `worktrees.dir` | `../.fleet-worktrees` | where card worktrees go, relative to the repo root |
 | `worktrees.setup` | none | run once in each new worktree, such as `npm ci` |
