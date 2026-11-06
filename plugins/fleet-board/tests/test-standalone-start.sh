@@ -40,6 +40,8 @@ case "$*" in
     if [ "$(cat "$GH_STATE/column")" = ready ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:ready"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label fleet:in_progress '*)
     if [ "$(cat "$GH_STATE/column")" = in_progress ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]}]\n'; else echo '[]'; fi ;;
+  'issue list --repo acme/toy --label fleet:in_review '*)
+    if [ "$(cat "$GH_STATE/column")" = in_review ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_review"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_review') printf in_review > "$GH_STATE/column" ;;
@@ -89,6 +91,7 @@ case "$*" in
       if [ "$count" -eq 2 ]; then printf human_qa > "$GH_STATE/column"; fi
     fi
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)" || exit 1
+    git --git-dir="$GH_REMOTE" update-ref refs/pull/34/head "$sha"
     jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
   *) echo "unexpected gh: $*" >&2; exit 1 ;;
 esac
@@ -226,7 +229,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -242,7 +245,7 @@ REVIEWER
     echo 'PASS: review-move-race'
     exit 0
   fi
-  if [ "${1:-start}" = findings-review ]; then
+  if [ "${1:-start}" = findings-review ] || [ "${1:-start}" = fix-re-review ]; then
     python3 - "$TMP/worker.sh" <<'PY_WORKER'
 import sys
 p = sys.argv[1]
@@ -252,7 +255,26 @@ PY_WORKER
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out"; then echo 'FAIL: findings review tick failed' >&2; exit 1; fi
     [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: findings review did not move card' >&2; exit 1; }
     jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: findings not recorded against reviewed head' >&2; exit 1; }
-    echo 'PASS: findings-review'
+    if [ "$1" = findings-review ]; then echo 'PASS: findings-review'; exit 0; fi
+    cat > "$TMP/worker.sh" <<'FIXER'
+#!/bin/sh
+set -eu
+if grep -q '"role": "fixer"' /scratch/request.json; then
+  grep -q 'Incorrect result' /scratch/request.json
+  printf 'fixed\n' > source.txt
+  git add source.txt
+  git -c user.name=Fixture -c user.email=fixture@example.com commit -qm fix
+  printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nFixed.\n## PR\n#34\n## Resolutions\n- Incorrect result :: fixed\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+else
+  grep -q '"role": "reviewer"' /scratch/request.json
+  printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nRe-reviewed.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+fi
+FIXER
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/fix-out"; then echo 'FAIL: fix and re-review tick failed' >&2; exit 1; fi
+    NEW_SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
+    [ "$NEW_SHA" != "$SHA" ] || { echo 'FAIL: fix did not advance branch' >&2; exit 1; }
+    jq -e --arg sha "$NEW_SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"round\": 2")) and (.body | contains("\"important\": 0")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: clean re-review not recorded on new head' >&2; exit 1; }
+    echo 'PASS: fix-re-review'
     exit 0
   fi
   if [ "${1:-start}" = review-human-race ]; then
