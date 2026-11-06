@@ -59,6 +59,7 @@ run_fix() { run_group bash "$SCRIPTS/standalone/fix.sh" "$@"; }
 run_qa() { run_group bash "$SCRIPTS/standalone/qa.sh" "$@"; }
 run_stage() { run_group bash "$SCRIPTS/standalone/stage.sh" "$@"; }
 run_hold() { run_group bash "$SCRIPTS/standalone/hold.sh" "$@"; }
+run_maintenance() { run_group bash "$SCRIPTS/standalone/maintenance.sh" "$@"; }
 run_publication() { run_group bash "$SCRIPTS/standalone/publication.sh" "$@"; }
 trap cleanup EXIT
 trap 'cancel 130' INT
@@ -131,7 +132,7 @@ fi
 if ! jq -e '
   ([.cards[].number] | length == (unique | length)) and
   ([.cards[] | select(.action == "merge")] | length <= 1) and
-  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "start", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
+  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "skip_card_lint", "wait", "start", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
   all(.cards[];
     if (.action | IN("advance_stage", "review_stage")) or (.action == "fix" and .stage != null)
     then (.stage | type == "object" and .provider == null and (.agent | type == "string" and length > 0) and (.model | type == "string" and length > 0))
@@ -162,6 +163,7 @@ while IFS= read -r CARD_JSON; do
   mkdir "$ACTION_DIR" || exit 1
   printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
   case "$ACTION" in
+    wait|skip_card_lint) run_maintenance "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     skip_no_acceptance) run_hold "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     start_review|review) run_review "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     review_stage)
@@ -175,4 +177,4 @@ while IFS= read -r CARD_JSON; do
   esac
 done < "$SCRATCH/actions"
 [ "$FAILURES" -eq 0 ] || { echo "$FAILURES card action(s) failed" >&2; exit 1; }
-jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" '. + {outcome: "progress"} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"
+jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" '. + {outcome: (if .dispatchable then "progress" else "idle" end)} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"
