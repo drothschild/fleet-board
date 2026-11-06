@@ -5,9 +5,9 @@
 # clean-room output. Update this file whenever a revision is recorded in README.md.
 ab7b0d220bc9b92f2217add8326270da445f15d3494c2cc428ee25d44bfcdcc3  agents/fixer.md
 913b1f6ad549f65b598464099454da6c621689253e5df618830bac68f1749b81  agents/implementor.md
-b1a5fa7fc685b1ab75dcb91d39e2ada01e6911b9faeb197907556cc33517c470  agents/manager.md
+1eccb8955788a054e1538c4c779ec3ce1cce8d6c9312f1cb79c2782c9be78954  agents/manager.md
 f549da78e4813abfb6b59d7cee63ae621aaff89a8687b81f767c5ceaf84b0b5d  agents/reviewer.md
-aa83f0da1e35a2339de519189ebbe0ee7e660b1f808728a06c5402ae843f21c7  skills/reporting/SKILL.md
+86c3ada66c1bbb1bae2bcd2a82fd4b6103d814cb0dfe652b7291221cf20b5692  skills/reporting/SKILL.md
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
 6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md
 bfd19b217ea02b844676f9277fbbf689b1d5cbe41a5507893ea08f960e0ea4d7  skills/status/SKILL.md  # exception: hand-edited by #76, not a clean-room output; card #115 re-authors it and removes this exception
