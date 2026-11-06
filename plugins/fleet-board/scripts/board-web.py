@@ -18,6 +18,8 @@ the import id instead of a generated one).
 from __future__ import annotations
 
 import argparse
+import errno
+import getpass
 import json
 import os
 import re
@@ -144,7 +146,16 @@ def read_card(dir: Path, n: int) -> dict:
 
 
 def local_user() -> str:
-    return os.environ.get("FLEET_BOARD_USER") or os.environ.get("USER") or ""
+    """FLEET_BOARD_USER, else USER, else the login name (fb_login's order); raises when empty."""
+    user = os.environ.get("FLEET_BOARD_USER") or os.environ.get("USER")
+    if not user:
+        try:
+            user = getpass.getuser()
+        except Exception:  # noqa: BLE001 - no passwd entry, no LOGNAME
+            user = ""
+    if not user:
+        raise ApiError(500, "cannot determine the local user: set FLEET_BOARD_USER")
+    return user
 
 
 def note_comment(card: dict):
@@ -204,8 +215,8 @@ TICK_RE = re.compile(r"^=== tick (\d+)\b")
 LOG_TAIL_LINES = 200
 
 # proc: the Popen this server spawned (kept so it is reaped); alive: the last
-# observed liveness (None before the first look).
-_RUN: dict = {"proc": None, "alive": None}
+# observed liveness (None before the first look); holder: the live wrapper's pid.
+_RUN: dict = {"proc": None, "alive": None, "holder": None}
 _RUN_LOCK = threading.RLock()
 
 
@@ -226,9 +237,21 @@ def read_text(path: Path) -> str:
         return ""
 
 
+def run_lock_path(cfg: dict) -> Path:
+    """The wrapper's run lock, <FLEET_BOARD_LOG_DIR or ~/.fleet-board/runs>/<owner>-<name>.lock."""
+    base = os.environ.get("FLEET_BOARD_LOG_DIR") or os.path.join(os.path.expanduser("~"), ".fleet-board", "runs")
+    repo = (cfg.get("board") or {}).get("repo") or os.path.basename(APP["root"])
+    return Path(os.path.abspath(base)) / (repo.replace("/", "-") + ".lock")
+
+
 def read_pid_file(sdir: Path):
     """(pid or None, recorded start time or ""). run.pid: line 1 the pid, line 2 its ps lstart."""
-    lines = read_text(sdir / "run.pid").split("\n")
+    return read_pid_path(sdir / "run.pid")
+
+
+def read_pid_path(path: Path):
+    """(pid or None, start time or "") from a run.pid-shaped file (the page's, or the wrapper's lock)."""
+    lines = read_text(path).split("\n")
     try:
         pid = int(lines[0].strip())
     except ValueError:
@@ -286,14 +309,20 @@ def clear_markers(dir: Path):
 
 
 def run_alive() -> bool:
-    """Whether the wrapper is alive; the first look after it died clears the markers."""
+    """Whether a wrapper is alive: the one this page started (run.pid), else any wrapper
+    holding the repo's run lock (one started from a terminal or launchd). Sets
+    _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
     with _RUN_LOCK:
         pid, started = read_pid_file(state_dir(APP["root"], cfg))
         alive = pid is not None and pid_alive(pid, started)
+        if not alive:
+            pid, started = read_pid_path(run_lock_path(cfg))
+            alive = pid is not None and bool(started) and pid_alive(pid, started)
         if _RUN["alive"] and not alive:
             clear_markers(dir)
         _RUN["alive"] = alive
+        _RUN["holder"] = pid if alive else None
         return alive
 
 
@@ -328,10 +357,13 @@ def run_status(alive=None) -> dict:
         alive = run_alive()
     pid = read_pid(sdir)
     out = read_text(sdir / "run.out")
-    if pid is None:
-        state = "idle"
-    elif alive:
+    if alive:
+        if _RUN["holder"] and _RUN["holder"] != pid:
+            # a wrapper this page did not start: run.out describes an older run
+            pid, out = _RUN["holder"], ""
         state = "stopping" if (Path(APP["root"]) / STOP_FILE).exists() else "running"
+    elif pid is None:
+        state = "idle"
     else:
         state = "stopped" if out.strip() else "idle"
     log = LOG_RE.search(out)
@@ -347,7 +379,21 @@ def run_status(alive=None) -> dict:
         "hours": to_float(stops[-1][1]) if stops else None,
         "log_path": log_path,
         "log_tail": tail,
+        "out_tail": out_tail(out) if state == "stopped" and not stops else None,
     }
+
+
+OUT_TAIL_LINES = 20
+
+
+def out_tail(out: str) -> list:
+    """The first and last lines of run.out (at most OUT_TAIL_LINES): what a wrapper that
+    exited before its stopped: line printed, such as a config or run-lock error."""
+    lines = [line for line in out.split("\n") if line.strip()]
+    if len(lines) <= OUT_TAIL_LINES:
+        return lines
+    half = OUT_TAIL_LINES // 2
+    return lines[:half] + lines[-half:]
 
 
 def board_run_status(alive: bool) -> dict:
@@ -653,12 +699,11 @@ def create_card(params, body):
         argv = ["bash", script("board-create.sh"), title, path]
         for label in labels:
             argv += ["--label", label]
-        if state == "ready":
-            argv += ["--state", "ready"]
+        # always created in backlog, then moved: board-move.sh applies the Ready rule
         created = json.loads(board_write(argv))
     finally:
         os.unlink(path)
-    if state not in (None, "ready", "backlog"):
+    if state not in (None, "backlog"):
         try:
             board_write(["bash", script("board-move.sh"), str(created["number"]), state])
         except ApiError as exc:
@@ -721,7 +766,7 @@ def start_run(params, body):
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
     with _RUN_LOCK:
         if run_alive():
-            raise ApiError(409, "a run is already alive")
+            raise ApiError(409, "a run is already alive (pid %s)" % _RUN["holder"])
         try:
             os.remove(os.path.join(APP["root"], STOP_FILE))
         except FileNotFoundError:
@@ -823,6 +868,13 @@ def csrf_ok(handler) -> bool:
     return origin in ("http://127.0.0.1:%d" % port, "http://localhost:%d" % port)
 
 
+def host_ok(handler) -> bool:
+    """The Host header names this server (127.0.0.1 or localhost, the bound port), so a page
+    on another name that resolves here (DNS rebinding) cannot read the board."""
+    port = APP["port"]
+    return handler.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
+
+
 def read_json_body(handler) -> dict:
     try:
         length = int(handler.headers.get("Content-Length") or 0)
@@ -887,6 +939,8 @@ class Handler(BaseHTTPRequestHandler):
     def dispatch(self, method: str):
         path = urlsplit(self.path).path
         try:
+            if not host_ok(self):
+                raise ApiError(403, "foreign Host header")
             if method in ("POST", "PATCH") and not csrf_ok(self):
                 raise ApiError(403, "missing X-Fleet-Board header or foreign Origin")
             route = match_route(method, path)
@@ -918,7 +972,14 @@ def main(argv=None) -> int:
     APP["root"] = os.path.abspath(args.root)
     APP["scripts"] = os.path.abspath(args.scripts)
     APP["static"] = (Path(APP["scripts"]) / "board-web" / "static").resolve()
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    except OSError as exc:
+        if exc.errno == errno.EADDRINUSE:
+            sys.stderr.write("board-web: port %d is in use\n" % args.port)
+        else:
+            sys.stderr.write("board-web: cannot listen on 127.0.0.1:%d: %s\n" % (args.port, exc.strerror or exc))
+        return 1
     APP["port"] = server.server_address[1]
     sys.stdout.write("listening on http://127.0.0.1:%d\n" % APP["port"])
     sys.stdout.flush()

@@ -184,12 +184,14 @@ start_server() {
 }
 
 # api <METHOD> <path> [json-body]: sets LAST_CODE; the body lands in BODY_FILE.
-# Sends X-Fleet-Board: 1 unless NOHDR=1; ORIGIN=<o> adds an Origin header.
+# Sends X-Fleet-Board: 1 unless NOHDR=1; ORIGIN=<o> adds an Origin header;
+# HOSTHDR=<h> replaces the Host header.
 api() {
   local args
   args=(-s --path-as-is -o "$BODY_FILE" -w '%{http_code}' -X "$1")
   [ "${NOHDR:-0}" = 1 ] || args+=(-H 'X-Fleet-Board: 1')
   [ -z "${ORIGIN:-}" ] || args+=(-H "Origin: $ORIGIN")
+  [ -z "${HOSTHDR:-}" ] || args+=(-H "Host: $HOSTHDR")
   if [ $# -ge 3 ]; then args+=(-H 'Content-Type: application/json' --data-binary "$3"); fi
   : > "$BODY_FILE"
   LAST_CODE="$(curl "${args[@]}" "http://127.0.0.1:$PORT$2")"
@@ -277,6 +279,15 @@ if setup_case; then
     fail "refused writes changed nothing" "card 1 title $(card_json 1 .title); cards: $(ls "$REPO/.fleet-board/cards")"
   fi
 
+  # DNS rebinding: a request whose Host is not this server is refused, reads included
+  HOSTHDR="evil.test:$PORT" api GET /api/board
+  assert_code 403
+  assert_body "foreign Host error is JSON" '.error|type' string
+  HOSTHDR="evil.test:$PORT" api GET /
+  assert_code 403
+  HOSTHDR="localhost:$PORT" api GET /api/board
+  assert_code 200
+
   ORIGIN="http://127.0.0.1:$PORT" api POST /api/cards '{"title":"New","body":"## Acceptance\n- x","labels":["bug"]}'
   assert_code 200
   assert_body "create returns number 4" '.number' 4
@@ -323,6 +334,11 @@ if setup_case; then
   else
     fail "bogus state created no card" "cards: $(ls "$REPO/.fleet-board/cards" | tr '\n' ' '); next: $(cat "$REPO/.fleet-board/next")"
   fi
+  # state ready goes through the move, so the Acceptance rule applies as it does to a drag
+  api POST /api/cards '{"title":"No criteria","body":"just text","state":"ready"}'
+  assert_code 409
+  assert_body "ready without Acceptance names the created card" '.error' '*#7*'
+  [ "$(card_json 7 .state)" = backlog ] && pass "the card exists in backlog" || fail "the card exists in backlog" "state $(card_json 7 .state)"
 
   api POST /api/cards '{"title":"x"}'
   assert_code 400
@@ -388,6 +404,36 @@ if setup_case; then
   : > "$FAKE_RUN_DIR/release"
   wait_for 'api GET /api/run; body_is .state stopped'
 
+  # A wrapper started outside the page holds the run lock: the page sees it.
+  LOCKF="$TMP/logs/acme-toy.lock"
+  rm -f "$REPO/.fleet-board.stop"   # the last run's stop file
+  printf '%s\n%s\n' "$$" "$(LC_ALL=C TZ=UTC ps -o lstart= -p $$ | awk '{ $1 = $1; print }')" > "$LOCKF"
+  api GET /api/run;                 assert_body "a live run lock reads as running" '.state' running
+  assert_body "the status names the lock's pid" '.pid' "$$"
+  assert_body "the page's older run.out does not describe the lock's run" '.stop_reason' null
+  api POST /api/run/start;          assert_code 409
+  assert_body "the start refusal names the pid" '.error' "*pid $$*"
+  api POST /api/run/stop;           assert_code 200
+  if [ -e "$REPO/.fleet-board.stop" ]; then pass "stop on a lock-held run writes the stop file"; else fail "stop on a lock-held run writes the stop file" "no stop file"; fi
+  api GET /api/run;                 assert_body "a lock-held run with the stop file is stopping" '.state' stopping
+  rm -f "$REPO/.fleet-board.stop"
+  printf '%s\nMon Jan  1 00:00:00 2001\n' "$$" > "$LOCKF"
+  api GET /api/run;                 assert_body "a lock with another start time is not a run" '.state' stopped
+  rm -f "$LOCKF"
+
+  # A wrapper that exits at once (before any stopped: line) shows its output.
+  stop_server
+  FAIL_RUN="$TMP/fail-run.sh"
+  printf '#!/bin/sh\necho "fleet-board-run: log: /nowhere/run.log" >/dev/null\necho "fleet-board-run: cannot read board.repo from the config" >&2\nexit 1\n' > "$FAIL_RUN"
+  FLEET_BOARD_RUN="$FAIL_RUN" start_server "$REPO"
+  api POST /api/run/start;          assert_code 200
+  wait_for 'api GET /api/run; body_is .state stopped'
+  api GET /api/run
+  assert_body "an early exit has no stop reason" '.stop_reason' null
+  assert_body "an early exit shows the wrapper's stderr" '.out_tail[0]' 'fleet-board-run: cannot read board.repo from the config'
+  stop_server
+  start_server "$REPO"
+
   api GET /api/nothing
   assert_code 404
   assert_body "unknown route error is JSON" '.error|type' string
@@ -431,7 +477,11 @@ printf '%s\n' "$*" >> "$FAKE_CLAUDE_DIR/args.log"
 prompt="${!#}"
 if [ -e "$FAKE_CLAUDE_DIR/fail" ]; then echo boom >&2; exit 1; fi
 dest="$(printf '%s' "$prompt" | sed -n 's/.*--preview \([^ ]*\).*/\1/p')"
-[ -e "$FAKE_CLAUDE_DIR/slow" ] && sleep 3
+# slow: hold the session until the test creates $FAKE_CLAUDE_DIR/release (30 s at most)
+if [ -e "$FAKE_CLAUDE_DIR/slow" ]; then
+  i=0
+  while [ ! -e "$FAKE_CLAUDE_DIR/release" ] && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+fi
 fixture="$IMPORT_FIXTURE"
 [ -e "$FAKE_CLAUDE_DIR/fixture" ] && fixture="$(cat "$FAKE_CLAUDE_DIR/fixture")"
 cp "$fixture" "$dest"
@@ -518,6 +568,7 @@ if setup_case; then
 
   # A session outliving a server restart is still running, then ready.
   : > "$FAKE_CLAUDE_DIR/slow"
+  rm -f "$FAKE_CLAUDE_DIR/release"
   stop_server
   export FLEET_BOARD_TEST_IMPORT_ID=fixed4
   start_server "$REPO"
@@ -525,6 +576,7 @@ if setup_case; then
   stop_server
   start_server "$REPO"
   api GET /api/import/fixed4;       assert_body "a live session survives a server restart as running" '.state' running
+  : > "$FAKE_CLAUDE_DIR/release"
   wait_for 'api GET /api/import/fixed4; body_is .state ready'
   rm -f "$FAKE_CLAUDE_DIR/slow"
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
@@ -581,9 +633,26 @@ PATH="$NOPY_DIR" run_check "$SCRIPTS/board-web.sh" --repo "$LOCAL_REPO"
 assert_exit "python3 missing exits 1" 1
 assert_stderr_contains "python3 missing names python3" "python3 is not on PATH"
 
-# The launcher execs the server on a local repo.
+for bad in 0 80 1023 65536 999999999999999999999; do
+  run_check "$SCRIPTS/board-web.sh" --repo "$LOCAL_REPO" --port "$bad"
+  assert_exit "--port $bad is out of range: exit 2" 2
+  assert_stderr_contains "--port $bad prints the usage line" "usage: board-web.sh [--repo DIR] [--port N]"
+done
+
+# free_port: a port nothing listens on right now
+free_port() { python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'; }
+
+# The launcher execs the server on a local repo, run from a linked worktree:
+# the root is the main checkout (the directory holding the common git dir), so
+# the page shows the store the scripts write.
+mkdir -p "$LOCAL_REPO/.fleet-board/cards"
+echo 2 > "$LOCAL_REPO/.fleet-board/next"
+REPO="$LOCAL_REPO" seed_card 1 backlog "Main store card" "b"
+LOCAL_WT="$TMP/launch-wt"
+git -C "$LOCAL_REPO" worktree add -q --detach "$LOCAL_WT" 2>/dev/null
 LAUNCH_OUT="$TMP/launch.out"
-"$BASH_EXE" "$SCRIPTS/board-web.sh" --repo "$LOCAL_REPO" --port 0 > "$LAUNCH_OUT" 2> "$TMP/launch.err" < /dev/null &
+PORT="$(free_port)"
+FLEET_BOARD_LOG_DIR="$TMP/launch-logs" "$BASH_EXE" "$SCRIPTS/board-web.sh" --repo "$LOCAL_WT" --port "$PORT" > "$LAUNCH_OUT" 2> "$TMP/launch.err" < /dev/null &
 SERVER_PID=$!
 i=0
 while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; do sleep 0.1; i=$((i + 1)); done
@@ -592,6 +661,32 @@ if head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-
 else
   fail "board-web.sh starts the server" "stdout: $(cat "$LAUNCH_OUT"); stderr: $(cat "$TMP/launch.err")"
 fi
+api GET /api/board
+assert_code 200
+assert_body "launched from a worktree, the page reads the main checkout's store" '.cards[0].title' "Main store card"
+
+# A second server on the same port: one line naming the port, exit 1, no traceback
+python3 "$SCRIPTS/board-web.py" --root "$LOCAL_REPO" --port "$PORT" --scripts "$SCRIPTS" > /dev/null 2> "$TMP/inuse.err" < /dev/null
+LAST_EXIT=$?
+LAST_ERR="$(cat "$TMP/inuse.err")"
+assert_exit "port in use exits 1" 1
+assert_stderr_contains "port in use names the port" "board-web: port $PORT is in use"
+case "$LAST_ERR" in *Traceback*) fail "port in use prints no traceback" "$LAST_ERR" ;; *) pass "port in use prints no traceback" ;; esac
+stop_server
+
+# Identity: with USER and FLEET_BOARD_USER unset, the note author is the login name
+ID_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$ID_REPO/.fleet-board/cards"
+echo 2 > "$ID_REPO/.fleet-board/next"
+ID_NOTE="$(printf '<!-- fleet-board:manager-note -->\n```json\n{"round":3}\n```\n')"
+REPO="$ID_REPO" seed_card 1 in_progress "Noted" "b" "$(jq -n --arg b "$ID_NOTE" --arg a "$(id -un)" '[{id: 1, author: $a, body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+SAVED_USER="${USER:-}"
+unset USER FLEET_BOARD_USER
+start_server "$ID_REPO"
+export USER="$SAVED_USER" FLEET_BOARD_USER=tester
+api GET /api/board
+assert_code 200
+assert_body "USER unset: the login name's note is the card's note" '.cards[0].note.round' 3
 stop_server
 
 echo ""

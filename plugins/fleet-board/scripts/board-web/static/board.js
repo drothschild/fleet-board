@@ -569,6 +569,8 @@ function renderHeader(run) {
   const tip = [];
   if (run.pid) tip.push("pid " + run.pid);
   if (run.log_path) tip.push(run.log_path);
+  // a wrapper that exited before its stopped: line (a config or run-lock error)
+  if (run.out_tail && run.out_tail.length) tip.push.apply(tip, run.out_tail);
   pill.title = tip.join("\n");
 
   const cost = $("run-cost");
@@ -584,7 +586,14 @@ function renderHeader(run) {
   stop.disabled = S.offline || S.busy || run.state !== "running";
   start.classList.toggle("primary", !start.disabled && !S.imp); // one filled button per page
 
-  if (S.logOpen && run.log_tail) renderLog(run.log_tail);
+  if (S.logOpen && run.log_tail) renderLog(logLines(run));
+}
+
+// logLines(run): the run log's tail, else the wrapper's own output when it
+// exited before writing a stopped: line
+function logLines(run) {
+  if (run.log_tail && run.log_tail.length) return run.log_tail;
+  return (run.out_tail && run.out_tail.length) ? run.out_tail : [];
 }
 
 function renderLog(lines) {
@@ -601,7 +610,7 @@ function toggleLog() {
   pre.hidden = !S.logOpen;
   $("log-btn").setAttribute("aria-expanded", String(S.logOpen));
   if (S.logOpen) {
-    renderLog((S.run && S.run.log_tail) || []);
+    renderLog(S.run ? logLines(S.run) : []);
     pre.scrollTop = pre.scrollHeight;
     pollRun();
   }

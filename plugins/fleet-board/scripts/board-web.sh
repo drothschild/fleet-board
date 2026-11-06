@@ -3,12 +3,15 @@
 #
 # Usage: board-web.sh [--repo DIR] [--port N]
 #
-# Runs from the repo root (DIR, default $PWD, then its git toplevel). The port
-# defaults to board.port. Needs board.backend: local and python3.
+# Runs from the repo root (DIR, default $PWD; the main checkout, the directory
+# holding the git common dir, so a linked worktree serves the main store). The
+# port defaults to board.port; --port takes 1024-65535. Needs board.backend:
+# local and python3.
 #
 # Exit codes:
-#   1 - not a git repository, a config read failed, or python3 is not on PATH
-#   2 - usage error, or board.backend is not local
+#   1 - not a git repository, a config read failed, python3 is not on PATH, or
+#       (from board-web.py) the port is in use
+#   2 - usage error (including a --port outside 1024-65535), or board.backend is not local
 #   3, 4, 5 - config.sh --check failed (3: no .fleet-board.yml)
 # Otherwise it execs board-web.py, which serves until interrupted.
 
@@ -30,7 +33,9 @@ while [ $# -gt 0 ]; do
       ;;
     --port)
       [ $# -ge 2 ] || die 2 "$USAGE"
-      case "$2" in ''|*[!0-9]*) die 2 "$USAGE" ;; esac
+      # 1024-65535 (the board.port range); the length check keeps the test in range for bash
+      case "$2" in ''|*[!0-9]*|0*) die 2 "$USAGE" ;; esac
+      [ "${#2}" -le 5 ] && [ "$2" -ge 1024 ] && [ "$2" -le 65535 ] || die 2 "$USAGE"
       PORT="$2"
       shift 2
       ;;
@@ -40,6 +45,10 @@ done
 
 cd "$DIR" 2>/dev/null || die 2 "cannot cd to $DIR"
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" && [ -n "$ROOT" ] || die 1 "$DIR is not inside a git repository"
+# The root is the main checkout, the directory holding the git common dir, as
+# board-lib.sh resolves FLEET_ROOT: from a linked worktree the page then shows
+# the store the scripts write
+COMMON="$(. "$HERE/board-lib.sh" && fb_git_common_dir .)" && [ -n "$COMMON" ] && ROOT="$(dirname "$COMMON")"
 cd "$ROOT" || die 1 "cannot cd to $ROOT"
 
 bash "$HERE/config.sh" --dir "$ROOT" --check </dev/null
