@@ -743,6 +743,7 @@ async function openDrawer(n, opener) {
     busy: false,
   };
   S.drawer = d;
+  clearDrawer(n);
   showDrawer();
   if (n === null) {
     renderDrawer(null);
@@ -759,6 +760,30 @@ async function openDrawer(n, opener) {
   }
   renderDrawer(card);
   $("dr-title").focus();
+}
+
+const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-comment", "dr-comment-btn"];
+
+// clearDrawer(n): empties every field, the comment box and the label input,
+// and disables them until renderDrawer fills them, so nothing typed or shown
+// for one card carries over to the next (or to a new card).
+function clearDrawer(n) {
+  $("dr-num").textContent = n === null ? "New card" : "#" + n;
+  $("dr-title").value = "";
+  $("dr-body").value = "";
+  $("dr-label-input").value = "";
+  $("dr-comment").value = "";
+  $("dr-state").replaceChildren();
+  $("dr-preview").replaceChildren();
+  $("dr-labels").replaceChildren();
+  $("dr-comments").replaceChildren();
+  $("dr-meta").replaceChildren();
+  setDrawerFields(false);
+  updateDirty();
+}
+
+function setDrawerFields(on) {
+  for (const id of DRAWER_FIELDS) $(id).disabled = !on;
 }
 
 async function fetchCard(n) {
@@ -815,6 +840,7 @@ function renderDrawer(card) {
     ? { title: "", body: NEW_CARD_BODY, labels: [], state: "backlog" }
     : { title: card.title || "", body: card.body || "", labels: (card.labels || []).slice(), state: card.state };
   d.labels = d.base.labels.slice();
+  setDrawerFields(true);
 
   const drawer = $("drawer");
   drawer.classList.toggle("new", isNew);
