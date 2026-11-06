@@ -242,12 +242,20 @@ WRAPPER
   [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
   if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
 fi
-if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ] || [ "${1:-start}" = continue-blocked-resume ] || [ "${1:-start}" = blocked-changed-blocker ] || [ "${1:-start}" = blocked-spoof ] || [ "${1:-start}" = blocked-report-changed ] || [ "${1:-start}" = blocked-cycle ] || [ "${1:-start}" = blocked-misleading-prose ]; then
+if [ "${1:-start}" = implementor-blocked ] || [ "${1:-start}" = continue-blocked ] || [ "${1:-start}" = continue-blocked-resume ] || [ "${1:-start}" = blocked-changed-blocker ] || [ "${1:-start}" = blocked-spoof ] || [ "${1:-start}" = blocked-report-changed ] || [ "${1:-start}" = blocked-cycle ] || [ "${1:-start}" = blocked-misleading-prose ] || [ "${1:-start}" = blocked-unlinked ]; then
   cat > "$TMP/worker.sh" <<'BLOCKED'
 #!/bin/sh
 set -eu
 printf '%s\n' '{"version":1,"outcome":"blocked","report":"## Status\nblocked\n## Findings\n- none\n## For the card\nCannot proceed.\nBlocked by: #44\n## PR\nNone\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
 BLOCKED
+  if [ "$1" = blocked-unlinked ]; then
+    python3 - "$TMP/worker.sh" <<'PY_WORKER'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace(r'Blocked by: #44\n', '')
+open(p, 'w').write(s)
+PY_WORKER
+  fi
   if [ "$1" = blocked-misleading-prose ]; then
     sed 's/Cannot proceed\./no progress after 3 attempts: network unavailable/' "$TMP/worker.sh" > "$TMP/worker-next" && mv "$TMP/worker-next" "$TMP/worker.sh"
   fi
@@ -310,7 +318,11 @@ WRAPPER
   [ "$(cat "$GH_STATE/column")" = blocked ] || { echo 'FAIL: blocked card did not move' >&2; exit 1; }
   [ ! -e "$GH_STATE/pr" ] && ! git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract || { echo 'FAIL: blocked worker published a branch or PR' >&2; exit 1; }
   note="$(bash "$ROOT/plugins/fleet-board/scripts/note.sh" get 12)" || exit 1
-  jq -e --argjson attempts "$ATTEMPTS" '.state == "blocked" and .blocked_from == "in_progress" and .blocking_pr == 44 and .implementor_attempts == $attempts and (.last_verified | contains("VERIFIED:"))' <<<"$note" >/dev/null || { echo 'FAIL: blocked evidence not recorded' >&2; exit 1; }
+  if [ "$1" = blocked-unlinked ]; then
+    jq -e --argjson attempts "$ATTEMPTS" '.state == "blocked" and .blocked_from == "in_progress" and .blocking_pr == null and .implementor_attempts == $attempts and (.blocked_findings[0].text | contains("Cannot proceed"))' <<<"$note" >/dev/null || { echo 'FAIL: unlinked blocker evidence not recorded' >&2; exit 1; }
+  else
+    jq -e --argjson attempts "$ATTEMPTS" '.state == "blocked" and .blocked_from == "in_progress" and .blocking_pr == 44 and .implementor_attempts == $attempts and (.last_verified | contains("VERIFIED:"))' <<<"$note" >/dev/null || { echo 'FAIL: blocked evidence not recorded' >&2; exit 1; }
+  fi
   jq -e '[.[] | select(.user.login == "fleet-bot" and (.body | contains("fleet-board:implementor-blocked:")))] | length == 1' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: authenticated blocked report missing or duplicated' >&2; exit 1; }
   if [ "$1" = blocked-cycle ]; then
     bash "$ROOT/bin/fleet-board" tick > "$TMP/unblock-out" || { echo 'FAIL: initial blocker did not unblock' >&2; exit 1; }
