@@ -55,6 +55,7 @@ run_group() {
 }
 run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
 run_continue() { run_group bash "$SCRIPTS/standalone/continue.sh" "$@"; }
+run_blocked() { run_group bash "$SCRIPTS/standalone/blocked.sh" "$@"; }
 run_review() { run_group bash "$SCRIPTS/standalone/review.sh" "$@"; }
 run_fix() { run_group bash "$SCRIPTS/standalone/fix.sh" "$@"; }
 run_qa() { run_group bash "$SCRIPTS/standalone/qa.sh" "$@"; }
@@ -85,13 +86,14 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json "$COMMON"/fleet-board-standalone/maintenance-file_pending-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/blocked-*.json "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json "$COMMON"/fleet-board-standalone/maintenance-file_pending-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
     jq -e '.version == 1 and (.plan_card | type == "object")' "$JOURNAL" >/dev/null || { echo 'invalid action journal' >&2; exit 1; }
     jq '.plan_card' "$JOURNAL" > "$SCRATCH/card" || exit 1
     case "$(basename "$JOURNAL")" in
+      blocked-*) run_blocked "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
       start-*) run_start "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       continue-*) run_continue "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
       fix-*) run_fix "$SCRATCH/card" "$SCRATCH" || exit 1 ;;

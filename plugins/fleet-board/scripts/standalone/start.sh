@@ -105,7 +105,14 @@ else
   wait "$CHILD"; RC=$?
   CHILD=""
   [ "$RC" -eq 0 ] || exit "$RC"
-  [ "$(jq -r .outcome "$SCRATCH/result")" = done ] || { echo 'worker did not complete implementation' >&2; exit 1; }
+  case "$(jq -r .outcome "$SCRATCH/result")" in
+    done) ;;
+    blocked)
+      bash "$SCRIPTS/standalone/blocked.sh" "$CARD" "$SCRATCH" "$SCRATCH/result" "$BASE" & CHILD=$!
+      wait "$CHILD"; RC=$?; CHILD=""
+      exit "$RC" ;;
+    *) echo 'worker did not complete implementation' >&2; exit 1 ;;
+  esac
   CLONE="$SCRATCH/worker/checkout"
   [ -d "$CLONE" ] && [ ! -L "$CLONE" ] || { echo 'unsafe worker checkout root' >&2; exit 1; }
   # Read only objects and the detached HEAD, never the worker's Git config.
