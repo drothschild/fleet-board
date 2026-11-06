@@ -28,6 +28,11 @@ printf '%s\n' "$*" >> "$GH_STATE/calls"
 case "$*" in
   'api user') printf '{"login":"fleet-bot"}\n' ;;
   'api repos/acme/toy/issues/12')
+    if [ -e "$GH_STATE/move-at-adapter" ] && jq -e 'any(.[]; .body | contains("fleet-board:standalone-review:"))' "$GH_STATE/comments" >/dev/null; then
+      count=0; [ ! -e "$GH_STATE/adapter-reads" ] || count="$(cat "$GH_STATE/adapter-reads")"
+      count=$((count + 1)); printf '%s' "$count" > "$GH_STATE/adapter-reads"
+      if [ "$count" -eq 2 ]; then printf human_qa > "$GH_STATE/column"; fi
+    fi
     column="$(cat "$GH_STATE/column")"
     jq -n --arg label "fleet:$column" '{number:12,title:"Add subtract",html_url:"https://github.com/acme/toy/issues/12",body:"Subtract.\n\n## Acceptance\n- subtract two numbers\n",labels:[{name:$label}]}' ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$GH_STATE/comments" ;;
@@ -221,13 +226,22 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
 set -eu
 printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed the implementation.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 REVIEWER
+  if [ "${1:-start}" = review-move-race ]; then
+    touch "$TMP/state/move-at-adapter"
+    if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then echo 'FAIL: adapter Human QA race accepted' >&2; exit 1; fi
+    grep -q 'refusing to move.*Human QA' "$TMP/review-err" || { cat "$TMP/review-err" >&2; echo 'FAIL: Human QA adapter gate not reached' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = human_qa ] || { echo 'FAIL: card moved out of Human QA' >&2; exit 1; }
+    jq -e --arg sha "$SHA" 'all(.[]; .id != 555 or (.body | contains("\"sha\": \"" + $sha + "\"")) | not)' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review note updated after Human QA move' >&2; exit 1; }
+    echo 'PASS: review-move-race'
+    exit 0
+  fi
   if [ "${1:-start}" = findings-review ]; then
     python3 - "$TMP/worker.sh" <<'PY_WORKER'
 import sys
