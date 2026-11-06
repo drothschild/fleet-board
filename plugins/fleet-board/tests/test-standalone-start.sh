@@ -202,6 +202,18 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-start}" = continue-implementor ]; then
+  printf in_progress > "$TMP/state/column"
+  cat > "$TMP/existing-note" <<'NOTE'
+<!-- fleet-board:manager-note -->
+### fleet-board manager note
+
+```json
+{"state":"in_progress","branch":"fleet/12-add-subtract","round":0,"implementor_attempts":2}
+```
+NOTE
+  jq -n --rawfile body "$TMP/existing-note" '[{id:555,user:{login:"fleet-bot"},body:$body}]' > "$TMP/state/comments"
+fi
 if [ "${1:-start}" = resume-ref ]; then
   REAL_GIT="$(command -v git)"
   touch "$TMP/state/fail-ref"
@@ -343,7 +355,11 @@ if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ]; then
 fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
 [ ! -e "$TMP/hook-ran" ] || { echo 'FAIL: worker Git config executed on controller' >&2; exit 1; }
-if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >/dev/null; then echo 'FAIL: start outcome' >&2; exit 1; fi
+if [ "${1:-start}" = continue-implementor ]; then EXPECTED_ACTION=continue_implementor; else EXPECTED_ACTION=start; fi
+if ! jq -e --arg action "$EXPECTED_ACTION" '.outcome == "progress" and .cards[0].action == $action' "$TMP/out" >/dev/null; then echo 'FAIL: start outcome' >&2; exit 1; fi
+if [ "${1:-start}" = continue-implementor ]; then
+  jq -e 'any(.[]; .id == 555 and (.body | contains("\"implementor_attempts\": 3")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: continuation attempt not recorded' >&2; exit 1; }
+fi
 if [ "${1:-start}" = resume-ref ] && ! jq -e '.cost_usd == 0' "$TMP/out" >/dev/null; then echo 'FAIL: recovered fixture tick cost missing' >&2; exit 1; fi
 [ "$(cat "$TMP/state/column")" = in_progress ] || { echo 'FAIL: card did not move' >&2; exit 1; }
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
