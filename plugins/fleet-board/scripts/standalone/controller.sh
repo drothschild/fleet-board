@@ -55,6 +55,7 @@ run_group() {
   return "$rc"
 }
 run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
+run_continue() { run_group bash "$SCRIPTS/standalone/continue.sh" "$@"; }
 run_review() { run_group bash "$SCRIPTS/standalone/review.sh" "$@"; }
 run_fix() { run_group bash "$SCRIPTS/standalone/fix.sh" "$@"; }
 run_qa() { run_group bash "$SCRIPTS/standalone/qa.sh" "$@"; }
@@ -78,7 +79,7 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
@@ -86,6 +87,7 @@ if [ "$MODE" = tick ]; then
     jq '.plan_card' "$JOURNAL" > "$SCRATCH/card" || exit 1
     case "$(basename "$JOURNAL")" in
       start-*) run_start "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      continue-*) run_continue "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
       fix-*) run_fix "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       review-*) run_review "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
       qa-*) run_qa "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
@@ -138,7 +140,7 @@ fi
 if ! jq -e '
   ([.cards[].number] | length == (unique | length)) and
   ([.cards[] | select(.action == "merge")] | length <= 1) and
-  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "skip_card_lint", "wait", "block", "unblock", "start", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
+  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "skip_card_lint", "wait", "block", "unblock", "start", "continue_implementor", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
   all(.cards[];
     if (.action | IN("advance_stage", "review_stage")) or (.action == "fix" and .stage != null)
     then (.stage | type == "object" and .provider == null and (.agent | type == "string" and length > 0) and (.model | type == "string" and length > 0))
@@ -171,6 +173,7 @@ while IFS= read -r CARD_JSON; do
   case "$ACTION" in
     wait|skip_card_lint|block|unblock) run_maintenance "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     skip_no_acceptance) run_hold "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    continue_implementor) run_continue "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     start_review|review) run_review "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
     review_stage)
       jq '.action = "stage_review"' "$ACTION_DIR/card" > "$ACTION_DIR/stage-card" || exit 1

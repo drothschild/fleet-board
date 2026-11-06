@@ -42,6 +42,10 @@ validate_push_destination() {
 validate_push_destination || { echo 'push destination does not match fixture remote' >&2; exit 1; }
 N="$(jq -r .number "$CARD")"; BRANCH="$(jq -r .branch "$CARD")"
 WT="$(jq -r .worktree "$CARD")"; TITLE="$(jq -r .title "$CARD")"
+ATTEMPT="$(jq -r '.continuation_attempt // 1' "$CARD")"
+[[ "$ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
+WORKER_ACTION=start
+[ "$ATTEMPT" = 1 ] || WORKER_ACTION=continue_implementor
 case "$BRANCH" in "fleet/$N-"*) ;; *) echo 'branch does not match card' >&2; exit 1 ;; esac
 [[ "$BRANCH" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]] || exit 1
 [ "$(jq -r .state "$CARD")" = ready ] || { echo 'card is not ready' >&2; exit 1; }
@@ -95,8 +99,8 @@ else
   release_git
   mkdir "$SCRATCH/worker" || exit 1
   cp "$FLEET_BOARD_WORKER_SCRIPT" "$SCRATCH/worker/worker.sh" || exit 1
-  jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$BASE" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg prompt "$TITLE" \
-    '{version:1,card:$card,action:"start",role:"implementor",worktree:$wt,expected_ref:$ref,prompt:$prompt,limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
+  jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$BASE" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg prompt "$TITLE" --arg action "$WORKER_ACTION" \
+    '{version:1,card:$card,action:$action,role:"implementor",worktree:$wt,expected_ref:$ref,prompt:$prompt,limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
   bash "$SCRIPTS/standalone/worker.sh" --request "$SCRATCH/request.json" --scratch "$SCRATCH/worker" > "$SCRATCH/result" & CHILD=$!
   wait "$CHILD"; RC=$?
   CHILD=""
@@ -165,8 +169,8 @@ if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .user.login == $me an
   bash "$SCRIPTS/parse-report.sh" --role implementor "$SCRATCH/official-report" >/dev/null || exit 1
   bash "$SCRIPTS/board-comment.sh" "$N" "$SCRATCH/official-report" || exit 1
 fi
-jq -n --arg branch "$BRANCH" --arg wt "$WT" --argjson pr "$PR" --slurpfile card "$CARD" --arg verified "$(jq -r .verified.line <<<"$PARSED")" \
-  '{state:"in_progress",branch:$branch,worktree:$wt,pr:$pr,round:0,models:$card[0].models,implementor_attempts:1,last_verified:$verified,action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
+jq -n --arg branch "$BRANCH" --arg wt "$WT" --argjson pr "$PR" --slurpfile card "$CARD" --arg verified "$(jq -r .verified.line <<<"$PARSED")" --argjson attempt "$ATTEMPT" \
+  '{state:"in_progress",branch:$branch,worktree:$wt,pr:$pr,round:0,models:$card[0].models,implementor_attempts:$attempt,last_verified:$verified,action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 jq -e '.state == "ready" or .state == "in_progress" or .state == null' <<<"$CURRENT" >/dev/null || { echo 'card moved to an incompatible state' >&2; exit 1; }
 FLEET_BOARD_ENFORCE_QA=1 bash "$SCRIPTS/board-move.sh" "$N" in_progress || exit 1
