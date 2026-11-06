@@ -121,11 +121,11 @@ if [ "$ACTION" = start_review ]; then
   bash "$SCRIPTS/review-stages.sh" route "$N" "$PR" >/dev/null || exit 1
 fi
 if [ "$ACTION" = stage_review ]; then MARKER="<!-- fleet-board:standalone-stage-review:$STAGE_NAME:$ROUND:$SHA -->"; else MARKER="<!-- fleet-board:standalone-review:$SHA -->"; fi
-COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
+COMMENTS="$(bash "$SCRIPTS/standalone/comments.sh" "$N")" || exit 1
 ME="$(fb_login)" || exit 1
 { printf '%s\nReviewed commit: `%s`\n\n' "$MARKER" "$SHA"; cat "$SCRATCH/reviewer-report"; } > "$SCRATCH/official-report"
-if jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null; then
-  jq -e --arg marker "$MARKER" --arg me "$ME" --rawfile body "$SCRATCH/official-report" '[.[] | select(.user.login == $me and (.body | startswith($marker)))] | length == 1 and .[0].body == $body' <<<"$COMMENTS" >/dev/null || { echo 'saved review report differs from posted report' >&2; exit 1; }
+if jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .author == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null; then
+  jq -e --arg marker "$MARKER" --arg me "$ME" --rawfile body "$SCRATCH/official-report" '[.[] | select(.author == $me and (.body | startswith($marker)))] | length == 1 and .[0].body == $body' <<<"$COMMENTS" >/dev/null || { echo 'saved review report differs from posted report' >&2; exit 1; }
 else
   bash "$SCRIPTS/board-comment.sh" "$N" "$SCRATCH/official-report" || exit 1
 fi
