@@ -34,7 +34,10 @@ Never guess an install path, never write one down, and never use a scripts path 
    - `model`: the `models.manager` value, set explicitly. Never the session's model, never a hardcoded value, and never left out.
    - `run_in_background: false`, passed explicitly and never left out. If this parameter is missing, the runtime may run the agent in the background anyway. A background manager leaves you with no tick report, and then the wrapper finds no `dispatchable:` line.
    - a prompt that contains the absolute scripts dir, the repo root, the full config JSON, and the start time.
-9. **Wait in the foreground.** Wait for the manager to finish before you print anything else. The dispatch runs in the foreground and is never a background task.
+9. **Wait in the foreground.** Wait for the manager to finish before you print anything else. Ask for a foreground dispatch and never ask for a background task.
+   - Some runtimes have no foreground option: the Agent tool has no `run_in_background` parameter, or ignores it, and runs the manager in the background anyway. The Agent call then returns at once with a launch acknowledgement, not a tick report.
+   - In that case, do not treat the acknowledgement as the manager's reply. End your turn and wait for the manager's completion notice, which carries the manager's final message. Meanwhile, do not poll, re-dispatch, read the manager's transcript or output file, or do the manager's work.
+   - When the completion notice arrives, its final message is the manager's reply for steps 11 to 13. Print it verbatim, exactly as you would a foreground reply.
 10. **One agent, one dispatch.** Dispatch no agent other than `fleet-board:manager`, and dispatch it only once per invocation. No second dispatch and no retry.
 11. **Print the report verbatim.** When the manager returns, your final output is its final message exactly as returned. Add nothing after it. Do not reword, reorder, summarize or drop any line.
 12. **Missing stop signal.** If no line in the manager's reply matches `^dispatchable: `, still print the reply exactly as returned. Before it, print one notice saying the tick produced no stop signal. The notice must not begin with `dispatchable:`. Never add, invent or change a `dispatchable:` line.
@@ -57,6 +60,7 @@ Never guess an install path, never write one down, and never use a scripts path 
 - Never dispatch any agent other than `fleet-board:manager`, and never dispatch it more than once per invocation.
 - Never leave out `model` on the manager dispatch, and never let it fall back to the session model.
 - Never leave out `run_in_background: false`, and never run the manager in the background.
+- When the runtime has no foreground option, never print a launch acknowledgement as the tick report, and never print anything before the manager's completion notice has arrived.
 - Never add anything after the manager's final message, and never change, summarize or reformat it.
 - Never add, invent or change a `dispatchable:` line.
 - Never loop or start a second tick.

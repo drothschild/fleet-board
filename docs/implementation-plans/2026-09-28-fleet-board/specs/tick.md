@@ -44,7 +44,10 @@ Proposed description:
    - `model` set explicitly to the `models.manager` value. It is never the session's model, never a hardcoded value, and never left out;
    - `run_in_background: false`, passed explicitly and never left out. If the parameter is missing, the runtime may run the agent in the background anyway. A background manager would leave the skill with no tick report, so the wrapper would find no `dispatchable:` line;
    - a prompt containing the absolute scripts dir, the repo root, the full config JSON and the start time.
-9. The skill waits for the manager to finish before it prints anything else. The dispatch is in the foreground and is never a background task.
+9. The skill waits for the manager to finish before it prints anything else. It asks for a foreground dispatch and never asks for a background task.
+   - Some runtimes have no foreground option: the Agent tool has no `run_in_background` parameter, ignores it, and runs the manager in the background anyway. The Agent call then returns at once with a launch acknowledgement, not a tick report.
+   - In that case the skill does not treat the acknowledgement as the manager's reply. It ends its turn and waits for the manager's completion notice, which carries the manager's final message. It does not poll, re-dispatch, read the manager's transcript or output file, or do the manager's work meanwhile.
+   - When the completion notice arrives, its final message is the manager's reply for steps 11 to 13, and the skill prints it verbatim, exactly as it would a foreground reply.
 10. The skill dispatches no agent other than `fleet-board:manager`, and dispatches it once per invocation. That means no second dispatch and no retry dispatch.
 11. When the manager returns, the skill's final output is the manager's final message exactly as returned. Nothing is added after it, and no line in it is reworded, reordered, summarized or dropped.
 12. If the manager's reply has no line matching `^dispatchable: `, the skill still prints the reply as returned. It also prints one notice, placed before the reply, saying the tick produced no stop signal. The notice does not begin with `dispatchable:`. The skill never adds, invents or changes a `dispatchable:` line.
@@ -59,6 +62,7 @@ Proposed description:
 - Never dispatch any agent other than `fleet-board:manager`, and never dispatch it more than once per invocation.
 - Never leave out `model` on the manager dispatch, and never let it fall back to the session model.
 - Never leave out `run_in_background: false`, and never run the manager in the background.
+- Never print a launch acknowledgement as the tick report, and never print anything before the manager's completion notice has arrived when the runtime has no foreground option.
 - Never add anything after the manager's final message, and never change, summarize or reformat it.
 - Never add, invent or change a `dispatchable:` line.
 - Never loop or start a second tick.

@@ -804,6 +804,74 @@ assert_exit "settle: non-numeric card exits 2" 2
 run_check "$SCRIPT" --settle 12 x1
 assert_exit "settle: a non-numeric second card exits 2" 2
 
+# Merge only reviewed heads: a clean review whose head moved past last_review.
+# plan_real <kind>: builds real commits in the case repo (the plan checks them
+# with git merge-tree) and routes the fake gh to them. kind is conflict (a
+# merge of main whose conflict a person resolved), clean (a merge of main with
+# no conflict) or nonmerge (an ordinary commit).
+plan_real() {
+  local kind="$1" b0 r m h dir main_msg
+  setup_case drift-clean "$(printf 'merge:\n  policy: auto')"
+  dir="$FAKE_GH_DIR/real"; mkdir -p "$dir"
+  printf 'base\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -q -m "add f"
+  b0="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q -b feat
+  printf 'feature\n' > "$REPO/f.txt"; git -C "$REPO" commit -q -am "feature change"
+  r="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q -b mainline "$b0"
+  if [ "$kind" = conflict ]; then printf 'mainline\n' > "$REPO/f.txt"; else printf 'other\n' > "$REPO/g.txt"; git -C "$REPO" add g.txt; fi
+  git -C "$REPO" commit -q -am "change on main"
+  m="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q feat
+  case "$kind" in
+    clean) git -C "$REPO" merge -q --no-edit -m "Merge branch 'main' into feat" mainline ;;
+    conflict)
+      git -C "$REPO" merge -q --no-edit mainline >/dev/null 2>&1
+      printf 'resolved by hand\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt
+      git -C "$REPO" commit -q -m "Merge branch 'main' into feat" ;;
+    nonmerge) printf 'more\n' > "$REPO/h.txt"; git -C "$REPO" add h.txt; git -C "$REPO" commit -q -m "more work" ;;
+  esac
+  h="$(git -C "$REPO" rev-parse HEAD)"
+  if [ "$kind" = nonmerge ]; then
+    jq -n --arg h "$h" --arg r "$r" '{commits: [{sha: $h, parents: [{sha: $r}], commit: {message: "more work"}}]}' > "$dir/compare.json"
+  else
+    jq -n --arg h "$h" --arg r "$r" --arg m "$m" --arg b "$b0" \
+      '{commits: [{sha: $m, parents: [{sha: $b}], commit: {message: "change on main"}},
+                  {sha: $h, parents: [{sha: $r}, {sha: $m}], commit: {message: "Merge branch '"'"'main'"'"' into feat"}}]}' > "$dir/compare.json"
+  fi
+  printf '{"files":[{"filename":"src/calc.js"}]}\n' > "$dir/commit.json"
+  jq -n --arg h "$h" '{isDraft: false, state: "OPEN", mergedAt: null, headRefOid: $h,
+    statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}]}' > "$dir/pr.json"
+  sed -e "s/abc1234/$r/g" -e 's/\\"important\\":1/\\"important\\":0/' "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"
+  {
+    printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
+    printf 'api repos/acme/toy/issues/12\t0\t%s/common/issue-12-in_review.json\n' "$TICK"
+    printf 'api --paginate repos/acme/toy/issues/12/comments\t0\t%s/comments.json\n' "$dir"
+    printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr.json\n' "$dir"
+    printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:ready *\t0\t%s/common/empty.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:in_progress *\t0\t%s/common/empty.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s/common/list-in_review-12.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:blocked *\t0\t%s/common/empty.json\n' "$TICK"
+    printf 'api repos/acme/toy/compare/%s...%s\t0\t%s/compare.json\n' "$r" "$h" "$dir"
+    printf 'api repos/acme/toy/commits/%s\t0\t%s/commit.json\n' "$h" "$dir"
+  } > "$dir/routes"
+  FAKE_GH_ROUTES="$dir/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+
+plan_real conflict
+assert_exit "merge-only-reviewed: conflict-resolving merge: exit" 0
+assert_jq "merge-only-reviewed: conflict-resolving merge of main after last_review plans review" "$(card 12 action)" '"review"'
+
+plan_real clean
+assert_exit "merge-only-reviewed: clean merge: exit" 0
+assert_jq "merge-only-reviewed: only a clean merge of main after last_review plans merge" "$(card 12 action)" '"merge"'
+
+plan_real nonmerge
+assert_exit "merge-only-reviewed: non-merge commit: exit" 0
+assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra
