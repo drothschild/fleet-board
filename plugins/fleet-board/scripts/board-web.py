@@ -140,9 +140,15 @@ def read_cards(dir: Path) -> list:
 
 
 def read_card(dir: Path, n: int) -> dict:
-    card = read_card_file(Path(dir) / "cards" / ("%d.json" % n))
-    if card is None:
+    path = Path(dir) / "cards" / ("%d.json" % n)
+    try:
+        card = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         raise ApiError(404, "card #%d not found" % n)
+    except (OSError, ValueError) as exc:
+        raise ApiError(500, "cannot read %s: %s" % (path, exc))
+    if not isinstance(card, dict):
+        raise ApiError(500, "cannot read %s: not a JSON object" % path)
     return card
 
 
@@ -327,8 +333,28 @@ def run_alive() -> bool:
         return alive
 
 
+_LOG_CACHE: dict = {}
+
+
 def scan_run_log(path: str):
-    """(last tick number or None, last LOG_TAIL_LINES lines) of the run log."""
+    """(last tick number or None, last LOG_TAIL_LINES lines) of the run log; rescanned only
+    when the file's size or mtime changed."""
+    try:
+        st = os.stat(path)
+        sig = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        sig = None
+    hit = _LOG_CACHE.get(path)
+    if sig is not None and hit is not None and hit[0] == sig:
+        return hit[1], list(hit[2])
+    tick, tail = _scan_run_log(path)
+    if sig is not None:
+        _LOG_CACHE.clear()
+        _LOG_CACHE[path] = (sig, tick, tail)
+    return tick, tail
+
+
+def _scan_run_log(path: str):
     tick, tail = None, deque(maxlen=LOG_TAIL_LINES)
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -429,8 +455,12 @@ def script(name: str) -> str:
 
 def temp_text(text: str) -> str:
     fd, path = tempfile.mkstemp(prefix="board-web.")
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(text)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+    except BaseException:
+        os.unlink(path)
+        raise
     return path
 
 
@@ -440,7 +470,8 @@ CREATED_RE = re.compile(r"^Created #(\d+):", re.M)
 
 # id -> the Popen this server spawned for the import session (kept so it is reaped).
 _IMPORTS: dict = {}
-_IMPORT_LOCK = threading.RLock()
+_IMPORT_LOCK = threading.RLock()  # guards _IMPORTS, _IMPORT_LOCKS and import creation
+_IMPORT_LOCKS: dict = {}  # id -> the lock that serialises that import's create
 
 
 def import_dir(id: str) -> Path:
@@ -464,6 +495,18 @@ def write_private(path: Path, text: str):
         f.write(text)
 
 
+def write_private_atomic(path: Path, text: str):
+    """write_private through a temp file and rename: a reader sees the old or the new file, never a partial one."""
+    tmp = path.with_name(path.name + ".tmp")
+    write_private(tmp, text)
+    os.replace(str(tmp), str(path))
+
+
+def import_lock(id: str):
+    with _IMPORT_LOCK:
+        return _IMPORT_LOCKS.setdefault(id, threading.RLock())
+
+
 def new_import_id() -> str:
     return os.environ.get("FLEET_BOARD_TEST_IMPORT_ID") or (
         "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(2)))
@@ -480,7 +523,7 @@ def start_import(plan_text: str, status: str) -> str:
         idir.mkdir(parents=True, mode=0o700)
         os.chmod(str(idir), 0o700)
         write_private(idir / "plan.md", plan_text)
-        write_private(idir / "meta.json", json.dumps({
+        write_private_atomic(idir / "meta.json", json.dumps({
             "status": status,
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }))
@@ -509,7 +552,7 @@ def start_import(plan_text: str, status: str) -> str:
             raise ApiError(500, "cannot start %s: %s" % (argv[0], exc))
         meta = read_json_file(idir / "meta.json") or {}
         meta.update(pid=proc.pid, pid_start=ps_start(proc.pid) or "")
-        write_private(idir / "meta.json", json.dumps(meta))
+        write_private_atomic(idir / "meta.json", json.dumps(meta))
     return id
 
 
@@ -573,9 +616,11 @@ def import_status(id: str) -> dict:
             pid = meta.get("pid")
             running = isinstance(pid, int) and pid > 0 and pid_alive(pid, meta.get("pid_start") or "")
         rc = proc.returncode if proc is not None else None
+    meta = read_json_file(idir / "meta.json") or {}
+    created = meta.get("created_numbers") if meta.get("created") else None
     status = {"state": "running", "elapsed_s": import_elapsed(idir, running),
               "last_text": last_session_text(idir / "session.jsonl"),
-              "cards": None, "table": None, "error": None}
+              "cards": None, "table": None, "error": None, "created": created}
     if running:
         return status
     cards = read_json_file(idir / "cards.json")
@@ -594,7 +639,7 @@ def import_status(id: str) -> dict:
 def create_import(id: str, embed: bool) -> dict:
     """Creates the previewed cards through import-plan.sh; once per import."""
     idir = import_dir(id)
-    with _IMPORT_LOCK:
+    with import_lock(id):
         meta = read_json_file(idir / "meta.json") or {}
         if meta.get("created"):
             raise ApiError(409, "import %s was already created" % id)
@@ -609,7 +654,7 @@ def create_import(id: str, embed: bool) -> dict:
         if created:  # even a partial create is final: a retry would duplicate these cards
             meta["created"] = True
             meta["created_numbers"] = created
-            write_private(idir / "meta.json", json.dumps(meta))
+            write_private_atomic(idir / "meta.json", json.dumps(meta))
         if rc != 0:
             raise ApiError(409, err.rstrip("\n") or "import-plan.sh exited %d" % rc,
                            {"created": created} if created else None)
@@ -730,7 +775,10 @@ def edit_card(params, body):
     finally:
         for path in (tpath, bpath):
             if path:
-                os.unlink(path)
+                try:
+                    os.unlink(path)
+                except FileNotFoundError:
+                    pass
     return 200, card_detail(cfg, dir, n)
 
 
@@ -773,6 +821,7 @@ def start_run(params, body):
             pass
         clear_markers(dir)
         fd = os.open(str(sdir / "run.out"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as out:
             proc = subprocess.Popen(
                 ["bash", wrapper, "--repo", APP["root"]], cwd=APP["root"],
@@ -780,6 +829,7 @@ def start_run(params, body):
                 start_new_session=True,
             )
         pfd = os.open(str(sdir / "run.pid"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(pfd, 0o600)
         with os.fdopen(pfd, "w") as f:
             f.write("%d\n%s\n" % (proc.pid, ps_start(proc.pid) or ""))
         _RUN["proc"] = proc
@@ -875,6 +925,10 @@ def host_ok(handler) -> bool:
     return handler.headers.get("Host") in ("127.0.0.1:%d" % port, "localhost:%d" % port)
 
 
+MAX_BODY = 1024 * 1024
+REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
+
+
 def read_json_body(handler) -> dict:
     try:
         length = int(handler.headers.get("Content-Length") or 0)
@@ -882,6 +936,9 @@ def read_json_body(handler) -> dict:
         raise ApiError(400, "bad Content-Length")
     if length <= 0:
         raise ApiError(400, "a JSON object body is required")
+    if length > MAX_BODY:
+        handler.close_connection = True  # the unread body must not be parsed as the next request
+        raise ApiError(413, "request body too large (limit %d bytes)" % MAX_BODY)
     try:
         body = json.loads(handler.rfile.read(length).decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
@@ -917,6 +974,7 @@ def send_static(handler, target: Path):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "fleet-board-web"
+    timeout = REQUEST_TIMEOUT
 
     def log_message(self, fmt, *args):
         sys.stderr.write("board-web: %s - %s\n" % (self.address_string(), fmt % args))
@@ -997,6 +1055,7 @@ def main(argv=None) -> int:
             sys.stderr.write("board-web: cannot listen on 127.0.0.1:%d: %s\n" % (args.port, exc.strerror or exc))
         return 1
     APP["port"] = server.server_address[1]
+    os.environ["FLEET_BOARD_PORT"] = str(APP["port"])  # fl_url names the port this server listens on
     sys.stdout.write("listening on http://127.0.0.1:%d\n" % APP["port"])
     sys.stdout.flush()
     try:
