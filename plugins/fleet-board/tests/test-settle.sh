@@ -226,7 +226,7 @@ bodies() {
 }
 # count of calls.log lines that start with the given words
 cnt_prefix() {
-  if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -c -- "^$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
+  if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -cE -- "^[0-9]+$(printf "\t")$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
 }
 handoffs() { bodies | grep -c 'What to check in Human QA' || true; }
 

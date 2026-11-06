@@ -77,7 +77,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 
 - Headless merges happen only in `scripts/merge-reviewed.sh`, a plain shell step outside any
   Claude session that the wrapper runs after `settle.sh`. It merges only under
-  `merge.policy: auto`, for a clean-reviewed, non-draft, green PR whose card is in_review
+  `merge.policy: auto`, for a clean-reviewed, non-draft, green PR whose card is in_review or a review stage
   and needs no Human QA (it asks `tick-plan.sh --settle-merge`); under `human` it makes no
   call. The wrapper never adds permission rules or `--dangerously-skip-permissions`, and no
   tick merges headless. `FLEET_BOARD_MERGE_REVIEWED` overrides the script. Worktree removal runs in `cleanup-done.sh`, outside any
@@ -86,8 +86,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   column; keep any new per-card network call behind that prefilter.
 - **Settle step** (`scripts/settle.sh`): after each successful tick, and before
   `cleanup-done.sh`, the wrapper runs it from the repo root, outside any Claude session. It
-  lists in_progress and in_review, runs `tick-plan.sh --settle`, and carries out only the
-  steps that start no agent (`move_to_review`, `to_human_qa`, `mark_ready`, `block`),
+  lists in_progress, in_review and every review stage column, runs `tick-plan.sh --settle`, and carries out only the
+  steps that start no agent (`move_to_review` then `review-stages.sh route`, `advance_stage`, `to_human_qa`, `mark_ready`, `block`),
   mirroring the manager's action table. It acts on the manager note, never merges, never
   moves a card out of human_qa, and writes no `action_failures`; a `block` whose reason
   starts with `no progress after` is left to the manager (2.D). A person's interactive
