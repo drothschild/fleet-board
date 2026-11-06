@@ -199,7 +199,7 @@ WRAPPER
   exit 0
 fi
 case "${1:-}" in
-  plan-only|tick-holds|tick-cost|interrupt-planner|hard-kill-lock) ;;
+  plan-only|tick-holds|tick-cost|interrupt-planner|hard-kill-lock|lock-reentry) ;;
   *) echo "usage: $0 plan-only|tick-holds|worker-boundary" >&2; exit 2 ;;
 esac
 TMP="$(mktemp -d)"
@@ -216,6 +216,27 @@ export PATH="$TMP/bin:$PATH" FAKE_GH_DIR="$TMP/gh" FAKE_GH_ROUTES="$ROOT/plugins
 cd "$TMP/repo"
 bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/expected" || exit 1
 rm -rf "$TMP/repo/.fw" "$TMP/repo/preflight-ran"
+if [ "$1" = lock-reentry ]; then
+  jq '.cards[0].action = "skip" | .dispatchable = false' "$TMP/expected" > "$TMP/idle-plan"
+  cat > "$TMP/inner-planner" <<PLANNER
+#!/bin/bash
+cat "$TMP/idle-plan"
+PLANNER
+  cat > "$TMP/outer-planner" <<PLANNER
+#!/bin/bash
+if FLEET_BOARD_TICK_PLAN="$TMP/inner-planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/inner-out" 2> "$TMP/inner-err"; then
+  printf allowed > "$TMP/reentry"
+else
+  printf blocked > "$TMP/reentry"
+fi
+cat "$TMP/idle-plan"
+PLANNER
+  FLEET_BOARD_TICK_PLAN="$TMP/outer-planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/outer-out" || exit 1
+  [ "$(cat "$TMP/reentry")" = blocked ] || { echo 'FAIL: inherited lock allowed nested tick' >&2; exit 1; }
+  grep -q 'another standalone tick holds the repository lock' "$TMP/inner-err" || { echo 'FAIL: nested tick was not rejected by lock' >&2; exit 1; }
+  echo 'PASS: lock-reentry'
+  exit 0
+fi
 if [ "$1" = hard-kill-lock ]; then
   cat > "$TMP/blocked-planner" <<PLANNER
 #!/bin/bash
