@@ -23,20 +23,33 @@ cleanup() {
 }
 CHILD=""
 cancel() {
-  local code="$1"
-  if [ -n "$CHILD" ]; then
-    kill -TERM "$CHILD" 2>/dev/null || true
-    wait "$CHILD" 2>/dev/null || true
+  local code="$1" target="$CHILD" watchdog=""
+  if [ -n "$target" ]; then
+    kill -TERM -- "-$target" 2>/dev/null || true
+    (
+      sleep 5 & timer=$!
+      trap 'kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true; exit 0' TERM INT
+      wait "$timer" && kill -KILL -- "-$target" 2>/dev/null || true
+    ) </dev/null >/dev/null 2>&1 & watchdog=$!
+    wait "$target" 2>/dev/null || true
+    # Reap any group members that ignored TERM after the leader exited.
+    kill -KILL -- "-$target" 2>/dev/null || true
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
     CHILD=""
   fi
   exit "$code"
 }
-run_start() {
-  bash "$SCRIPTS/standalone/start.sh" "$@" & CHILD=$!
-  wait "$CHILD"; local rc=$?
+run_group() {
+  local rc
+  set -m
+  "$@" & CHILD=$!
+  set +m
+  wait "$CHILD"; rc=$?
   CHILD=""
   return "$rc"
 }
+run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
 trap cleanup EXIT
 trap 'cancel 130' INT
 trap 'cancel 143' TERM
@@ -61,9 +74,9 @@ if [ "$MODE" = tick ]; then
   done
 fi
 if [ "$MODE" = plan ]; then
-  FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+  run_group env FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
 else
-  bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+  run_group bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
 fi
 # Enumerate every action emitted by tick-plan, including settle-only actions.
 # Unknown actions and malformed envelopes are rejected before any effect.
