@@ -339,6 +339,7 @@ s = open(p).read().replace('"outcome":"clean"', '"outcome":"findings"').replace(
 open(p, 'w').write(s)
 PY_WORKER
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out"; then echo 'FAIL: findings review tick failed' >&2; exit 1; fi
+    jq -e '.outcome == "progress" and .cards[0].action == "start_review" and (.cards | length == 1)' "$TMP/review-out" >/dev/null || { echo 'FAIL: review was not a single planned card action' >&2; exit 1; }
     [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: findings review did not move card' >&2; exit 1; }
     jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: findings not recorded against reviewed head' >&2; exit 1; }
     if [ "$1" = findings-review ]; then echo 'PASS: findings-review'; exit 0; fi
@@ -388,6 +389,7 @@ WRAPPER
       jq -e --arg sha "$FIRST_SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: interruption preceded re-review note' >&2; exit 1; }
     fi
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/fix-out"; then echo 'FAIL: fix and re-review tick failed' >&2; exit 1; fi
+    jq -e '.outcome == "progress" and .cards[0].action == "fix" and (.cards | length == 1)' "$TMP/fix-out" >/dev/null || { echo 'FAIL: fix was not a single planned card action' >&2; exit 1; }
     if [ "$1" = fix-resume-note ]; then
       [ "$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)" = "$FIRST_SHA" ] || { echo 'FAIL: fix repeated on resume' >&2; exit 1; }
       jq -e '[.[] | select(.body | contains("fleet-board:standalone-fix:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: fix report duplicated' >&2; exit 1; }
