@@ -115,6 +115,11 @@ case "$*" in
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'api -X PATCH repos/acme/toy/issues/comments/555 --input -')
     if [ -e "$GH_STATE/fail-patch" ]; then rm "$GH_STATE/fail-patch"; exit 1; fi
+    if [ -e "$GH_STATE/fail-patch-at" ]; then
+      count=0; [ ! -e "$GH_STATE/patch-count" ] || count="$(cat "$GH_STATE/patch-count")"
+      count=$((count + 1)); printf '%s' "$count" > "$GH_STATE/patch-count"
+      if [ "$count" = "$(cat "$GH_STATE/fail-patch-at")" ]; then rm "$GH_STATE/fail-patch-at"; exit 1; fi
+    fi
     body="$(cat)"; jq --argjson x "$body" 'map(if .id == 555 then .body = $x.body else . end)' "$GH_STATE/comments" > "$GH_STATE/new-comments" || exit 1
     mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{}' ;;
   'pr list '*) if [ -e "$GH_STATE/pr" ]; then echo '[{"number":34}]'; else echo '[]'; fi ;;
@@ -202,7 +207,7 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
-if [ "${1:-start}" = continue-implementor ]; then
+if [ "${1:-start}" = continue-implementor ] || [ "${1:-start}" = continue-resume ]; then
   printf in_progress > "$TMP/state/column"
   cat > "$TMP/existing-note" <<'NOTE'
 <!-- fleet-board:manager-note -->
@@ -228,6 +233,20 @@ WRAPPER
   if bash "$ROOT/bin/fleet-board" tick > "$TMP/ref-out" 2>&1; then echo 'FAIL: simulated ref failure succeeded' >&2; exit 1; fi
   [ -s "$TMP/repo/.git/fleet-board-standalone/start-12.json" ] || { echo 'FAIL: worker evidence missing after ref failure' >&2; exit 1; }
   if [ -e "$TMP/state/pr" ] || git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract; then echo 'FAIL: ref failure published work' >&2; exit 1; fi
+fi
+if [ "${1:-start}" = continue-resume ]; then
+  printf 2 > "$GH_STATE/fail-patch-at"
+  if bash "$ROOT/bin/fleet-board" tick > "$TMP/continue-first" 2>&1; then echo 'FAIL: simulated continuation note interruption succeeded' >&2; exit 1; fi
+  [ -e "$GH_STATE/pr" ] || { echo 'FAIL: interruption preceded PR creation' >&2; exit 1; }
+  FIRST_SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/continue-second" || { echo 'FAIL: start evidence recovery failed' >&2; exit 1; }
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/continue-third" || { echo 'FAIL: continuation journal recovery failed' >&2; exit 1; }
+  [ "$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)" = "$FIRST_SHA" ] || { echo 'FAIL: continuation re-dispatched worker' >&2; exit 1; }
+  [ "$(grep -c '^pr create ' "$GH_STATE/calls")" = 1 ] || { echo 'FAIL: continuation duplicated PR' >&2; exit 1; }
+  jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: continuation duplicated report' >&2; exit 1; }
+  jq -e 'any(.[]; .id == 555 and (.body | contains("\"implementor_attempts\": 3")))' "$GH_STATE/comments" >/dev/null || { echo 'FAIL: attempt changed during recovery' >&2; exit 1; }
+  echo 'PASS: continue-resume'
+  exit 0
 fi
 if [ "${1:-start}" = real-run ]; then
   cat >> "$TMP/repo/.fleet-board.yml" <<'YML'
