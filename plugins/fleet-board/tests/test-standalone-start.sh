@@ -221,13 +221,26 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
 set -eu
 printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed the implementation.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 REVIEWER
+  if [ "${1:-start}" = findings-review ]; then
+    python3 - "$TMP/worker.sh" <<'PY_WORKER'
+import sys
+p = sys.argv[1]
+s = open(p).read().replace('"outcome":"clean"', '"outcome":"findings"').replace(r'## Status\nclean\n## Findings\n- none', r'## Status\nfindings\n## Findings\n- [Important] Incorrect result')
+open(p, 'w').write(s)
+PY_WORKER
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out"; then echo 'FAIL: findings review tick failed' >&2; exit 1; fi
+    [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: findings review did not move card' >&2; exit 1; }
+    jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: findings not recorded against reviewed head' >&2; exit 1; }
+    echo 'PASS: findings-review'
+    exit 0
+  fi
   if [ "${1:-start}" = review-human-race ]; then
     touch "$TMP/state/move-to-human"
     if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then echo 'FAIL: Human QA race accepted' >&2; exit 1; fi
