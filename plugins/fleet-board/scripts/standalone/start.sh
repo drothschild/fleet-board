@@ -146,6 +146,6 @@ jq -n --arg branch "$BRANCH" --arg wt "$WT" --argjson pr "$PR" --slurpfile card 
   '{state:"in_progress",branch:$branch,worktree:$wt,pr:$pr,round:0,models:$card[0].models,implementor_attempts:1,last_verified:$verified,action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
 CURRENT="$(bash "$SCRIPTS/board-read.sh" "$N")" || exit 1
 jq -e '.state == "ready" or .state == "in_progress" or .state == null' <<<"$CURRENT" >/dev/null || { echo 'card moved to an incompatible state' >&2; exit 1; }
-bash "$SCRIPTS/board-move.sh" "$N" in_progress || exit 1
+FLEET_BOARD_ENFORCE_QA=1 bash "$SCRIPTS/board-move.sh" "$N" in_progress || exit 1
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/note.json" || exit 1
 jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1

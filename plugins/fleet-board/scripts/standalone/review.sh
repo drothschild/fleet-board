@@ -58,6 +58,10 @@ jq -e '(.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/d
 check_live_card() {
   local current states state
   current="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
+  if [ "$(fb_cfg board.backend)" = github-projects ]; then
+    jq -e --argjson n "$N" '.number == $n and .state == "in_progress"' <<<"$current" >/dev/null
+    return $?
+  fi
   states="$(for state in $FB_STATES; do fb_state_name "$state"; done | jq -Rsc 'split("\n") | map(select(length > 0))')" || return 1
   jq -e --arg expected "$(fb_state_name in_progress)" --argjson states "$states" '
     .state == "in_progress" and ([.labels[] | select(. as $label | ($states | index($label)) != null)] == [$expected])
@@ -82,5 +86,5 @@ check_pr <<<"$INFO" && [ "$(jq -r .headRefOid <<<"$INFO")" = "$SHA" ] || { echo 
 jq -n --argjson pr "$PR" --arg sha "$SHA" --argjson parsed "$PARSED" \
   '{state:"in_review",pr:$pr,round:1,last_verified:$parsed.verified.line,last_review:{round:1,sha:$sha,critical:$parsed.counts.critical,important:$parsed.counts.important,findings:$parsed.findings},action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
 check_live_card || { echo 'card state changed before review recording' >&2; exit 1; }
-bash "$SCRIPTS/board-move.sh" "$N" in_review || exit 1
+FLEET_BOARD_ENFORCE_QA=1 bash "$SCRIPTS/board-move.sh" "$N" in_review || exit 1
 bash "$SCRIPTS/note.sh" merge "$N" "$SCRATCH/note.json" || exit 1

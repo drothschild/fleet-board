@@ -238,7 +238,7 @@ REVIEWER
     if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then echo 'FAIL: adapter Human QA race accepted' >&2; exit 1; fi
     grep -q 'refusing to move.*Human QA' "$TMP/review-err" || { cat "$TMP/review-err" >&2; echo 'FAIL: Human QA adapter gate not reached' >&2; exit 1; }
     [ "$(cat "$TMP/state/column")" = human_qa ] || { echo 'FAIL: card moved out of Human QA' >&2; exit 1; }
-    jq -e --arg sha "$SHA" 'all(.[]; .id != 555 or (.body | contains("\"sha\": \"" + $sha + "\"")) | not)' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review note updated after Human QA move' >&2; exit 1; }
+    jq -e --arg sha "$SHA" 'all(.[]; .id != 555 or ((.body | contains("\"sha\": \"" + $sha + "\"")) | not))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review note updated after Human QA move' >&2; exit 1; }
     echo 'PASS: review-move-race'
     exit 0
   fi

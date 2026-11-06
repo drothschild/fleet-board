@@ -37,6 +37,9 @@ else
   CURRENT_STATUS="${ITEM_DATA#*$'\t'}"
 fi
 
+if [ "${FLEET_BOARD_ENFORCE_QA:-}" = 1 ] && [ "$TARGET" != human_qa ] && [ "$CURRENT_STATUS" = "$(fb_state_name human_qa)" ]; then
+  fb_die 1 "refusing to move #$N out of Human QA"
+fi
 [ "$CURRENT_STATUS" = "$TARGET_NAME" ] && exit 0
 
 gh project item-edit --id "$ITEM_ID" --project-id "$(jq -r .project_id "$CACHE")" \
