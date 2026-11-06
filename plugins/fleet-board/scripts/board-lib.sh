@@ -38,6 +38,22 @@ fb_set_states() {
   FB_STATES="${FB_STATES_FIXED/in_review/in_review $extra}"
 }
 
+# fb_mark_active <n>: on the local backend only, touches <board.dir>/active/<n>
+# (the web board lights the card while a role works on it) and sets
+# FB_ACTIVE_FILE to it. A failure is a warning, never an error. Needs the
+# config loaded.
+fb_mark_active() {
+  [ "$(fb_cfg board.backend)" = local ] || return 0
+  . "$FB_SCRIPTS/adapters/local/local-lib.sh"
+  local d; d="$(fl_active_dir)"
+  if mkdir -p "$d" 2>/dev/null && : > "$d/$1" 2>/dev/null; then
+    FB_ACTIVE_FILE="$d/$1"
+  else
+    printf 'fleet-board: warning: cannot write the active marker for #%s\n' "$1" >&2
+  fi
+  return 0
+}
+
 # fb_stage_states: the stage states of $FLEET_CFG, one per line, in config order.
 fb_stage_states() {
   [ -n "${FLEET_CFG:-}" ] || return 0
@@ -70,8 +86,17 @@ fb_git_common_dir() {
 # Prints scalars raw (booleans print as true/false), objects/arrays as JSON, and nothing for null.
 fb_cfg() { jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"; }
 
-# Prints the authenticated gh login; exits 1 if it cannot be determined
+# Prints the authenticated gh login (on the local backend, which never calls
+# gh: FLEET_BOARD_USER, else $USER, else `id -un`); exits 1 if it cannot be
+# determined
 fb_login() {
+  if [ "$(fb_cfg board.backend)" = "local" ]; then
+    local u="${FLEET_BOARD_USER:-${USER:-}}"
+    [ -n "$u" ] || u="$(id -un 2>/dev/null)"
+    [ -n "$u" ] || fb_die 1 "cannot determine the local user: set FLEET_BOARD_USER (USER is unset and id -un failed)"
+    printf '%s\n' "$u"
+    return 0
+  fi
   local l; l="$(gh api user 2>/dev/null | jq -r '.login // empty' 2>/dev/null)"
   [ -n "$l" ] && [ "$l" != "null" ] || fb_die 1 "cannot determine the authenticated gh login (gh api user failed)"
   printf '%s\n' "$l"
@@ -140,14 +165,14 @@ fb_default_name() {
   case "$1" in
     review_*)
       case "$(fb_cfg board.backend)" in
-        github-projects) echo "Review: ${1#review_}" ;;
+        github-projects|local) echo "Review: ${1#review_}" ;;
         *) echo "fleet:$1" ;;
       esac
       return 0
       ;;
   esac
   case "$(fb_cfg board.backend)" in
-    github-projects)
+    github-projects|local)
       case "$1" in
         backlog) echo "Backlog" ;;
         ready) echo "Ready" ;;

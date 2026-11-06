@@ -758,7 +758,7 @@ use_dir() {
     DIR_QA[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }')"
     DIR_NAMES[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" { print $3 }' | tr '[:upper:]' '[:lower:]')"
     case "${DIR_POLICY[n]} ${DIR_BACKEND[n]}" in
-      "human github-labels"|"human github-projects"|"auto github-labels"|"auto github-projects") ;;
+      "human github-labels"|"human github-projects"|"human local"|"auto github-labels"|"auto github-projects"|"auto local") ;;
       *) block "could not verify the board config; blocking to be safe" ;;
     esac
     [ -n "${DIR_QA[n]}" ] || block "could not verify the board config; blocking to be safe"
@@ -870,7 +870,7 @@ gate_edit() {
 
 gate_item() {
   local item="$1"
-  [ "$BACKEND" = github-labels ] && return 0
+  case "$BACKEND" in github-labels|local) return 0 ;; esac
   [ -n "$item" ] && ! is_dyn "$item" \
     || block "could not verify project item ${item:-(no --id)}; blocking to be safe"
   lookup "project item $item" bash "$S/adapters/github-projects/item-status.sh" "$item"

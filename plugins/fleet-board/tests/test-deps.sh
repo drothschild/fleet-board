@@ -334,6 +334,43 @@ run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22
 assert_exit "check: a failed project lookup exits 1" 1
 assert_eq "check: a failed project lookup names its command" "$(lookup_cmd)" "gh api graphql (project items of acme/toy#22)"
 
+# the local backend: a dependency in the board repo is read from the store
+LOCAL_YML="  backend: local"
+# local_card <n> <state>: seeds a card file in the local store of $REPO
+local_card() {
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 30 > "$REPO/.fleet-board/next"
+  jq -n --argjson n "$1" --arg s "$2" \
+    '{number: $n, title: "t", body: "", state: $s, labels: [], next_comment_id: 1, comments: []}' \
+    > "$REPO/.fleet-board/cards/$1.json"
+}
+
+setup_check "$LOCAL_YML"
+local_card 22 done
+local_card 23 in_review
+local_card 24 wont_do
+run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
+assert_exit "check: local, a done card, exit" 0
+assert_jq "check: local, a done card is met" '.unmet' '[]'
+run_check "$SCRIPT" check 12 '[{"repo":"ACME/Toy","number":23,"ref":"ACME/Toy#23"}]'
+assert_jq "check: local, the repo compares case-insensitively; an in_review card is unmet" '.unmet' '[{"ref":"ACME/Toy#23","status":"in_review"}]'
+run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":24,"ref":"acme/toy#24"}]'
+assert_jq "check: local, a wont_do card is unmet" '.unmet' '[{"ref":"acme/toy#24","status":"wont_do"}]'
+assert_jq "check: local, a wont_do card warns as not planned" '.warnings' '["#12 depends on acme/toy#24, which was closed as not planned"]'
+assert_eq "check: local, a same-repo ref makes no gh call" "$(cat "$FAKE_GH_DIR/calls.log" 2>/dev/null | wc -l | tr -d ' ')" 0
+
+run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":25,"ref":"acme/toy#25"}]'
+assert_exit "check: local, a missing card exits 1" 1
+assert_eq "check: local, a missing card prints nothing on stdout" "$LAST_OUT" ""
+assert_eq "check: local, a missing card names the lookup on stderr" "$LAST_ERR" "deps-lookup-failed: local card #25"
+
+setup_check "$LOCAL_YML"
+issue_route acme/other 3 CLOSED COMPLETED
+run_check "$SCRIPT" check 12 '[{"repo":"acme/other","number":3,"ref":"acme/other#3"}]'
+assert_exit "check: local, another repo goes through gh, exit" 0
+assert_jq "check: local, another repo's closed issue is met" '.unmet' '[]'
+assert_eq "check: local, another repo is read with gh issue view" "$(grep -c 'issue view 3 --repo acme/other' "$FAKE_GH_DIR/calls.log")" 1
+
 # usage
 setup_check
 run_check "$SCRIPT" check

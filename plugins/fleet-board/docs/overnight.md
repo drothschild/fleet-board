@@ -20,7 +20,11 @@ From the repo root:
 bash <path from /fleet-board:status> --repo .
 ```
 
-`--repo` defaults to the current directory. The wrapper runs from that repo's git root, checks the config (`config.sh --check`; exit 3 when there is no `.fleet-board.yml`), prints the path of its run log, and starts ticking.
+`--repo` defaults to the current directory. The wrapper runs from that repo's git root, checks the config (`config.sh --check`; exit 3 when there is no `.fleet-board.yml`), takes the run lock, prints the path of its run log, and starts ticking.
+
+### One run per repo
+
+The wrapper holds a run lock for its whole life: `$HOME/.fleet-board/runs/<owner>-<name>.lock` (in `$FLEET_BOARD_LOG_DIR` when that is set, beside the run logs). The file holds the wrapper's pid on line 1 and that process's start time on line 2 (`ps -o lstart=` in the C locale and UTC). While the lock names a live process with that start time, a second wrapper for the same repo prints `fleet-board-run: another run holds <lock> (pid N)` and exits 1 before it writes a log. A lock whose pid is gone, or now belongs to a process started at another time, is stale: the next wrapper replaces it. The wrapper uses Python 3 and an advisory lock on the adjacent `.lock.guard` file to serialize claims and stale-lock replacement. A simultaneous claimant exits 1 before writing a run log. The wrapper removes its lock on exit, including after Ctrl-C or TERM; after `kill -9` the lock stays until the next start finds it stale. The board page reads the same file, so a run started from a terminal or launchd shows as running there and the page's Start refuses a second one.
 
 ## When it stops
 
@@ -74,7 +78,7 @@ For an interrupt, the line is written on a best-effort basis, and the tick count
 | Exit | Meaning |
 |---|---|
 | 0 | stopped: `nothing-dispatchable`, `stop-file`, `max-hours` or `max-cost` |
-| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; `rate-limit-wait-cap`; or a setup failure (not a git repo, `claude` not found, the log cannot be written) |
+| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; `rate-limit-wait-cap`; or a setup failure (not a git repo, `claude` not found, the log cannot be written, another run holds the run lock) |
 | 2 | usage error, or `FLEET_BOARD_ISOLATE=1` |
 | 3 | no `.fleet-board.yml` |
 | 4, 5 | the config failed `config.sh --check`; 5 also for a limit that is not a valid number |
@@ -89,6 +93,8 @@ touch .fleet-board.stop
 The tick in progress finishes, and the run stops before the next one. Delete the file before the next run, or that run stops before its first tick.
 
 To stop at once, press Ctrl-C or send the wrapper TERM (`kill <pid>`). It passes TERM on to the running `claude` session (or cleanup, or the wait between ticks), waits up to 5 seconds for it to exit, and sends KILL to anything still running after that. Then it logs `stopped: interrupted (<signal>)` and exits 130 or 143. A stop can therefore take up to about 5 seconds. The tick it cut short is logged no further, and its cost is not counted. KILL ends only the process the wrapper started; a helper that process started and left behind is not tracked.
+
+On a `local` board, the Start and Stop buttons on the board page do the same thing by hand: Start spawns this wrapper in its own session, and Stop writes the same `.fleet-board.stop` file. The page counts a wrapper that holds the run lock as a live run even when the page did not start it. After each tick's session exits, the wrapper on a `local` board also removes every `<board.dir>/active/` marker, so a card whose role crashed without a report stops showing as worked on. The page keeps its own state (the run's pid and log) under `${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/web/<owner>-<name>/`. `FLEET_BOARD_RUN` makes Start spawn a different script.
 
 ## The run log
 

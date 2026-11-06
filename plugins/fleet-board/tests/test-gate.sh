@@ -133,8 +133,15 @@ assert_fast() {
   if [ "$LAST_SECS" -lt "$2" ]; then pass "$1"; else fail "$1" "took ${LAST_SECS}s, limit ${2}s (exit $LAST_EXIT)"; fi
 }
 
+# local_card N STATE BODY: seeds a card file in the local store of $REPO
+local_card() {
+  jq -n --argjson n "$1" --arg s "$2" --arg b "$3" \
+    '{number: $n, title: ("card " + ($n | tostring)), body: $b, state: $s, labels: [], next_comment_id: 1, comments: []}' \
+    > "$REPO/.fleet-board/cards/$1.json"
+}
+
 # setup_case CONFIG: a fresh repo (the payload's cwd) and a fresh fake gh.
-# CONFIG is one of: none, labels-human, labels-auto, hmb, bad-backend.
+# CONFIG is one of: none, labels-human, labels-auto, local-auto, hmb, bad-backend.
 setup_case() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -148,6 +155,24 @@ board:
 merge:
   policy: ${1#labels-}
 YML
+      ;;
+    local-auto)
+      cat > "$REPO/.fleet-board.yml" << YML
+board:
+  backend: local
+  repo: acme/toy
+merge:
+  policy: auto
+worktrees:
+  dir: .fw
+YML
+      mkdir -p "$REPO/.fleet-board/cards"
+      echo 1 > "$REPO/.fleet-board/next"
+      local_card 12 backlog "## Acceptance
+- works"
+      local_card 13 backlog "just a body"
+      local_card 14 human_qa "## Acceptance
+- works"
       ;;
     stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
@@ -431,6 +456,29 @@ assert_blocked "ready-needs-acceptance: #13" "## Acceptance"
 assert_stderr_contains "ready-needs-acceptance: names #13" "#13"
 run_hook bash.json "board-move.sh 12 ready"
 assert_silent_allow "ready-needs-acceptance: #12"
+
+# ---------------------------------------------------------------------------
+# local backend: the gate accepts it and enforces the same rules
+setup_case local-auto
+pr_routes > "$ROUTES"
+run_hook bash.json "board-move.sh 14 done"
+assert_blocked "local: board-move.sh 14 done on a human_qa card" "card #14 is in Human QA"
+run_hook bash.json "board-move.sh 13 ready"
+assert_blocked "local: ready needs Acceptance (#13)" "## Acceptance"
+run_hook bash.json "board-move.sh 12 ready"
+assert_silent_allow "local: ready with Acceptance (#12)"
+run_hook bash.json "gh pr merge 5"
+assert_blocked "local: auto policy blocks a red PR" "not green"
+run_hook bash.json "gh pr merge 4"
+assert_silent_allow "local: auto policy allows a green PR"
+run_hook bash.json "gh pr merge 3"
+assert_blocked "local: auto policy blocks a draft PR" "draft"
+run_hook bash.json "gh issue edit 14 --add-label bug"
+if printf '%s' "$LAST_ERR" | grep -Fq "could not verify the board config"; then
+  fail "local: backend local is not 'could not verify the board config'" "$LAST_ERR"
+else
+  pass "local: backend local is not 'could not verify the board config'"
+fi
 
 # ---------------------------------------------------------------------------
 # AC4.6 subagent-payload-gated-identically: the same command from a subagent

@@ -301,5 +301,57 @@ reset_gh
 run_import "y" "$SB/cards.json"
 check "projects board: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
 
+# ---------------------------------------------------------------- local backend
+echo "# local backend"
+ROOT_L="$SB/root-local"
+mkdir -p "$ROOT_L/.fleet-board/cards"
+git -C "$ROOT_L" init -q
+echo 1 > "$ROOT_L/.fleet-board/next"
+cat > "$ROOT_L/.fleet-board.yml" <<'EOF'
+board:
+  backend: local
+  repo: acme/toy
+worktrees:
+  dir: ".wt"
+EOF
+cat > "$SB/cards-local.json" <<'EOF'
+{"cards":[
+ {"key":"b","title":"B","repo":"acme/toy","labels":["frontend"],
+  "why":"Use the thing.","scope":["src/b.js"],
+  "acceptance":["B uses the thing"],"consumes":["the thing"],"produces":[]},
+ {"key":"a","title":"A","repo":"acme/toy","labels":["backend"],
+  "why":"Make the thing.","scope":["src/a.js"],
+  "acceptance":["A makes the thing"],"consumes":[],"produces":["the thing"]}
+]}
+EOF
+ROOT_SAVED="$ROOT"; ROOT="$ROOT_L"
+reset_gh
+run_import "y" "$SB/cards-local.json" --status ready
+check "local board: exits 0" "$RC" "0"
+case "$OUT" in *"Created #1: A"*) pass "local board: prints Created #1: A" ;; *) fail "local board: prints Created #1: A" "$OUT $(cat "$SB/err")" ;; esac
+case "$OUT" in *"Created #2: B"*) pass "local board: prints Created #2: B" ;; *) fail "local board: prints Created #2: B" "$OUT" ;; esac
+check "local board: card 2 body lists the dependency as acme/toy#1" "$(jq -r .body "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null | grep -c -- '^- acme/toy#1')" "1"
+check "local board: card 2 body has a Depends on section" "$(jq -r .body "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null | grep -c '^## Depends on')" "1"
+check "local board: card 1 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-board/cards/1.json" 2>/dev/null)" "ready"
+check "local board: card 2 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" "ready"
+check "local board: card labels are stored" "$(jq -c .labels "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" '["frontend"]'
+check "local board: no gh issue create is called" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+cat > "$SB/cards-local-x.json" <<'EOF'
+{"cards":[
+ {"key":"b","title":"B2","repo":"acme/toy","labels":[],
+  "why":"Use the thing.","scope":["src/b.js"],
+  "acceptance":["B uses the thing"],"consumes":["the thing"],"produces":[]},
+ {"key":"a","title":"A2","repo":"other/repo","labels":[],
+  "why":"Make the thing.","scope":["src/a.js"],
+  "acceptance":["A makes the thing"],"consumes":[],"produces":["the thing"]}
+]}
+EOF
+reset_gh
+run_import "y" "$SB/cards-local-x.json" --status ready
+check "local board, other repo: exits 0" "$RC" "0"
+check "local board, other repo: dependent card cites the board repo, acme/toy#3" "$(jq -r .body "$ROOT_L/.fleet-board/cards/4.json" 2>/dev/null | grep -c -- '^- acme/toy#3')" "1"
+check "local board, other repo: no ref names other/repo" "$(jq -r .body "$ROOT_L/.fleet-board/cards/4.json" 2>/dev/null | grep -c 'other/repo#')" "0"
+ROOT="$ROOT_SAVED"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
