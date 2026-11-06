@@ -262,6 +262,7 @@ fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
 [ ! -e "$TMP/hook-ran" ] || { echo 'FAIL: worker Git config executed on controller' >&2; exit 1; }
 if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >/dev/null; then echo 'FAIL: start outcome' >&2; exit 1; fi
+if [ "${1:-start}" = resume-ref ] && ! jq -e '.cost_usd == 0' "$TMP/out" >/dev/null; then echo 'FAIL: recovered fixture tick cost missing' >&2; exit 1; fi
 [ "$(cat "$TMP/state/column")" = in_progress ] || { echo 'FAIL: card did not move' >&2; exit 1; }
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
