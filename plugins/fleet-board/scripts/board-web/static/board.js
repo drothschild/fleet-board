@@ -758,6 +758,21 @@ function showDrawer() {
   $("top").inert = true;
 }
 
+// hasUnsavedEdits(): the open drawer differs from what was last saved.
+function hasUnsavedEdits() {
+  const d = S.drawer;
+  if (!d || !d.base || d.busy) return false;
+  const e = drawerEdits();
+  return e.title !== d.base.title || e.body !== d.base.body || e.state !== d.base.state ||
+    JSON.stringify(e.labels) !== JSON.stringify(d.base.labels);
+}
+
+// requestClose(): closes the drawer, asking first when edits would be lost.
+function requestClose() {
+  if (hasUnsavedEdits() && !confirm("Discard your unsaved changes?")) return;
+  closeDrawer();
+}
+
 // closeDrawer(): hides the drawer and returns focus to what opened it.
 function closeDrawer() {
   const d = S.drawer;
@@ -934,15 +949,13 @@ function formatTime(iso) {
 }
 
 // noteCommentIndex(card): the index in card.comments of the manager note the
-// server trusts (the last marker comment whose body matches manager_note), or -1.
+// server trusts: the comment whose id is card.manager_note_id, or -1.
 function noteCommentIndex(card) {
   const list = card.comments || [];
-  if (card.manager_note == null) return -1;
+  if (card.manager_note == null || card.manager_note_id == null) return -1;
   for (let i = list.length - 1; i >= 0; i--) {
-    const b = list[i] && list[i].body;
-    if (typeof b !== "string" || b.indexOf(NOTE_MARKER) !== 0) continue;
-    const rest = b.indexOf("\n") === -1 ? "" : b.slice(b.indexOf("\n") + 1);
-    if (rest === card.manager_note) return i;
+    const c = list[i];
+    if (c && c.id === card.manager_note_id) return i;
   }
   return -1;
 }
@@ -1062,9 +1075,13 @@ async function saveDrawer() {
       openDrawer(r.data.number);
       return;
     }
-    showToast("Card not created: " + errorText(r), "error");
     const made = /created card #(\d+)/.exec(errorText(r));
-    if (made) openDrawer(Number(made[1]));
+    if (made) {
+      showToast("Created #" + made[1] + " in Backlog; the move was refused: " + errorText(r), "error");
+      openDrawer(Number(made[1]));
+      return;
+    }
+    showToast("Card not created: " + errorText(r), "error");
     return;
   }
 
@@ -1075,19 +1092,22 @@ async function saveDrawer() {
   if (JSON.stringify(e.labels) !== JSON.stringify(d.base.labels)) patch.labels = e.labels;
   if (Object.keys(patch).length) {
     const r = await writeApi("PATCH", "/api/cards/" + n, patch);
-    if (S.drawer !== d) return;
     if (!r.ok) {
-      setDrawerBusy(false);
+      if (S.drawer === d) setDrawerBusy(false);
       showToast("#" + n + " not saved: " + errorText(r), "error");
       return;
     }
   }
+  // finishMove: the state move runs even if the drawer was closed meanwhile.
   if (e.state !== d.base.state) {
     const r = await writeApi("POST", "/api/cards/" + n + "/move", { state: e.state });
-    if (S.drawer !== d) return;
     if (!r.ok) {
       showToast("#" + n + " stayed in " + stateName(d.base.state) + ": " + errorText(r), "error");
     }
+  }
+  if (S.drawer !== d) {
+    fetchBoard(true);
+    return;
   }
   const card = await fetchCard(n);
   fetchBoard(true);
@@ -1136,8 +1156,8 @@ function syncDrawer() {
 }
 
 function bindDrawer() {
-  $("dr-close").addEventListener("click", closeDrawer);
-  $("drawer-dim").addEventListener("click", closeDrawer);
+  $("dr-close").addEventListener("click", requestClose);
+  $("drawer-dim").addEventListener("click", requestClose);
   $("dr-save").addEventListener("click", saveDrawer);
   $("dr-comment-btn").addEventListener("click", submitComment);
   $("dr-title").addEventListener("input", updateDirty);
@@ -1167,7 +1187,7 @@ function bindDrawer() {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.drawer && !e.defaultPrevented) {
       e.preventDefault();
-      closeDrawer();
+      requestClose();
     }
   });
 }
@@ -1348,10 +1368,13 @@ async function pollImport(id) {
       showImportFailed(errorText(r));
       return;
     }
+    imp.fails = (imp.fails || 0) + 1;
+    if (imp.fails >= 3) setImportStatus("board server not answering");
     // A blip: keep the last progress and ask again.
     imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
     return;
   }
+  imp.fails = 0;
   const d = r.data;
   const elapsed = Number.isInteger(d.elapsed_s) ? d.elapsed_s : 0;
   if (d.state === "running") {
