@@ -187,6 +187,8 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    3. Dispatch the fixer on `models.fixer`, with the findings list in 0.15.
    4. Reconcile its report (step 3).
    5. Only when the fixer's report is accepted and its Status is `done`: `note.sh merge` with `round` = `note.round` + 1, `models` = the plan card's `models`, and, when the plan card's `escalated` is true, `escalated: true` and `escalated_at_round` = the new round.
+   5a. When the accepted fixer report records a finding as not reproducible, record it in the note: `note.sh merge` with `last_fix` = `{"round": <the new round>, "not_reproducible": [<those findings>]}`, in the same merge as the `round` bump in step 5.
+   5b. Run the checker with `--commits-since-review` so the re-review is only dispatched when the fixer added commits after `note.last_review.sha`; `round` is bumped for the re-review either way.
    6. `worktree.sh review N <pr>`.
    7. Dispatch the reviewer with `round` = the new round, `prev_sha` = `note.last_review.sha`, the previous findings, and the fixer's report as the latest report.
 
