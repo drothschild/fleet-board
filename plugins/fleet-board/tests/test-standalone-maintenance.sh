@@ -11,6 +11,7 @@ printf '[]\n' > "$TMP/state/comments"
 cat > "$TMP/bin/gh" <<'GH'
 #!/usr/bin/env bash
 case "$*" in
+  'api user') echo '{"login":"bot"}' ;;
   'api repos/acme/toy/issues/12') echo '{"number":12,"title":"test","body":"","html_url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:ready"}]}' ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$STATE/comments" ;;
   'issue comment 12 --repo acme/toy --body-file '*) jq --rawfile body "$7" '. + [{id:556,user:{login:"bot"},body:$body}]' "$STATE/comments" > "$STATE/new" && mv "$STATE/new" "$STATE/comments" ;;
