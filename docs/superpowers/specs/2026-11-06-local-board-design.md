@@ -131,9 +131,10 @@ writes the note, whether the report was accepted (3.6) or the action failed (2.C
 3. Refuse (exit 1) when `python3` is not on `PATH`, naming it.
 4. `exec python3 "$HERE/board-web.py" --root <root> --port <port> --scripts "$HERE"`.
 
-It runs in the foreground; Ctrl-C stops the page, never the fleet. `status.sh` prints its
-path on a last line `Board page: <absolute path to board-web.sh>` after the
-`Headless wrapper:` line, so the docs never write down an install path.
+It runs in the foreground; Ctrl-C stops the page, never the fleet. It lives in the same
+directory as `fleet-board-run.sh`, whose absolute path `/fleet-board:status` prints on its
+last line (that line comes from the clean-room status skill and must stay last), so the
+docs say "the `board-web.sh` beside the wrapper" and never write down an install path.
 
 ### Process
 
@@ -289,7 +290,6 @@ calls, never `innerHTML` from card text, so a hostile card body cannot script th
 | `scripts/import-plan.sh` | the `local` case above |
 | `scripts/worktree.sh` | the active marker on `create` and `review` |
 | `scripts/stage-review.sh` | the active marker for the run's duration (provider stages) |
-| `scripts/status.sh` | the `Board page:` line |
 | `hooks/gate.sh` | add `local` to the policy/backend case at line 761; the Projects item lookups (873, 965) return as for `github-labels` |
 | `skills/import-plan/SKILL.md` | `--preview` |
 | `skills/init/SKILL.md` | offer Local as a third backend |
@@ -337,7 +337,7 @@ is trusted (break the script, watch the assertion fail, restore it):
   active marker; `list` fails closed on a corrupt file; `fb_login` with and without
   `FLEET_BOARD_USER`.
 - `test-config.sh`, `test-init.sh`, `test-gate.sh`, `test-deps.sh`, `test-import-plan.sh`,
-  `test-review-stages.sh`, `test-worktree.sh`, `test-status.sh`: new `local` cases.
+  `test-review-stages.sh`, `test-worktree.sh`, `test-stage-review.sh`: new `local` cases.
 - `test-board-web.sh`: starts `board-web.py` on a free port against a temp repo with the
   local backend and drives the API with `curl`: board JSON with state order, create, edit,
   move and refused move, the CSRF header check, Start with `FLEET_BOARD_RUN` pointing at a
