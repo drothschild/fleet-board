@@ -12,6 +12,18 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
+if [ "${1:-start}" = advisory-stage ]; then
+  cat >> "$TMP/repo/.fleet-board.yml" <<'YML'
+review:
+  stages:
+    - name: security
+      agent: fixture-reviewer
+      model: opus
+      paths: ["source.txt"]
+      label: needs-security-review
+      advisory: true
+YML
+fi
 printf 'before\n' > "$TMP/repo/source.txt"
 git -C "$TMP/repo" add .
 git -C "$TMP/repo" commit -qm initial
@@ -36,7 +48,8 @@ case "$*" in
     fi
     column="$(cat "$GH_STATE/column")"
     qa=false; [ ! -e "$GH_STATE/qa-flag" ] || qa=true
-    jq -n --arg label "fleet:$column" --argjson qa "$qa" '{number:12,title:"Add subtract",html_url:"https://github.com/acme/toy/issues/12",body:"Subtract.\n\n## Acceptance\n- subtract two numbers\n",labels:([{name:$label}] + (if $qa then [{name:"needs-human-qa"}] else [] end))}' ;;
+    stage=false; [ ! -e "$GH_STATE/stage-label" ] || stage=true
+    jq -n --arg label "fleet:$column" --argjson qa "$qa" --argjson stage "$stage" '{number:12,title:"Add subtract",html_url:"https://github.com/acme/toy/issues/12",body:"Subtract.\n\n## Acceptance\n- subtract two numbers\n",labels:([{name:$label}] + (if $qa then [{name:"needs-human-qa"}] else [] end) + (if $stage then [{name:"needs-security-review"}] else [] end))}' ;;
   'api --paginate repos/acme/toy/issues/12/comments') cat "$GH_STATE/comments" ;;
   'issue list --repo acme/toy --label fleet:ready '*)
     if [ "$(cat "$GH_STATE/column")" = ready ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:ready"}]}]\n'; else echo '[]'; fi ;;
@@ -44,8 +57,12 @@ case "$*" in
     if [ "$(cat "$GH_STATE/column")" = in_progress ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_progress"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label fleet:in_review '*)
     if [ "$(cat "$GH_STATE/column")" = in_review ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_review"}]}]\n'; else echo '[]'; fi ;;
+  'issue list --repo acme/toy --label fleet:review_security '*)
+    if [ "$(cat "$GH_STATE/column")" = review_security ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:review_security"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label needs-security-review') touch "$GH_STATE/stage-label" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:review_security') printf review_security > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_review')
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
@@ -87,6 +104,7 @@ case "$*" in
     draft=true; [ ! -e "$GH_STATE/ready" ] || draft=false
     state=OPEN; merged=null; if [ -e "$GH_STATE/merged" ]; then state=MERGED; merged='"2026-01-01T00:00:00Z"'; fi
     jq -n --arg sha "$sha" --arg state "$state" --argjson draft "$draft" --argjson merged "$merged" '{isDraft:$draft,state:$state,mergedAt:$merged,statusCheckRollup:[{__typename:"CheckRun",conclusion:"SUCCESS"}],headRefOid:$sha}' ;;
+  'pr view 34 --repo acme/toy --json files,changedFiles') echo '{"files":[{"path":"source.txt"}],"changedFiles":1}' ;;
   'pr view 34 --repo acme/toy --json mergeable') echo '{"mergeable":"MERGEABLE"}' ;;
   'pr ready 34 --repo acme/toy') touch "$GH_STATE/ready" ;;
   'pr merge 34 --repo acme/toy --squash --match-head-commit '*)
@@ -267,7 +285,7 @@ if [ "${1:-start}" = resume-ref ] && ! jq -e '.cost_usd == 0' "$TMP/out" >/dev/n
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ] || [ "${1:-start}" = merge-verification ] || [ "${1:-start}" = stale-head ] || [ "${1:-start}" = merge-qa-race ] || [ "${1:-start}" = merge-state-race ] || [ "${1:-start}" = merge-done-resume ] || [ "${1:-start}" = advisory-stage ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -418,6 +436,23 @@ PY_WORKER
     if [ -e "$TMP/state/merged" ] || grep -q '^pr merge ' "$TMP/state/calls"; then echo 'FAIL: merge attempted after QA or state changed' >&2; exit 1; fi
     if [ "$1" = merge-state-race ] && [ "$(cat "$TMP/state/column")" != human_qa ]; then echo 'FAIL: Human QA move lost' >&2; exit 1; fi
     echo "PASS: $1"
+    exit 0
+  fi
+  if [ "${1:-start}" = advisory-stage ]; then
+    [ -e "$TMP/state/stage-label" ] || { echo 'FAIL: stage routing label missing before review movement' >&2; exit 1; }
+    cat > "$TMP/worker.sh" <<'STAGE'
+#!/bin/sh
+set -eu
+grep -q '"role": "stage-reviewer"' /scratch/request.json
+printf '%s\n' '{"version":1,"outcome":"findings","report":"## Status\nfindings\n## Findings\n- [Important] Advisory issue\n## For the card\nAdvisory review.\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+STAGE
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/stage-out"; then echo 'FAIL: stage advance and review failed' >&2; exit 1; fi
+    jq -e '.outcome == "progress" and .cards[0].action == "advance_stage"' "$TMP/stage-out" >/dev/null || { echo 'FAIL: stage outcome' >&2; exit 1; }
+    [ "$(cat "$TMP/state/column")" = review_security ] || { echo 'FAIL: stage move missing' >&2; exit 1; }
+    jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")) and (.body | contains("\"stage\": \"security\"")) and (.body | contains("\"important\": 1")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: stage finding not recorded' >&2; exit 1; }
+    bash "$ROOT/bin/fleet-board" tick --plan-only > "$TMP/stage-next" || exit 1
+    jq -e '.cards[0].action == "mark_ready"' "$TMP/stage-next" >/dev/null || { echo 'FAIL: advisory finding incorrectly blocked progress' >&2; exit 1; }
+    echo 'PASS: advisory-stage'
     exit 0
   fi
   if [ "${1:-start}" = stale-head ]; then
