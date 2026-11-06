@@ -20,7 +20,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (`read`, `list`, `move`, `create`, `comment`, `note`, `cache-clear`). Each validates its
   arguments (exit 2 on usage), loads config, and execs
   `scripts/adapters/<board.backend>/<verb>.sh`. Backends: `github-labels`,
-  `github-projects`. `list` fails closed (exit 1) when `gh` returns exactly its `--limit`
+  `github-projects`, `local` (cards as files under `board.dir`; its `list` has no truncation
+  rule). `list` fails closed (exit 1) when `gh` returns exactly its `--limit`
   items (500 labels, 1000 Projects), since the reply may be truncated. Remedies: raise
   `FLEET_BOARD_LIST_LIMIT`, or shrink the listing (labels: remove `fleet:done` from old
   closed issues, as done/wont_do grow without bound; Projects: archive done items).
@@ -31,9 +32,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `review.stages` entry in config order, then human_qa blocked done wont_do
   (`FB_STATES_FIXED` is the list without stages); board names come from `board.states.*` or
   the backend default (`fleet:review_<name>` labels, `Review: <name>` columns). A new backend implements the same verbs.
+- **Active marker** (`fb_mark_active` in `board-lib.sh`). On `local` only, `worktree.sh create|review`
+  and `stage-review.sh` write `<board.dir>/active/<n>`; the `local` `note` verb removes it. The
+  page lights a card while its marker exists and a run is alive; Start clears stale markers and
+  the server clears them when it sees the run end. A failed write is a warning.
 - **Manager note** (`scripts/note.sh get|parse|put|merge|reset-failures|fail`). One comment per
   card, starting with `FB_MARKER`, holding one fenced JSON block. Trust boundary: only a
-  marker comment authored by the authenticated `gh` login counts; `get` validates fields
+  marker comment authored by the authenticated `gh` login counts (on `local`, `fb_login` is `FLEET_BOARD_USER`, else `$USER`, with no `gh` call, and the boundary is filesystem access); `get` validates fields
   that could steer shell commands (`pr`, `branch` = `fleet/<n>-<slug>`, absolute `worktree`
   inside the worktrees base, integer counters, control-char-free `last_action_error`) and
   treats an invalid note as `{}` with a warning. `put`/`merge` refuse to write an invalid
@@ -169,7 +174,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - Scripts run under `/bin/bash` 3.2 and both BSD and GNU tools: `sed -i.bak` (never bare
   `sed -i` or `sed -i ""`), no bash 4 features, `unset CDPATH` before `cd`, and
   `LC_ALL=C awk` for any decimal.
-- Runtime data goes under `$HOME/.fleet-board/` (override `FLEET_BOARD_LOG_DIR`).
+- Runtime data goes under `$HOME/.fleet-board/` (override `FLEET_BOARD_LOG_DIR`); the board page's state is its `web/<owner>-<name>/` subdirectory.
 
 ## Tests
 

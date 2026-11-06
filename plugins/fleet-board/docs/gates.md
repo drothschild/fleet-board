@@ -51,7 +51,8 @@ The gate reads command text before it runs. A string check cannot see:
 - obfuscation beyond what the hook decodes: `$'gh'`, `eval "$(printf ...)"`, a variable holding a whole command (`C="gh pr merge 5"; $C`), `alias` with `shopt -s expand_aliases`, `env -C dir` or `sudo -D dir`, and shell functions defined in an earlier Bash call;
 - `gh ... -R owner/board` or `GH_REPO=owner/board` from a directory without a config, which is inert by design;
 - `parallel board-move.sh ::: 14 ::: done`;
-- `cd -P link/..`, which the hook resolves logically and the shell physically.
+- `cd -P link/..`, which the hook resolves logically and the shell physically;
+- raw writes into `board.dir` on a `local` board (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered.
 
 It also blocks some harmless commands, because it prefers a block to a miss:
 

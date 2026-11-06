@@ -90,6 +90,8 @@ The tick in progress finishes, and the run stops before the next one. Delete the
 
 To stop at once, press Ctrl-C or send the wrapper TERM (`kill <pid>`). It passes TERM on to the running `claude` session (or cleanup, or the wait between ticks), waits up to 5 seconds for it to exit, and sends KILL to anything still running after that. Then it logs `stopped: interrupted (<signal>)` and exits 130 or 143. A stop can therefore take up to about 5 seconds. The tick it cut short is logged no further, and its cost is not counted. KILL ends only the process the wrapper started; a helper that process started and left behind is not tracked.
 
+On a `local` board, the Start and Stop buttons on the board page do the same thing by hand: Start spawns this wrapper in its own session, and Stop writes the same `.fleet-board.stop` file. The page keeps its own state (the run's pid and log) under `${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/web/<owner>-<name>/`. `FLEET_BOARD_RUN` makes Start spawn a different script.
+
 ## The run log
 
 Each run appends every tick to one file:
