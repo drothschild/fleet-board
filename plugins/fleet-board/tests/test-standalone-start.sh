@@ -88,7 +88,7 @@ case "$*" in
   'pr ready 34 --repo acme/toy') touch "$GH_STATE/ready" ;;
   'pr merge 34 --repo acme/toy --squash --match-head-commit '*)
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)"
-    [ "$7" = "$sha" ] && [ -e "$GH_STATE/ready" ] || exit 1
+    [ "$8" = "$sha" ] && [ -e "$GH_STATE/ready" ] || exit 1
     git --git-dir="$GH_REMOTE" update-ref refs/heads/main "$sha"
     touch "$GH_STATE/merged" ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body,statusCheckRollup,mergeable')
