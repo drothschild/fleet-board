@@ -57,6 +57,7 @@ run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
 run_review() { run_group bash "$SCRIPTS/standalone/review.sh" "$@"; }
 run_fix() { run_group bash "$SCRIPTS/standalone/fix.sh" "$@"; }
 run_qa() { run_group bash "$SCRIPTS/standalone/qa.sh" "$@"; }
+run_stage() { run_group bash "$SCRIPTS/standalone/stage.sh" "$@"; }
 run_publication() { run_group bash "$SCRIPTS/standalone/publication.sh" "$@"; }
 trap cleanup EXIT
 trap 'cancel 130' INT
@@ -70,7 +71,7 @@ fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
-  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json; do
+  for JOURNAL in "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json; do
     [ -e "$JOURNAL" ] || continue
     [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
     if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
@@ -82,6 +83,7 @@ if [ "$MODE" = tick ]; then
       review-*) run_review "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
       qa-*) run_qa "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       merge-*) run_publication "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      stage-*) run_stage "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
       *) exit 1 ;;
     esac
     jq -n --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]} + (if $fixture then {cost_usd:0} else {} end)'
@@ -139,6 +141,9 @@ elif jq -e '([.cards[] | select(.action == "fix")] | length) == 1 and all(.cards
 elif jq -e '([.cards[] | select(.action == "to_human_qa")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "to_human_qa")' "$PLAN" >/dev/null; then
   jq '.cards[] | select(.action == "to_human_qa")' "$PLAN" > "$SCRATCH/card"
   run_qa "$SCRATCH/card" "$SCRATCH" || exit 1
+elif jq -e '([.cards[] | select(.action == "advance_stage")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "advance_stage")' "$PLAN" >/dev/null; then
+  jq '.cards[] | select(.action == "advance_stage")' "$PLAN" > "$SCRATCH/card"
+  run_stage "$SCRATCH/card" "$SCRATCH" || exit 1
 elif jq -e '([.cards[] | select(.action | IN("mark_ready", "merge", "verify_main", "finish"))] | length) == 1 and all(.cards[]; .action == "skip" or (.action | IN("mark_ready", "merge", "verify_main", "finish")))' "$PLAN" >/dev/null; then
   jq '.cards[] | select(.action | IN("mark_ready", "merge", "verify_main", "finish"))' "$PLAN" > "$SCRATCH/card"
   run_publication "$SCRATCH/card" "$SCRATCH" || exit 1

@@ -7,7 +7,16 @@ SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ "$#" -eq 2 ] || [ "$#" -eq 3 ] || exit 2
 CARD="$1" SCRATCH="$2" RECOVERY_JOURNAL="${3:-}"
 ACTION="$(jq -r .action "$CARD")"
-case "$ACTION" in start_review) EXPECTED_STATE=in_progress; ROUND=1 ;; re_review) EXPECTED_STATE=in_review; ROUND="$(jq -r .round "$CARD")" ;; *) exit 2 ;; esac
+ROLE=reviewer STAGE_NAME="" STAGE_AGENT="" STAGE_MODEL=""
+case "$ACTION" in
+  start_review) EXPECTED_STATE=in_progress; ROUND=1 ;;
+  re_review) EXPECTED_STATE=in_review; ROUND="$(jq -r .round "$CARD")" ;;
+  stage_review)
+    STAGE_NAME="$(jq -r '.stage.name // empty' "$CARD")"; STAGE_AGENT="$(jq -r '.stage.agent // empty' "$CARD")"; STAGE_MODEL="$(jq -r '.stage.model // empty' "$CARD")"
+    [[ "$STAGE_NAME" =~ ^[a-z][a-z0-9_]*$ ]] && [ -n "$STAGE_AGENT" ] && [ -n "$STAGE_MODEL" ] && jq -e '.stage.provider == null' "$CARD" >/dev/null || exit 1
+    EXPECTED_STATE="review_$STAGE_NAME"; ROUND="$(jq -r .round "$CARD")"; ROLE=stage-reviewer ;;
+  *) exit 2 ;;
+esac
 [[ "$ROUND" =~ ^[1-9][0-9]*$ ]] || exit 1
 CHILD=""
 cancel() {
@@ -46,7 +55,7 @@ check_pr <<<"$INFO" || { echo 'review PR identity mismatch' >&2; exit 1; }
 SHA="$(jq -r .headRefOid <<<"$INFO")"
 COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || exit 1
 JDIR="$COMMON/fleet-board-standalone"; mkdir -p "$JDIR" || exit 1
-JOURNAL="$JDIR/review-$N-$ROUND-$SHA.json"
+JOURNAL="$JDIR/review-$N-$ROUND-${STAGE_NAME:-standard}-$SHA.json"
 [ -z "$RECOVERY_JOURNAL" ] || [ "$RECOVERY_JOURNAL" = "$JOURNAL" ] || { echo 'review head changed since saved verdict' >&2; exit 1; }
 RECOVERING=false
 if [ -e "$JOURNAL" ]; then
@@ -60,14 +69,14 @@ else
   WT="$(jq -r .path <<<"$REVIEW")"
   mkdir "$SCRATCH/worker" || exit 1
   cp "$FLEET_BOARD_WORKER_SCRIPT" "$SCRATCH/worker/worker.sh" || exit 1
-  jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$SHA" --arg image "$FLEET_BOARD_WORKER_IMAGE" \
-    '{version:1,card:$card,action:"review",role:"reviewer",worktree:$wt,expected_ref:$ref,prompt:"Review the requested change.",limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
+  jq -n --argjson card "$N" --arg wt "$WT" --arg ref "$SHA" --arg image "$FLEET_BOARD_WORKER_IMAGE" --arg role "$ROLE" --arg stage "$STAGE_NAME" --arg agent "$STAGE_AGENT" \
+    '{version:1,card:$card,action:"review",role:$role,worktree:$wt,expected_ref:$ref,prompt:("Review the requested change. Stage: " + $stage + "; agent: " + $agent),limits:{seconds:300,memory_mb:1024,pids:128},permissions:{network:false},image:$image}' > "$SCRATCH/request.json"
   bash "$SCRIPTS/standalone/worker.sh" --request "$SCRATCH/request.json" --scratch "$SCRATCH/worker" > "$SCRATCH/result" & CHILD=$!
   wait "$CHILD"; RC=$?; CHILD=""
   [ "$RC" -eq 0 ] || exit "$RC"
 fi
 jq -r .report "$SCRATCH/result" > "$SCRATCH/reviewer-report"
-PARSED="$(bash "$SCRIPTS/parse-report.sh" --role reviewer "$SCRATCH/reviewer-report")" || exit 1
+PARSED="$(bash "$SCRIPTS/parse-report.sh" --role "$ROLE" "$SCRATCH/reviewer-report")" || exit 1
 [ "$(jq -r .status <<<"$PARSED")" = "$(jq -r .outcome "$SCRATCH/result")" ] || exit 1
 jq -e '(.out_of_scope | length == 0) and (.bugs | length == 0)' <<<"$PARSED" >/dev/null || { echo 'review follow-ups require reconciliation' >&2; exit 1; }
 # A concurrent move, especially into Human QA, must not be undone by a review.
@@ -108,7 +117,7 @@ fi
 if [ "$ACTION" = start_review ]; then
   bash "$SCRIPTS/review-stages.sh" route "$N" "$PR" >/dev/null || exit 1
 fi
-MARKER="<!-- fleet-board:standalone-review:$SHA -->"
+if [ "$ACTION" = stage_review ]; then MARKER="<!-- fleet-board:standalone-stage-review:$STAGE_NAME:$ROUND:$SHA -->"; else MARKER="<!-- fleet-board:standalone-review:$SHA -->"; fi
 COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
 ME="$(fb_login)" || exit 1
 { printf '%s\nReviewed commit: `%s`\n\n' "$MARKER" "$SHA"; cat "$SCRATCH/reviewer-report"; } > "$SCRATCH/official-report"
@@ -121,7 +130,8 @@ fi
 INFO="$(pr_info)" || exit 1
 check_pr <<<"$INFO" && [ "$(jq -r .headRefOid <<<"$INFO")" = "$SHA" ] || { echo 'PR head changed before review recording' >&2; exit 1; }
 jq -n --argjson pr "$PR" --arg sha "$SHA" --argjson round "$ROUND" --argjson parsed "$PARSED" \
-  '{state:"in_review",pr:$pr,round:$round,last_verified:$parsed.verified.line,last_review:{round:$round,sha:$sha,critical:$parsed.counts.critical,important:$parsed.counts.important,findings:$parsed.findings},action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
+  --arg state "$EXPECTED_STATE" --arg stage "$STAGE_NAME" --arg agent "$STAGE_AGENT" --arg model "$STAGE_MODEL" \
+  '{state:(if $stage == "" then "in_review" else $state end),pr:$pr,round:$round,last_verified:$parsed.verified.line,last_review:({round:$round,sha:$sha,critical:$parsed.counts.critical,important:$parsed.counts.important,findings:$parsed.findings} + (if $stage == "" then {} else {stage:$stage,agent:$agent,model:$model,provider:null} end)),action_failures:0,last_action_error:null}' > "$SCRATCH/note.json"
 check_live_card || { echo 'card state changed before review recording' >&2; exit 1; }
 if [ "$ACTION" = start_review ] && { [ "$LIVE_STATE" = in_progress ] || [ "$LIVE_STATE" = null ]; }; then
   if [ "$LIVE_STATE" = in_progress ]; then
