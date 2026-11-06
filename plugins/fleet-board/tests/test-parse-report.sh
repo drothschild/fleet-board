@@ -543,10 +543,10 @@ assert_stderr_contains "findings-indented: names the malformed line" "malformed 
 echo "stage-reviewer"
 run_parse --role stage-reviewer "$REPORTS/stage-reviewer-ok.md"
 assert_exit "stage-reviewer-ok: exit 0" 0
-assert_jq "stage-reviewer-ok: acceptance_map null" '.acceptance_map' 'null'
+assert_jq "stage-reviewer-ok: acceptance_map null" '.acceptance_map == null'
 run_parse --role stage-reviewer "$REPORTS/stage-reviewer-findings.md"
 assert_exit "stage-reviewer-findings: exit 0" 0
-assert_jq "stage-reviewer-findings: counts" '.counts.important' '1'
+assert_jq "stage-reviewer-findings: counts" '.counts.important == 1'
 run_parse --role stage-reviewer "$REPORTS/stage-reviewer-clean-with-critical.md"
 assert_exit "stage-reviewer clean+critical: exit 1" 1
 assert_stderr_line "stage-reviewer clean+critical: message" "parse-report: status clean needs zero Critical and Important findings, found 1"
