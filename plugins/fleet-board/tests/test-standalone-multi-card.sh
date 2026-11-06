@@ -119,6 +119,34 @@ cat "$TMP/mixed-plan"
 PLAN
   export FLEET_BOARD_TICK_PLAN="$TMP/planner"
 fi
+if [ "${1:-multi-card}" = git-lock-cancel ]; then
+  REAL_BASH="$(command -v bash)"
+  touch "$TMP/state/block-git"
+  cat > "$TMP/bin/bash" <<WRAPPER
+#!/bin/bash
+case "\${1:-}" in
+  */worktree.sh)
+    if [ -e "$TMP/state/block-git" ]; then
+      rm "$TMP/state/block-git"
+      trap '' TERM
+      sleep 30 & child=\$!
+      printf '%s %s\n' \$$ \$child > "$TMP/state/git-pids"
+      wait \$child
+    fi ;;
+esac
+exec "$REAL_BASH" "\$@"
+WRAPPER
+  chmod +x "$TMP/bin/bash"
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/cancel-out" 2> "$TMP/cancel-err" & TICK_PID=$!
+  for unused in 1 2 3 4 5 6 7 8 9 10; do [ -s "$TMP/state/git-pids" ] && break; sleep 1; done
+  if [ ! -s "$TMP/state/git-pids" ]; then kill -TERM "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true; echo 'FAIL: Git mutex holder not reached' >&2; exit 1; fi
+  read -r GIT_PID GIT_CHILD < "$TMP/state/git-pids"
+  kill -TERM "$TICK_PID"
+  for unused in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$TICK_PID" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$TICK_PID" 2>/dev/null; then kill -KILL "$GIT_CHILD" "$GIT_PID" "$TICK_PID" 2>/dev/null || true; wait "$TICK_PID" 2>/dev/null || true; echo 'FAIL: interrupted Git batch did not stop' >&2; exit 1; fi
+  wait "$TICK_PID" 2>/dev/null || true
+  if find "$TMP/repo/.git" -maxdepth 1 -name 'fleet-board-standalone-git*.lock' -print -quit | grep -q .; then echo 'FAIL: interrupted tick left its Git mutex' >&2; exit 1; fi
+fi
 if [ "${1:-multi-card}" = multi-card-provider ]; then
   bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/base-plan" || exit 1
   jq '.cards[1].action = "review_stage" | .cards[1].state = "review_security" | .cards[1].stage = {name:"security",agent:null,provider:"openai",model:"test"}' "$TMP/base-plan" > "$TMP/provider-plan"

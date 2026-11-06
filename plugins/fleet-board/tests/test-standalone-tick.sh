@@ -8,7 +8,7 @@ case "${1:-}" in
   run-limits|run-cancel-real) exec bash "$TEST_DIR/test-standalone-run.sh" "$1" ;;
   legacy-entry) exec bash "$TEST_DIR/test-standalone-legacy.sh" "$1" ;;
 esac
-if [ "${1:-}" = multi-card ] || [ "${1:-}" = multi-card-skip ] || [ "${1:-}" = multi-card-provider ] || [ "${1:-}" = multi-card-lock ] || [ "${1:-}" = multi-card-parallel ] || [ "${1:-}" = multi-card-limit ] || [ "${1:-}" = multi-card-wait ] || [ "${1:-}" = multi-card-lint ]; then
+if [ "${1:-}" = multi-card ] || [ "${1:-}" = multi-card-skip ] || [ "${1:-}" = multi-card-provider ] || [ "${1:-}" = multi-card-lock ] || [ "${1:-}" = multi-card-parallel ] || [ "${1:-}" = multi-card-limit ] || [ "${1:-}" = multi-card-wait ] || [ "${1:-}" = multi-card-lint ] || [ "${1:-}" = git-lock-cancel ]; then
   exec bash "$TEST_DIR/test-standalone-multi-card.sh" "$1"
 fi
 if [ "${1:-}" = card-lifecycle ]; then
