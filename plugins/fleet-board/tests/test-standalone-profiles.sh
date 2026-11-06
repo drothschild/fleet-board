@@ -2,11 +2,44 @@
 # Targeted standalone profile cases; no provider calls.
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in routing|legacy-config) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
+case "${1:-}" in routing|legacy-config|preflight) ;; *) echo 'usage: test-standalone-profiles.sh routing|legacy-config' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo"
 git -C "$TMP/repo" init -q
+if [[ $1 == preflight ]]; then
+  mkdir -p "$TMP/bin"
+  for executable in codex docker; do
+    printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/$executable"
+    chmod +x "$TMP/bin/$executable"
+  done
+  export PATH="$TMP/bin:$PATH" OPENAI_API_KEY=test-key OPENROUTER_API_KEY=test-key
+  cat > "$TMP/repo/.fleet-board.yml" <<'YML'
+board: { repo: acme/toy }
+execution:
+  profiles:
+    code: { runner: codex, provider: openai, model: code-model }
+    review: { runner: diff-chat, provider: openrouter, model: review-model }
+  roles: { implementor: code, fixer: code, reviewer: review }
+YML
+  cd "$TMP/repo" || exit 1
+  check() { bash "$SCRIPTS/standalone/profiles.sh" preflight; }
+  check || { echo 'FAIL: valid profiles failed preflight' >&2; exit 1; }
+  unset OPENROUTER_API_KEY
+  if check >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing key accepted' >&2; exit 1; fi
+  rg -q 'OPENROUTER_API_KEY' "$TMP/err" || { echo 'FAIL: missing key not identified' >&2; exit 1; }
+  export OPENROUTER_API_KEY=test-key
+  sed 's/implementor: code/implementor: review/' .fleet-board.yml > "$TMP/next" && mv "$TMP/next" .fleet-board.yml
+  if check >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: diff-only implementor accepted' >&2; exit 1; fi
+  rg -q 'implementor' "$TMP/err" || exit 1
+  sed 's/implementor: review/implementor: code/' .fleet-board.yml > "$TMP/next" && mv "$TMP/next" .fleet-board.yml
+  rm "$TMP/bin/codex"
+  PATH="$TMP/bin:/usr/bin:/bin:/usr/sbin:/sbin"; export PATH
+  if check >"$TMP/out" 2>"$TMP/err"; then echo 'FAIL: missing codex accepted' >&2; exit 1; fi
+  rg -q 'codex' "$TMP/err" || exit 1
+  echo 'PASS: preflight'
+  exit 0
+fi
 if [[ $1 == legacy-config ]]; then
   cat > "$TMP/repo/.fleet-board.yml" <<'YML'
 board: { repo: acme/toy }
