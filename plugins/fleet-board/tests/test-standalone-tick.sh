@@ -77,6 +77,28 @@ WORKER
   if bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/invalid" >/dev/null 2>&1; then
     echo 'FAIL: malformed worker report accepted' >&2; exit 1
   fi
+  # Interrupt while the Docker client has not yet started the container.
+  mkdir "$TMP/delayed" "$TMP/wrapper"
+  cp "$TMP/scratch/worker.sh" "$TMP/delayed/worker.sh"
+  REAL_DOCKER="$(command -v docker)"
+  cat > "$TMP/wrapper/docker" <<WRAPPER
+#!/bin/bash
+case "\$1" in
+  run|start) touch "$TMP/start-pending"; sleep 4 ;;
+esac
+exec "$REAL_DOCKER" "\$@"
+WRAPPER
+  chmod +x "$TMP/wrapper/docker"
+  PATH="$TMP/wrapper:$PATH" bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/delayed" > "$TMP/delayed.out" 2>&1 & WORKER_PID=$!
+  for unused in 1 2 3 4 5; do [ -e "$TMP/start-pending" ] && break; sleep 1; done
+  [ -e "$TMP/start-pending" ] || { kill "$WORKER_PID" 2>/dev/null || true; echo 'FAIL: delayed start was not reached' >&2; exit 1; }
+  kill -TERM "$WORKER_PID"
+  wait "$WORKER_PID" 2>/dev/null || true
+  sleep 5
+  if docker ps -a --filter "name=fleet-worker-$(basename "$TMP/delayed")-" --format '{{.Names}}' | grep -q .; then
+    echo 'FAIL: container survived interrupted startup' >&2; exit 1
+  fi
+  if [ -e "$TMP/delayed/result.json" ]; then echo 'FAIL: worker ran after interrupted startup' >&2; exit 1; fi
   if PATH=/nonexistent /bin/bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch" >/dev/null 2>&1; then
     echo 'FAIL: unavailable isolation accepted' >&2; exit 1
   fi
