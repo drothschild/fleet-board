@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in move-to-review|stage-advance|settle-pass|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
+case "${1:-}" in move-to-review|move-resume|stage-advance|settle-pass|settle-unknown|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"; ROOT="$(cd "$TESTS/../../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch" "$TMP/log"
@@ -20,7 +20,7 @@ case "$*" in
   'issue edit 12 --repo acme/toy --add-label fleet:review_security') printf review_security > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_review') printf in_review > "$GH_STATE/column" ;;
-  'api -X POST repos/acme/toy/issues/12/comments --input -') body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments"; echo '{"id":555}' ;;
+  'api -X POST repos/acme/toy/issues/12/comments --input -') if [ -e "$GH_STATE/fail-note" ]; then rm "$GH_STATE/fail-note"; exit 1; fi; body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments"; echo '{"id":555}' ;;
   'api -X PATCH repos/acme/toy/issues/comments/555 --input -') body="$(cat)"; jq --argjson x "$body" 'map(if .id == 555 then .body = $x.body else . end)' "$GH_STATE/comments" > "$GH_STATE/new" && mv "$GH_STATE/new" "$GH_STATE/comments"; echo '{}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body'|'pr view 34 --repo acme/toy --json number,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body') echo '{"number":34,"state":"OPEN","headRefName":"fleet/12-example","headRefOid":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","baseRefName":"main","headRepositoryOwner":{"login":"acme"},"headRepository":{"name":"toy"},"body":"<!-- fleet-board:card:12 -->"}' ;;
@@ -30,10 +30,16 @@ GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 cd "$TMP/repo" || exit 1
-if [ "$1" = settle-pass ]; then
+if [ "$1" = settle-pass ] || [ "$1" = settle-unknown ]; then
   jq -n '{dispatchable:false,warnings:[],cards:[{number:12,state:"in_progress",action:"move_to_review",pr:34,branch:"fleet/12-example",reason:"PR exists"}]}' > "$TMP/plan"
+  if [ "$1" = settle-unknown ]; then jq '.cards[0].action = "merge"' "$TMP/plan" > "$TMP/plan.new" && mv "$TMP/plan.new" "$TMP/plan"; fi
   printf '#!/bin/sh\ncat "$PLAN_FIXTURE"\n' > "$TMP/plan-command"
   export PLAN_FIXTURE="$TMP/plan" FLEET_BOARD_TICK_PLAN="$TMP/plan-command"
+  if [ "$1" = settle-unknown ]; then
+    if bash "$SCRIPTS/standalone/settle.sh"; then echo 'FAIL: unexpected settle action accepted' >&2; exit 1; fi
+    [ "$(cat "$GH_STATE/column")" = in_progress ] || exit 1
+    echo 'PASS: settle-unknown'; exit 0
+  fi
   bash "$SCRIPTS/standalone/settle.sh" || exit 1
   [ "$(cat "$GH_STATE/column")" = in_review ] || exit 1
   echo 'PASS: settle-pass'; exit 0
@@ -62,13 +68,18 @@ YML
   jq -e '.stage == "security" and .round == 1' <<<"$note" >/dev/null || exit 1
   echo 'PASS: stage-advance'; exit 0
 fi
-if [ "$1" = move-to-review ]; then
+if [ "$1" = move-to-review ] || [ "$1" = move-resume ]; then
   jq -n '{number:12,state:"in_progress",action:"move_to_review",pr:34,branch:"fleet/12-example",reason:"PR exists"}' > "$TMP/card"
+  if [ "$1" = move-resume ]; then
+    touch "$GH_STATE/fail-note"
+    if bash "$SCRIPTS/standalone/settle-move.sh" "$TMP/card" "$TMP/scratch"; then echo 'FAIL: failed note accepted' >&2; exit 1; fi
+    [ "$(cat "$GH_STATE/column")" = in_review ] || exit 1
+  fi
   bash "$SCRIPTS/standalone/settle-move.sh" "$TMP/card" "$TMP/scratch" || exit 1
   [ "$(cat "$GH_STATE/column")" = in_review ] || exit 1
   note="$(bash "$SCRIPTS/note.sh" get 12)" || exit 1
   jq -e '.pr == 34 and .round == 1 and .state == "in_review"' <<<"$note" >/dev/null || exit 1
-  echo 'PASS: move-to-review'; exit 0
+  echo "PASS: $1"; exit 0
 fi
 cat > "$TMP/tick" <<'TICK'
 #!/bin/sh

@@ -20,6 +20,7 @@ MIN_GAP="$(cfg limits.min_tick_gap)" || exit 1
 MAX_FAILS="$(cfg limits.max_consecutive_failures)" || exit 1
 TICK_CMD="${FLEET_BOARD_STANDALONE_TICK:-$HERE/standalone/controller.sh}"
 CLEANUP="${FLEET_BOARD_CLEANUP:-$HERE/cleanup-done.sh}"
+SETTLE="${FLEET_BOARD_STANDALONE_SETTLE:-$HERE/standalone/settle.sh}"
 SLEEP_CMD="${FLEET_BOARD_SLEEP:-sleep}"
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
 case "$LOG_DIR" in /*) ;; *) LOG_DIR="$CALLER/$LOG_DIR" ;; esac
@@ -81,7 +82,8 @@ while :; do
     continue
   fi
   FAILS=0
-  # The standalone tick itself performs safe transitions. Cleanup does not merge.
+  # Settle only guarded, non-worker actions before cleaning finished worktrees.
+  run_group bash "$SETTLE" </dev/null >> "$LOG" 2>&1 || printf 'warning: standalone settle failed\n' >> "$LOG"
   run_group bash "$CLEANUP" </dev/null >> "$LOG" 2>&1 || printf 'warning: cleanup failed\n' >> "$LOG"
   [ "$(jq -r .outcome "$WORK/tick")" = idle ] && stop nothing-dispatchable 0
   greater "$COST" "$MAX_COST" && stop max-cost 0
