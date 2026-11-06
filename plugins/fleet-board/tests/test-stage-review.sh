@@ -49,7 +49,7 @@ trap 'rm -rf "$WORK"' EXIT
 make_bin() { # dir with_gh
   mkdir -p "$1"
   local t p
-  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false; do
+  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od; do
     p="$(command -v "$t" 2>/dev/null || true)"
     case "$p" in /*) ln -sf "$p" "$1/$t" ;; esac
   done
@@ -161,8 +161,9 @@ assert_eq "clean_reply_posts_and_prints_result: cost" "$(jq -r '.cost_usd == 0.0
 assert_eq "clean_reply_posts_and_prints_result: tokens" "$(jq -c '[.input_tokens,.output_tokens,.attempts,.provider,.model]' <<<"$LAST_OUT")" '[1000,100,1,"openai","gpt-test-2026"]'
 assert_eq "clean_reply_posts_and_prints_result: one comment" "$(posted)" "1"
 assert_eq "clean_reply_posts_and_prints_result: comment is the reply" "$(cat "$CASE/gh/bodies/"*)" "$(cat "$CASE/clean.md")"
-assert_eq "clean_reply_posts_and_prints_result: report file is absolute and holds the reply" \
-  "$(f="$(jq -r .report_file <<<"$LAST_OUT")"; case "$f" in /*) cat "$f" ;; *) echo relative ;; esac)" "$(cat "$CASE/clean.md")"
+report_file="$(jq -r .report_file <<<"$LAST_OUT")"
+assert_eq "clean_reply_posts_and_prints_result: report file is absolute" "${report_file:0:1}" "/"
+assert_eq "clean_reply_posts_and_prints_result: report file holds the reply" "$(cat "$report_file" 2>/dev/null)" "$(cat "$CASE/clean.md")"
 assert_eq "clean_reply_posts_and_prints_result: one call" "$(calls)" "1"
 
 # findings_reply_parsed
@@ -260,7 +261,7 @@ assert_eq "binary_only_diff_makes_no_call: no curl call" "$(calls)" "0"
 # missing_key_env_makes_no_call
 setup
 replies "200 r-clean.json"
-( unset OPENAI_API_KEY; sr 12 34 --stage compliance --round 1 )
+KEEP_KEY="$OPENAI_API_KEY"; unset OPENAI_API_KEY; sr 12 34 --stage compliance --round 1; export OPENAI_API_KEY="$KEEP_KEY"
 assert_exit "missing_key_env_makes_no_call: exit 3" 3
 assert_contains "missing_key_env_makes_no_call: stderr names the variable" "$LAST_ERR" "OPENAI_API_KEY"
 assert_eq "missing_key_env_makes_no_call: no curl call" "$(calls)" "0"
