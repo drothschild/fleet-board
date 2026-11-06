@@ -36,8 +36,8 @@ check "card-writing section says nothing promotes a Backlog card" "$r"
 
 # --- settle.sh docs claims (it runs outside the gate, so these are safety claims) ---
 DOCS_DIR="${SCRIPT_DIR}/../docs"
-GATES="${DOCS_DIR}/gates.md"
-OVERNIGHT="${DOCS_DIR}/overnight.md"
+GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
+OVERNIGHT="${OVERNIGHT_FILE:-${DOCS_DIR}/overnight.md}"
 
 gsec="$(awk '/^## settle\.sh runs outside the gate$/{f=1;next} f && /^## /{exit} f' "$GATES")"
 r=bad
