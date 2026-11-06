@@ -56,11 +56,18 @@ WORKER
   jq -n --arg source "$TMP/source" --arg scratch "$TMP/scratch" --arg ref "$REF" \
     '{version:1,card:12,action:"start",role:"implementor",worktree:$source,expected_ref:$ref,prompt:"fixture",limits:{seconds:8,memory_mb:256,pids:64},permissions:{network:false},image:"ghcr.io/home-assistant/home-assistant:stable"}' > "$TMP/request.json"
   export GH_TOKEN=controller-secret
+  cat > "$TMP/observe-kill" <<OBSERVER
+kill() {
+  if [ "\${1:-}" = -KILL ]; then printf '%s\n' "\$*" >> "$TMP/kill-log"; fi
+  builtin kill "\$@"
+}
+OBSERVER
   START_TIME="$(date +%s)"
-  if ! OUTPUT="$(bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch")"; then
+  if ! OUTPUT="$(BASH_ENV="$TMP/observe-kill" bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch")"; then
     echo 'FAIL: isolated worker should succeed' >&2; exit 1
   fi
   END_TIME="$(date +%s)"
+  if [ -e "$TMP/kill-log" ]; then echo 'FAIL: cleanup killed an already-reaped client' >&2; exit 1; fi
   if [ "$((END_TIME - START_TIME))" -ge 7 ]; then echo 'FAIL: worker left a timer holding output open' >&2; exit 1; fi
   printf '%s\n' "$OUTPUT" > "$TMP/out"
   if ! jq -e '.version == 1 and .outcome == "done" and (.report | contains("## Status"))' "$TMP/out" >/dev/null; then
