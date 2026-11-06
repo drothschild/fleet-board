@@ -79,7 +79,7 @@ redact() {
   local t="$1" esc
   t="$(printf '%s' "$t" | tr '\n\r' '  ')"
   if [ -n "$KEY" ]; then
-    esc="$(jq -nr --arg k "$KEY" '$k | @json')"
+    esc="$(printf '%s' "$KEY" | jq -Rr @json)"
     esc="${esc#\"}"
     esc="${esc%\"}"
     t="${t//"$KEY"/[redacted]}"
@@ -139,8 +139,14 @@ jq -ce --arg m "$MODEL" '
   if (.choices | type) == "array" and (.choices | length) > 0 then
     { text: (.choices[0].message.content // "" | if type == "string" then . else tojson end),
       finish_reason: (.choices[0].finish_reason // ""),
-      input_tokens: (.usage.prompt_tokens // 0),
-      output_tokens: (.usage.completion_tokens // 0),
+      input_tokens: (.usage.prompt_tokens | if type == "number" then . else error("no usage") end),
+      output_tokens: (.usage.completion_tokens | if type == "number" then . else error("no usage") end),
       model: (.model // $m) }
-  else error("no choices") end' "$TMP/resp.json" 2> /dev/null \
-  || die "unparseable reply: $(redact "$(cat "$TMP/resp.json")")" 1
+  else error("no choices") end' "$TMP/resp.json" > "$TMP/norm.json" 2> "$TMP/norm.err" \
+  || {
+    case "$(cat "$TMP/norm.err")" in
+      *"no usage"*) die "reply has no usage" 1 ;;
+      *) die "unparseable reply: $(redact "$(cat "$TMP/resp.json")")" 1 ;;
+    esac
+  }
+cat "$TMP/norm.json"

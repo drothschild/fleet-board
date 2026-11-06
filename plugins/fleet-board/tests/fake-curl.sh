@@ -6,6 +6,8 @@
 #   FAKE_CURL_LOG:     file the calls are appended to
 #   FAKE_CURL_REPLIES: file with one reply per call, consumed in order:
 #                        <http_code> <body-file> [retry-after-seconds]
+#                        exit <code> <stderr-file>   (no HTTP reply: the file's
+#                      text goes to stderr and curl exits <code>)
 #                      a relative body-file is relative to the replies file;
 #                      a blank or '#' line is ignored
 #
@@ -83,6 +85,16 @@ while IFS= read -r line || [ -n "$line" ]; do
   [ "$i" -eq "$n" ] && break
 done < "$FAKE_CURL_REPLIES"
 [ -n "$reply" ] || die "no reply configured" 1
+
+case "$reply" in
+  exit\ *)
+    ecode="$(printf '%s' "$reply" | awk '{print $2}')"
+    efile="$(printf '%s' "$reply" | awk '{print $3}')"
+    case "$efile" in /*) ;; *) efile="$(dirname "$FAKE_CURL_REPLIES")/$efile" ;; esac
+    [ -f "$efile" ] && cat "$efile" >&2
+    exit "$ecode"
+    ;;
+esac
 
 code="$(printf '%s' "$reply" | awk '{print $1}')"
 body="$(printf '%s' "$reply" | awk '{print $2}')"

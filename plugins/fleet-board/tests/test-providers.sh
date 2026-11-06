@@ -46,6 +46,14 @@ cat > "$WORK/sleep.sh" <<'EOF'
 printf '%s\n' "$*" >> "$SLEEP_LOG"
 EOF
 chmod +x "$WORK/sleep.sh"
+# jq shim: records every argv, then runs the real jq
+REAL_JQ="$(command -v jq)"
+{
+  printf '%s\n' '#!/bin/sh'
+  printf '%s\n' 'printf "%s\n" "$@" >> "$JQ_ARGV_LOG"'
+  printf 'exec "%s" "$@"\n' "$REAL_JQ"
+} > "$WORK/bin/jq"
+chmod +x "$WORK/bin/jq"
 
 export TEST_KEY=sk-test-123
 REQ='{"messages":[{"role":"system","content":"be brief"},{"role":"user","content":"review this"}]}'
@@ -57,9 +65,10 @@ setup() {
   : > "$WORK/case/curl.log"
   : > "$WORK/case/sleep.log"
   : > "$WORK/case/replies"
+  : > "$WORK/case/jq.log"
   local r
   for r in "$@"; do printf '%s\n' "$r" >> "$WORK/case/replies"; done
-  cp "$FIX"/*.json "$WORK/case/"
+  cp "$FIX"/*.json "$FIX"/*.err "$WORK/case/"
 }
 
 # chat [args...]  (stdin: $REQ unless CHAT_IN is set)
@@ -67,7 +76,7 @@ chat() {
   local in="${CHAT_IN-$REQ}"
   printf '%s' "$in" | env PATH="$WORK/bin:$PATH" \
     FAKE_CURL_LOG="$WORK/case/curl.log" FAKE_CURL_REPLIES="$WORK/case/replies" \
-    TMPDIR="$WORK/case/tmp" FB_SLEEP="$WORK/sleep.sh" SLEEP_LOG="$WORK/case/sleep.log" \
+    TMPDIR="$WORK/case/tmp" JQ_ARGV_LOG="$WORK/case/jq.log" FB_SLEEP="$WORK/sleep.sh" SLEEP_LOG="$WORK/case/sleep.log" \
     "$BASH_EXE" "$CHAT" "$@" > "$WORK/case/out" 2> "$WORK/case/err"
   LAST_EXIT=$?
   LAST_OUT="$(cat "$WORK/case/out")"
@@ -206,6 +215,36 @@ assert_exit "usage: bad stdin exit 2" 2
 assert_eq "usage: bad stdin makes no call" "$(calls)" "0"
 chat "${BASE[@]}" --key-env 'bad name'
 assert_exit "usage: bad key-env name exit 2" 2
+
+# key_never_in_jq_argv: no jq invocation, on any path, sees the key in argv
+setup "401 401-echoing-key.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "key_never_in_jq_argv: 401 path exit 1" 1
+assert_contains "key_never_in_jq_argv: shim saw jq calls" "$(cat "$WORK/case/jq.log")" "--arg"
+assert_lacks "key_never_in_jq_argv: 401 path" "$(cat "$WORK/case/jq.log")" "sk-test-123"
+setup "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_lacks "key_never_in_jq_argv: ok path" "$(cat "$WORK/case/jq.log")" "sk-test-123"
+
+# reply_without_usage_is_a_failure
+setup "200 no-usage.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "reply_without_usage_is_a_failure: exit 1" 1
+assert_eq "reply_without_usage_is_a_failure: stderr" "$LAST_ERR" "provider: reply has no usage"
+assert_eq "reply_without_usage_is_a_failure: nothing on stdout" "$LAST_OUT" ""
+assert_eq "reply_without_usage_is_a_failure: temp removed" "$(tmp_left)" "0"
+
+# transport_failure: not retried, one stderr line, key redacted
+setup "exit 28 curl-timeout.err" "200 ok.json"
+chat "${BASE[@]}" --key-env TEST_KEY
+assert_exit "transport_failure: exit 1" 1
+assert_eq "transport_failure: one call, no retry" "$(calls)" "1"
+assert_eq "transport_failure: one stderr line" "$(printf '%s\n' "$LAST_ERR" | wc -l | tr -d ' ')" "1"
+case "$LAST_ERR" in "provider: curl failed (exit 28)"*) pass "transport_failure: prefix" ;; *) fail "transport_failure: prefix" "$LAST_ERR" ;; esac
+assert_contains "transport_failure: redacted" "$LAST_ERR" "[redacted]"
+assert_lacks "transport_failure: key absent" "$LAST_ERR" "sk-test-123"
+assert_eq "transport_failure: temp removed" "$(tmp_left)" "0"
+assert_eq "transport_failure: nothing on stdout" "$LAST_OUT" ""
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
