@@ -70,7 +70,7 @@ done
 [ "${#NUMS[@]}" -gt 0 ] || exit 0
 run_group bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" --settle "${NUMS[@]}" > "$TMP/plan" || exit 1
 jq -n '$ARGS.positional | map(tonumber)' --args "${NUMS[@]}" > "$TMP/nums" || exit 1
-jq -e --slurpfile nums "$TMP/nums" 'type == "object" and .dispatchable == false and (.warnings | type == "array" and all(.[]; type == "string")) and (.cards | type == "array") and ([.cards[].number] | sort) == ($nums[0] | sort) and ([.cards[].number] | length == (unique | length)) and all(.cards[]; (.number as $n | $nums[0] | index($n)) != null and (.action | IN("skip","move_to_review","advance_stage","to_human_qa","mark_ready","block")))' "$TMP/plan" >/dev/null || { echo 'invalid settle plan' >&2; exit 1; }
+jq -e --slurpfile nums "$TMP/nums" 'type == "object" and .dispatchable == false and (.warnings | type == "array" and all(.[]; type == "string")) and (.cards | type == "array") and ([.cards[].number] | sort) == ($nums[0] | sort) and ([.cards[].number] | length == (unique | length)) and all(.cards[]; (.number as $n | $nums[0] | index($n)) != null and (.action | IN("skip","move_to_review","advance_stage","to_human_qa","mark_ready","block"))) and all(.cards[]; if .action == "advance_stage" then (.stage | type == "object" and .provider == null and (.agent | type == "string" and length > 0) and (.model | type == "string" and length > 0)) else true end)' "$TMP/plan" >/dev/null || { echo 'invalid settle plan' >&2; exit 1; }
 jq -c '.cards[] | select(.action != "skip")' "$TMP/plan" > "$TMP/actions" || exit 1
 RC=0
 while IFS= read -r card; do
