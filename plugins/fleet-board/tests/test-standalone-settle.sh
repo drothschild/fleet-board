@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -uo pipefail
 unset CDPATH
-case "${1:-}" in move-to-review|move-resume|stage-advance|settle-pass|settle-unknown|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
+case "${1:-}" in move-to-review|move-resume|stage-advance|settle-pass|settle-unknown|settle-empty|run-settle) ;; *) echo 'usage: test-standalone-settle.sh move-to-review|run-settle' >&2; exit 2 ;; esac
 TESTS="$(cd "$(dirname "$0")" && pwd)"; SCRIPTS="$TESTS/../scripts"; ROOT="$(cd "$TESTS/../../.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/repo" "$TMP/bin" "$TMP/state" "$TMP/scratch" "$TMP/log"
@@ -30,6 +30,11 @@ GH
 chmod +x "$TMP/bin/gh"
 export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 cd "$TMP/repo" || exit 1
+if [ "$1" = settle-empty ]; then
+  printf done > "$GH_STATE/column"
+  bash "$SCRIPTS/standalone/settle.sh" || exit 1
+  echo 'PASS: settle-empty'; exit 0
+fi
 if [ "$1" = settle-pass ] || [ "$1" = settle-unknown ]; then
   jq -n '{dispatchable:false,warnings:[],cards:[{number:12,state:"in_progress",action:"move_to_review",pr:34,branch:"fleet/12-example",reason:"PR exists"}]}' > "$TMP/plan"
   if [ "$1" = settle-unknown ]; then jq '.cards[0].action = "merge"' "$TMP/plan" > "$TMP/plan.new" && mv "$TMP/plan.new" "$TMP/plan"; fi
