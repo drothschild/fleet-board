@@ -216,7 +216,7 @@ REVIEWER
   if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out"; then echo 'FAIL: clean review tick failed' >&2; exit 1; fi
   if ! jq -e '.outcome == "progress" and .cards[0].action == "start_review"' "$TMP/review-out" >/dev/null; then echo 'FAIL: review outcome' >&2; exit 1; fi
   [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: card did not reach review' >&2; exit 1; }
-  jq -e --arg sha "$SHA" 'any(.[]; .body | contains($sha))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: exact reviewed head missing from evidence' >&2; exit 1; }
+  jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: exact reviewed head missing from manager note' >&2; exit 1; }
 fi
 if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ] || [ "${1:-start}" = resume-ref ]; then
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: report duplicated' >&2; exit 1; }

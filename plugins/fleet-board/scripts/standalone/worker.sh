@@ -42,8 +42,13 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+# Reviewers receive a read-only checkout even though their scratch is writable.
+REVIEW_MOUNT=()
+case "$(jq -r .role "$REQUEST")" in
+  reviewer|stage-reviewer) REVIEW_MOUNT=(--mount "type=bind,src=$SCRATCH/checkout,dst=/scratch/checkout,readonly") ;;
+esac
 # No host credentials or controller checkout are mounted into the container.
-docker create --pull never --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh >/dev/null || { echo 'cannot create isolated worker' >&2; exit 1; }
+docker create --pull never --name "$NAME" --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit "$PIDS" --memory "${MEMORY}m" --cpus 1 --tmpfs /tmp:rw,noexec,nosuid,size=64m --mount "type=bind,src=$SCRATCH,dst=/scratch" ${REVIEW_MOUNT[@]+"${REVIEW_MOUNT[@]}"} --workdir /scratch/checkout --entrypoint /usr/bin/env "$IMAGE" -i PATH=/usr/bin:/bin HOME=/tmp /bin/sh /scratch/worker.sh >/dev/null || { echo 'cannot create isolated worker' >&2; exit 1; }
 docker start -a "$NAME" > "$SCRATCH/worker.stdout" 2> "$SCRATCH/worker.stderr" &
 PID=$!
 (

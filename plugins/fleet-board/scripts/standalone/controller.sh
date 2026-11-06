@@ -50,6 +50,7 @@ run_group() {
   return "$rc"
 }
 run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
+run_review() { run_group bash "$SCRIPTS/standalone/review.sh" "$@"; }
 trap cleanup EXIT
 trap 'cancel 130' INT
 trap 'cancel 143' TERM
@@ -107,15 +108,19 @@ if [ "$MODE" = plan ]; then
   cat "$PLAN"
   exit 0
 fi
-# Only one start may run; reject the entire plan before effects otherwise.
+# Dispatch one supported action only; reject mixed plans before any effect.
 if jq -e 'all(.cards[]; .action == "skip") and .dispatchable == false' "$PLAN" >/dev/null; then
   jq '. + {outcome: "idle"}' "$PLAN"
   exit 0
 fi
-if ! jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start")' "$PLAN" >/dev/null; then
+if jq -e '([.cards[] | select(.action == "start")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start")' "$PLAN" >/dev/null; then
+  jq '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/card"
+  run_start "$SCRATCH/card" "$SCRATCH" || exit 1
+elif jq -e '([.cards[] | select(.action == "start_review")] | length) == 1 and all(.cards[]; .action == "skip" or .action == "start_review")' "$PLAN" >/dev/null; then
+  jq '.cards[] | select(.action == "start_review")' "$PLAN" > "$SCRATCH/card"
+  run_review "$SCRATCH/card" "$SCRATCH" || exit 1
+else
   echo 'tick contains an unsupported action; no actions taken' >&2
   exit 1
 fi
-jq '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/card"
-run_start "$SCRATCH/card" "$SCRATCH" || exit 1
 jq '. + {outcome: "progress"}' "$PLAN"
