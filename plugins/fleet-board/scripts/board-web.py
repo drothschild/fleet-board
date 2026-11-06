@@ -979,6 +979,14 @@ class LoopbackServer(ThreadingHTTPServer):
         self.server_port = port
 
 
+def clear_stale_markers():
+    """At startup: when run.pid names a dead run and no wrapper holds the lock, clear active/ once."""
+    cfg, dir = ctx()
+    pid, started = read_pid_file(state_dir(APP["root"], cfg))
+    if pid is not None and not pid_alive(pid, started) and not run_alive():
+        clear_markers(dir)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="board-web.py")
     ap.add_argument("--root", required=True)
@@ -997,6 +1005,7 @@ def main(argv=None) -> int:
             sys.stderr.write("board-web: cannot listen on 127.0.0.1:%d: %s\n" % (args.port, exc.strerror or exc))
         return 1
     APP["port"] = server.server_address[1]
+    clear_stale_markers()
     sys.stdout.write("listening on http://127.0.0.1:%d\n" % APP["port"])
     sys.stdout.flush()
     try:
