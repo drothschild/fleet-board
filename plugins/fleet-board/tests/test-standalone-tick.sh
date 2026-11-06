@@ -199,7 +199,7 @@ WRAPPER
   exit 0
 fi
 case "${1:-}" in
-  plan-only|tick-holds|tick-cost|interrupt-planner) ;;
+  plan-only|tick-holds|tick-cost|interrupt-planner|hard-kill-lock) ;;
   *) echo "usage: $0 plan-only|tick-holds|worker-boundary" >&2; exit 2 ;;
 esac
 TMP="$(mktemp -d)"
@@ -216,6 +216,31 @@ export PATH="$TMP/bin:$PATH" FAKE_GH_DIR="$TMP/gh" FAKE_GH_ROUTES="$ROOT/plugins
 cd "$TMP/repo"
 bash "$ROOT/plugins/fleet-board/scripts/tick-plan.sh" > "$TMP/expected" || exit 1
 rm -rf "$TMP/repo/.fw" "$TMP/repo/preflight-ran"
+if [ "$1" = hard-kill-lock ]; then
+  cat > "$TMP/blocked-planner" <<PLANNER
+#!/bin/bash
+sleep 30 & child=\$!
+printf '%s %s\n' \$$ \$child > "$TMP/lock-pids"
+wait \$child
+PLANNER
+  FLEET_BOARD_TICK_PLAN="$TMP/blocked-planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/killed-out" 2>&1 & TICK_PID=$!
+  for unused in 1 2 3 4 5; do [ -s "$TMP/lock-pids" ] && break; sleep 1; done
+  [ -s "$TMP/lock-pids" ] || { kill -KILL "$TICK_PID" 2>/dev/null || true; echo 'FAIL: lock fixture did not start' >&2; exit 1; }
+  read -r PLANNER_PID PLANNER_CHILD < "$TMP/lock-pids"
+  kill -KILL "$PLANNER_CHILD" "$PLANNER_PID" "$TICK_PID" 2>/dev/null || true
+  wait "$TICK_PID" 2>/dev/null || true
+  jq '.cards[0].action = "skip" | .dispatchable = false' "$TMP/expected" > "$TMP/idle-plan"
+  cat > "$TMP/idle-planner" <<PLANNER
+#!/bin/bash
+cat "$TMP/idle-plan"
+PLANNER
+  if ! FLEET_BOARD_TICK_PLAN="$TMP/idle-planner" bash "$ROOT/bin/fleet-board" tick > "$TMP/resumed" 2> "$TMP/resumed-err"; then
+    cat "$TMP/resumed-err" >&2; echo 'FAIL: hard-killed tick left repository locked' >&2; exit 1
+  fi
+  jq -e '.outcome == "idle"' "$TMP/resumed" >/dev/null || exit 1
+  echo 'PASS: hard-kill-lock'
+  exit 0
+fi
 if [ "$1" = interrupt-planner ]; then
   cat > "$TMP/slow-planner" <<PLANNER
 #!/bin/bash
