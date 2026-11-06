@@ -49,7 +49,7 @@ Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card
 
 ## `review.stages`
 
-Empty by default, so every existing config keeps its behavior. Each entry adds a board column after In Review, with its own reviewer, for checks the evidence reviewer does not make (security, UX, compliance). A stage names either an `agent` (a Claude subagent) or a `provider` (see [`providers`](#providers)); it sets exactly one.
+Empty by default, so every existing config keeps its behavior. Each entry adds a board column after In Review, with its own reviewer, for checks the evidence reviewer does not make (security, UX, compliance). A plugin stage names either an `agent` (a Claude subagent) or a `provider` (see [`providers`](#providers)). Standalone profiles may map an agent stage as described under [`execution`](#execution-profiles).
 
 ```yaml
 review:
@@ -88,9 +88,29 @@ A stage is the state `review_<name>`, in config order between `in_review` and `h
 
 **A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider, and nothing else from the repo: it has no tools and no worktree, so it runs no tests.
 
+## Execution profiles
+
+Standalone profile routing is being added alongside the existing plugin configuration. Configure profiles and roles with deployment-supported model IDs:
+
+```yaml
+execution:
+  profiles:
+    coding: { runner: codex, provider: openai, model: MODEL_ID }
+    independent: { runner: diff-chat, provider: openrouter, model: MODEL_ID }
+  roles: { implementor: coding, fixer: coding, reviewer: independent }
+  escalation: { profile: coding, after_round: 3 }
+review:
+  stages:
+    - { name: security, agent: 'fleet:security', profile: independent }
+```
+
+Profiles specify `runner`, `provider`, and `model`. Supported runner names are `codex`, `tool-chat`, and `diff-chat`; `diff-chat` cannot perform implementation or fixes. The escalation profile applies to implementor and fixer rounds at or beyond `after_round`. A stage's explicit profile takes precedence over its plugin agent. Without a profile, a provider-backed stage retains its provider configuration; a stage without either binding uses the reviewer role. An agent stage without a profile requires a mapping for standalone execution. A stage cannot combine `provider` and `profile`.
+
+Before a non-fixture standalone tick, preflight checks the role and stage mappings, runner capabilities, required executables, and referenced provider credential variables. This routing and preflight configuration does not itself enable production worker execution; the standalone execution adapters and their isolation checks must also be available.
+
 ## `providers`
 
-A review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). A stage sets exactly one; `config.sh` exits 5 with `review.stages[<i>] must set exactly one of agent and provider` otherwise.
+A plugin review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). It cannot set both. Standalone profile mappings are described under [`execution`](#execution-profiles).
 
 ```yaml
 providers:                       # optional; a preset name needs no entry
@@ -106,7 +126,7 @@ review:
       price: { input: 1.25, output: 10 }   # USD per million tokens
 ```
 
-Built-in presets are `openai`, `gemini`, `openrouter` and `ollama`; their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider a stage names or the file defines. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
+Built-in presets are `openai`, `gemini`, `openrouter` and `ollama`; their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider a stage names or the file defines. A provider the file defines that no stage or execution profile uses prints a warning on stderr and changes nothing else.
 
 | Key | Rule |
 |---|---|
