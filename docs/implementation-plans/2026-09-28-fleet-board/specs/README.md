@@ -1818,7 +1818,7 @@ Not copied: the rejection-message table and the Status and PR background in the 
 
 **Audit, `specs/status.md` against `skills/status/SKILL.md`.** One rule missing: `status.sh --forecast` (the `d2c3a75` hand edit, #76). The spec's script entry now covers `--forecast` and step 3 says when the skill runs it. The other lines of the skill and the spec agree.
 
-**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 17 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `967546d167237316`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `aba34ff6bba2f419`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c`.
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 17 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `967546d167237316`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `aba34ff6bba2f419`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c` (the run's input; `26ee556a4c783b6c` after the merge with main brought in main's Revision 14 edits).
 
 **`agents/manager.md` is not re-authored.** The spec only caught up with the agent file, which already holds every rule, so it stays at `e4e74e5d724175a9`.
 
@@ -1838,7 +1838,7 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 
 **Known limits, not re-run.** The skill's frontmatter description does not mention a forecast, and the spec's proposed description does not either. No behavioral run exercised `--forecast` through the skill.
 
-**Revision cost:** $0.0696. **Running total, all API-key charges:** ~$40.51 (the total after Revision 14 was ~$39.62, plus Revision 15 $0.1492 and Revision 16 $0.6737 from main, plus this run $0.0696).
+**Revision cost:** $0.0696. **Running total, all API-key charges:** ~$40.51 (the total after Revision 14 was ~$39.62, plus Revision 15 $0.1492 and Revision 16 $0.6737 from main, plus this run $0.0696). Plugin version 0.11.0 (main) to 0.11.2; 0.11.1 is taken by card 111's PR.
 
 **Output sha256 before → after (16):** `skills/status/SKILL.md` `bfd19b217ea02b84` (main) → `328ff52ca83b31c3` (restored) → `ca185e305e578202`.
 
