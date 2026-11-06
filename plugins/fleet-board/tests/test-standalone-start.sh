@@ -46,7 +46,14 @@ case "$*" in
     body="$(cat)"; jq --argjson x "$body" '. + [{id:555,user:{login:"fleet-bot"},body:$x.body}]' "$GH_STATE/comments" > "$GH_STATE/new-comments"; mv "$GH_STATE/new-comments" "$GH_STATE/comments"; echo '{"id":555}' ;;
   'api -X PUT repos/acme/toy/issues/comments/555/pin') echo '{}' ;;
   'pr list '*) if [ -e "$GH_STATE/pr" ]; then echo '[{"number":34}]'; else echo '[]'; fi ;;
-  'pr create '*) touch "$GH_STATE/pr"; echo 'https://github.com/acme/toy/pull/34' ;;
+  'pr create '*)
+    if [ -e "$GH_STATE/slow-pr" ]; then
+      trap '' TERM
+      sleep 30 & child=$!
+      printf '%s %s\n' "$$" "$child" > "$GH_STATE/pr-pids"
+      wait "$child"
+    fi
+    touch "$GH_STATE/pr"; echo 'https://github.com/acme/toy/pull/34' ;;
   'pr view 34 --repo acme/toy --json number,isDraft,state,headRefName,headRefOid,baseRefName,headRepositoryOwner,headRepository,body')
     sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/fleet/12-add-subtract)" || exit 1
     jq -n --arg sha "$sha" '{number:34,isDraft:true,state:"OPEN",headRefName:"fleet/12-add-subtract",headRefOid:$sha,baseRefName:"main",baseRepositoryOwner:{login:"acme"},baseRepository:{name:"toy"},headRepositoryOwner:{login:"acme"},headRepository:{name:"toy"},body:"Closes #12\n\n<!-- fleet-board:card:12 -->"}' ;;
@@ -141,6 +148,23 @@ STUBBORN
   [ "$(cat "$TMP/state/column")" = ready ] || { echo 'FAIL: interrupted tick moved card' >&2; exit 1; }
   echo 'PASS: tick-interrupt'
   exit 0
+fi
+if [ "${1:-start}" = interrupt-pr ]; then
+  touch "$TMP/state/slow-pr"
+  bash "$ROOT/bin/fleet-board" tick > "$TMP/pr-interrupted" 2>&1 & TICK_PID=$!
+  for unused in 1 2 3 4 5 6 7 8 9 10 11 12; do [ -s "$TMP/state/pr-pids" ] && break; sleep 1; done
+  [ -s "$TMP/state/pr-pids" ] || { kill -KILL "$TICK_PID" 2>/dev/null || true; cat "$TMP/pr-interrupted" >&2; echo 'FAIL: PR call not reached' >&2; exit 1; }
+  read -r PR_PID PR_CHILD < "$TMP/state/pr-pids"
+  kill -TERM "$TICK_PID"
+  for unused in 1 2 3 4 5 6 7 8; do kill -0 "$TICK_PID" 2>/dev/null || break; sleep 1; done
+  if kill -0 "$TICK_PID" 2>/dev/null; then
+    kill -KILL "$PR_CHILD" "$PR_PID" "$TICK_PID" 2>/dev/null || true
+    wait "$TICK_PID" 2>/dev/null || true
+    echo 'FAIL: interrupted publication did not stop' >&2; exit 1
+  fi
+  wait "$TICK_PID" 2>/dev/null || true
+  [ ! -e "$TMP/state/pr" ] && [ "$(cat "$TMP/state/column")" = ready ] || { echo 'FAIL: interrupted publication mutated PR or board' >&2; exit 1; }
+  rm "$TMP/state/slow-pr"
 fi
 if [ "${1:-start}" = push-destination ]; then
   git init -q --bare "$TMP/unexpected.git"
