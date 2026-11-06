@@ -40,7 +40,10 @@ n=$((n + 1))
 printf '%d\n' "$n" > "$COUNT_FILE"
 
 file_mode() {
-  stat -f '%Lp' "$1" 2>/dev/null || stat -c '%a' "$1" 2>/dev/null || printf '?'
+  # GNU first: on GNU stat, -f means filesystem status and succeeds with the
+  # wrong output; on BSD stat, -c is an unknown flag and fails, so the order
+  # matters.
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null || printf '?'
 }
 
 out_file=""
