@@ -106,6 +106,7 @@ echo "migrate-to-local: fresh store"
 setup_repo
 run_in "$REPO" "$BASH_EXE" "$MIGRATE" "$FIX/7.json" "$FIX/3.json"
 assert_exit "migration exits 0" 0
+assert_eq "fresh migration writes nothing to stderr" "$LAST_ERR" ""
 assert_stdout_contains "prints a line for card 7" "#7"
 assert_stdout_contains "prints a line for card 3" "#3"
 assert_eq "one line per card" "$(printf '%s\n' "$LAST_OUT" | grep -c .)" "2"

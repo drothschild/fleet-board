@@ -171,6 +171,8 @@ Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Under
 
 Set it up with `/fleet-board:init` and pick Local, or run `init.sh --backend local --repo OWNER/NAME`. It creates `.fleet-board/cards`, starts the card counter at 1, adds `.fleet-board/` to `.gitignore` and creates no labels. It still checks the `gh` scope `repo`. To version the board, remove that line from `.gitignore` and commit the directory.
 
+To move an existing board, save each active card with `board-read.sh <n> > <dir>/<n>.json` while the config still names the old backend, then run `migrate-to-local.sh <dir>/*.json` from the repo root and set `board.backend: local`: cards keep their numbers, states and comments, the manager note is re-authored to the local user (`--note-author` overrides), and it refuses an existing store unless `--force`.
+
 Open the page from the repo root with the `board-web.sh` beside the wrapper (the wrapper's path is the last line of `/fleet-board:status`):
 
 ```bash
