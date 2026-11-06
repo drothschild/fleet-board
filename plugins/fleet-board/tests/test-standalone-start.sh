@@ -45,7 +45,9 @@ case "$*" in
     if [ "$(cat "$GH_STATE/column")" = in_review ]; then printf '[{"number":12,"title":"Add subtract","url":"https://github.com/acme/toy/issues/12","labels":[{"name":"fleet:in_review"}]}]\n'; else echo '[]'; fi ;;
   'issue list --repo acme/toy --label '*) echo '[]' ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:ready'|'issue edit 12 --repo acme/toy --remove-label fleet:in_progress') printf none > "$GH_STATE/column" ;;
-  'issue edit 12 --repo acme/toy --add-label fleet:in_review') printf in_review > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:in_review')
+    if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
+    printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_review') printf none > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:human_qa') printf human_qa > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_progress')
@@ -234,7 +236,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -324,7 +326,7 @@ WRAPPER
     echo 'PASS: fix-re-review'
     exit 0
   fi
-  if [ "${1:-start}" = review-resume-verdict ]; then
+  if [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = review-resume-label ]; then
     cp "$TMP/worker.sh" "$TMP/clean-reviewer"
     python3 - "$TMP/worker.sh" <<'PY_WORKER'
 import sys
@@ -332,14 +334,15 @@ p = sys.argv[1]
 s = open(p).read().replace('"outcome":"clean"', '"outcome":"findings"').replace(r'## Status\nclean\n## Findings\n- none', r'## Status\nfindings\n## Findings\n- [Important] Original finding')
 open(p, 'w').write(s)
 PY_WORKER
-    touch "$TMP/state/fail-patch"
+    if [ "$1" = review-resume-label ]; then touch "$TMP/state/fail-review-move"; else touch "$TMP/state/fail-patch"; fi
     if bash "$ROOT/bin/fleet-board" tick > "$TMP/review-first" 2>&1; then echo 'FAIL: simulated review-note failure succeeded' >&2; exit 1; fi
     jq -e 'any(.[]; (.body | contains("fleet-board:standalone-review:")) and (.body | contains("Original finding")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: original review report missing' >&2; exit 1; }
+    if [ "$1" = review-resume-label ] && [ "$(cat "$TMP/state/column")" != none ]; then echo 'FAIL: interruption did not remove the state label' >&2; exit 1; fi
     cp "$TMP/clean-reviewer" "$TMP/worker.sh"
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-resumed"; then echo 'FAIL: review recovery failed' >&2; exit 1; fi
     jq -e 'any(.[]; .id == 555 and (.body | contains("\"important\": 1")) and (.body | contains("Original finding")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review verdict changed on retry' >&2; exit 1; }
     jq -e '[.[] | select(.body | contains("fleet-board:standalone-review:"))] | length == 1' "$TMP/state/comments" >/dev/null || { echo 'FAIL: review report duplicated' >&2; exit 1; }
-    echo 'PASS: review-resume-verdict'
+    echo "PASS: $1"
     exit 0
   fi
   if [ "${1:-start}" = review-human-race ]; then
