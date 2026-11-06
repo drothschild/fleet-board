@@ -21,8 +21,15 @@ if ! jq -e -s '
       (.title | type == "string") and (.state | type == "string" or . == null) and
       (.reason | type == "string") and (.branch | type == "string" and length > 0) and
       (.worktree | type == "string" and length > 0) and
-      has("pr") and has("round") and (.models | type == "object") and
-      (.escalated | type == "boolean") and has("stage") and has("needs_human_qa") and
+      has("pr") and (.pr | . == null or (type == "number" and . > 0 and floor == .)) and
+      has("round") and (.round | . == null or (type == "number" and . >= 0 and floor == .)) and
+      (.models | type == "object" and
+        (.implementor | type == "string" and length > 0) and
+        (.reviewer | type == "string" and length > 0) and
+        (.fixer | type == "string" and length > 0)) and
+      (.escalated | type == "boolean") and
+      has("stage") and (.stage | . == null or type == "object") and
+      has("needs_human_qa") and (.needs_human_qa | . == null or type == "boolean") and
       (.action | IN("start", "continue_implementor", "start_review", "review", "review_stage", "advance_stage", "fix", "mark_ready", "merge", "verify_main", "finish", "to_human_qa", "file_pending", "block", "unblock", "skip", "skip_no_acceptance", "skip_card_lint", "wait", "update_branch", "move_to_review")))))
 ' "$PLAN" >/dev/null 2>&1; then
   echo 'invalid tick plan or unknown action' >&2
