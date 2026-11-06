@@ -288,10 +288,15 @@ START="$(date +%s)"
 # The run id stage-review.sh writes into every ledger line
 FLEET_BOARD_RUN_ID="$START-$$"
 export FLEET_BOARD_RUN_ID
+# Pin FLEET_BOARD_LOG_DIR to the absolute directory the ledger lives in, so the
+# tick (which runs from the repo root or a worktree) and the wrapper read and
+# write the same ledger even when the variable was relative or unset
 case "${FLEET_BOARD_LOG_DIR:-}" in
-  "") LEDGER="$HOME/.fleet-board/provider-spend.jsonl" ;;
-  *) LEDGER="$LOG_DIR/provider-spend.jsonl" ;;
+  "") FLEET_BOARD_LOG_DIR="$HOME/.fleet-board" ;;
+  *) FLEET_BOARD_LOG_DIR="$LOG_DIR" ;;
 esac
+export FLEET_BOARD_LOG_DIR
+LEDGER="$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
 LEDGER_PRE=0
 PSPEND=0
 
@@ -328,16 +333,25 @@ ledger_count() {
 collect_provider_spend() {
   local res sum bad
   PSPEND=0
-  [ -f "$LEDGER" ] || return 0
-  res="$(tail -n +"$((LEDGER_PRE + 1))" "$LEDGER" 2>/dev/null | LC_ALL=C jq -Rrs --arg run "$FLEET_BOARD_RUN_ID" '
+  [ -e "$LEDGER" ] || return 0
+  # a ledger that is not a readable regular file is unreadable (BSD tail exits 0 on a directory)
+  if [ -f "$LEDGER" ] && [ -r "$LEDGER" ]; then
+    res="$(tail -n +"$((LEDGER_PRE + 1))" "$LEDGER" 2>/dev/null | LC_ALL=C jq -Rrs --arg run "$FLEET_BOARD_RUN_ID" '
     split("\n") | map(select(length > 0)) | map(try fromjson catch null) as $p
     | ($p | map(select(type == "object"))) as $objs
     | ($objs | map(select(.run_id == $run))) as $mine
     | ($mine | map(select((.cost_usd | type) == "number"))) as $ok
     | (($p | length) - ($objs | length) + ($mine | length) - ($ok | length)) as $bad
-    | "\($ok | map(.cost_usd) | add // 0) \($bad)"' 2>/dev/null)"
+    | "\($ok | map(.cost_usd) | add // 0) \($bad)"' 2>/dev/null)" || res=""
+  else
+    res=""
+  fi
   sum="${res%% *}"
   bad="${res##* }"
+  if [ -z "$res" ] || ! [[ "$bad" =~ ^[0-9]+$ ]] || ! num_ok "$(fnum "${sum:-x}")" 2>/dev/null; then
+    warn "cannot read the provider ledger $LEDGER; provider spend for tick $TICK is unknown and counted as 0"
+    return 0
+  fi
   if [[ "$bad" =~ ^[0-9]+$ ]] && [ "$bad" -gt 0 ]; then
     warn "skipped $bad malformed line(s) in the provider ledger $LEDGER"
   fi

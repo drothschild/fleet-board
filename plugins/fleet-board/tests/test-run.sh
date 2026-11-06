@@ -144,6 +144,7 @@ new_case() {
   C_CWD="$REPO"
   C_LOCALE=""
   C_TEST_BGJOB=""
+  C_LEDGER_FROM_ENV=""
   RUN_TMP="$T/tmp"; mkdir -p "$RUN_TMP"
 }
 
@@ -156,7 +157,7 @@ default_fixture() { cp "$FX/$1.jsonl" "$FC/default.jsonl"; }
 case_env() {
   unset FLEET_BOARD_LOG_DIR FLEET_BOARD_PLUGIN_DIR FLEET_BOARD_TICK_PROMPT FLEET_BOARD_ISOLATE \
     FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB FLEET_BOARD_RUN_ID FAKE_CLAUDE_LEDGER || true
-  export FAKE_CLAUDE_LEDGER="$LOGS/provider-spend.jsonl"
+  [ -z "${C_LEDGER_FROM_ENV:-}" ] && export FAKE_CLAUDE_LEDGER="$LOGS/provider-spend.jsonl"
   export HOME="$HOMEDIR" PATH="$BIN:$ORIG_PATH" FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" FAKE_CLAUDE_DIR="$FC"
   [ -n "$C_LOG_DIR" ] && export FLEET_BOARD_LOG_DIR="$C_LOG_DIR"
   [ -n "$C_PLUGIN_DIR" ] && export FLEET_BOARD_PLUGIN_DIR="$C_PLUGIN_DIR"
@@ -1085,6 +1086,32 @@ assert_exit "malformed_ledger_line_is_skipped_with_warning: exit 0" 0
 assert_stderr_contains "malformed_ledger_line_is_skipped_with_warning: warns on stderr" "provider-spend.jsonl"
 assert_file_contains "malformed_ledger_line_is_skipped_with_warning: warns in the log" "$LOG" "fleet-board-run: warning: skipped 2 malformed line(s)"
 assert_file_contains "malformed_ledger_line_is_skipped_with_warning: the good line still counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.25}'
+mkdir -p "$T/other"
+C_CWD="$T/other"
+C_LOG_DIR="rel-logs"
+LOGS="$T/other/rel-logs"
+C_LEDGER_FROM_ENV=1
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "relative_log_dir_pins_one_ledger: exit 0" 0
+assert_file_contains "relative_log_dir_pins_one_ledger: the tick's ledger line is counted" "$LOG" "cost_estimate_usd=0.85 (estimate; provider 0.25) ==="
+assert_false "relative_log_dir_pins_one_ledger: nothing written under the repo" test -e "$REPO/rel-logs"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+mkdir -p "$LOGS/provider-spend.jsonl"
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "unreadable_ledger_warns: exit 0 (the run goes on)" 0
+assert_stderr_contains "unreadable_ledger_warns: stderr names the ledger and unknown spend" "cannot read the provider ledger"
+assert_file_contains "unreadable_ledger_warns: the log has it" "$LOG" "provider spend for tick 1 is unknown and counted as 0"
+assert_stdout_contains "unreadable_ledger_warns: cost counts Claude only" "cost_estimate_usd 0.7 (estimate)"
 
 echo ""
 echo "-----------------------------------"
