@@ -4,7 +4,8 @@
 # log line, writes two tick lines one second apart, then waits for the repo's
 # .fleet-board.stop and prints the wrapper's stopped line.
 #
-# Env: FAKE_RUN_DIR (required) holds args.log and fake.log.
+# Env: FAKE_RUN_DIR (required) holds args.log, fake.log and the release file.
+# It also exits when the repo root disappears, so it never outlives a test.
 
 set -u
 
@@ -17,6 +18,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+rm -f "$FAKE_RUN_DIR/release"
 LOG="$FAKE_RUN_DIR/fake.log"
 : > "$LOG"
 echo "fleet-board-run: log: $LOG"
@@ -24,7 +26,11 @@ echo "=== tick 1 $(date -u +%Y-%m-%dT%H:%M:%SZ) rc=0 ===" >> "$LOG"
 sleep 1
 echo "=== tick 2 $(date -u +%Y-%m-%dT%H:%M:%SZ) rc=0 ===" >> "$LOG"
 
-while [ ! -e "$ROOT/.fleet-board.stop" ]; do
+while [ -d "$ROOT" ] && [ ! -e "$ROOT/.fleet-board.stop" ]; do
+  sleep 0.2
+done
+# Hold the stopping state until the test creates $FAKE_RUN_DIR/release.
+while [ -d "$ROOT" ] && [ ! -e "$FAKE_RUN_DIR/release" ]; do
   sleep 0.2
 done
 echo "fleet-board-run: stopped: stop-file after 2 ticks, 0.01 h, cost_estimate_usd 0.42 (estimate)"

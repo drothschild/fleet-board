@@ -49,6 +49,12 @@ stop_server() {
 
 cleanup() {
   stop_server
+  # A run left alive by a failed case lives in its own session: end it.
+  for pidfile in "$TMP"/logs/web/*/run.pid; do
+    [ -f "$pidfile" ] || continue
+    [ "$(head -n 1 "$pidfile")" != "$$" ] || continue
+    kill "$(head -n 1 "$pidfile")" 2>/dev/null || true
+  done
   for dir in ${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}; do
     rm -rf "$dir" 2>/dev/null || true
   done
@@ -345,6 +351,7 @@ if setup_case; then
   if [ -e "$REPO/.fleet-board.stop" ]; then pass "stop file written"; else fail "stop file written" "no $REPO/.fleet-board.stop"; fi
   api GET /api/run;                 assert_body "run is stopping" '.state' stopping
   api POST /api/run/start;          assert_code 409
+  : > "$FAKE_RUN_DIR/release"   # let the fake finish stopping
   wait_for 'api GET /api/run; body_is .state stopped'
   api GET /api/run
   assert_body "run state stopped" '.state' stopped
@@ -361,8 +368,22 @@ if setup_case; then
   start_server "$REPO"
   api GET /api/run;                 assert_body "restarted server reattaches to the live run" '.state' running
   api POST /api/run/stop;           assert_code 200
+  : > "$FAKE_RUN_DIR/release"
   wait_for 'api GET /api/run; body_is .state stopped'
   api GET /api/run;                 assert_body "reattached run stopped" '.state' stopped
+
+  # A pid file naming a live, unrelated process (this shell) with the wrong start time is not a run.
+  stop_server
+  SD="$TMP/logs/web/acme-toy"
+  printf '%s\nMon Jan  1 00:00:00 2001\n' "$$" > "$SD/run.pid"
+  : > "$SD/run.out"
+  start_server "$REPO"
+  api GET /api/run;                 assert_body "reused pid with another start time is idle" '.state' idle
+  api POST /api/run/stop;           assert_code 409
+  api POST /api/run/start;          assert_code 200
+  api POST /api/run/stop;           assert_code 200
+  : > "$FAKE_RUN_DIR/release"
+  wait_for 'api GET /api/run; body_is .state stopped'
 
   api GET /api/nothing
   assert_code 404

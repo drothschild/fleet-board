@@ -216,18 +216,43 @@ def read_text(path: Path) -> str:
         return ""
 
 
-def read_pid(sdir: Path):
+def read_pid_file(sdir: Path):
+    """(pid or None, recorded start time or ""). run.pid: line 1 the pid, line 2 its ps lstart."""
+    lines = read_text(sdir / "run.pid").split("\n")
     try:
-        pid = int(read_text(sdir / "run.pid").strip())
+        pid = int(lines[0].strip())
     except ValueError:
+        return None, ""
+    if pid <= 0:
+        return None, ""
+    return pid, (lines[1].strip() if len(lines) > 1 else "")
+
+
+def read_pid(sdir: Path):
+    return read_pid_file(sdir)[0]
+
+
+def ps_start(pid: int):
+    """The process start time from ps ('' when no such process), or None when ps is unusable."""
+    try:
+        proc = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                              capture_output=True, text=True, env=dict(os.environ, LC_ALL="C"))
+    except OSError:
         return None
-    return pid if pid > 0 else None
+    if proc.returncode not in (0, 1):
+        return None
+    return " ".join(proc.stdout.split())
 
 
-def pid_alive(pid: int) -> bool:
+def pid_alive(pid: int, started: str = "") -> bool:
+    """Whether pid is our wrapper: the server's own child, else a live pid with the recorded start time."""
     proc = _RUN["proc"]
     if proc is not None and proc.pid == pid:
         return proc.poll() is None
+    if started:
+        now = ps_start(pid)
+        if now is not None and now != started:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -254,8 +279,8 @@ def run_alive() -> bool:
     """Whether the wrapper is alive; the first look after it died clears the markers."""
     cfg, dir = ctx()
     with _RUN_LOCK:
-        pid = read_pid(state_dir(APP["root"], cfg))
-        alive = pid is not None and pid_alive(pid)
+        pid, started = read_pid_file(state_dir(APP["root"], cfg))
+        alive = pid is not None and pid_alive(pid, started)
         if _RUN["alive"] and not alive:
             clear_markers(dir)
         _RUN["alive"] = alive
@@ -513,7 +538,7 @@ def start_run(params, body):
             )
         pfd = os.open(str(sdir / "run.pid"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(pfd, "w") as f:
-            f.write("%d\n" % proc.pid)
+            f.write("%d\n%s\n" % (proc.pid, ps_start(proc.pid) or ""))
         _RUN["proc"] = proc
         _RUN["alive"] = True
     return 200, {"pid": proc.pid}
