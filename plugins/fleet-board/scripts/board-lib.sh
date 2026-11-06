@@ -86,11 +86,15 @@ fb_git_common_dir() {
 # Prints scalars raw (booleans print as true/false), objects/arrays as JSON, and nothing for null.
 fb_cfg() { jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"; }
 
-# Prints the authenticated gh login (FLEET_BOARD_USER or $USER on the local
-# backend, which never calls gh); exits 1 if it cannot be determined
+# Prints the authenticated gh login (on the local backend, which never calls
+# gh: FLEET_BOARD_USER, else $USER, else `id -un`); exits 1 if it cannot be
+# determined
 fb_login() {
   if [ "$(fb_cfg board.backend)" = "local" ]; then
-    printf '%s\n' "${FLEET_BOARD_USER:-$USER}"
+    local u="${FLEET_BOARD_USER:-${USER:-}}"
+    [ -n "$u" ] || u="$(id -un 2>/dev/null)"
+    [ -n "$u" ] || fb_die 1 "cannot determine the local user: set FLEET_BOARD_USER (USER is unset and id -un failed)"
+    printf '%s\n' "$u"
     return 0
   fi
   local l; l="$(gh api user 2>/dev/null | jq -r '.login // empty' 2>/dev/null)"

@@ -378,26 +378,41 @@ replies "200 r-clean.json"
 sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
 assert_contains "placeholder_text_in_diff_is_literal" "$(request_body 1 | jq -r '.messages[-1].content')" '+{{CARD}} {{DIFF}} \1 &'
 
-# active marker: local backend only, present while running, gone on exit
-SR_BACKEND=local setup
-replies "200 r-clean.json"
-sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
-assert_exit "stage-review local: exit 0" 0
-assert_eq "stage-review removes its marker on exit" "$(ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' ')" "0"
+# active marker: local backend only, present while running, gone on exit.
+# The provider call comes only after the marker is written, so a curl that
+# records whether the marker exists when it is called proves it is there while
+# the stage runs (no timing), and "gone after" then proves the trap removed it.
+printf '#!/bin/sh\nif [ -f "%s/.fleet-board/active/12" ]; then : > "%s/seen"; fi\nexec "%s" "$@"\n' "$CASE" "$CASE" "$FAKE_CURL" > "$WORK/rec-curl"
+chmod +x "$WORK/rec-curl"
+make_bin "$WORK/bin-rec" 1
+ln -sf "$WORK/rec-curl" "$WORK/bin-rec/curl"
+assert_true_file() { if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing $2"; fi; }
+active_count() { ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' '; }
 
 SR_BACKEND=local setup
 replies "200 r-clean.json"
-printf '#!/bin/sh\nsleep 1\nexec "%s" "$@"\n' "$FAKE_CURL" > "$WORK/slow-curl"
-chmod +x "$WORK/slow-curl"
-make_bin "$WORK/bin-slow" 1
-ln -sf "$WORK/slow-curl" "$WORK/bin-slow/curl"
-( sleep 0.3; if [ -f "$CASE/.fleet-board/active/12" ]; then : > "$CASE/seen"; fi ) &
-SR_PATH="$WORK/bin-slow" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
-wait
-assert_exit "stage-review slow: exit 0" 0
-assert_true_file() { if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing $2"; fi; }
-assert_true_file "stage-review has the marker while running" "$CASE/seen"
-assert_eq "stage-review slow: marker gone after" "$(ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' ')" "0"
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local: exit 0" 0
+assert_true_file "stage-review has the marker while the provider runs" "$CASE/seen"
+assert_eq "stage-review removes its marker on exit" "$(active_count)" "0"
+
+# a failing exit after the marker was written (provider failure, exit 1) removes it too
+SR_BACKEND=local setup
+printf 'curl: (28) timed out\n' > "$CASE/timeout.err"
+replies "exit 28 timeout.err"
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+assert_exit "stage-review local provider failure: exit 1" 1
+assert_true_file "stage-review provider failure: the marker was written" "$CASE/seen"
+assert_eq "stage-review provider failure: marker gone after" "$(active_count)" "0"
+
+# exit 3 (key unset) stops before the marker: nothing is left lit
+SR_BACKEND=local setup
+replies "200 r-clean.json"
+KEEP_KEY="$OPENAI_API_KEY"; unset OPENAI_API_KEY
+SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
+export OPENAI_API_KEY="$KEEP_KEY"
+assert_exit "stage-review local key unset: exit 3" 3
+assert_eq "stage-review key unset: active/ is empty" "$(active_count)" "0"
 
 # a labels config never writes a marker
 setup

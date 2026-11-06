@@ -149,6 +149,16 @@ assert_stdout_exact "fb_login is USER on local" "$USER"
 FLEET_BOARD_USER=robot run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_login'
 assert_stdout_exact "fb_login honors FLEET_BOARD_USER" "robot"
 
+# USER unset (cron, systemd, containers): the login name from id -un
+run_check_in "$REPO" env -u USER -u FLEET_BOARD_USER "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_login'
+assert_exit "fb_login with USER unset exits 0" "0"
+assert_stdout_exact "fb_login with USER unset is id -un" "$(id -un)"
+NOID_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$NOID_DIR")
+printf '#!/bin/sh\nexit 1\n' > "$NOID_DIR/id"; chmod +x "$NOID_DIR/id"
+run_check_in "$REPO" env -u USER -u FLEET_BOARD_USER PATH="$NOID_DIR:$PATH" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_login'
+assert_exit "fb_login with no identity at all exits 1" "1"
+assert_stderr_contains "fb_login names FLEET_BOARD_USER" "FLEET_BOARD_USER"
+
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name in_progress; fb_state_name wont_do'
 assert_stdout_exact "local default names" $'In Progress\nWon'"'"'t Do'
 
