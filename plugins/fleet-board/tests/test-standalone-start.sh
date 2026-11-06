@@ -49,7 +49,9 @@ case "$*" in
     if [ -e "$GH_STATE/fail-review-move" ]; then rm "$GH_STATE/fail-review-move"; exit 1; fi
     printf in_review > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --remove-label fleet:in_review') printf none > "$GH_STATE/column" ;;
-  'issue edit 12 --repo acme/toy --add-label fleet:human_qa') printf human_qa > "$GH_STATE/column" ;;
+  'issue edit 12 --repo acme/toy --add-label fleet:human_qa')
+    if [ -e "$GH_STATE/fail-qa-move" ]; then rm "$GH_STATE/fail-qa-move"; exit 1; fi
+    printf human_qa > "$GH_STATE/column" ;;
   'issue edit 12 --repo acme/toy --add-label fleet:in_progress')
     if [ -e "$GH_STATE/fail-move" ]; then rm "$GH_STATE/fail-move"; exit 1; fi
     printf in_progress > "$GH_STATE/column" ;;
@@ -236,7 +238,7 @@ if ! jq -e '.outcome == "progress" and .cards[0].action == "start"' "$TMP/out" >
 [ -e "$TMP/state/pr" ] || { echo 'FAIL: draft PR missing' >&2; exit 1; }
 [ "$(git --git-dir="$TMP/remote.git" show fleet/12-add-subtract:source.txt)" = after ] || { echo 'FAIL: worker commit not published' >&2; exit 1; }
 jq -e 'any(.[]; .body | contains("\"pr\": 34"))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: verified PR not recorded' >&2; exit 1; }
-if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ]; then
+if [ "${1:-start}" = clean-review ] || [ "${1:-start}" = review-stale ] || [ "${1:-start}" = review-human-race ] || [ "${1:-start}" = review-followups ] || [ "${1:-start}" = findings-review ] || [ "${1:-start}" = review-move-race ] || [ "${1:-start}" = fix-re-review ] || [ "${1:-start}" = fix-resume-note ] || [ "${1:-start}" = fix-two-rounds ] || [ "${1:-start}" = review-resume-verdict ] || [ "${1:-start}" = human-qa ] || [ "${1:-start}" = review-resume-label ] || [ "${1:-start}" = human-qa-resume-label ]; then
   SHA="$(git --git-dir="$TMP/remote.git" rev-parse refs/heads/fleet/12-add-subtract)"
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -380,8 +382,13 @@ PY_WORKER
   if ! jq -e '.outcome == "progress" and .cards[0].action == "start_review"' "$TMP/review-out" >/dev/null; then echo 'FAIL: review outcome' >&2; exit 1; fi
   [ "$(cat "$TMP/state/column")" = in_review ] || { echo 'FAIL: card did not reach review' >&2; exit 1; }
   jq -e --arg sha "$SHA" 'any(.[]; .id == 555 and (.body | contains("\"sha\": \"" + $sha + "\"")))' "$TMP/state/comments" >/dev/null || { echo 'FAIL: exact reviewed head missing from manager note' >&2; exit 1; }
-  if [ "${1:-start}" = human-qa ]; then
+  if [ "${1:-start}" = human-qa ] || [ "${1:-start}" = human-qa-resume-label ]; then
     touch "$TMP/state/qa-flag"
+    if [ "$1" = human-qa-resume-label ]; then
+      touch "$TMP/state/fail-qa-move"
+      if bash "$ROOT/bin/fleet-board" tick > "$TMP/qa-first" 2>&1; then echo 'FAIL: simulated QA move interruption succeeded' >&2; exit 1; fi
+      [ "$(cat "$TMP/state/column")" = none ] || { echo 'FAIL: QA label was not removed' >&2; exit 1; }
+    fi
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/qa-out"; then echo 'FAIL: Human QA tick failed' >&2; exit 1; fi
     jq -e '.outcome == "progress" and .cards[0].action == "to_human_qa"' "$TMP/qa-out" >/dev/null || { echo 'FAIL: Human QA outcome' >&2; exit 1; }
     [ "$(cat "$TMP/state/column")" = human_qa ] || { echo 'FAIL: card not in Human QA' >&2; exit 1; }
