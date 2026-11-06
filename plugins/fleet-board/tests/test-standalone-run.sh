@@ -31,6 +31,11 @@ case "$CASE" in
 esac
 TICK
 chmod +x "$TMP/tick"
+cat > "$TMP/cleanup" <<'CLEANUP'
+#!/bin/sh
+printf 'cleanup\n' >> "$STATE/cleanups"
+CLEANUP
+export FLEET_BOARD_CLEANUP="$TMP/cleanup"
 export STATE="$TMP" FLEET_BOARD_STANDALONE_TICK="$TMP/tick" FLEET_BOARD_LOG_DIR="$TMP/log" FLEET_BOARD_NOW_FILE="$TMP/now"
 if [ "$1" = run-cancel-real ]; then
   cat > "$TMP/planner" <<'PLANNER'
@@ -54,7 +59,7 @@ run() { (cd "$TMP/repo" && bash "$ROOT/bin/fleet-board" run) > "$TMP/out" 2> "$T
 check() { grep -q "$1" "$TMP/out" || { cat "$TMP/out" "$TMP/err" >&2; echo "FAIL: $1" >&2; exit 1; }; }
 echo 0 > "$TMP/now"
 CASE=idle; export CASE; run || exit 1; check nothing-dispatchable
-rm -f "$TMP/count"; CASE=cost; run || exit 1; check max-cost; [ "$(cat "$TMP/count")" = 1 ] || exit 1
+rm -f "$TMP/count" "$TMP/cleanups"; CASE=cost; run || exit 1; check max-cost; [ "$(cat "$TMP/count")" = 1 ] && [ "$(cat "$TMP/cleanups")" = cleanup ] || { echo 'FAIL: final successful tick cleanup missing' >&2; exit 1; }
 rm -f "$TMP/count"; CASE=unknown; if run; then echo 'FAIL: missing cost accepted' >&2; exit 1; fi; check cost-unknown
 rm -f "$TMP/count"; CASE=failure; if run; then echo 'FAIL: failed ticks accepted' >&2; exit 1; fi; check consecutive-failures; [ "$(cat "$TMP/count")" = 2 ] || exit 1
 rm -f "$TMP/count"; CASE=failure_cost; run || exit 1; check max-cost; [ "$(cat "$TMP/count")" = 1 ] || exit 1
