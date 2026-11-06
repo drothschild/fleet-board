@@ -121,6 +121,22 @@ assert_json() {
   if [ "$got" = "$3" ]; then pass "$1"; else fail "$1" "filter $2: expected '$3', got '$got'"; fi
 }
 
+# seed_card <n> <state> <title> <body>: writes cards/<n>.json directly.
+seed_card() {
+  jq -n --argjson n "$1" --arg s "$2" --arg t "$3" --arg b "$4" \
+    '{number: $n, title: $t, body: $b, state: $s, labels: [], next_comment_id: 1, comments: [], created_at: "2026-01-01T00:00:00Z"}' \
+    > "$REPO/.fleet-board/cards/$1.json"
+}
+
+# assert_card_json <n> <jq filter> <expected>: jq -r of the stored card must equal expected.
+assert_card_json() {
+  local got
+  got="$(jq -r "$2" "$REPO/.fleet-board/cards/$1.json" 2>/dev/null)"
+  if [ "$got" = "$3" ]; then pass "card $1 $2"; else fail "card $1 $2" "expected '$3', got '$got'"; fi
+}
+
+assert_card_state() { assert_card_json "$1" '.state' "$2"; }
+
 echo "Test: local board backend"
 echo ""
 
@@ -215,6 +231,55 @@ run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
 assert_exit "unknown state still reads" 0
 assert_json "unknown state is null" '.state' null
 assert_stderr_contains "unknown state warns" "bogus"
+
+# --- move, comment, note, edit ---
+setup_case; seed_card 1 backlog 'A card' $'## Acceptance\n- one'
+seed_card 2 backlog 'No acceptance' 'just text'
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 1 in_progress
+assert_exit "move exit 0" 0
+assert_card_state 1 in_progress
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 2 ready
+assert_exit "move to ready without Acceptance refused" 1
+assert_stderr_contains "refusal names Acceptance" "Acceptance"
+assert_card_state 2 backlog
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 1 review_security
+assert_exit "move to an unknown state exit 2" 2
+assert_card_state 1 in_progress
+c="$(mktemp)"; CLEANUP_DIRS+=("$c"); echo 'first comment' > "$c"
+run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$c"
+assert_exit "comment exit 0" 0
+assert_card_json 1 '.comments|length' 1
+assert_card_json 1 '.comments[0].id' 1
+assert_card_json 1 '.comments[0].author' "$USER"
+n="$(mktemp)"; CLEANUP_DIRS+=("$n"); printf '```json\n{"round":1}\n```\n' > "$n"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$n"
+assert_card_json 1 '.comments|length' 2
+assert_card_json 1 '.comments[1].body|startswith("<!-- fleet-board:manager-note -->")' true
+printf '```json\n{"round":2}\n```\n' > "$n"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$n"
+assert_card_json 1 '.comments|length' 2
+assert_card_json 1 '.comments[1].body|contains("\"round\":2")' true
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_json "read returns the note body without the marker line" '.manager_note' $'```json\n{"round":2}\n```'
+assert_json "read returns the note id" '.manager_note_id' 2
+# concurrency: eight comments at once lose nothing
+for i in 1 2 3 4 5 6 7 8; do (cd "$REPO" && bash "$SCRIPTS/board-comment.sh" 1 "$c") & done; wait
+assert_card_json 1 '.comments|length' 10
+t="$(mktemp)"; CLEANUP_DIRS+=("$t"); echo 'Renamed' > "$t"; b="$(mktemp)"; CLEANUP_DIRS+=("$b"); echo 'new body' > "$b"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "$b" '["x","y"]'
+assert_exit "edit exit 0" 0
+assert_card_json 1 '.title' Renamed
+assert_card_json 1 '.labels|join(",")' x,y
+assert_card_json 1 '.comments|length' 10
+assert_card_json 1 '.state' in_progress
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "$b" 'notjson'
+assert_exit "edit bad labels exit 2" 2
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 77 "$t" "$b" '[]'
+assert_exit "edit missing card exit 1" 1
+# note clears the active marker
+mkdir -p "$REPO/.fleet-board/active"; : > "$REPO/.fleet-board/active/1"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$n"
+if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "note removes the active marker"; else fail "note removes the active marker" "still present"; fi
 
 echo ""
 echo "-----------------------------------"
