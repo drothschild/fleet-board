@@ -431,14 +431,24 @@ printf '%s\n' "$*" >> "$FAKE_CLAUDE_DIR/args.log"
 prompt="${!#}"
 if [ -e "$FAKE_CLAUDE_DIR/fail" ]; then echo boom >&2; exit 1; fi
 dest="$(printf '%s' "$prompt" | sed -n 's/.*--preview \([^ ]*\).*/\1/p')"
-cp "$IMPORT_FIXTURE" "$dest"
+[ -e "$FAKE_CLAUDE_DIR/slow" ] && sleep 3
+fixture="$IMPORT_FIXTURE"
+[ -e "$FAKE_CLAUDE_DIR/fixture" ] && fixture="$(cat "$FAKE_CLAUDE_DIR/fixture")"
+cp "$fixture" "$dest"
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"grouped into 2 cards"}]}}'
 echo '{"type":"result","result":"done"}'
 EOF
 chmod +x "$FAKE_IMPORT_CLAUDE"
 export FLEET_BOARD_CLAUDE="$FAKE_IMPORT_CLAUDE" FAKE_CLAUDE_DIR IMPORT_FIXTURE
 export FLEET_BOARD_TEST_IMPORT_ID=fixed
+SAVED_YML="$LOCAL_YML"
+LOCAL_YML="$LOCAL_YML
+headless:
+  permission_mode: acceptEdits
+limits:
+  max_turns: 7"
 if setup_case; then
+  LOCAL_YML="$SAVED_YML"
   api GET /api/import/nope;         assert_code 404
   api POST /api/import '{"status":"ready"}';  assert_code 400
   api POST /api/import '{"plan":"","status":"ready"}';  assert_code 400
@@ -447,8 +457,8 @@ if setup_case; then
   assert_body "import id is the test override" '.import_id' fixed
   wait_for 'api GET /api/import/fixed; body_is .state ready'
   if grep -q -- '/fleet-board:import-plan .*plan.md --preview .*cards.json --status ready' "$FAKE_CLAUDE_DIR/args.log"; then pass "prompt names the skill, preview file and status"; else fail "prompt names the skill, preview file and status" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
-  if grep -q -- '--permission-mode auto' "$FAKE_CLAUDE_DIR/args.log"; then pass "permission mode from config"; else fail "permission mode from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
-  if grep -q -- '--max-turns 200' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--permission-mode acceptEdits' "$FAKE_CLAUDE_DIR/args.log"; then pass "permission mode from config"; else fail "permission mode from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--max-turns 7' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   api GET /api/import/fixed
   assert_body "ready import lists its cards" '.cards.cards|length' 2
@@ -485,6 +495,38 @@ if setup_case; then
   stop_server
   start_server "$REPO"
   api GET /api/import/fixed2;       assert_body "restarted server reads an unfinished import as failed" '.state' failed
+
+  # A partial create: card B's 2 MB title overflows the exec argument limit, so board-create.sh
+  # cannot be started for it after A exists.
+  rm -f "$FAKE_CLAUDE_DIR/fail"
+  jq '.cards[1].title = ("x" * 2000000)' "$IMPORT_FIXTURE" > "$TMP/import-cards-partial.json"
+  printf '%s' "$TMP/import-cards-partial.json" > "$FAKE_CLAUDE_DIR/fixture"
+  stop_server
+  export FLEET_BOARD_TEST_IMPORT_ID=fixed3
+  start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for 'api GET /api/import/fixed3; body_is .state ready'
+  api POST /api/import/fixed3/create '{}';   assert_code 409
+  assert_body "partial create lists the cards that exist" '.created|length' 1
+  assert_body "partial create reports the number of the first card" '.created[0]' 6
+  assert_body "partial create carries the error" '.error|type' string
+  if [ -f "$REPO/.fleet-board/cards/6.json" ]; then pass "the created card exists"; else fail "the created card exists" "no card 6"; fi
+  api POST /api/import/fixed3/create '{}';   assert_code 409
+  assert_body "a retry after a partial create says already created" '.error' '*already created*'
+  api GET /api/board;               assert_body "the retry adds no cards" '.cards|length' 6
+  rm -f "$FAKE_CLAUDE_DIR/fixture"
+
+  # A session outliving a server restart is still running, then ready.
+  : > "$FAKE_CLAUDE_DIR/slow"
+  stop_server
+  export FLEET_BOARD_TEST_IMPORT_ID=fixed4
+  start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  stop_server
+  start_server "$REPO"
+  api GET /api/import/fixed4;       assert_body "a live session survives a server restart as running" '.state' running
+  wait_for 'api GET /api/import/fixed4; body_is .state ready'
+  rm -f "$FAKE_CLAUDE_DIR/slow"
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
   stop_server

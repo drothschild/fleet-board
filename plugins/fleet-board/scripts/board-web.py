@@ -49,10 +49,11 @@ APP: dict = {}
 class ApiError(Exception):
     """An error with an HTTP status, returned to the client as {"error": msg}."""
 
-    def __init__(self, code: int, msg: str):
+    def __init__(self, code: int, msg: str, extra: dict = None):
         super().__init__(msg)
         self.code = code
         self.msg = msg
+        self.extra = extra or {}
 
 
 # --- config and store readers -------------------------------------------------
@@ -453,12 +454,15 @@ def start_import(plan_text: str, status: str) -> str:
             ofd = os.open(str(idir / "session.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             efd = os.open(str(idir / "session.err"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(ofd, "wb") as out, os.fdopen(efd, "wb") as err:
-                _IMPORTS[id] = subprocess.Popen(
+                proc = _IMPORTS[id] = subprocess.Popen(
                     argv, cwd=APP["root"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
                     start_new_session=True,
                 )
         except OSError as exc:
             raise ApiError(500, "cannot start %s: %s" % (argv[0], exc))
+        meta = read_json_file(idir / "meta.json") or {}
+        meta.update(pid=proc.pid, pid_start=ps_start(proc.pid) or "")
+        write_private(idir / "meta.json", json.dumps(meta))
     return id
 
 
@@ -515,7 +519,12 @@ def import_status(id: str) -> dict:
     idir = import_dir(id)
     with _IMPORT_LOCK:
         proc = _IMPORTS.get(id)
-        running = proc is not None and proc.poll() is None
+        if proc is not None:
+            running = proc.poll() is None
+        else:  # not our child (server restarted): the recorded pid, same start time
+            meta = read_json_file(idir / "meta.json") or {}
+            pid = meta.get("pid")
+            running = isinstance(pid, int) and pid > 0 and pid_alive(pid, meta.get("pid_start") or "")
         rc = proc.returncode if proc is not None else None
     status = {"state": "running", "elapsed_s": import_elapsed(idir, running),
               "last_text": last_session_text(idir / "session.jsonl"),
@@ -549,13 +558,16 @@ def create_import(id: str, embed: bool) -> dict:
         if meta.get("status") == "ready":
             argv += ["--status", "ready"]
         rc, out, err = run_script(APP["root"], argv, stdin="y\n" + ("e\n" if embed else "m\n"))
-        if rc != 0:
-            raise ApiError(409, err.rstrip("\n") or "import-plan.sh exited %d" % rc)
         created = [int(n) for n in CREATED_RE.findall(out)]
+        if created:  # even a partial create is final: a retry would duplicate these cards
+            meta["created"] = True
+            meta["created_numbers"] = created
+            write_private(idir / "meta.json", json.dumps(meta))
+        if rc != 0:
+            raise ApiError(409, err.rstrip("\n") or "import-plan.sh exited %d" % rc,
+                           {"created": created} if created else None)
         if not created:
             raise ApiError(409, "import-plan.sh created nothing: %s" % (out.strip() or err.strip()))
-        meta["created"] = True
-        write_private(idir / "meta.json", json.dumps(meta))
     return {"created": created, "output": out}
 
 
@@ -787,8 +799,8 @@ def match_route(method: str, path: str):
     return None
 
 
-def json_error(handler, code: int, msg: str):
-    send_json(handler, code, {"error": msg})
+def json_error(handler, code: int, msg: str, extra: dict = None):
+    send_json(handler, code, dict(extra or {}, error=msg))
 
 
 def send_json(handler, code: int, payload):
@@ -889,7 +901,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, "not found: %s %s" % (method, path))
             send_static(self, target)
         except ApiError as exc:
-            json_error(self, exc.code, exc.msg)
+            json_error(self, exc.code, exc.msg, exc.extra)
         except Exception as exc:  # noqa: BLE001 - every failure becomes a JSON 500
             traceback.print_exc(file=sys.stderr)
             json_error(self, 500, str(exc) or exc.__class__.__name__)
