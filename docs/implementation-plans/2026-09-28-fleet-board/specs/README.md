@@ -1791,6 +1791,16 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 
 **Output sha256 before → after (16):** `agents/manager.md` `e4e74e5d724175a9` (main, restored) → `b1a5fa7fc685b1ab`.
 
+### Revision 15 (2026-11-03, card #152): a manager that runs in the background
+
+**Cause.** In the Claude desktop app the Agent tool has no `run_in_background` parameter, so the manager always runs in the background and the `tick` skill had no report to print; `run` had no `dispatchable:` line to read until a completion notice arrived.
+
+**Spec and brief changes** (hand edits to the text): `specs/tick.md` (step 9 and a Must never bullet: with no foreground option, wait for the completion notice and print its final message verbatim) and `specs/run.md` (step 5 and a Must never bullet: a tick is finished only once its report has arrived). A "Revision 15" bullet was added to `briefs/spec-req-tick.md` and `briefs/spec-req-run.md`.
+
+**Runs.** Two isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, only `--add-dir` a staging dir holding the revised spec. The path audit found one read of the spec and one of the target, and two edits of the target, per run. Init events listed only built-in `cc-plugin-*` plugins and the tools `Edit` and `Read`. The claude-code 2.1.x build that ran listed four `cc-plugin-*` built-ins, not the two named in the Phase 5 pre-flight. Cost: $0.0769 (`skills/tick/SKILL.md`) and $0.0723 (`skills/run/SKILL.md`).
+
+Manifest hashes were updated for both skills. Plugin version 0.8.1 to 0.8.2. Behavior in a headless run is unchanged: the skill still passes `run_in_background: false`, and a foreground manager returns its report directly.
+
 ### Revision 16 (2026-11-03, card #100): single backticks for the Out of scope check command
 
 **Cause.** A role that wrote a markdown double-backtick span to hold a command containing a backtick had its report rejected with "out of scope entry needs a backticked check command or the words no testable check", which reads as if no command were present. `parse-report.sh` pairs single backticks only, so a double-backtick span or an odd number of backticks gives no command. The guidance said only "backticked".
@@ -1812,4 +1822,4 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 
 **Minimality check.** `git diff -U0` over `agents` and `skills` was read: every hunk is the Out of scope entry rule, the rejection-message explanation, the pitfall line or the table row. Frontmatter unchanged. **Kept.**
 
-**Revision cost:** $0.6737. The plugin version is bumped to 0.7.1.
+**Revision cost:** $0.6737. The plugin version is bumped to 0.10.1.

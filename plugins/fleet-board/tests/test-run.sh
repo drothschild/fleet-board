@@ -707,6 +707,7 @@ assert_exit "settle-default: exit 0" 0
 LOG="$(the_log "$LOGS")"
 assert_file_contains "settle-default: the shipped script listed the in_progress column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:in_progress"
 assert_file_contains "settle-default: its failure (stub gh) is a logged warning" "$LOG" "warning: settle.sh exited 1"
+assert_file_contains "settle-default: merge-reviewed.sh ran after settle" "$LOG" "--- merge-reviewed.sh ---"
 assert_eq "settle-default: the fake settle did not run" "$(lines "$T/settle-count")" "0"
 
 # ---------------------------------------------------------------------------

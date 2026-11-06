@@ -7,7 +7,8 @@
 #       label, raw label/Status API writes)
 #   G2  gh pr merge: blocked under merge.policy human; under auto, never --admin,
 #       never without an explicit PR, never a draft, never with checks that are
-#       not green; raw merges blocked
+#       not green, never a fleet PR whose head holds commits after the last
+#       review other than clean merges of main; raw merges blocked
 #   G3  board-move N ready needs a '## Acceptance' section on the card
 #
 # A block is exit 2 with one line on stderr. Within the shapes it recognizes,
@@ -900,6 +901,32 @@ check_pr() {
   return 0
 }
 
+# check_reviewed REF REPO: blocks when the PR is a fleet card's PR whose head
+# moved past the note's last_review.sha by anything but clean merges of main
+# (review-drift.sh): such a head has not been reviewed
+check_reviewed() {
+  local ref="$1" repo="$2" name oid n from
+  local args=(pr view "$ref")
+  [ -n "$repo" ] && args+=(-R "$repo")
+  args+=(--json headRefName,headRefOid)
+  lookup "PR $ref" gh "${args[@]}"
+  name="$(jq -r '.headRefName // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify PR $ref; blocking to be safe"
+  oid="$(jq -r '.headRefOid // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify PR $ref; blocking to be safe"
+  case "$name" in fleet/[0-9]*-*) ;; *) return 0 ;; esac
+  n="${name#fleet/}"; n="${n%%-*}"
+  case "$n" in ''|*[!0-9]*) return 0 ;; esac
+  lookup "the manager note of card #$n" bash "$S/note.sh" get "$n"
+  from="$(jq -r '.last_review.sha // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify the manager note of card #$n; blocking to be safe"
+  [ -n "$from" ] && [ -n "$oid" ] || return 0
+  lookup "the commits of PR $ref since its last review" bash "$S/review-drift.sh" "$from" "$oid"
+  [ "$LOOKUP_OUT" = reviewed ] \
+    || block "PR $ref head ${oid:0:7} has commits after the last review at ${from:0:7} that are not clean merges of main; review it before merging"
+  return 0
+}
+
 # --- gates -----------------------------------------------------------------------
 # Pass 1: gates that need no lookup, so a policy block never waits on the network.
 k=0
@@ -970,7 +997,8 @@ while [ $k -lt ${#SHAPES[@]} ]; do
         esac ;;
       merge)
         check_pr "$f1" "$f3"
-        for ref in $f4; do check_pr "$ref" "$f3"; done ;;
+        check_reviewed "$f1" "$f3"
+        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; done ;;
     esac
   done <<<"${SHAPE_DIRS[k]}"
   k=$((k + 1))
