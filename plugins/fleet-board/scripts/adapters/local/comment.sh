@@ -10,9 +10,9 @@ fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 trap 'rm -f "$TMP"; rm -rf "$FB_LOCK"' EXIT
-jq --arg me "$ME" --rawfile b "$2" --arg now "$(fl_now)" '
-  (.next_comment_id // ((.comments // []) | map(.id) | max // 0) + 1) as $id
-  | .comments = (.comments // []) + [{id: $id, author: $me, body: $b, created_at: $now}]
+ID="$(fl_next_comment_id "$CARD")" || fb_die 1 "cannot read the comments of card #$N"
+jq --arg me "$ME" --rawfile b "$2" --arg now "$(fl_now)" --argjson id "$ID" '
+  .comments = (.comments // []) + [{id: $id, author: $me, body: $b, created_at: $now}]
   | .next_comment_id = $id + 1
   | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
