@@ -24,6 +24,7 @@ import json
 import os
 import re
 import secrets
+import socketserver
 import subprocess
 import sys
 import tempfile
@@ -963,6 +964,22 @@ class Handler(BaseHTTPRequestHandler):
 
 # --- main ---------------------------------------------------------------------
 
+class LoopbackServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer without the reverse DNS lookup of the bind address.
+
+    HTTPServer.server_bind calls socket.getfqdn(host), which can block for
+    seconds on hosts with no reverse record for 127.0.0.1 (GitHub's macOS
+    runners among them). The name is only used in error pages, so set it
+    to the literal address instead.
+    """
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="board-web.py")
     ap.add_argument("--root", required=True)
@@ -973,7 +990,7 @@ def main(argv=None) -> int:
     APP["scripts"] = os.path.abspath(args.scripts)
     APP["static"] = (Path(APP["scripts"]) / "board-web" / "static").resolve()
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+        server = LoopbackServer(("127.0.0.1", args.port), Handler)
     except OSError as exc:
         if exc.errno == errno.EADDRINUSE:
             sys.stderr.write("board-web: port %d is in use\n" % args.port)
