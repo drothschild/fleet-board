@@ -268,7 +268,15 @@ gives one SHA per test, in the same order as step 7: a previous finding's SHA, t
 SHA when the test changed since it, then the merge-base. The reviewer reads the base branch with
 `gh pr view`. The statements of what the reviewer judges from name the previous findings.
 
-## Revision 14 requirements (2026-11-03, weakening outside a test body and in round 1)
+## Revision 16 requirements (2026-11-03, single backticks for the check command)
+
+The check command in an `Out of scope:` entry is written in single backticks with no backtick
+inside it. A markdown double-backtick span, or an odd number of backticks, gives no command,
+because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
+command were present. When the command cannot be written that way, the entry uses the words
+`no testable check`. The entry rule says so.
+
+## Revision 17 requirements (2026-11-03, weakening outside a test body and in round 1)
 
 The weakened-test step runs in every round, not only round 2 and later. In round 1 its reference
 SHA is the merge-base, so its diff covers every commit on the PR branch, including a fixer's

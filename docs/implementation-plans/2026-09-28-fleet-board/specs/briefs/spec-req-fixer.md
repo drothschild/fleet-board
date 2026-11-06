@@ -243,7 +243,15 @@ to exactly its content at the SHA in the finding. A partial restore is not allow
 A restore may also put back file-level lines the test needs, such as an import or a helper, each
 exactly as at the SHA. Restored test files count as touched test files.
 
-## Revision 14 requirements (2026-11-03, weakening outside a test body)
+## Revision 16 requirements (2026-11-03, single backticks for the check command)
+
+The check command in an `Out of scope:` entry is written in single backticks with no backtick
+inside it. A markdown double-backtick span, or an odd number of backticks, gives no command,
+because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
+command were present. When the command cannot be written that way, the entry uses the words
+`no testable check`. The entry rule says so.
+
+## Revision 17 requirements (2026-11-03, weakening outside a test body)
 
 The ban on changing existing tests also covers weakening outside a test's body: a changed or
 no-op test helper, a changed fixture or expected-output file, a new top-level setup hook such as

@@ -70,6 +70,13 @@
 # true until a comment holding that marker exists, so each distinct result is
 # commented once. A body with no Acceptance hint stays skip_no_acceptance.
 #
+# Scope overlap: a ready card that would start waits (reason "Scope overlaps
+# #<n> on <path>") when an in_progress or in_review card names a path that its
+# "## Scope" also names. Paths are backticked spans in that section with no
+# whitespace and a "/" or an extension; a card naming none starts as usual.
+# At most one merge is planned per tick: the lowest card number; the other
+# cards that would merge wait ("one merge per tick: #<n> merges first").
+#
 # The decision table itself is the single jq program below.
 #
 # Settle mode (--settle <n>...): the same plan JSON for only the named cards,
@@ -155,6 +162,13 @@
 # note.sh's warning to the plan's warnings:
 # "manager note on #<n> names a worktree outside <base>; treating it as null: <path>".
 #
+# Preflight: when commands.preflight is set, it runs once before planning (not
+# in settle mode). When it exits non-zero the plan holds every card (action
+# wait, reason "preflight failed; ..."; a skip stays a skip), dispatchable is
+# false, and the one warning "preflight failed: <command> (exit <n>)" followed
+# by the last 20 lines of its output. No card's state or
+# action_failures changes. A zero exit leaves the plan as if the key were unset.
+#
 # Rate limit failures: when the script fails and its stderr names a GitHub rate
 # limit, it asks gh api rate_limit for the reset time and adds the line
 # "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
@@ -211,6 +225,20 @@ fb_load_config
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
+
+# Preflight: commands.preflight runs once before planning (never in settle mode,
+# which starts no agent). A non-zero exit holds every card and adds the one
+# warning below; the plan changes no card's state or action_failures.
+PREFLIGHT_WARNING=""
+PRE_CMD="$(fb_cfg commands.preflight)"
+if [ "$SETTLE" != true ] && [ -n "$PRE_CMD" ]; then
+  PRE_OUT="$(cd "$FLEET_ROOT" && bash -c "$PRE_CMD" 2>&1 </dev/null)"
+  PRE_RC=$?
+  if [ "$PRE_RC" -ne 0 ]; then
+    PREFLIGHT_WARNING="preflight failed: $PRE_CMD (exit $PRE_RC)
+$(printf '%s\n' "$PRE_OUT" | tail -n 20)"
+  fi
+fi
 
 TEST_GLOBS="$(jq -r '.test_paths[]' <<<"$FLEET_CFG")" || fb_die 1 "cannot read test_paths"
 
@@ -292,7 +320,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
-  local drift=null
+  local drift=null scope='[]'
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
 
   if [ "${4:-}" = FAILED ]; then
@@ -423,6 +451,19 @@ card_input() {
     fi
   fi
 
+  # Backticked file paths in the body's "## Scope" section: a span with no
+  # whitespace that holds a "/" or ends in an extension
+  if [ -z "$failed" ]; then
+    scope="$(jq -cn --arg b "$body" '
+      $b | split("\n") | reduce .[] as $l ({in: false, paths: []};
+        if ($l | test("^##[ \t]+Scope[ \t]*$")) then .in = true
+        elif ($l | test("^##[ \t]")) then .in = false
+        elif .in then .paths += [$l | scan("`([^`]+)`") | .[0]
+              | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))]
+        else . end)
+      | .paths | unique' 2>/dev/null)" || scope='[]'
+  fi
+
   # A ready card's dependencies (only a card that could start is looked up)
   # (grep reads the file, not a pipe: grep -q quits at its first match, and a
   # body bigger than the pipe buffer would kill the writer and skip the gate)
@@ -460,7 +501,7 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" \
     '{number: $n, title: $title, state: $st,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -469,7 +510,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift}'
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -499,7 +540,7 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review blocked); d
   done
 done
 
-jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
+jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
@@ -584,7 +625,12 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
           else act("skip"; "blocked") end
         else act("skip"; "state \($c.state) is not planned") end;
 
-  [ .[] | . as $c | ($c.note // {}) as $n
+  . as $all
+  # Open cards (in_progress, in_review) and the lowest card number whose table
+  # action is merge: only that card merges this tick
+  | [$all[] | select(.state == "in_progress" or .state == "in_review")] as $open
+  | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger
+  | [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
     # Models (AC6.2): from escalate_after_rounds on, implementor and fixer use
     # models.escalation, or the reviewer model when that is null
@@ -594,12 +640,26 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        reviewer: $m.reviewer,
        fixer: (if $esc then $emodel else $m.fixer end)} as $models
     | (($c.title // "") | slug) as $slug
-    | decide($c; $n; $round) as $d0
+    | decide($c; $n; $round) as $d00
+    # A ready card that would start waits when an open card names one of its Scope paths
+    | (if $d00.action == "start"
+        then (first($open[] | select(.number != $c.number) | . as $o
+                | ([($c.scope_paths // [])[] | select(. as $p | ($o.scope_paths // []) | index($p))] | first) as $p
+                | select($p != null) | {num: $o.number, path: $p}) // null)
+        else null end) as $ov
+    | (if $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
+       elif $d00.action == "merge" and $merger != $c.number
+         then act("wait"; "one merge per tick: #\($merger) merges first")
+       else $d00 end) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0
        elif ($d0.action == "to_human_qa" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and $d0.action == "merge")) then $d0
        elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
        else act("skip"; "\($d0.action) waits for the next tick") end) as $d
+    # A failed preflight holds every card: no role runs, nothing is recorded
+    | (if $pre != "" and $d.action != "skip"
+       then act("wait"; "preflight failed; nothing is planned until the environment works")
+       else $d end) as $d
     | {number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
@@ -615,11 +675,12 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
-  | {dispatchable: (($settle | not) and any($cards[];
+  | {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
-       (if $m.implementor == $m.reviewer
+       (if $pre != "" then [$pre] else [] end)
+       + (if $m.implementor == $m.reviewer
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)
        + (if $m.escalation != null and $m.escalation == $m.reviewer
