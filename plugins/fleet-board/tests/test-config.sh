@@ -556,6 +556,41 @@ run_config "$REPO"
 assert_exit "field-validation valid values: exit 0" "0"
 assert_key "$REPO" "worktrees.dir" "../wt" "field-validation valid values: relative dir with .. kept"
 
+# review.stages: defaults fill in
+REPO="$(printf 'board:\n  repo: a/b\nmodels: { reviewer: opus }\nreview: { max_rounds: 4, stages: [ { name: security, agent: "acme:sec" } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: minimal stage is valid" 0
+assert_stdout_exact_jq() { # NAME JQ_FILTER EXPECTED (against LAST_OUT)
+  local got; got="$(jq -c "$2" <<<"$LAST_OUT")"
+  if [ "$got" = "$3" ]; then pass "$1"; else fail "$1" "expected: '$3', got: '$got'"; fi
+}
+assert_stdout_exact_jq "stages: defaults filled" '.review.stages[0]' \
+  '{"name":"security","agent":"acme:sec","model":"opus","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":4,"brief":null}'
+# explicit values kept
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: ux, agent: ux-reviewer, model: sonnet, paths: ["src/ui/**"], label: ux-pls, advisory: true, max_rounds: 1, brief: "Check copy." } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "stages: explicit values kept" '.review.stages[0]' \
+  '{"name":"ux","agent":"ux-reviewer","model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"brief":"Check copy."}'
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "stages: empty by default" '.review.stages' '[]'
+invalid_field_case "stages not a list" 'review: { stages: 3 }' "review.stages must be a list"
+invalid_field_case "stage bad name" 'review: { stages: [ { name: "Sec-1", agent: a } ] }' "review.stages[0].name must match ^[a-z][a-z0-9_]*$"
+invalid_field_case "stage duplicate name" 'review: { stages: [ { name: s, agent: a }, { name: s, agent: b } ] }' "review.stages[1].name s is not unique"
+invalid_field_case "stage missing agent" 'review: { stages: [ { name: s } ] }' "review.stages[0].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$"
+invalid_field_case "stage bad agent" 'review: { stages: [ { name: s, agent: "a b" } ] }' "review.stages[0].agent must match ^[A-Za-z0-9_-]+(:[A-Za-z0-9_-]+)?$"
+invalid_field_case "stage empty model" 'review: { stages: [ { name: s, agent: a, model: "" } ] }' "review.stages[0].model must be a non-empty string"
+invalid_field_case "stage paths" 'review: { stages: [ { name: s, agent: a, paths: [""] } ] }' "review.stages[0].paths must be a list of non-empty strings"
+invalid_field_case "stage label reserved" 'review: { stages: [ { name: s, agent: a, label: needs-human-qa } ] }' "review.stages[0].label must be a non-empty string"
+invalid_field_case "stage label duplicate" 'review: { stages: [ { name: s, agent: a, label: x }, { name: t, agent: a, label: x } ] }' "review.stages[1].label must be a non-empty string"
+invalid_field_case "stage advisory" 'review: { stages: [ { name: s, agent: a, advisory: yes_please } ] }' "review.stages[0].advisory must be boolean"
+invalid_field_case "stage max_rounds" 'review: { stages: [ { name: s, agent: a, max_rounds: 0 } ] }' "review.stages[0].max_rounds must be a positive integer"
+invalid_field_case "stage brief" 'review: { stages: [ { name: s, agent: a, brief: 7 } ] }' "review.stages[0].brief must be a string"
+invalid_field_case "board.states names no stage" 'board: { states: { review_x: "X Review" } }' "board.states key review_x names no stage"
+REPO="$(printf 'board:\n  repo: a/b\n  states: { review_security: "Sec" }\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: board.states may map a stage" 0
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
