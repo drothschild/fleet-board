@@ -196,7 +196,7 @@ VALIDATION_SCRIPT='
         (if (.board.repo | type) != "string" or (.board.repo | test("^[^/ ]+/[^/ ]+$") | not) then "board.repo must match ^[^/ ]+/[^/ ]+$" else empty end)
       else empty end),
       (if (.board | type) == "object" then
-        (if (.board.backend | type) != "string" or (.board.backend as $b | ($b == "github-labels" or $b == "github-projects") | not) then "board.backend must be github-labels or github-projects" else empty end)
+        (if (.board.backend | type) != "string" or (.board.backend as $b | ($b == "github-labels" or $b == "github-projects" or $b == "local") | not) then "board.backend must be github-labels, github-projects or local" else empty end)
       else empty end),
       (if (.board | type) == "object" and .board.backend == "github-projects" then
         (if (.board.project_number | type) != "number" then "github-projects requires numeric board.project_number" else empty end)
@@ -301,6 +301,12 @@ VALIDATION_SCRIPT='
       else empty end),
       (if (.worktrees | type) == "object" then
         (if (.worktrees.dir | type) != "string" or .worktrees.dir == "" or (.worktrees.dir | startswith("/")) then "worktrees.dir must be a non-empty relative path" else empty end)
+      else empty end),
+      (if (.board | type) == "object" then
+        (if (.board.dir | type) != "string" or .board.dir == "" or (.board.dir | startswith("/")) or (.board.dir | split("/") | index("..") != null) then "board.dir must be a non-empty relative path without .." else empty end)
+      else empty end),
+      (if (.board | type) == "object" then
+        (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
       (if (.models | type) == "object" then
         (("manager", "implementor", "reviewer", "fixer") as $r

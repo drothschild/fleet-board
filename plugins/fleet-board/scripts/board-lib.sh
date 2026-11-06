@@ -70,8 +70,13 @@ fb_git_common_dir() {
 # Prints scalars raw (booleans print as true/false), objects/arrays as JSON, and nothing for null.
 fb_cfg() { jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"; }
 
-# Prints the authenticated gh login; exits 1 if it cannot be determined
+# Prints the authenticated gh login (FLEET_BOARD_USER or $USER on the local
+# backend, which never calls gh); exits 1 if it cannot be determined
 fb_login() {
+  if [ "$(fb_cfg board.backend)" = "local" ]; then
+    printf '%s\n' "${FLEET_BOARD_USER:-$USER}"
+    return 0
+  fi
   local l; l="$(gh api user 2>/dev/null | jq -r '.login // empty' 2>/dev/null)"
   [ -n "$l" ] && [ "$l" != "null" ] || fb_die 1 "cannot determine the authenticated gh login (gh api user failed)"
   printf '%s\n' "$l"
@@ -140,14 +145,14 @@ fb_default_name() {
   case "$1" in
     review_*)
       case "$(fb_cfg board.backend)" in
-        github-projects) echo "Review: ${1#review_}" ;;
+        github-projects|local) echo "Review: ${1#review_}" ;;
         *) echo "fleet:$1" ;;
       esac
       return 0
       ;;
   esac
   case "$(fb_cfg board.backend)" in
-    github-projects)
+    github-projects|local)
       case "$1" in
         backlog) echo "Backlog" ;;
         ready) echo "Ready" ;;
