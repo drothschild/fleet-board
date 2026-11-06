@@ -477,6 +477,8 @@ printf '%s\n' "$*" >> "$FAKE_CLAUDE_DIR/args.log"
 prompt="${!#}"
 if [ -e "$FAKE_CLAUDE_DIR/fail" ]; then echo boom >&2; exit 1; fi
 dest="$(printf '%s' "$prompt" | sed -n 's/.*--preview \([^ ]*\).*/\1/p')"
+# hang: record our pid and sleep until killed
+if [ -e "$FAKE_CLAUDE_DIR/hang" ]; then echo $$ > "$FAKE_CLAUDE_DIR/pid"; while :; do sleep 1; done; fi
 # slow: hold the session until the test creates $FAKE_CLAUDE_DIR/release (30 s at most)
 if [ -e "$FAKE_CLAUDE_DIR/slow" ]; then
   i=0
@@ -579,6 +581,28 @@ if setup_case; then
   : > "$FAKE_CLAUDE_DIR/release"
   wait_for 'api GET /api/import/fixed4; body_is .state ready'
   rm -f "$FAKE_CLAUDE_DIR/slow"
+  # Cancel: a ready or failed import cannot be cancelled.
+  api POST /api/import/fixed4/cancel;  assert_code 409
+  api POST /api/import/fixed2/cancel;  assert_code 409
+
+  # Cancel a running session: a fake claude that sleeps until killed.
+  stop_server
+  : > "$FAKE_CLAUDE_DIR/hang"
+  rm -f "$FAKE_CLAUDE_DIR/pid"
+  export FLEET_BOARD_TEST_IMPORT_ID=cancel1
+  start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for '[ -s "$FAKE_CLAUDE_DIR/pid" ]'
+  HANG_PID="$(cat "$FAKE_CLAUDE_DIR/pid")"
+  api GET /api/import/cancel1;      assert_body "hanging import is running" '.state' running
+  api POST /api/import/cancel1/cancel; assert_code 200
+  wait_for '! kill -0 "$HANG_PID" 2>/dev/null'
+  if ! kill -0 "$HANG_PID" 2>/dev/null; then pass "cancel kills the session pid"; else fail "cancel kills the session pid" "pid $HANG_PID alive"; fi
+  api GET /api/import/cancel1;      assert_body "cancelled import reports cancelled" '.state' cancelled
+  api POST /api/import/cancel1/create '{}'; assert_code 409
+  api POST /api/import/cancel1/cancel; assert_code 409
+  rm -f "$FAKE_CLAUDE_DIR/hang"
+  if [ "$(pgrep -f "$FAKE_IMPORT_CLAUDE" | wc -l | tr -d ' ')" = 0 ]; then pass "no fake claude process left running"; else fail "no fake claude process left running" "$(pgrep -fl "$FAKE_IMPORT_CLAUDE")"; fi
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
   stop_server
