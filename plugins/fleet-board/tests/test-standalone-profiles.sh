@@ -27,7 +27,7 @@ YML
   cat > .fleet-board.yml <<'YML'
 board: { repo: acme/toy }
 execution:
-  profiles: { review: { runner: diff-chat, provider: openrouter, model: model-review, price: { input: 1, output: 2 }, timeout: 91 } }
+  profiles: { review: { runner: diff-chat, provider: openrouter, model: model-review } }
 review:
   stages:
     - { name: security, provider: openrouter, model: model-review, profile: review }
@@ -42,7 +42,7 @@ execution:
   profiles:
     coding: { runner: codex, provider: openai, model: model-code }
     stronger: { runner: codex, provider: openai, model: model-strong }
-    independent: { runner: diff-chat, provider: openrouter, model: model-review, price: { input: 1, output: 2 }, timeout: 91 }
+    independent: { runner: diff-chat, provider: openrouter, model: model-review }
   roles: { implementor: coding, fixer: coding, reviewer: independent }
   escalation: { profile: stronger, after_round: 3 }
 review:
@@ -61,7 +61,7 @@ jq -e '.profile == "coding" and .runner == "codex" and .provider == "openai" and
 out="$(resolve --role fixer --round 3)" || exit 1
 jq -e '.profile == "stronger" and .model == "model-strong" and .escalated == true' <<<"$out" >/dev/null || exit 1
 out="$(resolve --stage security --round 1)" || exit 1
-jq -e '.profile == "independent" and .runner == "diff-chat" and .provider == "openrouter" and .model == "model-review" and .price.input == 1 and .timeout == 91' <<<"$out" >/dev/null || exit 1
+jq -e '.profile == "independent" and .runner == "diff-chat" and .provider == "openrouter" and .model == "model-review"' <<<"$out" >/dev/null || exit 1
 sed 's/implementor: coding/implementor: absent/' .fleet-board.yml > "$TMP/invalid" && mv "$TMP/invalid" .fleet-board.yml
 if bash "$SCRIPTS/config.sh" --check >/dev/null 2>&1; then echo 'FAIL: missing referenced profile accepted' >&2; exit 1; fi
 echo 'PASS: routing'

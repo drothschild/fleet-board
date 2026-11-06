@@ -30,7 +30,7 @@ jq -e --arg role "$role" --arg stage "$stage" --argjson round "$round" '
     ([.review.stages[] | select(.name == $stage)] | first) as $s |
     if $s == null then error("unknown review stage " + $stage)
     elif $s.profile != null then from_profile($s.profile; false)
-    elif $s.provider != null then {profile:null, runner:"diff-chat", provider:$s.provider, model:$s.model, escalated:false, source:"legacy-provider"}
+    elif $s.provider != null then $s + {profile:null, runner:"diff-chat", escalated:false, source:"legacy-provider"}
     elif $s.agent != null then error("stage " + $stage + " uses plugin agent " + $s.agent + "; map it with review.stages[].profile")
     else from_profile(.execution.roles.reviewer; false) end
   else

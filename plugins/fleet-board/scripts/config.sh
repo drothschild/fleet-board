@@ -225,7 +225,7 @@ VALIDATION_SCRIPT='
                 (if ($s.name | type) != "string" or ($s.name | test("^[a-z][a-z0-9_]*$") | not) then "review.stages[\($i)].name must match ^[a-z][a-z0-9_]*$"
                  elif (($stages[0:$i] | map(select(type == "object") | .name)) | index($s.name)) != null then "review.stages[\($i)].name \($s.name) is not unique"
                  else empty end),
-                (if $s.agent != null and $s.provider != null then "review.stages[\($i)] must not set both agent and provider"
+                (if $s.agent != null and $s.provider != null then "review.stages[\($i)] must set exactly one of agent and provider"
                  elif $s.provider != null and $s.profile != null then "review.stages[\($i)] cannot combine provider and profile"
                  elif $s.agent == null and $s.provider == null and $s.profile == null and (($execution.profiles // {}) | length) == 0 then "review.stages[\($i)] must set exactly one of agent and provider"
                  else empty end),
