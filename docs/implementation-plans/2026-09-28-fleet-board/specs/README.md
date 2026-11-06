@@ -1823,21 +1823,3 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Minimality check.** `git diff -U0` over `agents` and `skills` was read: every hunk is the Out of scope entry rule, the rejection-message explanation, the pitfall line or the table row. Frontmatter unchanged. **Kept.**
 
 **Revision cost:** $0.6737. The plugin version is bumped to 0.10.1.
-
-### Revision 17 (2026-11-06, card #143): a fixer that cannot reproduce a finding
-
-**Cause.** On a card whose only Important finding came from a stale environment, the fixer re-ran the test, saw it pass, committed nothing and reported `blocked`. A person moving the card back re-planned `fix` from the same note, so the fixer blocked it again (HMB Workout #48, ticks 19 and 21). The fixer now has a fourth outcome, `not_reproducible`, and `tick-plan.sh` plans `review` for it and for a card returned from Blocked with an unchanged head.
-
-**Spec and brief changes** (hand edits to the text): `specs/fixer.md` (behavior 17, a Must never item, the Status bullet and shape line, the status-by-role line, one rejection message) and a "Revision 17 requirements" section in `briefs/spec-req-fixer.md`. Spec sha256 (16) `69c0a452552d0482`; brief `c75225e6928cedf3`.
-
-**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.319, 11 turns, cost $0.1999. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` and a copy of the edited spec as `spec-fixer.md`. The user approved the spend on the card. Evidence: `evidence/author-fixer.r17.init.json` (plugins only built-in `cc-plugin-*`, tools exactly `Edit` and `Read`).
-
-| Output | Before sha256 (16) | After sha256 (16) |
-|---|---|---|
-| `agents/fixer.md` | `ab7b0d220bc9b92f` | `d6f9fc4ee37b1716` |
-
-**Minimality check.** `git diff -U0` was read: every hunk is the new behavior, the Status values, the rejection message or the new Must never item. Frontmatter unchanged. **Kept.**
-
-**Known limit, not re-run.** `agents/manager.md` does not yet record `last_fix`, pass `--commits-since-review` to the checker, or bump `round` for the re-review; the plan side (`tick-plan.sh`) reads `note.last_fix` and `note.state` already. The manager spec and agent need their own revision (follow-up).
-
-**Revision cost:** $0.1999. The plugin version is bumped to 0.11.1.

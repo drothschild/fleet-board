@@ -41,7 +41,6 @@ Throughout this spec, example test commands assume `commands.test_one` is `node 
 14. **Writes the report outside the worktree.** It runs `mktemp` in a Bash call and notes the absolute path it prints; that temp file is outside the worktree (it lands under `$TMPDIR`). It creates the file with `mktemp` only, never at a self-chosen path. It writes the report to exactly that path with the Write tool. It never puts the report text inside a Bash command (no heredoc, `echo`, `printf` or `cat`), because the gate reads Bash command text and blocks a report that quotes a gated command. If the Write tool refuses the file because it has not been read, it reads it once with the Read tool and writes it again (still never a heredoc, `echo`, `printf` or `cat`, and never a different path). It writes no report or scratch file inside the worktree.
 15. **Checks the report in the posting call.** In ONE Bash call that names that literal path, it runs `bash <scripts dir>/parse-report.sh --role fixer <path> && bash <scripts dir>/board-comment.sh <card number> <path>`. If the check fails, it fixes the file with Edit or Write and repeats that one check-and-post Bash call, until the check exits 0. Running the checker is reading, not a board action.
 16. **Posts the report in the same call.** In that same Bash call, the post (`board-comment.sh`) runs only when `parse-report.sh` exits 0. The report is posted once. Its final reply is the same report text, character for character.
-17. **Reports a finding it cannot reproduce.** After recording the base head and before any edit, it re-runs what each input finding describes: the touched test files through `commands.test_one` (one file per run), or the command the finding names. When none of the findings reproduces at the base head (the tests pass and the defect is absent), it changes nothing: no commit, no push, and `git -C <worktree> status --porcelain` stays empty. It sets Status to `not_reproducible`, writes each finding's Resolutions line as `not fixed: not reproducible` followed by the command it ran and what that command printed, and states under `## For the card` that it made no commit, so the manager can have the reviewer look again. When only some findings fail to reproduce, it fixes the ones that do reproduce and reports Status `done` or `blocked` as in behavior 10, marking the others `not fixed: not reproducible` followed by the same evidence. `not_reproducible` is never used after any commit, and never without a command it ran in this dispatch.
 
 ## 4. Must never
 
@@ -63,7 +62,6 @@ Throughout this spec, example test commands assume `commands.test_one` is `node 
 - Dispatch agents, or load skills.
 - Copy code from another open PR into this branch instead of reporting `Blocked by: #<n>`.
 - Report a claim or count it did not get by running a command in this dispatch.
-- Report Status `not_reproducible` after making a commit, or without having run a command that tried to reproduce each finding.
 - List, glob, search or sort any temp directory (for example `ls -t $TMPDIR`, `/var/folders/...`, or `find` in a temp directory), or post or pass to a board script any file other than the report file it created with `mktemp` in this dispatch.
 
 ## 5. Report
@@ -72,7 +70,7 @@ The fixer produces exactly one report. It posts it as a card comment with `board
 
 **For the fixer specifically:**
 
-- **Status:** `done` (every input finding is `fixed`), `blocked` (at least one is `not fixed`, for any reason, including `needs human decision` and a cross-PR block) or `not_reproducible` (behavior 17: no finding reproduces and the fixer made no commit; the manager runs the checker with `--commits-since-review 0` and rejects the status when the branch has commits past the reviewed head). The fixer never uses `clean` or `findings`; the checker rejects them with `role fixer does not allow status: <word>`.
+- **Status:** `done` (every input finding is `fixed`) or `blocked` (at least one is `not fixed`, for any reason, including `needs human decision` and a cross-PR block). The fixer never uses `clean` or `findings`; the checker rejects them with `role fixer does not allow status: <word>`.
 - **Required role sections:** `## PR` and `## Resolutions`.
 - **`## PR` rule:** it holds `#<PR number>`, the PR the fixer was given. Because a PR always exists when the fixer runs, it includes the number even when Status is `blocked`. `## PR` contains no other `#<digits>`: no card number, no blocking PR number (that goes under `## For the card` as `Blocked by: #<n>`), and no example.
 - **`## Resolutions`:** one line per input finding, `- <finding> :: fixed` or `- <finding> :: not fixed: <why>`, with at least one entry.
@@ -83,7 +81,7 @@ The fixer produces exactly one report. It posts it as a card comment with `board
 
 ```
 ## Status
-<one word: done | blocked | clean | findings | not_reproducible>
+<one word: done | blocked | clean | findings>
 
 ## Findings
 - [Critical] <text>
@@ -111,7 +109,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
     - The repro is a command the role actually ran, and `observed` is what it printed.
     - A bug inside the card's own diff is a Finding, never a Bug found.
 - **Status values by role:**
-  - `done` and `blocked` are for the implementor and fixer; `not_reproducible` is for the fixer only.
+  - `done` and `blocked` are for the implementor and fixer.
   - `clean` and `findings` are for the reviewer.
 - **The `VERIFIED:` line:**
   - There is exactly one.
@@ -133,7 +131,7 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
   - Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`. Mutation is exactly one line of the two forms. Claim check has each of the four keys once, or only the skipped line.
   - The `VERIFIED:` integer ends at whitespace or the line end (`-> 3abc` and `-> 3.5` are rejected).
   - CRLF line endings, tabs and padded headings (`##  Status `) are accepted.
-- **With `--role`:** the role's sections are required; Status must be one of the role's two values; the fixer's `not_reproducible` is rejected for the other roles, and with `--commits-since-review <n>` for `n` above 0; the implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked` (no PR may exist yet); the reviewer's `clean` means zero Critical and Important findings and `findings` at least one; the reviewer's Acceptance map and the fixer's Resolutions have at least one entry.
+- **With `--role`:** the role's sections are required; Status must be one of the role's two values; the implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked` (no PR may exist yet); the reviewer's `clean` means zero Critical and Important findings and `findings` at least one; the reviewer's Acceptance map and the fixer's Resolutions have at least one entry.
 
 ### Enforcement: `parse-report.sh` error messages
 
@@ -164,14 +162,13 @@ VERIFIED: `<command>` -> <integer> <what the integer counts>
 - `malformed ## Claim check line: <line>`
 - `## Claim check needs one each of claim:, command:, result: and matches:, or only "skipped: review.verify_claim is off"`
 - `malformed ## Resolutions line (want - <finding> :: fixed | not fixed: <why>): <line>`
-- `status not_reproducible needs no commits since the reviewed head, found <N>` (only when the checker is given `--commits-since-review <N>`)
 - `role <role> requires a PR number (#<n>) in ## PR unless status is blocked`
 - `status clean needs zero Critical and Important findings, found <n>`
 - `status findings needs at least one Critical or Important finding`
 - `role reviewer requires at least one ## Acceptance map entry`
 - `role fixer requires at least one ## Resolutions entry`
 
-Usage errors exit 2 instead (`--commits-since-review` without a non-negative integer, `unknown flag: <flag>`, `unknown role: <role>`, `cannot read file: <file>`, and the usage line). They mean the checker was called wrongly, not that the report is malformed.
+Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `cannot read file: <file>`, and the usage line). They mean the checker was called wrongly, not that the report is malformed.
 
 ### Pitfalls the fixer must avoid
 
