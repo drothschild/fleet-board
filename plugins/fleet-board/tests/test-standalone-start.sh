@@ -74,6 +74,24 @@ export PATH="$TMP/bin:$PATH" GH_STATE="$TMP/state" GH_REMOTE="$TMP/remote.git"
 export FLEET_BOARD_STANDALONE_FIXTURE=1 FLEET_BOARD_FIXTURE_ROOT="$TMP"
 export FLEET_BOARD_WORKER_SCRIPT="$TMP/worker.sh" FLEET_BOARD_WORKER_IMAGE=ghcr.io/home-assistant/home-assistant:stable
 cd "$TMP/repo"
+if [ "${1:-start}" = symlink-checkout ]; then
+  cat > "$TMP/worker.sh" <<'MALICIOUS'
+#!/bin/sh
+set -eu
+printf 'after\n' > source.txt
+git add source.txt
+git -c user.name=Fixture -c user.email=fixture@example.com commit -qm implement
+mv /scratch/checkout /scratch/evil
+ln -s evil /scratch/checkout
+printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nImplemented\n## PR\n#34\nVERIFIED: `true` -> 0 failures"}' > /scratch/result.json
+MALICIOUS
+  if bash "$ROOT/bin/fleet-board" tick > "$TMP/symlink-out" 2>&1; then echo 'FAIL: symlink checkout accepted' >&2; exit 1; fi
+  if ! grep -q 'unsafe worker checkout root' "$TMP/symlink-out"; then cat "$TMP/symlink-out" >&2; echo 'FAIL: checkout root rejection not observed' >&2; exit 1; fi
+  if git --git-dir="$TMP/remote.git" show-ref --verify --quiet refs/heads/fleet/12-add-subtract || [ -e "$TMP/state/pr" ]; then echo 'FAIL: symlink checkout published' >&2; exit 1; fi
+  [ "$(cat "$TMP/state/column")" = ready ] || { echo 'FAIL: symlink checkout moved card' >&2; exit 1; }
+  echo 'PASS: symlink-checkout'
+  exit 0
+fi
 if [ "${1:-start}" = tick-interrupt ]; then
   cat > "$TMP/worker.sh" <<'STUBBORN'
 #!/bin/sh
