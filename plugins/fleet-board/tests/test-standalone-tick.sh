@@ -4,6 +4,52 @@ set -uo pipefail
 unset CDPATH
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$TEST_DIR/../../.." && pwd)"
+if [ "${1:-}" = worker-boundary ]; then
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  mkdir -p "$TMP/source" "$TMP/scratch" "$TMP/home"
+  git -C "$TMP/source" init -q
+  git -C "$TMP/source" config user.email test@example.com
+  git -C "$TMP/source" config user.name 'Test User'
+  printf 'original\n' > "$TMP/source/file.txt"
+  git -C "$TMP/source" add file.txt
+  git -C "$TMP/source" commit -q -m initial
+  REF="$(git -C "$TMP/source" rev-parse HEAD)"
+  printf 'secret\n' > "$TMP/home/credential"
+  ln -s "$TMP/home/credential" "$TMP/source/escape"
+  git -C "$TMP/source" add escape
+  git -C "$TMP/source" commit -q -m 'add symlink'
+  REF="$(git -C "$TMP/source" rev-parse HEAD)"
+  cat > "$TMP/scratch/worker.sh" <<'WORKER'
+#!/bin/sh
+set -eu
+[ ! -e /controller-secret ]
+[ ! -r escape ]
+[ ! -e /var/run/docker.sock ]
+[ -z "${GH_TOKEN:-}" ]
+[ ! -e .git/objects/info/alternates ]
+! git ls-remote https://github.com/example/nonexistent.git >/dev/null 2>&1
+printf 'edited\n' > file.txt
+[ "$(cat file.txt)" = edited ]
+printf '%s\n' '{"version":1,"outcome":"done","report":"worker report"}' > /scratch/result.json
+WORKER
+  jq -n --arg source "$TMP/source" --arg scratch "$TMP/scratch" --arg ref "$REF" \
+    '{version:1,card:12,action:"start",role:"implementor",worktree:$source,expected_ref:$ref,prompt:"fixture",limits:{seconds:30,memory_mb:256,pids:64},permissions:{network:false},image:"ghcr.io/home-assistant/home-assistant:stable"}' > "$TMP/request.json"
+  export GH_TOKEN=controller-secret
+  if ! bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch" > "$TMP/out"; then
+    echo 'FAIL: isolated worker should succeed' >&2; exit 1
+  fi
+  if ! jq -e '.version == 1 and .outcome == "done" and .report == "worker report"' "$TMP/out" >/dev/null; then
+    echo 'FAIL: worker result was not validated' >&2; exit 1
+  fi
+  [ "$(cat "$TMP/source/file.txt")" = original ] || { echo 'FAIL: controller checkout changed' >&2; exit 1; }
+  [ "$(cat "$TMP/scratch/checkout/file.txt")" = edited ] || { echo 'FAIL: worker checkout not edited' >&2; exit 1; }
+  if PATH=/nonexistent /bin/bash "$ROOT/bin/fleet-board" worker --request "$TMP/request.json" --scratch "$TMP/scratch" >/dev/null 2>&1; then
+    echo 'FAIL: unavailable isolation accepted' >&2; exit 1
+  fi
+  echo 'PASS: worker-boundary'
+  exit 0
+fi
 case "${1:-}" in
   plan-only) ;;
   *) echo "usage: $0 plan-only" >&2; exit 2 ;;
