@@ -858,3 +858,8 @@ the existing 0.18 Provider stages as 0.19 and use that number in references.
 ## PR 215 integration requirements
 
 Implement spec 2.9a and its override of ordinary fix handling. Pass plan findings, clear conflict/review state only after a pushed resolution, restart In Review at round 1 with no completed stages, retain blocked findings, and apply the conflict-specific progress rule. Update the fixer input list and stale update_branch descriptions consistently. Preserve unrelated behavior and numbering.
+
+
+## Revision 23 requirements: completion-driven scheduling
+
+Apply the current manager spec's Purpose, 0.4/0.5 completion registry, 1.5/1.6 scheduler, 2.1 shared concurrency, fresh-plan fix/stage continuations, and fresh final reporting. These supersede historical foreground/batch and one-step wording in this brief. Use explicit background Agent dispatch, one active role per card, immediate per-completion reconciliation, duplicate notification handling, an initial-card snapshot and 16 actions per card per tick. Maintain all report validation, failure accounting, model selection, review-head identity and human-QA protections. Provider stage and evidence-review tasks share worker capacity. Keep headless merges outside the manager, in the wrapper. Update contradictory wording throughout the existing manager, including retry parameters and Must never, while preserving unrelated contracts and frontmatter. Do not rewrite the whole agent or edit any other generated file. The offline contract test names structural requirements; the separate completion behavioral protocol is the runtime acceptance test.

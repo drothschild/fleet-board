@@ -228,3 +228,7 @@ A lock directory named `fleet-board-merge.lock` in the Git common directory seri
 ### Scope-aware admission
 
 Ready cards are considered in ascending card-number order. Each selected start reserves its declared Scope paths for the rest of that plan, alongside cards already in progress or review. Directory paths cover descendants, so `src/` overlaps `src/model.js` but not `src-other/model.js`. Active PR changed files supplement the declared paths. If a PR file list cannot be read completely, new starts wait; existing review and fix actions can continue. Scope-free cards retain their existing behavior, so declare meaningful paths for work that may overlap.
+
+### Fresh scheduling decisions
+
+After settlement, merge draining and cleanup, the wrapper clears the board cache and reads a new tick plan before deciding whether to stop. This both picks up newly unblocked work and avoids an extra tick when post-tick work emptied the queue. Pending follow-up filing keeps the run active. A failed or malformed refresh stops with `plan-refresh-failed` (exit 1). `FLEET_BOARD_TICK_PLAN` overrides the planner executable for controlled testing.
