@@ -18,6 +18,8 @@ FIX="$SCRIPT_DIR/../fixtures/gh/import"
 
 unset FLEET_BOARD_CONFIG FLEET_BOARD_LOCK_WAIT FLEET_BOARD_LIST_LIMIT || true
 export FLEET_BOARD_USER="localme"
+# the importer reads the GitHub board: the fake gh lets its board calls through
+export FAKE_GH_ALLOW_BOARD=1
 
 PASS=0
 FAIL=0

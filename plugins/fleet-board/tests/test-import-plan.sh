@@ -43,16 +43,11 @@ mkdir -p "$ROOT" "$STUBS" "$D/bodies"
 git -C "$ROOT" init -q
 cat > "$ROOT/.fleet-board.yml" <<'EOF'
 board:
-  backend: github-projects
   repo: acme/api
-  project_number: 3
 worktrees:
   dir: ".wt"
 EOF
-mkdir -p "$ROOT/.wt/.cache"
-cat > "$ROOT/.wt/.cache/projects.json" <<'EOF'
-{"project_id":"PID","field_id":"FID","options":{"Backlog":"OPT_BACKLOG","Ready":"OPT_READY"}}
-EOF
+ROOT_MAIN="$ROOT"
 
 # gh stub: logs "<args>" per call; issue create prints a URL with a global counter
 cat > "$STUBS/gh" <<'EOF'
@@ -115,17 +110,32 @@ cat > "$SB/cards.json" <<'EOF'
 ]}
 EOF
 
-reset_gh() { rm -rf "$D"; mkdir -p "$D/bodies"; }
+# reset_gh: a fresh gh log, and (for the main sandbox) an empty local store
+reset_gh() {
+  rm -rf "$D"; mkdir -p "$D/bodies"
+  if [ "$ROOT" = "$ROOT_MAIN" ]; then
+    rm -rf "$ROOT/.fleet-board"; mkdir -p "$ROOT/.fleet-board/cards"; echo 1 > "$ROOT/.fleet-board/next"
+  fi
+}
 run_import() { # <stdin-answer> args...
   local ans="$1"; shift
   OUT="$(cd "$ROOT" && printf '%s\n' "$ans" | FAKE_D="$D" PATH="$STUBS:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
   RC=$?
 }
-body_of() { # <title> -> body file of the issue created with that title
-  local n
-  n="$(awk -v t="$1" 'BEGIN{i=100} /^issue create /{i++; if (index($0, "--title " t " ")) {print i; exit}}' "$D/calls.log")"
+# card_of <title>: the number of the local card created with that title
+card_of() {
+  local f
+  for f in "$ROOT/.fleet-board/cards/"*.json; do
+    [ -e "$f" ] && [ "$(jq -r .title "$f")" = "$1" ] && { jq -r .number "$f"; return; }
+  done
+}
+body_of() { # <title> -> a file holding the card's body as board-read.sh returns it
+  local n; n="$(card_of "$1")"
+  (cd "$ROOT" && bash "$PLUGIN/scripts/board-read.sh" "$n" 2>/dev/null) | jq -j '.body // ""' > "$D/bodies/$n.md"
   echo "$D/bodies/$n.md"
 }
+# cards_created: how many cards the store holds
+cards_created() { ls "$ROOT/.fleet-board/cards/" 2>/dev/null | grep -c '\.json$' || true; }
 
 # ---------------------------------------------------------------- dry run
 echo "# dry run"
@@ -142,15 +152,15 @@ for c in Title Repo "Depends on" Labels; do
 done
 row_b="$(printf '%s\n' "$OUT" | grep '^| Add limits UI ')"
 case "$row_b" in *acme/web*"Add limits endpoint"*frontend*) pass "dry run row shows repo, depends on and labels" ;; *) fail "dry run row shows repo, depends on and labels" "$row_b" ;; esac
-check "dry run creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+check "dry run creates no issue" "$(cards_created)" "0"
 
 # ---------------------------------------------------------------- confirmed run
 echo "# confirmed run"
 reset_gh
 run_import "y" "$SB/cards.json"
 check "confirmed run exits 0" "$RC" "0"
-check "three issues created" "$(grep -c '^issue create' "$D/calls.log")" "3"
-titles="$(grep '^issue create ' "$D/calls.log" | sed 's/.*--title \(.*\) --body-file.*/\1/' | paste -sd'|' -)"
+check "three issues created" "$(cards_created)" "3"
+titles="$(for n in 1 2 3; do jq -r .title "$ROOT/.fleet-board/cards/$n.json" 2>/dev/null; done | paste -sd'|' -)"
 check "issues are created in dependency order" "$titles" "Add limits endpoint|Add limits UI|Document rate limits"
 
 for t in "Add limits endpoint" "Add limits UI" "Document rate limits"; do
@@ -164,21 +174,21 @@ for t in "Add limits endpoint" "Add limits UI" "Document rate limits"; do
   [ "$n" -ge 1 ] && pass "'$t' has an Acceptance bullet" || fail "'$t' has an Acceptance bullet" "none"
 done
 
-fb="$(body_of "Add limits UI")"
-grep -qx -- '- acme/api#101' "$fb" 2>/dev/null && pass "cross-repo dependency is '- acme/api#101'" || fail "cross-repo dependency is '- acme/api#101'" "$(cat "$fb" 2>/dev/null)"
-fc="$(body_of "Document rate limits")"
-grep -qx -- '- acme/web#102' "$fc" 2>/dev/null && pass "chained dependency is '- acme/web#102'" || fail "chained dependency is '- acme/web#102'" "$(cat "$fc" 2>/dev/null)"
+# every card goes to the one local board, so a dependency is a blocked_by number
+check "the dependent card is blocked by the endpoint card" "$(jq -c .blocked_by "$ROOT/.fleet-board/cards/$(card_of "Add limits UI").json" 2>/dev/null)" "[$(card_of "Add limits endpoint")]"
+check "the chained card is blocked by the UI card" "$(jq -c .blocked_by "$ROOT/.fleet-board/cards/$(card_of "Document rate limits").json" 2>/dev/null)" "[$(card_of "Add limits UI")]"
+check "the acceptance field holds the card's acceptance" "$(jq -c .acceptance "$ROOT/.fleet-board/cards/$(card_of "Add limits UI").json" 2>/dev/null)" '["The panel renders \"100 requests per minute\""]'
+check "the stored body has no Acceptance section" "$(jq -r .body "$ROOT/.fleet-board/cards/1.json" 2>/dev/null | grep -c '^## Acceptance')" "0"
 check "no #A_NUM placeholder in any body" "$(cat "$D"/bodies/*.md 2>/dev/null | grep -c '_NUM')" "0"
 
-check "each issue is added to the project" "$(grep -c '^project item-add 3 ' "$D/calls.log")" "3"
-check "each issue is set to Backlog by default" "$(grep '^project item-edit' "$D/calls.log" | grep -c -- '--single-select-option-id OPT_BACKLOG')" "3"
+check "each card is in Backlog by default" "$(jq -r .state "$ROOT/.fleet-board/cards/"*.json | grep -c '^backlog$')" "3"
 
 # ---------------------------------------------------------------- --status ready
 echo "# --status ready"
 reset_gh
 run_import "y" "$SB/cards.json" --status ready
 check "--status ready exits 0" "$RC" "0"
-check "--status ready sets Ready" "$(grep '^project item-edit' "$D/calls.log" | grep -c -- '--single-select-option-id OPT_READY')" "3"
+check "--status ready sets Ready" "$(jq -r .state "$ROOT/.fleet-board/cards/"*.json | grep -c '^ready$')" "3"
 
 # ---------------------------------------------------------------- declined
 echo "# confirmation"
@@ -187,13 +197,14 @@ run_import "no" "$SB/cards.json"
 check "declined run exits 0" "$RC" "0"
 check "declined run prints the table" "$(printf '%s\n' "$OUT" | grep -c '^| ')" "4"
 if [ -s "$D/calls.log" ]; then fail "declined run leaves the gh log empty" "$(cat "$D/calls.log")"; else pass "declined run leaves the gh log empty"; fi
+check "declined run creates no card" "$(cards_created)" "0"
 
 # ---------------------------------------------------------------- dry run stops by itself
 echo "# dry run with a yes answer"
 reset_gh
 run_import "y" "$SB/cards.json" --dry-run
 check "dry run with a yes answer exits 0" "$RC" "0"
-check "dry run with a yes answer creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+check "dry run with a yes answer creates no issue" "$(cards_created)" "0"
 
 # ---------------------------------------------------------------- explained failures
 echo "# cycle and unknown dependency"
@@ -213,7 +224,7 @@ printf '%s' '{"cards":[{"key":"a","title":"Good card","repo":"acme/api","accepta
 reset_gh
 run_import "y" "$SB/badcards.json"
 check "a failing card makes the import exit 1" "$RC" "1"
-check "a failing card creates no issue" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+check "a failing card creates no issue" "$(cards_created)" "0"
 case "$(cat "$SB/err") $OUT" in *untestable-bullet*) pass "the import names the lint rule" ;; *) fail "the import names the lint rule" "$(cat "$SB/err")" ;; esac
 case "$(cat "$SKILL")" in *lint*) pass "SKILL.md mentions the linter" ;; *) fail "SKILL.md mentions the linter" "missing" ;; esac
 # ---------------------------------------------------------------- parse
@@ -256,60 +267,14 @@ bash "$SCRIPT" parse "$SB/plan-empty.md" > "$SB/parse3.out" 2> "$SB/parse3.err";
 check "plan with no task headings exits 1" "$RC" "1"
 case "$(cat "$SB/parse3.err")" in *"no task headings"*) pass "no-task error prints a message" ;; *) fail "no-task error prints a message" "$(cat "$SB/parse3.err")" ;; esac
 
-# ---------------------------------------------------------------- labels backend
-echo "# labels backend"
-ROOT_P="$ROOT"
-ROOT="$SB/root-labels"; mkdir -p "$ROOT"; git -C "$ROOT" init -q
-cat > "$ROOT/.fleet-board.yml" <<'EOF2'
-board:
-  backend: github-labels
-  repo: acme/api
-EOF2
-reset_gh
-run_import "y" "$SB/cards.json"
-check "labels board: import-plan exits 0 instead of refusing" "$RC" "0"
-check "labels board: three issues created" "$(grep -c '^issue create' "$D/calls.log" 2>/dev/null)" "3"
-check "labels board: each created issue carries the fleet:backlog label" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:backlog')" "3"
-check "labels board: stubbed gh log has no project item call" "$(grep -c '^project ' "$D/calls.log" 2>/dev/null)" "0"
-reset_gh
-run_import "y" "$SB/cards.json" --status ready
-check "labels board: --status ready labels each issue fleet:ready" "$(grep '^issue create' "$D/calls.log" 2>/dev/null | grep -c -- '--label fleet:ready')" "3"
-# ---------------------------------------------------------------- labels must exist
-echo "# labels must exist before import"
-reset_gh
-run_import "y" "$SB/cards.json"
-check "labels board, label missing: exits 0" "$RC" "0"
-lc="$(grep -n '^label create fleet:backlog --repo acme/api' "$D/calls.log" | head -1 | cut -d: -f1)"
-ic="$(grep -n '^issue create --repo acme/api' "$D/calls.log" | head -1 | cut -d: -f1)"
-if [ -n "$lc" ] && [ -n "$ic" ] && [ "$lc" -lt "$ic" ]; then pass "labels board: gh label create fleet:backlog --repo acme/api is logged before that repo's first gh issue create"; else fail "labels board: gh label create fleet:backlog --repo acme/api is logged before that repo's first gh issue create" "label line '$lc', issue line '$ic'"; fi
-check "labels board: label created once for acme/api, not once per card" "$(grep -c '^label create fleet:backlog --repo acme/api' "$D/calls.log")" "1"
-check "labels board: label created once for acme/web though it has two cards" "$(grep -c '^label create fleet:backlog --repo acme/web' "$D/calls.log")" "1"
-check "labels board: label created for exactly the two repos" "$(grep -c '^label create ' "$D/calls.log")" "2"
-reset_gh
-mkdir -p "$D/labels"
-printf 'fleet:backlog\nbug\n' > "$D/labels/acme_api"
-printf 'fleet:backlog\n' > "$D/labels/acme_web"
-run_import "y" "$SB/cards.json"
-check "labels board, label exists: exits 0" "$RC" "0"
-check "labels board, label exists: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
-reset_gh
-run_import "y" "$SB/cards.json" --status ready
-check "labels board, --status ready: fleet:ready is created in each repo" "$(grep -c '^label create fleet:ready --repo ' "$D/calls.log")" "2"
-check "labels board, --status ready: fleet:backlog is not created" "$(grep -c '^label create fleet:backlog' "$D/calls.log")" "0"
-ROOT="$ROOT_P"
-reset_gh
-run_import "y" "$SB/cards.json"
-check "projects board: no gh label create call is made" "$(grep -c '^label create ' "$D/calls.log")" "0"
-
-# ---------------------------------------------------------------- local backend
-echo "# local backend"
+# ---------------------------------------------------------------- a second local board
+echo "# local board (acme/toy)"
 ROOT_L="$SB/root-local"
 mkdir -p "$ROOT_L/.fleet-board/cards"
 git -C "$ROOT_L" init -q
 echo 1 > "$ROOT_L/.fleet-board/next"
 cat > "$ROOT_L/.fleet-board.yml" <<'EOF'
 board:
-  backend: local
   repo: acme/toy
 worktrees:
   dir: ".wt"

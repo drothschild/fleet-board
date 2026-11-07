@@ -82,15 +82,15 @@ fl_next_number() {
   printf '%s\n' "$n"
 }
 
-# fl_split_body <body-file>: prints {"body","acceptance","blocked_by","outside"}.
+# fl_split_body <body-file> [repo]: prints {"body","acceptance","blocked_by","outside"}.
 # Removes the FIRST "## Acceptance" and the FIRST "## Depends on" section that
 # sit outside code fences (a section runs to the next heading); a repeat of
 # either heading, or one inside a fence, stays in the body as prose. Bullets
-# lose their "- " and are trimmed; "#n" and "<board.repo>#n" become numbers in
+# lose their "- " and are trimmed; "#n" and "<repo>#n" (repo defaults to board.repo) become numbers in
 # blocked_by, any other dependency entry goes to outside. A body with neither
 # section comes back byte for byte.
 fl_split_body() {
-  jq -n --rawfile b "$1" --arg repo "$(fb_cfg board.repo)" '
+  jq -n --rawfile b "$1" --arg repo "${2:-$(fb_cfg board.repo)}" '
     def trim: sub("^[ \t]+"; "") | sub("[ \t\r]+$"; "");
     def isbullet: test("^[ \t]*[-*][ \t]+");
     def clean: sub("^[ \t]*[-*][ \t]+"; "") | trim;
@@ -159,6 +159,27 @@ fl_fold_outside() {
   done
   jq -j '.body as $b | if (.outside | length) == 0 then $b
     else ($b | sub("\n+$"; "")) + (if $b == "" then "" else "\n\n" end) + (.outside | map("Depends on (outside this board): " + .) | join("\n")) + "\n" end' <<<"$1"
+}
+
+# fl_note_pr_info <note-body-file>: reads the note's fenced json block and
+# prints {"ok": false} when it has none or its "pr" is not a positive integer
+# or null, else {"ok": true, "has": <key present>, "pr": <value>}.
+fl_note_pr_info() {
+  jq -Rsc '
+  split("\n") | reduce .[] as $l ({on: false, buf: [], done: false};
+    if .done then .
+    elif .on and ($l | test("^```")) then .done = true
+    elif .on then .buf += [$l]
+    elif ($l | test("^```json")) then .on = true
+    else . end)
+  | if .done | not then {ok: false}
+    else (.buf | join("\n") | try fromjson catch null) as $j
+      | if ($j | type) != "object" then {ok: false}
+        elif ($j | has("pr") | not) then {ok: true, has: false}
+        elif $j.pr == null then {ok: true, has: true, pr: null}
+        elif ($j.pr | type) == "number" and $j.pr == ($j.pr | floor) and $j.pr > 0 then {ok: true, has: true, pr: $j.pr}
+        else {ok: false} end
+    end' < "$1"
 }
 
 # fl_check_blocked_by <self-number|""> <json>: exit 2 unless <json> is an array

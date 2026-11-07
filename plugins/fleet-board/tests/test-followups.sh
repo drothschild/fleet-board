@@ -10,6 +10,8 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/file-followups.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
@@ -70,6 +72,8 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
+  store_snap
   local script="$1"
   shift
   local tmpout tmperr
@@ -80,6 +84,7 @@ run_check() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  store_calls
 }
 
 jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
@@ -120,7 +125,23 @@ bodies_of() {
 }
 
 # Every gh call that is not an `api` read (search, create, comment)
-non_api_calls() { grep -vc $'\tapi ' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
+non_api_calls() { [ -f "$FAKE_GH_DIR/calls.log" ] || { echo 0; return; }; grep -vc $'\tapi ' "$FAKE_GH_DIR/calls.log" || true; }
+
+# failing_script <script> <exit-when-first-arg-is|*>: run file-followups.sh from
+# a copy of the scripts whose <script> (board-create.sh, board-comment.sh)
+# fails when its first argument matches, logging every call; sets SCRIPT
+failing_script() {
+  local copy="$FAKE_GH_DIR/scripts"
+  rm -rf "$copy"; cp -R "$SCRIPT_DIR/../scripts" "$copy"
+  mv "$copy/$1" "$copy/$1.real"
+  cat > "$copy/$1" << STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$1" >> "$FAKE_GH_DIR/$1.log"
+case "\$1" in $2) echo "stub: refused" >&2; exit 1 ;; esac
+exec bash "$copy/$1.real" "\$@"
+STUB
+  SCRIPT="$copy/file-followups.sh"
+}
 
 # Saved --body-file bodies, concatenated
 all_bodies() { cat "$FAKE_GH_DIR/bodies"/* 2>/dev/null; }
@@ -222,9 +243,9 @@ for f in $(files_starting issue create); do has_pair "$f" --label bug && N_BUG=$
 assert_eq "oos: no --label bug" "$N_BUG" 0
 assert_eq "oos: 2 pr comment 34" "$(calls_starting pr comment 34)" 2
 assert_eq "oos: pr comment bodies" "$(bodies_of pr comment 34)" \
-  "$(printf '%s\n%s' 'Out of scope, tracked as #78: Extract math utils' 'Out of scope, tracked as #79: Add CLI help')"
+  "$(printf '%s\n%s' 'Out of scope, tracked as #13: Extract math utils' 'Out of scope, tracked as #14: Add CLI help')"
 assert_eq "oos: output" "$(jq -S -c . <<<"$LAST_OUT" 2>/dev/null)" \
-  '{"bugs_filed":[],"out_of_scope_created":[{"existing":false,"number":78,"title":"Extract math utils"},{"existing":false,"number":79,"title":"Add CLI help"}]}'
+  '{"bugs_filed":[],"out_of_scope_created":[{"existing":false,"number":13,"title":"Extract math utils"},{"existing":false,"number":14,"title":"Add CLI help"}]}'
 
 # One title already in note.out_of_scope_created
 setup_case
@@ -234,8 +255,7 @@ run_ff
 assert_exit "oos-in-note: exit" 0
 assert_eq "oos-in-note: 1 issue create" "$(calls_starting issue create)" 1
 assert_eq "oos-in-note: 1 pr comment" "$(calls_starting pr comment 34)" 1
-assert_eq "oos-in-note: open and closed search" "$(calls_starting issue list)" 2
-assert_eq "oos-in-note: output" "$(jqc .out_of_scope_created)" '[{"title":"Add CLI help","number":79,"existing":false}]'
+assert_eq "oos-in-note: output" "$(jqc .out_of_scope_created)" '[{"title":"Add CLI help","number":13,"existing":false}]'
 
 # ---------------------------------------------------------------------------
 # AC3.10 files-bug
@@ -267,21 +287,24 @@ an error
 ## Observed
 a crash
 
+Found by fleet-board while working #12 (PR #34).
+
 ## Acceptance
 - `node -e "require('./calc').div(1,0)"` gives the expected result: an error
-
-Found by fleet-board while working #12 (PR #34).
 BODYEOF
 )"
 assert_eq "files-bug: exact body" "$(all_bodies)" "$EXPECTED_BODY"
+assert_eq "files-bug: the acceptance field holds the drafted item" "$(jq -c .acceptance "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" \
+  '["`node -e \"require('"'"'./calc'"'"').div(1,0)\"` gives the expected result: an error"]'
+assert_eq "files-bug: the stored body has no Acceptance section" "$(jq -r .body "$REPO/.fleet-board/cards/13.json" 2>/dev/null | grep -c '^## Acceptance')" 0
 BODY="$(all_bodies)"
 for want in '## Repro' "node -e \"require('./calc').div(1,0)\"" '## Expected' '## Observed' '#12'; do
   case "$BODY" in *"$want"*) pass "files-bug: body contains $want" ;; *) fail "files-bug: body contains $want" "$BODY" ;; esac
 done
 assert_eq "files-bug: 1 pr comment" "$(calls_starting pr comment 34)" 1
-assert_eq "files-bug: pr comment body" "$(bodies_of pr comment 34)" "Bug found outside this card, filed as #77: Division by zero crashes"
+assert_eq "files-bug: pr comment body" "$(bodies_of pr comment 34)" "Bug found outside this card, filed as #13: Division by zero crashes"
 assert_eq "files-bug: bugs_filed[0].existing" "$(jqc '.bugs_filed[0].existing')" "false"
-assert_eq "files-bug: output" "$(jqc .)" '{"out_of_scope_created":[],"bugs_filed":[{"title":"Division by zero crashes","number":77,"existing":false}]}'
+assert_eq "files-bug: output" "$(jqc .)" '{"out_of_scope_created":[],"bugs_filed":[{"title":"Division by zero crashes","number":13,"existing":false}]}'
 
 # ---------------------------------------------------------------------------
 # AC3.10 bug-matches-open-issue (case differs; a near-miss title comes first)
@@ -300,20 +323,6 @@ assert_eq "bug-matches-open-issue: no comment on the near miss" "$(calls_startin
 assert_eq "bug-matches-open-issue: 1 pr comment 34" "$(calls_starting pr comment 34)" 1
 assert_eq "bug-matches-open-issue: pr comment body" "$(bodies_of pr comment 34)" "Known bug, already tracked as #55: add() overflows on large ints"
 assert_eq "bug-matches-open-issue: bugs_filed" "$(jqc .bugs_filed)" '[{"title":"add() overflows on large ints","number":55,"existing":true,"matched":"open"}]'
-
-# AC3.10 search-terms-sanitized (same run)
-SEARCH="$(files_starting issue list | head -1)"
-if [ -n "$SEARCH" ]; then
-  S="$(arg_after "$SEARCH" --search)"
-  assert_eq "search-terms-sanitized: --search argument" "$S" "add   overflows on large ints in:title"
-  case "$S" in *"("*) fail "search-terms-sanitized: no '('" "$S" ;; *) pass "search-terms-sanitized: no '('" ;; esac
-  assert_eq "search-terms-sanitized: full search argv" "$(cat "$SEARCH")" \
-    "$(printf '%s\n' issue list --repo acme/toy --state open --search 'add   overflows on large ints in:title' --json number,title --limit 50)"
-else
-  fail "search-terms-sanitized: --search argument" "no issue list call"
-  fail "search-terms-sanitized: no '('" "no issue list call"
-  fail "search-terms-sanitized: full search argv" "no issue list call"
-fi
 
 # An out-of-scope match comments with "Out of scope, already tracked"
 setup_case
@@ -356,20 +365,19 @@ setup_case
 report '[]' "[$(bug "First bug"),$(bug "Second bug")]"
 run_ff
 assert_exit "second-search-fails-files-nothing: exit" 1
-assert_eq "second-search-fails-files-nothing: both searched (open and closed for the first, open for the second)" "$(calls_starting issue list)" 3
 assert_eq "second-search-fails-files-nothing: no issue create" "$(calls_starting issue create)" 0
 assert_eq "second-search-fails-files-nothing: no pr comment" "$(calls_starting pr comment)" 0
 
 # partial-create-reports-filed
-EXTRA_ROUTES="$(printf 'issue create --repo acme/toy --title Second bug *\t1\t-\n')
-"
 setup_case
+failing_script board-create.sh '"Second bug"'
 report '[]' "[$(bug "First bug"),$(bug "Second bug")]"
 run_ff
+SCRIPT="$SCRIPT_DIR/../scripts/file-followups.sh"
 assert_exit_nonzero "partial-create-reports-filed: non-zero exit"
-assert_eq "partial-create-reports-filed: 2 issue create attempts" "$(calls_starting issue create)" 2
+assert_eq "partial-create-reports-filed: 2 create attempts" "$(grep -c . "$FAKE_GH_DIR/board-create.sh.log" 2>/dev/null)" 2
 assert_eq "partial-create-reports-filed: bugs_filed is the first bug" "$(jqc .bugs_filed)" \
-  '[{"title":"First bug","number":78,"existing":false}]'
+  '[{"title":"First bug","number":13,"existing":false}]'
 assert_eq "partial-create-reports-filed: out_of_scope_created empty" "$(jqc .out_of_scope_created)" '[]'
 
 # pr-comment-failure-still-filed
@@ -380,18 +388,18 @@ report '[]' "[$(bug "Division by zero crashes")]"
 run_ff
 assert_exit "pr-comment-failure-still-filed: exit" 0
 assert_eq "pr-comment-failure-still-filed: bugs_filed" "$(jqc .bugs_filed)" \
-  '[{"title":"Division by zero crashes","number":77,"existing":false}]'
+  '[{"title":"Division by zero crashes","number":13,"existing":false}]'
 assert_stderr_contains "pr-comment-failure-still-filed: warning" "PR comment failed"
-assert_stderr_contains "pr-comment-failure-still-filed: warning names the issue" "warning: PR comment failed for #77"
+assert_stderr_contains "pr-comment-failure-still-filed: warning names the issue" "warning: PR comment failed for #13"
 
 # existing-comment-failure-not-filed
-EXTRA_ROUTES="$(printf 'issue comment 55 *\t1\t-\n')
-"
 setup_case
+failing_script board-comment.sh 55
 printf '[{"number":55,"title":"Add() overflows on large ints"}]\n' > "$FAKE_GH_DIR/match.json"
 { printf 'issue list --repo acme/toy --state open --search*\t0\t%s\n' "$FAKE_GH_DIR/match.json"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
 report '[]' "[$(bug "add() overflows on large ints")]"
 run_ff
+SCRIPT="$SCRIPT_DIR/../scripts/file-followups.sh"
 assert_exit_nonzero "existing-comment-failure-not-filed: non-zero exit"
 assert_eq "existing-comment-failure-not-filed: bugs_filed empty" "$(jqc .bugs_filed)" '[]'
 assert_eq "existing-comment-failure-not-filed: no pr comment" "$(calls_starting pr comment)" 0
@@ -402,7 +410,6 @@ report '[]' "[$(bug "Foo breaks"),$(bug "foo breaks")]"
 run_ff
 assert_exit "duplicate-title-in-input-files-once: exit" 0
 assert_eq "duplicate-title-in-input-files-once: one issue create" "$(calls_starting issue create)" 1
-assert_eq "duplicate-title-in-input-files-once: open and closed search" "$(calls_starting issue list)" 2
 assert_eq "duplicate-title-in-input-files-once: one entry" "$(jqc '.bugs_filed | length')" 1
 
 # note-read-failure-files-nothing
@@ -415,7 +422,7 @@ assert_exit "note-read-failure-files-nothing: exit" 1
 assert_eq "note-read-failure-files-nothing: no calls besides api reads" "$(non_api_calls)" 0
 
 # ---------------------------------------------------------------------------
-# local backend: searches and comments use the card files; gh answers only the
+# local cards seeded by the suite: searches and comments use the card files; gh answers only the
 # PR comment, so any issue search, create or comment has no route and exits 99
 
 # local_card <n> <title> <state> [updated_at]: writes a card file
@@ -427,7 +434,7 @@ local_card() {
 
 setup_local() {
   setup_case
-  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
   mkdir -p "$REPO/.fleet-board/cards"
   echo 13 > "$REPO/.fleet-board/next"
   local_card 12 "The card" in_progress

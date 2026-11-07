@@ -10,6 +10,8 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/file-followups.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
@@ -70,6 +72,8 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
+  store_snap
   local script="$1"
   shift
   local tmpout tmperr
@@ -80,6 +84,7 @@ run_check() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  store_calls
 }
 
 jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
@@ -286,8 +291,8 @@ if [ -n "$F" ]; then
 else
   fail "untestable: filed in fleet:backlog" "no issue create call"
 fi
-assert_eq "untestable: one issue comment on the new card" "$(calls_starting issue comment 78)" 1
-case "$(bodies_of issue comment 78)" in *"testable"*"Backlog"*|*"Backlog"*"testable"*) pass "untestable: comment says why" ;; *) fail "untestable: comment says why" "$(bodies_of issue comment 78)" ;; esac
+assert_eq "untestable: one issue comment on the new card" "$(calls_starting issue comment 13)" 1
+case "$(bodies_of issue comment 13)" in *"testable"*"Backlog"*|*"Backlog"*"testable"*) pass "untestable: comment says why" ;; *) fail "untestable: comment says why" "$(bodies_of issue comment 13)" ;; esac
 
 # --- escape words beat a backticked span: Backlog, no Acceptance
 setup_case
@@ -340,7 +345,7 @@ setup_case
 { printf 'issue create --repo acme/toy --title Rename the module *\t0\t%s\nissue comment 78 *\t0\t-\n' "$FAKE_GH_DIR/created-78.txt"; cat "$ROUTES"; } > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
 report '[{"title":"Rename the module","detail":"no testable check; a naming call"}]' '[]'
 run_ff
-C="$(bodies_of issue comment 78)"
+C="$(bodies_of issue comment 13)"
 case "$C" in *"no testable check"*) pass "escape-comment: names that no testable check was stated" ;; *) fail "escape-comment: names that no testable check was stated" "$C" ;; esac
 case "$C" in *"no failing command and expected result"*) fail "escape-comment: does not blame a missing command" "$C" ;; *) pass "escape-comment: does not blame a missing command" ;; esac
 
@@ -403,7 +408,7 @@ if grep -qF '## `followups.status`' "$DOCS" && grep -qF 'followups.status: backl
 # --- local backend: the "no testable check" item lands in Backlog on a card
 # file, with the why-comment on that card; gh answers only the PR comment
 setup_case
-printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards"
 echo 9 > "$REPO/.fleet-board/next"
 jq -n '{number: 12, title: "The card", body: "b", state: "in_progress", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-01T00:00:00Z"}' \

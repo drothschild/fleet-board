@@ -17,21 +17,7 @@ trap 'rm -f "$BODY" "$TMP"; rm -rf "$FB_LOCK"' EXIT
 } > "$BODY"
 # The note's "pr" drives pr_url: "has" says whether the key is there (an
 # integer or null), "pr" its value. Unparsable bodies change nothing and warn.
-PRINFO="$(jq -Rsc '
-  split("\n") | reduce .[] as $l ({on: false, buf: [], done: false};
-    if .done then .
-    elif .on and ($l | test("^```")) then .done = true
-    elif .on then .buf += [$l]
-    elif ($l | test("^```json")) then .on = true
-    else . end)
-  | if .done | not then {ok: false}
-    else (.buf | join("\n") | try fromjson catch null) as $j
-      | if ($j | type) != "object" then {ok: false}
-        elif ($j | has("pr") | not) then {ok: true, has: false}
-        elif $j.pr == null then {ok: true, has: true, pr: null}
-        elif ($j.pr | type) == "number" and $j.pr == ($j.pr | floor) and $j.pr > 0 then {ok: true, has: true, pr: $j.pr}
-        else {ok: false} end
-    end' < "$2")" || PRINFO='{"ok":false}'
+PRINFO="$(fl_note_pr_info "$2")" || PRINFO='{"ok":false}'
 if [ "$(jq -r '.ok' <<<"$PRINFO")" != true ]; then
   printf 'fleet-board: warning: manager note on #%s has no parsable json block with a valid "pr"; pr_url left as it is\n' "$N" >&2
 fi
