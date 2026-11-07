@@ -143,10 +143,11 @@ json.dump({'completion-manager': {'description':'Fleet board manager', 'prompt':
     'tools':['Agent','Skill','Read','Write','Bash','Grep','Glob']}},open(sys.argv[2],'w'))
 PYAGENT
 CLAUDE_CONFIG_DIR="$WORK/config" claude -p --bare --agents "$WORK/agents.json" --agent completion-manager --model sonnet \
-  --plugin-dir "$WORK/plugin" --add-dir "$WORK" --allowedTools Bash Read Write Skill --strict-mcp-config --settings "$AUTH_SETTINGS" \
+  --plugin-dir "$WORK/plugin" --add-dir "$WORK" --tools Bash,Read,Write,Skill,Agent,Grep,Glob --allowedTools Bash Read Write Skill --strict-mcp-config --settings "$AUTH_SETTINGS" \
   --permission-mode acceptEdits --max-turns 100 --max-budget-usd 3 \
   --verbose --output-format stream-json "$(cat "$WORK/prompt")" </dev/null > "$WORK/run.jsonl" 2> "$WORK/stderr"
 jq -se 'any(.[]; .type=="system" and .subtype=="init" and (.mcp_servers|length)==0
+  and ([.tools[]] | index("Write")) != null
   and all(.plugins[]; .name=="fleet-board" or .path=="builtin"))' "$WORK/run.jsonl" > /dev/null
 jq -se '[.[] | select(.type=="result")][-1] | .is_error==false' "$WORK/run.jsonl" > /dev/null
 python3 "$WORK/check-events.py" "$WORK/events"

@@ -1,0 +1,45 @@
+{
+  "implementation_commit": "5a2d92d",
+  "manager_sha256": "3dbd20185dc5570623969f7ade70e67e7f13fe327e21509ec77b62615367ca3d",
+  "offline_checks": {
+    "merge_reviewed": {
+      "passed": 62,
+      "failed": 0
+    },
+    "scope_reservations": {
+      "passed": 18,
+      "failed": 0
+    },
+    "run_throughput_selector": {
+      "passed": 19,
+      "failed": 0
+    },
+    "manager_completion_contract": {
+      "passed": 26,
+      "failed": 0
+    },
+    "clean_room": {
+      "passed": 118,
+      "failed": 0
+    }
+  },
+  "independent_review": "No blocking findings; runtime coverage limits retained.",
+  "behavioral": {
+    "status": "not_validated",
+    "cost_usd": 0.1315963,
+    "turns": 7,
+    "session_id": "08c516f8-3771-481c-9bd7-ad7f19f804bd",
+    "reason": "Bare-mode default tools omitted Write. Manager dispatched no reviews; event assertions failed because no events file existed.",
+    "startup_attempt": "An earlier CLI invocation failed agent lookup before any model call; explicit registration used the generated manager body verbatim.",
+    "isolation": "Only copied fleet-board plugin and built-in plugins; no MCP servers; disposable board and fake GitHub.",
+    "next_step": "Harness explicitly enables tools; a new paid run requires separate approval.",
+    "unexercised": [
+      "completion ordering",
+      "slot refill",
+      "Agent-role notifications",
+      "duplicate completions",
+      "retry and action caps",
+      "runtime failure recovery"
+    ]
+  }
+}

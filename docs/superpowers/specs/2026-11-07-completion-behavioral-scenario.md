@@ -1,6 +1,6 @@
 # Completion-driven manager behavioral scenario
 
-Status: core harness prepared and offline-validated; one run approved with a $3 CLI cap. Runtime results are recorded separately.
+Status: runtime validation pending. The approved attempt cost $0.1315963 and dispatched no reviews because bare mode omitted Write. Tool configuration is corrected; another paid attempt requires approval.
 
 ## Fixture and isolation
 
