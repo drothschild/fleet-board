@@ -127,6 +127,15 @@ check "README Local board section names board.dir" "$r"
 r=bad; grep -A1 'Headless wrapper' "$PLUGIN_CLAUDE" | grep -qF 'overnight.md' && r=ok
 check "plugin CLAUDE.md points at overnight.md" "$r"
 
+r=bad; sed -n '/^- `edit <n>/,/^- `label/p' "$SPEC" | tr '\n' ' ' | grep -Eq 'empty-string.*(argument|file).*null.*leaves[[:space:]]+that field unchanged' && r=ok
+check "spec edit row says empty or null leaves that field unchanged" "$r"
+
+r=bad; sed -n '/^## `board.dir` and `board.port`/,/^## Finding/p' "$CONFIG_MD" | grep -q 'and used only on `local`' && r=ok
+check "config.md says board.dir and board.port are used only on local" "$r"
+
+r=bad; grep -qF 'only for explicit external references' "$README" && grep -qF "shows as that card's title" "$README" && r=ok
+check "README says internal preview dependencies show as card titles" "$r"
+
 # The overrides must work: a copy with the "never merges" sentence removed must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
