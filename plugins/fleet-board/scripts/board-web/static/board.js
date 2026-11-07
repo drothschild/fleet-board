@@ -551,7 +551,10 @@ function runPillText(run) {
   if (S.offline) return "server unreachable";
   switch (run.state) {
     case "running": return run.tick != null ? "running · tick " + run.tick : "running";
-    case "stopped": return run.stop_reason ? "stopped: " + run.stop_reason : "stopped";
+    case "stopped": {
+      const n = run.ticks_done ? " · " + run.ticks_done + (run.ticks_done === 1 ? " tick" : " ticks") : "";
+      return (run.stop_reason ? "stopped: " + run.stop_reason : "stopped") + n;
+    }
     default: return run.state || "idle";
   }
 }

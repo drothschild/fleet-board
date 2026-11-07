@@ -537,6 +537,7 @@ while :; do
   OUT="$WORK/tick.jsonl"
   ERR="$WORK/tick.err"
   LEDGER_PRE="$(ledger_count)"
+  log "=== tick $TICK start $(iso) ==="
   run_bg "$CLAUDE" -p "$PROMPT" ${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"} --model "$MODEL" \
     --permission-mode "$MODE" --output-format stream-json --verbose \
     --max-turns "$MAX_TURNS" </dev/null >"$OUT" 2>"$ERR"

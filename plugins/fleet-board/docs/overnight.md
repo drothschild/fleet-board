@@ -106,7 +106,7 @@ $HOME/.fleet-board/runs/<owner>-<name>-<YYYYmmdd-HHMMSS>.log
 
 Set `FLEET_BOARD_LOG_DIR` to put the logs somewhere else. A relative path is taken from the directory the wrapper is started in. A log directory the wrapper creates is mode 700, and the files it writes are mode 600, because they hold tick reports and raw session output.
 
-A successful tick's block is a header line (`=== tick <n> <time> rc=0 cost_estimate_usd=<x> (estimate) ===`), the tick report, and the output of the worktree cleanup. A failed tick's block starts `=== tick <n> FAILED <time> rc=<rc> ===`, then gives the reason, the path of the tick's whole output, and the last 20 lines of that output, each cut to 2000 characters. The whole output of a failed tick is kept next to the log as `<log name>-tick-<n>.jsonl`. Successful ticks keep no such file.
+Every tick first logs `=== tick <n> start <time> ===`, before its session starts. The board page reads the running tick from the latest start line and counts the end lines (the headers below, each with `rc=`) as ticks done. A successful tick's block is a header line (`=== tick <n> <time> rc=0 cost_estimate_usd=<x> (estimate) ===`), the tick report, and the output of the worktree cleanup. A failed tick's block starts `=== tick <n> FAILED <time> rc=<rc> ===`, then gives the reason, the path of the tick's whole output, and the last 20 lines of that output, each cut to 2000 characters. The whole output of a failed tick is kept next to the log as `<log name>-tick-<n>.jsonl`. Successful ticks keep no such file.
 
 ## The cost figure is an estimate
 

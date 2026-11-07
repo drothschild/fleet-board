@@ -212,7 +212,8 @@ STOPPED_RE = re.compile(
     re.M,
 )
 LOG_RE = re.compile(r"^fleet-board-run: log: (.+)$", re.M)
-TICK_RE = re.compile(r"^=== tick (\d+)\b")
+TICK_RE = re.compile(r"^=== tick (\d+) start ")
+TICK_END_RE = re.compile(r"^=== tick \d+ .*\brc=")
 LOG_TAIL_LINES = 200
 
 # proc: the Popen this server spawned (kept so it is reaped); alive: the last
@@ -328,19 +329,22 @@ def run_alive() -> bool:
 
 
 def scan_run_log(path: str):
-    """(last tick number or None, last LOG_TAIL_LINES lines) of the run log."""
-    tick, tail = None, deque(maxlen=LOG_TAIL_LINES)
+    """(running tick number or None, ticks done, last LOG_TAIL_LINES lines) of the run log."""
+    tick, done, tail = None, 0, deque(maxlen=LOG_TAIL_LINES)
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.rstrip("\n")
-                tail.append(line)
                 m = TICK_RE.match(line)
                 if m:
                     tick = int(m.group(1))
+                    continue  # start lines feed the pill, not the log tail
+                tail.append(line)
+                if TICK_END_RE.match(line):
+                    done += 1
     except OSError:
         pass
-    return tick, list(tail)
+    return tick, done, list(tail)
 
 
 def to_float(s: str):
@@ -370,11 +374,12 @@ def run_status(alive=None) -> dict:
     log = LOG_RE.search(out)
     log_path = log.group(1) if log else None
     stops = STOPPED_RE.findall(out)
-    tick, tail = scan_run_log(log_path) if log_path else (None, [])
+    tick, done, tail = scan_run_log(log_path) if log_path else (None, 0, [])
     return {
         "state": state,
         "pid": pid,
         "tick": tick,
+        "ticks_done": done,
         "stop_reason": stops[-1][0] if stops else None,
         "cost": to_float(stops[-1][2]) if stops else None,
         "hours": to_float(stops[-1][1]) if stops else None,

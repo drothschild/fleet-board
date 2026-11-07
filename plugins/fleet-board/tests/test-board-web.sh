@@ -351,13 +351,14 @@ if setup_case; then
 
   api GET /api/run;                 assert_body "run starts idle" '.state' idle
   api POST /api/run/stop;           assert_code 409
-  rm -f "$FAKE_RUN_DIR/release"
+  rm -f "$FAKE_RUN_DIR/release" "$FAKE_RUN_DIR/tick-release"
   api POST /api/run/start;          assert_code 200
   assert_body "start returns a pid" '.pid|type' number
   if grep -q -- "--repo $REPO" "$FAKE_RUN_DIR/args.log"; then pass "wrapper got --repo root"; else fail "wrapper got --repo root" "args: $(cat "$FAKE_RUN_DIR/args.log" 2>/dev/null)"; fi
   api GET /api/run;                 assert_body "run is running" '.state' running
   wait_for 'api GET /api/run; body_is .tick 2'
   api GET /api/run;                 assert_body "run reached tick 2" '.tick' 2
+  assert_body "tick is the running tick while tick 2 has only its start line" '.ticks_done' 1
   assert_body "run log path parsed" '.log_path' "$FAKE_RUN_DIR/fake.log"
   if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "start clears stale markers"; else fail "start clears stale markers" "active/2 survived the start"; fi
   : > "$REPO/.fleet-board/active/2"   # the run's manager writes this marker
@@ -372,6 +373,7 @@ if setup_case; then
   wait_for 'api GET /api/run; body_is .state stopped'
   api GET /api/run
   assert_body "run state stopped" '.state' stopped
+  assert_body "ticks_done after two ticks" '.ticks_done' 2
   assert_body "stop reason" '.stop_reason' stop-file
   assert_body "run cost" '.cost' 0.42
   assert_body "run hours" '.hours' 0.01
