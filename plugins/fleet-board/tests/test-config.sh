@@ -713,6 +713,29 @@ REPO="$(make_test_repo bad-backend.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_stderr_contains "backend list names all three" "github-labels, github-projects or local"
 
+# The board is always local: the backend keys are refused with a pointer at the importer
+for kv in "backend: local" "backend: github-labels" "backend: github-projects" "project_number: 1" "project_owner: someone"; do
+  k="${kv%%:*}"
+  REPO="$(printf 'board:\n  repo: acme/toy\n  %s\n' "$kv" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+  assert_exit "removed key board.$kv: exit 5" "5"
+  assert_stderr_contains "removed key board.$kv: names the key" "board.$k is no longer a setting"
+  assert_stderr_contains "removed key board.$kv: says the board is always local" "the board is now always local"
+  assert_stderr_contains "removed key board.$kv: names the importer" "import-github.sh"
+done
+REPO="$(printf 'board:\n  repo: acme/toy\n  backend: local\n  project_number: 1\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_eq_count() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected $3, got $2"; fi; }
+assert_eq_count "removed keys: one message per key" "$(printf '%s\n' "$LAST_ERR" | grep -c 'is no longer a setting')" "2"
+REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "no backend key: exit 0" "0"
+assert_eq_count "no backend key: the merged config has no backend or project keys" \
+  "$(printf '%s' "$LAST_OUT" | jq -c '.board | [has("backend"), has("project_number"), has("project_owner")]')" '[false,false,false]'
+assert_key "$REPO" "board.dir" ".fleet-board" "no backend key: board.dir default stays"
+assert_key "$REPO" "board.port" "8765" "no backend key: board.port default stays"
+assert_key "$REPO" "board.repo" "acme/toy" "no backend key: board.repo stays"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
