@@ -613,16 +613,26 @@ def cancel_import(id: str) -> dict:
             if proc is not None:
                 return proc.poll() is not None
             return not pid_alive(pid, meta.get("pid_start") or "")
+        errors = []
         for sig, wait in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
             try:
                 os.killpg(pid, sig)
-            except OSError:
-                pass
+            except OSError as exc:
+                # No such group (or refused): signal the session leader itself.
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+                except OSError as exc2:
+                    errors.append("%s: %s / %s" % (sig.name, exc.strerror, exc2.strerror))
             deadline = time.time() + wait
             while not gone() and time.time() < deadline:
                 time.sleep(0.05)
             if gone():
                 break
+        if not gone():
+            raise ApiError(500, "import %s session pid %d did not stop%s"
+                           % (id, pid, (" (" + "; ".join(errors) + ")") if errors else ""))
     return {"state": "cancelled"}
 
 

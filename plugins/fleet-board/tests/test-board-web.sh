@@ -629,6 +629,74 @@ if setup_case; then
 fi
 unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
 
+echo "Case: Discard and Escape end the session process"
+IMPORTS_DIR="$TMP/logs/web/acme-toy/imports"
+# session_pid <import id>: the session pid recorded in the import's meta.json.
+session_pid() { jq -r '.pid // empty' "$IMPORTS_DIR/$1/meta.json" 2>/dev/null; }
+# proc_state <pid> <recorded start>: gone, alive, or unknown: <why>. A kill -0
+# that is refused (EPERM) means the process exists, so it is never read as gone.
+proc_state() {
+  local msg now
+  if msg="$(kill -0 "$1" 2>&1)"; then
+    now="$(LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+    if [ -n "$2" ] && [ -n "$now" ] && [ "$now" != "$2" ]; then echo gone; else echo alive; fi
+    return
+  fi
+  case "$msg" in
+    *"No such process"*) echo gone ;;
+    *"not permitted"*) echo alive ;;
+    *) echo "unknown: $msg" ;;
+  esac
+}
+# assert_session_gone <desc> <import id>
+assert_session_gone() {
+  local pid start st
+  pid="$(session_pid "$2")"
+  start="$(jq -r '.pid_start // ""' "$IMPORTS_DIR/$2/meta.json" 2>/dev/null)"
+  if [ -z "$pid" ]; then fail "$1" "no pid recorded for import $2"; return; fi
+  st="$(proc_state "$pid" "$start")"
+  if [ "$st" = gone ]; then pass "$1"; else fail "$1" "session pid $pid of import $2: $st"; fi
+}
+export FLEET_BOARD_CLAUDE="$FAKE_IMPORT_CLAUDE" FAKE_CLAUDE_DIR IMPORT_FIXTURE
+if setup_case; then
+  for mode in click escape; do
+    stop_server
+    : > "$FAKE_CLAUDE_DIR/hang"
+    rm -f "$FAKE_CLAUDE_DIR/pid"
+    export FLEET_BOARD_TEST_IMPORT_ID="js2-$mode"
+    start_server "$REPO"
+    api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+    wait_for '[ -s "$FAKE_CLAUDE_DIR/pid" ]'
+    JS_OUT="$(node "$SCRIPT_DIR/board-web-discard.js" "$SCRIPTS/board-web/static/board.js" "http://127.0.0.1:$PORT" "js2-$mode" "$mode" 2>&1)"
+    if [ "$JS_OUT" = closed ]; then pass "$mode (second run) closes the import view"; else fail "$mode (second run) closes the import view" "$JS_OUT"; fi
+    wait_for '[ "$(proc_state "$(session_pid js2-'"$mode"')" "")" != alive ]'
+    assert_session_gone "$mode ends the grouping session process" "js2-$mode"
+    rm -f "$FAKE_CLAUDE_DIR/hang"
+  done
+  stop_server
+  # Every session the import cases started has ended, the earlier cases' included.
+  for id in cancel1 js-click js-escape js2-click js2-escape; do
+    assert_session_gone "session of import $id is not left running" "$id"
+  done
+  # Enumeration must work for "nothing matched" to mean anything: pgrep exits 1
+  # on no match, 0 on a match and 2 or more when it cannot list processes.
+  PG_OUT="$(pgrep -fl "$FAKE_IMPORT_CLAUDE" 2>&1)"; PG_RC=$?
+  case "$PG_RC" in
+    1) pass "process list shows no fake claude left running" ;;
+    0) fail "process list shows no fake claude left running" "$PG_OUT" ;;
+    *) fail "process list shows no fake claude left running" "cannot list processes (pgrep exit $PG_RC): $PG_OUT" ;;
+  esac
+  # Leave nothing behind even when a case above failed.
+  for id in cancel1 js-click js-escape js2-click js2-escape; do
+    pid="$(session_pid "$id")"
+    [ -n "$pid" ] || continue
+    [ "$(proc_state "$pid" "$(jq -r '.pid_start // ""' "$IMPORTS_DIR/$id/meta.json" 2>/dev/null)")" = alive ] || continue
+    kill -KILL -- "-$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+  done
+fi
+unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
+
 echo "Case: review stages appear in the board states"
 STAGES_REPO="$(new_repo "$LOCAL_YML
 review:
