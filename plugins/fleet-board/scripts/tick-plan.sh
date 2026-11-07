@@ -11,7 +11,7 @@
 #
 #   {"dispatchable": bool, "warnings": [..], "cards": [
 #     {"number", "title", "state", "action", "reason", "branch", "worktree", "pr",
-#      "round", "models": {"implementor","reviewer","fixer"}, "escalated",
+#      "head_sha", "round", "models": {"implementor","reviewer","fixer"}, "escalated",
 #      "needs_human_qa": bool|null, "stage": object|null,
 #      "comment_needed": bool|null}]}
 #
@@ -128,7 +128,10 @@
 #
 # Scope overlap: a ready card that would start waits (reason "Scope overlaps
 # #<n> on <path>") when an in_progress, in_review or stage-column card names a path that its
-# "## Scope" also names. Paths are backticked spans in that section with no
+# "## Scope" also names. Active PR paths supplement declared scope, and
+# selected starts reserve their scopes in card-number order within the plan.
+# Directory scopes cover descendants; incomplete PR file lookups hold starts.
+# Paths are backticked spans in that section with no
 # whitespace and a "/" or an extension; a card naming none starts as usual.
 # At most one merge is planned per tick: the lowest card number; the other
 # cards that would merge wait ("one merge per tick: #<n> merges first").
@@ -144,7 +147,7 @@
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
 # dispatchable false. A plan without --settle never emits move_to_review.
-# --settle-merge is --settle that also keeps a merge action (merge-reviewed.sh
+# --settle-merge is --settle that also keeps merge and verify_main actions (merge-reviewed.sh
 # carries it out; settle.sh never asks for it).
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle has no card or a non-numeric card.
@@ -282,7 +285,7 @@ finish() {
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf 'resets at %s\n' "$reset" >&2 ;;
     esac
   fi
-  rm -f "$ERR_FILE" "${CARDS_FILE:-}" "${NOTE_ERR:-}" "${DEPS_FILE:-}" "${LINT_FILE:-}"
+  rm -f "$ERR_FILE" "${CARDS_FILE:-}" "${NOTE_ERR:-}" "${DEPS_FILE:-}" "${LINT_FILE:-}" "${SCOPE_FILE:-}"
   exit "$rc"
 }
 trap finish EXIT
@@ -658,6 +661,34 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_
   done
 done
 
+# Actual PR paths supplement declared scope only when admitting new work.
+# Reuse the normal card snapshot; settle-only calls never need these lookups.
+SCOPE_FILE="$(mktemp)" || fb_die 1 "cannot create scope input"
+if [ "$SETTLE" != true ] && jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >/dev/null; then
+  while IFS= read -r active; do
+    [ -n "$active" ] || continue
+    n="$(jq -r '.number' <<<"$active")"
+    pr="$(jq -r '.pr // empty' <<<"$active")"
+    paths='[]'
+    unknown=false
+    if jq -e '.lookup_failed != null or .invalid_note != null' <<<"$active" >/dev/null; then
+      unknown=true
+    elif [ -n "$pr" ] && [ "$(jq -r '.pr_info.state' <<<"$active")" = OPEN ]; then
+      if files="$(gh pr view "$pr" --repo "$FLEET_REPO" --json files,changedFiles)" \
+        && paths="$(jq -ce 'if (.files | type) == "array" and (.changedFiles | type) == "number"
+            and .changedFiles == (.files | length)
+            and all(.files[]; (.path | type) == "string" and (.path | length) > 0)
+            then [.files[].path] else error("incomplete file list") end' <<<"$files" 2>/dev/null)"; then
+        :
+      else
+        paths='[]'; unknown=true
+      fi
+    fi
+    jq -cn --argjson n "$n" --argjson paths "$paths" --argjson unknown "$unknown" \
+      '{number:$n, paths:$paths, unknown:$unknown}' >> "$SCOPE_FILE" || fb_die 1 "cannot record scope input"
+  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .stage != null)' "$CARDS_FILE")"
+fi
+
 # Provider stages whose API key variable is unset or empty (checked here, so
 # jq never reads the environment); a provider with a null api_key_env is skipped
 UNSET='[]'
@@ -669,10 +700,16 @@ while IFS="$(printf '\t')" read -r sname kenv; do
 done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
   | ($c.providers[.provider].api_key_env // empty) as $k | "\(.name)\t\($k)"' <<<"$FLEET_CFG")"
 
-jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
+  def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
+  def overlap($left; $right):
+    first($left[] as $a | $right[] as $b
+      | ($a | scope_key) as $x | ($b | scope_key) as $y
+      | select($x == "" or $y == "" or $x == $y or ($x | startswith($y + "/")) or ($y | startswith($x + "/")))
+      | $a) // null;
   def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-+"; "") | sub("-+$"; "")
     | .[0:40] | sub("-+$"; "") | if . == "" then "card" else . end;
   def act($a; $r): {action: $a, reason: $r};
@@ -709,6 +746,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
       | ($n.last_action_error // "no error recorded") as $err
       | if $c.lookup_failed != null then act("skip"; "lookup failed: \($c.lookup_failed)")
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
+        # Never let failure limits or follow-ups move an unverified merge out
+        # of review, where the headless recovery pass can still find it.
+        elif is_review($c) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
+          then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
         elif $n.pending_followups != null
              and (($n.pending_followups.pr // $n.pr // $c.pr) != null or $c.state == "blocked")
           then act("file_pending"; "pending follow-ups")
@@ -744,7 +785,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
         elif is_review($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in review, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
-            if $n.main_check == null then act("verify_main"; "PR #\($c.pr) merged; main not yet verified")
+            if $n.main_check.ok != true then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
             else act("finish"; "PR #\($c.pr) merged and main verified") end
           elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
           # A record from another stage (or from in_review) never counts
@@ -786,10 +827,15 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
           else act("skip"; "blocked") end
         else act("skip"; "state \($c.state) is not planned") end;
 
-  . as $all
+  map(. as $c | (first($actual_scope[] | select(.number == $c.number)) // {paths:[],unknown:false}) as $actual
+    | .scope_paths = ((.scope_paths // []) + $actual.paths | unique)
+    | .scope_unknown = $actual.unknown) as $all
+  | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
   | [$all[] | select(.state == "in_progress" or is_review(.))] as $open
+  | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
+  | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
   | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger
   | [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
@@ -805,16 +851,19 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
     # A ready card that would start waits when an open card names one of its Scope paths
     | (if $d00.action == "start"
         then (first($open[] | select(.number != $c.number) | . as $o
-                | ([($c.scope_paths // [])[] | select(. as $p | ($o.scope_paths // []) | index($p))] | first) as $p
+                | overlap(($c.scope_paths // []); ($o.scope_paths // [])) as $p
                 | select($p != null) | {num: $o.number, path: $p}) // null)
         else null end) as $ov
-    | (if $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
+    | (if $d00.action == "start" and $unknown_scope != null then act("wait"; "Scope unknown for #\($unknown_scope.number): PR file lookup failed or incomplete")
+       elif $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
+       elif $d00.action == "merge" and $verify_pending
+         then act("wait"; "successful main verification required before another merge")
        elif $d00.action == "merge" and $merger != $c.number
          then act("wait"; "one merge per tick: #\($merger) merges first")
        else $d00 end) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0
-       elif ($d0.action == "to_human_qa" or $d0.action == "advance_stage" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and $d0.action == "merge")) then $d0
+       elif ($d0.action == "to_human_qa" or $d0.action == "advance_stage" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and ($d0.action == "merge" or $d0.action == "verify_main"))) then $d0
        elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
        else act("skip"; "\($d0.action) waits for the next tick") end) as $d
     # A failed preflight holds every card: no role runs, nothing is recorded
@@ -832,7 +881,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
     | {key_held: $keyheld, number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
-       pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
+       pr: $c.pr, head_sha: $c.pr_info.headRefOid, round: $n.round, models: $models, escalated: $esc,
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files
@@ -857,7 +906,21 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null
                       and $c.state != "done" and $c.state != "wont_do"),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
-  ] as $cards
+  ] as $planned
+  # Reserve only starts that actually survived every gate. A waiting card
+  # contributes no reservation, so it cannot unnecessarily serialize others.
+  | reduce ($planned | sort_by(.number)[]) as $card ({cards:[], reserved:[]};
+      (first($all[] | select(.number == $card.number)).scope_paths // []) as $paths
+      | (if $card.action == "start" then
+          first(.reserved[] | . as $r | overlap($paths; $r.paths) as $p
+            | select($p != null) | {number:$r.number,path:$p}) // null
+         else null end) as $overlap
+      | if $overlap != null then
+          .cards += [$card + {action:"wait", reason:"Scope overlaps #\($overlap.number) on \($overlap.path)", waiting_on:[]}]
+        else .cards += [$card]
+          | if $card.action == "start" then .reserved += [{number:$card.number,paths:$paths}] else . end
+        end)
+  | .cards as $cards
   | {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
