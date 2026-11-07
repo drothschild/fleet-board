@@ -173,12 +173,14 @@ check "issues are created in dependency order" "$titles" "Add limits endpoint|Ad
 for t in "Add limits endpoint" "Add limits UI" "Document rate limits"; do
   f="$(body_of "$t")"
   ok=yes
-  for h in "## Why" "## Scope" "## Acceptance"; do grep -qx "$h" "$f" 2>/dev/null || ok=no; done
-  check "body of '$t' has Why, Scope and Acceptance" "$ok" "yes"
-  bad="$(awk '/^## Acceptance/{s=1;next} /^## /{s=0} s && NF && $0 !~ /^- /' "$f" 2>/dev/null | wc -l | tr -d ' ')"
-  check "every Acceptance line of '$t' starts with '- '" "$bad" "0"
-  n="$(awk '/^## Acceptance/{s=1;next} /^## /{s=0} s && /^- /' "$f" 2>/dev/null | wc -l | tr -d ' ')"
-  [ "$n" -ge 1 ] && pass "'$t' has an Acceptance bullet" || fail "'$t' has an Acceptance bullet" "none"
+  for h in "## Why" "## Scope"; do grep -qx "$h" "$f" 2>/dev/null || ok=no; done
+  check "body of '$t' has Why and Scope" "$ok" "yes"
+  acc="$ROOT/.fleet-board/cards/$(card_of "$t").json"
+  # the acceptance is the card's field now, not a body section
+  bad="$(jq -r '[(.acceptance // [])[] | select(type != "string" or . == "" or startswith("- "))] | length' "$acc" 2>/dev/null)"
+  check "every acceptance item of '$t' is a non-empty string without a '- ' prefix" "$bad" "0"
+  n="$(jq -r '(.acceptance // []) | length' "$acc" 2>/dev/null)"
+  [ "${n:-0}" -ge 1 ] && pass "'$t' has an acceptance item" || fail "'$t' has an acceptance item" "none"
 done
 
 # every card goes to the one local board, so a dependency is a blocked_by number

@@ -83,13 +83,14 @@ run_import() { # <stdin> args...
   local ans="$1"; shift
   OUT="$(cd "$ROOT" && printf '%b' "$ans" | FAKE_D="$D" FAKE_EXISTING="$SB/existing" PATH="$STUBS:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
   RC=$?
-  # each local card's body as board-read.sh returns it, at bodies/<100 + n>.md
+  # each local card's body as board-read.sh returns it, followed by its acceptance
+  # items as "- " lines (the path checks cover the field too), at bodies/<100 + n>.md
   # (where the GitHub stub saved issue n's body)
   local f n
   for f in "$ROOT/.fleet-board/cards/"*.json; do
     [ -e "$f" ] || continue
     n="$(jq -r .number "$f")"
-    (cd "$ROOT" && bash "$SCRIPT_DIR/../scripts/board-read.sh" "$n" 2>/dev/null) | jq -j '.body // ""' > "$D/bodies/$((100 + n)).md"
+    (cd "$ROOT" && bash "$SCRIPT_DIR/../scripts/board-read.sh" "$n" 2>/dev/null) | jq -j '(.body // "") + ((.acceptance // []) | map("\n- " + .) | join(""))' > "$D/bodies/$((100 + n)).md"
   done
 }
 issues() { ls "$ROOT/.fleet-board/cards/" 2>/dev/null | grep -c '\.json$'; true; }
