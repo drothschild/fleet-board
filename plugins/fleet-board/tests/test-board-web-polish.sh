@@ -27,6 +27,9 @@ check "partial-create toast begins with Created #n in Backlog" has '"Created #" 
 check "partial-create toast names the refused move" has 'the move was refused' "$JS"
 check "imp-progress has no role=status" lacks 'id="imp-progress"[^>]*role="status"' "$HTML"
 check "imp-last carries aria-live polite" has 'id="imp-last"[^>]*aria-live="polite"' "$HTML"
+check "imp-elapsed carries no aria-live" lacks 'id="imp-elapsed"[^>]*aria-live' "$HTML"
+check "imp-progress and its ancestors carry no aria-live" lacks 'id="(import|imp-progress)"[^>]*aria-live|class="imp-(foot|actions)"[^>]*aria-live' "$HTML"
+check "only imp-last announces inside the progress line" test "$(grep 'id="imp-progress"' "$HTML" | grep -o 'aria-live' | wc -l | tr -d ' ')" = 1
 check "import poll counts consecutive failures" has 'imp\.fails' "$JS"
 check "status line says board server not answering" has 'board server not answering' "$JS"
 
