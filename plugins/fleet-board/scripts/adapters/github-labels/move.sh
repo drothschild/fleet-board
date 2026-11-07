@@ -9,6 +9,9 @@ if [ "$TARGET" = ready ] && ! fb_has_acceptance "$(jq -r '.body // ""' <<<"$ISSU
   fb_die 1 "card #$N has no '## Acceptance' section; refusing to move it to ready"
 fi
 CURRENT="$(jq -r '.labels[].name' <<<"$ISSUE")"
+if [ "${FLEET_BOARD_ENFORCE_QA:-}" = 1 ] && [ "$TARGET" != human_qa ] && printf '%s\n' "$CURRENT" | grep -Fxq -- "$(fb_state_name human_qa)"; then
+  fb_die 1 "refusing to move #$N out of Human QA"
+fi
 HAS_TARGET=0
 for s in $FB_STATES; do
   name="$(fb_state_name "$s")"

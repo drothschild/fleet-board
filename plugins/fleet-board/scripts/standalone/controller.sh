@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# Standalone tick controller. Plans are checked before being returned or acted on.
+set -uo pipefail
+unset CDPATH
+SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "${1:-}" = worker ]; then
+  shift
+  exec bash "$SCRIPTS/standalone/worker.sh" "$@"
+fi
+MODE=tick
+if [ "$#" -eq 2 ] && [ "$1" = tick ] && [ "$2" = --plan-only ]; then
+  MODE=plan
+elif [ "$#" -ne 1 ] || [ "$1" != tick ]; then
+  echo 'usage: fleet-board tick [--plan-only]' >&2
+  exit 2
+fi
+SCRATCH="$(mktemp -d)" || exit 1
+PLAN="$SCRATCH/plan"
+GIT_MUTEX=""
+cleanup() {
+  local rc=$?
+  [ -z "$GIT_MUTEX" ] || rmdir "$GIT_MUTEX" 2>/dev/null || true
+  rm -rf "$SCRATCH"
+  if [ "$rc" -ne 0 ] && [ "$MODE" = tick ] && [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ]; then
+    jq -cn '{outcome:"failed",dispatchable:false,cost_usd:0}'
+  fi
+}
+CHILD=""
+cancel() {
+  local code="$1" target="$CHILD" watchdog=""
+  if [ -n "$target" ]; then
+    kill -TERM -- "-$target" 2>/dev/null || true
+    (
+      sleep 5 & timer=$!
+      trap 'kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true; exit 0' TERM INT
+      wait "$timer" && kill -KILL -- "-$target" 2>/dev/null || true
+    ) </dev/null >/dev/null 2>&1 & watchdog=$!
+    wait "$target" 2>/dev/null || true
+    # Reap any group members that ignored TERM after the leader exited.
+    kill -KILL -- "-$target" 2>/dev/null || true
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" 2>/dev/null || true
+    CHILD=""
+  fi
+  exit "$code"
+}
+run_group() {
+  local rc
+  set -m
+  "$@" & CHILD=$!
+  set +m
+  wait "$CHILD"; rc=$?
+  CHILD=""
+  return "$rc"
+}
+run_start() { run_group bash "$SCRIPTS/standalone/start.sh" "$@"; }
+run_continue() { run_group bash "$SCRIPTS/standalone/continue.sh" "$@"; }
+run_blocked() { run_group bash "$SCRIPTS/standalone/blocked.sh" "$@"; }
+run_review() { run_group bash "$SCRIPTS/standalone/review.sh" "$@"; }
+run_fix() { run_group bash "$SCRIPTS/standalone/fix.sh" "$@"; }
+run_qa() { run_group bash "$SCRIPTS/standalone/qa.sh" "$@"; }
+run_stage() { run_group bash "$SCRIPTS/standalone/stage.sh" "$@"; }
+run_hold() { run_group bash "$SCRIPTS/standalone/hold.sh" "$@"; }
+run_maintenance() { run_group bash "$SCRIPTS/standalone/maintenance.sh" "$@"; }
+run_update_branch() { run_group bash "$SCRIPTS/standalone/update-branch.sh" "$@"; }
+run_settle_move() { run_group bash "$SCRIPTS/standalone/settle-move.sh" "$@"; }
+run_settle_stage() { run_group bash "$SCRIPTS/standalone/settle-stage.sh" "$@"; }
+run_publication() { run_group bash "$SCRIPTS/standalone/publication.sh" "$@"; }
+trap cleanup EXIT
+trap 'cancel 130' INT
+trap 'cancel 143' TERM
+if [ "$MODE" = tick ]; then
+  COMMON="$(git rev-parse --git-common-dir)" || exit 1
+  COMMON="$(cd "$COMMON" && pwd -P)" || exit 1
+  LOCK_FILE="$COMMON/fleet-board-standalone.lockfile"
+  if [ -z "${FLEET_BOARD_REPO_LOCK_FD:-}" ] || [ "${FLEET_BOARD_REPO_LOCK_OWNER:-}" != "$$" ]; then
+    # Re-exec with the locked descriptor inherited by the controller and its
+    # descendants. The kernel releases it after the last process exits.
+    rm -rf "$SCRATCH"
+    trap - EXIT
+    exec python3 "$SCRIPTS/standalone/repo-lock.py" acquire "$LOCK_FILE" "${BASH_SOURCE[0]}" "$@"
+  fi
+  python3 "$SCRIPTS/standalone/repo-lock.py" verify "$LOCK_FILE" || exit 1
+  FLEET_BOARD_GIT_LOCK_TOKEN="$(basename "$SCRATCH")-$$"
+  [[ "$FLEET_BOARD_GIT_LOCK_TOKEN" =~ ^[A-Za-z0-9.-]+$ ]] || exit 1
+  export FLEET_BOARD_GIT_LOCK_TOKEN
+  GIT_MUTEX="$COMMON/fleet-board-standalone-git-$FLEET_BOARD_GIT_LOCK_TOKEN.lock"
+fi
+if [ "$MODE" = tick ]; then
+  # Recover one incomplete action before planning: the card may be between
+  # labels, or its move may have succeeded before its note was written.
+  for JOURNAL in "$COMMON"/fleet-board-standalone/blocked-*.json "$COMMON"/fleet-board-standalone/start-*.json "$COMMON"/fleet-board-standalone/continue-*.json "$COMMON"/fleet-board-standalone/fix-*.json "$COMMON"/fleet-board-standalone/review-*.json "$COMMON"/fleet-board-standalone/qa-*.json "$COMMON"/fleet-board-standalone/merge-*.json "$COMMON"/fleet-board-standalone/stage-*.json "$COMMON"/fleet-board-standalone/maintenance-block-*.json "$COMMON"/fleet-board-standalone/maintenance-unblock-*.json "$COMMON"/fleet-board-standalone/maintenance-file_pending-*.json "$COMMON"/fleet-board-standalone/update-branch-*.json "$COMMON"/fleet-board-standalone/settle-move-*.json "$COMMON"/fleet-board-standalone/settle-stage-*.json; do
+    [ -e "$JOURNAL" ] || continue
+    [ -f "$JOURNAL" ] && [ ! -L "$JOURNAL" ] || { echo 'invalid action journal' >&2; exit 1; }
+    if jq -e '.completed == true' "$JOURNAL" >/dev/null; then continue; fi
+    jq -e '.version == 1 and (.plan_card | type == "object")' "$JOURNAL" >/dev/null || { echo 'invalid action journal' >&2; exit 1; }
+    jq '.plan_card' "$JOURNAL" > "$SCRATCH/card" || exit 1
+    case "$(basename "$JOURNAL")" in
+      blocked-*) run_blocked "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
+      start-*) run_start "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      continue-*) run_continue "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
+      fix-*) run_fix "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      review-*) run_review "$SCRATCH/card" "$SCRATCH" "$JOURNAL" || exit 1 ;;
+      qa-*) run_qa "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      merge-*) run_publication "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      stage-*) run_stage "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      maintenance-*) run_maintenance "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      update-branch-*) run_update_branch "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      settle-move-*) run_settle_move "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      settle-stage-*) run_settle_stage "$SCRATCH/card" "$SCRATCH" || exit 1 ;;
+      *) exit 1 ;;
+    esac
+    jq -n --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" --slurpfile card "$SCRATCH/card" '{outcome:"progress",dispatchable:true,warnings:[],cards:[$card[0]]} + (if $fixture then {cost_usd:0} else {} end)'
+    exit 0
+  done
+fi
+if [ "$MODE" = plan ]; then
+  run_group env FLEET_BOARD_PLAN_READ_ONLY=1 FLEET_BOARD_PLAN_CACHE="$SCRATCH/projects.json" bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+else
+  run_group bash "${FLEET_BOARD_TICK_PLAN:-$SCRIPTS/tick-plan.sh}" > "$PLAN" || exit $?
+fi
+# Enumerate every action emitted by tick-plan, including settle-only actions.
+# Unknown actions and malformed envelopes are rejected before any effect.
+if ! jq -e -s '
+  length == 1 and (.[0] |
+    type == "object" and (.dispatchable | type == "boolean") and
+    (.warnings | type == "array" and all(.[]; type == "string")) and
+    (.cards | type == "array" and all(.[];
+      type == "object" and (.number | type == "number" and . > 0 and floor == .) and
+      (.title | type == "string") and (.state | type == "string" or . == null) and
+      (.reason | type == "string") and (.branch | type == "string" and length > 0) and
+      (.worktree | type == "string" and length > 0) and
+      has("pr") and (.pr | . == null or (type == "number" and . > 0 and floor == .)) and
+      has("round") and (.round | . == null or (type == "number" and . >= 0 and floor == .)) and
+      (.models | type == "object" and
+        (.implementor | type == "string" and length > 0) and
+        (.reviewer | type == "string" and length > 0) and
+        (.fixer | type == "string" and length > 0)) and
+      (.escalated | type == "boolean") and
+      has("stage") and (.stage | . == null or type == "object") and
+      has("needs_human_qa") and (.needs_human_qa | . == null or type == "boolean") and
+      (.action | IN("start", "continue_implementor", "start_review", "review", "review_stage", "advance_stage", "fix", "mark_ready", "merge", "verify_main", "finish", "to_human_qa", "file_pending", "block", "unblock", "skip", "skip_no_acceptance", "skip_card_lint", "wait", "update_branch", "move_to_review")))))
+' "$PLAN" >/dev/null 2>&1; then
+  echo 'invalid tick plan or unknown action' >&2
+  exit 1
+fi
+if [ "$MODE" = plan ]; then
+  cat "$PLAN"
+  exit 0
+fi
+# Validate the complete plan before effects. Cards run serially under the
+# repository lock, so worker concurrency is at most one and scratch is never
+# shared between actions. Unknown or currently unsupported actions hold all.
+if ! jq -e '
+  ([.cards[].number] | length == (unique | length)) and
+  ([.cards[] | select(.action == "merge")] | length <= 1) and
+  all(.cards[]; .action | IN("skip", "skip_no_acceptance", "skip_card_lint", "wait", "block", "unblock", "file_pending", "update_branch", "start", "continue_implementor", "start_review", "review", "review_stage", "advance_stage", "fix", "to_human_qa", "mark_ready", "merge", "verify_main", "finish")) and
+  all(.cards[];
+    if (.action | IN("advance_stage", "review_stage")) or (.action == "fix" and .stage != null)
+    then (.stage | type == "object" and .provider == null and (.agent | type == "string" and length > 0) and (.model | type == "string" and length > 0))
+    else true end)
+' "$PLAN" >/dev/null; then
+  echo 'tick contains an unsupported or duplicate action; no actions taken' >&2
+  exit 1
+fi
+if jq -e 'all(.cards[]; .action == "skip" or (.action == "skip_no_acceptance" and .comment_needed == false)) and .dispatchable == false' "$PLAN" >/dev/null; then
+  jq '. + {outcome: "idle", cost_usd: 0}' "$PLAN"
+  exit 0
+fi
+jq -c '.cards[] | select(.action != "skip")' "$PLAN" > "$SCRATCH/actions" || exit 1
+[ -s "$SCRATCH/actions" ] || { echo 'inconsistent idle plan' >&2; exit 1; }
+FAILURES=0 FILED=false
+# Pending follow-ups are reconciled before starting new work.
+jq -c '.cards[] | select(.action == "file_pending")' "$PLAN" > "$SCRATCH/pending-actions" || exit 1
+while IFS= read -r CARD_JSON; do
+  [ -n "$CARD_JSON" ] || continue
+  NUMBER="$(jq -r .number <<<"$CARD_JSON")"
+  ACTION_DIR="$SCRATCH/action-$NUMBER"
+  mkdir "$ACTION_DIR" || exit 1
+  printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
+  if run_maintenance "$ACTION_DIR/card" "$ACTION_DIR"; then
+    JOURNAL="$COMMON/fleet-board-standalone/maintenance-file_pending-$NUMBER.json"
+    if [ -f "$JOURNAL" ] && jq -e '.completed == true and .rc == 0' "$JOURNAL" >/dev/null; then FILED=true; fi
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+done < "$SCRATCH/pending-actions"
+jq -c '.cards[] | select(.action == "start")' "$PLAN" > "$SCRATCH/starts" || exit 1
+if [ -s "$SCRATCH/starts" ]; then
+  ROOT="$(git rev-parse --show-toplevel)" || exit 1
+  LIMIT="$(bash "$SCRIPTS/config.sh" --dir "$ROOT" limits.concurrency)" || exit 1
+  [[ "$LIMIT" =~ ^[1-9][0-9]*$ ]] || { echo 'invalid worker concurrency' >&2; exit 1; }
+  run_group bash "$SCRIPTS/standalone/start-batch.sh" "$SCRATCH/starts" "$SCRATCH" "$LIMIT" || FAILURES=$((FAILURES + 1))
+fi
+while IFS= read -r CARD_JSON; do
+  [ -n "$CARD_JSON" ] || continue
+  NUMBER="$(jq -r .number <<<"$CARD_JSON")"; ACTION="$(jq -r .action <<<"$CARD_JSON")"
+  [ "$ACTION" != start ] && [ "$ACTION" != file_pending ] || continue
+  ACTION_DIR="$SCRATCH/action-$NUMBER"
+  mkdir "$ACTION_DIR" || exit 1
+  printf '%s\n' "$CARD_JSON" > "$ACTION_DIR/card"
+  case "$ACTION" in
+    wait|skip_card_lint|block|unblock) run_maintenance "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    skip_no_acceptance) run_hold "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    update_branch) run_update_branch "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    continue_implementor) run_continue "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    start_review|review) run_review "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    review_stage)
+      jq '.action = "stage_review"' "$ACTION_DIR/card" > "$ACTION_DIR/stage-card" || exit 1
+      run_review "$ACTION_DIR/stage-card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    fix) run_fix "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    to_human_qa) run_qa "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    advance_stage) run_stage "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    mark_ready|merge|verify_main|finish) run_publication "$ACTION_DIR/card" "$ACTION_DIR" || FAILURES=$((FAILURES + 1)) ;;
+    *) exit 1 ;;
+  esac
+done < "$SCRATCH/actions"
+[ "$FAILURES" -eq 0 ] || { echo "$FAILURES card action(s) failed" >&2; exit 1; }
+jq --argjson fixture "$( [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" = 1 ] && echo true || echo false )" --argjson filed "$FILED" '(.dispatchable = (.dispatchable or $filed)) | . + {outcome: (if .dispatchable then "progress" else "idle" end)} + (if $fixture then {cost_usd:0} else {} end)' "$PLAN"

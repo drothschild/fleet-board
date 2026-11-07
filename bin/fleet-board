@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Standalone Fleet Board entry point.
+set -uo pipefail
+unset CDPATH
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ "${1:-}" = run ]; then
+  shift
+  exec bash "$ROOT/plugins/fleet-board/scripts/standalone/run.sh" "$@"
+fi
+exec bash "$ROOT/plugins/fleet-board/scripts/standalone/controller.sh" "$@"

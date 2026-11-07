@@ -271,3 +271,30 @@ fb_lock() {
 # Adapter scripts are exec'd with FLEET_CFG exported and never call fb_load_config;
 # derive the stage states for them at load.
 [ -z "${FLEET_CFG:-}" ] || fb_set_states
+
+# Resolve the worktree base; read-only planning must not create it.
+fb_worktrees_base() {
+  local WT_DIR="$1" BASE OLD_IFS component
+  if [ "${FLEET_BOARD_PLAN_READ_ONLY:-}" = 1 ]; then
+    BASE="$(cd "$FLEET_ROOT" && pwd -P)" || return 1
+    OLD_IFS="$IFS"; IFS=/; set -f
+    for component in $(fb_cfg worktrees.dir); do
+      case "$component" in
+        ''|.) ;;
+        ..) BASE="${BASE%/*}"; [ -n "$BASE" ] || BASE=/ ;;
+        *)
+          if [ -d "$BASE/$component" ]; then
+            BASE="$(cd "$BASE/$component" && pwd -P)" || return 1
+          elif [ -e "$BASE/$component" ]; then
+            return 1
+          else
+            BASE="${BASE%/}/$component"
+          fi ;;
+      esac
+    done
+    IFS="$OLD_IFS"
+  else
+    BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || return 1
+  fi
+  printf '%s\n' "$BASE"
+}

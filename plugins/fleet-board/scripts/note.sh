@@ -109,7 +109,7 @@ fb_load_config
 
 # The normalized worktrees base: worktree paths must be this or under it
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
-BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
+BASE="$(fb_worktrees_base "$WT_DIR")" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 
 TMP=""

@@ -10,7 +10,8 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 `listening on http://127.0.0.1:<port>`; requests are logged to stderr.
 
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
-FLEET_BOARD_RUN (headless wrapper override), FLEET_BOARD_CLAUDE (the claude binary the
+FLEET_BOARD_RUN (headless wrapper override), FLEET_BOARD_WEB_RUN_MODE (standalone opt-in),
+FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
 session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one).
@@ -763,7 +764,15 @@ def get_run(params, body):
 def start_run(params, body):
     cfg, dir = ctx()
     sdir = state_dir(APP["root"], cfg)
-    wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
+    mode = os.environ.get("FLEET_BOARD_WEB_RUN_MODE", "legacy")
+    if mode == "standalone":
+        if os.environ.get("FLEET_BOARD_STANDALONE_FIXTURE") != "1":
+            raise ApiError(409, "standalone execution is available only in local fixtures")
+        wrapper = script("standalone/run.sh")
+    elif mode == "legacy":
+        wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
+    else:
+        raise ApiError(400, "unknown board run mode")
     with _RUN_LOCK:
         if run_alive():
             raise ApiError(409, "a run is already alive (pid %s)" % _RUN["holder"])

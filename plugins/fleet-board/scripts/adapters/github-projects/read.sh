@@ -3,7 +3,7 @@ set -uo pipefail
 . "$FLEET_SCRIPTS/board-lib.sh"
 . "$FLEET_SCRIPTS/adapters/github-projects/common.sh"
 
-CACHE="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.cache/projects.json"
+CACHE="${FLEET_BOARD_PLAN_CACHE:-$FLEET_ROOT/$(fb_cfg worktrees.dir)/.cache/projects.json}"
 fp_ensure_cache "$CACHE" || exit 1
 
 # Get base from labels adapter (which handles the issue body, labels, comments, etc.)

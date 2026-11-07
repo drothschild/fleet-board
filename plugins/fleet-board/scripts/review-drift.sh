@@ -28,6 +28,12 @@ fb_load_config
 
 case "$HEAD_SHA" in "$FROM"*) echo reviewed; exit 0 ;; esac
 case "$FROM" in "$HEAD_SHA"*) echo reviewed; exit 0 ;; esac
+# A moved head needs review in read-only planning: fetching and merge-tree
+# may write repository objects, so do not try to prove a clean merge here.
+if [ "${FLEET_BOARD_PLAN_READ_ONLY:-}" = 1 ]; then
+  echo unreviewed
+  exit 0
+fi
 
 cmp="$(gh api "repos/$FLEET_REPO/compare/$FROM...$HEAD_SHA")" || fb_die 1 "cannot compare $FROM...$HEAD_SHA"
 chain="$(jq -r --arg head "$HEAD_SHA" '
