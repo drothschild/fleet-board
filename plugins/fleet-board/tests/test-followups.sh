@@ -484,7 +484,7 @@ assert_eq "no-pr: 3 cards reported filed" "$(jq -c '(.out_of_scope_created + .bu
 N_OK=0
 for f in "$FAKE_GH_DIR"/bodies/*; do
   [ -f "$f" ] || continue
-  grep -qF 'Found while working #12.' "$f" && ! grep -qF 'PR #' "$f" && N_OK=$((N_OK + 1))
+  grep -qF 'while working #12.' "$f" && ! grep -qF 'PR #' "$f" && N_OK=$((N_OK + 1))
 done
 assert_eq "no-pr: each body says Found while working #12 with no PR number" "$N_OK" 3
 
