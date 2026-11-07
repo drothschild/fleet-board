@@ -833,7 +833,7 @@ The spec text for every item below is in `specs/manager.md`; write each one into
 
 Unchanged: the exit 3 handling stays (the plan waits while the key variable is unset, but the variable can vanish between plan and run).
 
-## Revision 20 requirements (PR #217, command-provider evidence review)
+## Revision 21 requirements (PR #217, command-provider evidence review; written as Revision 20, renumbered on the merge with main)
 
 Apply only the evidence-review changes from the manager spec and keep the
 frontmatter unchanged. Add the spec's **Evidence reviewer.** section after
