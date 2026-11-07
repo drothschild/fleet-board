@@ -4,6 +4,7 @@ All mutations go through this interface. A caller cannot acquire the connection.
 """
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import stat
@@ -92,6 +93,10 @@ class Store:
                     raise ValueError('unversioned supervisor database is not empty')
                 conn.executescript('''BEGIN IMMEDIATE;
                     CREATE TABLE domain (id TEXT PRIMARY KEY, identity TEXT NOT NULL, desired_mode TEXT NOT NULL, phase TEXT NOT NULL, revision INTEGER NOT NULL, config_hash TEXT, service_version TEXT);
+                    CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL, deadline REAL NOT NULL, known_spend REAL NOT NULL, unknown_spend INTEGER NOT NULL, budget_stop TEXT);
+                    CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
+                    CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
+                    CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL);
                     CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
                     CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
                     PRAGMA user_version=1;
@@ -117,9 +122,77 @@ class Store:
         self.directory = directory
         self.domain_id = domain_id
 
+    def close(self):
+        self.__connection.close()
+
     def _event(self, kind, payload):
         self.__connection.execute('INSERT INTO events(timestamp,type,payload) VALUES(?,?,?)', (time.time(), kind, canonical_json(payload)))
         self.__connection.execute('UPDATE domain SET revision=revision+1')
+
+    def start_session(self, session):
+        required = ('id', 'started_at', 'deadline', 'known_spend', 'unknown_spend', 'budget_stop')
+        if any(k not in session for k in required) or not isinstance(session['id'], str) or not session['id']:
+            raise ValueError('invalid session')
+        for key in ('started_at', 'deadline', 'known_spend'):
+            value = session[key]
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError('invalid session number')
+        if type(session['unknown_spend']) is not bool or session['deadline'] < session['started_at']:
+            raise ValueError('invalid session budget')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            c.execute('INSERT INTO sessions VALUES(?,?,?,?,?,?)', tuple(session[k] for k in required))
+            self._event('session_started', {'id': session['id']})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def prepare_attempt(self, job, expected_revision, claims):
+        fields = ('id', 'card', 'action', 'role', 'stage', 'input_sha', 'input_version', 'provider', 'model', 'nonce')
+        if any(not isinstance(job.get(k), str) or not job[k] for k in fields):
+            raise ValueError('invalid job')
+        if any(type(job.get(k)) is not int or job[k] < 0 for k in ('generation', 'round')):
+            raise ValueError('invalid job version')
+        for key in ('global_cap', 'provider_cap'):
+            if type(claims.get(key)) is not int or claims[key] < 1:
+                raise ValueError('invalid capacity')
+        paths = claims.get('paths')
+        if not isinstance(paths, list) or any(not isinstance(p, str) or not p or p.startswith('/') or any(x in ('', '.', '..') for x in p.split('/')) for p in paths):
+            raise ValueError('invalid scope')
+        paths = sorted(set(paths)) or ['']
+        lane = claims.get('merge_lane', False)
+        if type(lane) is not bool:
+            raise ValueError('invalid merge claim')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                raise ValueError('revision mismatch')
+            active = list(c.execute('SELECT * FROM claims'))
+            if len(active) >= claims['global_cap'] or sum(x['provider'] == job['provider'] for x in active) >= claims['provider_cap']:
+                raise ValueError('capacity exhausted')
+            for existing in active:
+                if existing['card'] == job['card'] or (lane and existing['merge_lane']):
+                    raise ValueError('claim conflict')
+                for a in paths:
+                    for b in json.loads(existing['paths']):
+                        if not a or not b or a == b or a.startswith(b + '/') or b.startswith(a + '/'):
+                            raise ValueError('scope conflict')
+            logical = canonical_json([job[k] for k in ('card', 'action', 'role', 'stage', 'round', 'input_sha', 'input_version')])
+            c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?)', (job['id'], logical, job['card'], job['generation'], job['input_sha'], job['role'], job['stage'], 'active', 0, canonical_json(job)))
+            c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (job['nonce'], job['id'], job['nonce'], job['provider'], 'prepared', canonical_json(job)))
+            c.execute('INSERT INTO claims VALUES(?,?,?,?,?)', (job['nonce'], job['card'], job['provider'], canonical_json(paths), lane))
+            self._event('attempt_prepared', {'job_id': job['id'], 'attempt_id': job['nonce']})
+            c.execute('COMMIT')
+            return {'job_id': job['id'], 'attempt_id': job['nonce']}
+        except sqlite3.IntegrityError as exc:
+            c.execute('ROLLBACK')
+            raise ValueError('duplicate job or attempt') from exc
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
 
     def record_command(self, request):
         encoded = canonical_json(request)
@@ -173,8 +246,9 @@ class Store:
             for event in events:
                 event['payload'] = json.loads(event['payload'])
             commands = [dict(row) for row in connection.execute('SELECT * FROM commands ORDER BY rowid')]
+            records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims')}
             connection.execute('COMMIT')
-            return {'domain': domain, 'events': events, 'commands': commands}
+            return {'domain': domain, 'events': events, 'commands': commands, **records}
         except Exception:
             connection.execute('ROLLBACK')
             raise

@@ -25,12 +25,15 @@ class StoreContract(unittest.TestCase):
             "board_identity": "fixture", "runtime_root": str(self.root / "runtime"),
         }
         self.store = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(self.store.close)
 
     def test_reopen_retains_domain_state_and_events(self):
         before = self.store.snapshot()
         self.store.record_command({"id": "pause-1", "expected_revision": before["domain"]["revision"],
                                    "actor": "fixture", "command": "pause", "payload": {}})
-        reopened = Store.open(self.domain, filesystem_inspector=lambda path: "local").snapshot()
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(other.close)
+        reopened = other.snapshot()
         self.assertEqual(reopened["domain"]["desired_mode"], "paused")
         self.assertGreater(reopened["domain"]["revision"], before["domain"]["revision"])
         self.assertTrue(reopened["events"])
@@ -50,7 +53,9 @@ class StoreContract(unittest.TestCase):
         self.store.start_session({"id": "s1", "started_at": 1, "deadline": 100,
                                   "known_spend": 2.5, "unknown_spend": True,
                                   "budget_stop": "unknown"})
-        restored = Store.open(self.domain, filesystem_inspector=lambda path: "local").snapshot()
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(other.close)
+        restored = other.snapshot()
         self.assertEqual(restored["sessions"][0]["known_spend"], 2.5)
         self.assertTrue(restored["sessions"][0]["unknown_spend"])
         self.assertEqual(restored["sessions"][0]["budget_stop"], "unknown")
@@ -67,6 +72,8 @@ class StoreContract(unittest.TestCase):
                 return True
             except ValueError:
                 return False
+            finally:
+                store.close()
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             outcomes = list(executor.map(admit, (1, 2)))
         self.assertEqual(sum(outcomes), 1)
