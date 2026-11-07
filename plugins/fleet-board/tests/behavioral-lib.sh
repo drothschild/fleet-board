@@ -306,8 +306,8 @@ cleanup() {
       fi
     done
     for n in $CARDS; do
-      gh issue close "$n" --repo "$SANDBOX_REPO" --reason "not planned" >/dev/null 2>&1 \
-        || bl_log "cleanup: could not close card #$n"
+      (cd "$CLONE" && bash "$S/board-move.sh" "$n" wont_do) >/dev/null 2>&1 \
+        || bl_log "cleanup: could not move card #$n to wont_do"
     done
   fi
   [ -n "$WORK" ] && rm -rf "$WORK"
