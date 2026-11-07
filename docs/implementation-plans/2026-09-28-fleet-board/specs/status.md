@@ -30,11 +30,12 @@ Proposed description:
 
 Scripts the skill uses (the paths below abbreviate `<base directory>/../../scripts/` as `scripts/`):
 
-- `scripts/status.sh [--all]` prints one section per state: `ready`, `in_progress`, `in_review`, `human_qa`, `blocked`, plus `backlog`, `done` and `wont_do` with `--all`. Each card takes one line: `#<n> <title> · round <r> · PR #<pr> · <implementor>/<reviewer>`. An empty section shows `(none)`. Exit codes:
+- `scripts/status.sh [--all | --forecast]` prints one section per state: `ready`, `in_progress`, `in_review`, `human_qa`, `blocked`, plus `backlog`, `done` and `wont_do` with `--all`. Each card takes one line: `#<n> <title> · round <r> · PR #<pr> · <implementor>/<reviewer>`. An empty section shows `(none)`. Exit codes:
   - 0: the board was printed.
   - 1: a column or a card's note could not be read. Whatever could be printed is still printed.
   - 2: usage error.
   - 3: no `.fleet-board.yml`.
+- `scripts/status.sh --forecast` prints an overnight preflight instead of the board, and never with `--all`. It reads every card in `ready`, `in_progress`, `in_review`, `human_qa`, `blocked` and `backlog`, and writes nothing. It prints these sections, each only when it has entries: the critical-path human gates (cards labelled `needs-human-qa` that another Ready or Backlog card depends on), the dependencies needing a manual step (cards labelled `needs-manual-step` that another Ready or Backlog card depends on), and the Ready cards waiting on Backlog. Then it prints `can finish unattended: ...` (Ready cards that can finish with no person) and `run stops at: ...` (the cards above, each with its reason). With no entry in the first three sections it prints the one line `forecast: nothing to warn about`. Its exit codes are the same as above.
 - `scripts/board-list.sh done` prints a JSON array of done cards, each with a `number`.
 - `scripts/config.sh worktrees.dir` prints the worktrees directory, relative to the repository root. `config.sh` exit codes:
   - 0: ok.
@@ -48,6 +49,8 @@ Scripts the skill uses (the paths below abbreviate `<base directory>/../../scrip
 1. **Locate scripts.** The skill resolves the absolute scripts directory by running `cd "<base directory>/../../scripts" && pwd`, with the base directory the Skill tool announced. The command lines below use that directory, or the equivalent `<base directory>/../../scripts/` path.
 2. **Decide `--all`.** If the user asked for all cards or all states, including backlog, done or won't-do cards, the skill runs `status.sh` with `--all`. Otherwise it runs `status.sh` without `--all`. A request that names only active states ("what's in Human QA", "what's blocked", "board status") does not get `--all`.
 3. **Run the board.** In the user's repository, the skill runs `bash "<base directory>/../../scripts/status.sh"`, adding `--all` only when step 2 calls for it. It runs `status.sh` exactly once.
+
+   When the user asks for a forecast or an overnight preflight (stall points before a run), the skill runs `status.sh --forecast` instead, never together with `--all`. It passes the forecast output through verbatim, like the board. The exit-code handling in steps 4 to 7 applies to it too.
 4. **Exit 0.** The skill prints `status.sh`'s stdout verbatim. It does not reformat, reorder, summarize, drop or add card lines.
 5. **Exit 1.** The skill prints what `status.sh` printed to stdout, verbatim, then its stderr. It then prints a line saying the board could not be read completely.
 6. **Exit 3.** The skill prints no board. It tells the user that fleet-board is not set up in this repository and to run `/fleet-board:init`. It does not create `.fleet-board.yml` or run `init`. It skips the leftover-worktree check (step 9).
