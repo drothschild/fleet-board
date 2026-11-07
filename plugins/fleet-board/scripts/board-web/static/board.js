@@ -113,12 +113,53 @@ function formatHours(h) {
 // md(text) -> DocumentFragment. Headings, paragraphs, bullet and numbered
 // lists, fenced code, inline code, emphasis and links; HTML comments dropped;
 // any other HTML stays literal text.
+// stripComments(lines): drops <!-- ... --> outside fenced code; an unclosed one
+// hides the rest of the body but never reaches into a code fence.
+function stripComments(lines) {
+  const out = [];
+  let fence = null;
+  let inComment = false;
+  for (let line of lines) {
+    if (inComment) {
+      const end = line.indexOf("-->");
+      if (end < 0) continue;
+      line = line.slice(end + 3);
+      inComment = false;
+    }
+    if (fence) {
+      out.push(line);
+      const t = line.trim();
+      if (t.indexOf(fence) === 0 && /^(`+|~+)$/.test(t)) fence = null;
+      continue;
+    }
+    const fm = /^\s*(`{3,}|~{3,})\s*([\w+.-]*)\s*$/.exec(line);
+    if (fm) {
+      fence = fm[1];
+      out.push(line);
+      continue;
+    }
+    let start = line.indexOf("<!--");
+    while (start >= 0) {
+      const end = line.indexOf("-->", start + 4);
+      if (end < 0) {
+        line = line.slice(0, start);
+        inComment = true;
+        break;
+      }
+      line = line.slice(0, start) + line.slice(end + 3);
+      start = line.indexOf("<!--");
+    }
+    out.push(line);
+  }
+  return out;
+}
+
 function md(text) {
   const frag = document.createDocumentFragment();
-  const lines = String(text == null ? "" : text)
-    .replace(/<!--[\s\S]*?(-->|$)/g, "")
+  let lines = String(text == null ? "" : text)
     .replace(/\r\n?/g, "\n")
     .split("\n");
+  lines = stripComments(lines);
   let para = [];
   let i = 0;
 
@@ -204,7 +245,7 @@ function md(text) {
   return frag;
 }
 
-const MD_INLINE = /`([^`]+)`|\[([^\]]+)\]\(([^)\s]+)\)|\*\*(.+?)\*\*|__(.+?)__|\*(?!\s)(.+?)\*|(?<!\w)_(?!\s)(.+?)_(?!\w)/;
+const MD_INLINE = /`([^`]+)`|\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*(.+?)\*\*|__(.+?)__|\*(?!\s)(.+?)\*|_(?!\s)(.+?)_(?!\w)/;
 
 // mdInline(text, parent): appends text's inline markdown to parent.
 function mdInline(text, parent) {
@@ -214,6 +255,12 @@ function mdInline(text, parent) {
     if (!m) {
       parent.appendChild(document.createTextNode(rest));
       break;
+    }
+    // no lookbehind (Safari before 16.4 rejects it): an _ inside a word is literal
+    if (m[7] !== undefined && m.index > 0 && /\w/.test(rest.charAt(m.index - 1))) {
+      parent.appendChild(document.createTextNode(rest.slice(0, m.index + 1)));
+      rest = rest.slice(m.index + 1);
+      continue;
     }
     if (m.index) parent.appendChild(document.createTextNode(rest.slice(0, m.index)));
     if (m[1] !== undefined) {
@@ -527,10 +574,10 @@ function bindDrop(col, key) {
   col.addEventListener("drop", function (e) {
     e.preventDefault();
     const n = S.dragging;
-    S.pendingBoard = null; // the move below fetches a fresher board
+    const card = n !== null && S.board && S.board.cards.find(function (c) { return c.number === n; });
+    // only a real move fetches a fresher board; otherwise keep the held poll
+    if (card && card.state !== key) S.pendingBoard = null;
     endDrag();
-    if (n === null) return;
-    const card = S.board && S.board.cards.find(function (c) { return c.number === n; });
     if (!card || card.state === key) return;
     moveCard(n, key);
   });
@@ -563,7 +610,13 @@ async function moveCard(n, state) {
     r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
   }
   S.pendingMove = null;
+  const shown = document.querySelector('.card[data-n="' + n + '"]');
+  if (shown) shown.classList.remove("pending"); // the refresh below may be superseded
   if (!r.ok) {
+    if (card && from) { // snap back at once; the refresh may not arrive
+      card.state = from;
+      renderBoard(S.board, true);
+    }
     const where = from ? " stayed in " + stateName(from) : " did not move";
     showToast("#" + n + where + ": " + errorText(r), "error");
   }
@@ -603,7 +656,16 @@ function runPillText(run) {
 // renderHeader(run): the pill, cost and hours, Start/Stop, and the log panel
 // (when run carries log_tail; /api/board's run does not).
 function renderHeader(run) {
-  if (run) S.run = Object.assign({}, S.run, run);
+  if (run) {
+    const next = Object.assign({}, S.run, run);
+    // the stop fields describe one run: never carry them into another
+    if (run.state !== "stopped") {
+      for (const k of ["stop_reason", "cost", "hours"]) {
+        if (!(k in run)) delete next[k];
+      }
+    }
+    S.run = next;
+  }
   run = S.run || { state: "idle" };
   const state = S.offline ? "offline" : run.state || "idle";
 
