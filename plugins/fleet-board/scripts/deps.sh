@@ -4,6 +4,7 @@
 #
 # Usage:
 #   deps.sh parse <body-file>
+#   deps.sh parse-card <read-file>
 #   deps.sh check <card-n> <refs-json>
 #
 # parse prints {"refs": [{"repo","number","ref"}], "warnings": [..]} for the
@@ -13,6 +14,11 @@
 # are ignored; any other line in the section is ignored too, with the warning
 # "unrecognized dependency line: <line>" (tick-plan.sh prefixes the card).
 # A ref repeated in the section counts once. "ref" is always "owner/repo#n".
+#
+# parse-card prints the same shape for a board-read.sh result in <read-file>:
+# when the card carries a "blocked_by" array (the local backend) the refs are
+# those card numbers in board.repo (the body is ignored, warnings are empty);
+# a card without the field is parsed from its body as parse does.
 #
 # check prints {"unmet": [{"ref","status"}], "warnings": [..]} for the refs
 # (parse's list) that card <card-n> depends on. Per dependency it runs
@@ -29,6 +35,11 @@
 #   deps-lookup-failed: <command>
 # on stderr and exits 1, with nothing on stdout.
 #
+# On the local backend check also follows "blocked_by" through the store from
+# <card-n>: when the card is in a dependency cycle, each of its refs on the
+# cycle is unmet with status "in a dependency cycle" (even a done one), and the
+# warnings gain "#<n> is in a dependency cycle: #a, #b".
+#
 # Exit codes:
 #   0 - printed
 #   1 - a lookup failed, or the config could not be loaded (check)
@@ -38,12 +49,16 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: deps.sh parse <body-file> | check <card-n> <refs-json>"; }
+usage() { fb_die 2 "usage: deps.sh parse <body-file> | parse-card <read-file> | check <card-n> <refs-json>"; }
 
 [ $# -ge 1 ] || usage
 CMD="$1"
 case "$CMD" in
   parse)
+    [ $# -eq 2 ] || usage
+    [ -f "$2" ] || fb_die 2 "file not found: $2"
+    ;;
+  parse-card)
     [ $# -eq 2 ] || usage
     [ -f "$2" ] || fb_die 2 "file not found: $2"
     ;;
@@ -123,30 +138,87 @@ check_ref() {
   jq -cn --argjson met "$met" --arg status "$status" --argjson np "$np" '{met: $met, status: $status, not_planned: $np}'
 }
 
+# local_blockers <n>: the blocked_by numbers of local card <n> (nothing when
+# the card cannot be read or has no field)
+local_blockers() {
+  fl_read_card "$1" 2>/dev/null | jq -r '(.blocked_by // [])[] | tostring' 2>/dev/null
+}
+
+# local_reach <n>: every card number reachable from <n> through blocked_by
+# (one per line; <n> itself only when it is on a cycle). A visited set bounds it.
+local_reach() {
+  local seen=" " front="$1" next x b
+  while [ -n "$front" ]; do
+    next=""
+    for x in $front; do
+      for b in $(local_blockers "$x"); do
+        case "$seen" in *" $b "*) continue ;; esac
+        seen="$seen$b "
+        next="$next $b"
+      done
+    done
+    front="$next"
+  done
+  printf '%s\n' $seen
+}
+
+emit_parse() {
+  ROWS="$(parse_body "$1")" || fb_die 1 "cannot read $1"
+  printf '%s\n' "$ROWS" | jq -R -s -c --arg repo "$FLEET_REPO" '
+    def clean: gsub("[[:cntrl:]]"; " ");
+    [split("\n")[] | select(length > 0) | split("\t") | {k: .[0], v: (.[1:] | join("\t"))}] as $rows
+    | {refs: ([$rows[] | select(.k == "R") | .v
+               | (if startswith("#") then $repo + . else . end)
+               | capture("\\A(?<repo>.*)#(?<n>[0-9]+)\\z")
+               | {repo, number: (.n | tonumber), ref: "\(.repo)#\(.n | tonumber)"}]
+              | reduce .[] as $r ([]; if any(.[]; .ref | ascii_downcase == ($r.ref | ascii_downcase)) then . else . + [$r] end)),
+       warnings: [$rows[] | select(.k == "W") | "unrecognized dependency line: \(.v | clean)"]}' \
+    || fb_die 1 "cannot build the dependency list"
+}
+
 case "$CMD" in
   check)
     RESULTS=""
+    CYC_MEMBERS=""
+    if [ "$(fb_cfg board.backend)" = local ]; then
+      . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
+      REACH="$(local_reach "$2")"
+      if printf '%s\n' "$REACH" | grep -qx "$2"; then
+        for m in $REACH; do
+          [ "$m" = "$2" ] || { local_reach "$m" | grep -qx "$2" || continue; }
+          CYC_MEMBERS="$CYC_MEMBERS$m"$'\n'
+        done
+        CYC_MEMBERS="$(printf '%s\n' "$CYC_MEMBERS" | sort -un)"
+      fi
+    fi
     while IFS=$'\t' read -r repo num ref; do
       [ -n "$repo" ] || continue
       fb_valid_number "$num" || fb_die 2 "bad ref number: $num"
       r="$(check_ref "$repo" "$num")" || exit $?
       RESULTS="$RESULTS$(jq -c --arg ref "$ref" '. + {ref: $ref}' <<<"$r")"$'\n'
     done < <(jq -r '.[] | [.repo, (.number | tostring), .ref] | @tsv' <<<"$3")
-    printf '%s' "$RESULTS" | jq -s -c --argjson n "$2" '
-      {unmet: [.[] | select(.met | not) | {ref, status}],
-       warnings: [.[] | select(.not_planned) | "#\($n) depends on \(.ref), which was closed as not planned"]}'
+    CYC_JSON="$(printf '%s\n' "$CYC_MEMBERS" | jq -R -s -c '[split("\n")[] | select(length > 0) | tonumber]')" || CYC_JSON='[]'
+    printf '%s' "$RESULTS" | jq -s -c --argjson n "$2" --argjson cyc "$CYC_JSON" --arg repo "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" '
+      def oncycle: (.ref | ascii_downcase) as $r
+        | any($cyc[]; $r == ($repo + "#" + tostring));
+      {unmet: ([.[] | select((.met | not) and (oncycle | not)) | {ref, status}]
+               + [.[] | select(oncycle) | {ref, status: "in a dependency cycle"}]),
+       warnings: ([.[] | select(.not_planned) | "#\($n) depends on \(.ref), which was closed as not planned"]
+                  + (if ($cyc | length) > 0 then ["#\($n) is in a dependency cycle: \($cyc | map("#" + tostring) | join(", "))"] else [] end))}'
     ;;
   parse)
-    ROWS="$(parse_body "$2")" || fb_die 1 "cannot read $2"
-    printf '%s\n' "$ROWS" | jq -R -s -c --arg repo "$FLEET_REPO" '
-      def clean: gsub("[[:cntrl:]]"; " ");
-      [split("\n")[] | select(length > 0) | split("\t") | {k: .[0], v: (.[1:] | join("\t"))}] as $rows
-      | {refs: ([$rows[] | select(.k == "R") | .v
-                 | (if startswith("#") then $repo + . else . end)
-                 | capture("\\A(?<repo>.*)#(?<n>[0-9]+)\\z")
-                 | {repo, number: (.n | tonumber), ref: "\(.repo)#\(.n | tonumber)"}]
-                | reduce .[] as $r ([]; if any(.[]; .ref | ascii_downcase == ($r.ref | ascii_downcase)) then . else . + [$r] end)),
-         warnings: [$rows[] | select(.k == "W") | "unrecognized dependency line: \(.v | clean)"]}' \
-      || fb_die 1 "cannot build the dependency list"
+    emit_parse "$2"
+    ;;
+  parse-card)
+    if jq -e '.blocked_by | type == "array"' "$2" >/dev/null 2>&1; then
+      jq -c --arg repo "$FLEET_REPO" '
+        {refs: [.blocked_by[] | {repo: $repo, number: ., ref: "\($repo)#\(.)"}], warnings: []}' "$2" \
+        || fb_die 1 "cannot build the dependency list"
+    else
+      BF="$(mktemp)" || fb_die 1 "cannot create a temp file"
+      trap 'rm -f "$BF"' EXIT
+      jq -r '.body // ""' "$2" > "$BF" || fb_die 1 "cannot read $2"
+      emit_parse "$BF"
+    fi
     ;;
 esac

@@ -248,10 +248,10 @@ run_check "$LINT" 13
 assert_eq "local: a clean field item passes" "$LAST_EXIT" 0
 setup_local '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
 run_check "$PLAN"
-assert_eq "local plan: acceptance [] is has_acceptance false" "$(card has_acceptance)" "false"
+assert_eq "local plan: acceptance [] is skip_no_acceptance whatever the body says" "$(card action)" '"skip_no_acceptance"'
 setup_local '["clamp returns 3"]' ""
 run_check "$PLAN"
-assert_eq "local plan: field items are has_acceptance true" "$(card has_acceptance)" "true"
+assert_eq "local plan: field items let the card start" "$(card action)" '"start"'
 setup_local '["clamp returns 3"]' ""
 echo 15 > "$REPO/.fleet-board/next"
 jq '.blocked_by = [14]' "$REPO/.fleet-board/cards/13.json" > "$REPO/t.json" && mv "$REPO/t.json" "$REPO/.fleet-board/cards/13.json"

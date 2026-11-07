@@ -71,7 +71,13 @@ section() {
     on { print }'
 }
 
-ACCEPTANCE="$(section Acceptance)"
+# the acceptance field's items when the card has the field (local backend), else the body's section
+if jq -e '.acceptance | type == "array"' <<<"$READ" >/dev/null 2>&1; then
+  ACCEPTANCE="$(jq -r '.acceptance[] | tostring | gsub("\n"; " ") | "- " + .' <<<"$READ")" \
+    || fb_die 1 "cannot read the acceptance of card #$CARD"
+else
+  ACCEPTANCE="$(section Acceptance)"
+fi
 QA_ITEMS="$(section "Human QA" | sed -n 's/^- \(.*\)$/\1/p')"
 
 STEPS=""

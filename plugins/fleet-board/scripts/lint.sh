@@ -81,6 +81,8 @@ else
     fb_valid_number "$id" || fb_die 2 "card number must be numeric, got: $id"
     READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$id")" || fb_die 3 "cannot read card #$id"
     jq -r '.body // ""' <<<"$READ" | tr -d '\r' > "$WORK/$id.md" || fb_die 3 "cannot parse card #$id"
+    # a card with an acceptance field is linted on the field (see card-lint.sh --read-file)
+    if jq -e '.acceptance | type == "array"' <<<"$READ" >/dev/null 2>&1; then printf '%s\n' "$READ" > "$WORK/$id.read"; fi
   done
 fi
 
@@ -101,14 +103,15 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
   # card-lint.sh's rules
   while IFS= read -r line; do
     [ -n "$line" ] && printf '#%s: %s\n' "$id" "$line" >> "$OUT"
-  done < <(bash "$FB_SCRIPTS/card-lint.sh" --body-file "$F")
+  done < <(if [ -f "$WORK/$id.read" ]; then bash "$FB_SCRIPTS/card-lint.sh" --read-file "$WORK/$id.read"; else bash "$FB_SCRIPTS/card-lint.sh" --body-file "$F"; fi)
 
   # untestable-bullet
   while IFS= read -r line; do
     if grep -Eiq '(^|[^[:alpha:]])(manual|manually|visually|looks)([^[:alpha:]]|$)' <<<"$line"; then
       emit "$id" untestable-bullet "${line#- }"
     fi
-  done < <(awk '/^##[ \t]+Acceptance([ \t].*)?$/{s=1;next} /^##[ \t]/{s=0} s && /^- /' "$F")
+  done < <(if [ -f "$WORK/$id.read" ]; then jq -r '.acceptance[] | tostring | gsub("\n"; " ") | "- " + .' "$WORK/$id.read"
+           else awk '/^##[ \t]+Acceptance([ \t].*)?$/{s=1;next} /^##[ \t]/{s=0} s && /^- /' "$F"; fi)
 
   # dependencies
   while IFS= read -r tok; do
@@ -136,11 +139,13 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     if [ -z "$drepo" ] || ! gh issue view "$num" --repo "$drepo" --json state >/dev/null 2>&1; then
       emit "$id" unresolved-dependency "$tok does not exist"
     fi
-  done < <(awk '
+  done < <(if [ -f "$WORK/$id.read" ] && jq -e '.blocked_by | type == "array"' "$WORK/$id.read" >/dev/null 2>&1; then
+             jq -r --arg r "$REPO" '.blocked_by[] | $r + "#" + tostring' "$WORK/$id.read"
+           else awk '
     /^##[ \t]+[Dd]epends[ \t]+[Oo]n[ \t]*$/ { s = 1; next }
     /^#/ { s = 0 }
     s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
-  ' "$F")
+  ' "$F"; fi)
 
   # missing-file
   if [ -n "$DEFBR" ]; then

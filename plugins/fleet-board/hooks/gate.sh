@@ -822,9 +822,11 @@ read_card() {
     || block "could not verify card #$1; blocking to be safe"
   CARD_BODY="$(jq -r '.body // ""' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify card #$1; blocking to be safe"
+  CARD_JSON="$LOOKUP_OUT"
 }
 
-has_acceptance() { (. "$S/board-lib.sh" && fb_has_acceptance "$1"); }
+# has_acceptance: the card's acceptance field when it has one, else its body
+has_acceptance() { (. "$S/board-lib.sh" && fb_card_has_acceptance "$CARD_JSON"); }
 
 # touches_state TEXT: a state's board name appears in TEXT (case-insensitive:
 # GitHub label names are)
@@ -846,7 +848,7 @@ gate_move() {
   if [ "$CARD_STATE" = human_qa ] && [ "$st" != human_qa ]; then
     block "card #$n is in Human QA; only a human may move it out (GitHub UI)"
   fi
-  if [ "$st" = ready ] && ! has_acceptance "$CARD_BODY"; then
+  if [ "$st" = ready ] && ! has_acceptance; then
     block "card #$n has no '## Acceptance' section"
   fi
 }

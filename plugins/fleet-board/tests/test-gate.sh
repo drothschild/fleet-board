@@ -173,6 +173,10 @@ YML
       local_card 13 backlog "just a body"
       local_card 14 human_qa "## Acceptance
 - works"
+      # a card read on local carries the fields: #12 and #14 store their bullet as acceptance
+      for c in 12 14; do
+        jq '.acceptance = ["works"] | .blocked_by = []' "$REPO/.fleet-board/cards/$c.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/$c.json"
+      done
       # card fields: acceptance [] with a body that still has the heading; items with no heading
       jq -n '{number: 15, title: "card 15", body: "## Acceptance\n- works\n", acceptance: [], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
         > "$REPO/.fleet-board/cards/15.json"

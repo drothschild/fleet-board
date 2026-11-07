@@ -205,8 +205,13 @@ printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > 
 git -C "$LR" add .fleet-board.yml
 git -C "$LR" commit -q -m initial
 echo 3 > "$LR/.fleet-board/next"
+# lcard <n> <sectioned body>: a local card whose Acceptance bullets and board-repo
+# Depends on refs are stored in the fields (a card read on local always carries them)
 lcard() {
-  jq -n --argjson n "$1" --arg b "$2" '{number: $n, title: "t", body: $b, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+  local acc dep
+  acc="$(printf '%s\n' "$2" | awk '/^## Acceptance/{s=1;next} /^##/{s=0} s&&/^- /{sub(/^- /,"");print}' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  dep="$(printf '%s\n' "$2" | awk '/^## Depends on/{s=1;next} /^##/{s=0} s&&/^- /{sub(/^- /,"");print}' | { grep -E '^(acme/toy)?#[0-9]+$' || true; } | sed 's/.*#//' | jq -R -s -c 'split("\n") | map(select(length > 0) | tonumber) | unique')"
+  jq -n --argjson n "$1" --argjson a "$acc" --argjson d "$dep" '{number: $n, title: "t", body: "", acceptance: $a, blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
     > "$LR/.fleet-board/cards/$1.json"
 }
 lcard 2 "$(printf '## Acceptance\n- clamp returns 3\n')"
@@ -228,7 +233,7 @@ has "local: acme/toy#8 is unresolved" "$OUT" "acme/toy#8 does not exist"
 check "local: no gh call for this repo's refs" "$(cat "$LSTUB/calls" 2>/dev/null)" ""
 lcard 1 "$(printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- other/repo#5\n')"
 run_local 1
-has "local: another repo's ref still goes through gh" "$(cat "$LSTUB/calls" 2>/dev/null)" "issue view 5 --repo other/repo"
+check "local: an outside ref is not a field, so lint makes no gh call for it" "$(cat "$LSTUB/calls" 2>/dev/null)" ""
 lfcard() { # n acceptance-json blocked_by-json body
   jq -n --argjson n "$1" --argjson a "$2" --argjson d "$3" --arg b "$4" '{number: $n, title: "t", body: $b, acceptance: $a, blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
     > "$LR/.fleet-board/cards/$1.json"

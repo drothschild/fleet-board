@@ -199,6 +199,20 @@ fb_canonical_of() {
 # body bigger than the pipe buffer would kill the writer and read as "no Acceptance")
 fb_has_acceptance() { grep -Eq '^##[[:space:]]+Acceptance([[:space:]].*)?$' <<<"$1"; }
 
+# fb_card_has_acceptance <card-json>: a card read (board-read.sh output or a
+# stored local card). When it carries an "acceptance" array, that array alone
+# decides (non-empty = true, whatever the body says); a card without the field
+# (the GitHub backends, an unmigrated local card) falls back to its body.
+fb_card_has_acceptance() {
+  local k
+  k="$(jq -r 'if (.acceptance | type) == "array" then (if (.acceptance | length) > 0 then "yes" else "no" end) else "body" end' <<<"$1" 2>/dev/null)" || k=body
+  case "$k" in
+    yes) return 0 ;;
+    no) return 1 ;;
+  esac
+  fb_has_acceptance "$(jq -r '.body // ""' <<<"$1" 2>/dev/null)"
+}
+
 # fb_list_limit DEFAULT: the --limit a backend passes to its gh list call,
 # FLEET_BOARD_LIST_LIMIT when set. Dies (1) on a value that is not a positive
 # integer. Callers run it in $(...), so they must add `|| exit 1`.

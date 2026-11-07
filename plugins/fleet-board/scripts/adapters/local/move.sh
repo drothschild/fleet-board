@@ -8,8 +8,7 @@ fb_valid_state "$TARGET" || fb_die 2 "invalid state: $TARGET"
 fl_require_store
 fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
-if [ "$TARGET" = ready ] && ! fb_has_acceptance "$(jq -r '.body // ""' <<<"$CARD")" \
-   && [ "$(jq -r '(.acceptance // []) | length' <<<"$CARD")" = 0 ]; then
+if [ "$TARGET" = ready ] && ! fb_card_has_acceptance "$CARD"; then
   fb_die 1 "card #$N has no '## Acceptance' section; refusing to move it to ready"
 fi
 [ "$(jq -r '.state // ""' <<<"$CARD")" = "$TARGET" ] && exit 0

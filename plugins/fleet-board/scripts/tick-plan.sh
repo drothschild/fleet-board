@@ -401,7 +401,7 @@ card_input() {
     body="$(jq -r '.body // ""' <<<"$read" 2>/dev/null)" || failed="board-read.sh $n (unparsable)"
   fi
   if [ -z "$failed" ]; then
-    fb_has_acceptance "$body" && has_acc=true
+    fb_card_has_acceptance "$read" && has_acc=true
     marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
       || failed="board-read.sh $n (unparsable comments)"
   fi
@@ -528,8 +528,11 @@ card_input() {
   # stays skip_no_acceptance. The marker names the lint result, so the manager
   # comments once per distinct result (compared with the latest posted lint comment only).
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ]; then
-    if printf '%s\n' "$body" > "$LINT_FILE"; then
-      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --body-file "$LINT_FILE")"; lint_rc=$?
+    # a card read with an acceptance field is linted on the field
+    lint_flag=--body-file; lint_src="$body"
+    if jq -e '.acceptance | type == "array"' <<<"$read" >/dev/null 2>&1; then lint_flag=--read-file; lint_src="$read"; fi
+    if printf '%s\n' "$lint_src" > "$LINT_FILE"; then
+      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" "$lint_flag" "$LINT_FILE")"; lint_rc=$?
       case "$lint_rc" in
         0) ;;
         1)
@@ -566,10 +569,14 @@ card_input() {
   # A ready card's dependencies (only a card that could start is looked up)
   # (grep reads the file, not a pipe: grep -q quits at its first match, and a
   # body bigger than the pipe buffer would kill the writer and skip the gate)
-  has_deps=1
+  has_deps=1; deps_cmd=parse
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] && [ "$lint_gate" = false ]; then
     # grep exits 1 on no match and 2 on an error: only 1 means "no Depends on"
-    if printf '%s\n' "$body" > "$DEPS_FILE"; then
+    # (a card with the blocked_by field has its dependencies whatever the body says)
+    if jq -e '.blocked_by | type == "array"' <<<"$read" >/dev/null 2>&1; then
+      deps_cmd=parse-card
+      if printf '%s\n' "$read" > "$DEPS_FILE"; then has_deps=0; else has_deps=2; fi
+    elif printf '%s\n' "$body" > "$DEPS_FILE"; then
       grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; has_deps=$?
     else
       has_deps=2
@@ -577,7 +584,7 @@ card_input() {
     [ "$has_deps" -le 1 ] || failed="deps.sh parse $n (cannot read the card body)"
   fi
   if [ -z "$failed" ] && [ "$has_deps" -eq 0 ]; then
-    if out="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE")" \
+    if out="$(bash "$FLEET_SCRIPTS/deps.sh" "$deps_cmd" "$DEPS_FILE")" \
        && refs="$(jq -c '.refs' <<<"$out" 2>/dev/null)" \
        && deps_warn="$(jq -c --argjson n "$n" '[.warnings[] | "#\($n): \(.)"]' <<<"$out" 2>/dev/null)"; then
       if [ "$refs" != '[]' ]; then

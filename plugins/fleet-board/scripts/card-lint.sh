@@ -3,6 +3,11 @@
 #
 # Usage: card-lint.sh <number>
 #        card-lint.sh --body-file <file>     (lint a body already read; used by tick-plan.sh)
+#        card-lint.sh --read-file <file>     (lint a board-read.sh result already read)
+#
+# A card read that carries an "acceptance" array (the local backend) is linted
+# on that array: empty is "empty-acceptance", and manual-check scans its items.
+# Without the field (GitHub backends, --body-file) the body is linted as below.
 #
 # Prints one line per violation, "<rule>: <detail>", and exits 1; prints
 # nothing and exits 0 for a card that passes. Rules:
@@ -21,22 +26,43 @@ unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
 BODY=""
+READ=""
 if [ $# -eq 2 ] && [ "$1" = "--body-file" ]; then
   [ -r "$2" ] || fb_die 2 "cannot read file: $2"
   BODY="$(cat "$2")"
+elif [ $# -eq 2 ] && [ "$1" = "--read-file" ]; then
+  [ -r "$2" ] || fb_die 2 "cannot read file: $2"
+  READ="$(cat "$2")"
+  BODY="$(jq -r '.body // ""' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read in $2"
 elif [ $# -eq 1 ]; then
   fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
   fb_load_config
   READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1")" || fb_die 3 "cannot read card #$1"
   BODY="$(jq -r '.body // ""' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse card #$1"
 else
-  fb_die 2 "usage: card-lint.sh <number> | card-lint.sh --body-file <file>"
+  fb_die 2 "usage: card-lint.sh <number> | card-lint.sh --body-file <file> | card-lint.sh --read-file <file>"
 fi
 
 # Issue bodies edited in the web UI often carry CRLF line endings
 BODY="${BODY//$'\r'/}"
 
 FOUND=0
+
+# A card with an acceptance field: the items are the Acceptance section
+if [ -n "$READ" ] && [ "$(jq -r '(.acceptance | type)' <<<"$READ" 2>/dev/null)" = array ]; then
+  if [ "$(jq -r '.acceptance | length' <<<"$READ")" = 0 ]; then
+    echo "empty-acceptance: the card has no acceptance items"
+    exit 1
+  fi
+  while IFS= read -r item; do
+    if grep -Eiq 'on (a )?device|verify on|by hand|human qa|simulator' <<<"$item"; then
+      printf 'manual-check: %s\n' "$item"
+      FOUND=1
+    fi
+  done < <(jq -r '.acceptance[] | tostring | gsub("\n"; " ")' <<<"$READ")
+  [ "$FOUND" -eq 0 ] || exit 1
+  exit 0
+fi
 
 if ! fb_has_acceptance "$BODY"; then
   hint="$(grep -Eio -m1 '^[[:space:]]*(\*\*Acceptance[^*]*\*\*|Acceptance:)' <<<"$BODY" | sed 's/^[[:space:]]*//')"
