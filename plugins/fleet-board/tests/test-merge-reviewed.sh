@@ -141,9 +141,19 @@ pr() {
 CLEAN='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}}'
 GREEN='[{"conclusion":"SUCCESS"}]'
 
+setup_pair() {
+  setup_case auto
+  card 12 in_review "$CLEAN"
+  card 13 in_review "$(jq -c '.pr=35 | .branch="fleet/13-next"' <<<"$CLEAN")"
+  pr 34 false "$GREEN"
+  pr 35 false "$GREEN"
+  finalize
+}
+
 echo "Test: merge-reviewed.sh"
 echo ""
 
+if [ "${FLEET_BOARD_TEST_CASE:-}" != ambiguous ]; then
 echo "usage"
 setup_case auto
 finalize
@@ -248,14 +258,7 @@ finalize
 no_merge "PR not yet reviewed"
 
 echo "drain two reviewed cards, replan and pin each merge head"
-setup_pair() {
-  setup_case auto
-  card 12 in_review "$CLEAN"
-  card 13 in_review "$(jq -c '.pr=35 | .branch="fleet/13-next"' <<<"$CLEAN")"
-  pr 34 false "$GREEN"
-  pr 35 false "$GREEN"
-  finalize
-}
+
 setup_pair
 run_merge
 assert_exit "drain: exit 0" 0
@@ -325,6 +328,29 @@ mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
 plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
 assert_eq "failed recorded verification: recover rather than finish" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
+
+fi
+echo "ambiguous merge failure recovers before another merge"
+setup_pair
+rm "$FAKE_GH_DIR/bin/gh"
+cat > "$FAKE_GH_DIR/bin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1 $2 ${3:-}" = 'pr merge 34' ]; then
+  jq '.state="MERGED"' "$FAKE_GH_DIR/fx/pr-34.json" > "$FAKE_GH_DIR/fx/merged.json"
+  mv "$FAKE_GH_DIR/fx/merged.json" "$FAKE_GH_DIR/fx/pr-34.json"
+fi
+exec bash "$FAKE_GH_REAL" "$@"
+GH
+chmod +x "$FAKE_GH_DIR/bin/gh"
+printf 'pr merge 34 *\t1\t-\n' | cat - "$FAKE_GH_ROUTES" > "$FX/new-routes"
+mv "$FX/new-routes" "$FAKE_GH_ROUTES"
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<'VERIFY'
+#!/bin/sh
+printf '%s\n' '{"commit":"abc1234","ok":false,"results":[]}'
+VERIFY
+FAKE_GH_REAL="$SCRIPT_DIR/fake-gh.sh" run_merge
+assert_exit "ambiguous merge: red main stops" 3
+assert_eq "ambiguous merge: no second merge" "$(cnt 'pr merge 35 ')" 0
 
 echo ""
 echo "-----------------------------------"
