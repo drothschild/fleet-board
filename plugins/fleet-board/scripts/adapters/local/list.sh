@@ -13,9 +13,14 @@ if [ "${#FILES[@]}" -eq 0 ]; then
   printf '[]\n'
   exit 0
 fi
-OUT="$(jq -c -s 'if all(.[]; type == "object") then map({number, title, state}) else error("not a card object") end' ${FILES[@]+"${FILES[@]}"} 2>/dev/null)" || {
+OUT="$(jq -c -n --argjson count "${#FILES[@]}" '
+  [inputs | {file: input_filename, card: .}]
+  | if length == $count and (map(.file) | unique | length) == $count
+       and all(.[]; .card | type == "object")
+    then map(.card | {number, title, state})
+    else error("each card file must contain exactly one object") end' ${FILES[@]+"${FILES[@]}"} 2>/dev/null)" || {
   for f in ${FILES[@]+"${FILES[@]}"}; do
-    jq -e 'type == "object"' "$f" >/dev/null 2>&1 || fb_die 1 "card file is not valid JSON: $f"
+    jq -s -e 'length == 1 and (.[0] | type == "object")' "$f" >/dev/null 2>&1 || fb_die 1 "card file is not valid JSON: $f"
   done
   fb_die 1 "cannot read the card files in $CARDS"
 }
