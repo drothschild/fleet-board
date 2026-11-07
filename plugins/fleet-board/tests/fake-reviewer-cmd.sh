@@ -13,6 +13,8 @@ printf '%s\n' "$dir" > "$case_dir/clone"
 printf '%s\n' "$model" > "$case_dir/model"
 pwd -P > "$case_dir/cwd"
 printf '%s\n' "${TMPDIR:-}" > "$case_dir/tmpdir"
+mktemp > "$case_dir/temp-file"
+mktemp -d > "$case_dir/temp-dir"
 cat > "$case_dir/prompt.$attempt"
 while IFS=' ' read -r action arg; do
   case "$action" in

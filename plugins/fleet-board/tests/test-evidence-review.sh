@@ -128,6 +128,8 @@ check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == 
 check "provider receives the working directory as dir" test "$(cat "$FAKE_REVIEWER_DIR/cwd")" = "$(cat "$FAKE_REVIEWER_DIR/clone")"
 check "round 1 reference is the merge-base" grep -Fq "Review round 1. Reference SHA $base." "$FAKE_REVIEWER_DIR/prompt.1"
 check "provider temp directory is inside clone" test "$(cat "$FAKE_REVIEWER_DIR/tmpdir")" = "$(cat "$FAKE_REVIEWER_DIR/clone")/.fleet-board-tmp"
+check "provider mktemp file is inside clone" test "$(dirname "$(cat "$FAKE_REVIEWER_DIR/temp-file")")" = "$(cat "$FAKE_REVIEWER_DIR/tmpdir")"
+check "provider mktemp directory is inside clone" test "$(dirname "$(cat "$FAKE_REVIEWER_DIR/temp-dir")")" = "$(cat "$FAKE_REVIEWER_DIR/tmpdir")"
 check "scratch clone removed" clone_removed
 
 setup
