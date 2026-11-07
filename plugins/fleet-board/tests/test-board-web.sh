@@ -603,6 +603,40 @@ if start_server "$STAGES_REPO"; then
   stop_server
 fi
 
+echo "Case: cards whose state is unknown"
+if setup_case; then
+  seed_card 4 bogus "Lost card" "Hand-edited state."
+  echo 5 > "$REPO/.fleet-board/next"
+  api GET /api/board
+  assert_code 200
+  assert_body "unknown card is listed" '.cards[]|select(.number==4)|.title' "Lost card"
+  assert_body "unknown card keeps its stored state" '.cards[]|select(.number==4)|.state' bogus
+  assert_body "unknown card has known false" '.cards[]|select(.number==4)|.known' false
+  assert_body "every other card has known true" '[.cards[]|select(.number!=4)|.known]|unique|join(",")' true
+  cp "$BODY_FILE" "$TMP/board.json"
+  DOM_OUT="$(node "$SCRIPT_DIR/board-dom-harness.js" "$SCRIPTS/board-web/static/board.js" "$TMP/board.json" bogus 2>&1)"
+  got="$(printf '%s' "$DOM_OUT" | jq -r '[.groups[]|select(.heading|contains("Unknown state"))|.cards[]]|join("|")' 2>/dev/null)"
+  case "$got" in
+    *"Lost card"*bogus*) pass "page shows the unknown card under an Unknown state heading with its stored state" ;;
+    *) fail "page shows the unknown card under an Unknown state heading with its stored state" "got '$got' from: $DOM_OUT" ;;
+  esac
+  got="$(printf '%s' "$DOM_OUT" | jq -r '[.groups[]|select(.heading|contains("Unknown state")|not)|.cards[]|select(contains("Lost card"))]|length' 2>/dev/null)"
+  if [ "$got" = 0 ]; then pass "the unknown card is in no regular column"; else fail "the unknown card is in no regular column" "count '$got'"; fi
+  got="$(printf '%s' "$DOM_OUT" | jq -r '.options|map(.value)|join(" ")' 2>/dev/null)"
+  case "$got" in
+    *backlog*bogus*|*bogus*backlog*) pass "drawer state select offers the stored state and the valid states" ;;
+    *) fail "drawer state select offers the stored state and the valid states" "options: '$got'" ;;
+  esac
+  if [ "$(printf '%s' "$DOM_OUT" | jq -r .selected 2>/dev/null)" = bogus ]; then pass "drawer select shows the stored state"; else fail "drawer select shows the stored state" "$DOM_OUT"; fi
+
+  api POST /api/cards/4/move '{"state":"backlog"}'
+  assert_code 200
+  api GET /api/board
+  assert_body "moved card is known" '.cards[]|select(.number==4)|.known' true
+  assert_body "moved card is in the chosen state" '.cards[]|select(.number==4)|.state' backlog
+  stop_server
+fi
+
 echo "Case: board-web.sh"
 LABELS_REPO="$(new_repo 'board:
   backend: github-labels
