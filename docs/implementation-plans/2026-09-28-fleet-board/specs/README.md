@@ -1993,4 +1993,4 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 
 **Known limits, not re-run.** The run reported two places it was told not to touch that still name only Status `done` for the fixer: the `fix` row of the action table and the fixer status list in 3.9. Both need the same spec change and a further run.
 
-**Revision cost:** $0.3162. **Running total, all API-key charges:** ~$43.38 (~$43.06 at Revision 21; Revision 22 made no run; plus this run). Plugin version 0.15.1 (main) to 0.15.2.
+**Revision cost:** $0.3162. **Running total, all API-key charges:** ~$43.38 (~$43.06 at Revision 21; Revision 22 made no run; plus this run). Plugin version 0.15.3 (main) to 0.15.4.
