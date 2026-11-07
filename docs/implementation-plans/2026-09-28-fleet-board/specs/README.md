@@ -1907,6 +1907,7 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 **Revision cost:** $0.4933. **Running total, all API-key charges:** ~$42.47: Revision 17's ~$41.29, plus card 115's $0.0696 and Revision 18's $0.6183 (both counted in Revision 18's ~$41.13, which left out Revision 17), plus this revision.
 
 **Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
+
 ### Revision 20 (2026-11-06, card #175): helpers and fixtures outside test_paths in the reviewer agent
 
 **Cause.** `specs/reviewer.md` has carried the "Helpers and fixtures outside test_paths" bullet in its weakened-test step since PR #131, but `agents/reviewer.md` never got it. PR #176 first added it to the agent file by hand, which broke `tests/test-clean-room.sh`. The hand edit was dropped and the bullet authored by an isolated run.
@@ -1928,3 +1929,46 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Revision cost:** $0.1620. **Running total, all API-key charges:** ~$42.63 (~$42.47 at Revision 19 plus this run).
 
 **Merge with main (2026-11-06).** Written as Revision 19; main then recorded its own Revision 19 (PR #174), so this revision was renumbered 20, with its brief section and init evidence file (`r19` to `r20`). Main did not change `agents/reviewer.md` or `specs/reviewer.md` after this branch's merge-base, so this run's output stands unchanged. Plugin version 0.14.0 (main) to 0.14.1.
+
+### Revision 21 (2026-11-06, PR #217): command-provider evidence reviewer in the manager
+
+One approved isolated edit used `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40` with a $1.50 CLI budget, strict MCP configuration, a fresh empty configuration directory, and stdin from `/dev/null`. The working directory was the plugin root. The only added directory held `edit-req.md` (hash `07cc754a9074311a`) and the manager spec copy (hash `14220cebb2e0dbb0`). Prompt hash `777d16b5b12c61d9`. Claude Code 2.1.319 used `claude-opus-5-5` and `apiKeyHelper`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/manager.md` | `417e66154bd561bf` | PASS | PASS (4 reads, 11 edits) | 16 | 0.4341 | `41799b377c411831` | `83a650e092885482` |
+
+The init event showed four built-in plugins, only Read and Edit, no namespaced skills, agents or commands, and no MCP servers. Reads were limited to the two staged inputs and the manager file. Every edit targeted the manager file. No tool call failed. Sanitized evidence is in `evidence/author-manager.r21.init.json`.
+
+The zero-context diff contains ten hunks, covering dispatch, concurrency, action routing, reconciliation, cost and provider restrictions. Frontmatter is unchanged. The manager evidence-review, manager stages, clean-room and clean-room manifest suites passed. A behavioral tick (13/13) and one live `gpt-6-astra` review were run afterwards, at `ebc3ab7`, and reported on PR #217.
+
+**Revision cost:** $0.4341. **Running total, all API-key charges:** ~$43.06 (~$42.63 at Revision 20 plus this run).
+
+**Merge with main (2026-11-06).** Written as Revision 20; main then recorded its own Revision 20 (card #175, PR #176), so this revision was renumbered 21, with its brief section and init evidence file (`r20` to `r21`). Main's Revision 20 changed only `agents/reviewer.md`, so this run's `agents/manager.md` output stands unchanged. Plugin version 0.14.1 (main) to 0.15.0.
+
+### Revision 22 (2026-11-06, card 70): the fixer resolves merge conflicts, test files included
+
+**Cause.** `update-branch.sh` blocked every conflicting merge and never dispatched the fixer, so a person resolved each one, including conflicts across several files and a shared test file (HMB Workout PRs 59, 60 and 62).
+
+**Spec change** (hand edit, as in Revision 11): `specs/fixer.md` gains behavior 3a (re-run the merge of the base, resolve every conflict, commit a merge commit; never rebase or force-push), a narrow conflict-region exception to the ban on editing existing tests (keep every test and assertion from both sides, change no line outside a conflict region, report `blocked` when both cannot be kept, push nothing when a touched test fails), and two Must never edits. `tests/test-conflict-fixer-docs.sh` checks the spec, the agent and `docs/config.md`; it is not clean-room and was written test-first (6 checks failed before the change).
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, `claude-opus-5-5`, `--add-dir` a staging dir holding `edit-req.md` and a copy of the edited spec. Cost $0.2006. The init event and path audit were not re-asserted for this run (not recorded: the log was kept outside the repo and only the cost was read), so the isolation row is unverified.
+
+**Minimality check.** `git diff -U0 agents/fixer.md` was read: the frontmatter description, the Principle sentence, the step 3 exception sentence, the new step 3a, and the two Never bullets. **Kept.**
+
+**Known limits, not re-run.** `agents/manager.md` (clean-room, outside this card's Scope) still describes `update_branch` as blocking the card on a conflict and does not yet tell the manager to pass the plan's `findings` to the fixer, clear `conflicted_files` and `last_review` after a resolved merge, or block with the conflicted files when the fixer reports blocked. No behavioral run exercised step 3a.
+
+**Output sha256 (22):** `agents/fixer.md` `2d122bed1ab906b0` → `7d93223e9200e45e`.
+
+
+### PR 215 integration repair (2026-11-06)
+
+The conflict planner now has matching manager and reviewer contracts. The manager uses plan conflict findings, verifies the pushed resolution, resets review round and completed stages, and returns the card to In Review. Blocked conflict metadata is persisted before the move, so a failed write cannot expose a stale merged dependency. Failure counts follow the conflict-specific progress rule.
+
+The reviewer may classify a change as Conflict-resolved only after reconstructing its two-parent merge, preserving every assertion from both sides, checking unrelated edits and earlier weakening, and passing the named test and configured mutation check. This classification applies after a fixer report without weakening the ordinary test-protection rules.
+
+**Approved exception.** The owner explicitly authorized direct edits to `agents/manager.md` and `agents/reviewer.md` for this repair. Their manifest entries are named exceptions with updated hashes. No isolated authoring run or API-key spend is claimed for these edits. Plugin version: 0.14.3.
+
+**Validation.** The contract check initially failed 29 of 32 checks; the final check has 36 passing checks. Five manager scenarios cover success from a stage column, blocked resolution, rejected reports, route failure and failed blocked-metadata persistence. Three real-merge reviewer scenarios accept a preserving resolution and reject a dropped parent assertion and an edit outside the conflict region. The preserving candidate's implementation mutant was killed. Result artifacts: `evidence/pr215-manager-behavior.json` and `evidence/pr215-reviewer-behavior.json`. These are bounded behavioral fixture exercises, not a live board run or claims of unit coverage for instructions.
+
+**Merge with main (2026-11-07).** Card 70's revision was written as 21; main then recorded its own Revision 21 (PR 217, the command-provider evidence reviewer), so this one is renumbered 22. Plugin version 0.14.3 (this branch) and 0.15.0 (main) to 0.15.1. `agents/fixer.md` is unchanged by the merge. `agents/manager.md` and `agents/reviewer.md` are git merges: main's Revision 21 run output (manager) and Revision 20 run output (reviewer, card 175) with the owner-approved direct edits of the PR 215 integration repair. No single run produced either file, so both stay named exceptions in the manifest with their merged hashes. The owner confirmed the PR 215 exception and chose to keep the merge rather than re-author on 2026-11-07.

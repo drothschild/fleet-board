@@ -367,6 +367,58 @@ CODEX_CMD='codex exec --skip-git-repo-check -s read-only -m {model}'
 assert_exit "command_timeout: exit 1" 1
 assert_contains "command_timeout: message" "$LAST_ERR" "timed out"
 
+review_dir="$WORK/review"
+quoted_dir="$WORK/a b'c"
+mkdir -p "$review_dir" "$quoted_dir"
+CODEX_CMD='codex {dir}'
+FAKE_CODEX_OUT='review'
+codex_chat --dir "$review_dir"
+assert_eq "--dir sets cwd" "$(cat "$WORK/case/codex.cwd")" "$(cd "$review_dir" && pwd -P)"
+assert_eq "--dir substitutes the path" "$(cat "$WORK/case/codex.argv")" "$review_dir"
+codex_chat --dir "$quoted_dir"
+assert_eq "--dir preserves spaces and quotes" "$(cat "$WORK/case/codex.argv")" "$quoted_dir"
+chat "${BASE[@]}" --key-env TEST_KEY --dir "$review_dir"
+assert_exit "--dir without --command exits 2" 2
+codex_chat --dir "$WORK/missing"
+assert_exit "--dir with a missing directory exits 2" 2
+
+# A compound command leaves a shell between chat.sh and the provider.
+cat > "$FAKE_CODEX_DIR/descendant" <<'EOF'
+#!/bin/bash
+echo "$$" > "$FAKE_PROVIDER_PID"
+exec sleep 15
+EOF
+chmod +x "$FAKE_CODEX_DIR/descendant"
+pidfile="$WORK/provider.pid"
+printf '%s' "$REQ" > "$WORK/signal-request"
+PATH="$FAKE_CODEX_DIR:$PATH" FAKE_PROVIDER_PID="$pidfile" "$BASH_EXE" "$CHAT" \
+  --command 'descendant; :' --model test --timeout 20 < "$WORK/signal-request" \
+  > "$WORK/signal-out" 2> "$WORK/signal-err" &
+adapter_pid=$!
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  [ ! -s "$pidfile" ] || break
+  sleep 0.1
+done
+kill -TERM "$adapter_pid" 2>/dev/null
+LAST_EXIT=0
+wait "$adapter_pid" || LAST_EXIT=$?
+assert_exit "command signal: adapter exits 130" 130
+if [ -s "$pidfile" ]; then
+  provider_pid="$(cat "$pidfile")"
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$provider_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if kill -0 "$provider_pid" 2>/dev/null; then
+    kill -KILL "$provider_pid" 2>/dev/null || true
+    fail "command signal: provider stopped" "provider process survived TERM"
+  else
+    pass "command signal: provider stopped"
+  fi
+else
+  fail "command signal: provider stopped" "provider never started"
+fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

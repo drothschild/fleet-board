@@ -36,6 +36,10 @@
 #                 tick with no change posts none; once D is closed as completed,
 #                 A is started
 #
+#   provider-reviewer
+#                 seeded In Review PR with a scripted evidence reviewer. Checks
+#                 the background Bash call, reviewer dispatch and manager note.
+#
 # Every tick is also scanned with plugin-interaction-scan.sh; foreign_skill and
 # foreign_agent must be 0.
 #
@@ -51,7 +55,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="default ready-path bad-report fix-block merge-auto merge-red out-of-scope bug-found waits-on-dependency"
+SCENARIOS="default ready-path bad-report fix-block merge-auto merge-red out-of-scope bug-found waits-on-dependency provider-reviewer"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s [--scenario <%s>] [--max-ticks N]\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 SCENARIO=default
@@ -739,6 +743,79 @@ scenario_waits_on_dependency() {
   fi
 }
 
+scenario_provider_reviewer() {
+  local provider_command config_file
+  seed_pr "$BL_FIX/card-subtract.md" "$PATCHES/good.patch" 1; A="$CARD"
+  seed_note "$A" 1 0 '[]' 'del(.last_review)'
+
+  export FAKE_REVIEWER_DIR="$WORK/provider-reviewer"
+  export FAKE_REVIEWER_SCRIPT="$FAKE_REVIEWER_DIR/actions"
+  mkdir -p "$FAKE_REVIEWER_DIR" || bl_die "cannot create reviewer fixture"
+  printf 'reply report.md\n' >"$FAKE_REVIEWER_SCRIPT.1"
+  cp "$FAKE_REVIEWER_SCRIPT.1" "$FAKE_REVIEWER_SCRIPT.2"
+  cat >"$FAKE_REVIEWER_DIR/report.md" <<REPORT
+## Status
+clean
+
+## Findings
+- none
+
+## For the card
+reviewed head: $HEAD
+
+## Acceptance map
+- subtract(5, 2) returns 3 -> test/calc.test.js::subtract positive
+- subtract(2, 5) returns -3 -> test/calc.test.js::subtract negative
+
+## Mutation
+killed: 2 survived: 0 invalid: 0
+
+## Claim check
+skipped: review.verify_claim is off
+
+VERIFIED: \`node --test test/calc.test.js\` -> 3 tests passed
+REPORT
+
+  cat >"$WORK/provider-implementor.md" <<REPORT
+## Status
+done
+
+## PR
+#$PR
+
+## Findings
+- none
+
+## For the card
+Seeded the subtract change and its tests.
+
+VERIFIED: \`node --test test/calc.test.js\` -> 3 tests passed
+REPORT
+  in_clone bash "$S/board-comment.sh" "$A" "$WORK/provider-implementor.md" >/dev/null ||
+    bl_die "cannot seed the implementor report"
+
+  provider_command="bash '$BL_TESTS/fake-reviewer-cmd.sh' {dir} {model}"
+  config_file="$WORK/provider-reviewer.yml"
+  FB_TEST_REVIEW_COMMAND="$provider_command" yq '
+    .models.reviewer = {"provider": "fake", "model": "test-model", "price": {"input": 0, "output": 0}} |
+    .models.escalation = "opus" |
+    .providers.fake.review_command = strenv(FB_TEST_REVIEW_COMMAND) |
+    .review.verify_claim = false
+  ' "$CLONE/.fleet-board.yml" >"$config_file" || bl_die "cannot configure fake reviewer"
+  FLEET_BOARD_CONFIG="$config_file" run_tick
+
+  jq -s '[.[] | .. | objects | select(.type == "tool_use")] | unique_by(.id)' \
+    "$RUN/tick-$TICK.jsonl" >"$RUN/provider-tool-calls.json" || bl_die "cannot read tick tool calls"
+  check_jq "provider reviewer: tick launched a background evidence review" "$RUN/provider-tool-calls.json" '
+    any(.[]; .name == "Bash" and .input.run_in_background == true and
+      ((.input.command // "") | contains("evidence-review.sh")))'
+  check_jq "provider reviewer: tick dispatched no reviewer Agent" "$RUN/provider-tool-calls.json" '
+    all(.[]; .name != "Agent" or .input.subagent_type != "fleet-board:reviewer")'
+  note_get "$A" >"$RUN/provider-note.json"
+  check_jq "provider reviewer: note records the provider, model and head" "$RUN/provider-note.json" \
+    ".last_review.provider == \"fake\" and .last_review.model == \"test-model\" and .last_review.sha == \"$HEAD\""
+}
+
 case "$SCENARIO" in
   default) scenario_default ;;
   ready-path) scenario_ready_path ;;
@@ -749,6 +826,7 @@ case "$SCENARIO" in
   out-of-scope) scenario_out_of_scope ;;
   bug-found) scenario_bug_found ;;
   waits-on-dependency) scenario_waits_on_dependency ;;
+  provider-reviewer) scenario_provider_reviewer ;;
 esac
 
 DUR=$(( $(date +%s) - START_ALL ))
