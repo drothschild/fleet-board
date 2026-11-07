@@ -45,7 +45,10 @@ read_card() {
   elif [ "$ACTUAL" != "$STATE" ]; then
     return 1
   fi
-  if [ "$(fb_cfg board.backend)" = github-projects ]; then
+  if [ "$(fb_cfg board.backend)" = local ]; then
+    [ "$ACTUAL" != null ] || return 1
+    jq -e --argjson n "$N" '.number == $n' <<<"$CURRENT" >/dev/null || return 1
+  elif [ "$(fb_cfg board.backend)" = github-projects ]; then
     [ -n "$item" ] || return 1
     if [ "$ACTUAL" = null ]; then [ "$(jq -r '.move_item_id // empty' "$JOURNAL")" = "$item" ] || return 1; fi
     jq -e --argjson n "$N" '.number == $n' <<<"$CURRENT" >/dev/null || return 1
