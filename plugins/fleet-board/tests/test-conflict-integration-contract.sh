@@ -16,6 +16,7 @@ checks = {
  'manager': [
   ('conflict dispatch uses plan findings', "plan card's `findings`"),
   ('conflict flow overrides ordinary fix flow', 'instead of the ordinary 2.9 steps'),
+  ('blocked metadata precedes the move', 'Before moving, run `note.sh merge`'),
   ('resolved conflict clears pending files', '`conflicted_files: null`'),
   ('resolved conflict invalidates review', '`last_review: null`'),
   ('resolved conflict restarts evidence review', '`round: 1`'),
@@ -25,6 +26,7 @@ checks = {
  ],
  'reviewer': [
   ('explicit conflict classification', '**Conflict-resolved:**'),
+  ('does not skip an unchanged first-parent test', 'even when the first-parent diff is empty'),
   ('reconstructs merge to verify conflict boundaries', 'reconstruct the merge'),
   ('checks both parent versions', 'both parents'),
   ('preserves all assertions', 'every test and assertion from both sides'),

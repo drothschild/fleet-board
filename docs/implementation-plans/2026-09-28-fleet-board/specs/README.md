@@ -1943,3 +1943,14 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Known limits, not re-run.** `agents/manager.md` (clean-room, outside this card's Scope) still describes `update_branch` as blocking the card on a conflict and does not yet tell the manager to pass the plan's `findings` to the fixer, clear `conflicted_files` and `last_review` after a resolved merge, or block with the conflicted files when the fixer reports blocked. No behavioral run exercised step 3a.
 
 **Output sha256 (21):** `agents/fixer.md` `2d122bed1ab906b0` → `7d93223e9200e45e`.
+
+
+### PR 215 integration repair (2026-11-06)
+
+The conflict planner now has matching manager and reviewer contracts. The manager uses plan conflict findings, verifies the pushed resolution, resets review round and completed stages, and returns the card to In Review. Blocked conflict metadata is persisted before the move, so a failed write cannot expose a stale merged dependency. Failure counts follow the conflict-specific progress rule.
+
+The reviewer may classify a change as Conflict-resolved only after reconstructing its two-parent merge, preserving every assertion from both sides, checking unrelated edits and earlier weakening, and passing the named test and configured mutation check. This classification applies after a fixer report without weakening the ordinary test-protection rules.
+
+**Approved exception.** The owner explicitly authorized direct edits to `agents/manager.md` and `agents/reviewer.md` for this repair. Their manifest entries are named exceptions with updated hashes. No isolated authoring run or API-key spend is claimed for these edits. Plugin version: 0.14.3.
+
+**Validation.** The contract check initially failed 29 of 32 checks; the final check has 36 passing checks. Five manager scenarios cover success from a stage column, blocked resolution, rejected reports, route failure and failed blocked-metadata persistence. Three real-merge reviewer scenarios accept a preserving resolution and reject a dropped parent assertion and an edit outside the conflict region. The preserving candidate's implementation mutant was killed. Result artifacts: `evidence/pr215-manager-behavior.json` and `evidence/pr215-reviewer-behavior.json`. These are bounded behavioral fixture exercises, not a live board run or claims of unit coverage for instructions.
