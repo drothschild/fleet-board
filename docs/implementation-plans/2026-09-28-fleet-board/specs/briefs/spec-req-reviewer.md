@@ -304,3 +304,23 @@ alongside the test it affects.
 ## PR 215 integration requirements
 
 Implement the Conflict-resolved classification from the reviewer spec. Verify real merge provenance and reconstructed conflict boundaries, preserve both sides and coverage, require passing tests and configured mutation evidence, and keep prior weakening and unrelated edits subject to the ordinary rules. Permit this narrowly verified classification after a fixer report. Preserve unrelated behavior and numbering.
+
+## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
+
+Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
+prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on
+this board) and `pr_url`. Acceptance items come from the `acceptance` field, never from an
+`Acceptance` section of the body. A card changes state only through `board-move.sh`, which no
+role runs. Change only what the items below name; keep the frontmatter and every other line
+unchanged.
+
+1. The card input is the card number, card body and acceptance items: the card's `acceptance`
+   field, an array of strings, as `board-read.sh <n> | jq '.acceptance'` prints it; each string
+   is one Acceptance item. They are not read from a section of the body.
+2. Step 1 (map every Acceptance item): every item of the card's `acceptance` field (in place of
+   every bullet of the card's `Acceptance` section) gets exactly one line in `## Acceptance map`.
+   The rest of the step is unchanged.
+3. Must never: move a card, write the manager note, or change a card's labels or fields (no
+   `board-move`, `board-note`; on the local board a card changes state only through
+   `board-move.sh`). The `gh issue edit` and `gh project item-edit` names and "project fields"
+   go.

@@ -10,11 +10,14 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/cleanup-done.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
+# a done column is what its listing says (done_only narrows it), as on the GitHub board
+export ROUTES_STORE_LISTED_ONLY=1
 
 PASS=0
 FAIL=0
@@ -64,6 +67,8 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
+  rm -f "$FAKE_GH_DIR/cat.log" # only the run's own card reads count
   local tmpout tmperr
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"
@@ -142,6 +147,8 @@ setup_case() {
   BIN="$FAKE_GH_DIR/bin"
   mkdir -p "$BIN"
   ln -s "$SCRIPT_DIR/fake-gh.sh" "$BIN/gh"
+  printf '#!/bin/sh\ncase "$*" in *"/.fleet-board/cards/"*) printf "%%s\\n" "$*" >> "%s/cat.log" ;; esac\nexec /bin/cat "$@"\n' "$FAKE_GH_DIR" > "$BIN/cat"
+  chmod +x "$BIN/cat"
   ROUTES="$FAKE_GH_DIR/routes.txt"
   printf '%s' "${1:-}" > "$ROUTES"
   printf 'api user\t0\t%s\n' "$FIXTURES/labels/user.json" >> "$ROUTES"
@@ -242,7 +249,6 @@ done_only 12 13 17
 FLEET_BOARD_LIST_LIMIT=3 run_check
 assert_exit "done-at-limit: exit 0" 0
 assert_stdout_exact "done-at-limit: #12 still cleaned" "cleaned #12 $BASE/12-x"
-assert_stderr_contains "done-at-limit: warning names the limit" "list limit (3); the list may be truncated, continuing"
 assert_false "done-at-limit: #12 worktree gone" test -e "$BASE/12-x"
 
 # A note that cannot be read: that card is skipped, others still cleaned, exit 1
@@ -262,8 +268,9 @@ assert_stdout_exact "unreadable-note: the next card is still cleaned" "cleaned #
 # named <n>-*. The done column grows without bound; the cost must scale with
 # the local dirs, not with the column.
 
-# card_read <n>: the fake gh was asked for card n's issue or its comments
-card_read() { grep -qE "repos/acme/toy/issues/$1(/| |\$)" "$FAKE_GH_DIR/calls.log" 2>/dev/null; }
+# card_read <n>: card n's file was read (a cat wrapper on PATH logs the card
+# files the scripts read; on the GitHub board this was a gh call for the issue)
+card_read() { grep -qF "/.fleet-board/cards/$1.json" "$FAKE_GH_DIR/cat.log" 2>/dev/null; }
 reset_calls() { rm -f "$FAKE_GH_DIR/calls.log"; }
 
 # (a) several done cards, only #12 has dirs: only #12 is read, and it is cleaned
@@ -302,7 +309,7 @@ reset_calls
 run_check
 assert_exit "empty-base: exit 0" 0
 assert_stdout_exact "empty-base: nothing printed" ""
-assert_false "empty-base: no per-card gh call" grep -qE 'repos/acme/toy/issues/[0-9]' "$FAKE_GH_DIR/calls.log"
+assert_false "empty-base: no per-card gh call" grep -qE '/.fleet-board/cards/[0-9]' "$FAKE_GH_DIR/cat.log"
 assert_true "empty-base: the base is still empty" sh -c '[ -z "$(ls -A "$1")" ]' _ "$BASE"
 
 # (d) a <n>-review dir alone makes n a candidate; names with spaces are harmless

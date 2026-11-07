@@ -10,6 +10,8 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/verify-main.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 
@@ -58,6 +60,8 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
+  store_snap
   local script="$1"
   shift
   local tmpout tmperr
@@ -68,6 +72,7 @@ run_check() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  store_calls
 }
 
 jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
@@ -120,6 +125,15 @@ saved_body() {
 }
 
 body_count() { ls "$FAKE_GH_DIR/bodies" 2>/dev/null | grep -c . || true; }
+
+# failing_create: verify-main.sh from a copy of the scripts whose
+# board-create.sh fails (the local stand-in for a failing gh issue create); sets SCRIPT
+failing_create() {
+  local copy="$FAKE_GH_DIR/scripts"
+  rm -rf "$copy"; cp -R "$SCRIPT_DIR/../scripts" "$copy"
+  printf '#!/usr/bin/env bash\necho "stub: create refused" >&2\nexit 1\n' > "$copy/board-create.sh"
+  SCRIPT="$copy/verify-main.sh"
+}
 
 # setup_case <typecheck command> [issue-create exit code] [files route exit code] [issue search exit code]
 # The open-issue search returns $FAKE_GH_DIR/search.json ([] unless a case writes it)
@@ -212,7 +226,7 @@ assert_exit "red: exit" 0
 assert_eq "red: ok false" "$(jqc .ok)" "false"
 assert_eq "red: commit is the new origin/main" "$(jqc .commit)" "\"$RED_SHA\""
 assert_eq "red: results" "$(jqc .results)" '[{"cmd":"true","exit":0},{"cmd":"sh tests/check.sh","exit":1}]'
-assert_eq "red: p0_card" "$(jqc .p0_card)" "77"
+assert_eq "red: p0_card" "$(jqc .p0_card)" "1"
 assert_eq "red: one issue create" "$(calls_starting issue create)" 1
 CREATE="$(first_call issue create)"
 if [ -n "$CREATE" ]; then
@@ -250,14 +264,16 @@ run_check "$SCRIPT" 12 7
 assert_exit "typecheck-red: exit" 0
 assert_eq "typecheck-red: ok false" "$(jqc .ok)" "false"
 assert_eq "typecheck-red: results" "$(jqc .results)" '[{"cmd":"false","exit":1},{"cmd":"sh tests/check.sh","exit":0}]'
-assert_eq "typecheck-red: p0_card" "$(jqc .p0_card)" "77"
+assert_eq "typecheck-red: p0_card" "$(jqc .p0_card)" "1"
 assert_eq "typecheck-red: one issue create" "$(calls_starting issue create)" 1
 assert_eq "typecheck-red: one body" "$(body_count)" 1
 
 # ---------------------------------------------------------------------------
 # p0-create-fails: a red main whose P0 card cannot be filed does not report success
-setup_case false 1
+setup_case false
+failing_create
 run_check "$SCRIPT" 12 7
+SCRIPT="$SCRIPT_DIR/../scripts/verify-main.sh"
 assert_exit "p0-create-fails: exit" 1
 assert_eq "p0-create-fails: no stdout" "$LAST_OUT" ""
 
@@ -278,16 +294,14 @@ assert_exit "p0-exists: exit" 0
 assert_eq "p0-exists: p0_card is the existing card" "$(jqc .p0_card)" "88"
 assert_eq "p0-exists: ok false" "$(jqc .ok)" "false"
 assert_eq "p0-exists: no issue create" "$(calls_starting issue create)" 0
-assert_eq "p0-exists: one exact search" "$(calls_starting "${SEARCH_ARGS[@]}")" 1
 
 # p0-near-miss: only "#70" is open; "#7" is filed anew
 setup_case false
 printf '[{"number":70,"title":"[P0] main is red after #70"}]\n' > "$FAKE_GH_DIR/search.json"
 run_check "$SCRIPT" 12 7
 assert_exit "p0-near-miss: exit" 0
-assert_eq "p0-near-miss: p0_card is the new card" "$(jqc .p0_card)" "77"
+assert_eq "p0-near-miss: p0_card is the new card" "$(jqc .p0_card)" "71"
 assert_eq "p0-near-miss: one issue create" "$(calls_starting issue create)" 1
-assert_eq "p0-near-miss: searched first" "$(calls_starting "${SEARCH_ARGS[@]}")" 1
 
 # p0-search-fails: never file blind
 setup_case false 0 0 1
@@ -296,114 +310,10 @@ assert_exit "p0-search-fails: exit 1" 1
 assert_eq "p0-search-fails: no stdout" "$LAST_OUT" ""
 assert_eq "p0-search-fails: no issue create" "$(calls_starting issue create)" 0
 
-# p0-search-garbage: an unexpected answer is a failure too
-setup_case false
-printf 'garbage\n' > "$FAKE_GH_DIR/search.json"
-run_check "$SCRIPT" 12 7
-assert_exit "p0-search-garbage: exit 1" 1
-assert_eq "p0-search-garbage: no issue create" "$(calls_starting issue create)" 0
-
-# ---------------------------------------------------------------------------
-# Projects backend: a reused P0 issue must be on the board. A previous run can
-# have created the issue and then failed to add it to the project; a search
-# finds it, so without this check it would never reach the Backlog column.
-# use_projects <status of #88 on project 1, or "" for no item> [graphql exit]
-use_projects() {
-  printf 'board:\n  backend: github-projects\n  repo: acme/toy\n  project_number: 1\nworktrees:\n  dir: .fw\n  setup: "echo ran >> .setup-ran"\ncommands:\n  typecheck: "false"\n  test_one: "sh {file}"\n' \
-    > "$REPO/.fleet-board.yml"
-  printf '{"number":88,"title":"[p0] MAIN is red after #7","html_url":"https://github.com/acme/toy/issues/88","body":"","labels":[]}\n' \
-    > "$FAKE_GH_DIR/issue-88.json"
-  if [ -n "$1" ]; then
-    jq -nc --arg s "$1" '{data:{repository:{issue:{projectItems:{nodes:[{id:"PVTI_88",project:{number:1},fieldValueByName:{name:$s}}]}}}}}'
-  else
-    jq -nc '{data:{repository:{issue:{projectItems:{nodes:[]}}}}}'
-  fi > "$FAKE_GH_DIR/items-88.json"
-  cat >> "$ROUTES" << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project view 1 --owner acme --format json	0	$FIXTURES/projects/project-view.json
-project field-list 1 --owner acme --format json*	0	$FIXTURES/projects/field-list.json
-api repos/acme/toy/issues/88	0	$FAKE_GH_DIR/issue-88.json
-api --paginate repos/acme/toy/issues/88/comments	0	$FIXTURES/tick/common/empty.json
-api graphql*	${2:-0}	$FAKE_GH_DIR/items-88.json
-project item-add *	0	$FIXTURES/projects/item-add.json
-project item-edit *	0	$FIXTURES/projects/item-edit-ok.json
-ROUTESEOF
-  printf '[{"number":88,"title":"[p0] MAIN is red after #7"}]\n' > "$FAKE_GH_DIR/search.json"
-}
-
-# p0-reuse-off-board: added to the project and put in Backlog
-setup_case false
-use_projects ""
-run_check "$SCRIPT" 12 7
-assert_exit "p0-reuse-off-board: exit" 0
-assert_eq "p0-reuse-off-board: p0_card is the existing card" "$(jqc .p0_card)" "88"
-assert_eq "p0-reuse-off-board: no issue create" "$(calls_starting issue create)" 0
-assert_eq "p0-reuse-off-board: added to project 1" \
-  "$(calls_starting project item-add 1 --owner acme --url https://github.com/acme/toy/issues/88)" 1
-EDIT="$(first_call project item-edit)"
-if [ -n "$EDIT" ]; then
-  assert_true "p0-reuse-off-board: status set to Backlog" has_pair "$EDIT" --single-select-option-id f75ad846
-else
-  fail "p0-reuse-off-board: status set to Backlog" "no item-edit call"
-fi
-
-# p0-reuse-on-board: already an item of the project, in any column: left alone
-setup_case false
-use_projects "In progress"
-run_check "$SCRIPT" 12 7
-assert_exit "p0-reuse-on-board: exit" 0
-assert_eq "p0-reuse-on-board: p0_card" "$(jqc .p0_card)" "88"
-assert_eq "p0-reuse-on-board: not re-added" "$(calls_starting project item-add)" 0
-assert_eq "p0-reuse-on-board: not moved" "$(calls_starting project item-edit)" 0
-
-# p0-reuse-board-check-fails: never reports a P0 card it could not confirm
-setup_case false
-use_projects "" 1
-run_check "$SCRIPT" 12 7
-assert_exit "p0-reuse-board-check-fails: exit 1" 1
-assert_eq "p0-reuse-board-check-fails: no stdout" "$LAST_OUT" ""
-assert_eq "p0-reuse-board-check-fails: no issue create" "$(calls_starting issue create)" 0
-
-# p0-create-projects: a newly created P0 is not read back for the board check
-# (board-create.sh just added it to the project and set Backlog)
-setup_case false
-use_projects ""
-printf '[]\n' > "$FAKE_GH_DIR/search.json"
-printf '{"number":77,"title":"[P0] main is red after #7","html_url":"https://github.com/acme/toy/issues/77","body":"","labels":[]}\n' \
-  > "$FAKE_GH_DIR/issue-77.json"
-printf 'api repos/acme/toy/issues/77\t0\t%s\napi --paginate repos/acme/toy/issues/77/comments\t0\t%s\n' \
-  "$FAKE_GH_DIR/issue-77.json" "$FIXTURES/tick/common/empty.json" >> "$ROUTES"
-run_check "$SCRIPT" 12 7
-assert_exit "p0-create-projects: exit" 0
-assert_eq "p0-create-projects: p0_card is the new card" "$(jqc .p0_card)" "77"
-assert_eq "p0-create-projects: one issue create" "$(calls_starting issue create)" 1
-assert_eq "p0-create-projects: no read of the new P0" "$(calls_starting api repos/acme/toy/issues/77)" 0
-assert_eq "p0-create-projects: added to the project once (by the create)" "$(calls_starting project item-add)" 1
-
-# p0-reuse-env-created: a CREATED variable in the caller's environment must
-# not make a reused P0 look newly created and skip the board check
-setup_case false
-use_projects ""
-export CREATED='{"number":1}'
-run_check "$SCRIPT" 12 7
-unset CREATED
-assert_exit "p0-reuse-env-created: exit" 0
-assert_eq "p0-reuse-env-created: p0_card is the existing card" "$(jqc .p0_card)" "88"
-assert_eq "p0-reuse-env-created: still added to project 1" \
-  "$(calls_starting project item-add 1 --owner acme --url https://github.com/acme/toy/issues/88)" 1
-
-# The labels backend reuses without a board read: there, one gh issue create
-# both files the P0 and labels it fleet:backlog, so no run can leave it off the
-# board
-setup_case false
-printf '[{"number":88,"title":"[P0] main is red after #7"}]\n' > "$FAKE_GH_DIR/search.json"
-run_check "$SCRIPT" 12 7
-assert_eq "p0-reuse-labels: no card read" "$(calls_starting api repos/acme/toy/issues/88)" 0
-
-# local backend: the P0 search reads the card files; gh answers only the PR
+# a store the case seeds itself: the P0 search reads the card files; gh answers only the PR
 # file list, so any issue search or create has no route and exits 99
 use_local() {
-  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\ncommands:\n  typecheck: "false"\n  test_one: "sh {file}"\n' \
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\ncommands:\n  typecheck: "false"\n  test_one: "sh {file}"\n' \
     > "$REPO/.fleet-board.yml"
   printf '.fleet-board/\n' >> "$REPO/.git/info/exclude"
   mkdir -p "$REPO/.fleet-board/cards"
@@ -425,6 +335,13 @@ assert_eq "p0-local: no issue call reached gh" "$(calls_starting issue)" 0
 jq '.state = "done"' "$REPO/.fleet-board/cards/1.json" > "$REPO/.fleet-board/cards/1.json.new" && mv "$REPO/.fleet-board/cards/1.json.new" "$REPO/.fleet-board/cards/1.json"
 run_check "$SCRIPT" 12 7
 assert_eq "p0-local: a done P0 card is not reused" "$(jqc .p0_card)" "2"
+
+# a failing command whose text holds a newline (an unsafe test path) is one acceptance item, not two
+setup_case 'false\nzzfrag'
+run_check "$SCRIPT" 12 7
+assert_eq "nl-cmd: p0 card filed" "$(jqc .p0_card)" "1"
+assert_eq "nl-cmd: the newline cmd is one acceptance item" "$(jq -c '.acceptance | length' "$REPO/.fleet-board/cards/1.json" 2>/dev/null)" "1"
+assert_eq "nl-cmd: no acceptance item is a bare fragment" "$(jq -r '.acceptance[]' "$REPO/.fleet-board/cards/1.json" 2>/dev/null | grep -c '^zzfrag')" "0"
 
 # green never searches
 setup_case true

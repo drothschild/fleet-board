@@ -12,8 +12,12 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/settle.sh"
 PLAN_SH="${SCRIPT_DIR}/../scripts/tick-plan.sh"
+# a column is what its listing says (the cases empty a listing to move a card out), as on the GitHub board
+export ROUTES_STORE_LISTED_ONLY=1
 MARK='<!-- fleet-board:manager-note -->'
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
@@ -62,6 +66,8 @@ assert_not_contains() {
 }
 
 run_settle() {
+  store_sync
+  store_snap
   local tmpout tmperr
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"
@@ -70,6 +76,7 @@ run_settle() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  store_calls
 }
 
 # ---------------------------------------------------------------------------
@@ -198,6 +205,21 @@ pr() {
 CLEAN_REVIEW_NOTE='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}}'
 
 # count of calls.log lines matching a fixed string (0 when no log)
+# failing_script <script> <glob>: settle.sh from a copy of the scripts whose
+# <script> (board-move.sh, adapters/local/label.sh) fails when its arguments
+# match <glob> (the local stand-in for a failing gh route); sets SCRIPT
+failing_script() {
+  local copy="$FAKE_GH_DIR/scripts"
+  [ -d "$copy" ] || cp -R "$SCRIPT_DIR/../scripts" "$copy"
+  mv "$copy/$1" "$copy/$1.real"
+  cat > "$copy/$1" << STUB
+#!/usr/bin/env bash
+case "\$*" in $2) echo "stub: board refused" >&2; exit 1 ;; esac
+exec bash "$copy/$1.real" "\$@"
+STUB
+  SCRIPT="$copy/settle.sh"
+}
+
 cnt() {
   if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -cF -- "$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
 }
@@ -247,7 +269,6 @@ setup_case
 finalize
 run_settle
 assert_exit "empty columns: exit 0" 0
-assert_eq "empty columns: only the two listings were made" "$(cnt "")" 2
 assert_eq "empty columns: no card read" "$(cnt "api repos")" 0
 
 # ---------------------------------------------------------------------------
@@ -282,11 +303,14 @@ finalize
 for col in ready blocked; do printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s\n' "$col" "$FX/empty.json" >> "$FAKE_GH_ROUTES"; done
 printf '[]\n' > "$FX/empty.json"
 run_settle_plan() {
+  store_sync
+  store_snap
   local tmpout; tmpout="$(mktemp)"
   "$BASH_EXE" "$PLAN_SH" > "$tmpout" 2>/dev/null
   LAST_EXIT=$?
   LAST_OUT="$(cat "$tmpout")"
   rm -f "$tmpout"
+  store_calls
 }
 run_settle_plan
 assert_exit "plan after settle: exit 0" 0
@@ -323,7 +347,6 @@ assert_eq "advance: note stage" "$(jq -c .stage <<<"$NOTE")" '"security"'
 assert_eq "advance: note round 1" "$(jq -c .round <<<"$NOTE")" 1
 assert_eq "advance: reviewed_stages unchanged from in_review" "$(jq -c .reviewed_stages <<<"$NOTE")" '[]'
 assert_eq "advance: state" "$(jq -c .state <<<"$NOTE")" '"review_security"'
-assert_eq "advance: lists review_security" "$(cnt_prefix "issue list --repo acme/toy --label fleet:review_security")" 1
 assert_eq "advance: no merge" "$(cnt "pr merge")" 0
 
 echo "advance_stage from a stage to the next appends the stage left"
@@ -352,9 +375,10 @@ echo "a failed board move for advance_stage writes no note"
 setup_case "$STAGES_CFG"
 card 12 in_review '{"state":"in_review","round":1,"pr":34,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0}}' needs-security-review
 pr 34 false
-route_first "issue edit 12 --repo acme/toy --add-label fleet:review_security" 1 -
+failing_script board-move.sh '"12 review_security"'
 finalize
 run_settle
+SCRIPT="$SCRIPT_DIR/../scripts/settle.sh"
 assert_exit "advance fails: exit 1" 1
 assert_eq "advance fails: no note write" "$(cnt "api -X")" 0
 
@@ -377,9 +401,10 @@ card 12 in_progress '{"state":"in_progress","branch":"fleet/12-add-subtract","ro
 route "pr list --repo acme/toy --head fleet/12-add-subtract --state open --json number" 0 "$FX/prlist.json"
 printf '[{"number":34}]\n' > "$FX/prlist.json"
 pr 34 true src/auth/login.js
-route_first "issue edit 12 --repo acme/toy --add-label needs-security-review" 1 -
+failing_script adapters/local/label.sh '"12 add needs-security-review"'
 finalize
 run_settle
+SCRIPT="$SCRIPT_DIR/../scripts/settle.sh"
 assert_exit "route fails: exit 1" 1
 assert_contains "route fails: says so" "$LAST_ERR" "#12"
 assert_eq "route fails: no move to in_review" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:in_review")" 0
@@ -397,7 +422,6 @@ pr 34 false
 finalize
 run_settle
 assert_exit "provider stage: exit 0" 0
-assert_eq "provider stage: lists the compliance column" "$(cnt_prefix "issue list --repo acme/toy --label fleet:review_compliance")" 1
 assert_eq "provider stage: no board, note or PR write at all" "$(all_writes)" 0
 assert_eq "provider stage: stage-review.sh never ran" "$([ -f "$STUB_DIR/stage-review-calls.log" ] && wc -l < "$STUB_DIR/stage-review-calls.log" | tr -d ' ' || echo 0)" 0
 PATH="$FAKE_GH_DIR/bin:$ORIG_PATH"
@@ -430,11 +454,11 @@ assert_eq "to_human_qa twice: still one hand-off comment" "$(handoffs)" 1
 
 # With the card in human_qa, a later run lists nothing and does nothing
 INREV=()
-before="$(cnt "")"
+before="$(all_writes)"
 finalize
 run_settle
 assert_exit "to_human_qa after the move: exit 0" 0
-assert_eq "to_human_qa after the move: only the two listings" "$(( $(cnt "") - before ))" 2
+assert_eq "to_human_qa after the move: no write" "$(( $(all_writes) - before ))" 0
 
 # qa_build runs in the plan card's worktree; its exit code and output reach the comment
 setup_case "$(printf 'commands:\n  qa_build: "pwd -P; echo built-ok; exit 3"')"
@@ -456,9 +480,10 @@ card 12 in_review "$CLEAN_REVIEW_NOTE" needs-human-qa
 card 13 in_review "$(jq -c '.branch = "fleet/13-add-subtract" | .pr = 35' <<<"$CLEAN_REVIEW_NOTE")" needs-human-qa
 pr 34 false
 pr 35 false
-route_first "issue edit 12 *" 1 -
+failing_script board-move.sh '"12 "*'
 finalize
 run_settle
+SCRIPT="$SCRIPT_DIR/../scripts/settle.sh"
 assert_exit "move fails: exit 1" 1
 assert_eq "move fails: no comment posted for card 12" "$(cnt "issue comment 12")" 0
 assert_eq "move fails: card 13 still moved" "$(cnt "issue edit 13 --repo acme/toy --add-label fleet:human_qa")" 1
@@ -550,9 +575,10 @@ echo "settle writes no action_failures or last_action_error"
 setup_case
 card 12 in_review '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":3,"action_failures":1,"last_action_error":"earlier","last_review":{"round":3,"sha":"abc1234","critical":1,"important":0,"findings":[{"severity":"Critical","text":"x"}]}}'
 pr 34 false
-route_first "issue edit 12 *" 1 -
+failing_script board-move.sh '"12 "*'
 finalize
 run_settle
+SCRIPT="$SCRIPT_DIR/../scripts/settle.sh"
 assert_exit "failed block: exit 1" 1
 assert_eq "failed block: no note write, so the stored count stays for the next tick" "$(cnt "api -X")" 0
 assert_eq "failed block: no comment" "$(cnt "issue comment")" 0

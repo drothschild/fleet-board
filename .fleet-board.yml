@@ -1,6 +1,5 @@
 # fleet-board config. See the fleet-board README.
 board:
-  backend: "local"
   repo: "drothschild/fleet-board"
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Requires Human QA" }
 commands:

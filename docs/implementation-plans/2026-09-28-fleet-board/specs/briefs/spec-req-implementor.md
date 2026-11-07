@@ -239,3 +239,44 @@ inside it. A markdown double-backtick span, or an odd number of backticks, gives
 because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
 command were present. When the command cannot be written that way, the entry uses the words
 `no testable check`. The entry rule says so.
+
+## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
+
+Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
+prints the card as JSON with `acceptance` (an array of strings, one testable behavior per item),
+`blocked_by` (card numbers on this board) and `pr_url`. Acceptance criteria come from the
+`acceptance` field, never from a `## Acceptance` section of the body. A card changes state only
+through `board-move.sh`, which no role runs. Change only what the items below name; keep the
+frontmatter and every other line unchanged.
+
+1. The card input is the number, title, body and acceptance items: the card's `acceptance`
+   field, an array of strings, as `board-read.sh <n> | jq '.acceptance'` prints it, one
+   testable behavior per item. They are not read from a section of the body. The opening
+   paragraph's "`## Acceptance` bullets" becomes the card's acceptance items (its `acceptance`
+   field).
+2. The start check is that the card's `acceptance` field holds at least one item. The two old
+   block causes "no Acceptance section" and "no `- ` bullet" become one: no acceptance items. The
+   finding example is `- [Important] The card has no acceptance items, so there is nothing to
+   write a failing test against.` An empty `acceptance` field counts as a defect in the card's
+   Acceptance. The For-the-card example is: add acceptance items to the card's `acceptance`
+   field, one per testable behavior, then move the card back to Ready.
+3. The VERIFIED example for that block is `bash <scripts dir>/board-read.sh <card number> | jq
+   '.acceptance | length'`, which prints `0`. It replaces both `gh issue view` examples (the
+   missing-section and the no-bullets ones). The worktree and branch examples are unchanged.
+4. The test-first step: every item in the card's `acceptance` field gets at least one test
+   before any implementation code (in place of every `- ` bullet under `## Acceptance`).
+5. Template B: the finding and For-the-card text as in item 2 (no `##` inside them), and the
+   line ``VERIFIED: `bash /plugins/fleet-board/scripts/board-read.sh 7 | jq '.acceptance |
+   length'` -> 0 acceptance items on the card``, written on one line.
+6. The backtick pitfall example reads card text with `board-read.sh <n> | jq -r '.body'` in
+   place of `gh issue view <n> --json body --jq .body`.
+7. Must never / What not to do, same intent in local-board words:
+   - Move cards or edit labels: no `board-move.sh` (the only way a card changes state on the
+     local board), no edit of a card's labels or fields, and no other state change on the board.
+     The `gh issue edit` and `gh project item-edit` names go.
+   - Touch any board script other than `board-comment.sh` and `board-read.sh`. `board-read.sh`
+     only reads the card, for example to count its acceptance items. `board-move.sh`,
+     `board-note.sh` and `board-list.sh` are not run.
+   - File issues or bug cards itself (`board-create.sh`) in place of `gh issue create`.
+8. The scripts-directory input names `board-read.sh` beside `board-comment.sh` and
+   `parse-report.sh`.

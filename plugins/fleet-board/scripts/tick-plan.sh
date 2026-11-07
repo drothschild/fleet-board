@@ -37,7 +37,7 @@
 # files (review-stages.sh match; read-only, the plan adds no label). So a
 # stage whose paths a later push touches cannot be skipped, even one before
 # the current column; a label-only stage (empty paths) is skipped by removing
-# its label. A card whose state label names a stage that is
+# its label. A card whose state names a stage that is
 # not configured reads with no canonical state and gets skip ("state <state>
 # is not planned"). For a provider stage whose providers.<name>.api_key_env is
 # unset or empty, review_stage is planned as wait with the reason "stage <name>:
@@ -82,11 +82,9 @@
 #       decision does not use it
 #   gh pr view <blocking_pr> --json state,mergedAt
 #       blocked, when note.blocking_pr is set
-#   deps.sh parse / deps.sh check <n> <refs>
-#       ready, with an Acceptance section and a "## Depends on" section in the
-#       body: deps.sh check runs gh issue view <N> --repo <owner/repo> --json
-#       state,stateReason per dependency, and on the Projects backend the
-#       project Status of a dependency in board.repo (see deps.sh)
+#   deps.sh parse-card / deps.sh check <n> <refs>
+#       ready, with acceptance and a non-empty blocked_by: deps.sh check reads
+#       each blocker's state from the local store (see deps.sh)
 # A failed lookup (or a failed card or note read) makes that card's action
 # skip, with reason "lookup failed: <command>" and a warning. It never falls
 # through to any other action.
@@ -97,8 +95,8 @@
 # note.sh merge refuses to write over an invalid note, so no action could
 # record its effect (an attempt count, a round), and the card would loop.
 #
-# Dependency gate: a ready card with an Acceptance section and any unmet
-# dependency (its "## Depends on" bullets) gets action wait, with reason
+# Dependency gate: a ready card with acceptance criteria and any unmet
+# dependency (its blocked_by field) gets action wait, with reason
 # "waits for <ref> (<state or column>)[, <ref> (...)]", and stays in ready.
 # The card's waiting_on lists the unmet refs (null for any other card). Only
 # ready cards are gated; the card is not dispatchable for itself, while the
@@ -232,8 +230,10 @@
 # by the last 20 lines of its output. No card's state or
 # action_failures changes. A zero exit leaves the plan as if the key were unset.
 #
-# Rate limit failures: when the script fails and its stderr names a GitHub rate
-# limit, it asks gh api rate_limit for the reset time and adds the line
+# Rate limit failures: a card lookup (gh pr ...) that failed while gh named a
+# GitHub rate limit fails the whole plan (exit 1, no plan printed), since every
+# card's lookups would fail alike. When the script fails and its stderr names a
+# GitHub rate limit, it asks gh api rate_limit for the reset time and adds the line
 # "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
 # fleet-board-run.sh waits out. If that query fails, nothing is added. A
 # failure that is not a rate limit never gets the line.
@@ -414,7 +414,7 @@ card_input() {
     body="$(jq -r '.body // ""' <<<"$read" 2>/dev/null)" || failed="board-read.sh $n (unparsable)"
   fi
   if [ -z "$failed" ]; then
-    fb_has_acceptance "$body" && has_acc=true
+    fb_card_has_acceptance "$read" && has_acc=true
     marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
       || failed="board-read.sh $n (unparsable comments)"
   fi
@@ -541,8 +541,9 @@ card_input() {
   # stays skip_no_acceptance. The marker names the lint result, so the manager
   # comments once per distinct result (compared with the latest posted lint comment only).
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ]; then
-    if printf '%s\n' "$body" > "$LINT_FILE"; then
-      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --body-file "$LINT_FILE")"; lint_rc=$?
+    # the card read is linted on its acceptance field
+    if printf '%s\n' "$read" > "$LINT_FILE"; then
+      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --read-file "$LINT_FILE")"; lint_rc=$?
       case "$lint_rc" in
         0) ;;
         1)
@@ -576,21 +577,15 @@ card_input() {
       | .paths | unique' 2>/dev/null)" || scope='[]'
   fi
 
-  # A ready card's dependencies (only a card that could start is looked up)
-  # (grep reads the file, not a pipe: grep -q quits at its first match, and a
-  # body bigger than the pipe buffer would kill the writer and skip the gate)
-  has_deps=1
+  # A ready card's dependencies, its blocked_by field (only a card that could
+  # start is looked up)
+  has_deps=1; deps_cmd=parse-card
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] && [ "$lint_gate" = false ]; then
-    # grep exits 1 on no match and 2 on an error: only 1 means "no Depends on"
-    if printf '%s\n' "$body" > "$DEPS_FILE"; then
-      grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; has_deps=$?
-    else
-      has_deps=2
-    fi
-    [ "$has_deps" -le 1 ] || failed="deps.sh parse $n (cannot read the card body)"
+    if printf '%s\n' "$read" > "$DEPS_FILE"; then has_deps=0; else has_deps=2; fi
+    [ "$has_deps" -le 1 ] || failed="deps.sh parse-card $n (cannot write the card)"
   fi
   if [ -z "$failed" ] && [ "$has_deps" -eq 0 ]; then
-    if out="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE")" \
+    if out="$(bash "$FLEET_SCRIPTS/deps.sh" "$deps_cmd" "$DEPS_FILE")" \
        && refs="$(jq -c '.refs' <<<"$out" 2>/dev/null)" \
        && deps_warn="$(jq -c --argjson n "$n" '[.warnings[] | "#\($n): \(.)"]' <<<"$out" 2>/dev/null)"; then
       if [ "$refs" != '[]' ]; then
@@ -606,7 +601,7 @@ card_input() {
         fi
       fi
     else
-      failed="deps.sh parse $n"; deps_warn='[]'
+      failed="deps.sh parse-card $n"; deps_warn='[]'
     fi
   fi
 
@@ -653,6 +648,12 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_
     card_input "$st" "$n" "$TITLE" >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$n"
   done
 done
+
+# A lookup that failed on a GitHub rate limit fails the plan, so the wrapper
+# waits out the reset (finish adds "resets at") instead of skipping the cards
+if grep -qi 'rate limit' "$ERR_FILE" && jq -se 'any(.[]; .lookup_failed != null)' "$CARDS_FILE" >/dev/null 2>&1; then
+  fb_die 1 "a GitHub lookup hit a rate limit; no plan printed"
+fi
 
 # Provider stages whose API key variable is unset or empty (checked here, so
 # jq never reads the environment); a provider with a null api_key_env is skipped
@@ -721,8 +722,8 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
           if $c.has_acceptance then
             if ($c.deps_unmet | length) > 0
             then act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))")
-            else act("start"; "ready, with an Acceptance section") end
-          else act("skip_no_acceptance"; "no ## Acceptance section") end
+            else act("start"; "ready, with acceptance criteria") end
+          else act("skip_no_acceptance"; "no acceptance criteria") end
         # update-branch.sh recorded the files of an aborted conflicting merge: the
         # fixer resolves them (test files included), so update_branch is not
         # planned again while the PR still reads CONFLICTING

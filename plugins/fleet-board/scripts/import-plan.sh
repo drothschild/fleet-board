@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# import-plan.sh - turn a grouped cards file into board issues.
+# import-plan.sh - turn a grouped cards file into board cards.
 #
 # Usage: import-plan.sh <cards.json> [--status backlog|ready] [--dry-run]
 #
@@ -11,12 +11,14 @@
 #   depends_on [..]                optional: other card keys, or "owner/repo#N"
 #
 # Prints a table (Title, Repo, Depends on, Labels). With --dry-run it stops
-# there. Otherwise it asks "Create N issues? [y/N]" on stdin and creates
-# nothing unless the answer is y or yes. Issues are created in dependency order;
-# a dependency becomes "- owner/repo#N" with the real number, because the
-# dependency was created first. Each issue is added to the project and set to
-# the --status column (default backlog). Needs board.backend github-projects or github-labels
-# (on labels, the issue gets the fleet:<status> label instead of a project item).
+# there. Otherwise it asks "Create N cards? [y/N]" on stdin and creates
+# nothing unless the answer is y or yes. Cards are created on the local board
+# in dependency order, in the --status column (default backlog), through
+# board-create.sh: acceptance goes into the acceptance field and each
+# dependency into blocked_by (a card key becomes the real number, because the
+# dependency was created first; "#N" or "<board.repo>#N" is that card). A
+# dependency in another repo is outside this board: it stays in the body as
+# prose, with a warning.
 #
 # import-plan.sh parse <plan.md>
 #   Prints {"cards": [{title, scope, acceptance}, ...]} as JSON, one card per
@@ -130,25 +132,12 @@ jq -r 'def esc: gsub("\\|"; "\\|");
 
 [ "$DRY" -eq 1 ] && exit 0
 
-printf 'Create %s issues? [y/N] ' "$N"
+printf 'Create %s cards? [y/N] ' "$N"
 ANSWER=""; IFS= read -r ANSWER || true
 echo
 case "$ANSWER" in y|Y|yes|YES|Yes) ;; *) echo "Nothing created."; exit 0 ;; esac
 
 fb_load_config
-BACKEND="$(fb_cfg board.backend)"
-case "$BACKEND" in
-  github-projects)
-    . "$FLEET_SCRIPTS/adapters/github-projects/common.sh"
-    CACHE="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.cache/projects.json"
-    fp_ensure_cache "$CACHE" || exit 1
-    OPT="$(fp_option_id "$(fb_state_name "$STATUS")" "$CACHE")" || exit 1
-    PN="$(fb_cfg board.project_number)"
-    PO="$(fp_get_owner)" ;;
-  github-labels) ;;
-  local) ;;
-  *) fb_die 1 "import-plan needs board.backend github-projects, github-labels or local" ;;
-esac
 
 # Docs referenced from a card's why or acceptance (scope lists files the card will
 # create, so it is not scanned) must exist on the default branch, because role
@@ -184,7 +173,8 @@ section_text() {
 }
 
 REFS='{}'
-ENSURED=" "
+ACC="$(mktemp)" || fb_die 1 "cannot create a temp file"
+trap 'rm -rf "$LINTDIR" "$BODY" "$ACC"' EXIT
 i=0
 while [ "$i" -lt "$N" ]; do
   card="$(jq -c --argjson i "$i" '.cards[$i]' <<<"$PLAN")"
@@ -215,38 +205,26 @@ $text
         | .embedded = $e' <<<"$card")"
     fi
   fi
-  render_body "$REFS" <<<"$card" > "$BODY"
-  title="$(jq -r .title <<<"$card")"; repo="$(jq -r .repo <<<"$card")"
-  if [ "$BACKEND" = "github-labels" ]; then
-    case "$ENSURED" in
-      *" $repo "*) ;;
-      *)
-        slabel="$(fb_state_name "$STATUS")"
-        have="$(gh label list --repo "$repo" --limit 1000 --json name --jq '.[].name' 2>/dev/null)" || have=""
-        printf '%s\n' "$have" | grep -qxF -- "$slabel" \
-          || gh label create "$slabel" --repo "$repo" >/dev/null || fb_die 1 "failed to create label $slabel in $repo"
-        ENSURED="$ENSURED$repo " ;;
-    esac
-  fi
-  largs=()
-  [ "$BACKEND" = "github-labels" ] && largs+=(--label "$(fb_state_name "$STATUS")")
-  while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
-  if [ "$BACKEND" = "local" ]; then
-    OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" ${largs[@]+"${largs[@]}"} --state "$STATUS")" || fb_die 1 "failed to create: $title"
-    num="$(jq -r .number <<<"$OUT")"
-    CREATED="#$num"
-    repo="$FLEET_REPO" # a ref must name the board repo: deps.sh reads the local store only for it
-  else
-    URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
-    num="${URL##*/}"
-    CREATED="$repo#$num"
-  fi
-  if [ "$BACKEND" = "github-projects" ]; then
-  ITEM="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json | jq -r '.id // empty')"
-  [ -n "$ITEM" ] || fb_die 1 "failed to add $URL to project $PN"
-  gh project item-edit --id "$ITEM" --project-id "$(jq -r .project_id "$CACHE")" \
-    --field-id "$(jq -r .field_id "$CACHE")" --single-select-option-id "$OPT" >/dev/null || fb_die 1 "failed to set status of $URL"
-  fi
-  REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "$repo#$num" '. + {($k): $r}' <<<"$REFS")"
+  # the body holds the prose and any outside dependency; the fields hold the rest
+  jq -r --arg repo "$FLEET_REPO" '
+    def board_ref: (ascii_downcase | startswith(($repo | ascii_downcase) + "#")) or test("^#[0-9]+$");
+    "## Why\n\(.why // "")\n\n## Scope\n" + ((.scope // []) | map("- " + .) | join("\n"))
+    + ([.deps[] | select(test("^[^/]+/[^#]+#[0-9]+$") and (board_ref | not))] as $out
+       | if ($out | length) > 0 then "\n\n## Depends on\n" + ($out | map("- " + .) | join("\n")) else "" end)
+    + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)' <<<"$card" > "$BODY" \
+    || fb_die 1 "cannot write the card body"
+  jq -r '(.acceptance // [])[] | "- " + .' <<<"$card" > "$ACC" || fb_die 1 "cannot write the card acceptance"
+  title="$(jq -r .title <<<"$card")"
+  cargs=(--state "$STATUS" --acceptance-file "$ACC")
+  while IFS= read -r l; do [ -n "$l" ] && cargs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
+  while IFS= read -r d; do [ -n "$d" ] && cargs+=(--blocked-by "$d"); done < <(jq -r --argjson refs "$REFS" --arg repo "$FLEET_REPO" '
+    .deps[] | ($refs[.] // .)
+    | if test("^#[0-9]+$") then .[1:]
+      elif (ascii_downcase | startswith(($repo | ascii_downcase) + "#")) then split("#")[1]
+      else empty end' <<<"$card")
+  OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" "${cargs[@]}")" || fb_die 1 "failed to create: $title"
+  num="$(jq -r .number <<<"$OUT")"
+  CREATED="#$num"
+  REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "#$num" '. + {($k): $r}' <<<"$REFS")"
   echo "Created $CREATED: $title"
 done

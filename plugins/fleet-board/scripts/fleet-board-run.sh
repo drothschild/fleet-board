@@ -32,7 +32,7 @@
 #     ledger is zero; a malformed line is skipped with a warning. The log line
 #     reads cost_estimate_usd=<total> (estimate; provider <x>) when the
 #     provider part is non-zero. A tick cut short by a signal counts nothing.
-#   - on the local backend, every <board.dir>/active/ marker is removed once
+#   - every <board.dir>/active/ marker is removed once
 #     the tick's session exits (whatever its outcome); a failure is a warning
 #   - after each successful tick, settle.sh and then cleanup-done.sh run from
 #     the repo root, outside any Claude session (settle.sh moves the cards
@@ -176,16 +176,12 @@ MAX_TURNS="$(cfg limits.max_turns)" || exit 1
 RL_MAX_WAIT="$(cfg limits.rate_limit_max_wait)" || exit 1
 RL_MARGIN="$(cfg limits.rate_limit_margin)" || exit 1
 MIN_GAP="$(cfg limits.min_tick_gap)" || exit 1
-BACKEND="$(cfg board.backend)" || exit 1
-# On the local backend, the card store's active/ directory (under the main
-# checkout, found through the git common dir as board-lib.sh does)
-ACTIVE_DIR=""
-if [ "$BACKEND" = local ]; then
-  BOARD_DIR="$(cfg board.dir)" || exit 1
-  STORE_ROOT="$(. "$HERE/board-lib.sh" && c="$(fb_git_common_dir "$ROOT")" && dirname "$c")" || STORE_ROOT=""
-  [ -n "$STORE_ROOT" ] || STORE_ROOT="$ROOT"
-  ACTIVE_DIR="$STORE_ROOT/$BOARD_DIR/active"
-fi
+# The card store's active/ directory (under the main checkout, found through
+# the git common dir as board-lib.sh does)
+BOARD_DIR="$(cfg board.dir)" || exit 1
+STORE_ROOT="$(. "$HERE/board-lib.sh" && c="$(fb_git_common_dir "$ROOT")" && dirname "$c")" || STORE_ROOT=""
+[ -n "$STORE_ROOT" ] || STORE_ROOT="$ROOT"
+ACTIVE_DIR="$STORE_ROOT/$BOARD_DIR/active"
 
 num_ok "$MAX_HOURS" || die 5 "invalid config: limits.max_hours must be a non-negative number, got: $MAX_HOURS"
 num_ok "$MAX_COST" || die 5 "invalid config: limits.max_cost_usd must be a non-negative number, got: $MAX_COST"
@@ -456,7 +452,7 @@ run_merge_reviewed() {
   logfile "$WORK/merge.err"
 }
 
-# clear_active: on the local backend, removes every active marker once a
+# clear_active: removes every active marker once a
 # tick's session has exited, so a role that crashed without posting its report
 # does not stay lit; a failure is only a warning
 clear_active() {
