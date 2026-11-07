@@ -7,7 +7,7 @@ fl_cards_dir() { printf '%s/cards\n' "$(fl_dir)"; }
 fl_active_dir() { printf '%s/active\n' "$(fl_dir)"; }
 fl_card_file() { printf '%s/%s.json\n' "$(fl_cards_dir)" "$1"; }
 fl_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
-fl_url() { printf 'http://127.0.0.1:%s/cards/%s\n' "$(fb_cfg board.port)" "$1"; }
+fl_url() { printf 'http://127.0.0.1:%s/cards/%s\n' "${FLEET_BOARD_PORT:-$(fb_cfg board.port)}" "$1"; }
 
 fl_require_store() {
   local d; d="$(fl_dir)"

@@ -14,6 +14,7 @@ const S = {
   run: null,          // the last run dict (log_tail kept from /api/run)
   stateKeys: "",      // the column list the board was built for
   cols: {},           // state key -> {el, list, count, sig}
+  unknown: null,      // the Unknown state group {el, list, count, sig}
   open: {},           // collapsible state key -> expanded
   dragging: null,     // number of the card being dragged
   pendingBoard: null, // a board that arrived mid-drag, rendered on dragend
@@ -353,13 +354,15 @@ function renderBoard(board, force) {
   const stateOf = {};
   for (const s of board.states) byState[s.key] = [];
   for (const c of board.cards) stateOf[c.number] = c.state;
+  const unknown = [];
   for (const c of board.cards) {
     // the open blockers depend on other cards: kept on the card so a column
     // re-renders when only a blocker's state changed
     c.open_blockers = (Array.isArray(c.blocked_by) ? c.blocked_by : []).filter(function (b) {
       return stateOf[b] !== "done";
     });
-    if (byState[c.state]) byState[c.state].push(c);
+    if (byState[c.state] && c.known !== false) byState[c.state].push(c);
+    else unknown.push(c);
   }
 
   const focus = focusedCard();
@@ -367,12 +370,50 @@ function renderBoard(board, force) {
     const cards = byState[s.key].sort(function (a, b) { return a.number - b.number; });
     renderColumn(s, cards, board.repo, force);
   }
+  renderUnknown(unknown.sort(function (a, b) { return a.number - b.number; }), board.repo, force);
   restoreFocus(focus);
+}
+
+// renderUnknown: the "Unknown state" group at the end of the board, for cards
+// whose stored state is not a column. It exists only while such cards do.
+function renderUnknown(cards, repo, force) {
+  let g = S.unknown;
+  if (!cards.length) {
+    if (g) {
+      g.el.hidden = true;
+      g.list.replaceChildren();
+      g.sig = null;
+    }
+    return;
+  }
+  if (!g) {
+    const col = el("section", "col unknown");
+    col.setAttribute("aria-label", "Unknown state");
+    const head = el("h2", "col-head");
+    head.appendChild(el("span", null, "Unknown state"));
+    const count = el("span", "col-count", "0");
+    head.appendChild(count);
+    col.appendChild(head);
+    const list = el("ol", "cards");
+    list.id = "cards-unknown";
+    col.appendChild(list);
+    g = S.unknown = { el: col, list: list, count: count, sig: null };
+    $("board").appendChild(col);
+  }
+  g.el.hidden = false;
+  g.count.textContent = String(cards.length);
+  const sig = JSON.stringify([repo, cards]);
+  if (!force && sig === g.sig) return;
+  const frag = document.createDocumentFragment();
+  for (const c of cards) frag.appendChild(renderCard(c, repo));
+  g.list.replaceChildren(frag);
+  g.sig = sig;
 }
 
 function buildColumns(states) {
   const root = $("board");
   root.replaceChildren();
+  S.unknown = null;
   S.cols = {};
   let stack = null;
   for (const s of states) {
@@ -482,6 +523,7 @@ function renderCard(c, repo) {
   li.appendChild(id);
 
   li.appendChild(el("div", "card-title", c.title || "(untitled)"));
+  if (c.known === false) li.appendChild(el("div", "card-meta warn card-state", "state: " + c.state));
 
   const note = c.note || null;
   const open = c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : [];
@@ -939,6 +981,12 @@ function renderDrawer(card) {
 function fillStateSelect(current) {
   const sel = $("dr-state");
   const frag = document.createDocumentFragment();
+  const known = (S.board && S.board.states) || [];
+  if (known.length && !known.some(function (s) { return s.key === current; })) {
+    const opt = el("option", null, "Unknown state: " + current);
+    opt.value = current;
+    frag.appendChild(opt);
+  }
   for (const s of (S.board && S.board.states) || [{ key: current, name: current }]) {
     const opt = el("option", null, s.name);
     opt.value = s.key;
