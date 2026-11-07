@@ -1994,3 +1994,5 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Known limits, not re-run.** The run reported two places it was told not to touch that still name only Status `done` for the fixer: the `fix` row of the action table and the fixer status list in 3.9. Both need the same spec change and a further run.
 
 **Revision cost:** $0.3162. **Running total, all API-key charges:** ~$43.38 (~$43.06 at Revision 21; Revision 22 made no run; plus this run). Plugin version 0.15.3 (main) to 0.15.4.
+
+**Merge with main (2026-11-07).** Main's PR 218 (card 210) then edited `agents/manager.md` 2.9a and 2.17b and `specs/manager.md` by hand, under the same named exception. Git merged it with this run's output with no conflict: PR 218's hunks are in 2.9a and 2.17b, this run's in 2.9 steps 4 and 5 and the 2.9 closing paragraph. No single run produced the merged file (`8d10d2fbd2e8ff9a`), and the manifest note says so.
