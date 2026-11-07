@@ -21,7 +21,7 @@ For each executed case, record the tested commit, case ID, exact command, expect
 | S1 | S1.1-S1.3 | 3.1, 4.2, 5.1 | Production slow/fast workflow in 7.2 |
 | S2 | S2.1-S2.3 | 2.1, 2.2, 5.1, 5.2 | Browser/chat closure and reboot in 6.2 |
 | S3 | S3.1-S3.4 | 1.2, 2.1, 2.2, 4.1, 4.2 | Production publication interruption in 7.2 |
-| S4 | S4.1-S4.3 | 2.2, 3.2, 4.1 | Real-process evidence required offline |
+| S4 | S4.1-S4.4 | 2.2, 3.2, 4.1 | Real-process evidence required offline |
 | S5 | S5.1-S5.3 | 1.2, 2.2, 4.3, 5.1, 5.2 | Production interruption retry in 7.2 |
 | S6 | S6.1-S6.4 | 1.2, 3.1, 4.2, 5.1 | None beyond integrated qualification |
 | S7 | S7.1-S7.4 | 3.2, 4.1, 5.2 | Reservation conflict rehearsal in 7.2 |
@@ -63,6 +63,8 @@ For each executed case, record the tested commit, case ID, exact command, expect
 - **S4.1 (Task 2.2):** Reuse a PID with another start identity; make the process inspector unavailable; supply contradictory launch receipt/lock evidence. Evidence: no adoption by PID alone, no signal to the unrelated process, and no retry or capacity release while ownership is uncertain.
 - **S4.2 (Tasks 2.2, 3.2):** Keep a TERM-resistant or escaped descendant alive after the leader exits. Evidence: cancellation escalation is recorded, uncertainty quarantines the attempt, capacity/scope stay held, and its workspace is not reused. A result-ready runner still holds capacity until exit is confirmed.
 - **S4.3 (Task 4.1):** Fail fresh board/head/note lookups during reconciliation. Evidence: affected effects remain held, retry/release is refused, and independent cards continue when repository-wide authority remains trustworthy.
+
+- **S4.4 (Task 2.2):** Combine fake time with a real fake worker: send periodic heartbeats without semantic progress, repeat log lines, run a recognized healthy quiet bounded operation, and suppress heartbeats while the matching process remains alive. Evidence: no-progress triggers suspected-stuck inspection; recognized healthy work continues only within its original deadline; heartbeats/log repetition reset neither progress nor absolute-deadline timers; missing heartbeats cause identity/activity inspection, never immediate duplicate dispatch. At the original hard deadline, cancellation follows the normal grace/termination protocol.
 
 ## S5 — Exactly one eligible infrastructure retry
 
