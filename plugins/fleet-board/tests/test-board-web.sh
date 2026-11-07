@@ -453,6 +453,112 @@ if setup_case; then
   stop_server
 fi
 
+echo "Case: card fields in the API"
+# set_fields <n> <jq update>: edits cards/<n>.json in place.
+set_fields() {
+  local f="$REPO/.fleet-board/cards/$1.json"
+  jq "$2" "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+# card_unchanged <desc> <n> <before>: passes when cards/<n>.json still equals <before>.
+card_unchanged() {
+  if [ "$(cat "$REPO/.fleet-board/cards/$2.json")" = "$3" ]; then pass "$1"; else fail "$1" "card $2 changed: $(cat "$REPO/.fleet-board/cards/$2.json")"; fi
+}
+REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
+echo 5 > "$REPO/.fleet-board/next"
+seed_card 1 backlog "Blocked twice" "Prose one."
+set_fields 1 '.acceptance = ["first", "second"] | .blocked_by = [2, 3] | .pr_url = "https://github.com/acme/toy/pull/7" | .pr_url_source = "person"'
+seed_card 2 done "Done blocker" "Prose two."
+set_fields 2 '.acceptance = [] | .blocked_by = [] | .pr_url = null | .pr_url_source = null'
+seed_card 3 ready "Open blocker" "Prose three."
+set_fields 3 '.acceptance = ["three"] | .blocked_by = [2] | .pr_url = null | .pr_url_source = null'
+seed_card 4 backlog "Missing blocker" "Prose four."
+set_fields 4 '.acceptance = [] | .blocked_by = [99] | .pr_url = null | .pr_url_source = null'
+if start_server "$REPO"; then
+  api GET /api/board
+  assert_code 200
+  assert_body "summary acceptance_count" '.cards[]|select(.number==1)|.acceptance_count' 2
+  assert_body "summary blocked_by" '.cards[]|select(.number==1)|.blocked_by|map(tostring)|join(",")' 2,3
+  assert_body "summary pr_url" '.cards[]|select(.number==1)|.pr_url' 'https://github.com/acme/toy/pull/7'
+  assert_body "an open blocker blocks" '.cards[]|select(.number==1)|.blocked' true
+  assert_body "a done blocker alone does not block" '.cards[]|select(.number==3)|.blocked' false
+  assert_body "a missing blocker blocks" '.cards[]|select(.number==4)|.blocked' true
+  assert_body "no blockers, not blocked" '.cards[]|select(.number==2)|.blocked' false
+  assert_body "summary acceptance_count 0" '.cards[]|select(.number==2)|.acceptance_count' 0
+  assert_body "summary pr_url null" '.cards[]|select(.number==2)|.pr_url' null
+
+  api GET /api/cards/1
+  assert_code 200
+  assert_body "detail acceptance" '.acceptance|join("|")' 'first|second'
+  assert_body "detail blocked_by" '.blocked_by|map(tostring)|join(",")' 2,3
+  assert_body "detail pr_url is the card field" '.pr_url' 'https://github.com/acme/toy/pull/7'
+  assert_body "detail body_prose is the stored body" '.body_prose' 'Prose one.'
+  assert_body "detail body still renders the sections" '.body' '*## Acceptance*'
+
+  api PATCH /api/cards/1 '{"acceptance":["x","y","z"]}'
+  assert_code 200
+  assert_body "patched acceptance returned" '.acceptance|join("|")' 'x|y|z'
+  [ "$(card_json 1 '.acceptance|join("|")')" = "x|y|z" ] && pass "acceptance stored" || fail "acceptance stored" "got $(card_json 1 .acceptance)"
+  [ "$(card_json 1 '.blocked_by|map(tostring)|join(",")')" = "2,3" ] && pass "acceptance patch kept blocked_by" || fail "acceptance patch kept blocked_by" "got $(card_json 1 .blocked_by)"
+
+  api PATCH /api/cards/1 '{"blocked_by":[3]}'
+  assert_code 200
+  [ "$(card_json 1 '.blocked_by|map(tostring)|join(",")')" = 3 ] && pass "blocked_by stored" || fail "blocked_by stored" "got $(card_json 1 .blocked_by)"
+  [ "$(card_json 1 '.acceptance|length')" = 3 ] && pass "blocked_by patch kept acceptance" || fail "blocked_by patch kept acceptance" "got $(card_json 1 .acceptance)"
+
+  api PATCH /api/cards/1 '{"body":"New prose."}'
+  assert_code 200
+  assert_body "prose patch returns body_prose" '.body_prose' 'New prose.*'
+  if [ "$(card_json 1 '.acceptance|join("|")')|$(card_json 1 '.blocked_by|map(tostring)|join(",")')" = "x|y|z|3" ]; then
+    pass "a prose-only body keeps acceptance and blocked_by"
+  else
+    fail "a prose-only body keeps acceptance and blocked_by" "got $(cat "$REPO/.fleet-board/cards/1.json")"
+  fi
+
+  api PATCH /api/cards/1 '{"pr_url":"https://github.com/ACME/Toy/pull/12"}'
+  assert_code 200
+  [ "$(card_json 1 .pr_url)|$(card_json 1 .pr_url_source)" = "https://github.com/ACME/Toy/pull/12|person" ] \
+    && pass "pr_url stored with source person" || fail "pr_url stored with source person" "got $(card_json 1 .pr_url) $(card_json 1 .pr_url_source)"
+  api PATCH /api/cards/1 '{"pr_url":null}'
+  assert_code 200
+  [ "$(card_json 1 .pr_url)" = null ] && pass "pr_url null clears it" || fail "pr_url null clears it" "got $(card_json 1 .pr_url)"
+  assert_body "cleared pr_url in the reply" '.pr_url' null
+
+  before="$(cat "$REPO/.fleet-board/cards/1.json")"
+  for bad in '"https://github.com/other/repo/pull/1"' '"https://github.com/acme/toy/pull/0"' \
+             '"http://github.com/acme/toy/pull/1"' '"https://github.com/acme/toy/pull/1/files"' '""' '5'; do
+    api PATCH /api/cards/1 "{\"pr_url\":$bad}"
+    assert_code 400
+    assert_body "bad pr_url $bad error names pr_url" '.error' '*pr_url*'
+  done
+  for bad in '"x"' '[1]' '{"a":1}'; do
+    api PATCH /api/cards/1 "{\"acceptance\":$bad}"
+    assert_code 400
+    assert_body "bad acceptance $bad error names acceptance" '.error' '*acceptance*'
+  done
+  api PATCH /api/cards/1 '{"blocked_by":[1]}'
+  assert_code 400
+  assert_body "self blocker refused" '.error' '*#1*'
+  api PATCH /api/cards/1 '{"blocked_by":[999]}'
+  assert_code 400
+  assert_body "missing blocker refused" '.error' '*#999*'
+  for bad in '["2"]' '[true]' '[0]' '"3"'; do
+    api PATCH /api/cards/1 "{\"blocked_by\":$bad}"
+    assert_code 400
+  done
+  api PATCH /api/cards/1 '{"title":"Never","blocked_by":[999]}'
+  assert_code 400
+  card_unchanged "refused field patches changed nothing" 1 "$before"
+
+  api GET /api/board
+  assert_body "blocked by the open #3 alone" '.cards[]|select(.number==1)|.blocked' true
+  api PATCH /api/cards/1 '{"blocked_by":[2]}'
+  api GET /api/board
+  assert_body "only a done blocker left, not blocked" '.cards[]|select(.number==1)|.blocked' false
+  if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr"; fi
+  stop_server
+fi
+
 echo "Case: import API"
 # A fake claude: logs its argv, writes the two-card fixture to the --preview path
 # (or fails when $FAKE_CLAUDE_DIR/fail exists) and prints stream-json lines.
