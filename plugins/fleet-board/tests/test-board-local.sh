@@ -103,7 +103,6 @@ setup_case() {
   git -C "$REPO" config user.name "Test User"
   cat > "$REPO/.fleet-board.yml" <<'YML'
 board:
-  backend: local
   repo: acme/toy
 worktrees:
   dir: .fw

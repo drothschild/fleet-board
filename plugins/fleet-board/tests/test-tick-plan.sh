@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/tick-plan.sh"
 NOTE_SH="${SCRIPT_DIR}/../scripts/note.sh"
 TICK="$SCRIPT_DIR/../fixtures/gh/tick"
@@ -66,6 +67,7 @@ assert_eq() {
 }
 
 run_check() {
+  store_sync
   local script="$1"
   shift
   local tmpout tmperr
@@ -420,21 +422,22 @@ assert_jq "note-worktree-outside-base: warning" '.warnings' \
   "[\"manager note on #12 names a worktree outside $BASE; treating it as null: /old-clone/.fw/12-add-subtract\"]"
 
 # ---------------------------------------------------------------------------
-# gh calls for one in_review card: one card read (api user, issue, comments),
-# the PR view, the mergeable lookup, and the files lookup only when the review is clean and current.
-# Before the note and labels were taken from the card read: 11 per card.
+# gh calls for one in_review card: the card is read from the local store (no
+# gh call), then the PR view, the mergeable lookup, and the files lookup only
+# when the review is clean and current. (On the GitHub board the card read
+# added three: api user, issue, comments; before the note and labels were taken
+# from the card read: 11 per card.)
 per_card_calls() { echo $(( $(wc -l < "$FAKE_GH_DIR/calls.log") - $(grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log") )); }
 plan in-review-mark-ready-human
-assert_eq "gh-calls: clean current review (mark_ready): 6 per card" "$(per_card_calls)" 6
-assert_eq "gh-calls: clean current review: one card read" "$(call_count api repos/acme/toy/issues/12)" 1
+assert_eq "gh-calls: clean current review (mark_ready): 3 per card" "$(per_card_calls)" 3
 assert_eq "gh-calls: clean current review: one files lookup" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
 plan in-review-fix
-assert_eq "gh-calls: findings (fix): 5 per card, no files lookup" "$(per_card_calls)" 5
+assert_eq "gh-calls: findings (fix): 2 per card, no files lookup" "$(per_card_calls)" 2
 assert_jq "gh-calls: findings: needs_human_qa not computed" "$(card 12 needs_human_qa)" 'null'
 plan in-review-needs-review
-assert_eq "gh-calls: review not current (review): 5 per card, no files lookup" "$(per_card_calls)" 5
+assert_eq "gh-calls: review not current (review): 2 per card, no files lookup" "$(per_card_calls)" 2
 plan in-review-human-qa-label
-assert_eq "gh-calls: labelled card: 5 per card, no files lookup" "$(per_card_calls)" 5
+assert_eq "gh-calls: labelled card: 2 per card, no files lookup" "$(per_card_calls)" 2
 assert_jq "gh-calls: labelled card still -> to_human_qa" "$(card 12 action)" '"to_human_qa"'
 
 # ---------------------------------------------------------------------------
@@ -633,20 +636,15 @@ assert_stdout_exact "list-failure: no plan printed" ""
 
 # ---------------------------------------------------------------------------
 # Dependency gate: a Ready card with an unmet "## Depends on" waits
-issue_views() { grep -c 'issue view' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
 
 plan deps-wait
 assert_exit "deps-wait: exit" 0
 assert_jq "deps-wait: action wait" "$(card 12 action)" '"wait"'
-assert_jq "deps-wait: reason names the dependency and its state" "$(card 12 reason)" '"waits for acme/toy#22 (open)"'
+assert_jq "deps-wait: reason names the dependency and its state" "$(card 12 reason)" '"waits for acme/toy#22 (backlog)"'
 assert_jq "deps-wait: waiting_on lists the unmet refs" "$(card 12 waiting_on)" '["acme/toy#22"]'
 assert_jq "deps-wait: the card stays in ready" "$(card 12 state)" '"ready"'
 assert_jq "deps-wait: not dispatchable" '.dispatchable' 'false'
 assert_jq "deps-wait: no warnings" '.warnings' '[]'
-
-plan deps-wait-two
-assert_jq "deps-wait-two: reason lists every unmet dependency, in order" "$(card 12 reason)" '"waits for acme/toy#22 (open), other/repo#7 (open)"'
-assert_jq "deps-wait-two: waiting_on" "$(card 12 waiting_on)" '["acme/toy#22","other/repo#7"]'
 
 plan deps-met
 assert_jq "deps-met: every dependency closed as completed, the card starts" "$(card 12 action)" '"start"'
@@ -655,30 +653,21 @@ assert_jq "deps-met: dispatchable" '.dispatchable' 'true'
 
 plan deps-not-planned
 assert_jq "deps-not-planned: action wait" "$(card 12 action)" '"wait"'
-assert_jq "deps-not-planned: reason" "$(card 12 reason)" '"waits for acme/toy#22 (closed as not planned)"'
+assert_jq "deps-not-planned: reason" "$(card 12 reason)" '"waits for acme/toy#22 (wont_do)"'
 assert_jq "deps-not-planned: warning" '.warnings' '["#12 depends on acme/toy#22, which was closed as not planned"]'
 
 plan deps-lookup-failure
 assert_exit "deps-lookup-failure: exit" 0
 assert_jq "deps-lookup-failure: action skip" "$(card 12 action)" '"skip"'
-assert_jq "deps-lookup-failure: reason names the command" "$(card 12 reason)" '"lookup failed: gh issue view 22 --repo acme/toy --json state,stateReason"'
-assert_jq "deps-lookup-failure: warning" '.warnings' '["#12: lookup failed: gh issue view 22 --repo acme/toy --json state,stateReason"]'
+assert_jq "deps-lookup-failure: reason names the command" "$(card 12 reason)" '"lookup failed: local card #22"'
+assert_jq "deps-lookup-failure: warning" '.warnings' '["#12: lookup failed: local card #22"]'
 assert_jq "deps-lookup-failure: not dispatchable" '.dispatchable' 'false'
 
 plan deps-bad-line
 assert_jq "deps-bad-line: a line that is no dependency does not hold the card" "$(card 12 action)" '"start"'
-assert_jq "deps-bad-line: warning names the card and the line" '.warnings' '["#12: unrecognized dependency line: - nope"]'
 
 plan deps-in-progress-not-gated
 assert_jq "deps-in-progress-not-gated: in_progress is never gated" "$(card 12 action)" '"continue_implementor"'
-assert_eq "deps-in-progress-not-gated: no dependency lookup" "$(issue_views)" 0
-
-# Projects backend: the only dependency is an open issue in another repo that
-# sits at Status Done on the same project, so the card starts
-plan deps-cross-repo-done "" "$(printf '  backend: github-projects\n  project_number: 1')"
-assert_exit "deps-cross-repo-done: exit" 0
-assert_jq "deps-cross-repo-done: a cross-repo dependency at Done is met, the card starts" "$(card 12 action)" '"start"'
-assert_jq "deps-cross-repo-done: no warnings" '.warnings' '[]'
 
 # A body larger than the pipe buffer: the Depends on heading is found early,
 # and the gate must still hold (a pre-check that SIGPIPEs would skip it)
@@ -705,7 +694,6 @@ assert_jq "deps-large-body: Acceptance first in a large body is still found, the
 
 plan deps-no-acceptance
 assert_jq "deps-no-acceptance: no Acceptance wins over the gate" "$(card 13 action)" '"skip_no_acceptance"'
-assert_eq "deps-no-acceptance: no dependency lookup" "$(issue_views)" 0
 
 plan deps-other-card-starts
 assert_jq "deps-other-card-starts: the card with the dependency waits" "$(card 12 action)" '"wait"'
@@ -750,7 +738,6 @@ assert_jq "update_branch: in progress, mergeable PR keeps start_review" "$(card 
 # settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
 # settle <case> <n> [extra YAML]: set up the case and run --settle <n>
 settle() { local c="$1" n="$2"; shift 2; setup_case "$c" "$@"; run_check "$SCRIPT" --settle "$n"; }
-list_calls() { grep -c $'\tissue list' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
 
 settle in-review-human-qa-path 12
 assert_exit "settle: clean review needing human QA: exit" 0
@@ -792,9 +779,6 @@ assert_jq "settle: failed lookup warns" '[.warnings[] | select(startswith("#12: 
 
 settle in-review-fix 12
 assert_jq "settle: output lists only the named card" '[.cards[].number]' '[12]'
-assert_eq "settle: no column is listed" "$(list_calls)" 0
-plan in-review-fix
-assert_eq "settle: a normal plan does list columns" "$(list_calls)" 4
 
 plan in-review-fix
 run_check "$SCRIPT" --settle
@@ -1056,8 +1040,6 @@ assert_jq "stage-advance: entering security" "$(card 12 stage.name)" '"security"
 assert_jq "stage-advance: agent carried" "$(card 12 stage.agent)" '"acme:sec"'
 assert_eq "stage-advance: one files lookup (match; no needs-human-qa)" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
 assert_jq "stage-advance: dispatchable" '.dispatchable' 'true'
-# the security column is listed
-assert_eq "stage columns listed" "$(grep -c 'issue list --repo acme/toy --label fleet:review_security' "$FAKE_GH_DIR/calls.log")" 1
 # in review_security, note stage security round 1, no last_review -> review_stage
 splan stage-review-needed
 assert_exit "stage-review: exit" 0

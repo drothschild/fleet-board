@@ -1,6 +1,6 @@
 ---
 name: init
-description: Use when the user wants to set up fleet-board in a repository - asks which board backend to use, writes .fleet-board.yml, creates the fleet:* labels or verifies the GitHub Projects Status options, and checks gh scopes. Invoke as /fleet-board:init.
+description: Use when the user wants to set up fleet-board in a repository - writes .fleet-board.yml, creates the local card store (.fleet-board/, kept out of git) and checks that gh is logged in with the repo scope; it can then move an existing GitHub board onto the store. Invoke as /fleet-board:init.
 user-invocable: true
 ---
 
@@ -8,14 +8,19 @@ user-invocable: true
 
 Sets up fleet-board in the current repository. You gather the answers; `init.sh` does all
 the work. Never write `.fleet-board.yml` yourself, not even to fix it up afterwards. Only
-`init.sh` writes it, because it validates the file and sets up the board first.
+`init.sh` writes it, because it validates the file and sets up the card store first.
 
-## Locating the script
+The board is always local: cards are files under `.fleet-board/` in this repo, shown by
+the board page. GitHub is still where the PRs live, so `gh` must be logged in with the
+`repo` scope.
 
-The Skill tool announced this skill's base directory when it loaded. The script is at:
+## Locating the scripts
+
+The Skill tool announced this skill's base directory when it loaded. The scripts are at:
 
 ```
 <this skill's base directory>/../../scripts/init.sh
+<this skill's base directory>/../../scripts/import-github.sh
 ```
 
 Substitute the real base directory. Do not guess an install path.
@@ -30,31 +35,14 @@ gh repo view --json nameWithOwner -q .nameWithOwner
 
 This is the `--repo` value. If it fails, ask the user for `OWNER/NAME`.
 
-## Step 2: Choose the backend
+## Step 2: Column names
 
-Ask the user which board to use:
-
-- **Labels** (`github-labels`): a new board. fleet-board creates one `fleet:<state>` label
-  per state.
-- **Projects v2** (`github-projects`): an existing GitHub project board.
-- **Local** (`local`): cards in `.fleet-board/` in this repo, served by the board page; no labels or project needed
-
-If they choose Projects v2:
-
-1. Ask for the project number and its owner. The owner defaults to the repo owner.
-   Always pass `--project <N>`; init.sh refuses Projects without it. Pass
-   `--owner <OWNER>` only when the project's owner differs from the repo owner (for
-   example, an organization project for a personal repo).
-2. Show the project's Status options:
-   ```bash
-   gh project field-list <N> --owner <OWNER> --format json \
-     | jq -r '.fields[] | select(.name == "Status") | .options[].name'
-   ```
-3. Ask how each canonical state maps to a column. The canonical states are `backlog`, `ready`,
-   `in_progress`, `in_review`, `human_qa`, `blocked`, `done` and `wont_do`. Their default
-   column names are `Backlog`, `Ready`, `In Progress`, `In Review`, `Human QA`, `Blocked`,
-   `Done` and `Won't Do`. Default each state to the option with exactly that name. For every
-   state whose column has a different name, pass `--state <canonical>=<Column name>`.
+The canonical states are `backlog`, `ready`, `in_progress`, `in_review`, `human_qa`,
+`blocked`, `done` and `wont_do`. Their default column names are `Backlog`, `Ready`,
+`In Progress`, `In Review`, `Human QA`, `Blocked`, `Done` and `Won't Do`. Ask whether the
+user wants a different name for any column; for each, pass
+`--state <canonical>=<Column name>`. When they are moving an existing GitHub Projects
+board (Step 8), offer that board's column names, so the import maps each column.
 
 ## Step 3: Propose commands
 
@@ -78,8 +66,7 @@ Leave out any command the user does not want; the defaults then apply.
 Run it from the repository root, with the flags gathered above:
 
 ```bash
-bash "<this skill's base directory>/../../scripts/init.sh" \
-  --backend <github-labels|github-projects|local> --repo <OWNER/NAME> [flags...]
+bash "<this skill's base directory>/../../scripts/init.sh" --repo <OWNER/NAME> [flags...]
 ```
 
 Map each answer to exactly one flag. Leave a flag out when the user gave no answer for
@@ -87,10 +74,7 @@ it, so the default applies:
 
 | Answer | Flag |
 |---|---|
-| Backend | `--backend github-labels`, `--backend github-projects` or `--backend local` |
 | Repository | `--repo <OWNER/NAME>` |
-| Project number (Projects only, required) | `--project <N>` |
-| Project owner, when it is not the repo owner | `--owner <OWNER>` |
 | Each state whose column name differs from the default | `--state <canonical>=<Column name>`, once per state |
 | Single-test command | `--test-one "<cmd with {file}>"` |
 | Typecheck command | `--typecheck "<cmd>"` |
@@ -118,7 +102,7 @@ If init.sh exits 1 and prints `Run: gh auth refresh -s ...`, tell the user to ru
 that command, then stop. Do not run it for them, and do not work around it.
 
 For any other exit 1, show the message and help the user fix its cause, such as a
-missing Status option or a missing tool (`gh`, `jq` or `git`). Then run init.sh again.
+missing tool (`gh`, `jq` or `git`). Then run init.sh again.
 
 ## Step 7: On success
 
@@ -127,3 +111,21 @@ Show the written `.fleet-board.yml`, and suggest committing it:
 ```bash
 git add .fleet-board.yml && git commit -m "chore: add fleet-board config"
 ```
+
+## Step 8: Moving an existing GitHub board (optional)
+
+Ask whether the repo already has a fleet-board board on GitHub (`fleet:<state>` labels, or
+a Projects v2 board). If it does, `import-github.sh` copies it into the new store. It only
+reads GitHub; it writes nothing there. Run it from the repository root, first with
+`--dry-run` and show the user the lines it prints:
+
+```bash
+bash "<this skill's base directory>/../../scripts/import-github.sh" --repo <OWNER/NAME> --dry-run
+```
+
+For a Projects board add `--project <N>`, and `--owner <OWNER>` when the project's owner is
+not the repo owner. When the user agrees, run it again without `--dry-run`. It refuses a
+store that already has cards; pass `--force` only when the user confirms overwriting the
+imported numbers. An exit 1 naming a project column means that column has no state in
+this config: add it with `--state` (re-run init.sh with `--force`) or as a review stage,
+then import again.

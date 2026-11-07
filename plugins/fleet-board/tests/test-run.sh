@@ -659,7 +659,8 @@ C_CLEANUP=""
 run_wrapper --repo "$REPO"
 assert_exit "cleanup-default: exit 0" 0
 LOG="$(the_log "$LOGS")"
-assert_file_contains "cleanup-default: the shipped script listed the done column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:done"
+# (the case has no card store, so the shipped script's board read fails; its stderr is logged)
+assert_file_contains "cleanup-default: the shipped script read the board" "$LOG" "no local board at"
 assert_file_contains "cleanup-default: its failure (stub gh) is a logged warning" "$LOG" "warning: cleanup-done.sh exited 1"
 assert_eq "cleanup-default: the fake cleanup did not run" "$(lines "$T/cleanup-count")" "0"
 
@@ -707,7 +708,7 @@ C_SETTLE=""
 run_wrapper --repo "$REPO"
 assert_exit "settle-default: exit 0" 0
 LOG="$(the_log "$LOGS")"
-assert_file_contains "settle-default: the shipped script listed the in_progress column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:in_progress"
+assert_file_contains "settle-default: the shipped script read the board" "$LOG" "no local board at"
 assert_file_contains "settle-default: its failure (stub gh) is a logged warning" "$LOG" "warning: settle.sh exited 1"
 assert_file_contains "settle-default: merge-reviewed.sh ran after settle" "$LOG" "--- merge-reviewed.sh ---"
 assert_eq "settle-default: the fake settle did not run" "$(lines "$T/settle-count")" "0"
@@ -1135,9 +1136,9 @@ assert_file_contains "unreadable_ledger_warns: the log has it" "$LOG" "provider 
 assert_stdout_contains "unreadable_ledger_warns: cost counts Claude only" "cost_estimate_usd 0.7 (estimate)"
 
 # ---------------------------------------------------------------------------
-echo "local board: the wrapper clears the active markers after each tick's session"
+echo "the wrapper clears the active markers after each tick's session"
 new_case "max_consecutive_failures: 1"
-printf 'board: { backend: local, repo: acme/toy }\nlimits: { tick_interval: 0, max_consecutive_failures: 1 }\n' > "$REPO/.fleet-board.yml"
+printf 'board: { repo: acme/toy }\nlimits: { tick_interval: 0, max_consecutive_failures: 1 }\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
 echo 1 > "$REPO/.fleet-board/next"
 : > "$REPO/.fleet-board/active/3"
@@ -1147,13 +1148,6 @@ assert_exit "active-cleared: a failed tick stops the run" 1
 assert_false "active-cleared: a role that crashed without a report is not left lit" test -e "$REPO/.fleet-board/active/3"
 assert_true "active-cleared: the directory stays" test -d "$REPO/.fleet-board/active"
 
-new_case
-seq_fixture 1 tick-idle
-mkdir -p "$REPO/.fleet-board/active"
-: > "$REPO/.fleet-board/active/3"
-run_wrapper --repo "$REPO"
-assert_exit "active-github: exit 0" 0
-assert_true "active-github: a GitHub backend leaves the directory alone" test -e "$REPO/.fleet-board/active/3"
 
 # ---------------------------------------------------------------------------
 echo "run lock: one wrapper per repo"

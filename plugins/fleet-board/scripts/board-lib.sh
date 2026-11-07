@@ -38,12 +38,11 @@ fb_set_states() {
   FB_STATES="${FB_STATES_FIXED/in_review/in_review $extra}"
 }
 
-# fb_mark_active <n>: on the local backend only, touches <board.dir>/active/<n>
+# fb_mark_active <n>: touches <board.dir>/active/<n>
 # (the web board lights the card while a role works on it) and sets
 # FB_ACTIVE_FILE to it. A failure is a warning, never an error. Needs the
 # config loaded.
 fb_mark_active() {
-  [ "$(fb_cfg board.backend)" = local ] || return 0
   . "$FB_SCRIPTS/adapters/local/local-lib.sh"
   local d; d="$(fl_active_dir)"
   if mkdir -p "$d" 2>/dev/null && : > "$d/$1" 2>/dev/null; then
@@ -86,26 +85,19 @@ fb_git_common_dir() {
 # Prints scalars raw (booleans print as true/false), objects/arrays as JSON, and nothing for null.
 fb_cfg() { jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"; }
 
-# Prints the authenticated gh login (on the local backend, which never calls
-# gh: FLEET_BOARD_USER, else $USER, else `id -un`); exits 1 if it cannot be
-# determined
+# fb_login: the login whose manager note counts on this board: FLEET_BOARD_USER,
+# else $USER, else `id -un` (no gh call); exits 1 if it cannot be determined
 fb_login() {
-  if [ "$(fb_cfg board.backend)" = "local" ]; then
-    local u="${FLEET_BOARD_USER:-${USER:-}}"
-    [ -n "$u" ] || u="$(id -un 2>/dev/null)"
-    [ -n "$u" ] || fb_die 1 "cannot determine the local user: set FLEET_BOARD_USER (USER is unset and id -un failed)"
-    printf '%s\n' "$u"
-    return 0
-  fi
-  local l; l="$(gh api user 2>/dev/null | jq -r '.login // empty' 2>/dev/null)"
-  [ -n "$l" ] && [ "$l" != "null" ] || fb_die 1 "cannot determine the authenticated gh login (gh api user failed)"
-  printf '%s\n' "$l"
+  local u="${FLEET_BOARD_USER:-${USER:-}}"
+  [ -n "$u" ] || u="$(id -un 2>/dev/null)"
+  [ -n "$u" ] || fb_die 1 "cannot determine the local user: set FLEET_BOARD_USER (USER is unset and id -un failed)"
+  printf '%s\n' "$u"
 }
 
 # fb_token_scopes <gh auth status output>: prints the "Token scopes:" line of
 # github.com's ACTIVE account, or nothing when gh shows none for it (a
-# GH_TOKEN token, a failed login, or no github.com login). The adapters and
-# init talk to github.com only, so another host's accounts never count.
+# GH_TOKEN token, a failed login, or no github.com login). init.sh talks
+# to github.com only, so another host's accounts never count.
 # gh groups accounts under a host header line (the host name, unindented), and
 # prints one block per account, starting at a "Logged in to <host>" /
 # "Failed to log in to <host>" line, with an "Active account:" line inside it.
@@ -161,30 +153,17 @@ fb_has_scope() {
 fb_valid_state() { case " $FB_STATES " in *" $1 "*) return 0 ;; esac; return 1; }
 
 fb_default_name() {
-  # Backend-specific default board name for a canonical state
+  # The default board (column) name of a canonical state
   case "$1" in
-    review_*)
-      case "$(fb_cfg board.backend)" in
-        github-projects|local) echo "Review: ${1#review_}" ;;
-        *) echo "fleet:$1" ;;
-      esac
-      return 0
-      ;;
-  esac
-  case "$(fb_cfg board.backend)" in
-    github-projects|local)
-      case "$1" in
-        backlog) echo "Backlog" ;;
-        ready) echo "Ready" ;;
-        in_progress) echo "In Progress" ;;
-        in_review) echo "In Review" ;;
-        human_qa) echo "Human QA" ;;
-        blocked) echo "Blocked" ;;
-        done) echo "Done" ;;
-        wont_do) echo "Won't Do" ;;
-      esac
-      ;;
-    *) echo "fleet:$1" ;;
+    review_*) echo "Review: ${1#review_}" ;;
+    backlog) echo "Backlog" ;;
+    ready) echo "Ready" ;;
+    in_progress) echo "In Progress" ;;
+    in_review) echo "In Review" ;;
+    human_qa) echo "Human QA" ;;
+    blocked) echo "Blocked" ;;
+    done) echo "Done" ;;
+    wont_do) echo "Won't Do" ;;
   esac
 }
 
@@ -199,47 +178,23 @@ fb_canonical_of() {
 # body bigger than the pipe buffer would kill the writer and read as "no Acceptance")
 fb_has_acceptance() { grep -Eq '^##[[:space:]]+Acceptance([[:space:]].*)?$' <<<"$1"; }
 
-# fb_card_has_acceptance <card-json>: a card read. When it carries an
-# "acceptance" array, that array alone decides (non-empty = true, whatever the
-# body says). On local, board-read.sh always emits that array, so there the
-# body fallback applies only to a raw stored card that predates migration (no
-# field at all); on the GitHub backends a read has no such field and the body
-# decides. local move.sh passes the raw stored card, so an unmigrated card with
-# a body heading can still move to ready there but not through a board-read
-# (gate, card-lint, tick-plan): migrate first.
+# fb_card_has_acceptance <card-json>: a card (a read, or a stored card file)
+# has acceptance when its "acceptance" array is non-empty, whatever its body
+# says. A card without the field (a store that predates migrate-card-fields.sh)
+# has none: migrate first.
 fb_card_has_acceptance() {
-  local k
-  k="$(jq -r 'if (.acceptance | type) == "array" then (if (.acceptance | length) > 0 then "yes" else "no" end) else "body" end' <<<"$1" 2>/dev/null)" || k=body
-  case "$k" in
-    yes) return 0 ;;
-    no) return 1 ;;
-  esac
-  fb_has_acceptance "$(jq -r '.body // ""' <<<"$1" 2>/dev/null)"
+  jq -e '(.acceptance | type) == "array" and (.acceptance | length) > 0' <<<"$1" >/dev/null 2>&1
 }
 
-# fb_list_limit DEFAULT: the --limit a backend passes to its gh list call,
-# FLEET_BOARD_LIST_LIMIT when set. Dies (1) on a value that is not a positive
-# integer. Callers run it in $(...), so they must add `|| exit 1`.
+# fb_list_limit DEFAULT: the --limit import-github.sh passes to its gh list
+# calls, FLEET_BOARD_LIST_LIMIT when set. Dies (1) on a value that is not a
+# positive integer. Callers run it in $(...), so they must add `|| exit 1`.
 fb_list_limit() {
   local v="${FLEET_BOARD_LIST_LIMIT:-$1}"
   case "$v" in
     ''|*[!0-9]*|0*) fb_die 1 "FLEET_BOARD_LIST_LIMIT must be a positive integer, got: $v" ;;
   esac
   printf '%s\n' "$v"
-}
-
-# fb_list_truncated COUNT LIMIT WHAT REMEDY: a gh list reply of LIMIT items may
-# be cut short, and a short column silently drops cards, so fail closed (exit 1)
-# naming both remedies: a higher FLEET_BOARD_LIST_LIMIT, or REMEDY (the
-# backend's way to shrink what it lists). FB_LIST_ALLOW_TRUNCATED=1, set only by
-# `board-list.sh --allow-truncated`, downgrades the failure to a warning.
-fb_list_truncated() {
-  [ "$1" -lt "$2" ] && return 0
-  if [ "${FB_LIST_ALLOW_TRUNCATED:-}" = 1 ]; then
-    printf 'fleet-board: warning: %s returned %s items, the list limit (%s); the list may be truncated, continuing\n' "$3" "$1" "$2" >&2
-    return 0
-  fi
-  fb_die 1 "$3 returned $1 items, the list limit ($2); the list may be truncated. Set FLEET_BOARD_LIST_LIMIT above $2, or $4, and retry"
 }
 
 # fb_glob_match <path> <pattern>: exit 0 when the path matches. Matched with

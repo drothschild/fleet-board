@@ -129,7 +129,6 @@ echo ""
 # Test 1: minimal.yml defaults merge
 REPO="$(make_test_repo minimal.yml)"
 CLEANUP_DIRS+=("$REPO")
-assert_key "$REPO" "board.backend" "github-labels" "minimal defaults backend"
 assert_key "$REPO" "review.max_rounds" "3" "minimal defaults max_rounds"
 assert_key "$REPO" "models.reviewer" "opus" "minimal defaults reviewer model"
 run_config "$REPO"
@@ -291,13 +290,6 @@ assert_exit "bad backend exit 5" "5"
 assert_stderr_contains "bad backend stderr mentions backend" "board.backend"
 rm -rf "$REPO"
 
-# Test 12: bad-projects-no-number.yml
-REPO="$(make_test_repo bad-projects-no-number.yml)"
-CLEANUP_DIRS+=("$REPO")
-run_config "$REPO"
-assert_exit "projects no number exit 5" "5"
-assert_stderr_contains "projects no number mentions project_number" "project_number"
-rm -rf "$REPO"
 
 # Test 13: Invalid merge policy
 REPO="$(mktemp -d)"
@@ -387,7 +379,7 @@ fi
 # Test 18: Missing repo in board section (validation)
 REPO="$(make_inline_repo <<'YML'
 board:
-  backend: github-labels
+  states: {}
 YML
 )"
 CLEANUP_DIRS+=("$REPO")
@@ -476,24 +468,6 @@ for section in test_paths human_qa_paths; do
   assert_exit "$section scalar exit 5" "5"
   assert_stderr_contains "$section scalar gives specific reason" "config.sh: invalid config: $section must be a list"
 done
-
-# Test 27: board.project_owner must be null or a string
-REPO="$(printf 'board:\n  repo: a/b\n  project_owner: someone\n' | make_inline_repo)"
-CLEANUP_DIRS+=("$REPO")
-assert_key "$REPO" "board.project_owner" "someone" "project_owner string accepted"
-REPO="$(printf 'board:\n  repo: a/b\n  project_owner: 42\n' | make_inline_repo)"
-CLEANUP_DIRS+=("$REPO")
-run_config "$REPO"
-assert_exit "project_owner number exit 5" "5"
-assert_stderr_contains "project_owner number reason" "config.sh: invalid config: board.project_owner must be null or a string"
-REPO="$(make_test_repo minimal.yml)"
-CLEANUP_DIRS+=("$REPO")
-run_config "$REPO"
-if printf '%s' "$LAST_OUT" | jq -e '.board | has("project_owner") and .project_owner == null' >/dev/null; then
-  pass "project_owner defaults to null"
-else
-  fail "project_owner defaults to null" "got $(printf '%s' "$LAST_OUT" | jq -c .board)"
-fi
 
 # Test 28: cdpath-relative-script. With CDPATH exported and a same-named
 # "scripts" directory in it, config.sh run by a relative path must still find
@@ -684,34 +658,30 @@ REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, provider: op
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stderr_exact "provider stage no model: exactly one message" "config.sh: invalid config: review.stages[0].model must be set when provider is set"
 
-# local backend: accepted, defaults filled, board.dir and board.port validated
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n' | make_inline_repo)"
+# a local board: accepted, defaults filled, board.dir and board.port validated
+REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "local backend exit 0" "0"
-assert_key "$REPO" "board.backend" "local" "local backend kept"
 assert_key "$REPO" "board.dir" ".fleet-board" "board.dir default"
 assert_key "$REPO" "board.port" "8765" "board.port default"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: /tmp/x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: /tmp/x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "absolute board.dir exit 5" "5"; assert_stderr_contains "absolute board.dir named" "board.dir"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: ../x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: ../x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "dotdot board.dir exit 5" "5"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: a/../x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: a/../x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "embedded dotdot board.dir exit 5" "5"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: a..b/x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: a..b/x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "dots inside a segment name are fine" "0"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  port: 80\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  port: 80\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "low port exit 5" "5"; assert_stderr_contains "port named" "board.port"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  port: 70000\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  port: 70000\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "high port exit 5" "5"
-REPO="$(make_test_repo bad-backend.yml)"
-CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
-assert_stderr_contains "backend list names all three" "github-labels, github-projects or local"
 
 # The board is always local: the backend keys are refused with a pointer at the importer
 for kv in "backend: local" "backend: github-labels" "backend: github-projects" "project_number: 1" "project_owner: someone"; do

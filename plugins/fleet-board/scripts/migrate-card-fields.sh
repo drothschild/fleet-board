@@ -20,7 +20,6 @@ esac
 [ $# -le 1 ] || fb_die 2 "usage: migrate-card-fields.sh [--dry-run]"
 fb_load_config
 . "$FB_SCRIPTS/adapters/local/local-lib.sh"
-[ "$(fb_cfg board.backend)" = local ] || fb_die 2 "migrate-card-fields.sh needs board.backend: local"
 fl_require_store
 
 REPO_SLUG="$(fb_cfg board.repo)"

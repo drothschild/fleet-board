@@ -7,6 +7,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/human-qa-handoff.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 
@@ -63,21 +64,30 @@ ROUTESEOF
   export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH
   cd "$REPO"
   CLEANUP_DIRS+=("$REPO" "$FAKE_GH_DIR")
+  POSTED_TOTAL=0
 }
 
 # run_handoff: runs the script; BODY is the last posted comment (empty if none)
+# (the comment lands on the local card: BODY is the newest comment the run
+# added to card 12, and posted_count the comments the runs since setup_case
+# added, as the fake gh's call log counted them)
 run_handoff() {
+  local before=0
+  store_sync
+  [ -f "$REPO/.fleet-board/cards/12.json" ] && before="$(jq '.comments | length' "$REPO/.fleet-board/cards/12.json")"
   /bin/bash "$SCRIPT" 12 34 > "$FAKE_GH_DIR/out" 2> "$FAKE_GH_DIR/err"
   LAST_EXIT=$?
   LAST_ERR="$(cat "$FAKE_GH_DIR/err")"
   BODY=""
-  local f
-  for f in "$FAKE_GH_DIR"/bodies/*; do
-    [ -f "$f" ] && BODY="$(cat "$f")"
-  done
+  POSTED=0
+  if [ -f "$REPO/.fleet-board/cards/12.json" ]; then
+    POSTED=$(( $(jq '.comments | length' "$REPO/.fleet-board/cards/12.json") - before ))
+    [ "$POSTED" -gt 0 ] && BODY="$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/12.json")"
+  fi
+  POSTED_TOTAL=$(( ${POSTED_TOTAL:-0} + POSTED ))
 }
 
-posted_count() { grep -c 'issue comment 12' "$FAKE_GH_DIR/calls.log" 2>/dev/null || true; }
+posted_count() { echo "${POSTED_TOTAL:-0}"; }
 
 assert_has() { # name text
   case "$BODY" in *"$2"*) pass "$1" ;; *) fail "$1" "expected '$2' in comment (exit $LAST_EXIT, stderr: $LAST_ERR): $BODY" ;; esac
@@ -169,7 +179,7 @@ assert_lacks "no unresolved findings: no checklist" "- [ ]"
 # card fields on the local backend: the Acceptance quote comes from the field
 local_handoff() { # acceptance-json body
   setup_case "$PLAIN_BODY" "$PR_OK"
-  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
   mkdir -p "$REPO/.fleet-board/cards"
   echo 13 > "$REPO/.fleet-board/next"
   jq -n --argjson a "$1" --arg b "$2" \

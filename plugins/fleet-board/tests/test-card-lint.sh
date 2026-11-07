@@ -9,6 +9,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 LINT="$SCRIPT_DIR/../scripts/card-lint.sh"
 PLAN="$SCRIPT_DIR/../scripts/tick-plan.sh"
 FIX="$SCRIPT_DIR/lint-fixtures"
@@ -40,6 +41,7 @@ assert_not_contains() {
 }
 
 run_check() {
+  store_sync
   local script="$1"; shift
   local o e
   o="$(mktemp)"; e="$(mktemp)"
@@ -49,8 +51,8 @@ run_check() {
   rm -f "$o" "$e"
 }
 
-# setup_card <body-file> [comments-json]: a temp repo whose fake gh serves
-# card 13 (Ready) with that body, on the labels backend
+# setup_card <body-file> [comments-json]: a temp repo whose routes describe
+# card 13 (Ready) with that body; store_sync turns it into a local card
 setup_card() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -85,7 +87,8 @@ setup_card() {
   cd "$REPO"
 }
 
-lint() { setup_card "$1"; run_check "$LINT" 13; }
+# the body rules: card-lint.sh --body-file (a card is linted on its fields)
+lint() { setup_card "$1"; run_check "$LINT" --body-file "$1"; }
 plan() { setup_card "$@"; run_check "$PLAN"; }
 card() { jq -c "(.cards[] | select(.number == 13)).$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
 
@@ -149,22 +152,18 @@ echo ""
 echo "Test: tick-plan.sh skip_card_lint"
 echo ""
 
-plan "$FIX/no-bullets.md"
-assert_eq "plan no-bullets: exit" "$LAST_EXIT" 0
-assert_eq "plan no-bullets: action" "$(card action)" '"skip_card_lint"'
-assert_contains "plan no-bullets: lint result in the plan" "$(card lint)" "no-bullets"
-assert_eq "plan no-bullets: comment_needed" "$(card comment_needed)" true
-assert_eq "plan no-bullets: dispatchable (a comment is due)" "$(jq -c .dispatchable <<<"$LAST_OUT")" true
-MARKER="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
-assert_contains "plan no-bullets: marker shape" "$MARKER" "<!-- fleet-board:card-lint:"
-
 plan "$FIX/manual-check.md"
+assert_eq "plan manual-check: exit" "$LAST_EXIT" 0
 assert_eq "plan manual-check: action" "$(card action)" '"skip_card_lint"'
 assert_contains "plan manual-check: lint names the bullet" "$(card lint)" "The slider looks right on device"
+assert_eq "plan manual-check: comment_needed" "$(card comment_needed)" true
+assert_eq "plan manual-check: dispatchable (a comment is due)" "$(jq -c .dispatchable <<<"$LAST_OUT")" true
+MARKER="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
+assert_contains "plan manual-check: marker shape" "$MARKER" "<!-- fleet-board:card-lint:"
+CHANGED="$(mktemp)"; CLEANUP_DIRS+=("$CHANGED")
+printf '## Acceptance\n- clamp returns 3\n- verify on the simulator\n' > "$CHANGED"
+plan "$CHANGED"
 MARKER2="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
-
-plan "$FIX/no-heading-bold.md"
-assert_eq "plan bold Acceptance: action" "$(card action)" '"skip_card_lint"'
 
 # a body with no hint at all stays skip_no_acceptance
 plan "$FIX/plain-no-heading.md"
@@ -178,11 +177,11 @@ assert_eq "plan ok: lint null" "$(card lint)" null
 # same lint result already commented: no new comment; a changed result: new one
 COMMENTS="$(jq -cn --arg b "$MARKER
 Card lint failed" '[{"id":5,"user":{"login":"fleet-bot"},"body":$b,"created_at":"2026-01-01T00:00:00Z"}]')"
-plan "$FIX/no-bullets.md" "$COMMENTS"
+plan "$FIX/manual-check.md" "$COMMENTS"
 assert_eq "plan repeat: still skip_card_lint" "$(card action)" '"skip_card_lint"'
 assert_eq "plan repeat: same result needs no comment" "$(card comment_needed)" false
 assert_eq "plan repeat: not dispatchable" "$(jq -c .dispatchable <<<"$LAST_OUT")" false
-plan "$FIX/manual-check.md" "$COMMENTS"
+plan "$CHANGED" "$COMMENTS"
 assert_eq "plan changed: new result needs a comment" "$(card comment_needed)" true
 assert_eq "plan changed: marker differs" "$([ "$MARKER" != "$MARKER2" ] && echo yes)" yes
 
@@ -221,7 +220,7 @@ setup_local() {
   git init -q "$REPO"
   git -C "$REPO" config user.email t@example.com
   git -C "$REPO" config user.name T
-  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m initial
   mkdir -p "$REPO/.fleet-board/cards"

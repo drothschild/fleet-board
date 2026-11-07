@@ -17,10 +17,11 @@
 #                          "visually" or "looks"; it is not a testable assertion.
 #   dependency-cycle       the card is in a cycle of "## Depends on" references
 #                          among the linted cards; the detail names every card in it.
-#   unresolved-dependency  a "## Depends on" reference is neither a linted card
-#                          nor an issue "gh issue view" finds (on the local
-#                          backend a board.repo reference is a card file
-#                          under board.dir; a missing file is unresolved).
+#   unresolved-dependency  a "## Depends on" reference (#n or board.repo#n) is
+#                          neither a linted card nor a card file under
+#                          board.dir. A reference to another repo is outside
+#                          this board: it is not checked (create keeps it in
+#                          the body as prose).
 #   missing-file           a backticked path (dir/name.ext) is not on the default
 #                          branch. A line with create, new or add(s) is skipped:
 #                          it names a file the card makes.
@@ -43,7 +44,7 @@ while [ $# -gt 0 ]; do
 done
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-LCARDS="" # set on the local backend: the card files a board.repo ref resolves to
+LCARDS="" # the card files a board.repo ref resolves to (unset without a config)
 OUT="$WORK/out"; : > "$OUT"
 EDGES="$WORK/edges"; : > "$EDGES"
 IDS=()
@@ -53,7 +54,7 @@ if [ -n "$BODIES" ]; then
   CFG="$(bash "$FB_SCRIPTS/config.sh" 2>/dev/null)" || CFG=""
   REPO=""; [ -z "$CFG" ] || REPO="$(jq -r '.board.repo // ""' <<<"$CFG")"
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  if [ -n "$CFG" ] && [ "$(jq -r '.board.backend // ""' <<<"$CFG")" = local ]; then
+  if [ -n "$CFG" ]; then
     LCOMMON="$(fb_git_common_dir .)" && LROOT="$(dirname "$LCOMMON")" || LROOT="$(pwd)"
     LCARDS="$LROOT/$(jq -r '.board.dir // ".fleet-board"' <<<"$CFG")/cards"
   fi
@@ -68,7 +69,7 @@ if [ -n "$BODIES" ]; then
 else
   fb_load_config
   REPO="$FLEET_REPO"; ROOT="$FLEET_ROOT"
-  [ "$(fb_cfg board.backend)" != local ] || LCARDS="$FLEET_ROOT/$(fb_cfg board.dir)/cards"
+  LCARDS="$FLEET_ROOT/$(fb_cfg board.dir)/cards"
   if [ ${#ARGS[@]} -gt 0 ]; then
     IDS=("${ARGS[@]}")
   else
@@ -81,8 +82,8 @@ else
     fb_valid_number "$id" || fb_die 2 "card number must be numeric, got: $id"
     READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$id")" || fb_die 3 "cannot read card #$id"
     jq -r '.body // ""' <<<"$READ" | tr -d '\r' > "$WORK/$id.md" || fb_die 3 "cannot parse card #$id"
-    # a card with an acceptance field is linted on the field (see card-lint.sh --read-file)
-    if jq -e '.acceptance | type == "array"' <<<"$READ" >/dev/null 2>&1; then printf '%s\n' "$READ" > "$WORK/$id.read"; fi
+    # a card is linted on its fields (see card-lint.sh --read-file)
+    printf '%s\n' "$READ" > "$WORK/$id.read"
   done
 fi
 
@@ -110,7 +111,7 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     if grep -Eiq '(^|[^[:alpha:]])(manual|manually|visually|looks)([^[:alpha:]]|$)' <<<"$line"; then
       emit "$id" untestable-bullet "${line#- }"
     fi
-  done < <(if [ -f "$WORK/$id.read" ]; then jq -r '.acceptance[] | tostring | gsub("\n"; " ") | "- " + .' "$WORK/$id.read"
+  done < <(if [ -f "$WORK/$id.read" ]; then jq -r '(.acceptance // [])[] | tostring | gsub("\n"; " ") | "- " + .' "$WORK/$id.read"
            else awk '/^##[ \t]+Acceptance([ \t].*)?$/{s=1;next} /^##[ \t]/{s=0} s && /^- /' "$F"; fi)
 
   # dependencies
@@ -132,15 +133,14 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
       */*#[0-9]*) ;;
       *) emit "$id" unresolved-dependency "$tok is not a card in this set"; continue ;;
     esac
-    if [ -n "$LCARDS" ] && [ -n "$REPO" ] && [ "$drepo" = "$REPO" ]; then
-      [ -f "$LCARDS/$num.json" ] || emit "$id" unresolved-dependency "$tok does not exist"
-      continue
+    if [ -n "$REPO" ] && [ "$drepo" != "$REPO" ]; then
+      continue # outside this board: nothing to look it up in
     fi
-    if [ -z "$drepo" ] || ! gh issue view "$num" --repo "$drepo" --json state >/dev/null 2>&1; then
+    if [ -z "$LCARDS" ] || [ ! -f "$LCARDS/$num.json" ]; then
       emit "$id" unresolved-dependency "$tok does not exist"
     fi
-  done < <(if [ -f "$WORK/$id.read" ] && jq -e '.blocked_by | type == "array"' "$WORK/$id.read" >/dev/null 2>&1; then
-             jq -r --arg r "$REPO" '.blocked_by[] | $r + "#" + tostring' "$WORK/$id.read"
+  done < <(if [ -f "$WORK/$id.read" ]; then
+             jq -r --arg r "$REPO" '(.blocked_by // [])[] | $r + "#" + tostring' "$WORK/$id.read"
            else awk '
     /^##[ \t]+[Dd]epends[ \t]+[Oo]n[ \t]*$/ { s = 1; next }
     /^#/ { s = 0 }

@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/deps.sh"
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
@@ -47,6 +48,7 @@ assert_eq() {
 }
 
 run_check() {
+  store_sync
   local script="$1"
   shift
   local tmpout tmperr
@@ -211,131 +213,8 @@ item_route() {
 # lookup_cmd: the command a failed lookup named on stderr
 lookup_cmd() { sed -n 's/^deps-lookup-failed: //p' <<<"$LAST_ERR"; }
 
-PROJECTS_YML="$(printf '  backend: github-projects\n  project_number: 1')"
-
-setup_check
-issue_route acme/toy 22 CLOSED COMPLETED
-issue_route other/repo 7 OPEN ""
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"},{"repo":"other/repo","number":7,"ref":"other/repo#7"}]'
-assert_exit "check: exit" 0
-assert_jq "check: closed completed is met; an open issue is unmet" '.unmet' '[{"ref":"other/repo#7","status":"open"}]'
-assert_jq "check: no warnings" '.warnings' '[]'
-assert_eq "check: one issue view per dependency" "$(grep -c 'issue view' "$FAKE_GH_DIR/calls.log")" 2
-
-setup_check
-run_check "$SCRIPT" check 12 '[]'
-assert_exit "check: no refs, exit" 0
-assert_jq "check: no refs gives nothing unmet" '.' '{"unmet":[],"warnings":[]}'
-
-setup_check
-issue_route acme/toy 22 CLOSED NOT_PLANNED
-issue_route acme/toy 23 CLOSED DUPLICATE
-issue_route acme/toy 24 CLOSED ""
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"},{"repo":"acme/toy","number":23,"ref":"acme/toy#23"},{"repo":"acme/toy","number":24,"ref":"acme/toy#24"}]'
-assert_exit "check: closed otherwise, exit" 0
-assert_jq "check: closed as not planned, a duplicate or with no reason is unmet" '.unmet' \
-  '[{"ref":"acme/toy#22","status":"closed as not planned"},{"ref":"acme/toy#23","status":"closed as duplicate"},{"ref":"acme/toy#24","status":"closed"}]'
-assert_jq "check: only not planned warns" '.warnings' '["#12 depends on acme/toy#22, which was closed as not planned"]'
-assert_eq "check: labels backend makes no project lookup" "$(grep -c 'graphql' "$FAKE_GH_DIR/calls.log")" 0
-
-# lookups that fail
-setup_check
-route "issue view 22 --repo acme/toy --json state,stateReason" 1
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
-assert_exit "check: a failed lookup exits 1" 1
-assert_eq "check: a failed lookup prints nothing on stdout" "$LAST_OUT" ""
-assert_eq "check: a failed lookup names the command on stderr" "$(lookup_cmd)" "gh issue view 22 --repo acme/toy --json state,stateReason"
-
-setup_check
-route "issue view 22 --repo acme/toy --json state,stateReason" 0 '{"state":"WEIRD"}'
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
-assert_exit "check: an unexpected response exits 1" 1
-assert_eq "check: an unexpected response names the command" "$(lookup_cmd)" "gh issue view 22 --repo acme/toy --json state,stateReason (unexpected response)"
-
-# the Projects backend: Status of a same-board card
-setup_check "$PROJECTS_YML"
-issue_route acme/toy 22 OPEN ""
-item_route 22 "Done"
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
-assert_exit "check: projects, Status Done, exit" 0
-assert_jq "check: Status equal to the done column is met even when the issue is open" '.unmet' '[]'
-
-setup_check "$PROJECTS_YML"
-issue_route acme/toy 22 OPEN ""
-item_route 22 "In Review"
-issue_route acme/toy 23 OPEN ""
-item_route 23 "-"
-issue_route acme/toy 24 OPEN ""
-item_route 24 ""
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"},{"repo":"acme/toy","number":23,"ref":"acme/toy#23"},{"repo":"acme/toy","number":24,"ref":"acme/toy#24"}]'
-assert_jq "check: the column name is the status; no item or no Status falls back to the state" '.unmet' \
-  '[{"ref":"acme/toy#22","status":"In Review"},{"ref":"acme/toy#23","status":"open"},{"ref":"acme/toy#24","status":"open"}]'
-
-setup_check "$PROJECTS_YML"
-issue_route acme/toy 22 OPEN ""
-item_route 22 "Won't Do"
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
-assert_jq "check: Status Won't Do is unmet" '.unmet' '[{"ref":"acme/toy#22","status":"Won'"'"'t Do"}]'
-assert_jq "check: Status Won't Do warns as not planned" '.warnings' '["#12 depends on acme/toy#22, which was closed as not planned"]'
-
-setup_check "$PROJECTS_YML"
-issue_route acme/toy 22 CLOSED COMPLETED
-issue_route other/repo 7 CLOSED COMPLETED
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"},{"repo":"other/repo","number":7,"ref":"other/repo#7"}]'
-assert_jq "check: projects, closed completed needs no project lookup, in any repo" '.unmet' '[]'
-assert_eq "check: projects, no graphql call was made" "$(grep -c 'graphql' "$FAKE_GH_DIR/calls.log")" 0
-
-# the Projects backend: a dependency in another repo that is an item on the same project
-CROSS='[{"repo":"other/repo","number":7,"ref":"other/repo#7"}]'
-setup_check "$PROJECTS_YML"
-issue_route other/repo 7 OPEN ""
-item_route 7 "Done" other/repo
-run_check "$SCRIPT" check 12 "$CROSS"
-assert_exit "check: cross-repo, Status Done, exit" 0
-assert_jq "check: cross-repo, an open issue at Status Done is met" '.unmet' '[]'
-assert_eq "check: cross-repo, the project lookup names the dependency's repo" \
-  "$(grep -c 'graphql.* -f o=other -f r=repo -F n=7' "$FAKE_GH_DIR/calls.log")" 1
-
-setup_check "$PROJECTS_YML"
-issue_route other/repo 7 OPEN ""
-item_route 7 "Won't Do" other/repo
-run_check "$SCRIPT" check 12 "$CROSS"
-assert_jq "check: cross-repo, Status Won't Do is unmet" '.unmet' '[{"ref":"other/repo#7","status":"Won'"'"'t Do"}]'
-assert_jq "check: cross-repo, Status Won't Do warns as not planned" '.warnings' '["#12 depends on other/repo#7, which was closed as not planned"]'
-
-setup_check "$PROJECTS_YML"
-issue_route other/repo 7 OPEN ""
-item_route 7 "In Review" other/repo
-issue_route other/repo 8 OPEN ""
-item_route 8 "-" other/repo
-run_check "$SCRIPT" check 12 '[{"repo":"other/repo","number":7,"ref":"other/repo#7"},{"repo":"other/repo","number":8,"ref":"other/repo#8"}]'
-assert_jq "check: cross-repo, another column or no item falls back like a same-repo card" '.unmet' \
-  '[{"ref":"other/repo#7","status":"In Review"},{"ref":"other/repo#8","status":"open"}]'
-
-setup_check "$PROJECTS_YML"
-issue_route other/repo 7 OPEN ""
-route "api graphql *-f o=other -f r=repo -F n=7" 1
-run_check "$SCRIPT" check 12 "$CROSS"
-assert_exit "check: cross-repo, a failed project lookup exits 1" 1
-assert_eq "check: cross-repo, a failed project lookup names its command" "$(lookup_cmd)" "gh api graphql (project items of other/repo#7)"
-
-# labels backend: a cross-repo dependency is judged by the issue state only
-setup_check
-issue_route other/repo 7 OPEN ""
-item_route 7 "Done" other/repo
-run_check "$SCRIPT" check 12 "$CROSS"
-assert_jq "check: labels backend, cross-repo Status is not consulted" '.unmet' '[{"ref":"other/repo#7","status":"open"}]'
-assert_eq "check: labels backend, cross-repo makes no graphql call" "$(grep -c 'graphql' "$FAKE_GH_DIR/calls.log")" 0
-
-setup_check "$PROJECTS_YML"
-issue_route acme/toy 22 OPEN ""
-route "api graphql *-F n=22" 1
-run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
-assert_exit "check: a failed project lookup exits 1" 1
-assert_eq "check: a failed project lookup names its command" "$(lookup_cmd)" "gh api graphql (project items of acme/toy#22)"
-
-# the local backend: a dependency in the board repo is read from the store
-LOCAL_YML="  backend: local"
+# a dependency in the board repo is read from the store
+LOCAL_YML=""
 # local_card <n> <state>: seeds a card file in the local store of $REPO
 local_card() {
   mkdir -p "$REPO/.fleet-board/cards"
@@ -364,12 +243,13 @@ assert_exit "check: local, a missing card exits 1" 1
 assert_eq "check: local, a missing card prints nothing on stdout" "$LAST_OUT" ""
 assert_eq "check: local, a missing card names the lookup on stderr" "$LAST_ERR" "deps-lookup-failed: local card #25"
 
+# a ref in another repo is outside this board: not looked up, met, warned about
 setup_check "$LOCAL_YML"
-issue_route acme/other 3 CLOSED COMPLETED
 run_check "$SCRIPT" check 12 '[{"repo":"acme/other","number":3,"ref":"acme/other#3"}]'
-assert_exit "check: local, another repo goes through gh, exit" 0
-assert_jq "check: local, another repo's closed issue is met" '.unmet' '[]'
-assert_eq "check: local, another repo is read with gh issue view" "$(grep -c 'issue view 3 --repo acme/other' "$FAKE_GH_DIR/calls.log")" 1
+assert_exit "check: another repo is outside this board, exit" 0
+assert_jq "check: another repo's ref is not unmet" '.unmet' '[]'
+assert_jq "check: another repo's ref warns that it is not checked" '.warnings' '["#12 depends on acme/other#3, which is outside this board; not checked"]'
+assert_eq "check: another repo's ref makes no gh call" "$(cat "$FAKE_GH_DIR/calls.log" 2>/dev/null | wc -l | tr -d ' ')" 0
 
 # card fields: parse-card reads blocked_by; check reports a cycle
 # field_card <n> <state> <blocked_by json>: a local card with the fields
@@ -389,7 +269,7 @@ assert_jq "parse-card: refs come from blocked_by, not the body" '.refs' '[{"repo
 assert_jq "parse-card: no warnings" '.warnings' '[]'
 jq -n '{number: 12, body: "## Depends on\n- #99\n"}' > "$RJ"
 run_check "$SCRIPT" parse-card "$RJ"
-assert_jq "parse-card: a card without the field falls back to the body" '[.refs[].number]' '[99]'
+assert_jq "parse-card: a card without the field has no dependencies, whatever the body says" '.refs' '[]'
 jq -n '{number: 12, body: "## Depends on\n- #99\n", blocked_by: []}' > "$RJ"
 run_check "$SCRIPT" parse-card "$RJ"
 assert_jq "parse-card: blocked_by [] means no dependencies whatever the body says" '.refs' '[]'

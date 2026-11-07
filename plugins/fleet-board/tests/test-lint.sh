@@ -55,15 +55,12 @@ echo x > "$ROOT/src/real.js"
 git -C "$ROOT" add -A
 git -C "$ROOT" commit -q -m initial
 
-# gh stub: "issue view 404" is not found; any other issue view is open
-cat > "$STUBS/gh" <<'EOF'
-#!/usr/bin/env bash
-case "$1 $2 $3" in
-  "issue view 404") echo "GraphQL: Could not resolve to an Issue" >&2; exit 1 ;;
-  "issue view "*) echo '{"state":"OPEN"}'; exit 0 ;;
-esac
-exit 0
-EOF
+# the board store of ROOT holds card 7 (not 404); gh is never needed
+mkdir -p "$ROOT/.fleet-board/cards"
+echo 8 > "$ROOT/.fleet-board/next"
+jq -n '{number: 7, title: "t", body: "", acceptance: ["x"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+  > "$ROOT/.fleet-board/cards/7.json"
+printf '#!/usr/bin/env bash\necho "gh must not be called: $*" >&2\nexit 99\n' > "$STUBS/gh"
 chmod +x "$STUBS/gh"
 
 newset() { rm -rf "$BODIES"; mkdir -p "$BODIES"; }
@@ -146,7 +143,7 @@ run_lint 1
 check "the named bad card fails" "$RC" "1"
 
 # ---------------------------------------------------------------- board mode
-echo "# board mode (labels backend)"
+echo "# board mode (the issue fixtures become local cards: routes-store.sh)"
 FG="$SB/fakegh"; mkdir -p "$FG/bin" "$FG/r"
 ln -s "$SCRIPT_DIR/fake-gh.sh" "$FG/bin/gh"
 mk_issue() { jq -n --arg b "$2" --arg l "$3" --argjson n "$1" '{number:$n,title:"t",html_url:"x",body:$b,labels:[{name:$l}]}' > "$FG/r/issue$1.json"; }
@@ -167,6 +164,7 @@ echo '{"login":"bot"}' > "$FG/r/user.json"
   printf 'issue list --repo acme/toy --label fleet:backlog *\t0\t%s\n' "$FG/r/backlog.json"
 } > "$FG/routes"
 run_board() {
+  FLEET_BOARD_USER="$(bash "$SCRIPT_DIR/routes-store.sh" "$FG/routes" "$ROOT")"; export FLEET_BOARD_USER
   OUT="$(cd "$ROOT" && FAKE_GH_DIR="$FG" FAKE_GH_ROUTES="$FG/routes" PATH="$FG/bin:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
   RC=$?
 }
@@ -195,13 +193,13 @@ has "no arguments: lints a failing Backlog card" "$OUT" "#24"
 hasnt "no arguments: clean Backlog card 22 stays silent" "$OUT" "#22"
 
 # ---------------------------------------------------------------- local backend
-echo "# local backend: board.repo refs read the card files; gh exits 99"
+echo "# local cards: board.repo refs read the card files; gh exits 99"
 LR="$SB/localroot"; LSTUB="$SB/stub99"
 mkdir -p "$LR/.fleet-board/cards" "$LSTUB"
 git -C "$LR" init -q -b main
 git -C "$LR" config user.email t@example.com
 git -C "$LR" config user.name T
-printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$LR/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$LR/.fleet-board.yml"
 git -C "$LR" add .fleet-board.yml
 git -C "$LR" commit -q -m initial
 echo 3 > "$LR/.fleet-board/next"

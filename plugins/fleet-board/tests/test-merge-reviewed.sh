@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/merge-reviewed.sh"
 MARK='<!-- fleet-board:manager-note -->'
 
@@ -32,12 +33,19 @@ assert_exit() { if [ "$LAST_EXIT" = "$2" ]; then pass "$1"; else fail "$1" "expe
 assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
 
 run_merge() {
+  store_sync
+  cp "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" 2>/dev/null || : > "$FAKE_GH_DIR/card-12.before"
   local e; e="$(mktemp)"
   "$BASH_EXE" "$SCRIPT" "$@" > /dev/null 2> "$e" </dev/null
   LAST_EXIT=$?
   LAST_ERR="$(cat "$e")"
   rm -f "$e"
 }
+
+# moved_done: 1 when the run moved card 12 to done on the local board, else 0
+moved_done() { [ "$(jq -r .state "$REPO/.fleet-board/cards/12.json" 2>/dev/null)" = done ] && ! cmp -s "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" && echo 1 || echo 0; }
+# board_writes: 1 when the run changed card 12's file, else 0
+board_writes() { cmp -s "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" && echo 0 || echo 1; }
 
 cnt() {
   if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -cF -- "$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
@@ -161,7 +169,7 @@ assert_exit "auto: exit 0" 0
 assert_eq "auto: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
 assert_eq "auto: never --admin" "$(cnt "--admin")" 0
 assert_eq "auto: never --auto" "$(cnt "--auto")" 0
-assert_eq "auto: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
+assert_eq "auto: the card moves to done" "$(moved_done)" 1
 
 echo "merge.policy auto: a card in a review stage with a clean stage review is merged"
 STAGE_CFG='review:
@@ -175,9 +183,8 @@ pr 34 false "$GREEN"
 finalize
 run_merge
 assert_exit "stage: exit 0" 0
-assert_eq "stage: the fleet:review_security column is listed" "$(cnt "issue list --repo acme/toy --label fleet:review_security")" 1
 assert_eq "stage: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
-assert_eq "stage: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
+assert_eq "stage: the card moves to done" "$(moved_done)" 1
 
 echo "merge.policy human: nothing is merged"
 setup_case human
@@ -187,7 +194,7 @@ finalize
 run_merge
 assert_exit "human: exit 0" 0
 assert_eq "human: no gh pr merge" "$(cnt "pr merge")" 0
-assert_eq "human: no board write" "$(cnt "issue edit")" 0
+assert_eq "human: no board write" "$(board_writes)" 0
 
 echo "a failed merge leaves the card where it is"
 setup_case auto
@@ -197,13 +204,13 @@ printf 'pr merge *\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
 finalize
 run_merge
 assert_exit "failed merge: exit 1" 1
-assert_eq "failed merge: no move to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 0
+assert_eq "failed merge: no move to done" "$(moved_done)" 0
 
 echo "cases that must never merge"
 no_merge() { # <desc> ; the case is already finalized
   run_merge
   assert_eq "$1: no gh pr merge" "$(cnt "pr merge")" 0
-  assert_eq "$1: no move to done" "$(cnt "add-label fleet:done")" 0
+  assert_eq "$1: no move to done" "$(moved_done)" 0
 }
 setup_case auto
 card 12 in_review "$CLEAN"

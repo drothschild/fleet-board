@@ -5,17 +5,18 @@
 #        card-lint.sh --body-file <file>     (lint a body already read; used by tick-plan.sh)
 #        card-lint.sh --read-file <file>     (lint a board-read.sh result already read)
 #
-# A card read that carries an "acceptance" array (the local backend) is linted
-# on that array: empty is "empty-acceptance", and manual-check scans its items.
-# Without the field (GitHub backends, --body-file) the body is linted as below.
+# A card (<number> or --read-file) is linted on its "acceptance" array (a card
+# without the field has none): empty is "empty-acceptance", and manual-check
+# scans its items. --body-file (import-plan.sh's generated bodies, through
+# lint.sh --bodies) lints the body as below.
 #
 # Prints one line per violation, "<rule>: <detail>", and exits 1; prints
 # nothing and exits 0 for a card that passes. Rules:
 #   no-heading    no "## Acceptance" heading. When the body has "**Acceptance**"
 #                 or "Acceptance:" the detail starts with "found " and names it.
 #   no-bullets    the heading is there but no "- " bullet is under it.
-#   empty-acceptance  a card read with an "acceptance" array (local) whose array
-#                 is empty; replaces no-heading and no-bullets for such a card.
+#   empty-acceptance  a card whose "acceptance" array is empty or missing;
+#                 replaces no-heading and no-bullets for a card.
 #   manual-check  an Acceptance bullet holds a phrase that marks a check no
 #                 agent can run (on device, on a device, verify on, by hand,
 #                 Human QA, simulator, any case); it belongs under "## Human QA".
@@ -51,7 +52,8 @@ BODY="${BODY//$'\r'/}"
 FOUND=0
 
 # A card with an acceptance field: the items are the Acceptance section
-if [ -n "$READ" ] && [ "$(jq -r '(.acceptance | type)' <<<"$READ" 2>/dev/null)" = array ]; then
+if [ -n "$READ" ]; then
+  READ="$(jq -c '.acceptance |= (if type == "array" then . else [] end)' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read"
   if [ "$(jq -r '.acceptance | length' <<<"$READ")" = 0 ]; then
     echo "empty-acceptance: the card has no acceptance items"
     exit 1

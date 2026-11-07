@@ -123,7 +123,6 @@ new_repo() {
 }
 
 LOCAL_YML='board:
-  backend: local
   repo: acme/toy
 worktrees:
   dir: .fw'
@@ -604,13 +603,6 @@ if start_server "$STAGES_REPO"; then
 fi
 
 echo "Case: board-web.sh"
-LABELS_REPO="$(new_repo 'board:
-  backend: github-labels
-  repo: acme/toy')"
-run_check "$SCRIPTS/board-web.sh" --repo "$LABELS_REPO"
-assert_exit "labels repo refused" 2
-assert_stderr_contains "labels refusal names the backend" "board.backend is github-labels; the board page needs local"
-
 NOCFG_REPO="$(new_repo '')"
 run_check "$SCRIPTS/board-web.sh" --repo "$NOCFG_REPO"
 assert_exit "missing config exits 3" 3

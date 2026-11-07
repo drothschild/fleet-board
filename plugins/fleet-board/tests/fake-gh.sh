@@ -5,7 +5,13 @@
 # Environment:
 #   FAKE_GH_DIR: writable state directory for calls.log, bodies/, inputs/
 #   FAKE_GH_ROUTES: path to routes file
-#   FAKE_GH_DELAY: (optional) seconds to sleep before replying to 'issue edit' calls
+#   FAKE_GH_ALLOW_BOARD: (optional) 1 lets board calls through (see below)
+#
+# The board is local: a gh call on GitHub issues, labels or projects, or any
+# GraphQL call, is refused (logged, then exit 99) whatever the routes say,
+# unless FAKE_GH_ALLOW_BOARD=1 (only the read-only importer's suite sets it).
+# A suite's routes may still describe issues: tests/routes-store.sh turns
+# them into local cards, and no script may ask gh for them.
 #
 # Routes file format (tab-separated):
 #   <glob>\t<exit-code>\t<fixture-path-or-dash>
@@ -56,6 +62,17 @@ done
   printf '%s\t%s\n' "$PPID" "$*"
 } >> "$FAKE_GH_DIR/calls.log"
 
+# Refuse a board call (after logging it, so a suite can see it was tried)
+if [ "${FAKE_GH_ALLOW_BOARD:-}" != 1 ]; then
+  case "$1" in
+    issue|label|project) printf 'fake-gh: board call refused (the board is local): %s\n' "$*" >&2; exit 99 ;;
+    api)
+      case " $* " in
+        *graphql*|*/issues*) printf 'fake-gh: board call refused (the board is local): %s\n' "$*" >&2; exit 99 ;;
+      esac ;;
+  esac
+fi
+
 # Handle --body-file: copy the file byte-for-byte
 for i in "$@"; do
   if [ "$i" = "--body-file" ]; then
@@ -88,14 +105,6 @@ for i in "$@"; do
   fi
 done
 
-# Apply FAKE_GH_DELAY for 'issue edit' calls
-if [ "${FAKE_GH_DELAY:-}" != "" ]; then
-  case "$*" in
-    *"issue edit"*)
-      sleep "$FAKE_GH_DELAY"
-      ;;
-  esac
-fi
 
 # Find matching route
 routes_dir="$(dirname "$FAKE_GH_ROUTES")"

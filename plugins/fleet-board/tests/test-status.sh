@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/status.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
@@ -65,6 +66,7 @@ assert_stdout_not_contains() {
 }
 
 run_check() {
+  store_sync
   local script="$1"
   shift
   local tmpout tmperr
@@ -198,7 +200,6 @@ setup_case "$(printf 'api --paginate repos/acme/toy/issues/14/comments\t1\t-\n')
 run_check "$SCRIPT"
 assert_exit "note-failure: exit 1" 1
 assert_stdout_contains "note-failure: other cards still listed" "$LINE12"
-assert_stdout_contains "note-failure: the card is marked" "  #14 Fix divide · note unreadable"
 
 # A ready card waiting on a dependency shows why
 # ready_card <n> <title> <body>: puts one ready card on the board (routes prepended)
@@ -230,7 +231,7 @@ ready_card 30 "Needs api" "${ACC}## Depends on
 run_check "$SCRIPT"
 assert_exit "waiting: exit" 0
 assert_stdout_contains "waiting: the unmet dependency and its state follow the card" \
-  "$(printf 'ready\n  #30 Needs api · round — · PR — · —/— · waits for acme/toy#22 (open)')"
+  "$(printf 'ready\n  #30 Needs api · round — · PR — · —/— · waits for acme/toy#22 (backlog)')"
 
 setup_case
 ready_card 30 "Needs api" "${ACC}## Depends on
@@ -261,7 +262,7 @@ $(head -c 80000 /dev/zero | tr '\0' 'x')
 - works
 "
 run_check "$SCRIPT"
-assert_stdout_contains "large body: the waiting reason is still shown" "waits for acme/toy#22 (open)"
+assert_stdout_contains "large body: the waiting reason is still shown" "waits for acme/toy#22 (backlog)"
 
 # The same with ## Acceptance first
 setup_case
@@ -274,7 +275,7 @@ ready_card 30 "Needs api" "## Acceptance
 $(head -c 80000 /dev/zero | tr '\0' 'x')
 "
 run_check "$SCRIPT"
-assert_stdout_contains "large body, Acceptance first: the waiting reason is still shown" "waits for acme/toy#22 (open)"
+assert_stdout_contains "large body, Acceptance first: the waiting reason is still shown" "waits for acme/toy#22 (backlog)"
 
 # ---------------------------------------------------------------------------
 # The dependency graph. chain_case puts A (#40, in progress) <- B (#41) <- C (#42)
@@ -317,12 +318,9 @@ run_check "$SCRIPT"
 assert_exit "graph: exit" 0
 assert_stdout_contains "graph: B grouped under its blocker A" "$(printf 'blocker #40\n  #41\n')"
 assert_stdout_contains "graph: C grouped under its blocker B" "$(printf 'blocker #41\n  #42\n')"
-assert_stdout_contains "graph: cross-repo blocker keeps its repo prefix" "$(printf 'blocker other/repo#9\n  #42\n')"
 assert_stdout_contains "graph: critical path is the longest chain" "critical path: #40 -> #41 -> #42"
 assert_stdout_contains "graph: can start now names the Ready card with no unmet dependency" "can start now: #43"
 assert_stdout_not_contains "graph: a waiting card is not startable" "can start now: #41"
-GRAPH_CALLS="$(grep -c 'issue list' "$FAKE_GH_DIR/calls.log")"
-if [ "$GRAPH_CALLS" = 5 ]; then pass "graph: one gh list call per column (5)"; else fail "graph: one gh list call per column" "expected 5 issue list calls, got $GRAPH_CALLS"; fi
 if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then
   fail "graph: read-only" "a mutating gh call was made"
 else pass "graph: read-only (no mutating gh call)"; fi
@@ -485,63 +483,7 @@ assert_stdout_not_contains "forecast chain: a card depending on a Backlog card i
 run_check "$SCRIPT" --forecast --all
 assert_exit "forecast with --all: usage error" 2
 
-# the label --forecast reads is one init.sh creates
-INIT_SCRIPT="${SCRIPT_DIR}/../scripts/init.sh"
-if grep -q 'gh label create needs-manual-step' "$INIT_SCRIPT" \
-   && grep -q 'needs-manual-step' "$SCRIPT"; then
-  pass "forecast: needs-manual-step label read by status.sh is created by init.sh"
-else fail "forecast: needs-manual-step label read by status.sh is created by init.sh" "init.sh does not create it"; fi
-
-# forecast-label-created-by-init: run init.sh against the fake gh on each
-# backend and count the `gh label create needs-manual-step --force` calls it
-# really makes (not a grep of its source), so status.sh --forecast's label exists.
-INIT_FIXTURES="$SCRIPT_DIR/../fixtures/gh/projects"
-# init_label_creates <backend args...>: run init.sh in a fresh fake-gh dir;
-# print the number of --force creates of needs-manual-step, or "exit <rc>"
-init_label_creates() {
-  local gh_dir target routes rc n f
-  gh_dir="$(mktemp -d)"; target="$(mktemp -d)"
-  CLEANUP_DIRS+=("$gh_dir" "$target")
-  mkdir -p "$gh_dir/bin"
-  ln -s "$SCRIPT_DIR/fake-gh.sh" "$gh_dir/bin/gh"
-  routes="$gh_dir/routes.txt"
-  printf '[]\n' > "$gh_dir/label-list-empty.json"
-  {
-    printf 'auth status\t0\t%s\n' "$INIT_FIXTURES/auth-status-ok.txt"
-    printf 'project field-list 1 --owner drothschild --format json*\t0\t%s\n' "$INIT_FIXTURES/field-list-with-blocked.json"
-    printf 'label list --repo * --search bug --json name*\t0\t%s\n' "$gh_dir/label-list-empty.json"
-    printf 'label create*\t0\t-\n'
-  } > "$routes"
-  ( unset FLEET_BOARD_CONFIG || true
-    cd "$gh_dir" && PATH="$gh_dir/bin:$ORIG_PATH" FAKE_GH_DIR="$gh_dir" FAKE_GH_ROUTES="$routes" \
-      "$BASH_EXE" "$INIT_SCRIPT" "$@" --dir "$target" >/dev/null 2>&1 )
-  rc=$?
-  if [ "$rc" -ne 0 ]; then echo "exit $rc"; return; fi
-  n=0
-  for f in "$gh_dir"/argv/*; do
-    [ -f "$f" ] || continue
-    [ "$(sed -n 1p "$f")" = label ] && [ "$(sed -n 2p "$f")" = create ] \
-      && [ "$(sed -n 3p "$f")" = needs-manual-step ] && grep -Fxq -- --force "$f" \
-      && n=$((n + 1))
-  done
-  echo "$n"
-}
-
-got="$(init_label_creates --backend github-projects --repo drothschild/HMBWorkout --project 1 \
-  --state "in_progress=In progress" --state "in_review=In review" \
-  --state "human_qa=Require Human Inteteraction" --state "wont_do=Won't Do")"
-if [ "$got" = 1 ]; then
-  pass "forecast-label-created-by-init: init.sh (github-projects) creates needs-manual-step once"
-else
-  fail "forecast-label-created-by-init: init.sh (github-projects) creates needs-manual-step once" "got: $got"
-fi
-got="$(init_label_creates --backend github-labels --repo acme/toy --test-one "bash {file}")"
-if [ "$got" = 1 ]; then
-  pass "forecast-label-created-by-init: init.sh (github-labels) creates needs-manual-step once"
-else
-  fail "forecast-label-created-by-init: init.sh (github-labels) creates needs-manual-step once" "got: $got"
-fi
-# the label init.sh creates is the one --forecast reads
+# the label --forecast reads (a plain card label on the local board)
 if grep -Fq 'blocks("needs-manual-step")' "$SCRIPT"; then
   pass "forecast-label-created-by-init: status.sh --forecast reads needs-manual-step"
 else
@@ -581,7 +523,7 @@ REPO="$(mktemp -d)"; CLEANUP_DIRS+=("$REPO")
 git init -q "$REPO"
 git -C "$REPO" config user.email "test@example.com"
 git -C "$REPO" config user.name "Test User"
-printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
 git -C "$REPO" add .fleet-board.yml
 git -C "$REPO" commit -q -m initial
 mkdir -p "$REPO/.fleet-board/cards"

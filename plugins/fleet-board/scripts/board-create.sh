@@ -42,4 +42,4 @@ done
 
 fb_load_config
 export FB_CREATE_STATE
-exec bash "$FLEET_SCRIPTS/adapters/$(fb_cfg board.backend)/create.sh" "$TITLE" "$BODY_FILE" "${LABELS[@]+"${LABELS[@]}"}"
+exec bash "$FLEET_SCRIPTS/adapters/local/create.sh" "$TITLE" "$BODY_FILE" "${LABELS[@]+"${LABELS[@]}"}"

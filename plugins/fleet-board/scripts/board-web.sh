@@ -5,13 +5,12 @@
 #
 # Runs from the repo root (DIR, default $PWD; the main checkout, the directory
 # holding the git common dir, so a linked worktree serves the main store). The
-# port defaults to board.port; --port takes 1024-65535. Needs board.backend:
-# local and python3.
+# port defaults to board.port; --port takes 1024-65535. Needs python3.
 #
 # Exit codes:
 #   1 - not a git repository, a config read failed, python3 is not on PATH, or
 #       (from board-web.py) the port is in use
-#   2 - usage error (including a --port outside 1024-65535), or board.backend is not local
+#   2 - usage error (including a --port outside 1024-65535)
 #   3, 4, 5 - config.sh --check failed (3: no .fleet-board.yml)
 # Otherwise it execs board-web.py, which serves until interrupted.
 
@@ -61,8 +60,6 @@ cfg() {
   printf '%s' "$v"
 }
 
-BACKEND="$(cfg board.backend)" || exit 1
-[ "$BACKEND" = local ] || die 2 "board.backend is $BACKEND; the board page needs local"
 if [ -z "$PORT" ]; then
   PORT="$(cfg board.port)" || exit 1
 fi

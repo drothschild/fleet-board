@@ -82,11 +82,9 @@
 #       decision does not use it
 #   gh pr view <blocking_pr> --json state,mergedAt
 #       blocked, when note.blocking_pr is set
-#   deps.sh parse / deps.sh check <n> <refs>
-#       ready, with an Acceptance section and a "## Depends on" section in the
-#       body: deps.sh check runs gh issue view <N> --repo <owner/repo> --json
-#       state,stateReason per dependency, and on the Projects backend the
-#       project Status of a dependency in board.repo (see deps.sh)
+#   deps.sh parse-card / deps.sh check <n> <refs>
+#       ready, with acceptance and a non-empty blocked_by: deps.sh check reads
+#       each blocker's state from the local store (see deps.sh)
 # A failed lookup (or a failed card or note read) makes that card's action
 # skip, with reason "lookup failed: <command>" and a warning. It never falls
 # through to any other action.
@@ -528,11 +526,9 @@ card_input() {
   # stays skip_no_acceptance. The marker names the lint result, so the manager
   # comments once per distinct result (compared with the latest posted lint comment only).
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ]; then
-    # a card read with an acceptance field is linted on the field
-    lint_flag=--body-file; lint_src="$body"
-    if jq -e '.acceptance | type == "array"' <<<"$read" >/dev/null 2>&1; then lint_flag=--read-file; lint_src="$read"; fi
-    if printf '%s\n' "$lint_src" > "$LINT_FILE"; then
-      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" "$lint_flag" "$LINT_FILE")"; lint_rc=$?
+    # the card read is linted on its acceptance field
+    if printf '%s\n' "$read" > "$LINT_FILE"; then
+      lint_out="$(bash "$FLEET_SCRIPTS/card-lint.sh" --read-file "$LINT_FILE")"; lint_rc=$?
       case "$lint_rc" in
         0) ;;
         1)
@@ -566,22 +562,12 @@ card_input() {
       | .paths | unique' 2>/dev/null)" || scope='[]'
   fi
 
-  # A ready card's dependencies (only a card that could start is looked up)
-  # (grep reads the file, not a pipe: grep -q quits at its first match, and a
-  # body bigger than the pipe buffer would kill the writer and skip the gate)
-  has_deps=1; deps_cmd=parse
+  # A ready card's dependencies, its blocked_by field (only a card that could
+  # start is looked up)
+  has_deps=1; deps_cmd=parse-card
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] && [ "$lint_gate" = false ]; then
-    # grep exits 1 on no match and 2 on an error: only 1 means "no Depends on"
-    # (a card with the blocked_by field has its dependencies whatever the body says)
-    if jq -e '.blocked_by | type == "array"' <<<"$read" >/dev/null 2>&1; then
-      deps_cmd=parse-card
-      if printf '%s\n' "$read" > "$DEPS_FILE"; then has_deps=0; else has_deps=2; fi
-    elif printf '%s\n' "$body" > "$DEPS_FILE"; then
-      grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"; has_deps=$?
-    else
-      has_deps=2
-    fi
-    [ "$has_deps" -le 1 ] || failed="deps.sh parse $n (cannot read the card body)"
+    if printf '%s\n' "$read" > "$DEPS_FILE"; then has_deps=0; else has_deps=2; fi
+    [ "$has_deps" -le 1 ] || failed="deps.sh parse-card $n (cannot write the card)"
   fi
   if [ -z "$failed" ] && [ "$has_deps" -eq 0 ]; then
     if out="$(bash "$FLEET_SCRIPTS/deps.sh" "$deps_cmd" "$DEPS_FILE")" \
@@ -600,7 +586,7 @@ card_input() {
         fi
       fi
     else
-      failed="deps.sh parse $n"; deps_warn='[]'
+      failed="deps.sh parse-card $n"; deps_warn='[]'
     fi
   fi
 

@@ -75,20 +75,12 @@ trap 'rm -f "$DEPS_FILE" "$EDGES_FILE" "$START_FILE" "$FC_FILE"' EXIT
 # waits_for <n>: prints the waiting reason of a ready card ("waits for ..."),
 # nothing when it has no unmet dependency; fails when they cannot be looked up
 waits_for() {
-  local card body refs out
+  local card refs out
   card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1" </dev/null)" || return 1
-  body="$(jq -r '.body // ""' <<<"$card" 2>/dev/null)" || return 1
   fb_card_has_acceptance "$card" || return 0
-  if jq -e '.blocked_by | type == "array"' <<<"$card" >/dev/null 2>&1; then
-    # a card with the blocked_by field: the field is the dependency list
-    printf '%s\n' "$card" > "$DEPS_FILE" || return 1
-    refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse-card "$DEPS_FILE" | jq -c .refs)" || return 1
-  else
-    printf '%s\n' "$body" > "$DEPS_FILE" || return 1
-    grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"
-    case $? in 0) ;; 1) return 0 ;; *) return 1 ;; esac
-    refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1
-  fi
+  # the blocked_by field is the dependency list
+  printf '%s\n' "$card" > "$DEPS_FILE" || return 1
+  refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse-card "$DEPS_FILE" | jq -c .refs)" || return 1
   [ "$refs" != '[]' ] || return 0
   out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$1" "$refs" 2>/dev/null)" || return 1
   jq -c --arg c "$1" --arg r "$FLEET_REPO" \
@@ -101,23 +93,12 @@ waits_for() {
 # forecast_card <state> <n> <title>: appends one JSON line for the card to
 # FC_FILE: number, title, column, labels, dependency refs, unmet dependencies
 forecast_card() {
-  local st="$1" n="$2" title="$3" card body labels refs="[]" unmet="[]" out
+  local st="$1" n="$2" title="$3" card labels refs="[]" unmet="[]" out
   card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null)" || return 1
-  body="$(jq -r '.body // ""' <<<"$card" 2>/dev/null)" || return 1
   labels="$(jq -c '.labels // []' <<<"$card" 2>/dev/null)" || return 1
   if [ "$st" = ready ] || [ "$st" = backlog ]; then
-    if jq -e '.blocked_by | type == "array"' <<<"$card" >/dev/null 2>&1; then
-      printf '%s\n' "$card" > "$DEPS_FILE" || return 1
-      refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse-card "$DEPS_FILE" | jq -c .refs)" || return 1
-    else
-      printf '%s\n' "$body" > "$DEPS_FILE" || return 1
-      grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"
-      case $? in
-        0) refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1 ;;
-        1) ;;
-        *) return 1 ;;
-      esac
-    fi
+    printf '%s\n' "$card" > "$DEPS_FILE" || return 1
+    refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse-card "$DEPS_FILE" | jq -c .refs)" || return 1
     if [ "$st" = ready ] && [ "$refs" != '[]' ] && fb_card_has_acceptance "$card"; then
       out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$n" "$refs" 2>/dev/null)" || return 1
       unmet="$(jq -c .unmet <<<"$out")" || return 1
