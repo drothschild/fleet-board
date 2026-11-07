@@ -159,19 +159,25 @@ check_conflict() { # <label> <files...>: run a conflicting merge over the files 
   local label="$1"; shift
   setup "" "$*" 1
   run_update
-  assert_exit "$label: exit 1 so the failure is counted" 1
+  assert_exit "$label: exit 1 so the manager counts the failure" 1
   assert_eq "$label: the merge is aborted" "$(count_lines '^merge --abort' "$GIT_LOG")" 1
   assert_eq "$label: nothing is pushed" "$(count_lines '^push ' "$GIT_LOG")" 0
   assert_eq "$label: git log has no rebase" "$(count_lines 'rebase' "$GIT_LOG")" 0
   assert_eq "$label: the card is not moved to blocked" "$(gh_calls 'issue edit')" 0
   assert_eq "$label: the note stays in_review" "$(written_note | jq -c '.state')" '"in_review"'
+  assert_eq "$label: one comment" "$(gh_calls 'issue comment 12')" 1
+  local body_file f
+  body_file="$(ls "$FAKE_GH_DIR"/bodies/* 2>/dev/null | head -1)"
+  for f in "$@"; do
+    assert_eq "$label: comment names $f" "$(count_lines "$f" "$body_file")" 1
+  done
+  assert_eq "$label: the script does not count the failure (the manager does, once)" \
+    "$(written_note | jq -c '.action_failures // 0')" '0'
 }
 
 check_conflict "conflict in one non-test file dispatches the fixer" src/calc.js
 assert_eq "conflict in one non-test file dispatches the fixer: the note records the file" \
   "$(written_note | jq -c '.conflicted_files')" '["src/calc.js"]'
-assert_eq "conflict in one non-test file dispatches the fixer: the failure is counted" \
-  "$(written_note | jq -c '.action_failures')" '1'
 
 check_conflict "conflict in several files dispatches the fixer" src/calc.js src/util.js src/more.js
 assert_eq "conflict in several files dispatches the fixer: every file is recorded in the note" \
