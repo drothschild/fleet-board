@@ -1224,8 +1224,8 @@ assert_file_contains "run skill: names settle.sh" "$RUN_SKILL" "settle.sh"
 assert_file_contains "run skill: names cleanup-done.sh" "$RUN_SKILL" "cleanup-done.sh"
 assert_file_contains "run brief: names settle.sh" "$RUN_BRIEF" "settle.sh"
 assert_file_contains "run spec: names cleanup-done.sh" "$RUN_SPEC" "cleanup-done.sh"
-S_LINE="$(grep -nF 'settle.sh' "$RUN_SKILL" 2>/dev/null | head -1 | cut -d: -f1)"
-C_LINE="$(grep -nF 'cleanup-done.sh' "$RUN_SKILL" 2>/dev/null | head -1 | cut -d: -f1)"
+S_LINE="$(grep -nF 'scripts/settle.sh' "$RUN_SKILL" 2>/dev/null | head -1 | cut -d: -f1)"
+C_LINE="$(grep -nF 'scripts/cleanup-done.sh' "$RUN_SKILL" 2>/dev/null | head -1 | cut -d: -f1)"
 if [ -n "$S_LINE" ] && [ -n "$C_LINE" ] && [ "$S_LINE" -lt "$C_LINE" ]; then
   pass "run skill: settle.sh is named before cleanup-done.sh"
 else
