@@ -825,3 +825,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
   #board { padding: 10px 12px; scroll-snap-type: x mandatory; }
   .col, .stack { flex-basis: 78vw; scroll-snap-align: start; }
 }
+
+/* Cards whose stored state is not a column */
+.col.unknown { border-style: dashed; }
+.card-state { overflow-wrap: anywhere; }
