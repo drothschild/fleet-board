@@ -367,6 +367,21 @@ CODEX_CMD='codex exec --skip-git-repo-check -s read-only -m {model}'
 assert_exit "command_timeout: exit 1" 1
 assert_contains "command_timeout: message" "$LAST_ERR" "timed out"
 
+review_dir="$WORK/review"
+quoted_dir="$WORK/a b'c"
+mkdir -p "$review_dir" "$quoted_dir"
+CODEX_CMD='codex {dir}'
+FAKE_CODEX_OUT='review'
+codex_chat --dir "$review_dir"
+assert_eq "--dir sets cwd" "$(cat "$WORK/case/codex.cwd")" "$(cd "$review_dir" && pwd -P)"
+assert_eq "--dir substitutes the path" "$(cat "$WORK/case/codex.argv")" "$review_dir"
+codex_chat --dir "$quoted_dir"
+assert_eq "--dir preserves spaces and quotes" "$(cat "$WORK/case/codex.argv")" "$quoted_dir"
+chat "${BASE[@]}" --key-env TEST_KEY --dir "$review_dir"
+assert_exit "--dir without --command exits 2" 2
+codex_chat --dir "$WORK/missing"
+assert_exit "--dir with a missing directory exits 2" 2
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
