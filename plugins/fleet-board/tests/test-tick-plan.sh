@@ -141,6 +141,44 @@ call_count() {
 DEFAULT_MODELS='{"implementor":"sonnet","reviewer":"opus","fixer":"sonnet"}'
 ESCALATED_MODELS='{"implementor":"opus","reviewer":"opus","fixer":"opus"}'
 
+# Focused regression cases for the manager's per-card follow-on step.
+# Also run in the normal suite; the flag runs only these four scenarios.
+follow_on_settle() {
+  setup_case in-progress-draft-pr
+  run_check "$SCRIPT" --settle 12
+  assert_exit "follow-on: open PR exit" 0
+  assert_jq "follow-on: open PR moves to review" "$(card 12 action)" '"move_to_review"'
+  assert_jq "follow-on: carries PR" "$(card 12 pr)" 34
+  assert_jq "follow-on: open PR never dispatches" '.dispatchable' false
+
+  setup_case stage-advance-from-review "$(printf 'review:\n  stages:\n    - name: security\n      agent: acme:sec\n      model: opus\n      paths: ["src/auth/**"]\n      max_rounds: 2')"
+  expected_stage="$(bash "$SCRIPTS_ABS/config.sh" | jq -c '.review.stages[0]')"
+  run_check "$SCRIPT" --settle 12
+  assert_exit "follow-on: clean review exit" 0
+  assert_jq "follow-on: clean review advances" "$(card 12 action)" '"advance_stage"'
+  assert_jq "follow-on: complete stage object" "$(card 12 stage)" "$expected_stage"
+  assert_jq "follow-on: stage never dispatches" '.dispatchable' false
+
+  setup_case in-review-fix
+  run_check "$SCRIPT" --settle 12
+  assert_exit "follow-on: finding exit" 0
+  assert_jq "follow-on: finding waits for fixer" "$(card 12 action)" '"skip"'
+  assert_jq "follow-on: finding reason" "$(card 12 reason)" '"fix waits for the next tick"'
+  assert_jq "follow-on: finding never dispatches" '.dispatchable' false
+
+  setup_case settle-clean-head-moved
+  run_check "$SCRIPT" --settle 12
+  assert_exit "follow-on: changed head exit" 0
+  assert_jq "follow-on: changed head cannot advance" "$(card 12 action)" '"skip"'
+  assert_jq "follow-on: changed head needs review" "$(card 12 reason)" '"review waits for the next tick"'
+  assert_jq "follow-on: changed head never dispatches" '.dispatchable' false
+}
+follow_on_settle
+if [ "${1:-}" = --follow-on ]; then
+  printf 'passed: %s failed: %s\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]; exit $?
+fi
+
 echo "Test: tick-plan.sh"
 echo ""
 
