@@ -12,7 +12,7 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
-if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ] || [ "${1:-start}" = local-web ]; then
+if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ] || [ "${1:-start}" = local-web ] || [ "${1:-start}" = local-qa-race ]; then
   printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
   mkdir -p "$TMP/repo/.fleet-board/cards"
   printf '13\n' > "$TMP/repo/.fleet-board/next"
@@ -496,13 +496,26 @@ if [ "${1:-start}" = local-web ]; then
   echo 'PASS: local-web'; exit 0
 fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
-if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ] || [ "${1:-start}" = local-web ]; then
+if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ] || [ "${1:-start}" = local-web ] || [ "${1:-start}" = local-qa-race ]; then
   jq -e '.state == "in_progress" and any(.comments[]; .author == "fleet-bot" and (.body | contains("fleet-board:standalone-start:")))' .fleet-board/cards/12.json >/dev/null || { echo 'FAIL: local card state or report missing' >&2; exit 1; }
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
 set -eu
 printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed the implementation.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
 REVIEWER
+  if [ "$1" = local-qa-race ]; then
+    MARKER="review-started-$(basename "$TMP")"
+    sed "s|set -eu|set -eu\\ntouch /scratch/$MARKER\\nwhile [ ! -e /scratch/continue-review ]; do sleep 0.1; done|" "$TMP/worker.sh" > "$TMP/worker-next" && mv "$TMP/worker-next" "$TMP/worker.sh"
+    TMPDIR="$TMP" bash "$ROOT/bin/fleet-board" tick > "$TMP/race-out" 2> "$TMP/race-err" & RACE_PID=$!
+    marker=""
+    for i in {1..200}; do marker="$(find "${TMPDIR:-/tmp}" -name "$MARKER" -type f -print -quit 2>/dev/null)"; [ -n "$marker" ] && break; sleep 0.1; done
+    [ -n "$marker" ] || { kill "$RACE_PID" 2>/dev/null || true; wait "$RACE_PID" 2>/dev/null || true; cat "$TMP/race-err" >&2; echo 'FAIL: review did not start' >&2; exit 1; }
+    bash "$ROOT/plugins/fleet-board/scripts/board-move.sh" 12 human_qa || exit 1
+    touch "$(dirname "$marker")/continue-review"
+    if wait "$RACE_PID"; then echo 'FAIL: review accepted Human QA race' >&2; exit 1; fi
+    jq -e '.state == "human_qa" and all(.comments[]; (.body | contains("fleet-board:standalone-review:")) | not)' .fleet-board/cards/12.json >/dev/null || { echo 'FAIL: Human QA or review evidence changed' >&2; exit 1; }
+    echo 'PASS: local-qa-race'; exit 0
+  fi
   if [ "$1" = local-fix ]; then
     sed 's/"outcome":"clean"/"outcome":"findings"/; s/Status\\nclean\\n## Findings\\n- none/Status\\nfindings\\n## Findings\\n- [Important] Incorrect result/' "$TMP/worker.sh" > "$TMP/worker-next" && mv "$TMP/worker-next" "$TMP/worker.sh"
   fi
