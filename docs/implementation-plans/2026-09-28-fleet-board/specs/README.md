@@ -1972,3 +1972,25 @@ The reviewer may classify a change as Conflict-resolved only after reconstructin
 **Validation.** The contract check initially failed 29 of 32 checks; the final check has 36 passing checks. Five manager scenarios cover success from a stage column, blocked resolution, rejected reports, route failure and failed blocked-metadata persistence. Three real-merge reviewer scenarios accept a preserving resolution and reject a dropped parent assertion and an edit outside the conflict region. The preserving candidate's implementation mutant was killed. Result artifacts: `evidence/pr215-manager-behavior.json` and `evidence/pr215-reviewer-behavior.json`. These are bounded behavioral fixture exercises, not a live board run or claims of unit coverage for instructions.
 
 **Merge with main (2026-11-07).** Card 70's revision was written as 21; main then recorded its own Revision 21 (PR 217, the command-provider evidence reviewer), so this one is renumbered 22. Plugin version 0.14.3 (this branch) and 0.15.0 (main) to 0.15.1. `agents/fixer.md` is unchanged by the merge. `agents/manager.md` and `agents/reviewer.md` are git merges: main's Revision 21 run output (manager) and Revision 20 run output (reviewer, card 175) with the owner-approved direct edits of the PR 215 integration repair. No single run produced either file, so both stay named exceptions in the manifest with their merged hashes. The owner confirmed the PR 215 exception and chose to keep the merge rather than re-author on 2026-11-07.
+
+### Revision 23 (2026-11-07, card 180): the manager records not_reproducible
+
+**Cause.** `tick-plan.sh` (PR #179, card 143) plans a re-review instead of another fix when `note.last_fix` is `{"status":"not_reproducible","round":<n>}`, and `parse-report.sh` accepts a fixer Status `not_reproducible` only with `--commits-since-review 0`. Neither `specs/manager.md` nor `agents/manager.md` told the manager to pass that flag or write `last_fix`. PR #181 first added two lines to the agent file by hand, which broke `tests/test-clean-room.sh`, and its `last_fix` shape (`{"round", "not_reproducible": [...]}`) was not the one `tick-plan.sh` reads. The hand edit was dropped and the rule authored by an isolated run.
+
+**Spec and brief changes** (hand edits to the text): `specs/manager.md` 2.9 steps 4 and 5 and its closing paragraph, and a "Revision 23 requirements" section in `briefs/spec-req-manager.md`, committed before the agent file. Spec sha256 (23): `068235c7f2562c46` → `6e73790bfd32ef0a`. Brief sha256 (23): `c1a41a6206005767` → `7e4797cbf7747ede`. `tests/test-manager-last-fix.sh` checks the agent file for `last_fix`; it is not clean-room and failed before the run.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.319, `claude-opus-5-5`. Its only `--add-dir` was a staging dir holding `edit-req.md` (sha256 `b7286e94906e1b1d`, not committed) and a copy of `specs/manager.md` as `spec-manager.md` (`6e73790bfd32ef0a`). The repo owner approved the spend in the session that ran it.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/manager.md` | `d5c9793267f31b52` | PASS | PASS (3 reads, 2 edits) | 6 | 0.3162 | `025ec74e10e78ff3` | `cbe0c611d8e842e6` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-manager.r23.init.json`, with no key and no local path.
+
+**Path audit.** The run read its two inputs and its target, and edited only its target.
+
+**Minimality check.** `git diff -U0` was read: three hunks, all in 2.9 (step 4, step 5, the closing paragraph). Frontmatter unchanged. **Kept.** The input file is the Revision 22 named exception (owner-approved direct edits, PR 215), so the output keeps that exception note, with this run added to it.
+
+**Known limits, not re-run.** The run reported two places it was told not to touch that still name only Status `done` for the fixer: the `fix` row of the action table and the fixer status list in 3.9. Both need the same spec change and a further run.
+
+**Revision cost:** $0.3162. **Running total, all API-key charges:** ~$43.38 (~$43.06 at Revision 21; Revision 22 made no run; plus this run). Plugin version 0.15.3 (main) to 0.15.4.

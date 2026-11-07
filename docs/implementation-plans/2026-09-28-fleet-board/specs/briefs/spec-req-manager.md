@@ -858,3 +858,11 @@ the existing 0.18 Provider stages as 0.19 and use that number in references.
 ## PR 215 integration requirements
 
 Implement spec 2.9a and its override of ordinary fix handling. Pass plan findings, clear conflict/review state only after a pushed resolution, restart In Review at round 1 with no completed stages, retain blocked findings, and apply the conflict-specific progress rule. Update the fixer input list and stale update_branch descriptions consistently. Preserve unrelated behavior and numbering.
+
+## Revision 23 requirements (2026-11-07, card 180: the manager records not_reproducible)
+
+In 2.9 (`fix`), the agent file carries the spec text:
+
+1. **Step 4.** The fixer report is checked with `--commits-since-review <n>` added to `parse-report.sh --role fixer`, where `<n>` is `git -C <plan worktree> rev-list --count <note.last_review.sha>..HEAD`, counted after the fixer returns. The checker accepts Status `not_reproducible` only when `<n>` is 0.
+2. **Step 5.** On an accepted Status `done` or `not_reproducible`, one `note.sh merge` with `round` + 1 and `last_fix` = `{"status": <the Status>, "round": <the round before the bump>}`, plus `models` and the escalation keys as before. The round is bumped for `not_reproducible` too, so the next review re-checks the findings at the same head. `tick-plan.sh` reads `note.last_fix` as `{"status":"not_reproducible","round":<n>}`.
+3. **The closing paragraph.** On a rejected-twice or `blocked` report, `last_fix` is not written. Progress names both accepted statuses and the `last_fix` write.
