@@ -1,0 +1,192 @@
+[
+  {
+    "name": "resolved_from_stage",
+    "fixer_findings": [
+      {
+        "severity": "Important",
+        "text": "merge conflict in src/calc.js"
+      },
+      {
+        "severity": "Important",
+        "text": "merge conflict in test/calc.test.js"
+      }
+    ],
+    "actions": [
+      "Read plan, note, and card; re-fetch remote before acting on PR state",
+      "Create worktree using plan branch and worktree",
+      "Dispatch fixer with plan conflict findings, models.fixer, and run_in_background false",
+      "Accept parsed fixer report and record last_verified",
+      "Verify remote PR head contains pushed resolution",
+      "Run review-stages.sh route",
+      "Move card to in_review",
+      "Merge conflict/review reset and success counter atomically",
+      "Leave reviewer dispatch to next plan",
+      "Preserve section 3.6 item 6 follow-up handling; fixture provides no follow-up items to file"
+    ],
+    "final_state": "in_review",
+    "note_patch": {
+      "last_verified": "<accepted parsed verified.line>",
+      "state": "in_review",
+      "conflicted_files": null,
+      "last_review": null,
+      "round": 1,
+      "stage": null,
+      "reviewed_stages": [],
+      "blocking_pr": null,
+      "blocked_from": null,
+      "blocked_findings": [],
+      "action_failures": 0,
+      "last_action_error": null
+    },
+    "progress": true,
+    "review_dispatched_this_action": false
+  },
+  {
+    "name": "blocked_from_review",
+    "fixer_findings": [
+      {
+        "severity": "Important",
+        "text": "merge conflict in src/calc.js"
+      },
+      {
+        "severity": "Important",
+        "text": "merge conflict in test/calc.test.js"
+      }
+    ],
+    "actions": [
+      "Read plan, note, and card; re-fetch remote before acting on PR state",
+      "Create worktree using plan branch and worktree",
+      "Dispatch fixer with plan conflict findings, models.fixer, and run_in_background false",
+      "Accept parsed fixer report and record last_verified",
+      "Persist blocked_from in_review, blocked_findings from plan, and blocking_pr null before moving",
+      "After metadata write succeeds, move card to blocked",
+      "Record state blocked and reset action_failures to zero and last_action_error to null",
+      "Post conflicted files and fixer reason",
+      "Apply follow-up filing rules; fixture has no items"
+    ],
+    "final_state": "blocked",
+    "note_patch": {
+      "last_verified": "<accepted parsed verified.line>",
+      "state": "blocked",
+      "blocked_from": "in_review",
+      "blocked_findings": [
+        {
+          "severity": "Important",
+          "text": "merge conflict in src/calc.js"
+        },
+        {
+          "severity": "Important",
+          "text": "merge conflict in test/calc.test.js"
+        }
+      ],
+      "action_failures": 0,
+      "last_action_error": null,
+      "blocking_pr": null
+    },
+    "progress": true,
+    "review_dispatched_this_action": false
+  },
+  {
+    "name": "rejected_report",
+    "fixer_findings": [
+      {
+        "severity": "Important",
+        "text": "merge conflict in src/calc.js"
+      },
+      {
+        "severity": "Important",
+        "text": "merge conflict in test/calc.test.js"
+      }
+    ],
+    "actions": [
+      "Read plan, note, and card; re-fetch remote before acting on PR state",
+      "Create worktree using plan branch and worktree",
+      "Dispatch fixer with plan conflict findings, models.fixer, and run_in_background false",
+      "Parse fixer report; rejection triggers one fixer re-dispatch with identical inputs and exact rejection rules",
+      "Parse second report; reject, stop action, preserve conflict data and round",
+      "Append report_errors; record one no-progress failure and resulting state"
+    ],
+    "final_state": "in_review",
+    "note_patch": {
+      "report_errors": [
+        {
+          "role": "fixer",
+          "round": 3,
+          "at": "<tick ISO time>",
+          "errors": [
+            "<second rejection stderr lines>"
+          ]
+        }
+      ],
+      "action_failures": 2,
+      "last_action_error": "fixer report rejected twice: <first parse-report stderr line of second rejection>",
+      "state": "in_review"
+    },
+    "progress": false,
+    "review_dispatched_this_action": false
+  },
+  {
+    "name": "route_failure",
+    "fixer_findings": [
+      {
+        "severity": "Important",
+        "text": "merge conflict in src/calc.js"
+      },
+      {
+        "severity": "Important",
+        "text": "merge conflict in test/calc.test.js"
+      }
+    ],
+    "actions": [
+      "Read plan, note, and card; re-fetch remote before acting on PR state",
+      "Create worktree using plan branch and worktree",
+      "Dispatch fixer with plan conflict findings, models.fixer, and run_in_background false",
+      "Accept parsed fixer report and record last_verified",
+      "Verify remote PR head contains pushed resolution",
+      "Run review-stages.sh route",
+      "Stop on failed route without moving card or clearing conflict/review data",
+      "Record one no-progress failure and resulting state",
+      "Preserve section 3.6 item 6 follow-up handling; fixture provides no follow-up items to file"
+    ],
+    "final_state": "in_progress",
+    "note_patch": {
+      "last_verified": "<accepted parsed verified.line>",
+      "state": "in_progress",
+      "action_failures": 2,
+      "last_action_error": "<review-stages.sh route first stderr line>"
+    },
+    "progress": false,
+    "review_dispatched_this_action": false
+  },
+  {
+    "name": "blocked_metadata_failure",
+    "fixer_findings": [
+      {
+        "severity": "Important",
+        "text": "merge conflict in src/calc.js"
+      },
+      {
+        "severity": "Important",
+        "text": "merge conflict in test/calc.test.js"
+      }
+    ],
+    "actions": [
+      "Read plan, note, and card; re-fetch remote before acting on PR state",
+      "Create worktree using plan branch and worktree",
+      "Dispatch fixer with plan conflict findings, models.fixer, and run_in_background false",
+      "Accept parsed fixer report and record last_verified",
+      "Attempt prerequisite note merge of blocked_from in_review, blocked_findings from plan, and blocking_pr null; write fails",
+      "End action without any board move, comment, follow-up filing, or review dispatch; existing blocking_pr 99 remains",
+      "Record resulting state in_review and one no-progress failure; increment action_failures from 1 to 2"
+    ],
+    "final_state": "in_review",
+    "note_patch": {
+      "last_verified": "<accepted parsed verified.line>",
+      "state": "in_review",
+      "action_failures": 2,
+      "last_action_error": "<prerequisite note.sh merge first stderr line>"
+    },
+    "progress": false,
+    "review_dispatched_this_action": false
+  }
+]

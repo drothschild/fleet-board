@@ -241,7 +241,7 @@ A new report role, `stage-reviewer`, for a review stage's report: the report of 
 6. Report section: Status values by role, Role sections (stage-reviewer: none), and the With `--role` rule name the stage-reviewer; the rejection-messages usage line reads `[--role implementor|reviewer|fixer|stage-reviewer]`.
 7. Role-specific table: a `stage-reviewer` row (`clean`/`findings`, no role sections, no `## PR` rule).
 
-## Revision 22 requirements (2026-11-06, card fields and the local board; these win over anything above)
+## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
 
 Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
 prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on

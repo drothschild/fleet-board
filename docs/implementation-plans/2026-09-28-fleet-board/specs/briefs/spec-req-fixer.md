@@ -258,7 +258,7 @@ no-op test helper, a changed fixture or expected-output file, a new top-level se
 a `beforeEach` that stubs the code under test, `describe(` changed to `describe.skip(`, and a new
 `test.only(...)` block or other `.only` marker. The Must-never list names them too.
 
-## Revision 22 requirements (2026-11-06, card fields and the local board; these win over anything above)
+## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
 
 Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
 prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on

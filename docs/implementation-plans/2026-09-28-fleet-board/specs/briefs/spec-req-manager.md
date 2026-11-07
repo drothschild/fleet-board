@@ -855,7 +855,11 @@ the existing 0.18 Provider stages as 0.19 and use that number in references.
 4. Update the corresponding reviewer reconciliation, provider-call rule, and
    tick cost calculation. The evidence-review script has no Agent token count.
 
-## Revision 22 requirements (2026-11-06, card fields and the local board; these win over anything above)
+## PR 215 integration requirements
+
+Implement spec 2.9a and its override of ordinary fix handling. Pass plan findings, clear conflict/review state only after a pushed resolution, restart In Review at round 1 with no completed stages, retain blocked findings, and apply the conflict-specific progress rule. Update the fixer input list and stale update_branch descriptions consistently. Preserve unrelated behavior and numbering.
+
+## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
 
 Cards now carry first-class fields, and the board is the local card store. `board-read.sh N`
 prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on

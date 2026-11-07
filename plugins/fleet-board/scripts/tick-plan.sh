@@ -110,6 +110,12 @@
 # merge conflicts with its base branch"), before start_review, review, fix and
 # every other dispatch for the card. The manager runs update-branch.sh, which
 # merges the base into the branch and pushes (never rebases, never forces).
+# A conflict is aborted and recorded in the note (note.conflicted_files, every
+# file, test files included): such a card plans fix instead, whatever the PR's
+# mergeable state, and the card's "findings" are one {severity: "Important",
+# text: "merge conflict in <file>"} per file (null on any other card). The fixer
+# re-runs the merge and commits the resolution; the merge resets last_review, so
+# the next tick plans review. action_failures bounds the loop, as for any action.
 #
 # Card lint: a ready card whose body fails card-lint.sh (and has the Acceptance
 # heading, or a "**Acceptance**" / "Acceptance:" line in place of it) gets action
@@ -678,6 +684,8 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
   # absolute, and single-quoted when the shell would split or expand it
   # A review column: in_review, or the column of a configured stage ($c.stage set)
   def is_review($c): $c.state == "in_review" or $c.stage != null;
+  # The conflicted files update-branch.sh recorded in the note (strings only)
+  def conflict_files($n): [($n.conflicted_files // [])[]? | strings | select(. != "")];
   def reset_cmd($n): "bash \($note_sh | if test("\\A[A-Za-z0-9/._+:@-]+\\z") then . else @sh end) reset-failures \($n)";
 
   $cfg.review.max_rounds as $max
@@ -716,6 +724,12 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
             then act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))")
             else act("start"; "ready, with acceptance criteria") end
           else act("skip_no_acceptance"; "no acceptance criteria") end
+        # update-branch.sh recorded the files of an aborted conflicting merge: the
+        # fixer resolves them (test files included), so update_branch is not
+        # planned again while the PR still reads CONFLICTING
+        elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
+             and ($c.pr_info.state // null) == "OPEN" and conflict_files($n) != []
+          then act("fix"; "merge conflicts in \(conflict_files($n) | length) file(s): \(conflict_files($n) | join(", "))")
         elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
              and ($c.pr_info.state // null) == "OPEN" and $c.mergeable == "CONFLICTING"
           then act("update_branch"; "PR #\($c.pr) has merge conflicts with its base branch")
@@ -817,6 +831,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) then $c.needs_human_qa else null end),
+       # fix on a conflicted card: its findings are the conflicted files
+       findings: (if $d.action == "fix" and conflict_files($n) != []
+                  then [conflict_files($n)[] | {severity: "Important", text: "merge conflict in \(.)"}]
+                  else null end),
        drift: ($c.drift // null),
        # advance_stage: the stage being entered; a stage column: its stage
        stage: (if $d.action == "advance_stage"

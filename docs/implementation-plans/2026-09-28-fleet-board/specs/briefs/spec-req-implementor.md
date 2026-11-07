@@ -240,7 +240,7 @@ because `parse-report.sh` pairs single backticks only, and the rejection then re
 command were present. When the command cannot be written that way, the entry uses the words
 `no testable check`. The entry rule says so.
 
-## Revision 22 requirements (2026-11-06, card fields and the local board; these win over anything above)
+## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
 
 Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
 prints the card as JSON with `acceptance` (an array of strings, one testable behavior per item),
