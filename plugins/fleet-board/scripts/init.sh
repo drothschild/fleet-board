@@ -36,7 +36,7 @@ NL='
 usage() {
   [ -n "${1:-}" ] && printf 'fleet-board init: %s\n' "$1" >&2
   cat >&2 << 'EOF'
-usage: init.sh --backend github-labels|github-projects --repo OWNER/NAME
+usage: init.sh --backend github-labels|github-projects|local --repo OWNER/NAME
                [--project N] [--owner LOGIN] [--state canonical=Name]...
                [--test-one CMD] [--typecheck CMD] [--lint CMD] [--qa-build CMD]
                [--worktrees-dir DIR] [--setup CMD] [--human-qa-path GLOB]...
@@ -97,8 +97,8 @@ done
 [ -n "$BACKEND" ] || usage "--backend is required"
 [ -n "$REPO" ] || usage "--repo is required"
 case "$BACKEND" in
-  github-labels|github-projects) ;;
-  *) usage "--backend must be github-labels or github-projects" ;;
+  github-labels|github-projects|local) ;;
+  *) usage "--backend must be github-labels, github-projects or local" ;;
 esac
 if [ "$BACKEND" = github-projects ]; then
   [ -n "$PROJECT" ] || usage "--project is required for github-projects"
@@ -236,6 +236,7 @@ ERR="$(FLEET_BOARD_CONFIG="$TMP" bash "$HERE/config.sh" --check 2>&1 >/dev/null)
   exit 1
 }
 FLEET_CFG="$(FLEET_BOARD_CONFIG="$TMP" bash "$HERE/config.sh")" || die 1 "cannot read the rendered config"
+fb_set_states
 
 # --- Step 6: backend setup -------------------------------------------------
 state_color() {
@@ -244,6 +245,7 @@ state_color() {
     ready) echo 0e8a16 ;;
     in_progress) echo 1d76db ;;
     in_review) echo 5319e7 ;;
+    review_*) echo 5319e7 ;;
     human_qa) echo fbca04 ;;
     blocked) echo b60205 ;;
     done) echo 0e8a16 ;;
@@ -270,6 +272,18 @@ if [ "$BACKEND" = github-labels ]; then
       --description "fleet-board state: $s" --force >/dev/null \
       || die 1 "cannot create label $name in $REPO"
   done
+elif [ "$BACKEND" = local ]; then
+  # Cards are files in <DIR>/<board.dir>: no labels, no project. An existing
+  # store is never reset, and the directory is kept out of git.
+  LDIR="$(fb_cfg board.dir)"
+  mkdir -p "$DIR/$LDIR/cards" || die 1 "cannot create $DIR/$LDIR/cards"
+  [ -f "$DIR/$LDIR/next" ] || printf '1\n' > "$DIR/$LDIR/next" || die 1 "cannot write $DIR/$LDIR/next"
+  if ! grep -qxF -- "$LDIR/" "$DIR/.gitignore" 2>/dev/null; then
+    if [ -s "$DIR/.gitignore" ] && [ -n "$(tail -c 1 "$DIR/.gitignore")" ]; then
+      printf '\n' >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
+    fi
+    printf '%s/\n' "$LDIR" >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
+  fi
 else
   OWNER_EFF="$(fb_cfg board.project_owner)"
   [ -n "$OWNER_EFF" ] || OWNER_EFF="${REPO%%/*}"
@@ -300,20 +314,24 @@ create_routing_labels() {
   create_needs_human_qa
   create_needs_manual_step
 }
-create_routing_labels
+[ "$BACKEND" = local ] || create_routing_labels
 
-# The bug label (both backends): created only when absent, never overwritten.
+# The bug label (both GitHub backends; the local backend makes no gh label
+# call): created only when absent, never overwritten.
 # The search is fuzzy (it also returns bugfix, not-a-bug, ...), so list up to
 # 1000 matches rather than gh's default 30, and match the name exactly below.
-BUGS="$(gh label list --repo "$REPO" --search bug --json name --limit 1000)" \
-  || die 1 "cannot check bug label in $REPO (gh label list failed)"
-HAS_BUG="$(jq -r 'if type == "array" then any(.[]; .name == "bug") else error("not a list") end' <<<"$BUGS" 2>/dev/null)" \
-  || die 1 "cannot check bug label in $REPO (unreadable gh label list output)"
-if [ "$HAS_BUG" != true ]; then
-  gh label create bug --repo "$REPO" --color d73a4a --description "Something isn't working" >/dev/null \
-    || die 1 "cannot check bug label in $REPO (gh label create bug failed)"
+if [ "$BACKEND" != local ]; then
+  BUGS="$(gh label list --repo "$REPO" --search bug --json name --limit 1000)" \
+    || die 1 "cannot check bug label in $REPO (gh label list failed)"
+  HAS_BUG="$(jq -r 'if type == "array" then any(.[]; .name == "bug") else error("not a list") end' <<<"$BUGS" 2>/dev/null)" \
+    || die 1 "cannot check bug label in $REPO (unreadable gh label list output)"
+  if [ "$HAS_BUG" != true ]; then
+    gh label create bug --repo "$REPO" --color d73a4a --description "Something isn't working" >/dev/null \
+      || die 1 "cannot check bug label in $REPO (gh label create bug failed)"
+  fi
 fi
 
 # --- Step 7: write ---------------------------------------------------------
 mv -f "$TMP" "$TARGET" || die 1 "cannot write $TARGET"
 printf 'wrote %s\n' "$TARGET"
+printf 'fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash %s/review-stages.sh setup\n' "$HERE"

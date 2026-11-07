@@ -539,6 +539,24 @@ run_parse "$REPORTS/findings-indented.md"
 assert_exit "findings-indented: exit 1" 1
 assert_stderr_contains "findings-indented: names the malformed line" "malformed finding line"
 
+# --- stage-reviewer role -----------------------------------------------------
+echo "stage-reviewer"
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-ok.md"
+assert_exit "stage-reviewer-ok: exit 0" 0
+assert_jq "stage-reviewer-ok: acceptance_map null" '.acceptance_map == null'
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-findings.md"
+assert_exit "stage-reviewer-findings: exit 0" 0
+assert_jq "stage-reviewer-findings: counts" '.counts.important == 1'
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-clean-with-critical.md"
+assert_exit "stage-reviewer clean+critical: exit 1" 1
+assert_stderr_line "stage-reviewer clean+critical: message" "parse-report: status clean needs zero Critical and Important findings, found 1"
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-done.md"
+assert_stderr_line "stage-reviewer done: not allowed" "parse-report: role stage-reviewer does not allow status: done"
+run_parse --role stage-reviewer "$REPORTS/reviewer-missing-mutation.md"
+assert_exit "stage-reviewer: a full reviewer report without Mutation passes" 0
+run_parse --role nope "$REPORTS/stage-reviewer-ok.md"
+assert_stderr_line "usage names the role" "parse-report: usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer] <file>"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

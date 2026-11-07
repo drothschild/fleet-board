@@ -3,12 +3,16 @@
 #
 # Usage: jq -Rsc -f yaml.jq FILE
 #
-# Supported: block maps and block lists; flow maps and lists, nested and
-# across lines; plain, 'single' and "double" quoted scalars; | and > block
-# scalars with - and + chomping; # comments; one leading "---".
+# Supported: block maps and block lists, including a block map as a list item
+# ("- key: value" with the item's other keys aligned under key); flow maps
+# and lists, nested and across lines; plain, 'single' and "double" quoted
+# scalars; | and > block scalars with - and + chomping; # comments; one
+# leading "---".
 # Rejected with "line N: <reason>": anchors, aliases and tags, tabs in
-# indentation, duplicate keys, a second document, a map inside a block list
-# item, and anything else outside the subset. Must run on jq 1.6.
+# indentation, duplicate keys (also inside a list-item map), a second
+# document, and anything else outside the subset (a list-item map whose
+# continuation lines are misaligned fails as unexpected indentation).
+# Must run on jq 1.6.
 
 def fail($n; $msg): error("line \($n): \($msg)");
 
@@ -200,7 +204,11 @@ def entries:
                 elif $ind == 0 and ($text == "..." or ($text | startswith("%"))) then
                   fail($n; "document markers and directives are not supported")
                 elif ($text | test("(^|: |^- )[|>][-+]?$")) then
-                  .es += [{n: $n, ind: $ind, t: $text, block: []}] | .bs = $ind
+                  # Block content must be deeper than the owning key: for
+                  # "- key: |" that is the key's column, not the dash's.
+                  ($text | if test("^-[ \t]+[|>][-+]?$") or (startswith("- ") | not) then 0
+                           else length - (.[1:] | sub("^[ \t]+"; "") | length) end) as $off
+                  | .es += [{n: $n, ind: $ind, t: $text, block: []}] | .bs = $ind + $off
                 else .es += [{n: $n, ind: $ind, t: $text}] end
             end
         end)
@@ -242,6 +250,22 @@ def parse($E):
                      then joined($j + 1; $s + " " + $E[$j + 1].t) else error(.) end);
             joined($i; $rest)
           else [value_of($rest; $e.n), $i + 1] end;
+      # $first, when not null, stands in for entry $i (a list item's first line).
+      def pairs($i; $ind; $acc; $first):
+        if $i >= $len then [$acc, $i]
+        else
+          ($first // $E[$i]) as $e
+          | if $e.ind < $ind then [$acc, $i]
+            elif $e.ind > $ind then fail($e.n; "unexpected indentation")
+            elif ($e | is_item) then fail($e.n; "expected a key, found a list item")
+            else
+              ($e | split_key) as $kv
+              | if $kv == null then fail($e.n; "expected key: value") else . end
+              | if ($acc | has($kv.k)) then fail($e.n; "duplicate key \($kv.k)") else . end
+              | value_after($i; $ind; $kv.r; true) as [$v, $j]
+              | pairs($j; $ind; $acc + {($kv.k): $v}; null)
+            end
+        end;
       def items($i; $ind; $acc):
         if $i >= $len or $E[$i].ind < $ind or (($E[$i] | is_item) | not) then
           if $i < $len and $E[$i].ind > $ind then fail($E[$i].n; "unexpected indentation") else [$acc, $i] end
@@ -249,22 +273,15 @@ def parse($E):
         else
           ($E[$i].t[1:] | sub("^[ \t]+"; "")) as $rest
           | if ({t: $rest, n: $E[$i].n} | split_key) != null then
-              fail($E[$i].n; "a block list item must be a scalar or a flow collection")
+              # "- key: value" opens a block map whose column is that of key;
+              # its first entry is this line, re-read without the "- ".
+              ($ind + ($E[$i].t | length) - ($rest | length)) as $mind
+              | pairs($i; $mind; {}; $E[$i] + {ind: $mind, t: $rest}) as [$v, $j]
+              | items($j; $ind; $acc + [$v])
             else value_after($i; $ind; $rest; false) as [$v, $j] | items($j; $ind; $acc + [$v]) end
         end;
-      def pairs($i; $ind; $acc):
-        if $i >= $len or $E[$i].ind < $ind then [$acc, $i]
-        elif $E[$i].ind > $ind then fail($E[$i].n; "unexpected indentation")
-        elif ($E[$i] | is_item) then fail($E[$i].n; "expected a key, found a list item")
-        else
-          ($E[$i] | split_key) as $kv
-          | if $kv == null then fail($E[$i].n; "expected key: value") else . end
-          | if ($acc | has($kv.k)) then fail($E[$i].n; "duplicate key \($kv.k)") else . end
-          | value_after($i; $ind; $kv.r; true) as [$v, $j]
-          | pairs($j; $ind; $acc + {($kv.k): $v})
-        end;
       if ($E[$i] | is_item) then items($i; $ind; [])
-      elif ($E[$i] | split_key) != null then pairs($i; $ind; {})
+      elif ($E[$i] | split_key) != null then pairs($i; $ind; {}; null)
       else value_after($i; $ind; $E[$i].t; false) end;
     if $len == 0 then null
     else node(0; $E[0].ind) as [$v, $j]

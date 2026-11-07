@@ -289,7 +289,7 @@ against the merge-base. The `CHECKED` rule and the step give the reference SHA o
 test at it is not already weakened against the merge-base, and otherwise give the merge-base
 SHA.
 
-## Revision 19 requirements (2026-11-06, helpers and fixtures outside test_paths)
+## Revision 20 requirements (2026-11-06, helpers and fixtures outside test_paths)
 
 The weakened-test step carries the spec's "Helpers and fixtures outside test_paths" bullet. The
 step's diff reads only files matching `test_paths`, so a helper, fixture or shared setup file

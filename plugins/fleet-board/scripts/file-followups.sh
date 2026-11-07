@@ -41,6 +41,11 @@
 # matching closed card suppresses the item like an open one, and the printed
 # entry gains "matched": "open"|"closed" (existing entries only).
 #
+# On the local backend no issue is searched or commented on: both passes use
+# the card files (fl_find_title: open = not done/wont_do; closed = done/wont_do
+# updated within RECENT_DAYS) and comments go through board-comment.sh. The PR
+# comments still go to GitHub.
+#
 # Prints {"out_of_scope_created":[{title,number,existing}], "bugs_filed":[...]}.
 #
 # Exit codes:
@@ -63,6 +68,9 @@ PR="$2"
 REPORT_FILE="$3"
 
 fb_load_config
+BACKEND="$(fb_cfg board.backend)"
+# The local backend searches and comments on card files, never on GitHub issues
+[ "$BACKEND" != local ] || . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
 
 BODY=""
 trap 'rm -f ${BODY:+"$BODY"}' EXIT
@@ -97,6 +105,17 @@ STATUS="$(fb_cfg followups.status)"
 while IFS= read -r item; do
   [ -n "$item" ] || continue
   title="$(jq -r .title <<<"$item")" || fb_die 1 "cannot read an item title; nothing filed"
+  if [ "$BACKEND" = local ]; then
+    m="$(fl_find_title "$title" open)" || fb_die 1 "open-card search failed for: $title; nothing filed"
+    how=open
+    if [ "$m" = none ]; then
+      m="$(fl_find_title "$title" closed "$RECENT_DAYS")" || fb_die 1 "closed-card search failed for: $title; nothing filed"
+      how=closed
+    fi
+    MATCHES+=("$m")
+    MATCHED_AS+=("$how")
+    continue
+  fi
   terms="$(jq -r '.title | gsub("[^A-Za-z0-9 _-]"; " ")' <<<"$item")" || fb_die 1 "cannot build search terms; nothing filed"
   rows="$(gh issue list --repo "$FLEET_REPO" --state open --search "$terms in:title" --json number,title --limit 50 </dev/null)" \
     || fb_die 1 "open-issue search failed for: $title; nothing filed"
@@ -139,6 +158,16 @@ record() {
 # stop <message>: print what was filed so far, then exit 1
 stop() { emit; fb_die 1 "$1"; }
 
+# local_comment <n> <text>: posts <text> on local card <n> through board-comment.sh
+local_comment() {
+  local f rc
+  f="$(mktemp)" || return 1
+  printf '%s\n' "$2" > "$f" && bash "$FLEET_SCRIPTS/board-comment.sh" "$1" "$f" </dev/null >/dev/null
+  rc=$?
+  rm -f "$f"
+  return $rc
+}
+
 pr_comment() {
   gh pr comment "$PR" --repo "$FLEET_REPO" --body "$1" </dev/null >/dev/null \
     || printf 'fleet-board: warning: PR comment failed for #%s\n' "$2" >&2
@@ -154,8 +183,13 @@ while IFS= read -r item; do
   kind="$(jq -r .kind <<<"$item")"
   title="$(jq -r .title <<<"$item")"
   if [ "$m" != none ]; then
-    gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
-      || stop "cannot comment on the existing issue #$m for: $title"
+    if [ "$BACKEND" = local ]; then
+      local_comment "$m" "Also seen while working #$CARD (PR #$PR)." \
+        || stop "cannot comment on the existing card #$m for: $title"
+    else
+      gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
+        || stop "cannot comment on the existing issue #$m for: $title"
+    fi
     record "$kind" "$title" "$m" true "$how" || stop "cannot record #$m"
     if [ "$kind" = bug ]; then label="Known bug"; else label="Out of scope"; fi
     pr_comment "$label, already tracked as #$m: $title" "$m"
@@ -197,8 +231,13 @@ while IFS= read -r item; do
       else
         backlog_msg="Filed in Backlog: the finding gave no testable Acceptance bullet (no failing command and expected result), so a person must write criteria and move it to Ready."
       fi
-      gh issue comment "$new" --repo "$FLEET_REPO" --body "$backlog_msg" </dev/null >/dev/null \
-        || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
+      if [ "$BACKEND" = local ]; then
+        local_comment "$new" "$backlog_msg" \
+          || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
+      else
+        gh issue comment "$new" --repo "$FLEET_REPO" --body "$backlog_msg" </dev/null >/dev/null \
+          || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
+      fi
     fi
     pr_comment "Out of scope, tracked as #$new: $title" "$new"
   fi

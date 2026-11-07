@@ -14,7 +14,7 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 ## settle.sh runs outside the gate
 
-`scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress and in_review, and its only move into human_qa is the hand-off after a clean review). A person's interactive `/fleet-board:tick` does not run it.
+`scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress, in_review and every review stage column; besides the move into human_qa after a clean review it moves cards between review columns, `advance_stage`, and adds routing labels with `review-stages.sh route`, before the move). A person's interactive `/fleet-board:tick` does not run it.
 
 ## The cards.sh helper
 
@@ -51,7 +51,9 @@ The gate reads command text before it runs. A string check cannot see:
 - obfuscation beyond what the hook decodes: `$'gh'`, `eval "$(printf ...)"`, a variable holding a whole command (`C="gh pr merge 5"; $C`), `alias` with `shopt -s expand_aliases`, `env -C dir` or `sudo -D dir`, and shell functions defined in an earlier Bash call;
 - `gh ... -R owner/board` or `GH_REPO=owner/board` from a directory without a config, which is inert by design;
 - `parallel board-move.sh ::: 14 ::: done`;
-- `cd -P link/..`, which the hook resolves logically and the shell physically.
+- `cd -P link/..`, which the hook resolves logically and the shell physically;
+- raw writes into `board.dir` on a `local` board (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered;
+- with the board page running, `curl` against the page's API (`curl -X POST -H 'X-Fleet-Board: 1' http://127.0.0.1:<port>/api/cards/<n>/move`), which can move a card out of Human QA: the gate classifies `curl` only against the GitHub API. This is a residual, not covered.
 
 It also blocks some harmless commands, because it prefers a block to a miss:
 

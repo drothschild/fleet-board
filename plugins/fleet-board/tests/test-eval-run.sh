@@ -161,6 +161,83 @@ else
   pass "the prompt holds no scoring pattern"
 fi
 
+# --- provider mode (stage-review.sh through a fake curl) ----------------------
+run "$RUN" --dry-run --provider openai --model gpt-x --price-in 1 --price-out 2
+assert_exit "provider_dry_run_prints_stage_review_commands: exits 0" 0
+srlines="$(printf '%s\n' "$LAST_OUT" | grep -c 'stage-review.sh ')"
+if [ "$ndefects" -ge 6 ] && [ "$srlines" -eq $((ndefects * 3)) ]; then
+  pass "provider_dry_run_prints_stage_review_commands: one stage-review.sh command per defect per run ($srlines)"
+else
+  fail "provider_dry_run_prints_stage_review_commands: one stage-review.sh command per defect per run" "defects=$ndefects lines=$srlines"
+fi
+case "$LAST_OUT" in
+  *"claude -p"*) fail "provider dry run prints no claude -p" "claude -p present" ;;
+  *) pass "provider dry run prints no claude -p" ;;
+esac
+case "$LAST_OUT" in *"--no-post"*"openai:gpt-x"*|*"openai:gpt-x"*"--no-post"*) pass "provider dry run names openai:gpt-x and --no-post" ;; *) fail "provider dry run names openai:gpt-x and --no-post" "$LAST_OUT" ;; esac
+if [ ! -e "$TMP/claude-ran" ]; then pass "provider dry run runs nothing"; else fail "provider dry run runs nothing" "claude was invoked"; fi
+
+run "$RUN" --dry-run --provider openai --model gpt-x
+assert_exit "provider_requires_prices: no prices exits 2" 2
+run "$RUN" --dry-run --provider openai --model gpt-x --price-in 1
+assert_exit "provider_requires_prices: only --price-in exits 2" 2
+run "$RUN" --dry-run --provider openai --model gpt-x --price-in 1 --price-out abc
+assert_exit "provider_requires_prices: a non-number price exits 2" 2
+run "$RUN" --dry-run --provider openai --price-in 1 --price-out 2
+assert_exit "provider mode without --model exits 2" 2
+run "$RUN" --dry-run --provider "Bad Name" --model gpt-x --price-in 1 --price-out 2
+assert_exit "a malformed provider name exits 2" 2
+run "$RUN" --dry-run --provider openai --model gpt-x --price-in 1 --price-out 2 --bogus
+assert_exit "provider mode: unknown flag still exits 2" 2
+
+# Offline real run: fake curl answers with a chat completion wrapping a canned report.
+mkdir -p "$TMP/bin-curl" "$TMP/prov"
+ln -sf "$SCRIPT_DIR/fake-curl.sh" "$TMP/bin-curl/curl"
+chat_reply() { # report-file out-file
+  jq -n --rawfile t "$1" '{id:"c1",model:"gpt-x-2026",choices:[{index:0,message:{role:"assistant",content:$t},finish_reason:"stop"}],usage:{prompt_tokens:1000000,completion_tokens:500000,total_tokens:1500000}}' > "$2"
+}
+chat_reply "$EVAL/canned/caught.md" "$TMP/prov/caught.json"
+chat_reply "$EVAL/canned/missed.md" "$TMP/prov/missed.json"
+# prov_run REPLY-BODY OUT [run.sh args...]
+prov_run() {
+  local body="$1" out="$2"
+  shift 2
+  rm -f "$TMP/prov/replies" "$TMP/prov/replies.count" "$TMP/prov/curl.log"
+  printf '200 %s\n' "$body" > "$TMP/prov/replies"
+  LAST_OUT="$(PATH="$TMP/bin-curl:$TMP/bin:$PATH" OPENAI_API_KEY=sk-test-eval FAKE_CURL_LOG="$TMP/prov/curl.log" \
+    FAKE_CURL_REPLIES="$TMP/prov/replies" bash "$RUN" --out "$out" --provider openai --model gpt-x \
+    --price-in 1 --price-out 2 "$@" 2>"$TMP/err")"
+  LAST_EXIT=$?
+  LAST_ERR="$(cat "$TMP/err")"
+}
+
+prov_run "$TMP/prov/caught.json" "$TMP/p1" --defect off-by-one --runs 1
+assert_exit "provider_verdict_from_fake_reply: a caught reply exits 0" 0
+verdict_is "provider_verdict_from_fake_reply: the canned caught report is caught" caught "$TMP/p1"
+if [ "$(cut -f4 "$TMP/p1/results.tsv" 2>/dev/null)" = "openai:gpt-x" ]; then pass "the model column is provider:model"; else fail "the model column is provider:model" "$(cat "$TMP/p1/results.tsv" 2>/dev/null)"; fi
+if [ "$(cut -f7 "$TMP/p1/results.tsv" 2>/dev/null)" = "2.000000" ] || [ "$(cut -f7 "$TMP/p1/results.tsv" 2>/dev/null)" = "2" ]; then
+  pass "cost comes from stage-review.sh (1M in at 1 + 0.5M out at 2 = 2)"
+else
+  fail "cost comes from stage-review.sh" "$(cat "$TMP/p1/results.tsv" 2>/dev/null)"
+fi
+if [ -f "$TMP/p1/provider-log/provider-spend.jsonl" ]; then pass "the ledger lands under --out"; else fail "the ledger lands under --out" "$(ls -R "$TMP/p1" | head -20)"; fi
+if [ ! -e "$TMP/claude-ran" ]; then pass "provider mode never runs claude"; else fail "provider mode never runs claude" "claude was invoked"; fi
+if grep -q '^DATA .*pr-paginate\|^DATA .*pageCount' "$TMP/prov/curl.log"; then pass "the request carries the PR diff"; else fail "the request carries the PR diff" "no diff text in the request"; fi
+case "$LAST_OUT" in *"| off-by-one | openai:gpt-x |"*) pass "the table shows provider:model" ;; *) fail "the table shows provider:model" "$LAST_OUT" ;; esac
+
+prov_run "$TMP/prov/missed.json" "$TMP/p2" --defect off-by-one --runs 1
+assert_exit "provider: a real miss still exits 0" 0
+verdict_is "provider_verdict_from_fake_reply: the canned missed report is missed" missed "$TMP/p2"
+
+env_unset_out="$(PATH="$TMP/bin-curl:$TMP/bin:$PATH" OPENAI_API_KEY= FAKE_CURL_LOG="$TMP/prov/curl2.log" FAKE_CURL_REPLIES="$TMP/prov/replies" \
+  bash "$RUN" --out "$TMP/p3" --provider openai --model gpt-x --price-in 1 --price-out 2 --defect off-by-one --runs 1 2>"$TMP/err")"
+rc3=$?
+if [ "$rc3" = 1 ] && [ "$(cut -f6 "$TMP/p3/results.tsv" 2>/dev/null)" = "error" ]; then
+  pass "a run where stage-review.sh fails is error and exits 1"
+else
+  fail "a run where stage-review.sh fails is error and exits 1" "rc=$rc3 $(cat "$TMP/p3/results.tsv" 2>/dev/null)"
+fi
+
 # --- result parser -----------------------------------------------------------
 run "$PARSE" "$EVAL/canned/caught.md" off-by-one
 assert_exit "parser exits 0 on a caught report" 0

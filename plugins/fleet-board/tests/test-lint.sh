@@ -136,6 +136,22 @@ newset; card 1 "$GOOD\n## Scope\n- edit \`src/real.js\`\n"
 run_lint
 check "existing file passes" "$RC" "0"
 
+echo "# missing-file: ## Creates heading, not create/new/add wording"
+newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
+run_lint
+check "path under ## Creates without create wording exits 0" "$RC" "0"
+hasnt "path under ## Creates is not flagged" "$OUT" "src/fresh.js"
+newset; card 1 "$GOOD\n## Scope\n- we will create \`src/fresh.js\`\n"
+run_lint
+check "create wording outside ## Creates no longer skips the check" "$RC" "1"
+newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n\n## Scope\n- edit \`src/gone.js\`\n"
+run_lint
+check "path outside ## Creates exits 1" "$RC" "1"
+has "path outside ## Creates is flagged with the path" "$OUT" "src/gone.js is not on main"
+hasnt "## Creates path still not flagged beside a flagged one" "$OUT" "src/fresh.js"
+check "lint.sh has no create/new/add word-list skip" "$(grep -cE 'create\|new\|add' "$SCRIPT")" "0"
+check "lint.sh missing-file check names no create/new/adds word list" "$(grep -cE '\(create|\|new\||adds\?' "$SCRIPT")" "0"
+
 echo "# card arguments"
 newset
 card 1 "## Acceptance\n- the slider looks right\n"
@@ -193,6 +209,45 @@ echo '[{"number":22,"title":"t","url":"x","labels":[{"name":"fleet:backlog"}]},{
 run_board
 has "no arguments: lints a failing Backlog card" "$OUT" "#24"
 hasnt "no arguments: clean Backlog card 22 stays silent" "$OUT" "#22"
+
+# ---------------------------------------------------------------- local backend
+echo "# local backend: board.repo refs read the card files; gh exits 99"
+LR="$SB/localroot"; LSTUB="$SB/stub99"
+mkdir -p "$LR/.fleet-board/cards" "$LSTUB"
+git -C "$LR" init -q -b main
+git -C "$LR" config user.email t@example.com
+git -C "$LR" config user.name T
+printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$LR/.fleet-board.yml"
+git -C "$LR" add .fleet-board.yml
+git -C "$LR" commit -q -m initial
+echo 3 > "$LR/.fleet-board/next"
+lcard() {
+  jq -n --argjson n "$1" --arg b "$2" '{number: $n, title: "t", body: $b, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$LR/.fleet-board/cards/$1.json"
+}
+lcard 2 "$(printf '## Acceptance\n- clamp returns 3\n')"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s/calls"\nexit 99\n' "$LSTUB" > "$LSTUB/gh"
+chmod +x "$LSTUB/gh"
+run_local() {
+  OUT="$(cd "$LR" && PATH="$LSTUB:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
+  RC=$?
+}
+lcard 1 "$(printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- #2\n- acme/toy#2\n')"
+run_local 1
+check "local: #2 and acme/toy#2 resolve from the card file" "$RC" "0"
+check "local: prints nothing" "$OUT" ""
+lcard 1 "$(printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- #9\n- acme/toy#8\n')"
+run_local 1
+check "local: a missing card file exits 1" "$RC" "1"
+has "local: #9 is unresolved" "$OUT" "#9 does not exist"
+has "local: acme/toy#8 is unresolved" "$OUT" "acme/toy#8 does not exist"
+check "local: no gh call for this repo's refs" "$(cat "$LSTUB/calls" 2>/dev/null)" ""
+lcard 1 "$(printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- other/repo#5\n')"
+run_local 1
+has "local: another repo's ref still goes through gh" "$(cat "$LSTUB/calls" 2>/dev/null)" "issue view 5 --repo other/repo"
+newset; card 1 "$GOOD\n## Depends on\n- #2\n"
+OUT="$(cd "$LR" && PATH="$LSTUB:$PATH" bash "$SCRIPT" --bodies "$BODIES" 2>"$SB/err")"; RC=$?
+check "local --bodies: #2 resolves from the card file" "$RC" "0"
 
 echo
 echo "passed: $PASS failed: $FAIL"

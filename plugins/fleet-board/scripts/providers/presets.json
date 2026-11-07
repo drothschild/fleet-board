@@ -1,0 +1,7 @@
+{
+  "openai": { "base_url": "https://api.openai.com/v1", "api_key_env": "OPENAI_API_KEY", "max_tokens_param": "max_completion_tokens" },
+  "gemini": { "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "api_key_env": "GEMINI_API_KEY", "max_tokens_param": "max_tokens" },
+  "openrouter": { "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY", "max_tokens_param": "max_tokens" },
+  "ollama": { "base_url": "http://localhost:11434/v1", "api_key_env": null, "max_tokens_param": "max_tokens" },
+  "codex": { "command": "codex exec --skip-git-repo-check -s read-only -m {model}" }
+}

@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml/badge.svg)](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml)
 
-Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. Cards are written with an `## Acceptance` section and marked ready by hand. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review; merging stays manual. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
+Turns a GitHub issue board into a work queue for a fleet of Claude Code agents. Cards are written with an `## Acceptance` section and marked ready by hand. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), optional extra review stages (security, UX, whatever you configure) check it again with their own agent or a model from another provider, and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review; merging stays manual. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
 
 ## Install
 
@@ -13,7 +13,7 @@ Tell Claude Code "Go to https://github.com/drothschild/fleet-board and follow th
 /plugin install fleet-board@fleet-board
 ```
 
-Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
+Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (plus `project` for a Projects board). The local board page and the headless run wrapper need `python3` 3.9 or later (standard library only). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
 
 ## Adding fleet-board to an existing project
 
@@ -56,6 +56,8 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
    | tick 3 | `fleet:human_qa`, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
    | tick 4 | unchanged | `dispatchable: false` |
 
+   With `review.stages` configured and a PR that matches a stage, the clean In Review card goes to `fleet:review_<name>` instead of Human QA, and the stage's report appears on it in that same tick. Each stage adds at least one tick; Human QA or the ready PR follows once every stage is clean ([details](docs/config.md#reviewstages)).
+
 8. **Release Human QA by hand** in the GitHub UI: check the change, merge the PR, and move the card to `fleet:done` (or back to `fleet:ready`). No agent can do this; the gate blocks it.
 
 ## The board
@@ -66,7 +68,7 @@ Backlog → Ready → In Progress → In Review → Human QA → Done
                      Blocked       Blocked
 ```
 
-Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on a Projects board it is the Status column.
+Each entry in `review.stages` adds a column after In Review. Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on a Projects board it is the Status column.
 
 **Who moves what.** Only a person moves cards from Backlog to Ready, and out of Human QA. The manager makes every other move. Role agents never move cards; they post reports as comments.
 
@@ -75,7 +77,7 @@ Plus Won't Do. On the labels board a card's state is a `fleet:<state>` label; on
 - **`## Acceptance` lists only what a test can check**, one `- ` bullet per behavior. The reviewer maps each bullet to a test; a bullet with no test is a finding.
 - **Put on-device and manual checks under `## Human QA`**, not in Acceptance. No agent can test them, so in Acceptance they only get the card blocked.
 - **Hold a card until another finishes with `## Depends on`**, one bullet per dependency: `- #22` for an issue in `board.repo`, or `- owner/repo#22` for another repo. While any dependency is unmet, the card stays in Ready, `/fleet-board:status` shows what it waits for, and the manager comments `Waiting for ...` once (again only when the set of unmet dependencies changes). A dependency is met when its issue is closed as completed, or, on a Projects board, when it is an item on the board's project in the Done column (in any repo; on a labels board only the issue state counts). Closed as not planned, or Won't Do, never counts as met and adds a tick warning. You still move the card from Backlog to Ready yourself; the gate only holds a Ready card back, and never one already in progress. See [Dependencies](docs/config.md#how-the-board-works-in-detail).
-- **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress or In review card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. The plan also gives `merge` to at most one card per tick, the lowest card number; the others wait for the next tick.
+- **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress, In review or review-stage card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. The plan also gives `merge` to at most one card per tick, the lowest card number; the others wait for the next tick.
 - **Move the whole chain to Ready; each card starts on the first tick after its dependencies are Done.** That is the safe way to set up an overnight run. Nothing promotes a Backlog card when its dependencies finish, so a card left in Backlog stays there.
 
 **Lint command.** `/fleet-board:lint [card...]` (`scripts/lint.sh`) runs `card-lint.sh` on Ready and Backlog cards, or on the cards you name, and adds `untestable-bullet`, `dependency-cycle`, `unresolved-dependency` and `missing-file`. It exits 1 when any card fails. `/fleet-board:import-plan` runs it on its generated cards and creates nothing while one fails.
@@ -108,9 +110,11 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 
 | Key | Default | What it does |
 |---|---|---|
-| `board.backend` | `github-labels` | `github-labels` or `github-projects` |
+| `board.backend` | `github-labels` | `github-labels`, `github-projects` or `local` (cards as files in the repo, see [Local board](#local-board)) |
 | `board.repo` | none (required) | `owner/name` of the repo the cards live in |
-| `board.project_number` | none | the Projects board number; required for `github-projects` |
+| `board.project_number` | none | the Projects board number; required for `github-projects`, not used on `local` |
+| `board.dir` | `.fleet-board` | `local` only: where the cards live, relative to the repo root; no `..`, not absolute ([details](docs/config.md#boarddir-and-boardport)) |
+| `board.port` | `8765` | `local` only: the port of the board page, 1024 to 65535 ([details](docs/config.md#boarddir-and-boardport)) |
 | `board.project_owner` | `null` | the project's owner, when it isn't the repo owner |
 | `board.states` | `{}` | maps a state to a label or column name ([details](docs/config.md#boardstates)) |
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
@@ -127,6 +131,9 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
+| `review.stages` | `[]` | extra review columns after In Review, each with its own agent or provider model, routed by path globs or a label ([details](docs/config.md#reviewstages)) |
+| `review.stages[].provider` | none | runs the review stage on a model from a provider instead of a Claude `agent`; set exactly one of the two, plus `model` and `price` ([details](docs/config.md#providers)) |
+| `providers` | `{}` | provider connections by name: `base_url`, `api_key_env`, `max_tokens_param`, or `command` (a local program such as `codex exec`; sends the same card, findings, report and diff to it); built-in presets `openai`, `gemini`, `openrouter`, `ollama`, `codex` need no entry ([details](docs/config.md#providers)) |
 | `models.manager` / `implementor` / `reviewer` / `fixer` | `sonnet` / `sonnet` / `opus` / `sonnet` | each role's model |
 | `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.escalation` |
 | `models.escalation` | unset | model for escalated implementor and fixer; unset means `models.reviewer`. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |
@@ -158,9 +165,32 @@ After each successful tick the wrapper also runs `scripts/settle.sh`, a plain sh
 
 Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Under `merge.policy: auto` an overnight run merges reviewed, non-draft, green PRs itself and moves their cards to Done; under `human` (the default) it merges nothing. Stop reasons, exit codes, the run log, cost estimates and scheduling with launchd are in [docs/overnight.md](docs/overnight.md).
 
+## Local board
+
+`board.backend: local` keeps the cards as JSON files under `<repo>/.fleet-board/` instead of GitHub issues. `board.repo` stays required, since the PRs still live there.
+
+Set it up with `/fleet-board:init` and pick Local, or run `init.sh --backend local --repo OWNER/NAME`. It creates `.fleet-board/cards`, starts the card counter at 1, adds `.fleet-board/` to `.gitignore` and creates no labels. It still checks the `gh` scope `repo`. To version the board, remove that line from `.gitignore` and commit the directory.
+
+To move an existing board, save each active card with `board-read.sh <n> > <dir>/<n>.json` while the config still names the old backend, then run `migrate-to-local.sh <dir>/*.json` from the repo root and set `board.backend: local`: cards keep their numbers, states and comments, the manager note is re-authored to the local user (`--note-author` overrides), and it refuses an existing store unless `--force`.
+
+Open the page from the repo root with the `board-web.sh` beside the wrapper (the wrapper's path is the last line of `/fleet-board:status`):
+
+```bash
+bash <directory of that path>/board-web.sh --repo .
+```
+
+It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`. It refuses a board that is not `local`.
+
+- **Cards.** Drag a card to another column, or click it to open the drawer and edit its title, body, labels and state. The state select in the drawer is the keyboard path. A card lights up while a role works on it.
+- **Start and Stop.** Start spawns the headless wrapper in its own session, so it keeps running when you close the page. Stop writes `.fleet-board.stop`, which ends the run after the current tick. A restarted page finds a live run again, and a run started from a terminal or launchd counts too: every wrapper holds a per-repo run lock, so Start never launches a second one (see [docs/overnight.md](docs/overnight.md)). The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it). `FLEET_BOARD_RUN` replaces the wrapper script.
+- **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). Dependencies show as `owner/repo#n` using `board.repo`. `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
+- **Who you are.** On `local` the author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
+- **Rate limits.** The local board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain, so you can lower `limits.tick_interval` to match your CI time.
+
 ## Known issues
 
 - **Unblocking a card re-runs the implementor.** A card moved from Blocked back to Ready goes through `start` again, so the implementor runs once more before review. Its branch and PR are reused, so no work is lost. Planned for 0.1.1.
+- **Role prompts name a GitHub command on a local board.** The role prompts give `gh issue view <n> --json body` as an example for re-reading a card. On a local board that reads an unrelated GitHub issue with the same number in `board.repo`. The manager passes the card body inline, so this only happens when a role picks that example.
 
 ## Demo
 

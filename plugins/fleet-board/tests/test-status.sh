@@ -548,6 +548,34 @@ else
   fail "forecast-label-created-by-init: status.sh --forecast reads needs-manual-step" "no blocks(\"needs-manual-step\") in status.sh"
 fi
 
+# Review stage sections: one per stage, after in_review, in config order; an
+# agent stage shows <fixer>/<agent>@<model>, a provider stage <fixer>/<provider>:<model>
+setup_case
+cp "$SCRIPT_DIR/../fixtures/config/stages.yml" "$REPO/.fleet-board.yml"
+list_route review_security open "[$(item 14 "Fix divide" fleet:review_security)]"
+list_route review_ux open '[]'
+list_route review_compliance open "[$(item 15 "Audit log" fleet:review_compliance)]"
+list_route in_review open "[$(item 12 "Add subtract" fleet:in_review)]"
+list_route blocked open '[]'
+card 14 "Fix divide" fleet:review_security \
+  '{"state":"review_security","stage":"security","round":1,"pr":40,"models":{"implementor":"sonnet","reviewer":"opus","fixer":"sonnet"}}'
+card 15 "Audit log" fleet:review_compliance \
+  '{"state":"review_compliance","stage":"compliance","round":2,"pr":41,"models":{"implementor":"sonnet","reviewer":"opus","fixer":"sonnet"}}'
+run_check "$SCRIPT"
+assert_exit "stages: exit" 0
+assert_stdout_exact "stages: sections after in_review in config order, both card line forms" "$(printf '%s\n' \
+  ready '  (none)' \
+  in_progress '  (none)' \
+  in_review "$LINE12" \
+  review_security '  #14 Fix divide · round 1 · PR #40 · sonnet/acme:security-reviewer@opus' \
+  review_ux '  (none)' \
+  review_compliance '  #15 Audit log · round 2 · PR #41 · sonnet/openai:gpt-test' \
+  human_qa '  (none)' \
+  blocked '  (none)')"
+if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then
+  fail "stages: read-only" "a mutating gh call was made"
+else pass "stages: read-only (no mutating gh call)"; fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

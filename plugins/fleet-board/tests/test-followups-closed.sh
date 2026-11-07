@@ -255,6 +255,39 @@ assert_exit "closed-twice: second exit" 0
 assert_eq "closed-twice: still one issue comment on the closed card" "$(calls_starting issue comment 61)" 1
 assert_eq "closed-twice: still one PR comment" "$(calls_starting pr comment 34)" 1
 
+# --- local backend: "closed" is done or wont_do, updated within 30 days; gh
+# answers only the PR comment, so any issue search or comment exits 99
+local_card() {
+  jq -n --argjson n "$1" --arg t "$2" --arg s "$3" --arg u "$4" \
+    '{number: $n, title: $t, body: "b", state: $s, labels: [], next_comment_id: 1, comments: [],
+      created_at: "2026-01-01T00:00:00Z", updated_at: $u}' > "$REPO/.fleet-board/cards/$1.json"
+}
+setup_local() {
+  setup_case
+  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 70 > "$REPO/.fleet-board/next"
+  local_card 12 "The card" in_progress "$RECENT"
+  printf 'pr comment 34 *\t0\t-\n' > "$ROUTES"
+  report "$OOS_CMD" '[]'
+}
+
+setup_local
+local_card 61 "fix ROUNDING" wont_do "$RECENT"
+run_ff
+assert_exit "local closed-match: exit" 0
+assert_eq "local closed-match: matched the recent wont_do card" "$(jq -c .out_of_scope_created <<<"$LAST_OUT")" '[{"title":"Fix rounding","number":61,"existing":true,"matched":"closed"}]'
+assert_eq "local closed-match: comment on card 61" "$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/61.json")" "Also seen while working #12 (PR #34)."
+assert_eq "local closed-match: no card created" "$(cat "$REPO/.fleet-board/next")" 70
+assert_eq "local closed-match: only the PR comment reached gh" "$(ls "$FAKE_GH_DIR/argv" | wc -l | tr -d ' ')" 1
+
+setup_local
+local_card 61 "Fix rounding" done 2020-01-01T00:00:00Z
+run_ff
+assert_exit "local old-closed: exit" 0
+assert_eq "local old-closed: a card closed long ago is no match" "$(jq -c .out_of_scope_created <<<"$LAST_OUT")" '[{"title":"Fix rounding","number":70,"existing":false}]'
+assert_eq "local old-closed: created in the followups column" "$(jq -r .state "$REPO/.fleet-board/cards/70.json")" ready
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
