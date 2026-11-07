@@ -291,8 +291,10 @@ release_run_lock() {
 }
 command -v python3 >/dev/null 2>&1 || die 1 "python3 is required for the run lock"
 LOCK_PATH="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
-python3 "$HERE/claim-run-lock.py" "$LOCK_PATH" "$$" || exit 1
+# Set RUN_LOCK first: a signal landing right after the claim still releases it
+# (release_run_lock removes the file only when line 1 is this pid)
 RUN_LOCK="$LOCK_PATH"
+python3 "$HERE/claim-run-lock.py" "$LOCK_PATH" "$$" || { RUN_LOCK=""; exit 1; }
 LOG="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-')-$(date +%Y%m%d-%H%M%S).log"
 [ -e "$LOG" ] && LOG="${LOG%.log}-$$.log"
 ( umask 077; set -C; : > "$LOG" ) 2>/dev/null || die 1 "cannot create the run log $LOG"

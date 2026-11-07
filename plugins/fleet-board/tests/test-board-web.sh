@@ -375,7 +375,7 @@ if setup_case; then
   assert_body "stop reason" '.stop_reason' stop-file
   assert_body "run cost" '.cost' 0.42
   assert_body "run hours" '.hours' 0.01
-  assert_body "log tail has the two tick lines" '.log_tail|length' 2
+  assert_body "log tail has the two tick lines and the stopped line" '.log_tail|length' 3
   if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "markers cleared when the run ended"; else fail "markers cleared when the run ended" "active/2 still exists"; fi
   api GET /api/board;               assert_body "no card active after the run" '.cards[]|select(.number==2)|.active' false
   rm -f "$FAKE_RUN_DIR/release"
@@ -672,6 +672,33 @@ LAST_ERR="$(cat "$TMP/inuse.err")"
 assert_exit "port in use exits 1" 1
 assert_stderr_contains "port in use names the port" "board-web: port $PORT is in use"
 case "$LAST_ERR" in *Traceback*) fail "port in use prints no traceback" "$LAST_ERR" ;; *) pass "port in use prints no traceback" ;; esac
+stop_server
+
+# Stale markers at startup: run.pid names a dead run and active/2 exists
+STALE_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$STALE_REPO/.fleet-board/cards" "$STALE_REPO/.fleet-board/active" "$TMP/logs/web/acme-toy"
+echo 3 > "$STALE_REPO/.fleet-board/next"
+REPO="$STALE_REPO" seed_card 2 in_progress "Second" "Body two.
+
+## Acceptance
+- yes"
+: > "$STALE_REPO/.fleet-board/active/2"
+printf '%s\nMon Jan  1 00:00:00 2001\n' "$$" > "$TMP/logs/web/acme-toy/run.pid"
+rm -f "$TMP/logs/acme-toy.lock"
+start_server "$STALE_REPO"
+api GET /api/board
+assert_code 200
+assert_body "stale marker at startup: card 2 is inactive" '.cards[]|select(.number==2)|.active' false
+LEFT="$(ls -A "$STALE_REPO/.fleet-board/active" | wc -l | tr -d ' ')"
+if [ "$LEFT" = 0 ]; then pass "stale marker at startup: active/ is empty after the first board read"; else fail "stale marker at startup: active/ is empty after the first board read" "$LEFT entries left"; fi
+stop_server
+
+# Invalid config at startup: the stale-marker clear must not kill the server
+BAD_REPO="$(new_repo 'board:
+  repo: not a valid repo
+')"
+start_server "$BAD_REPO"
+if [ -n "$PORT" ] && kill -0 "$SERVER_PID" 2>/dev/null; then pass "invalid config at startup: server still listens"; else fail "invalid config at startup: server still listens" "stderr: $(cat "$TMP/server.err" 2>/dev/null)"; fi
 stop_server
 
 # Identity: with USER and FLEET_BOARD_USER unset, the note author is the login name

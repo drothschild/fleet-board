@@ -32,5 +32,7 @@ done
 while [ -d "$ROOT" ] && [ ! -e "$FAKE_RUN_DIR/release" ]; do
   sleep 0.2
 done
-echo "fleet-board-run: stopped: stop-file after 2 ticks, 0.01 h, cost_estimate_usd 0.42 (estimate)"
+STOPPED="fleet-board-run: stopped: stop-file after 2 ticks, 0.01 h, cost_estimate_usd 0.42 (estimate)"
+echo "$STOPPED" >> "$LOG"
+echo "$STOPPED"
 exit 0
