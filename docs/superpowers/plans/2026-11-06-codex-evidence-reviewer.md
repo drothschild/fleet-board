@@ -189,8 +189,8 @@ This task spends API money on an isolated run. Check the ceiling in the plan's `
 
 - [x] **Step 1: Bump** the version in both files and run `bash plugins/fleet-board/tests/test-clean-room.sh` — Expected: `failed: 0`.
 - [x] **Step 2: Add the behavioral scenario** `provider-reviewer`: a card In Review with the fake reviewer command as `models.reviewer`; assert the tick's transcript has a background Bash call to `evidence-review.sh`, no Agent call with `subagent_type: fleet-board:reviewer`, and a note whose `last_review` has `provider` and `model`.
-- [ ] **Step 3: Run the scenario once, only with the user's approval** (it costs plan usage). Expected: the three assertions pass.
-- [ ] **Step 4: Live check, only with the user's approval:** one real `gpt-6-astra` review of a small known PR in `SANDBOX_REPO`. Expected: a posted reviewer report with a `killed: … survived: … invalid: …` line and a `reviewed head:` equal to the PR head.
+- [x] **Step 3: Run the scenario once, only with the user's approval** (it costs plan usage). Expected: the three assertions pass.
+- [x] **Step 4: Live check, only with the user's approval:** one real `gpt-6-astra` review of a small known PR in `SANDBOX_REPO`. Expected: a posted reviewer report with a `killed: … survived: … invalid: …` line and a `reviewed head:` equal to the PR head.
 - [x] **Step 5: Commit** `fleet-board 0.15.0: provider evidence reviewer`.
 
 After this plan ships, switching this board means editing `.fleet-board.yml` to the spec's object form with `escalation: opus`, and removing the `codex` review stage it now carries.
