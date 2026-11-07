@@ -14,6 +14,8 @@
 #   no-heading    no "## Acceptance" heading. When the body has "**Acceptance**"
 #                 or "Acceptance:" the detail starts with "found " and names it.
 #   no-bullets    the heading is there but no "- " bullet is under it.
+#   empty-acceptance  a card read with an "acceptance" array (local) whose array
+#                 is empty; replaces no-heading and no-bullets for such a card.
 #   manual-check  an Acceptance bullet holds a phrase that marks a check no
 #                 agent can run (on device, on a device, verify on, by hand,
 #                 Human QA, simulator, any case); it belongs under "## Human QA".

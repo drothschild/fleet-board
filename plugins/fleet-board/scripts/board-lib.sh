@@ -199,10 +199,14 @@ fb_canonical_of() {
 # body bigger than the pipe buffer would kill the writer and read as "no Acceptance")
 fb_has_acceptance() { grep -Eq '^##[[:space:]]+Acceptance([[:space:]].*)?$' <<<"$1"; }
 
-# fb_card_has_acceptance <card-json>: a card read (board-read.sh output or a
-# stored local card). When it carries an "acceptance" array, that array alone
-# decides (non-empty = true, whatever the body says); a card without the field
-# (the GitHub backends, an unmigrated local card) falls back to its body.
+# fb_card_has_acceptance <card-json>: a card read. When it carries an
+# "acceptance" array, that array alone decides (non-empty = true, whatever the
+# body says). On local, board-read.sh always emits that array, so there the
+# body fallback applies only to a raw stored card that predates migration (no
+# field at all); on the GitHub backends a read has no such field and the body
+# decides. local move.sh passes the raw stored card, so an unmigrated card with
+# a body heading can still move to ready there but not through a board-read
+# (gate, card-lint, tick-plan): migrate first.
 fb_card_has_acceptance() {
   local k
   k="$(jq -r 'if (.acceptance | type) == "array" then (if (.acceptance | length) > 0 then "yes" else "no" end) else "body" end' <<<"$1" 2>/dev/null)" || k=body

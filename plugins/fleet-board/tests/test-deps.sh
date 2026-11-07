@@ -404,6 +404,17 @@ assert_jq "check: a cycle warns with its members" '.warnings' '["#5 is in a depe
 field_card 6 done '[5]'
 run_check "$SCRIPT" check 5 '[{"repo":"acme/toy","number":6,"ref":"acme/toy#6"}]'
 assert_jq "check: a cycle through a done card is still unmet" '.unmet[0].status' '"in a dependency cycle"'
+# a 12-card ring (#40..#51, #41 done): every member listed on every run
+for i in 40 41 42 43 44 45 46 47 48 49 50 51; do
+  nxt=$((i + 1)); [ "$i" -lt 51 ] || nxt=40
+  if [ "$i" = 41 ]; then field_card "$i" done "[$nxt]"; else field_card "$i" ready "[$nxt]"; fi
+done
+RING_WANT='["#40 is in a dependency cycle: #40, #41, #42, #43, #44, #45, #46, #47, #48, #49, #50, #51"]'
+for run in 1 2 3 4 5; do
+  run_check "$SCRIPT" check 40 '[{"repo":"acme/toy","number":41,"ref":"acme/toy#41"}]'
+  assert_jq "check: 12-card ring, run $run lists all 12 members" '.warnings' "$RING_WANT"
+  assert_jq "check: 12-card ring, run $run: the done direct ref is still unmet" '.unmet' '[{"ref":"acme/toy#41","status":"in a dependency cycle"}]'
+done
 field_card 8 ready '[22]'
 run_check "$SCRIPT" check 8 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
 assert_jq "check: no cycle, no cycle warning" '.warnings' '[]'

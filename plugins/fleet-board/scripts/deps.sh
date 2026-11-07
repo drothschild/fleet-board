@@ -138,28 +138,32 @@ check_ref() {
   jq -cn --argjson met "$met" --arg status "$status" --argjson np "$np" '{met: $met, status: $status, not_planned: $np}'
 }
 
-# local_blockers <n>: the blocked_by numbers of local card <n> (nothing when
-# the card cannot be read or has no field)
-local_blockers() {
-  fl_read_card "$1" 2>/dev/null | jq -r '(.blocked_by // [])[] | tostring' 2>/dev/null
-}
-
-# local_reach <n>: every card number reachable from <n> through blocked_by
-# (one per line; <n> itself only when it is on a cycle). A visited set bounds it.
-local_reach() {
-  local seen=" " front="$1" next x b
-  while [ -n "$front" ]; do
-    next=""
-    for x in $front; do
-      for b in $(local_blockers "$x"); do
-        case "$seen" in *" $b "*) continue ;; esac
-        seen="$seen$b "
-        next="$next $b"
-      done
-    done
-    front="$next"
-  done
-  printf '%s\n' $seen
+# local_cycle_members <n>: the card numbers (one per line, sorted) of the
+# dependency cycle through local card <n> via blocked_by; nothing when <n> is on
+# no cycle. One jq call reads every card's blocked_by, one awk walks the edges
+# forward and backward from <n>; the members are the cards in both walks.
+local_cycle_members() {
+  local dir; dir="$(fl_cards_dir)"
+  set -- "$1" "$dir"/*.json
+  [ -e "$2" ] || return 0
+  local n="$1"; shift
+  jq -r 'select(type == "object" and (.number | type) == "number")
+         | .number as $c | ((.blocked_by // []) | arrays)[] | select(type == "number") | "\($c) \(.)"' "$@" 2>/dev/null \
+    | LC_ALL=C awk -v s="$n" '
+        { out[$1] = out[$1] " " $2; inn[$2] = inn[$2] " " $1 }
+        function walk(adj, seen,   q, h, t, k, m, i) {
+          h = 1; t = 0
+          m = split(adj[s], k, " "); for (i = 1; i <= m; i++) if (!(k[i] in seen)) { seen[k[i]] = 1; q[++t] = k[i] }
+          while (h <= t) {
+            m = split(adj[q[h++]], k, " ")
+            for (i = 1; i <= m; i++) if (!(k[i] in seen)) { seen[k[i]] = 1; q[++t] = k[i] }
+          }
+        }
+        END {
+          walk(out, f); walk(inn, r)
+          if (!(s in f)) exit
+          for (x in f) if (x in r) print x
+        }' | sort -n
 }
 
 emit_parse() {
@@ -182,14 +186,7 @@ case "$CMD" in
     CYC_MEMBERS=""
     if [ "$(fb_cfg board.backend)" = local ]; then
       . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
-      REACH="$(local_reach "$2")"
-      if printf '%s\n' "$REACH" | grep -qx "$2"; then
-        for m in $REACH; do
-          [ "$m" = "$2" ] || { local_reach "$m" | grep -qx "$2" || continue; }
-          CYC_MEMBERS="$CYC_MEMBERS$m"$'\n'
-        done
-        CYC_MEMBERS="$(printf '%s\n' "$CYC_MEMBERS" | sort -un)"
-      fi
+      CYC_MEMBERS="$(local_cycle_members "$2")"
     fi
     while IFS=$'\t' read -r repo num ref; do
       [ -n "$repo" ] || continue
