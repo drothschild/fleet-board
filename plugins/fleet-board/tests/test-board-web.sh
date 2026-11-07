@@ -108,8 +108,9 @@ export FAKE_RUN_DIR FLEET_BOARD_RUN
 # new_repo <yml>: prints a fresh git repo path holding <yml> as .fleet-board.yml
 # (no config when <yml> is empty).
 new_repo() {
-  local r
-  r="$(mktemp -d)"
+  local r repo_temp_base
+  repo_temp_base="${TMPDIR:-/tmp}"
+  r="$(mktemp -d "${repo_temp_base%/}/tmp.XXXXXX")"
   CLEANUP_DIRS+=("$r")
   git init -q "$r"
   git -C "$r" config user.email "test@example.com"
