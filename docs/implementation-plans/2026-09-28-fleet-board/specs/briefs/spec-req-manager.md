@@ -832,3 +832,25 @@ The spec text for every item below is in `specs/manager.md`; write each one into
 8. **5.4 cost line.** Add: provider spend that `stage-review.sh` reports on exit 6, and on exit 1 after a reply, is in the ledger and counted by the headless wrapper, not in this line.
 
 Unchanged: the exit 3 handling stays (the plan waits while the key variable is unset, but the variable can vanish between plan and run).
+
+## Revision 20 requirements (PR #217, command-provider evidence review)
+
+Apply only the evidence-review changes from the manager spec and keep the
+frontmatter unchanged. Add the spec's **Evidence reviewer.** section after
+the existing 0.18 Provider stages as 0.19 and use that number in references.
+
+1. Route the object reviewer through `evidence-review.sh` for `start_review`,
+   `review`, and the re-review after `fix` when there is no review stage. Cover
+   the action rows and step-by-step rules. Preserve the route-before-move
+   sequence and the existing string-reviewer clause at the end of the
+   `start_review` row. Leave stage review dispatch rules intact.
+2. Preserve the exact argument and timeout contracts, background completion
+   handling, and shared concurrency limit in the new section. Record the plan
+   card's reviewer object in `models`.
+3. Preserve the exit mappings from the new section. For exit 0 recheck the
+   file, reconcile it as a reviewer report, and record the runner's SHA,
+   provider and model. Leave the stage null and avoid posting twice. For
+   exit 6 record reviewer report errors, including rejection messages prefixed
+   by the runner as well as those from the report checker.
+4. Update the corresponding reviewer reconciliation, provider-call rule, and
+   tick cost calculation. The evidence-review script has no Agent token count.
