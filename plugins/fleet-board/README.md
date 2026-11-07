@@ -84,14 +84,18 @@ Each entry in `review.stages` adds a column after In Review. Plus Won't Do. A ca
 
 **Card lint.** Before a Ready card is dispatched, `scripts/card-lint.sh` checks its acceptance items. A failing card stays in Ready, the manager posts one comment naming the rule and the item (again only when the lint result changes), and no implementor runs until you fix the card. The rules:
 
-- [`empty-acceptance`](#card-lint-empty-acceptance): the card's `acceptance` field has no items.
+- [`no-heading`](#card-lint-no-heading): a body has no `## Acceptance` heading.
+- [`no-bullets`](#card-lint-no-bullets): the heading has no `- ` bullet under it.
 - [`manual-check`](#card-lint-manual-check): an acceptance item needs a person to check it.
+- `empty-acceptance`: a card whose `acceptance` field has no items. It replaces `no-heading` and `no-bullets` for a stored card, since the field has no heading.
 
-(`no-heading` and `no-bullets` still exist for the card bodies `import-plan` generates, where acceptance is still a `## Acceptance` section before it is split into the field.)
+#### Card lint: no-heading
 
-#### Card lint: empty-acceptance
+Applies to a body, such as the ones `import-plan` generates before they are split into card fields: it needs a `## Acceptance` heading. A bold `**Acceptance**` line or `Acceptance:` is not a heading; the lint names it so you can turn it into one. On a stored card the same mistake shows as `empty-acceptance`: add at least one item to the card's acceptance list.
 
-Add at least one testable item to the card's acceptance list. A body with a `## Acceptance` section pasted in through `board-create.sh` or the page's import is split into the field, so that works too.
+#### Card lint: no-bullets
+
+Write one `- ` bullet per testable behavior under `## Acceptance` (in a stored card, one list item each). One prose sentence gives the implementor nothing to map a test to.
 
 #### Card lint: manual-check
 
