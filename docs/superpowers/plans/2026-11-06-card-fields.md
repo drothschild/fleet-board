@@ -33,7 +33,7 @@
 2. `blocked_by` naming a card that does not exist, or the card itself, is refused on write (exit 2) rather than leaving a card waiting forever; test in Task 1.
 3. A cycle (`#5` blocked by `#6`, `#6` by `#5`) is reported by `deps.sh check` and `status.sh`, not looped on; test in Task 3.
 4. The gate refuses a move to Ready for a card whose `acceptance` is `[]` whatever its body says; test in Task 3.
-5. After Task 2 nothing under `scripts/` or `hooks/` calls `gh issue`, `gh label`, `gh project` or GraphQL; a grep test in Task 4 pins it.
+5. After Task 4 nothing under `scripts/` or `hooks/` calls `gh issue`, `gh label`, `gh project` or GraphQL, except the read-only importer `scripts/import-github.sh`; a grep test in Task 4 pins it.
 
 ---
 
@@ -70,8 +70,16 @@
 
 **Files:** `scripts/import-plan.sh` (cards file `acceptance` and `depends_on` go straight into fields; no labels/projects branches), `scripts/file-followups.sh` and `scripts/verify-main.sh` (create with fields; drop the GitHub branches), `scripts/review-stages.sh` (route and setup local only), `scripts/init.sh` (local only: no `--backend`, `--project`, `--owner`; still checks `gh` for the `repo` scope), `scripts/config.sh` and `config-defaults.json` (remove backend keys; reject them with a migration hint), `scripts/board-lib.sh` (`fb_default_name` single table), `hooks/gate.sh` (drop the labels/projects branches and the `cards.sh` rules), delete `scripts/adapters/github-labels/`, `scripts/adapters/github-projects/`, `scripts/cards.sh`, `tests/test-board-labels.sh`, `tests/test-board-projects.sh`, `tests/test-cards.sh`; update `tests/fake-gh.sh` users to PR routes only.
 
-- [ ] Add the grep test (review-focus 5) and failing config cases first.
+- [ ] Add the grep test (review-focus 5) and failing config cases first. The grep test exempts exactly one file, `scripts/import-github.sh` (below).
 - [ ] Remove and rewrite; run every suite once; commit in two commits (writers, then removal).
+
+**Read-only GitHub importer (user decision, added during execution).** With the backends gone, nothing could read an existing GitHub board any more, so moving another repo's board onto the local store would be impossible. Keep one read-only importer:
+
+- `scripts/import-github.sh --repo OWNER/NAME [--project N [--owner LOGIN]] [--dry-run] [--force]`, run from the target repo root (its `.fleet-board.yml` already `local`). It lists every issue (open and closed) with its comments through `gh` (labels board: state from the `fleet:<state>` label; `--project`: state from the item's Status column mapped through the same default names the removed Projects adapter used, `Review: <stage>` included), keeps each issue number as the card number, and writes cards in the new shape: `acceptance` and `blocked_by` split from the body with `fl_split_body`, `pr_url` from the manager note's `pr` (source `note`), the manager-note comment re-authored to the local login as `migrate-to-local.sh` does today.
+- It writes only to the local store, never to GitHub: every `gh` call it makes is a read (`gh issue list`, `gh api ... /comments` GET, `gh project item-list`). It refuses (exit 1) when the store already has cards unless `--force`; validates everything before writing; prints one line per card; `--dry-run` prints the same lines and writes nothing.
+- It replaces `scripts/migrate-to-local.sh` and `tests/test-migrate-to-local.sh`, which only worked on JSON saved by the removed backends; delete both and move their still-relevant cases (numbers kept, note re-authored, `next` set, refusal without `--force`) into `tests/test-import-github.sh`.
+- `tests/test-import-github.sh`: fake `gh` with fixtures for a labels board and a Projects board (reuse `fixtures/gh/labels` and `fixtures/gh/projects` where they fit), asserting the written cards' fields, states, numbers, note author, `next`, `--dry-run` writing nothing, and that the fake logs no write verb (`issue edit|create|comment|close`, `label create`, `project item-edit|item-add`, any `-X POST|PATCH|PUT|DELETE`).
+- README (Task 8): a "Moving an existing GitHub board" paragraph pointing at this script.
 
 ### Task 5: Server and page
 
