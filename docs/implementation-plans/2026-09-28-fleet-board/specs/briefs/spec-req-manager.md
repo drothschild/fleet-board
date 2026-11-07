@@ -832,3 +832,8 @@ The spec text for every item below is in `specs/manager.md`; write each one into
 8. **5.4 cost line.** Add: provider spend that `stage-review.sh` reports on exit 6, and on exit 1 after a reply, is in the ledger and counted by the headless wrapper, not in this line.
 
 Unchanged: the exit 3 handling stays (the plan waits while the key variable is unset, but the variable can vanish between plan and run).
+
+
+## PR 215 integration requirements
+
+Implement spec 2.9a and its override of ordinary fix handling. Pass plan findings, clear conflict/review state only after a pushed resolution, restart In Review at round 1 with no completed stages, retain blocked findings, and apply the conflict-specific progress rule. Update the fixer input list and stale update_branch descriptions consistently. Preserve unrelated behavior and numbering.
