@@ -212,6 +212,11 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
    If the fixer's report is rejected twice, or its Status is `blocked`, the round stays the same and no reviewer is dispatched this tick. Progress means the fixer's report was accepted and `round` + 1 was merged. A failure in the reviewer step that follows in the same tick is a warning, and the next tick's `review` action counts it.
 
+2.9a. **`fix` for a merge conflict.** When the plan card's `findings` is non-null, the `fix` is a conflict dispatch: its findings are one `[Important] merge conflict in <file>` per file in the note's `conflicted_files`.
+   - Dispatch the fixer with the plan card's `findings` as the findings list, in place of `note.last_review.findings`.
+   - When the fixer's report is accepted with Status `done` (the merge is resolved and pushed), run `note.sh merge` with `conflicted_files: null` and `last_review: null`, so the next tick plans a `review` of the merged head. A merge with conflict resolution never skips review, so do not dispatch the reviewer in this tick and do not merge `round` + 1.
+   - When the fixer's Status is `blocked`, or its report is rejected twice, `conflicted_files` stays in the note. When the Status is `blocked`, run `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = the card's state before the move and `blocked_findings` = the plan card's `findings` → a comment that names the conflicted files and the fixer's reason.
+
 2.10. **Surviving findings** for a `block` that is not an action-failure block:
    - They are `note.last_review.findings` filtered to Critical and Important.
    - `blocked_findings` is always a list of `{severity, text}`.
@@ -252,7 +257,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.17. **`skip_no_acceptance`.** At most one explanatory comment per card, ever: the plan sets `comment_needed` to false once a comment with the marker exists. Progress means the comment was posted, or none was needed.
 
-2.17b. **`update_branch`.** Runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge and blocks the card. When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
+2.17b. **`update_branch`.** Runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge, records the files in the note's `conflicted_files`, counts the conflict as a failed action and leaves the card where it is; the next tick's plan is `fix` (2.9a). When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
 
 2.18. **Unlisted actions.** Any action value not in the table is treated as `skip`, and the tick report carries a warning naming the card and the value.
 
