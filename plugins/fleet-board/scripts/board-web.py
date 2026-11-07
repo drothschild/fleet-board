@@ -625,12 +625,13 @@ def ctx():
     return cfg, store_dir(APP["root"], cfg)
 
 
-def card_summary(dir: Path, card: dict, alive: bool) -> dict:
+def card_summary(dir: Path, card: dict, alive: bool, known_states=None) -> dict:
     note = parse_note(card)
     return {
         "number": card.get("number"),
         "title": card.get("title"),
         "state": card.get("state"),
+        "known": known_states is None or card.get("state") in known_states,
         "labels": card.get("labels") or [],
         "updated_at": card.get("updated_at"),
         "active": is_active(dir, card.get("number"), alive),
@@ -655,9 +656,11 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
 def get_board(params, body):
     cfg, dir = ctx()
     alive = run_alive()  # one liveness check per request
+    sts = states(cfg)
+    keys = [s["key"] for s in sts]
     return 200, {
-        "states": states(cfg),
-        "cards": [card_summary(dir, c, alive) for c in read_cards(dir)],
+        "states": sts,
+        "cards": [card_summary(dir, c, alive, keys) for c in read_cards(dir)],
         "run": board_run_status(alive),
         "repo": (cfg.get("board") or {}).get("repo"),
     }
