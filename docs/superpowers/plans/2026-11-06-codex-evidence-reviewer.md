@@ -96,15 +96,15 @@
 - Consumes: Task 2's merged reviewer object.
 - Produces: each plan card's `models.reviewer` is the merged object, byte-for-byte as `config.sh` emits it. Escalated implementor and fixer use `models.escalation`, and fall back to `models.reviewer` only when it is a string. New warning, verbatim: `reviewer <provider>/<model> has price 0; max_cost_usd does not count its spend`.
 
-- [ ] **Step 1: Write the failing tests** in `test-tick-plan.sh`:
+- [x] **Step 1: Write the failing tests** in `test-tick-plan.sh`:
   - `reviewer object: plan card carries it unchanged`: `.cards[0].models.reviewer == {provider:"codex", model:"gpt-6-astra", ...}`.
   - `reviewer object: escalated writers use models.escalation`: at `round >= escalate_after_rounds`, implementor and fixer are `opus`.
   - `reviewer object: shared-model warning compares reviewer.model`: implementor `gpt-6-astra` gives the shared-model warning naming `gpt-6-astra`; implementor `sonnet` gives none.
   - `reviewer object: zero price warns once`: exactly one warning equal to the string above.
-- [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-tick-plan.sh` — Expected: new cases FAIL.
-- [ ] **Step 3: Implement** the type check in the escalation expression, compare `($m.reviewer | if type == "object" then .model else . end)` in both shared-model warnings, and add the zero-price warning.
-- [ ] **Step 4: Run** `bash plugins/fleet-board/tests/test-tick-plan.sh` — Expected: `failed: 0`.
-- [ ] **Step 5: Commit** `tick-plan: pass a provider reviewer through`.
+- [x] **Step 2: Run** `bash plugins/fleet-board/tests/test-tick-plan.sh` — Expected: new cases FAIL.
+- [x] **Step 3: Implement** the type check in the escalation expression, compare `($m.reviewer | if type == "object" then .model else . end)` in both shared-model warnings, and add the zero-price warning.
+- [x] **Step 4: Run** `bash plugins/fleet-board/tests/test-tick-plan.sh` — Expected: `failed: 0`.
+- [x] **Step 5: Commit** `tick-plan: pass a provider reviewer through`.
 
 ### Task 4: The evidence-review prompt
 
