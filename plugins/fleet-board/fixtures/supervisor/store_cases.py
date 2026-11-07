@@ -4,7 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(sys.argv.pop())
+ROOT = Path(sys.argv.pop()).resolve()
 
 try:
     from supervisor.store import Store
