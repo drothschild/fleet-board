@@ -80,7 +80,7 @@ Same verbs as the other backends. Each script sources `board-lib.sh` and uses `j
 | `list <state>` | Reads every `cards/*.json`, keeps those whose `state` equals the argument, sorts by number, prints `[{number,title,url}]`. No truncation rule, since nothing is paginated. Exit 1 naming the file when any card file is unparsable (fail closed: a short column drops cards). `--allow-truncated` is accepted and ignored. |
 | `move <n> <state>` | Takes `fb_lock n`, applies the Ready rule (`fb_has_acceptance` on the body, exit 1 otherwise), rewrites `state` and `updated_at`. Exit 0 without a write when the card is already there. |
 | `create <title> <body-file> [--label L]...` | Takes a lock on `next` (same `mkdir` lock pattern as `fb_lock`), allocates the number, writes the card with `state` = `FB_CREATE_STATE` (default `backlog`), prints `{number, url}`. |
-| `comment <n> <body-file>` | Under `fb_lock n`, appends `{id: next_comment_id, author: fb_login, body, created_at}`; then removes `active/<n>` (see Active cards). |
+| `comment <n> <body-file>` | Under `fb_lock n`, appends `{id: next_comment_id, author: fb_login, body, created_at}`; then removes `active/<n>` only when the comment is an accepted role report (see Active cards). |
 | `note <n> <body-file>` | Under `fb_lock n`, replaces the body of the last marker comment by this author, or appends one. |
 | `cache-clear` | No-op, exit 0. |
 
@@ -89,6 +89,8 @@ Local-only helpers, not part of the contract:
 - `edit <n> <title-file> <body-file> <labels-json>` (the web server): under `fb_lock n`,
   re-reads the card and rewrites only `title`, `body`, `labels` and `updated_at`, never
   `comments` or `state`, so an agent's comment landing at the same moment is never lost.
+  An empty-string `<title-file>` or `<body-file>` argument, or `null` for `<labels-json>`, leaves
+  that field unchanged.
 - `label <n> add|remove <label>` (`review-stages.sh route`): under `fb_lock n`, re-reads
   the card and adds or removes one label, rewriting only `labels` and `updated_at`.
 - `fl_find_title <title> open|closed [days]` in `local-lib.sh` (the follow-up and P0
@@ -205,7 +207,10 @@ and `run.log` (the path the wrapper printed as its log, parsed from the first li
   `$FLEET_BOARD_LOG_DIR`, else `$HOME/.fleet-board/runs`) for its whole life, holding the
   same two lines as `run.pid` (the pid, then `ps -o lstart=` under `LC_ALL=C TZ=UTC`). It
   refuses to start (exit 1, `another run holds <lock> (pid N)`) while the lock names a live
-  pid with that start time, and removes the lock in its `EXIT` trap. The server computes the
+  pid with that start time, and removes the lock in its `EXIT` trap. It claims the lock
+  through `scripts/claim-run-lock.py` (so the wrapper needs `python3` on every backend),
+  which serializes claims and stale-lock replacement with an advisory lock on the adjacent
+  `.lock.guard` file. The server computes the
   same path and treats a live lock as an alive run, so a wrapper started from a terminal or
   launchd is seen: Start is refused, Stop works, status shows its pid.
 - **Start** refuses (409, naming the pid) when a run is alive (its own `run.pid` or the run

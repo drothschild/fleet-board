@@ -167,7 +167,7 @@ Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Under
 
 ## Local board
 
-`board.backend: local` keeps the cards as JSON files under `<repo>/.fleet-board/` instead of GitHub issues. `board.repo` stays required, since the PRs still live there.
+`board.backend: local` keeps the cards as JSON files under `<repo>/.fleet-board/` (the `board.dir` key moves it) instead of GitHub issues. `board.repo` stays required, since the PRs still live there.
 
 Set it up with `/fleet-board:init` and pick Local, or run `init.sh --backend local --repo OWNER/NAME`. It creates `.fleet-board/cards`, starts the card counter at 1, adds `.fleet-board/` to `.gitignore` and creates no labels. It still checks the `gh` scope `repo`. To version the board, remove that line from `.gitignore` and commit the directory.
 
@@ -183,7 +183,7 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`. It r
 
 - **Cards.** Drag a card to another column, or click it to open the drawer and edit its title, body, labels and state. The state select in the drawer is the keyboard path. A card lights up while a role works on it.
 - **Start and Stop.** Start spawns the headless wrapper in its own session, so it keeps running when you close the page. Stop writes `.fleet-board.stop`, which ends the run after the current tick. A restarted page finds a live run again, and a run started from a terminal or launchd counts too: every wrapper holds a per-repo run lock, so Start never launches a second one (see [docs/overnight.md](docs/overnight.md)). The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it). `FLEET_BOARD_RUN` replaces the wrapper script.
-- **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). Dependencies show as `owner/repo#n` using `board.repo`. `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
+- **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). Dependencies in the preview show as `owner/repo#n` using `board.repo`. `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
 - **Who you are.** On `local` the author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
 - **Rate limits.** The local board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain, so you can lower `limits.tick_interval` to match your CI time.
 
