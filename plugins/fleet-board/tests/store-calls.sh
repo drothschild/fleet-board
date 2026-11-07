@@ -64,7 +64,16 @@ store_calls() {
     if [ ! -e "$old" ]; then
       mkdir -p "$FAKE_GH_DIR/bodies"
       b="$FAKE_GH_DIR/bodies/store-$n"
-      (cd "$root" && bash "$STORE_SYNC_HERE/../scripts/board-read.sh" "$n" 2>/dev/null) | jq -j '.body // ""' > "$b"
+      # The recorded issue body is the card's prose with its fields written as
+      # the "## Acceptance" and "## Depends on" sections, the shape the suites
+      # assert on; board-read.sh returns the prose alone, so this helper puts
+      # the sections back from the fields (test-only; no script does this).
+      (cd "$root" && bash "$STORE_SYNC_HERE/../scripts/board-read.sh" "$n" 2>/dev/null) | jq -j '
+        def sec($h; $items): if ($items | length) == 0 then null else $h + "\n" + ($items | map("- " + .) | join("\n")) end;
+        (.acceptance // []) as $a | ((.blocked_by // []) | map("#" + tostring)) as $d
+        | if ($a | length) == 0 and ($d | length) == 0 then (.body // "")
+          else [(.body // "" | sub("\n+$"; "") | select(. != "")), sec("## Acceptance"; $a), sec("## Depends on"; $d)]
+               | map(select(. != null)) | join("\n\n") + "\n" end' > "$b"
       args=(issue create --repo "$repo" --title "$(jq -r .title "$f")" --body-file "$b" --label "fleet:$(jq -r .state "$f")")
       while IFS= read -r l; do [ -n "$l" ] && args+=(--label "$l"); done < <(jq -r '(.labels // [])[]' "$f")
       store_record "${args[@]}"

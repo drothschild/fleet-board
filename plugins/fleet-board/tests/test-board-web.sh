@@ -309,7 +309,8 @@ if setup_case; then
   assert_code 200
   api GET /api/cards/4
   assert_body "patched title" '.title' Renamed
-  assert_body "patch kept the body" '.body' '## Acceptance*'
+  assert_body "patch kept the acceptance field" '.acceptance|join("|")' x
+  assert_body "patch kept the body prose" '.body' ''
   assert_body "patch kept the labels" '.labels|join(",")' bug
 
   api POST /api/cards/4/comments '{"body":"hi"}'
