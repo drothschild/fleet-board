@@ -1,0 +1,7 @@
+# Board Throughput Design
+
+1. Merge draining runs under auto policy only. Read review columns, take a finite candidate snapshot, and repeatedly use the shared planner to select one candidate. Remove each attempted candidate before replanning so failures cannot spin. Revalidate the selected head before merging; bind the merge to that head. Preserve human-QA and current-review checks. Verify every successful merge before attempting another. A verification error or literal ok:false stops the drain and remains recoverable; no card with failed verification becomes done.
+2. Scope reservations include open cards and previously selected starts in deterministic card order. Disjoint work remains concurrent. Use actual PR files to supplement declared scope without replacing it; failed file lookup must not silently allow conflicting work.
+3. Completion-driven scheduling reconciles each final result immediately, then schedules the next eligible action using fresh planner state and available worker slots. One active role per card; no tick exits with workers pending; bounded action counts prevent loops. Headless merges remain outside the manager. Wrapper settlement must refresh dispatchability before deciding that the board is idle.
+
+Validation uses offline fixtures for multiple merges, changed eligibility between merges, failed main verification, failed merge bypass, exact-head binding, same-batch scope conflicts and refreshed run stop state. Manager behavior requires an approved isolated re-author and behavioral scenario, not a text assertion alone.
