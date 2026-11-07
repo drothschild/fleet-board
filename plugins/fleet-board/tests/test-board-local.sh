@@ -250,7 +250,7 @@ assert_exit "move exit 0" 0
 assert_card_state 1 in_progress
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 2 ready
 assert_exit "move to ready without Acceptance refused" 1
-assert_stderr_contains "refusal names Acceptance" "Acceptance"
+assert_stderr_contains "refusal says the card has no acceptance criteria" "no acceptance criteria"
 assert_card_state 2 backlog
 seed_card 5 backlog 'Empty field' $'## Acceptance\n- stale'
 jq '.acceptance = [] | .blocked_by = []' "$REPO/.fleet-board/cards/5.json" > "$REPO/five.tmp" && mv "$REPO/five.tmp" "$REPO/.fleet-board/cards/5.json"
