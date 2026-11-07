@@ -7,6 +7,13 @@
 #   stdin: {"messages":[{"role":...,"content":...}, ...]}
 #   stdout: {"text","finish_reason","input_tokens","output_tokens","model"}
 #
+# Command mode (--command <string> --model <id> --timeout <s>; no HTTP): the
+# string runs with sh -c in the repo root, {model} replaced by --model, the
+# prompt (message contents joined by a blank line) on stdin. Stdout is the
+# reply, with null token counts; a non-zero exit, a timeout or an empty stdout
+# exits 1. With --dir <path>, it runs in that directory and substitutes {dir}
+# with the shell-quoted path.
+#
 # The key is read from the environment variable named by --key-env ('-' sends
 # no Authorization header, for a loopback server). It reaches curl only through
 # a mode-600 header file (-H @file) in a private temp dir that a trap removes;
@@ -41,7 +48,8 @@ usage() {
   exit 2
 }
 
-BASE_URL="" KEY_ENV="" MODEL="" MAX_TOKENS="" MAX_PARAM="" TIMEOUT=""
+BASE_URL="" KEY_ENV="" MODEL="" MAX_TOKENS="" MAX_PARAM="" TIMEOUT="" COMMAND=""
+unset COMMAND_DIR
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage "missing value for $1"
   case "$1" in
@@ -51,28 +59,88 @@ while [ $# -gt 0 ]; do
     --max-tokens) MAX_TOKENS="$2" ;;
     --max-tokens-param) MAX_PARAM="$2" ;;
     --timeout) TIMEOUT="$2" ;;
+    --command) COMMAND="$2" ;;
+    --dir) COMMAND_DIR="$2" ;;
     *) usage "unknown argument: $1" ;;
   esac
   shift 2
 done
-[ -n "$BASE_URL" ] && [ -n "$KEY_ENV" ] && [ -n "$MODEL" ] && [ -n "$MAX_TOKENS" ] \
-  && [ -n "$MAX_PARAM" ] && [ -n "$TIMEOUT" ] || usage "all of --base-url --key-env --model --max-tokens --max-tokens-param --timeout are required"
-case "$MAX_TOKENS" in *[!0-9]*) usage "--max-tokens must be an integer" ;; esac
-case "$TIMEOUT" in *[!0-9]*) usage "--timeout must be an integer" ;; esac
-case "$MAX_PARAM" in max_tokens|max_completion_tokens) ;; *) usage "--max-tokens-param must be max_tokens or max_completion_tokens" ;; esac
-# Backstop for config.sh's base_url rule: no userinfo in the authority, and a
-# plain-http host must itself be loopback (optional numeric port). grep is
-# line-based, so a control character is refused first.
-case "$BASE_URL" in *[[:cntrl:]]*) die "base_url holds a control character" 2 ;; esac
-printf '%s' "$BASE_URL" | grep -Eq '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@' \
-  && die "base_url must not contain userinfo" 2
-printf '%s' "$BASE_URL" | grep -Eq '^(https://[^/?#]|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$))' \
-  || die "base_url must start with https:// or a loopback http:// address" 2
-if [ "$KEY_ENV" != "-" ]; then
-  printf '%s' "$KEY_ENV" | grep -Eq '^[A-Z_][A-Z0-9_]*$' || usage "--key-env must match ^[A-Z_][A-Z0-9_]*$ or be -"
+if [ -n "$COMMAND" ]; then
+  if [ "${COMMAND_DIR+x}" ]; then
+    [ -d "$COMMAND_DIR" ] || usage "--dir must name a directory"
+  fi
+  # Command mode: no HTTP; --base-url, --key-env, --max-tokens and --max-tokens-param are not used.
+  [ -n "$MODEL" ] && [ -n "$TIMEOUT" ] || usage "--command needs --model and --timeout"
+  [ -z "$BASE_URL" ] || usage "--command and --base-url are exclusive"
+  case "$TIMEOUT" in *[!0-9]*) usage "--timeout must be an integer" ;; esac
+  # {model} is substituted into a shell command line, so the model id is restricted
+  printf '%s' "$MODEL" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*$' || die "model id holds characters not allowed in a command provider" 2
+  case "$COMMAND" in *[[:cntrl:]]*) die "command holds a control character" 2 ;; esac
+else
+  [ ! "${COMMAND_DIR+x}" ] || usage "--dir requires --command"
+  [ -n "$BASE_URL" ] && [ -n "$KEY_ENV" ] && [ -n "$MODEL" ] && [ -n "$MAX_TOKENS" ] \
+    && [ -n "$MAX_PARAM" ] && [ -n "$TIMEOUT" ] || usage "all of --base-url --key-env --model --max-tokens --max-tokens-param --timeout are required"
+  case "$MAX_TOKENS" in *[!0-9]*) usage "--max-tokens must be an integer" ;; esac
+  case "$TIMEOUT" in *[!0-9]*) usage "--timeout must be an integer" ;; esac
+  case "$MAX_PARAM" in max_tokens|max_completion_tokens) ;; *) usage "--max-tokens-param must be max_tokens or max_completion_tokens" ;; esac
+  # Backstop for config.sh's base_url rule: no userinfo in the authority, and a
+  # plain-http host must itself be loopback (optional numeric port). grep is
+  # line-based, so a control character is refused first.
+  case "$BASE_URL" in *[[:cntrl:]]*) die "base_url holds a control character" 2 ;; esac
+  printf '%s' "$BASE_URL" | grep -Eq '^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@' \
+    && die "base_url must not contain userinfo" 2
+  printf '%s' "$BASE_URL" | grep -Eq '^(https://[^/?#]|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$))' \
+    || die "base_url must start with https:// or a loopback http:// address" 2
+  if [ "$KEY_ENV" != "-" ]; then
+    printf '%s' "$KEY_ENV" | grep -Eq '^[A-Z_][A-Z0-9_]*$' || usage "--key-env must match ^[A-Z_][A-Z0-9_]*$ or be -"
+  fi
+fi
+REQ_IN="$(cat)"
+if [ -n "$COMMAND" ]; then
+  PROMPT="$(printf '%s' "$REQ_IN" | jq -r 'if (.messages | type) == "array" then [.messages[] | (if .role == "assistant" then "Your previous reply:\n" else "" end) + (.content | if type == "string" then . else tojson end)] | join("\n\n") else error("no messages") end' 2>/dev/null)" \
+    || usage 'stdin must be {"messages":[...]}'
+  umask 077
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT
+  # A compound command can leave a shell between this adapter and the provider.
+  # Put the provider and watchdog in separate process groups for cancellation.
+  set -m
+  cpid="" wpid=""
+  trap 'if [ -n "$wpid" ]; then kill -KILL -- "-$wpid" 2>/dev/null || true; fi
+        if [ -n "$cpid" ]; then kill -KILL -- "-$cpid" 2>/dev/null || true; fi
+        exit 130' INT TERM
+  RUN="${COMMAND//\{model\}/$MODEL}"
+  if [ "${COMMAND_DIR+x}" ]; then
+    # Preserve an absolute argument even when the caller supplied a relative path.
+    case "$COMMAND_DIR" in /*) ;; *) COMMAND_DIR="$PWD/$COMMAND_DIR" ;; esac
+    QUOTED_DIR="$(jq -nr --arg dir "$COMMAND_DIR" '$dir | @sh')"
+    RUN="${RUN//\{dir\}/$QUOTED_DIR}"
+  else
+    COMMAND_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  fi
+  printf '%s' "$PROMPT" > "$TMP/prompt.txt"
+  ( cd "$COMMAND_DIR" && exec sh -c "$RUN" ) < "$TMP/prompt.txt" > "$TMP/out.txt" 2> "$TMP/err.txt" &
+  cpid=$!
+  ( sleep "$TIMEOUT"; : > "$TMP/timedout"; kill -KILL -- "-$cpid" 2>/dev/null ) > /dev/null 2>&1 &
+  wpid=$!
+  rc=0
+  wait "$cpid" 2>/dev/null || rc=$?
+  cpid=""
+  kill -KILL -- "-$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  wpid=""
+  if [ -e "$TMP/timedout" ]; then
+    die "command timed out after ${TIMEOUT}s" 1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    die "command failed (exit $rc): $(t="$(tr '\n\r' '  ' < "$TMP/err.txt")"; printf '%s' "${t:0:300}")" 1
+  fi
+  grep -q '[^[:space:]]' "$TMP/out.txt" || die "empty reply" 1
+  jq -cn --rawfile t "$TMP/out.txt" --arg m "$MODEL" \
+    '{text: $t, finish_reason: "stop", input_tokens: null, output_tokens: null, model: $m}'
+  exit 0
 fi
 
-REQ_IN="$(cat)"
 REQUEST="$(printf '%s' "$REQ_IN" | jq -ce --arg m "$MODEL" --arg p "$MAX_PARAM" --argjson n "$MAX_TOKENS" \
   'if (.messages | type) == "array" then {model: $m, messages: .messages, ($p): $n} else error("no messages") end' 2>/dev/null)" \
   || usage 'stdin must be {"messages":[...]}'

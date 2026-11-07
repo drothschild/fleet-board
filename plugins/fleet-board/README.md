@@ -133,10 +133,12 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
 | `review.stages` | `[]` | extra review columns after In Review, each with its own agent or provider model, routed by path globs or a label ([details](docs/config.md#reviewstages)) |
 | `review.stages[].provider` | none | runs the review stage on a model from a provider instead of a Claude `agent`; set exactly one of the two, plus `model` and `price` ([details](docs/config.md#providers)) |
-| `providers` | `{}` | provider connections by name: `base_url`, `api_key_env`, `max_tokens_param`; built-in presets `openai`, `gemini`, `openrouter`, `ollama` need no entry ([details](docs/config.md#providers)) |
+| `providers` | `{}` | provider connections by name: `base_url`, `api_key_env`, `max_tokens_param`, or `command` (a local program such as `codex exec`; sends the same card, findings, report and diff to it); built-in presets `openai`, `gemini`, `openrouter`, `ollama`, `codex` need no entry ([details](docs/config.md#providers)) |
 | `models.manager` / `implementor` / `reviewer` / `fixer` | `sonnet` / `sonnet` / `opus` / `sonnet` | each role's model |
 | `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.escalation` |
-| `models.escalation` | unset | model for escalated implementor and fixer; unset means `models.reviewer`. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |
+| `models.reviewer` | `opus` | Claude model string or an object with `provider`, `model`, `price` and optional `timeout` ([details](docs/config.md#modelsreviewer)) |
+| `providers.<name>.review_command` | none | runs the evidence reviewer in a scratch clone. A Codex evidence reviewer can read the whole repository and sends what it reads to OpenAI through the Codex CLI. |
+| `models.escalation` | unset | model for escalated implementor and fixer; defaults to the reviewer model in string form and is required in object form. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |
 | `limits.concurrency` | `6` | role agents running at once |
 | `limits.tick_interval` | `300` | seconds between ticks |
 | `limits.max_hours`, `max_cost_usd`, `max_consecutive_failures`, `max_turns` | `8`, `40`, `3`, `200` | headless wrapper limits |
