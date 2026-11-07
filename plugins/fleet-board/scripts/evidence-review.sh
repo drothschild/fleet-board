@@ -161,6 +161,10 @@ PROVIDER_BIN="$CLONE/.fleet-board-bin"
 mkdir "$PROVIDER_BIN" || die "cannot create provider utility directory"
 cp "$FLEET_SCRIPTS/providers/reviewer-mktemp.sh" "$PROVIDER_BIN/mktemp" || die "cannot install provider mktemp"
 chmod +x "$PROVIDER_BIN/mktemp" || die "cannot make provider mktemp executable"
+if [ "$(uname -s)" = Darwin ]; then
+  cp "$FLEET_SCRIPTS/providers/reviewer-ps.py" "$PROVIDER_BIN/ps" || die "cannot install provider ps"
+  chmod +x "$PROVIDER_BIN/ps" || die "cannot make provider ps executable"
+fi
 REVIEW_COMMAND='export FLEET_REVIEW_MKTEMP="$(command -v mktemp)"; export TMPDIR="$PWD/.fleet-board-tmp"; export PATH="$PWD/.fleet-board-bin:$PATH"; '"$REVIEW_COMMAND"
 
 ATTEMPTS=0

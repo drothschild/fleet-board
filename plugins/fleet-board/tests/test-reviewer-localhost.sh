@@ -26,7 +26,11 @@ if os.environ.get('FLEET_TEST_CODEX_SANDBOX') != '1':
     print('SKIP live sandbox probe (set FLEET_TEST_CODEX_SANDBOX=1)')
     sys.exit(0)
 probe = r'''
-import errno, http.server, os, pathlib, socket, subprocess, threading, urllib.request
+import errno, http.server, os, pathlib, socket, subprocess, sys, threading, urllib.request
+if sys.platform == 'darwin':
+    result = subprocess.check_output(['ps', '-o', 'lstart=', '-p', str(os.getpid())], text=True)
+    assert result.strip(), 'same-sandbox process start time must be readable'
+    print('PASS sandbox process start-time query')
 for command in (["mktemp"], ["mktemp", "-d"]):
     result = pathlib.Path(subprocess.check_output(command, text=True).strip())
     assert result.parent == pathlib.Path(os.environ["TMPDIR"])
@@ -59,6 +63,9 @@ with tempfile.TemporaryDirectory() as parent:
     tmpdir = scratch/'.fleet-board-tmp'; tmpdir.mkdir()
     shutil.copy(root/'plugins/fleet-board/scripts/providers/reviewer-mktemp.sh', bindir/'mktemp')
     (bindir/'mktemp').chmod(0o755)
+    if sys.platform == 'darwin':
+        shutil.copy(root/'plugins/fleet-board/scripts/providers/reviewer-ps.py', bindir/'ps')
+        (bindir/'ps').chmod(0o755)
     env_args = ['env', 'TMPDIR='+str(tmpdir), 'FLEET_REVIEW_MKTEMP='+shutil.which('mktemp'), 'PATH='+str(bindir)+os.pathsep+os.environ['PATH']]
     subprocess.run(['codex' , 'sandbox', '-c', 'sandbox_mode="workspace-write"', *flags, '--', *env_args, sys.executable, '-c', probe], cwd=scratch, check=True)
 PY
