@@ -12,6 +12,13 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
+if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ] || [ "${1:-start}" = local-web ] || [ "${1:-start}" = local-qa-race ]; then
+  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
+  mkdir -p "$TMP/repo/.fleet-board/cards"
+  printf '13\n' > "$TMP/repo/.fleet-board/next"
+  printf '%s\n' '{"number":12,"title":"Add subtract","body":"Subtract.\n\n## Acceptance\n- subtract two numbers\n","state":"ready","labels":[],"comments":[],"next_comment_id":1}' > "$TMP/repo/.fleet-board/cards/12.json"
+  export FLEET_BOARD_USER=fleet-bot
+fi
 if [ "${1:-start}" = projects-review ] || [ "${1:-start}" = projects-qa-race ]; then
   printf 'board:\n  backend: github-projects\n  repo: acme/toy\n  project_number: 1\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
   export GH_PROJECT=1
@@ -479,7 +486,84 @@ if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ]; then
   [ -e "$TMP/state/pr" ] || { echo 'FAIL: interruption preceded PR creation' >&2; exit 1; }
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { cat "$TMP/first-err" >&2; cat "$TMP/state/comments" >&2; echo 'FAIL: official report missing before interruption' >&2; exit 1; }
 fi
+if [ "${1:-start}" = local-web ]; then
+  printf '\nlimits: { tick_interval: 3 }\n' >> .fleet-board.yml
+  export FLEET_BOARD_WEB_RUN_MODE=standalone FLEET_BOARD_LOG_DIR="$TMP/logs"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/cleanup"
+  export FLEET_BOARD_CLEANUP="$TMP/cleanup"
+  python3 "$ROOT/plugins/fleet-board/scripts/board-web.py" --root "$PWD" --port 0 --scripts "$ROOT/plugins/fleet-board/scripts" > "$TMP/web-out" 2> "$TMP/web-err" & WEB_PID=$!
+  trap 'kill "$WEB_PID" 2>/dev/null || true; wait "$WEB_PID" 2>/dev/null || true; rm -rf "$TMP"' EXIT
+  for i in {1..100}; do grep -q '^listening on ' "$TMP/web-out" && break; sleep 0.1; done
+  PORT="$(sed -n '1s/.*://p' "$TMP/web-out")"
+  [ -n "$PORT" ] || { echo 'FAIL: web server did not start' >&2; exit 1; }
+  code="$(curl -s -o "$TMP/start-response" -w '%{http_code}' -X POST -H 'X-Fleet-Board: 1' "http://127.0.0.1:$PORT/api/run/start")"
+  [ "$code" = 200 ] || { cat "$TMP/start-response" >&2; echo 'FAIL: web start failed' >&2; exit 1; }
+  for i in {1..150}; do [ "$(jq -r .state .fleet-board/cards/12.json)" = in_progress ] && break; sleep 0.1; done
+  [ "$(jq -r .state .fleet-board/cards/12.json)" = in_progress ] || { cat "$TMP/logs/web/acme-toy/run.out" >&2; echo 'FAIL: web run did not update local card' >&2; exit 1; }
+  code="$(curl -s -o "$TMP/stop-response" -w '%{http_code}' -X POST -H 'X-Fleet-Board: 1' "http://127.0.0.1:$PORT/api/run/stop")"
+  [ "$code" = 200 ] || { cat "$TMP/stop-response" >&2; echo 'FAIL: web stop failed' >&2; exit 1; }
+  for i in {1..120}; do curl -fsS "http://127.0.0.1:$PORT/api/run" > "$TMP/status"; [ "$(jq -r .state "$TMP/status")" = stopped ] && break; sleep 0.1; done
+  [ "$(jq -r .state "$TMP/status")" = stopped ] || { echo 'FAIL: web run did not stop' >&2; exit 1; }
+  jq -e '.stop_reason == "stop-file" and (.hours | type == "number")' "$TMP/status" >/dev/null || { echo 'FAIL: stop status was not reported' >&2; exit 1; }
+  echo 'PASS: local-web'; exit 0
+fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
+if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ] || [ "${1:-start}" = local-web ] || [ "${1:-start}" = local-qa-race ]; then
+  jq -e '.state == "in_progress" and any(.comments[]; .author == "fleet-bot" and (.body | contains("fleet-board:standalone-start:")))' .fleet-board/cards/12.json >/dev/null || { echo 'FAIL: local card state or report missing' >&2; exit 1; }
+  cat > "$TMP/worker.sh" <<'REVIEWER'
+#!/bin/sh
+set -eu
+printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nReviewed the implementation.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+REVIEWER
+  if [ "$1" = local-qa-race ]; then
+    MARKER="review-started-$(basename "$TMP")"
+    sed "s|set -eu|set -eu\\ntouch /scratch/$MARKER\\nwhile [ ! -e /scratch/continue-review ]; do sleep 0.1; done|" "$TMP/worker.sh" > "$TMP/worker-next" && mv "$TMP/worker-next" "$TMP/worker.sh"
+    TMPDIR="$TMP" bash "$ROOT/bin/fleet-board" tick > "$TMP/race-out" 2> "$TMP/race-err" & RACE_PID=$!
+    marker=""
+    for i in {1..200}; do marker="$(find "${TMPDIR:-/tmp}" -name "$MARKER" -type f -print -quit 2>/dev/null)"; [ -n "$marker" ] && break; sleep 0.1; done
+    [ -n "$marker" ] || { kill "$RACE_PID" 2>/dev/null || true; wait "$RACE_PID" 2>/dev/null || true; cat "$TMP/race-err" >&2; echo 'FAIL: review did not start' >&2; exit 1; }
+    bash "$ROOT/plugins/fleet-board/scripts/board-move.sh" 12 human_qa || exit 1
+    touch "$(dirname "$marker")/continue-review"
+    if wait "$RACE_PID"; then echo 'FAIL: review accepted Human QA race' >&2; exit 1; fi
+    jq -e '.state == "human_qa" and all(.comments[]; (.body | contains("fleet-board:standalone-review:")) | not)' .fleet-board/cards/12.json >/dev/null || { echo 'FAIL: Human QA or review evidence changed' >&2; exit 1; }
+    echo 'PASS: local-qa-race'; exit 0
+  fi
+  if [ "$1" = local-fix ]; then
+    sed 's/"outcome":"clean"/"outcome":"findings"/; s/Status\\nclean\\n## Findings\\n- none/Status\\nfindings\\n## Findings\\n- [Important] Incorrect result/' "$TMP/worker.sh" > "$TMP/worker-next" && mv "$TMP/worker-next" "$TMP/worker.sh"
+  fi
+  if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/review-out" 2> "$TMP/review-err"; then cat "$TMP/review-err" >&2; echo 'FAIL: local review tick failed' >&2; exit 1; fi
+  jq -e '.state == "in_review" and any(.comments[]; .author == "fleet-bot" and (.body | contains("fleet-board:standalone-review:")))' .fleet-board/cards/12.json >/dev/null || { echo 'FAIL: local review missing' >&2; exit 1; }
+  if [ "$1" = local-fix ]; then
+    cat > "$TMP/worker.sh" <<'FIXER'
+#!/bin/sh
+set -eu
+if grep -q '"role": "fixer"' /scratch/request.json; then
+  printf 'fixed\n' > source.txt; git add source.txt
+  git -c user.name=Fixture -c user.email=fixture@example.com commit -qm fix
+  printf '%s\n' '{"version":1,"outcome":"done","report":"## Status\ndone\n## Findings\n- none\n## For the card\nFixed.\n## PR\n#34\n## Resolutions\n- Incorrect result :: fixed\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+else
+  printf '%s\n' '{"version":1,"outcome":"clean","report":"## Status\nclean\n## Findings\n- none\n## For the card\nRe-reviewed.\n## Acceptance map\n- subtract -> CHECKED: `cat source.txt`\n## Mutation\nskipped: review.mutation is off\n## Claim check\nskipped: review.verify_claim is off\nVERIFIED: `cat source.txt` -> 1 file"}' > /scratch/result.json
+fi
+FIXER
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/fix-out" 2> "$TMP/fix-err"; then cat "$TMP/fix-err" >&2; echo 'FAIL: local fix failed' >&2; exit 1; fi
+    jq -e 'any(.comments[]; .author == "fleet-bot" and (.body | contains("fleet-board:standalone-fix:")))' .fleet-board/cards/12.json >/dev/null || exit 1
+    echo 'PASS: local-fix'; exit 0
+  fi
+  if [ "$1" = local-publish ]; then
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/ready-out" 2> "$TMP/ready-err"; then cat "$TMP/ready-err" >&2; echo 'FAIL: local mark-ready failed' >&2; exit 1; fi
+    [ -e "$TMP/state/ready" ] || { echo 'FAIL: local PR not ready' >&2; exit 1; }
+    cat > "$TMP/verify-main" <<'VERIFY'
+#!/bin/bash
+sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/main)"
+jq -n --arg sha "$sha" '{commit:$sha,ok:true,results:[]}'
+VERIFY
+    export FLEET_BOARD_VERIFY_MAIN="$TMP/verify-main"
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/merge-out" 2> "$TMP/merge-err"; then cat "$TMP/merge-err" >&2; echo 'FAIL: local merge failed' >&2; exit 1; fi
+    [ "$(jq -r .state .fleet-board/cards/12.json)" = done ] || { echo 'FAIL: local card not done' >&2; exit 1; }
+    echo 'PASS: local-publish'; exit 0
+  fi
+  echo 'PASS: local-start'; exit 0
+fi
 [ ! -e "$TMP/hook-ran" ] || { echo 'FAIL: worker Git config executed on controller' >&2; exit 1; }
 if [ "${1:-start}" = continue-implementor ]; then EXPECTED_ACTION=continue_implementor; else EXPECTED_ACTION=start; fi
 if ! jq -e --arg action "$EXPECTED_ACTION" '.outcome == "progress" and .cards[0].action == $action' "$TMP/out" >/dev/null; then echo 'FAIL: start outcome' >&2; exit 1; fi

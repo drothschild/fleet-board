@@ -162,9 +162,9 @@ jq -e --argjson n "$PR" --arg branch "$BRANCH" --arg sha "$HEAD_SHA" --arg owner
 ' <<<"$INFO" >/dev/null || { echo 'draft PR identity does not match evidence' >&2; exit 1; }
 # Construct the official comment from parsed report data and verified PR evidence.
 MARKER="<!-- fleet-board:standalone-start:$HEAD_SHA -->"
-COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
+COMMENTS="$(bash "$SCRIPTS/standalone/comments.sh" "$N")" || exit 1
 ME="$(fb_login)" || exit 1
-if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null; then
+if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .author == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null; then
   {
     printf '%s\n\n## Status\ndone\n\n## Findings\n' "$MARKER"
     jq -r 'if (.findings | length) == 0 then "- none" else .findings[] | "- [\(.severity)] \(.text)" end' <<<"$PARSED"

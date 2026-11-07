@@ -13,6 +13,7 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo 'not a repository'
 cd "$ROOT" || exit 1
 bash "$HERE/config.sh" --dir "$ROOT" --check </dev/null || exit $?
 cfg() { bash "$HERE/config.sh" --dir "$ROOT" "$1" </dev/null; }
+REPO_SLUG="$(cfg board.repo)" || exit 1
 MAX_HOURS="$(cfg limits.max_hours)" || exit 1
 MAX_COST="$(cfg limits.max_cost_usd)" || exit 1
 INTERVAL="$(cfg limits.tick_interval)" || exit 1
@@ -25,11 +26,15 @@ SLEEP_CMD="${FLEET_BOARD_SLEEP:-sleep}"
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
 case "$LOG_DIR" in /*) ;; *) LOG_DIR="$CALLER/$LOG_DIR" ;; esac
 (umask 077; mkdir -p "$LOG_DIR") || exit 1
+RUN_LOCK="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+python3 "$HERE/claim-run-lock.py" "$RUN_LOCK" "$$" || exit 1
+release_run_lock() { [ "$(sed -n 1p "$RUN_LOCK" 2>/dev/null)" != "$$" ] || rm -f "$RUN_LOCK"; }
+trap release_run_lock EXIT
 LOG="$LOG_DIR/standalone-$(date +%Y%m%d-%H%M%S)-$$.log"
 (umask 077; set -C; : > "$LOG") || exit 1
 WORK="$(mktemp -d)" || exit 1
 CHILD=""
-cleanup() { rm -rf "$WORK"; }
+cleanup() { rm -rf "$WORK"; release_run_lock; }
 cancel() {
   local code="$1" target="$CHILD" watchdog=""
   trap '' INT TERM
@@ -57,7 +62,7 @@ now() { if [ -n "${FLEET_BOARD_NOW_FILE:-}" ]; then cat "$FLEET_BOARD_NOW_FILE";
 greater() { LC_ALL=C awk -v a="$1" -v b="$2" 'BEGIN { exit !(a > b) }'; }
 add() { LC_ALL=C awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a+b }'; }
 START="$(now)"; LAST=""; TICKS=0; FAILS=0; COST=0
-stop() { printf 'fleet-board-run: stopped: %s after %s ticks, cost_estimate_usd %s (estimate)\n' "$1" "$TICKS" "$COST" | tee -a "$LOG"; exit "$2"; }
+stop() { local hours; hours="$(LC_ALL=C awk -v elapsed="$(($(now) - START))" 'BEGIN {printf "%.2f", elapsed / 3600}')"; printf 'fleet-board-run: stopped: %s after %s ticks, %s h, cost_estimate_usd %s (estimate)\n' "$1" "$TICKS" "$hours" "$COST" | tee -a "$LOG"; exit "$2"; }
 echo "fleet-board-run: log: $LOG"
 while :; do
   [ -e "$ROOT/.fleet-board.stop" ] && stop stop-file 0
@@ -69,6 +74,7 @@ while :; do
     if greater "$GAP" 0; then run_group "$SLEEP_CMD" "$GAP" || exit 1; continue; fi
   fi
   LAST="$(now)"; TICKS=$((TICKS + 1))
+  printf '=== tick %s ===\n' "$TICKS" >> "$LOG"
   run_group bash "$TICK_CMD" tick </dev/null > "$WORK/tick" 2> "$WORK/err"; RC=$?
   cat "$WORK/tick" "$WORK/err" >> "$LOG" || exit 1
   # Account for every attempt, including failures, before another tick can run.

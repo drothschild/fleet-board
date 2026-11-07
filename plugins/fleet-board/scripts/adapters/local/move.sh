@@ -8,6 +8,9 @@ fb_valid_state "$TARGET" || fb_die 2 "invalid state: $TARGET"
 fl_require_store
 fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
+if [ "${FLEET_BOARD_ENFORCE_QA:-}" = 1 ] && [ "$TARGET" != human_qa ] && [ "$(jq -r '.state // ""' <<<"$CARD")" = human_qa ]; then
+  fb_die 1 "refusing to move #$N out of Human QA"
+fi
 if [ "$TARGET" = ready ] && ! fb_has_acceptance "$(jq -r '.body // ""' <<<"$CARD")"; then
   fb_die 1 "card #$N has no '## Acceptance' section; refusing to move it to ready"
 fi

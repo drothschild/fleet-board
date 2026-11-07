@@ -57,7 +57,10 @@ check_pr() {
 check_state() {
   local current states state
   current="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
-  if [ "$(fb_cfg board.backend)" = github-projects ]; then
+  if [ "$(fb_cfg board.backend)" = local ]; then
+    jq -e --argjson n "$N" --arg state "$STATE" '.number == $n and .state == $state' <<<"$current" >/dev/null
+    return $?
+  elif [ "$(fb_cfg board.backend)" = github-projects ]; then
     jq -e --argjson n "$N" --arg state "$STATE" '.number == $n and .state == $state and (.item_id | type == "string" and length > 0)' <<<"$current" >/dev/null
     return $?
   fi
@@ -90,10 +93,10 @@ if [ -e "$JOURNAL" ]; then
     [ "$LIVE_SHA" = "$HEAD_SHA" ] || exit 1
     REMOTE_HEAD="$(git -C "$FLEET_ROOT" ls-remote --heads origin "refs/heads/$BRANCH")" || exit 1
     [ "${REMOTE_HEAD%%[[:space:]]*}" = "$HEAD_SHA" ] || exit 1
-    COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
+    COMMENTS="$(bash "$SCRIPTS/standalone/comments.sh" "$N")" || exit 1
     ME="$(fb_login)" || exit 1
     if [ -n "$STAGE_NAME" ]; then REVIEW_MARKER="<!-- fleet-board:standalone-stage-review:$STAGE_NAME:$((ROUND + 1)):$HEAD_SHA -->"; else REVIEW_MARKER="<!-- fleet-board:standalone-review:$HEAD_SHA -->"; fi
-    jq -e --arg marker "$REVIEW_MARKER" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null || exit 1
+    jq -e --arg marker "$REVIEW_MARKER" --arg me "$ME" 'any(.[]; .author == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null || exit 1
     check_state || exit 1
     jq '.completed = true' "$JOURNAL" > "$JOURNAL.tmp.$$" && mv "$JOURNAL.tmp.$$" "$JOURNAL" || exit 1
     exit 0
@@ -142,9 +145,9 @@ INFO="$(pr_info)" || exit 1
 check_pr <<<"$INFO" && [ "$(jq -r .headRefOid <<<"$INFO")" = "$HEAD_SHA" ] || { echo 'published fix head not verified' >&2; exit 1; }
 check_state || exit 1
 MARKER="<!-- fleet-board:standalone-fix:$HEAD_SHA -->"
-COMMENTS="$(gh api --paginate "repos/$FLEET_REPO/issues/$N/comments" | jq -s 'add // []')" || exit 1
+COMMENTS="$(bash "$SCRIPTS/standalone/comments.sh" "$N")" || exit 1
 ME="$(fb_login)" || exit 1
-if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .user.login == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null; then
+if ! jq -e --arg marker "$MARKER" --arg me "$ME" 'any(.[]; .author == $me and (.body | startswith($marker)))' <<<"$COMMENTS" >/dev/null; then
   { printf '%s\nFixed commit: `%s`\n\n' "$MARKER" "$HEAD_SHA"; cat "$SCRATCH/fixer-report"; } > "$SCRATCH/official-fix"
   bash "$SCRIPTS/board-comment.sh" "$N" "$SCRATCH/official-fix" || exit 1
 fi
