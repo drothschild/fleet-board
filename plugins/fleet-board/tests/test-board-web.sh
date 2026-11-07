@@ -555,6 +555,25 @@ if start_server "$REPO"; then
   api PATCH /api/cards/1 '{"blocked_by":[2]}'
   api GET /api/board
   assert_body "only a done blocker left, not blocked" '.cards[]|select(.number==1)|.blocked' false
+
+  # the drawer creates a card with its fields, not with body sections
+  api POST /api/cards '{"title":"Made","body":"Prose.","acceptance":["one","two"],"blocked_by":[3]}'
+  assert_code 200
+  if [ "$(card_json 5 '.acceptance|join("|")')|$(card_json 5 '.blocked_by|map(tostring)|join(",")')|$(card_json 5 .body)" = "one|two|3|Prose." ]; then
+    pass "create stores acceptance and blocked_by"
+  else
+    fail "create stores acceptance and blocked_by" "got $(cat "$REPO/.fleet-board/cards/5.json" 2>/dev/null)"
+  fi
+  api POST /api/cards '{"title":"Bad","body":"b","blocked_by":[999]}'
+  assert_code 400
+  assert_body "create with a missing blocker names it" '.error' '*#999*'
+  api POST /api/cards '{"title":"Bad","body":"b","acceptance":"x"}'
+  assert_code 400
+  [ ! -f "$REPO/.fleet-board/cards/6.json" ] && pass "refused creates made no card" || fail "refused creates made no card" "cards/6.json exists"
+  # the drawer's new card may have criteria and no prose
+  api POST /api/cards '{"title":"No prose","body":"","acceptance":["only this"]}'
+  assert_code 200
+  [ "$(card_json 6 '.acceptance|join("|")')" = "only this" ] && pass "create with an empty body" || fail "create with an empty body" "got $(cat "$REPO/.fleet-board/cards/6.json" 2>/dev/null)"
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr"; fi
   stop_server
 fi

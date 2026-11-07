@@ -100,8 +100,40 @@
     <section class="dr-section" aria-labelledby="dr-body-h">
       <h3 id="dr-body-h" class="dr-h"><label for="dr-body">Body</label></h3>
       <div class="dr-editor">
-        <textarea id="dr-body" class="dr-body" spellcheck="false"></textarea>
+        <textarea id="dr-body" class="dr-body" spellcheck="false" placeholder="What the work is and why"></textarea>
         <div id="dr-preview" class="dr-preview md" aria-label="Preview"></div>
+      </div>
+    </section>
+    <section class="dr-section" aria-labelledby="dr-acc-h">
+      <h3 id="dr-acc-h" class="dr-h">Acceptance <span id="dr-acc-count" class="dr-h-count"></span></h3>
+      <ol id="dr-acc" class="acc-list" aria-labelledby="dr-acc-h"></ol>
+      <div class="acc-add-row">
+        <span class="acc-box add" aria-hidden="true"></span>
+        <input id="dr-acc-input" class="acc-add" type="text" placeholder="Add a criterion the work must meet" aria-label="Add an acceptance criterion" autocomplete="off">
+      </div>
+    </section>
+    <section class="dr-section dr-pair">
+      <div class="dr-field" role="group" aria-labelledby="dr-blk-h">
+        <h3 id="dr-blk-h" class="dr-h">Blocked by</h3>
+        <div class="dr-labels-row">
+          <ul id="dr-blk" class="labels dr-labels dr-blk" aria-labelledby="dr-blk-h"></ul>
+          <input id="dr-blk-input" class="dr-label-input dr-blk-input" type="text" inputmode="numeric" placeholder="add #n" aria-label="Add a blocking card by number" aria-describedby="dr-blk-err" autocomplete="off">
+        </div>
+        <p id="dr-blk-err" class="dr-field-err" role="alert" hidden></p>
+      </div>
+      <div id="dr-pr-field" class="dr-field" role="group" aria-labelledby="dr-pr-h">
+        <h3 id="dr-pr-h" class="dr-h">Pull request</h3>
+        <div id="dr-pr-show" class="dr-pr-row">
+          <span id="dr-pr-view" class="dr-pr-view"></span>
+          <button type="button" id="dr-pr-edit" class="text-btn">Edit</button>
+          <button type="button" id="dr-pr-clear" class="text-btn" aria-label="Clear the pull request">Clear</button>
+        </div>
+        <div id="dr-pr-form" class="dr-pr-row" hidden>
+          <input id="dr-pr-input" class="dr-pr-input" type="url" placeholder="https://github.com/owner/repo/pull/12" aria-label="Pull request link" aria-describedby="dr-pr-err dr-pr-hint" autocomplete="off" spellcheck="false">
+          <button type="button" id="dr-pr-done" class="btn">Done</button>
+        </div>
+        <p id="dr-pr-err" class="dr-field-err" role="alert" hidden></p>
+        <p id="dr-pr-hint" class="sr-only">Leave it empty to clear the pull request.</p>
       </div>
     </section>
     <section class="dr-section" aria-labelledby="dr-labels-h">
