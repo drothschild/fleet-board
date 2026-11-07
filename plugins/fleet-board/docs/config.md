@@ -101,7 +101,10 @@ models:
 
 The provider must define a `review_command`. Set both non-negative prices and
 an escalation model. The timeout is an integer from 1 to 1500 seconds and
-defaults to 1500. With this form, each agent review stage must set its own model.
+defaults to 1500. Both attempts share this timeout. The Codex preset restricts
+writes to the scratch clone, where the runner sets the provider's `TMPDIR`.
+Custom review commands must provide equivalent isolation. With this form,
+each agent review stage must set its own model.
 
 ## `providers`
 

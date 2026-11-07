@@ -153,13 +153,25 @@ write_ledger() {
     >> "$LOG_DIR/provider-spend.jsonl" || die "cannot write provider spend ledger"
 }
 
+# Set TMPDIR only inside the provider shell. The adapter and runner keep
+# their transport and retry files outside the clone's writable root.
+PROVIDER_TMP="$CLONE/.fleet-board-tmp"
+mkdir "$PROVIDER_TMP" || die "cannot create provider temp directory"
+REVIEW_COMMAND='export TMPDIR="$PWD/.fleet-board-tmp"; '"$REVIEW_COMMAND"
+
 ATTEMPTS=0
 REPLIED=0
+deadline=$((SECONDS + TIMEOUT))
 while :; do
+  remaining=$((deadline - SECONDS))
+  if [ "$remaining" -le 0 ]; then
+    [ "$REPLIED" -eq 0 ] || write_ledger
+    die "review timeout exhausted"
+  fi
   ATTEMPTS=$((ATTEMPTS + 1))
   rc=0
   jq -c '{messages: .}' "$TMP/messages.json" | bash "$HERE/providers/chat.sh" \
-    --command "$REVIEW_COMMAND" --model "$MODEL" --timeout "$TIMEOUT" --dir "$CLONE" \
+    --command "$REVIEW_COMMAND" --model "$MODEL" --timeout "$remaining" --dir "$CLONE" \
     > "$TMP/reply.json" 2> "$TMP/chat.err" || rc=$?
   if [ "$rc" -eq 0 ]; then REPLIED=1; fi
   if ! after="$(snapshot "$FLEET_ROOT")" || [ "$after" != "$ROOT_BEFORE" ]; then

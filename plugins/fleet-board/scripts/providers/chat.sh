@@ -102,7 +102,13 @@ if [ -n "$COMMAND" ]; then
   umask 077
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
-  trap 'exit 130' INT TERM
+  # A compound command can leave a shell between this adapter and the provider.
+  # Put the provider and watchdog in separate process groups for cancellation.
+  set -m
+  cpid="" wpid=""
+  trap 'if [ -n "$wpid" ]; then kill -KILL -- "-$wpid" 2>/dev/null || true; fi
+        if [ -n "$cpid" ]; then kill -KILL -- "-$cpid" 2>/dev/null || true; fi
+        exit 130' INT TERM
   RUN="${COMMAND//\{model\}/$MODEL}"
   if [ "${COMMAND_DIR+x}" ]; then
     # Preserve an absolute argument even when the caller supplied a relative path.
@@ -115,11 +121,14 @@ if [ -n "$COMMAND" ]; then
   printf '%s' "$PROMPT" > "$TMP/prompt.txt"
   ( cd "$COMMAND_DIR" && exec sh -c "$RUN" ) < "$TMP/prompt.txt" > "$TMP/out.txt" 2> "$TMP/err.txt" &
   cpid=$!
-  ( sleep "$TIMEOUT"; : > "$TMP/timedout"; kill "$cpid" 2>/dev/null ) > /dev/null 2>&1 &
+  ( sleep "$TIMEOUT"; : > "$TMP/timedout"; kill -KILL -- "-$cpid" 2>/dev/null ) > /dev/null 2>&1 &
   wpid=$!
   rc=0
-  wait "$cpid" || rc=$?
-  kill "$wpid" 2>/dev/null || true
+  wait "$cpid" 2>/dev/null || rc=$?
+  cpid=""
+  kill -KILL -- "-$wpid" 2>/dev/null || true
+  wait "$wpid" 2>/dev/null || true
+  wpid=""
   if [ -e "$TMP/timedout" ]; then
     die "command timed out after ${TIMEOUT}s" 1
   fi

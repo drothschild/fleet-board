@@ -77,7 +77,7 @@ evidence reviewer. The existing `command` is unchanged and still serves provider
 The `codex` preset in `scripts/providers/presets.json` gains:
 
 ```
-codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -C {dir} -m {model}
+codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c sandbox_workspace_write.exclude_slash_tmp=true -C {dir} -m {model}
 ```
 
 - `{dir}` is replaced by the scratch clone's absolute path and `{model}` by the reviewer's
@@ -151,7 +151,8 @@ Arguments mirror `stage-review.sh`. Steps:
      not `skipped`.
 
    On a rejection, re-ask once, in the same scratch clone, with the rejection quoted, as
-   `stage-review.sh` does. The second rejection is exit 6.
+   `stage-review.sh` does. Both attempts share one reviewer timeout. If the budget
+   runs out, the runner exits 1. The second rejection is exit 6.
 8. **Post and record.** Post with `board-comment.sh` unless `--no-post`. Append one line to
    `${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/provider-spend.jsonl` with `"role":
    "reviewer"`. Print
@@ -174,8 +175,10 @@ starting point, not the whole input, and `max_diff_bytes` does not apply.
 
 ## Sandbox
 
-- **Writable:** the scratch clone, and the system temp directory, which `workspace-write`
-  allows by default.
+- **Writable with the Codex preset:** the scratch clone. The runner sets the provider's
+  `TMPDIR` inside the clone, and the preset excludes inherited temp roots and `/tmp`
+  from automatic write access. The runner and manager keep their files outside the clone.
+  Custom review commands must provide equivalent isolation.
 - **Read-only:** everything else, including the main checkout, the `-review` worktree and
   the card store.
 - **Network:** off. A touched test that needs the network fails inside the review; the
@@ -232,6 +235,8 @@ The explicit `timeout` is required. Without it a background call is still killed
 
 `config.sh --check` limits `models.reviewer.timeout` to at most `1500` seconds, so the
 background call's timeout never exceeds the 30 minutes the spike below confirmed.
+Both provider attempts share the configured timeout, leaving the additional 300 seconds
+for setup, validation, posting and cleanup.
 
 #### Spike result (2026-11-06)
 

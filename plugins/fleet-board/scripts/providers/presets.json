@@ -3,5 +3,5 @@
   "gemini": { "base_url": "https://generativelanguage.googleapis.com/v1beta/openai", "api_key_env": "GEMINI_API_KEY", "max_tokens_param": "max_tokens" },
   "openrouter": { "base_url": "https://openrouter.ai/api/v1", "api_key_env": "OPENROUTER_API_KEY", "max_tokens_param": "max_tokens" },
   "ollama": { "base_url": "http://localhost:11434/v1", "api_key_env": null, "max_tokens_param": "max_tokens" },
-  "codex": { "command": "codex exec --skip-git-repo-check -s read-only -m {model}", "review_command": "codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -C {dir} -m {model}" }
+  "codex": { "command": "codex exec --skip-git-repo-check -s read-only -m {model}", "review_command": "codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c sandbox_workspace_write.exclude_slash_tmp=true -C {dir} -m {model}" }
 }

@@ -18,7 +18,7 @@
 - Tests are plain-bash suites under `plugins/fleet-board/tests/`. Run only the suite you touched. After any change under `plugins/fleet-board/`, `bash plugins/fleet-board/tests/test-clean-room.sh` must pass.
 - Every new suite is shown to fail once before it is trusted.
 - Reviewer object defaults: `timeout` `1500`, maximum `1500` seconds. The manager's background call timeout is `(timeout + 300) * 1000` ms.
-- `codex` preset `review_command`, verbatim: `codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -C {dir} -m {model}`
+- `codex` preset `review_command`, verbatim: `codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c sandbox_workspace_write.exclude_slash_tmp=true -C {dir} -m {model}`
 - Forbidden in any `review_command`: `--dangerously-bypass-approvals-and-sandbox`, `danger-full-access`, `--dangerously-bypass-hook-trust`.
 - `evidence-review.sh` exit codes: 0 posted or checked; 1 provider failure, empty reply, timeout, tripwire, marker in reply, setup failure or failed post; 2 usage error or `models.reviewer` not an object; 3 the `review_command` program is not on PATH; 6 rejected twice.
 - Version: bump `fleet-board` from `0.14.0` to `0.15.0` in both `plugins/fleet-board/.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.
