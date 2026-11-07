@@ -1,21 +1,20 @@
 # Completion-driven manager behavioral scenario
 
-Status: prepared; requires explicit paid-run approval. This is a behavioral acceptance protocol, not an offline test result.
+Status: core harness prepared and offline-validated; one run approved with a $3 CLI cap. Runtime results are recorded separately.
 
 ## Fixture and isolation
 
-Use a disposable local-board repository and a copied plugin. Load only that plugin with a fresh empty CLAUDE_CONFIG_DIR and assert the system/init plugin list. The generated manager is the subject; use scripted fixture role agents/providers for reports. Never point this scenario at the production board. Use fake gh for all PR reads/writes, real board adapters and note parsing, and stub verify-main.sh with controlled JSON.
+`tests/behavioral-completion.sh` creates a disposable local board and copied plugin with a fresh configuration directory. It runs the generated manager with scripted evidence-review providers, fake GitHub calls, real board adapters and real note parsing. No production board is used. Concurrency is two, merge policy is human, and three In Review cards have controlled PR heads and valid reports.
 
-Set limits.concurrency to 2, merge.policy to human, review.max_rounds to 2. Ready cards A and B have disjoint scopes and acceptance criteria. Card C overlaps A and must remain Ready until A stops reserving its scope. Provide controlled PR heads and strict valid reports with VERIFIED commands. Log task starts, task completions, note writes and board transitions as ordered JSONL events.
+## Core test: fast review reconciles and refills a slot
 
-## Core test: fast card advances while another worker is running
+1. Review A waits until review B has started, then returns its clean report.
+2. Review B waits for both review C to start and A's accepted current-head review note plus Human QA transition. A bounded timeout fails the scenario.
+3. C returns promptly. Assert A finishes before C starts and C starts before B finishes.
+4. Assert the reconciliation checkpoint precedes B's completion, all three reviews finish, capacity never exceeds two, each card launches once, all final review notes preserve the dispatched SHA and round, and all cards reach Human QA.
+5. Assert the generated manager returns successfully, the plugin isolation check passes, and no merge command was issued.
 
-1. A's implementor returns a valid PR report promptly.
-2. B's implementor waits for an A-review-complete marker, with a bounded fallback timeout that records a failure marker before returning its report.
-3. A's reviewer returns a clean current-head report and writes the marker. Capture the manager's accepted last_review note separately, so a provider-produced marker alone is not sufficient proof.
-4. Assert A's implementor is reconciled and A's review starts and is reconciled before B completes. The old foreground batch manager should fail this ordering assertion.
-5. Assert B is eventually reconciled; the final tick report arrives only after both task completions. Maximum simultaneous roles is two, and maximum roles on any one card is one.
-6. Assert C was not dispatched while A was in progress or review. The wrapper owns merges, so no headless manager gh merge is expected in this scenario.
+The offline preparation also checks that the event assertion rejects a batch-order trace. This core run exercises evidence-provider completion and slot refill. It does not establish Agent-role scheduling, implementation-to-review chaining, overlapping-scope admission, or the variations below; scope admission has separate deterministic tests.
 
 ## Controlled failure variations
 

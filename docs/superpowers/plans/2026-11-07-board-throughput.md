@@ -23,7 +23,7 @@
 - [x] Prepare spec and behavioral scenario for per-completion reconciliation, bounded advancement, shared worker slots, and fresh stop decisions.
 - [x] Add failing offline wrapper regressions; implement fresh dispatchability after settlement and merge draining.
 - [x] Obtain approval for paid isolated manager re-authoring (user approved in chat).
-- [ ] Obtain separate approval for the core behavioral validation run once its harness is ready.
+- [x] Obtain separate approval for the core behavioral validation run once its harness is ready.
 - [ ] Re-author, verify, review and push approved changes.
 
 All source paths above are relative to plugins/fleet-board/. Never edit clean-room primitives by hand. Follow test-first commits and run only touched suites plus test-clean-room.sh. No paid calls without explicit approval.

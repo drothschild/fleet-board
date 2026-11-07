@@ -73,6 +73,13 @@ S="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 n="$1"
 printf 'start %s\n' "$n" >> "$FB_COMPLETION_WORK/events"
 touch "$FB_COMPLETION_WORK/started-$n"
+if [ "$n" = 1 ]; then
+  for ((i=0;i<120;i++)); do
+    [ ! -f "$FB_COMPLETION_WORK/started-2" ] || break
+    sleep 1
+  done
+  [ -f "$FB_COMPLETION_WORK/started-2" ] || printf 'timeout batch-barrier\n' >> "$FB_COMPLETION_WORK/events"
+fi
 if [ "$n" = 2 ]; then
   observed=false
   for ((i=0;i<120;i++)); do
@@ -101,6 +108,7 @@ import sys
 from pathlib import Path
 lines=Path(sys.argv[1]).read_text().splitlines()
 assert 'timeout batch-barrier' not in lines
+assert max(lines.index('start 1'),lines.index('start 2')) < lines.index('finish 1')
 assert lines.index('finish 1') < lines.index('start 3') < lines.index('finish 2')
 assert lines.index('checkpoint fast-reconciled-and-refilled') < lines.index('finish 2')
 active=set()
@@ -124,9 +132,18 @@ fi
 [ "$MODE" = --run ] || { echo 'offline fixture preparation passed; no paid run'; exit 0; }
 AUTH_SETTINGS="${FLEET_BOARD_BARE_SETTINGS:-$HOME/.config/fleet-board/bare-settings.json}"
 [ -r "$AUTH_SETTINGS" ] || { echo 'isolated auth settings unavailable' >&2; exit 2; }
-printf 'Run one fleet-board manager tick. Repo root: %s. Scripts dir: %s. Read .fleet-board.yml for config. Use the installed manager rules. The three review cards are controlled fixtures; use their configured evidence-review runner. Reconcile each completion immediately and use fresh plans. Keep concurrency at two, wait for all final reports, and return the tick report.\n' "$WORK/repo" "$S" > "$WORK/prompt"
-CLAUDE_CONFIG_DIR="$WORK/config" claude -p --bare --agent fleet-board:manager --model sonnet \
-  --plugin-dir "$WORK/plugin" --strict-mcp-config --settings "$AUTH_SETTINGS" \
+printf 'Run one fleet-board manager tick. Repo root: %s. Scripts dir: %s. Read .fleet-board.yml for config. Use the installed manager rules. The three review cards are controlled fixtures; use their configured evidence-review runner. For deterministic fixture ordering, initially fill the two slots with cards 1 and 2, with card 3 next in the queue. Follow the manager rules and return the tick report.\n' "$WORK/repo" "$S" > "$WORK/prompt"
+# Explicit registration avoids CLI startup ordering of plugin agent discovery.
+# Use the generated manager body verbatim, without fixture-specific instructions.
+python3 - "$WORK/plugin/agents/manager.md" "$WORK/agents.json" <<'PYAGENT'
+import json,sys
+text=open(sys.argv[1]).read()
+body=text.split('---',2)[2].lstrip()
+json.dump({'completion-manager': {'description':'Fleet board manager', 'prompt':body,
+    'tools':['Agent','Skill','Read','Write','Bash','Grep','Glob']}},open(sys.argv[2],'w'))
+PYAGENT
+CLAUDE_CONFIG_DIR="$WORK/config" claude -p --bare --agents "$WORK/agents.json" --agent completion-manager --model sonnet \
+  --plugin-dir "$WORK/plugin" --add-dir "$WORK" --allowedTools Bash Read Write Skill --strict-mcp-config --settings "$AUTH_SETTINGS" \
   --permission-mode acceptEdits --max-turns 100 --max-budget-usd 3 \
   --verbose --output-format stream-json "$(cat "$WORK/prompt")" </dev/null > "$WORK/run.jsonl" 2> "$WORK/stderr"
 jq -se 'any(.[]; .type=="system" and .subtype=="init" and (.mcp_servers|length)==0

@@ -5,7 +5,7 @@ Last verified: 2026-11-06
 ## Purpose
 
 Turns a GitHub issue board into a work queue for coding agents. A stateless manager
-advances every card one step per tick; role agents (implementor, reviewer, fixer) work in
+advances eligible cards as workers complete within bounded ticks; role agents (implementor, reviewer, fixer) work in
 worktrees; a PreToolUse hook enforces the human-QA and merge gates. Status: 0.1.0.
 
 This public repo carries only the clean-room specs from the implementation plan, under
