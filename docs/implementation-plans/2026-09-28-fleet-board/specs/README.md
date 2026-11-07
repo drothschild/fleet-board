@@ -1972,3 +1972,18 @@ The reviewer may classify a change as Conflict-resolved only after reconstructin
 **Validation.** The contract check initially failed 29 of 32 checks; the final check has 36 passing checks. Five manager scenarios cover success from a stage column, blocked resolution, rejected reports, route failure and failed blocked-metadata persistence. Three real-merge reviewer scenarios accept a preserving resolution and reject a dropped parent assertion and an edit outside the conflict region. The preserving candidate's implementation mutant was killed. Result artifacts: `evidence/pr215-manager-behavior.json` and `evidence/pr215-reviewer-behavior.json`. These are bounded behavioral fixture exercises, not a live board run or claims of unit coverage for instructions.
 
 **Merge with main (2026-11-07).** Card 70's revision was written as 21; main then recorded its own Revision 21 (PR 217, the command-provider evidence reviewer), so this one is renumbered 22. Plugin version 0.14.3 (this branch) and 0.15.0 (main) to 0.15.1. `agents/fixer.md` is unchanged by the merge. `agents/manager.md` and `agents/reviewer.md` are git merges: main's Revision 21 run output (manager) and Revision 20 run output (reviewer, card 175) with the owner-approved direct edits of the PR 215 integration repair. No single run produced either file, so both stay named exceptions in the manifest with their merged hashes. The owner confirmed the PR 215 exception and chose to keep the merge rather than re-author on 2026-11-07.
+
+### Revision 23 (2026-11-07, PR #222): completion-driven manager
+
+Two owner-approved isolated runs updated the manager from its revised spec. Both used a fresh empty configuration directory, `--bare`, Opus, only Read/Edit, strict MCP configuration, the existing authentication helper, and staged spec/request inputs. The initial CLI cap was $2; the correction cap was $1, with total actual spend below the approved $2 combined budget.
+
+| Run | Turns | Reads / edits | Cost USD | Before SHA256 | After SHA256 |
+|---|---|---|---|---|---|
+| Initial | 29 | 6 / 22 | 0.7088088 | `4e886bfc2443913336` | `0506a52e861302c4` |
+| Correction | 19 | 6 / 12 | 0.5003600 | `0506a52e861302c4` | `3dbd20185dc55706` |
+
+Both init events passed isolation checks: tools exactly Read/Edit, built-in plugins only, no MCP servers or namespaced skills. Both path audits passed: reads only the staged inputs and target, edits only `agents/manager.md`. Frontmatter is unchanged. Sanitized init evidence is in `evidence/author-manager.r23.initial.init.json` and `evidence/author-manager.r23.correction.init.json`; their SHA256 is `26be61671232ffd48c70442f6ea55d40a84783d2425b59159e13ef9f15094856`. The manifest records the final generated output; the earlier integration exception remains documented above.
+
+The correction addressed strict verification progress, stale final-signal overrides, bounded provider retries, headless deferred merges, and fresh planning after branch updates. Structural checks passed 26/26 and clean-room checks passed 118/118; these checks do not establish runtime scheduling behavior. The separately approved behavioral run is recorded with the throughput validation evidence.
+
+**Revision cost:** $1.2091688. **Running authoring total:** approximately $44.47, excluding separately recorded behavioral validation.
