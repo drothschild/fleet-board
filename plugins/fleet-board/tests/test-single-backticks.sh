@@ -32,23 +32,14 @@ for f in agents/implementor.md agents/reviewer.md agents/fixer.md skills/reporti
   at_least_one "$f ties the check command to 'single backticks'" "$PLUGIN_DIR/$f" 'check command.*single backticks\|single backticks.*check command'
 done
 
-# README: the new revision section raises the 'tools exactly' count above main's.
-readme_rel="docs/implementation-plans/2026-09-28-fleet-board/specs/README.md"
-ref=main; git -C "$REPO_DIR" rev-parse -q --verify origin/main >/dev/null && ref=origin/main
-base="$(git -C "$REPO_DIR" show "$ref:$readme_rel" 2>/dev/null | grep -c 'tools exactly')"
-now="$(grep -c 'tools exactly' "$SPECS_DIR/README.md")"
-if [ "$now" -gt "${base:-0}" ]; then
-  pass "README 'tools exactly' count rose ($base -> $now)"
-else
-  fail "README 'tools exactly' count did not rise (main $base, now $now)"
-fi
-
 # The last revision section is this card's: heading names single backticks and
 # its Isolation line reads built-in plugins only, tools exactly Edit and Read.
-last_head="$(grep -n '^### Revision' "$SPECS_DIR/README.md" | tail -1)"
-case "$last_head" in
+# Revision 16 is this change. Find it by number: a later revision appended
+# after it must not make this check fail.
+r16_head="$(grep -n '^### Revision 16 ' "$SPECS_DIR/README.md")"
+case "$r16_head" in
   *'single backtick'*) pass "README has a new revision section about single backticks" ;;
-  *) fail "last README revision heading does not mention single backticks: $last_head" ;;
+  *) fail "README Revision 16 heading does not mention single backticks: $r16_head" ;;
 esac
 iso="$(grep '^Isolation:' "$SPECS_DIR/README.md" | tail -1)"
 case "$iso" in

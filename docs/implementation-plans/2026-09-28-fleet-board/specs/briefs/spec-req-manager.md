@@ -782,7 +782,58 @@ In 3.6 items 4 and 5 the card has already moved when the role reports, and the p
 - **Rule 2.17b**, directly after 2.17 and before 2.18 (the existing 2.17a stays where it is): `update_branch` runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge and blocks the card. When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
 - **Progress list** (the one that lists, per action, what counts as progress): a bullet directly after the `block` bullet: `update_branch`: `update-branch.sh` exited 0 (a clean merge pushed, or a conflict moved the card to `blocked`).
 
-## Revision 17 requirements (2026-11-03: rules that were added to the agent file by hand; these win over anything above)
+## Revision 17 requirements (2026-11-06, PR #174: review stages and provider stages; these win over anything above)
+
+A config may list review stages (`review.stages`). Each stage is a board column `review_<name>` after In Review, with its own reviewer: either a Claude agent (`stage.agent`, on `stage.model`) or a model from another provider (`stage.provider`), run by the script `stage-review.sh`. The spec text for every item below is in `specs/manager.md`; write each one into the file where the spec puts it. Nothing else in the file changes.
+
+Review stages:
+
+1. **Purpose and Inputs.** The manager also dispatches a review stage's agent; a provider stage runs through `stage-review.sh`, never an Agent call. The config JSON includes `review.stages` and `providers`.
+2. **0.3.** Every Agent call's `subagent_type` is one of the three fleet roles, "or, for `review_stage` and for the re-review after `fix` on a card whose plan card has a `stage`, the plan card's `stage.agent`. Never any other agent."
+3. **0.4.** The `model` source adds: "for a stage agent, the plan card's `stage.model`."
+4. **0.15.** A new **stage agent** entry: `subagent_type` = `stage.agent`, `model` = `stage.model`, for an agent stage; inputs: card number and body; PR number; PR diff (file path over 1500 lines); the latest implementor or fixer report text; the review worktree path; the config JSON; the stage name and its `brief` verbatim; the round; `prev_sha`; the previous Critical and Important findings from round 2; the absolute scripts dir; and the instruction to check and post with `parse-report.sh --role stage-reviewer` and `board-comment.sh` in one Bash call.
+5. **1.4.** The plan card gains `stage`: the config's stage object whole (fields as the spec lists), for `advance_stage` the stage being entered, for any other card in a stage column that column's stage, else null; `stage.provider` null for an agent stage, `stage.agent` null for a provider stage; `models` unchanged.
+6. **2.1.** A stage agent dispatch, and the reviewer or stage agent dispatch after a fix, count against `limits.concurrency`.
+7. **`start_review` row and 2.7.** `review-stages.sh route N <pr>` runs FIRST, before `board-move.sh N in_review` and the note write; a route failure stops the action with no move and no note write (no progress, the next tick retries). Its stdout (JSON list of stage names) goes in the card's tick report line. The reason: nothing re-routes a card already in In Review.
+8. **New `advance_stage` row and 2.8a.** `board-move.sh N review_<stage.name>` → `note.sh merge` with `stage`, `round: 1`, `reviewed_stages` (the note's list plus the stage the card leaves, when it leaves a stage column; `in_review` is never listed) → the `review_stage` steps in the same tick. Progress, and a following review failure as a warning, as the spec says.
+9. **New `review_stage` row and 2.8b.** Agent stage: `worktree.sh review N <pr>` → dispatch `stage.agent` on `stage.model` with the stage agent inputs. Provider stage: the `stage-review.sh` call (item 15).
+10. **`fix` row and 2.9 step 7.** "dispatch the reviewer in the same tick" becomes "dispatch the reviewer, or the plan card's stage agent when the plan card has a `stage`, in the same tick"; for a provider stage, the `stage-review.sh` call replaces `worktree.sh review` and the dispatch.
+11. **`block` row, 2.D.3.** `blocked_from` may be `review_<name>`.
+12. **2.3, 2.C.1, 2.C.3, 2.C.4.** `<pr>` also for `advance_stage` and `review_stage`; stage columns in the block rule; progress lines for `advance_stage` and `review_stage`; `review-stages.sh route` and `stage-review.sh` exits 1, 3, 6 among the no-progress reasons.
+13. **3.2, 3.3, 3.6 item 2.** A stage report (agent, or a provider stage's `report_file`) is checked with `--role stage-reviewer`; a stage agent is re-dispatched once on `stage.agent` / `stage.model`; a provider stage never is. `last_review` for a stage review records `stage`, `agent`, `model` and `provider` as the spec says.
+14. **4.3a, 4.3b, 5.2.** `models` unchanged by a stage review (model in `last_review.model`); `stage` and `reviewed_stages` written only by `advance_stage`; the tick report line names the routed stages, the stage, round and counts.
+
+Provider stages:
+
+15. **New 0.16 Provider stages.** When `stage.provider` is non-null: no `worktree.sh review` and no Agent call; instead `cd <repo root> && bash <scripts>/stage-review.sh N <pr> --stage <name> --round <round> --prev-sha <sha>`, plus `--findings <file>` from round 2 and `--impl-report <file>`, as one Bash call with literal values (0.6, 0.7). The PR head read with `gh pr view ... --json headRefOid` before the call becomes `last_review.sha`.
+16. **Exit mapping** (in 0.16): 0 → `parse-report.sh --role stage-reviewer` on the printed `report_file`, reconciled exactly as for an agent stage report, recording `last_review.agent: null`, `last_review.provider`, `last_review.model`; the report is already posted. 1, 3 or 6 → a report error: `last_action_error` = the script's last stderr line, no state change, counted in `action_failures` like a report rejected twice. 7 → block the card with the stderr line as the reason. 2 → the manager's own error, as `parse-report.sh` exit 2. Never re-run the script on exit 6: it already re-asked once.
+17. **Must never** gains: "Call a provider by any means other than `stage-review.sh`, re-run `stage-review.sh` after it exits 6, or post a provider stage's report again", and "Move a card to In Review before `review-stages.sh route` has succeeded for it". The model and agent Must-never lines name `stage.model` and `stage.agent`.
+18. **5.4.** The cost line adds each `stage-review.sh` result's `cost_usd`.
+19. **Rejection table copy.** Where the file carries its own copy of the reporting rule table, its rows `role <role> does not allow status: <word>`, `role <role> requires ## <section>`, `status clean needs ...` and `status findings needs ...` match `specs/reporting.md` Revision 17 (the stage-reviewer uses `clean` and `findings` and has no role sections).
+## Revision 18 requirements (2026-11-06, one round 1 reference SHA)
+
+The manager states one round 1 reference SHA in both places: the reviewer's inputs and the
+`review` action row. In round 1 the reference SHA `prev_sha` is the `base` from `worktree.sh
+review` (the merge-base), even when an earlier review exists, because `unblock`, `start` and
+`start_review` reset the round to 1. In round 2 and later it is `note.last_review.sha`. No line
+says round 1 uses `base` only when there is no previous review.
+
+## Revision 19 requirements (2026-11-06, PR #174: manager wording after the merge with Revision 18; these win over anything above)
+
+The spec text for every item below is in `specs/manager.md`; write each one into the file where the spec puts it (the spec's 0.16 is the file's 0.18). Nothing else in the file changes, and the frontmatter is unchanged.
+
+1. **`start_review` row.** The row opens with the route rule: the route runs first; a route failure stops the action with no move and no note write, and the next tick retries; the route's stdout (the JSON list of stage names whose label the card now carries) goes in the card's tick report line. Then the chain, unbroken: `` `review-stages.sh route N <pr>` → `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` | `` — the row ends exactly with that last clause and the closing `|`. The row never names `last_review`.
+2. **Stage agent `prev_sha`.** The stage agent inputs bullet becomes: `prev_sha`: `note.last_review.sha`, the head the previous round reviewed (In Review's review for a stage's round 1). A stage review always follows an In Review review, so there is always one. No line in the file says "no previous review".
+3. **Routing is re-evaluated.** In 2.7, the clause saying nothing re-routes a card already in In Review (and that routing after the move would fail open) is replaced by: routing is re-evaluated after that: on every clean, current review the planner re-matches every stage's `paths` against the PR's current files (`review-stages.sh match`), so a later commit that touches a routed path sends the card to that stage; a person can skip only a label-only stage, by removing its label.
+4. **Provider round.** In the provider stages rule, a bullet after the `<sha>` bullet: `<round>` is `note.round`, as for the agent stage.
+5. **Exit 6 entry.** The `report_errors` entry's `errors` holds the script's stderr `parse-report:` lines (not "the printed rejection lines").
+6. **Exit 2 bound.** After "it is not a report error": when the cause is the plan card's stage (an unknown stage or an agent stage in the plan card's `stage`) and not the manager's own argv, it is a failed script call instead: the action made no progress and is counted (2.C.4) with `last_action_error` = the script's last stderr line. Never change the stage name and never re-run the script in the same tick.
+7. **0.3 scope.** The `stage.agent` allowance covers `review_stage`, the re-review after `fix` on a card whose plan card has a `stage`, and the dispatch that follows `advance_stage`.
+8. **5.4 cost line.** Add: provider spend that `stage-review.sh` reports on exit 6, and on exit 1 after a reply, is in the ledger and counted by the headless wrapper, not in this line.
+
+Unchanged: the exit 3 handling stays (the plan waits while the key variable is unset, but the variable can vanish between plan and run).
+
+## Revision 21 requirements (2026-11-03, card 115: rules that were added to the agent file by hand; these win over anything above)
 
 These rules were added to `agents/manager.md` by later PRs, by hand. The spec must carry each, so a regeneration keeps them:
 

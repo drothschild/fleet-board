@@ -43,7 +43,7 @@ cnt() {
   if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -cF -- "$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
 }
 
-# setup_case <policy> : a repo whose config has merge.policy <policy>
+# setup_case <policy> [extra YAML] : a repo whose config has merge.policy <policy>
 setup_case() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -54,6 +54,7 @@ setup_case() {
     printf 'worktrees:\n  dir: .fw\n'
     printf 'human_qa_paths: ["src/components/**"]\n'
     printf 'merge:\n  policy: %s\n' "$1"
+    [ -n "${2:-}" ] && printf '%s\n' "$2"
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
@@ -73,6 +74,7 @@ setup_case() {
   R="$FX/routes-main"
   : > "$R"
   INREV=()
+  INSTG=()
   printf '{"login":"fleet-bot"}\n' > "$FX/user.json"
   printf '{"id":9001}\n' > "$FX/created.json"
   route 'issue edit *' 0 -
@@ -92,8 +94,18 @@ finalize() {
   done
   printf '%s\n' "$items" > "$FX/list-in_review.json"
   for col in in_progress; do printf '[]\n' > "$FX/list-$col.json"; done
+  local e
+  for col in review_security; do
+    items='[]'
+    for e in ${INSTG[@]+"${INSTG[@]}"}; do
+      [ "${e%%:*}" = "$col" ] || continue
+      items="$(jq -c --argjson n "${e#*:}" '. + [{number:$n, title:"Add subtract", url:"u", labels:[{name:"fleet:'"$col"'"}]}]' <<<"$items")"
+    done
+    printf '%s\n' "$items" > "$FX/list-$col.json"
+  done
   {
     printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s\n' "$FX/list-in_review.json"
+    printf 'issue list --repo acme/toy --label fleet:review_security *\t0\t%s\n' "$FX/list-review_security.json"
     cat "$R"
   } > "$FAKE_GH_ROUTES"
 }
@@ -110,6 +122,7 @@ card() {
       created_at:"2026-09-28T00:01:00Z"}]' > "$FX/comments-$n.json"
   route "api repos/acme/toy/issues/$n" 0 "$FX/issue-$n.json"
   route "api --paginate repos/acme/toy/issues/$n/comments" 0 "$FX/comments-$n.json"
+  case "$col" in review_*) INSTG+=("$col:$n"); return ;; esac
   case "$col:${4:-yes}" in in_review:*|*:yes) INREV+=("$n") ;; esac
 }
 
@@ -149,6 +162,22 @@ assert_eq "auto: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo ac
 assert_eq "auto: never --admin" "$(cnt "--admin")" 0
 assert_eq "auto: never --auto" "$(cnt "--auto")" 0
 assert_eq "auto: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
+
+echo "merge.policy auto: a card in a review stage with a clean stage review is merged"
+STAGE_CFG='review:
+  stages:
+    - name: security
+      agent: "acme:security-reviewer"
+      model: opus'
+setup_case auto "$STAGE_CFG"
+card 12 review_security '{"state":"review_security","stage":"security","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"stage":"security","sha":"abc1234","critical":0,"important":0,"findings":[]}}'
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "stage: exit 0" 0
+assert_eq "stage: the fleet:review_security column is listed" "$(cnt "issue list --repo acme/toy --label fleet:review_security")" 1
+assert_eq "stage: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
+assert_eq "stage: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
 
 echo "merge.policy human: nothing is merged"
 setup_case human

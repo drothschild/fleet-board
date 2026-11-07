@@ -1801,47 +1801,6 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 
 Manifest hashes were updated for both skills. Plugin version 0.8.1 to 0.8.2. Behavior in a headless run is unchanged: the skill still passes `run_in_background: false`, and a foreground manager returns its report directly.
 
-### Revision 17 (2026-11-03, card 115): remaining hand-added rules brought into the specs
-
-**Cause.** Revision 13 listed rules that PRs added to clean-room files by hand and left out of their specs. In-place edits keep such rules. A full regeneration from the spec would drop them. The audit below compared each spec with its authored file, not just the list in the card.
-
-**Audit, `specs/manager.md` against `agents/manager.md`.** Rules in the agent file and missing from the spec (the hand edits are in `8385f40`, `c32c5bb`, `aeefac1`, `30f7fb5` and `5a0e118`; the rest were never in the spec):
-- standing rules 0.16 (adversarial review before merge) and 0.17 (re-fetch before acting on PR state);
-- the full `## After merge` flow in 2.15 (`after-merge.sh run`, the `after_merge` note, the block, and the continue), where the spec still opened with "Only two steps";
-- the `to_human_qa` row and 2.11: `human-qa-handoff.sh [--qa-summary <file>] N <pr>`, the checklist of pre-merge steps and the `## Human QA` bullets;
-- the `skip_card_lint` row, 2.17a and its progress line in 2.C.3, with `lint_marker`;
-- the `wait` row with `deps_commented`, and the 4.4 exception for it;
-- a few rules the spec never carried: roles have no `Skill` tool (0.15 and Must never), an empty final reply is checked as empty text (3.1), never check a report with another role or without `--role` (3.2 and Must never), the exit 2 messages (3.5), the frontmatter `model` is only a fallback (Purpose);
-- one wrong cross-reference in the spec: 0.1 named 0.9 for the temp directory rule, which is 0.10.
-
-Not copied: the rejection-message table and the Status and PR background in the agent file's 3.9. They came from `reporting.md`, which was the other input of the Revision 12 manager runs, and 3.3 of the spec already says the rules are quoted from `reporting.md`. Commit `36f23c1` changed only that table, and `reporting.md` already carries its rows. The tick report template and What not to do are the same rules as the spec's Tick report and Must never.
-
-**Audit, `specs/status.md` against `skills/status/SKILL.md`.** One rule missing: `status.sh --forecast` (the `d2c3a75` hand edit, #76). The spec's script entry now covers `--forecast` and step 3 says when the skill runs it. The other lines of the skill and the spec agree.
-
-**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 17 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `967546d167237316`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `aba34ff6bba2f419`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c` (the run's input; `26ee556a4c783b6c` after the merge with main brought in main's Revision 14 edits).
-
-**`agents/manager.md` is not re-authored.** The spec only caught up with the agent file, which already holds every rule, so it stays at `e4e74e5d724175a9`.
-
-**Starting point.** `skills/status/SKILL.md` on main (`bfd19b217ea02b84`) already held the `--forecast` paragraph. So the file was first restored byte for byte to the last clean-room output (`git show d2c3a75^:...`, sha256 `328ff52ca83b31c3`, its own commit), and the run authored `--forecast` from the spec.
-
-**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `fc6e2cf0ad328121`, not committed) and a copy of the edited spec as `spec-status.md` (`68468a253aa2658a`). Prompt sha256 `dc8ebe2353a1be04`.
-
-| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
-|---|---|---|---|---|---|---|
-| `skills/status/SKILL.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 1 edit) | 5 | 0.0696 | `ca185e305e578202` |
-
-Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills, no MCP servers. Path audit: the three reads were the two inputs and the target, the one edit was of the target, and no tool call failed. Evidence: `evidence/author-status.r14.init.json`, with no key and no local path.
-
-**Minimality check.** `git diff -U0` against the restored file was read line by line: one hunk, two added lines (a paragraph in step 3 and its blank line). The paragraph says when to run `status.sh --forecast`, that it is never combined with `--all`, what it prints, that its output is passed through verbatim and that steps 4 to 7 apply to its exit code. The frontmatter is unchanged and no other line moved. **Kept.**
-
-**Test changes.** Two test commits followed the first one. One matched three needles to the spec's third-person wording ("re-fetches", "passes", "continues"). One made the skill check look for `--forecast` instead of `status.sh --forecast`, because the authored paragraph writes the command with the flag after the quoted path. No assertion was removed or skipped.
-
-**Known limits, not re-run.** The skill's frontmatter description does not mention a forecast, and the spec's proposed description does not either. No behavioral run exercised `--forecast` through the skill.
-
-**Revision cost:** $0.0696. **Running total, all API-key charges:** ~$40.51 (the total after Revision 14 was ~$39.62, plus Revision 15 $0.1492 and Revision 16 $0.6737 from main, plus this run $0.0696). Plugin version 0.11.0 (main) to 0.11.2; 0.11.1 is taken by card 111's PR.
-
-**Output sha256 before → after (16):** `skills/status/SKILL.md` `bfd19b217ea02b84` (main) → `328ff52ca83b31c3` (restored) → `ca185e305e578202`.
-
 ### Revision 16 (2026-11-03, card #100): single backticks for the Out of scope check command
 
 **Cause.** A role that wrote a markdown double-backtick span to hold a command containing a backtick had its report rejected with "out of scope entry needs a backticked check command or the words no testable check", which reads as if no command were present. `parse-report.sh` pairs single backticks only, so a double-backtick span or an odd number of backticks gives no command. The guidance said only "backticked".
@@ -1864,3 +1823,130 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Minimality check.** `git diff -U0` over `agents` and `skills` was read: every hunk is the Out of scope entry rule, the rejection-message explanation, the pitfall line or the table row. Frontmatter unchanged. **Kept.**
 
 **Revision cost:** $0.6737. The plugin version is bumped to 0.10.1.
+
+### Revision 17 (2026-11-06, PR #174): review stages and provider stages
+
+**Cause.** PR #174 adds review stages (`review.stages`): extra review columns `review_<name>` after In Review, each with its own reviewer. A stage's reviewer is either a Claude agent (`stage.agent` on `stage.model`) or a model from another provider (`stage.provider`), which `scripts/stage-review.sh` calls. The scripts were changed test-first earlier on the branch: `tick-plan.sh` (the plan card's `stage` object, the actions `advance_stage` and `review_stage`, the missing-key warning), `review-stages.sh route|next`, `parse-report.sh --role stage-reviewer`, `note.sh` (`stage`, `reviewed_stages`, `last_review.stage`, `last_review.provider`) and `settle.sh` (`advance_stage`, and `move_to_review` routing before the move). The manager agent and the reporting skill had none of these rules.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 13): `specs/manager.md` (Purpose, Inputs, 0.3, 0.4, 0.15 stage agent inputs, a new 0.16 Provider stages with the `stage-review.sh` call and its exit mapping, 1.4 plan card `stage`, 2.1, the `start_review` row with `review-stages.sh route` before the move, new `advance_stage` and `review_stage` rows, the `fix` and `block` rows, 2.3, 2.7, new 2.8a and 2.8b, 2.9 step 7, 2.C.1, 2.C.3, 2.C.4, 2.D.3, 3.2, 3.3, 3.6 item 2, new 4.3a and 4.3b, 5.2, 5.4, Must never, the example tick report) and `specs/reporting.md` (the `stage-reviewer` role: Purpose, Inputs, item 5, the rule table rows for status and role sections, the Report section, the usage line and the role-specific table). A "Revision 17 requirements" section was added to `briefs/spec-req-manager.md` (19 items) and `briefs/spec-req-reporting.md` (7 items). Brief sha256 (16): manager `01f16d923f52c88e` → `8dc2aafe64e10258`, reporting `9536be922251a19b` → `6c9486c01757c298`. Spec: manager `25ae50cd1f955690` → `98a166127f2706dd`, reporting `7e2f16a20a882319` → `438ff4b59d4ccda4`. `tests/test-manager-stages.sh` (new, not clean-room, written test-first and first seen failing on every check) greps the rules in both specs and both authored files.
+
+Two rules come from rulings rather than the briefs. The route runs before the move to In Review, because nothing re-routes a card already there, so routing after the move fails open (the Task C8 ruling; `settle.sh` does the same). And a provider stage's `last_review.sha` is the PR head the manager reads with `gh pr view <pr> --repo R --json headRefOid` before the `stage-review.sh` call, because that script runs no `worktree.sh review` and prints no SHA, and `tick-plan.sh`, `review-drift.sh` and the gate all key on `last_review.sha`.
+
+**Runs.** Two isolated in-place edits, one per file, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.319, `claude-opus-5-5`. Inputs per run: a staging dir (its only `--add-dir`) holding `edit-req.md` (the brief's Revision 17 section; manager sha256 `c770fbe9eb0cef0f`, reporting `042b97367bd28bad`, not committed) and a copy of the edited spec as `spec-<name>.md`. Prompt sha256: manager `3ce496c699ca9aff`, reporting `a071a5ae9a564e0b`. The manager prompt says the file already has rules 0.16 and 0.17 that the spec lacks, so the spec's new 0.16 is written as 0.18 in the file, with its cross-references. The repo owner approved the spend for this revision.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/manager.md` | `d5c9793267f31b52` | PASS | PASS (3 reads, 33 edits) | 37 | 0.5969 | `b1a5fa7fc685b1ab` | `1eccb8955788a054` |
+| `skills/reporting/SKILL.md` | `d5c9793267f31b52` | PASS | PASS (3 reads, 12 edits) | 16 | 0.2449 | `aa83f0da1e35a233` | `86c3ada66c1bbb1b` |
+
+Isolation: the per-run assertion ran on each log's init event. Plugins were only the four built-in `cc-plugin-*@builtin` ones (as in Revision 15), tools exactly `Edit` and `Read`, no namespaced skill or command, no MCP servers, and no forbidden name. The checker was first shown to fail: a doctored log with a foreign plugin, a `Bash` tool, a `p:s` skill, a read of a system file and an edit outside the target gave `isolation: FAIL`, two bad paths, `path audit: FAIL` and exit 1. Evidence: `evidence/author-{manager,reporting}.r17.init.json`, identical, checked for `sk-ant`, home and temp paths and the forbidden name (no match). The README's jq re-check filter predates the `cc-plugin-` prefix, so it reports `false` on the plugin names for this file, as for the Revision 15 runs.
+
+**Path audit.** Each run read its two staged inputs and its target, and edited only its target. No tool call failed.
+
+**Minimality check.** `git diff -U0` of each file was read hunk by hunk. `agents/manager.md`: 31 hunks, each one a Revision 17 requirement (Principle and Inputs, 0.3, 0.4, the 0.15 stage agent entry, 0.18, 1.4, 2.1, the `start_review`, `advance_stage`, `review_stage`, `fix` and `block` rows, 2.3, 2.7, 2.8a and 2.8b, 2.9, 2.C.1, 2.C.3, 2.C.4, 2.D.3, 3.2, 3.3, 3.6 item 2, four rows of the 3.9 rule table copy, 4.3a and 4.3b, 5.2, 5.4, three Must-never lines). `skills/reporting/SKILL.md`: 11 hunks, each one of the seven requirements. The skill had no usage line in its rejection-messages section, so the run added it from the spec. Frontmatter unchanged in both. **Kept.**
+
+**Known limits, not re-run.** The manager file's 3.9 background bullet "Status values by role" still names only the reviewer for `clean` and `findings` (3.9 says the rest of the method wins, and the table rows the manager quotes are updated). The manager file's example tick report has no `advance_stage` row, which the spec's example has. The reporting skill's frontmatter description still says "(implementor, reviewer or fixer)", because the frontmatter is held unchanged. No behavioral run exercised the new rules. The limits listed under Revisions 13 and 14 still hold.
+
+**Revision cost:** $0.8417. **Running total, all API-key charges:** ~$41.29: Revision 14's ~$39.62, plus Revision 15's $0.1492 and Revision 16's $0.6737 (~$40.44; the ~$40.30 carried in the PR's task notes left out Revision 15), plus this revision.
+
+**Output sha256 before → after (16):** `agents/manager.md` `b1a5fa7fc685b1ab` → `1eccb8955788a054`; `skills/reporting/SKILL.md` `aa83f0da1e35a233` → `86c3ada66c1bbb1b`.
+### Revision 18 (2026-11-03, card 111; renumbered on merges with main 2026-11-06): weakened tests outside a test body, in round 1, and the SHA a finding gives
+
+**Cause.** The adversarial review of PR #109 traced four gaps that predate it. The weakened-test step counted only lines inside a test body and diffed only `test_paths`, so a no-op helper, a changed fixture, a new top-level `beforeEach`, `describe.skip(` and a new `test.only(...)` block all passed. The step did nothing in round 1, and `unblock`, `start` and `start_review` reset the round to 1, so a fixer's unreviewed commit was never checked. A finding could give a SHA at which the test was already weakened, so a fixer's restore counted as Restored while the weak test stayed. And `agents/manager.md` said two things about the round 1 reference SHA (`base` in the reviewer's inputs, `note.last_review.sha` in the `review` row).
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/{reviewer,fixer,manager}.md` and a "Revision 18 requirements" section in `briefs/spec-req-{reviewer,fixer,manager}.md`, committed before the agent files. The step runs in every round; in round 1 its reference SHA is the merge-base. It lists a test helper, a fixture, a top-level setup hook, a `.skip` marker and an `.only` marker. The `CHECKED` rule and the step give the reference SHA only when the test at it is not already weakened against the merge-base, otherwise the merge-base SHA. The manager's round 1 reference SHA is `base` in both places, even when an earlier review exists. `tests/test-weakened-test-scope.sh` checks all three specs and all three agent files; it is not clean-room and was written test-first (36 checks failed, 6 passed, before the spec change).
+
+Brief sha256 (18): reviewer `a274af1a0bfbd3c7` → `91f20ebf62b3bc32`; fixer `8d34d61154b9e22e` → `a262d7ce4d5ad0c7`; manager `be1c19ba90c89cf9` → `9c8d5d591fd3ba0d`. Spec sha256 (18): reviewer `f383e417fa064cfa` → `e154c40c82cfcdf4`; fixer `58e0234d6e98aab3` → `0e7b3e5cdd73041e`; manager `c8e2a05f6397ca02` → `75bcbb2186e2c81e`.
+
+**Runs.** Three isolated in-place edits, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Each run's only `--add-dir` was a staging dir holding that role's `edit-req.md` and a copy of the edited spec. `edit-req.md` sha256 (18), not committed: reviewer `95a32713ba55cacc`, fixer `427acbef42f6cb83`, manager `ba34d2d52bc47570`. The edit-req files, spec copies and logs were kept outside the repo.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 8 edits) | 12 | 0.2329 | `deb4a81bde0ddc31` |
+| `agents/fixer.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.1310 | `a0144525ab919728` |
+| `agents/manager.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 2 edits) | 6 | 0.2544 | `ca3c496c69fb9d24` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. The path audit found each run's reads were its two inputs and the target, and every edit was of the target. No tool call failed. Evidence: `evidence/author-{reviewer,fixer}.r18.init.json` and `evidence/author-manager.r14.init.json` (all sha256 `28ed8fa4b931b3bf`; the reviewer and fixer files were written as `r14` on the branch and renamed when the revision was renumbered, because main's Revision 16 had taken the `r14` names), with no key and no local path.
+
+**Minimality check.** `git diff -U0` was read line by line. Reviewer: the frontmatter description and opening sentence (round 2 wording), the reference SHA input, the `CHECKED` rule, step 7's heading, baseline and new bullet, the Adapted and Weakened classes and the `.only` exception. Fixer: one new item in step 3 and one new forbidden example. Manager: the `prev_sha` input bullet and the `review` row. The frontmatter `name` and `model` are unchanged. **Kept.**
+
+**Known limits, not re-run.** No behavioral run exercised the round 1 check or the new weakening classes. A helper or fixture outside `test_paths` is not in the diff the step reads. `specs/manager.md` still lacks the other rules that earlier PRs added to the agent file by hand (see Revision 13), so a full regeneration would drop them.
+
+**Revision cost:** $0.6183. **Running total, all API-key charges:** ~$41.13 (the last stated total, ~$39.62 at Revision 14, plus Revision 15's $0.1492, Revision 16's $0.6737, Revision 17's $0.0696 (card 115) and this revision).
+
+**Output sha256 before → after (18):** `agents/reviewer.md` `f651a8a96074c365` → `deb4a81bde0ddc31`; `agents/fixer.md` `b5035f0e48a270f1` → `a0144525ab919728`; `agents/manager.md` `e4e74e5d724175a9` → `ca3c496c69fb9d24`.
+
+**First merge with main (2026-11-06).** This revision was written as Revision 14 on the branch while main recorded its own Revision 14 (`update_branch`, PR #63) and Revision 15. On merging `origin/main` it was renumbered 16, and its brief section in `briefs/spec-req-manager.md` became "Revision 16 requirements", after main's. `specs/reviewer.md` keeps this revision's Adapted and Weakened classes and main's "Helpers and fixtures outside test_paths" bullet (PR #131), with that bullet's `<previous-review-sha>` changed to `<reference SHA>` so it follows this revision's round 1 rule. No isolated run was made for the merge. `agents/fixer.md` (`a0144525ab919728`) and `agents/reviewer.md` (`deb4a81bde0ddc31`) are byte-identical to this revision's run outputs above. `agents/manager.md` (`8b59b7d55402d7aa`) is a git merge of main's Revision 14 output (`b1a5fa7fc685b1ab`) and this revision's output (`ca3c496c69fb9d24`). Their hunks do not overlap: main added the `update_branch` row, rule 2.17b and a progress bullet, and this revision changed the `prev_sha` input and the `review` row. No single run produced the merged file, and the manifest line says so. Plugin version 0.10.0 to 0.10.1.
+
+**Second merge with main (2026-11-06).** Main then recorded its own Revision 16 (card #100, single backticks for the Out of scope check command), so this revision was renumbered 17, and then 18, because card 115 (PR #124) records its own Revision 17. Its brief sections in `briefs/spec-req-{reviewer,fixer,manager}.md` became "Revision 18 requirements" and follow main's Revision 16 sections; the brief sha256 values above are those of the run inputs, before both merges. No isolated run was made for this merge. `agents/reviewer.md` and `agents/fixer.md` are git merges of main's Revision 16 outputs (reviewer `f549da78e4813abf`, fixer `ab7b0d220bc9b92f`) and this revision's outputs (Revision 18; reviewer `deb4a81bde0ddc31`, fixer `a0144525ab919728`). Git merged them with no conflict: main's hunks are the Out of scope entry rule, and this revision's are the weakened-test step, the reference SHA and the `CHECKED` rule. No single run produced either merged file, and the manifest lines say so. `agents/implementor.md` and `skills/reporting/SKILL.md` are main's Revision 16 outputs, unchanged. `agents/manager.md` is unchanged by this merge. Plugin version 0.11.0 (main) to 0.11.1.
+
+**Merge of Revision 17 with main's Revision 18 (2026-11-06, PR #174).** Main's Revision 18 changed the `review` row and the `prev_sha` bullet of `specs/manager.md` and `agents/manager.md` while Revision 17 was in flight. The merge keeps Revision 17's rows and takes main's `review` row verbatim (the `prev_sha` bullet merged without conflict), following the Revision 14/18 precedent of merging run outputs; the manifest line says so. Output sha256 (16): `agents/manager.md` `1eccb8955788a054` → `508f6ad8910ea25f`. No authoring run; no API-key cost.
+
+### Revision 19 (2026-11-06, PR #174): manager wording after the merge with Revision 18
+
+**Cause.** After the merge, two of main's suites failed on this branch because of manager wording: `tests/test-weakened-test-examples.sh` needs the `start_review` row to end with the round 1 dispatch clause, and `tests/test-weakened-test-scope.sh` forbids the phrase "no previous review" anywhere in the file, which the Revision 17 stage agent `prev_sha` bullet still carried. Review of the merged file found six more gaps in the Revision 17 text: 2.7 said nothing re-routes a card already in In Review (the planner now re-matches stage `paths` with `review-stages.sh match`), the provider call did not say where `--round` comes from, the exit 6 entry said "printed" lines for what is stderr, exit 2 had no bound when the plan card's stage is the cause, 0.3 did not cover the dispatch after `advance_stage`, and 5.4 did not say where provider spend on exit 6 and exit 1 goes. The unset-key behaviour is unchanged: `tick-plan.sh` plans `wait` for `review_stage` while the key variable is unset, and the exit 3 row stays.
+
+**Spec and brief changes** (hand edits, as in Revision 17): `specs/manager.md` (0.3, the 0.15 stage agent `prev_sha` bullet, 0.16's new `<round>` bullet, its exit 6 and exit 2 bullets, the `start_review` row, 2.7, 5.4) and a "Revision 19 requirements" section in `briefs/spec-req-manager.md` (8 items). The `start_review` row opens with the route rule and then gives the chain unbroken, because `tests/test-manager-stages.sh` greps `` review-stages.sh route N <pr>` → `board-move.sh N in_review `` on that row, and ends with the clause main's suite pins. Brief sha256 (16): `401b7ec42daa8643` → `94ac50e6f05d2083`. Spec: `f9ca3dea14b286b5` → `bf9fd8f9ff272d71`. The reporting skill's frontmatter description (it names three roles, not the stage-reviewer) was not changed: frontmatter is held unchanged by the minimality rule, so no reporting run was made.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.319, `claude-opus-5-5`. Its only `--add-dir` was a staging dir holding `edit-req.md` (the brief's Revision 19 section; sha256 `0cc2c0821e0b6d99`, not committed) and a copy of the edited spec as `spec-manager.md`. Prompt sha256 `93b78f8b2ed49c62`; it keeps the file's 0.18 numbering for the spec's 0.16. The repo owner approved the spend for this revision.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/manager.md` | `d5c9793267f31b52` | PASS | PASS (4 reads, 8 edits) | 13 | 0.4933 | `508f6ad8910ea25f` | `41799b377c411831` |
+
+Isolation: the per-run assertion ran on the init event: only the four built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skill or command, no MCP servers, and no forbidden name in the plugin, tool, agent, skill or command lists. The checker was first shown to fail: a doctored log with a foreign plugin, a `Bash` tool, a `p:s` skill, a read of a system file and an edit outside the target gave `isolation: FAIL`, two bad paths and `path audit: FAIL`. Evidence: `evidence/author-manager.r19.init.json`, byte-identical to the Revision 17 file, checked for `sk-ant`, home and temp paths and the forbidden name (no match).
+
+**Path audit.** The run read its two staged inputs and the target (the target twice), and edited only the target. No tool call failed.
+
+**Minimality check.** `git diff -U0` was read hunk by hunk: 8 hunks, each one a Revision 19 requirement (0.3; the stage agent `prev_sha` bullet; the 0.18 `<round>` bullet; the 0.18 exit 6 entry; the 0.18 exit 2 bound; the `start_review` row; 2.7; 5.4). Frontmatter unchanged. The file is now a single run's output, so the manifest's `# merge:` note on the manager line is dropped. **Kept.**
+
+**Tests.** `test-weakened-test-examples.sh`, `test-weakened-test-scope.sh`, `test-manager-stages.sh`, `test-manager-blocked-from.sh`, `test-single-backticks.sh`, `test-clean-room.sh` (`passed: 104   failed: 0`) and `test-clean-room-manifest.sh` (`passed: 6   failed: 0`) pass. The first two failed on the agent file and both specs-side checks passed after the spec edit, before the run.
+
+**Known limits, not re-run.** No behavioral run exercised the new rules. The Revision 17 limits (the 3.9 "Status values by role" bullet, no `advance_stage` row in the example tick report, the reporting skill's description) still hold.
+
+**Revision cost:** $0.4933. **Running total, all API-key charges:** ~$42.47: Revision 17's ~$41.29, plus card 115's $0.0696 and Revision 18's $0.6183 (both counted in Revision 18's ~$41.13, which left out Revision 17), plus this revision.
+
+**Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
+
+### Revision 21 (2026-11-03, card 115; renumbered on merges with main 2026-11-06): remaining hand-added rules brought into the specs
+
+**Cause.** Revision 13 listed rules that PRs added to clean-room files by hand and left out of their specs. In-place edits keep such rules. A full regeneration from the spec would drop them. The audit below compared each spec with its authored file, not just the list in the card.
+
+**Audit, `specs/manager.md` against `agents/manager.md`.** Rules in the agent file and missing from the spec (the hand edits are in `8385f40`, `c32c5bb`, `aeefac1`, `30f7fb5` and `5a0e118`; the rest were never in the spec):
+- standing rules 0.16 (adversarial review before merge) and 0.17 (re-fetch before acting on PR state);
+- the full `## After merge` flow in 2.15 (`after-merge.sh run`, the `after_merge` note, the block, and the continue), where the spec still opened with "Only two steps";
+- the `to_human_qa` row and 2.11: `human-qa-handoff.sh [--qa-summary <file>] N <pr>`, the checklist of pre-merge steps and the `## Human QA` bullets;
+- the `skip_card_lint` row, 2.17a and its progress line in 2.C.3, with `lint_marker`;
+- the `wait` row with `deps_commented`, and the 4.4 exception for it;
+- a few rules the spec never carried: roles have no `Skill` tool (0.15 and Must never), an empty final reply is checked as empty text (3.1), never check a report with another role or without `--role` (3.2 and Must never), the exit 2 messages (3.5), the frontmatter `model` is only a fallback (Purpose);
+- one wrong cross-reference in the spec: 0.1 named 0.9 for the temp directory rule, which is 0.10.
+
+Not copied: the rejection-message table and the Status and PR background in the agent file's 3.9. They came from `reporting.md`, which was the other input of the Revision 12 manager runs, and 3.3 of the spec already says the rules are quoted from `reporting.md`. Commit `36f23c1` changed only that table, and `reporting.md` already carries its rows. The tick report template and What not to do are the same rules as the spec's Tick report and Must never.
+
+**Audit, `specs/status.md` against `skills/status/SKILL.md`.** One rule missing: `status.sh --forecast` (the `d2c3a75` hand edit, #76). The spec's script entry now covers `--forecast` and step 3 says when the skill runs it. The other lines of the skill and the spec agree.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 21 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `967546d167237316`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `aba34ff6bba2f419`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c` (the run's input; `26ee556a4c783b6c` after the merge with main brought in main's Revision 14 edits).
+
+**`agents/manager.md` is not re-authored.** The spec only caught up with the agent file, which already holds every rule, so it was not changed here: `e4e74e5d724175a9` when this revision was written, and main's `41799b377c411831` after the merges.
+
+**Starting point.** `skills/status/SKILL.md` on main (`bfd19b217ea02b84`) already held the `--forecast` paragraph. So the file was first restored byte for byte to the last clean-room output (`git show d2c3a75^:...`, sha256 `328ff52ca83b31c3`, its own commit), and the run authored `--forecast` from the spec.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `fc6e2cf0ad328121`, not committed) and a copy of the edited spec as `spec-status.md` (`68468a253aa2658a`). Prompt sha256 `dc8ebe2353a1be04`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `skills/status/SKILL.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 1 edit) | 5 | 0.0696 | `ca185e305e578202` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills, no MCP servers. Path audit: the three reads were the two inputs and the target, the one edit was of the target, and no tool call failed. Evidence: `evidence/author-status.r14.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: one hunk, two added lines (a paragraph in step 3 and its blank line). The paragraph says when to run `status.sh --forecast`, that it is never combined with `--all`, what it prints, that its output is passed through verbatim and that steps 4 to 7 apply to its exit code. The frontmatter is unchanged and no other line moved. **Kept.**
+
+**Test changes.** Two test commits followed the first one. One matched three needles to the spec's third-person wording ("re-fetches", "passes", "continues"). One made the skill check look for `--forecast` instead of `status.sh --forecast`, because the authored paragraph writes the command with the flag after the quoted path. No assertion was removed or skipped.
+
+**Known limits, not re-run.** The skill's frontmatter description does not mention a forecast, and the spec's proposed description does not either. No behavioral run exercised `--forecast` through the skill.
+
+**Revision cost:** $0.0696. Already counted in the running total: main's Revision 19 total, ~$42.47, includes this run, so this revision adds nothing to it. **Running total, all API-key charges:** ~$42.47.
+
+**Output sha256 before → after (16):** `skills/status/SKILL.md` `bfd19b217ea02b84` (main) → `328ff52ca83b31c3` (restored) → `ca185e305e578202`.
+
+**Merges with main (2026-11-06).** Written as Revision 14, renumbered 17 on the first merges, and 21 when main recorded its own Revision 17 and Revision 19 (PR #174); card 175 holds 20. Its brief sections in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md` became "Revision 21 requirements", and `tests/test-spec-catch-up.sh` checks Revision 21. In `specs/manager.md` the merge keeps both sides: main's review-stage and provider-stage text, and this revision's hand-added rules. Main's provider-stage rule is numbered 0.18 in the spec, as in `agents/manager.md`, where 0.16 and 0.17 are the adversarial-review and re-fetch rules. `agents/manager.md` is main's file, unchanged by this merge (manifest `41799b377c411831`). `skills/status/SKILL.md` and `specs/status.md` were not changed on main. Plugin version 0.14.0 (main) to 0.14.2; 0.14.1 is card 175's PR #176.

@@ -922,6 +922,47 @@ comment_guard_setup
 printf '## What to check in Human QA\n\n> - the button works\n' > comment.md
 comment_guard_case human-qa post
 
+# review stages: board-list.sh accepts a configured stage, still rejects unknown states
+setup_case
+printf 'board:\n  repo: acme/toy\nreview: { stages: [ { name: security, agent: a } ] }\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+cat > "$ROUTES" << ROUTESEOF
+api user	0	$FIXTURES/labels/user.json
+issue list*	0	$FIXTURES/labels/issue-list-mixed.json
+ROUTESEOF
+export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH="$BIN:$PATH"
+run_check "$SCRIPT_DIR/../scripts/board-list.sh" review_security
+assert_exit "list-stage: exit code" 0
+assert_logs_contain "issue list --repo acme/toy --label fleet:review_security --state open" "list-stage: calls.log"
+run_check "$SCRIPT_DIR/../scripts/board-list.sh" review_nope
+assert_exit "list-stage: unknown stage still exits 2" 2
+
+# review stages: a stage state moves like any state
+stage_move_case() { # NAME LABELS_JSON TARGET STATES_YAML_LINE
+  setup_case
+  printf 'board:\n  repo: acme/toy\n%sreview: { stages: [ { name: security, agent: a } ] }\nworktrees:\n  dir: .fw\n' "$4" > "$REPO/.fleet-board.yml"
+  printf '{"number":12,"title":"t","html_url":"u","body":"b","labels":%s}\n' "$2" > "$FAKE_GH_DIR/issue-12.json"
+  cat > "$ROUTES" << ROUTESEOF
+api user	0	$FIXTURES/labels/user.json
+api repos/acme/toy/issues/12	0	$FAKE_GH_DIR/issue-12.json
+issue edit*	0	-
+ROUTESEOF
+  export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH="$BIN:$PATH"
+  run_check "$SCRIPT_DIR/../scripts/board-move.sh" 12 "$3"
+  assert_exit "$1: exit code" 0
+}
+
+stage_move_case stage-enter '[{"name":"fleet:in_review"}]' review_security ""
+assert_logs_contain "issue edit 12 --repo acme/toy --remove-label fleet:in_review" "stage-enter: removes in_review"
+assert_logs_contain "issue edit 12 --repo acme/toy --add-label fleet:review_security" "stage-enter: adds the stage label"
+
+stage_move_case stage-leave '[{"name":"fleet:review_security"}]' human_qa ""
+assert_logs_contain "issue edit 12 --repo acme/toy --remove-label fleet:review_security" "stage-leave: removes the stage label"
+assert_logs_contain "issue edit 12 --repo acme/toy --add-label fleet:human_qa" "stage-leave: adds human_qa"
+
+stage_move_case stage-mapped '[{"name":"fleet:in_review"}]' review_security '  states: { review_security: "Sec Review" }
+'
+assert_logs_contain "issue edit 12 --repo acme/toy --add-label Sec Review" "stage-mapped: adds the mapped label"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

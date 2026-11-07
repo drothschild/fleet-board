@@ -22,6 +22,18 @@
 #   - the tick's cost is total_cost_usd, or, when that is absent, modelUsage
 #     priced by estimate-cost.sh --model-usage; either way an estimate. A
 #     failed tick's cost counts when its result carries one.
+#   - provider spend: the wrapper exports FLEET_BOARD_RUN_ID (<epoch>-<pid>)
+#     before the first tick. stage-review.sh appends one line per provider call
+#     to ${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/provider-spend.jsonl, with
+#     that run id and cost_usd. The wrapper records the ledger's line count
+#     before each tick and, after it, adds the cost_usd of the lines appended
+#     during the tick that carry this run's id to the tick's cost (a failed or
+#     rate-limited tick too), so max-cost holds on the combined total. A missing
+#     ledger is zero; a malformed line is skipped with a warning. The log line
+#     reads cost_estimate_usd=<total> (estimate; provider <x>) when the
+#     provider part is non-zero. A tick cut short by a signal counts nothing.
+#   - on the local backend, every <board.dir>/active/ marker is removed once
+#     the tick's session exits (whatever its outcome); a failure is a warning
 #   - after each successful tick, settle.sh and then cleanup-done.sh run from
 #     the repo root, outside any Claude session (settle.sh moves the cards
 #     whose next step starts no agent, so the board changes now and not a whole
@@ -50,6 +62,11 @@
 #   fleet-board-run: stopped: <reason> after <n> ticks, <h.hh> h, cost_estimate_usd <x> (estimate)
 # (<n> counts the tick an interrupt cut short.) The limits are checked between
 # ticks only: one tick can overrun max-hours or max-cost; --max-turns bounds it.
+#
+# Run lock: $FLEET_BOARD_LOG_DIR/<owner>-<name>.lock (pid, then its ps lstart
+# in the C locale and UTC) is created before the run log and removed on exit.
+# While it names a live process with that start time, a second wrapper for the
+# repo exits 1 with "another run holds <lock> (pid N)"; a stale lock is replaced.
 #
 # Every tick is appended to one run log per run:
 #   $FLEET_BOARD_LOG_DIR/<owner>-<name>-<YYYYmmdd-HHMMSS>.log
@@ -87,7 +104,7 @@
 # Exit codes:
 #   0 - stopped: nothing-dispatchable, stop-file, max-hours or max-cost
 #   1 - stopped: consecutive-failures, cost-unknown or permission-mode-mismatch;
-#       or a setup failure
+#       or a setup failure, including another run holding the run lock
 #   2 - usage error, or FLEET_BOARD_ISOLATE=1
 #   3, 4, 5 - config.sh --check failed (3: no .fleet-board.yml); 5 also for
 #       a limit that is not a valid number
@@ -159,6 +176,16 @@ MAX_TURNS="$(cfg limits.max_turns)" || exit 1
 RL_MAX_WAIT="$(cfg limits.rate_limit_max_wait)" || exit 1
 RL_MARGIN="$(cfg limits.rate_limit_margin)" || exit 1
 MIN_GAP="$(cfg limits.min_tick_gap)" || exit 1
+BACKEND="$(cfg board.backend)" || exit 1
+# On the local backend, the card store's active/ directory (under the main
+# checkout, found through the git common dir as board-lib.sh does)
+ACTIVE_DIR=""
+if [ "$BACKEND" = local ]; then
+  BOARD_DIR="$(cfg board.dir)" || exit 1
+  STORE_ROOT="$(. "$HERE/board-lib.sh" && c="$(fb_git_common_dir "$ROOT")" && dirname "$c")" || STORE_ROOT=""
+  [ -n "$STORE_ROOT" ] || STORE_ROOT="$ROOT"
+  ACTIVE_DIR="$STORE_ROOT/$BOARD_DIR/active"
+fi
 
 num_ok "$MAX_HOURS" || die 5 "invalid config: limits.max_hours must be a non-negative number, got: $MAX_HOURS"
 num_ok "$MAX_COST" || die 5 "invalid config: limits.max_cost_usd must be a non-negative number, got: $MAX_COST"
@@ -242,13 +269,30 @@ on_signal() {
 
 WORK="$(mktemp -d)" || die 1 "mktemp failed"
 LOCK_HELD=""
-trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null' EXIT
+RUN_LOCK=""
+trap 'rm -rf "$WORK"; [ -n "$LOCK_HELD" ] && rmdir "$LOCK_HELD" 2>/dev/null; [ -z "$RUN_LOCK" ] || release_run_lock' EXIT
 trap 'on_signal INT 130' INT
 trap 'on_signal TERM 143' TERM
 
 # The logs hold tick reports and raw session output: umask 077, in subshells
 # only, so claude and cleanup keep the caller's umask
 ( umask 077; mkdir -p "$LOG_DIR" ) 2>/dev/null || die 1 "cannot create the log directory $LOG_DIR"
+
+# The run lock: one wrapper per repo. <LOG_DIR>/<owner>-<name>.lock holds this
+# wrapper's pid and, on line 2, its ps start time (lstart, C locale, UTC): the
+# format of the board page's run.pid, so the page sees a run it did not start.
+# A lock naming a live pid with that start time refuses this run (exit 1); any
+# other lock is stale and replaced. The EXIT trap removes the lock when its
+# first line is still this pid.
+release_run_lock() {
+  [ -n "$RUN_LOCK" ] || return 0
+  [ "$(sed -n 1p "$RUN_LOCK" 2>/dev/null)" = "$$" ] && rm -f "$RUN_LOCK"
+  return 0
+}
+command -v python3 >/dev/null 2>&1 || die 1 "python3 is required for the run lock"
+LOCK_PATH="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+python3 "$HERE/claim-run-lock.py" "$LOCK_PATH" "$$" || exit 1
+RUN_LOCK="$LOCK_PATH"
 LOG="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-')-$(date +%Y%m%d-%H%M%S).log"
 [ -e "$LOG" ] && LOG="${LOG%.log}-$$.log"
 ( umask 077; set -C; : > "$LOG" ) 2>/dev/null || die 1 "cannot create the run log $LOG"
@@ -275,6 +319,21 @@ FAILS=0
 COST=0
 START="$(date +%s)"
 
+# The run id stage-review.sh writes into every ledger line
+FLEET_BOARD_RUN_ID="$START-$$"
+export FLEET_BOARD_RUN_ID
+# Pin FLEET_BOARD_LOG_DIR to the absolute directory the ledger lives in, so the
+# tick (which runs from the repo root or a worktree) and the wrapper read and
+# write the same ledger even when the variable was relative or unset
+case "${FLEET_BOARD_LOG_DIR:-}" in
+  "") FLEET_BOARD_LOG_DIR="$HOME/.fleet-board" ;;
+  *) FLEET_BOARD_LOG_DIR="$LOG_DIR" ;;
+esac
+export FLEET_BOARD_LOG_DIR
+LEDGER="$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+LEDGER_PRE=0
+PSPEND=0
+
 stop() { # <reason> <exit code>
   local h line
   h="$(hours %.2f)"
@@ -294,6 +353,60 @@ tick_cost() {
   c="$(bash "$HERE/estimate-cost.sh" --model-usage "$mu" </dev/null 2>/dev/null)" || return 1
   num_ok "$c" || return 1
   fnum "$c"
+}
+
+# ledger_count: the number of lines in the provider ledger (0 when missing)
+ledger_count() {
+  if [ -f "$LEDGER" ]; then wc -l < "$LEDGER" | tr -d ' '; else echo 0; fi
+}
+
+# collect_provider_spend: sets PSPEND to the cost_usd sum of the ledger lines
+# appended since LEDGER_PRE that carry this run's id (jq -s under LC_ALL=C), adds
+# it to COST, and warns about lines it cannot read (not JSON, not an object, or
+# this run's with a cost_usd that is not a non-negative number). It also warns,
+# once per tick, when any object line in the window has a null or missing
+# run_id: a stage-review.sh run outside this wrapper's environment, whose
+# spend this run cannot attribute.
+collect_provider_spend() {
+  local res sum bad nul
+  PSPEND=0
+  [ -e "$LEDGER" ] || return 0
+  # a ledger that is not a readable regular file is unreadable (BSD tail exits 0 on a directory)
+  if [ -f "$LEDGER" ] && [ -r "$LEDGER" ]; then
+    res="$(tail -n +"$((LEDGER_PRE + 1))" "$LEDGER" 2>/dev/null | LC_ALL=C jq -Rrs --arg run "$FLEET_BOARD_RUN_ID" '
+    split("\n") | map(select(length > 0)) | map(try fromjson catch null) as $p
+    | ($p | map(select(type == "object"))) as $objs
+    | ($objs | map(select(.run_id == $run))) as $mine
+    | ($mine | map(select((.cost_usd | type) == "number" and .cost_usd >= 0))) as $ok
+    | (($p | length) - ($objs | length) + ($mine | length) - ($ok | length)) as $bad
+    | ($objs | map(select(.run_id == null)) | length) as $nul
+    | "\($ok | map(.cost_usd) | add // 0) \($bad) \($nul)"' 2>/dev/null)" || res=""
+  else
+    res=""
+  fi
+  read -r sum bad nul <<<"$res"
+  if [ -z "$res" ] || ! [[ "$bad" =~ ^[0-9]+$ ]] || ! [[ "$nul" =~ ^[0-9]+$ ]] || ! num_ok "$(fnum "${sum:-x}")" 2>/dev/null; then
+    warn "cannot read the provider ledger $LEDGER; provider spend for tick $TICK is unknown and counted as 0"
+    return 0
+  fi
+  if [ "$bad" -gt 0 ]; then
+    warn "skipped $bad malformed line(s) in the provider ledger $LEDGER"
+  fi
+  if [ "$nul" -gt 0 ]; then
+    warn "ledger line without a run id in tick $TICK; provider spend may be uncounted"
+  fi
+  num_ok "$(fnum "${sum:-x}")" 2>/dev/null || return 0
+  PSPEND="$(fnum "$sum")"
+  COST="$(fadd "$COST" "$PSPEND")"
+}
+
+# cost_text <claude cost>: the log's cost field, with the provider part when it is non-zero
+cost_text() {
+  if fgt "$PSPEND" 0; then
+    printf 'cost_estimate_usd=%s (estimate; provider %s)' "$(fadd "$1" "$PSPEND")" "$PSPEND"
+  else
+    printf 'cost_estimate_usd=%s (estimate)' "$1"
+  fi
 }
 
 # jq: rtrimws drops trailing spaces, tabs and CRs in linear time. (A regex
@@ -341,6 +454,14 @@ run_merge_reviewed() {
     log "warning: merge-reviewed.sh exited $rc"
   fi
   logfile "$WORK/merge.err"
+}
+
+# clear_active: on the local backend, removes every active marker once a
+# tick's session has exited, so a role that crashed without posting its report
+# does not stay lit; a failure is only a warning
+clear_active() {
+  [ -n "$ACTIVE_DIR" ] && [ -d "$ACTIVE_DIR" ] || return 0
+  rm -f "$ACTIVE_DIR"/* 2>/dev/null || warn "cannot clear the active markers in $ACTIVE_DIR"
 }
 
 if [ -n "${FLEET_BOARD_TEST_BGJOB:-}" ]; then
@@ -415,10 +536,13 @@ while :; do
   TICK=$((TICK + 1))
   OUT="$WORK/tick.jsonl"
   ERR="$WORK/tick.err"
+  LEDGER_PRE="$(ledger_count)"
   run_bg "$CLAUDE" -p "$PROMPT" ${PLUGIN_ARGS[@]+"${PLUGIN_ARGS[@]}"} --model "$MODEL" \
     --permission-mode "$MODE" --output-format stream-json --verbose \
     --max-turns "$MAX_TURNS" </dev/null >"$OUT" 2>"$ERR"
   RC=$?
+  clear_active
+  collect_provider_spend
 
   # The session's init event: a different permission mode would deny the
   # same tool calls on every later tick, so the run stops (no retry)
@@ -482,7 +606,7 @@ while :; do
     log "=== tick $TICK RATE LIMITED $(iso) rc=$RC ===" "reason: $WHY"
     if TC="$(tick_cost "$RESULT")"; then
       COST="$(fadd "$COST" "$TC")"
-      log "cost_estimate_usd=$TC (estimate)"
+      log "$(cost_text "$TC")"
     else
       log "cost_estimate_usd=unknown"
     fi
@@ -501,7 +625,7 @@ while :; do
     log "=== tick $TICK FAILED $(iso) rc=$RC ===" "reason: $WHY"
     if [ -n "$RESULT" ] && TC="$(tick_cost "$RESULT")"; then
       COST="$(fadd "$COST" "$TC")"
-      log "cost_estimate_usd=$TC (estimate)"
+      log "$(cost_text "$TC")"
     else
       log "cost_estimate_usd=unknown"
     fi
@@ -525,7 +649,7 @@ while :; do
   FAILS=0
   if TC="$(tick_cost "$RESULT")"; then
     COST="$(fadd "$COST" "$TC")"
-    log "=== tick $TICK $(iso) rc=0 cost_estimate_usd=$TC (estimate) ==="
+    log "=== tick $TICK $(iso) rc=0 $(cost_text "$TC") ==="
   else
     TC=""
     log "=== tick $TICK $(iso) rc=0 cost_estimate_usd=unknown ==="
