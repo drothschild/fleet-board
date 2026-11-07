@@ -377,7 +377,7 @@ if setup_case; then
   assert_body "stop reason" '.stop_reason' stop-file
   assert_body "run cost" '.cost' 0.42
   assert_body "run hours" '.hours' 0.01
-  assert_body "log tail has the start and end lines of two ticks" '.log_tail|length' 4
+  assert_body "log tail has the two tick lines" '.log_tail|length' 2
   if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "markers cleared when the run ended"; else fail "markers cleared when the run ended" "active/2 still exists"; fi
   api GET /api/board;               assert_body "no card active after the run" '.cards[]|select(.number==2)|.active' false
   rm -f "$FAKE_RUN_DIR/release"

@@ -335,11 +335,12 @@ def scan_run_log(path: str):
         with open(path, encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.rstrip("\n")
-                tail.append(line)
                 m = TICK_RE.match(line)
                 if m:
                     tick = int(m.group(1))
-                elif TICK_END_RE.match(line):
+                    continue  # start lines feed the pill, not the log tail
+                tail.append(line)
+                if TICK_END_RE.match(line):
                     done += 1
     except OSError:
         pass
