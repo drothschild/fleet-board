@@ -137,6 +137,51 @@ assert_card_json() {
 
 assert_card_state() { assert_card_json "$1" '.state' "$2"; }
 
+# A writer handshake prevents a green result against only the seeded card.
+atomic_write_case() {
+  setup_case; seed_card 1 backlog Atomic "$(head -c 20000 /dev/zero | tr '\0' x)"
+  AW="$REPO/write.json"; jq '.title = "Updated"' "$REPO/.fleet-board/cards/1.json" > "$AW"
+  STOP="$REPO/stop-writer"; WRITES="$REPO/writes"; : > "$WRITES"
+  ( cd "$REPO" && bash -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"
+    while [ ! -e "$1" ]; do
+      fl_write_card 1 "$2" || exit 1
+      printf "written\n" >> "$3"
+    done' _ "$STOP" "$AW" "$WRITES" ) >"$REPO/writer.out" 2>"$REPO/writer.err" &
+  WRITER=$!
+  for i in $(seq 1 100); do
+    [ -s "$WRITES" ] && break
+    kill -0 "$WRITER" 2>/dev/null || break
+    sleep 0.02
+  done
+  BEFORE="$(wc -l < "$WRITES" | tr -d ' ')"
+  BAD=0
+  for i in $(seq 1 200); do
+    jq -e 'type == "object" and .title == "Updated" and (keys | join(",")) == "body,comments,created_at,labels,next_comment_id,number,state,title"'       "$REPO/.fleet-board/cards/1.json" >/dev/null 2>&1 || BAD=$((BAD + 1))
+  done
+  AFTER="$(wc -l < "$WRITES" | tr -d ' ')"
+  : > "$STOP"
+  if wait "$WRITER"; then pass "atomic writer exits successfully"; else fail "atomic writer exits successfully" "$(cat "$REPO/writer.err")"; fi
+  if [ "$BEFORE" -gt 0 ] && [ "$AFTER" -gt "$BEFORE" ]; then pass "successful writes overlap the reader interval"; else fail "successful writes overlap the reader interval" "before=$BEFORE after=$AFTER"; fi
+  if [ "$BAD" -eq 0 ]; then pass "reader sees complete cards on all 200 parses"; else fail "reader sees complete cards on all 200 parses" "$BAD parses failed"; fi
+}
+racing_note_case() {
+  setup_case; seed_card 1 backlog Race x
+  rn="$REPO/note.txt"; echo 'racing note' > "$rn"
+  (cd "$REPO" && bash "$SCRIPTS/board-note.sh" 1 "$rn" >"$REPO/note1.out" 2>"$REPO/note1.err") &
+  P1=$!
+  (cd "$REPO" && bash "$SCRIPTS/board-note.sh" 1 "$rn" >"$REPO/note2.out" 2>"$REPO/note2.err") &
+  P2=$!
+  if wait "$P1"; then pass "first racing note succeeds"; else fail "first racing note succeeds" "$(cat "$REPO/note1.err")"; fi
+  if wait "$P2"; then pass "second racing note succeeds"; else fail "second racing note succeeds" "$(cat "$REPO/note2.err")"; fi
+  assert_card_json 1 '[.comments[] | select(.body | startswith("<!-- fleet-board:manager-note -->"))] | length' 1
+}
+if [ "${1:-}" = --concurrency ]; then
+  atomic_write_case
+  racing_note_case
+  printf 'passed: %s failed: %s\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]; exit $?
+fi
+
 echo "Test: local board backend"
 echo ""
 
@@ -314,6 +359,59 @@ rm -f "$report"
 assert_exit "report comment exit 0" 0
 if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "comment removes the active marker"; else fail "comment removes the active marker" "still present"; fi
 if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card's marker"; else fail "comment leaves another card's marker" "removed"; fi
+
+# --- atomic write ---
+atomic_write_case
+
+# --- next counter edge cases ---
+for v in 0 -3 007; do
+  setup_case; printf '%s\n' "$v" > "$REPO/.fleet-board/next"
+  run_check_in "$REPO" "$SCRIPTS/board-create.sh" T "$body"
+  assert_exit "next '$v' fails create" 1
+  assert_stderr_contains "next '$v' names the next file" "next"
+done
+setup_case; printf '7 \n' > "$REPO/.fleet-board/next"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" T "$body"
+assert_exit "next with trailing space succeeds" 0
+assert_stdout_contains "next with trailing space allocates 7" '"number":7'
+
+# --- a card file that is valid JSON but not an object ---
+setup_case; seed_card 1 backlog 'Real' 'x'; echo '[]' > "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_exit "read fails closed on a [] card" 1
+assert_stderr_contains "read names the [] card file" "2.json"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
+assert_exit "list fails closed on a [] card" 1
+assert_stderr_contains "list names the [] card file" "2.json"
+
+# --- eight concurrent creates allocate eight distinct numbers ---
+setup_case; CO="$(mktemp -d)"; CLEANUP_DIRS+=("$CO")
+for i in 1 2 3 4 5 6 7 8; do (cd "$REPO" && bash "$SCRIPTS/board-create.sh" "C$i" "$body" > "$CO/$i.out" 2>/dev/null) & done; wait
+got="$(cat "$CO"/*.out | jq -r .number | sort -n | tr '\n' ' ')"
+if [ "$got" = "1 2 3 4 5 6 7 8 " ]; then pass "eight concurrent creates give numbers 1 through 8"; else fail "eight concurrent creates give numbers 1 through 8" "got: $got"; fi
+
+# --- racing notes ---
+racing_note_case
+
+# --- an empty note file still writes a marker comment ---
+setup_case; seed_card 1 backlog 'Empty note' 'x'; en="$(mktemp)"; CLEANUP_DIRS+=("$en"); : > "$en"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$en"
+assert_exit "empty note file exits 0" 0
+assert_card_json 1 '[.comments[] | select(.body | startswith("<!-- fleet-board:manager-note -->"))] | length' 1
+
+# --- edit on a card without a labels key ---
+setup_case; seed_card 1 backlog 'No labels' 'x'
+jq 'del(.labels)' "$REPO/.fleet-board/cards/1.json" > "$REPO/card.tmp" && mv "$REPO/card.tmp" "$REPO/.fleet-board/cards/1.json"
+et="$(mktemp)"; CLEANUP_DIRS+=("$et"); echo T2 > "$et"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$et" "" '["a","b"]'
+assert_exit "edit on a card with no labels key exits 0" 0
+assert_card_json 1 '.labels|join(",")' a,b
+
+# --- a comment without a trailing newline round-trips byte for byte ---
+setup_case; seed_card 1 backlog 'Bytes' 'x'; nc="$(mktemp)"; CLEANUP_DIRS+=("$nc"); printf 'no newline at end' > "$nc"
+run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$nc"
+jq -j '.comments[0].body' "$REPO/.fleet-board/cards/1.json" > "$REPO/out.bin"
+if cmp -s "$nc" "$REPO/out.bin"; then pass "comment without trailing newline round-trips byte for byte"; else fail "comment without trailing newline round-trips byte for byte" "bytes differ"; fi
 
 echo ""
 echo "-----------------------------------"

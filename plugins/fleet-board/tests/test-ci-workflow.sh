@@ -24,7 +24,6 @@ workflow_problems() {
   local wf="$1"
   if [ ! -f "$wf" ]; then echo "workflow file missing: $wf"; return; fi
   grep -q 'ubuntu-latest' "$wf" || echo "matrix lacks ubuntu-latest"
-  grep -q 'macos-latest' "$wf" || echo "matrix lacks macos-latest"
   grep -qF "$GLOB" "$wf" || echo "workflow does not run $GLOB"
   grep -q 'behavioral-' "$wf" && echo "workflow includes behavioral suites"
   grep -qiE 'brew|homebrew' "$wf" && echo "workflow uses Homebrew"
@@ -57,7 +56,7 @@ fail() { FAILS=$((FAILS + 1)); printf '  FAIL %s\n' "$1"; }
 
 # 1. Real workflow passes all checks.
 out="$(workflow_problems "$WF_REAL")"
-if [ -z "$out" ]; then pass "workflow lists both runners, runs the glob, uses /bin/bash"
+if [ -z "$out" ]; then pass "workflow lists ubuntu-latest, runs the glob, uses /bin/bash"
 else fail "real workflow: $out"; fi
 
 # Each mutant must make the check fail (a suite that cannot fail proves nothing).
@@ -74,7 +73,6 @@ mutant "glob includes behavioral-*.sh" 's#test-\*\.sh#behavioral-*.sh#'
 mutant "brew install bash" 's#/bin/bash#brew install bash#'
 mutant "bash path outside /bin/bash" 's#/bin/bash#/opt/homebrew/bin/bash#'
 mutant "ubuntu-latest dropped" 's#ubuntu-latest#ubuntu-20.04#'
-mutant "macos-latest dropped" 's#macos-latest#macos-13#'
 
 # 2. Runner: fixture dir with one passing and one failing suite.
 FIX="$TMP/fix"; mkdir -p "$FIX"

@@ -14,10 +14,15 @@
 #                   the only change since the review, and review otherwise
 #                   (tick-plan.sh, review-drift.sh).
 #   conflict        the merge is aborted (nothing is pushed), a comment names
-#                   the conflicted files, and the card moves to blocked. A
-#                   conflict is never resolved here: a person resolves it.
-# Exit codes: 0 done (clean or blocked), 1 a git, gh or board step failed,
-# 2 usage error.
+#                   the conflicted files, the manager note gains
+#                   conflicted_files (every file, test files included) and the
+#                   card stays where it is. tick-plan.sh then plans the fixer
+#                   with those files as its findings. The script exits 1 and
+#                   the manager counts that as one failed action (note.sh
+#                   fail); the script does not count it too. A conflict is
+#                   never resolved here.
+# Exit codes: 0 done (clean merge), 1 a git, gh or board step failed or the
+# merge conflicted (the manager counts the failure), 2 usage error.
 
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
@@ -58,13 +63,16 @@ if [ "$RC" -ne 0 ] || [ -n "$CONFLICTS" ]; then
   {
     printf 'Merging `%s` into `%s` conflicts in:\n\n' "origin/$BASE" "$BRANCH"
     printf '%s\n' "$CONFLICTS" | sed 's/^/- /'
-    printf '\nThe merge was aborted and nothing was pushed. Resolve the conflict by hand, then move the card back.\n'
+    printf '\nThe merge was aborted and nothing was pushed. The card stays where it is; the next tick dispatches the fixer to resolve these files.\n'
   } > "$TMP"
   bash "$FLEET_SCRIPTS/board-comment.sh" "$N" "$TMP" || fb_die 1 "cannot comment on #$N"
-  bash "$FLEET_SCRIPTS/board-move.sh" "$N" blocked || fb_die 1 "cannot move #$N to blocked"
-  jq -n '{state: "blocked"}' > "$TMP"
+  # One note write: the files for the fixer. The exit 1 below is counted once,
+  # by the manager (2.C.4), so a card that keeps conflicting is still blocked
+  # by the action_failures rule instead of looping
+  printf '%s\n' "$CONFLICTS" | jq -R . | jq -s '{conflicted_files: .}' > "$TMP" \
+    || fb_die 1 "cannot build the note patch for #$N"
   bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$TMP" || fb_die 1 "cannot update the note on #$N"
-  exit 0
+  fb_die 1 "merge of origin/$BASE into $BRANCH conflicts; recorded the files for the fixer"
 fi
 
 AFTER="$(git -C "$WT" rev-parse HEAD)" || fb_die 1 "cannot read HEAD in $WT"
