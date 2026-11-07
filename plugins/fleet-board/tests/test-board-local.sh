@@ -494,6 +494,17 @@ run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$nc"
 jq -j '.comments[0].body' "$REPO/.fleet-board/cards/1.json" > "$REPO/out.bin"
 if cmp -s "$nc" "$REPO/out.bin"; then pass "comment without trailing newline round-trips byte for byte"; else fail "comment without trailing newline round-trips byte for byte" "bytes differ"; fi
 
+# --- shared id helper: executable calls only, no inline fallback (comments ignored, whitespace-insensitive) ---
+for f in comment.sh note.sh; do
+  code="$(sed -e 's/^[[:space:]]*#.*$//' "$LOCALDIR/$f")"
+  if printf '%s\n' "$code" | grep -Eq '^[[:space:]]*ID="\$\([[:space:]]*fl_next_comment_id[[:space:]]+"\$CARD"[[:space:]]*\)"'; then
+    pass "$f executes the fl_next_comment_id helper (not in a comment)"
+  else fail "$f executes the fl_next_comment_id helper (not in a comment)" "no executable call"; fi
+  if printf '%s\n' "$code" | grep -Eq 'max[[:space:]]*//|next_comment_id[[:space:]]*//|\|[[:space:]]*max'; then
+    fail "$f has no inline id fallback expression" "inline fallback found"
+  else pass "$f has no inline id fallback expression"; fi
+done
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
