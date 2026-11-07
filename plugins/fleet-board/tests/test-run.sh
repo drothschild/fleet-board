@@ -1216,6 +1216,15 @@ case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
 esac
 assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
 
+echo "verification failure stops before cleanup or another tick"
+new_case
+seq_fixture 1 tick-idle
+printf '#!/bin/sh\nexit 3\n' > "$T/merge-failed.sh"
+FLEET_BOARD_MERGE_REVIEWED="$T/merge-failed.sh" run_wrapper --repo "$REPO"
+assert_exit "verification failure: run fails" 1
+assert_stdout_contains "verification failure: stop reason" "main-verification-failed"
+assert_false "verification failure: no cleanup" test -f "$T/cleanup-count"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

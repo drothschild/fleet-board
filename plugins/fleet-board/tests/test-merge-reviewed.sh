@@ -247,6 +247,85 @@ pr 34 false "$GREEN"
 finalize
 no_merge "PR not yet reviewed"
 
+echo "drain two reviewed cards, replan and pin each merge head"
+setup_pair() {
+  setup_case auto
+  card 12 in_review "$CLEAN"
+  card 13 in_review "$(jq -c '.pr=35 | .branch="fleet/13-next"' <<<"$CLEAN")"
+  pr 34 false "$GREEN"
+  pr 35 false "$GREEN"
+  finalize
+}
+setup_pair
+run_merge
+assert_exit "drain: exit 0" 0
+assert_eq "drain: first merged once" "$(cnt "pr merge 34 ")" 1
+assert_eq "drain: second merged once" "$(cnt "pr merge 35 ")" 1
+assert_eq "drain: exact planned heads bound" "$(cnt --match-head-commit)" 2
+
+setup_pair
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<'VERIFY'
+#!/usr/bin/env bash
+# First integration changes the second PR: the old approval must not merge it.
+jq '.headRefOid="def5678"' "$FAKE_GH_DIR/fx/pr-35.json" > "$FAKE_GH_DIR/fx/next.json"
+mv "$FAKE_GH_DIR/fx/next.json" "$FAKE_GH_DIR/fx/pr-35.json"
+printf '{"commit":"abc1234","ok":true,"results":[]}\n'
+VERIFY
+run_merge
+assert_eq "drain: replan prevents stale second approval" "$(cnt "pr merge 35 ")" 0
+
+setup_pair
+printf 'pr merge 34 *\t1\t-\n' | cat - "$FAKE_GH_ROUTES" > "$FX/new-routes"
+mv "$FX/new-routes" "$FAKE_GH_ROUTES"
+run_merge
+assert_exit "failed candidate: exit 1" 1
+assert_eq "failed candidate: attempted once" "$(cnt "pr merge 34 ")" 1
+assert_eq "failed candidate: unrelated merge proceeds" "$(cnt "pr merge 35 ")" 1
+
+for result in false null '"true"'; do
+  setup_pair
+  cat > "$FLEET_BOARD_VERIFY_MAIN" <<VERIFY
+#!/bin/sh
+printf '%s\n' '{"commit":"abc1234","ok":$result,"results":[]}'
+VERIFY
+  run_merge
+  assert_exit "verification $result: fatal stop" 3
+  assert_eq "verification $result: no done" "$(cnt 'add-label fleet:done')" 0
+  assert_eq "verification $result: no second merge" "$(cnt 'pr merge 35 ')" 0
+done
+
+setup_pair
+printf '#!/bin/sh\nexit 1\n' > "$FLEET_BOARD_VERIFY_MAIN"
+run_merge
+assert_exit "verification command error: fatal stop" 3
+assert_eq "verification error: no second merge" "$(cnt 'pr merge 35 ')" 0
+
+setup_pair
+# Recovery must verify an earlier merged PR before admitting another merge.
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<VERIFY
+#!/bin/sh
+printf '%s\n' '{"commit":"abc1234","ok":false,"results":[]}'
+VERIFY
+run_merge
+assert_exit "pending verification: fatal stop" 3
+assert_eq "pending verification: no new merge" "$(cnt 'pr merge ')" 0
+
+setup_pair
+FLEET_BOARD_MERGE_LIMIT=1 run_merge
+assert_eq "merge budget: one merge" "$(cnt 'pr merge ')" 1
+
+
+setup_case auto
+card 12 in_review "$(jq -c '.main_check={commit:"abc1234",ok:false,results:[]}' <<<"$CLEAN")"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
+assert_eq "failed recorded verification: recover rather than finish" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
