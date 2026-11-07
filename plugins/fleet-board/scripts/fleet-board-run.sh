@@ -54,6 +54,8 @@
 # is waited out (until the reset plus limits.rate_limit_margin) and the next
 # tick runs; it does not count as a failed tick. With limits.min_tick_gap > 0,
 # tick starts of runs sharing FLEET_BOARD_TOKEN_LOCK are that far apart.
+#   plan-refresh-failed   post-settlement plan could not be read      exit 1
+#   main-verification-failed  merge verification/recovery failed      exit 1
 #   cost-unknown          a successful tick gives no cost at all       exit 1
 #   interrupted (<sig>)   INT or TERM: the running claude, settle, cleanup or sleep
 #                         (every background job) gets TERM, then KILL if it is
@@ -141,6 +143,7 @@ PROMPT="${FLEET_BOARD_TICK_PROMPT:-/fleet-board:tick}"
 CLEANUP="${FLEET_BOARD_CLEANUP:-$HERE/cleanup-done.sh}"
 SETTLE="${FLEET_BOARD_SETTLE:-$HERE/settle.sh}"
 MERGE_REVIEWED="${FLEET_BOARD_MERGE_REVIEWED:-$HERE/merge-reviewed.sh}"
+TICK_PLAN="${FLEET_BOARD_TICK_PLAN:-$HERE/tick-plan.sh}"
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
 case "$LOG_DIR" in
   /*) ;;
@@ -439,7 +442,7 @@ run_settle() {
 }
 
 # run_merge_reviewed: merge-reviewed.sh from the repo root (it merges only under
-# merge.policy: auto); a failure is only a warning
+# merge.policy: auto); verification/recovery failure stops the run
 run_merge_reviewed() {
   local rc
   run_bg bash "$MERGE_REVIEWED" </dev/null >"$WORK/merge.out" 2>"$WORK/merge.err"
@@ -450,6 +453,27 @@ run_merge_reviewed() {
     log "warning: merge-reviewed.sh exited $rc"
   fi
   logfile "$WORK/merge.err"
+  [ "$rc" -ne 3 ] || stop main-verification-failed 1
+}
+
+# Settlement and merging can invalidate either value of the manager signal.
+# Read fresh state only after those mutations; never mistake a failed read for idle.
+refresh_dispatchable() {
+  local refreshed rc
+  run_bg bash "$HERE/board-cache-clear.sh" </dev/null >"$WORK/refresh.out" 2>"$WORK/refresh.err"
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    logfile "$WORK/refresh.err"
+    stop plan-refresh-failed 1
+  fi
+  run_bg bash "$TICK_PLAN" </dev/null >"$WORK/refresh.out" 2>"$WORK/refresh.err"
+  rc=$?
+  logfile "$WORK/refresh.err"
+  [ "$rc" -eq 0 ] || stop plan-refresh-failed 1
+  refreshed="$(jq -er 'if (.dispatchable | type) == "boolean" and (.cards | type) == "array"
+    then (.dispatchable or any(.cards[]; .action == "file_pending")) | tostring
+    else error("invalid tick plan") end' "$WORK/refresh.out" 2>/dev/null)" || stop plan-refresh-failed 1
+  SIGNAL="$refreshed"
 }
 
 # clear_active: removes every active marker once a
@@ -656,6 +680,7 @@ while :; do
   run_cleanup
 
   [ -n "$TC" ] || stop cost-unknown 1
+  refresh_dispatchable
   [ "$SIGNAL" = false ] && stop nothing-dispatchable 0
   fgt "$COST" "$MAX_COST" && stop max-cost 0
   [ "$INTERVAL" = 0 ] || run_bg sleep "$INTERVAL"

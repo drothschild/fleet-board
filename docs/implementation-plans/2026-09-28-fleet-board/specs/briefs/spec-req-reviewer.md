@@ -305,7 +305,7 @@ alongside the test it affects.
 
 Implement the Conflict-resolved classification from the reviewer spec. Verify real merge provenance and reconstructed conflict boundaries, preserve both sides and coverage, require passing tests and configured mutation evidence, and keep prior weakening and unrelated edits subject to the ordinary rules. Permit this narrowly verified classification after a fixer report. Preserve unrelated behavior and numbering.
 
-## Revision 23 requirements (2026-11-06, card fields and the local board; these win over anything above)
+## Revision 24 requirements (2026-11-06, card fields and the local board; these win over anything above)
 
 Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
 prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on

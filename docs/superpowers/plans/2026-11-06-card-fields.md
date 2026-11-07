@@ -17,7 +17,7 @@
 3. **The role prompts are re-authored, not rendered around.** The implementor, reviewer, fixer and manager prompts and the reporting skill read `## Acceptance` from the body and cite `gh issue view <n>` as the way to re-read a card. They are clean-room files, so they change only by editing their behavior specs and re-authoring them in isolated `claude -p --bare` runs. That costs API spend; the memory puts clean-room spend at about $42 so far against a ceiling recorded in the private handoff. Check the ceiling before Task 6.
 4. **The body keeps a rendered copy until the prompts are re-authored.** Tasks 1–5 render the fields back into the body on read so the current prompts keep working; Task 7 removes the rendering once Task 6 has landed. This keeps every intermediate commit runnable.
 5. **`pr_url` follows the manager note's `pr`.** The manager (clean-room) keeps writing `pr` into its note; the local `note` verb mirrors it into `pr_url`. A person can set or clear it in the drawer; a later note overwrites a hand-set URL only when it names a different PR.
-6. **Version 0.15.0.** PR 199 (Codex provider) takes 0.14.0. (Update 2026-11-07: main reached 0.15.1 before this merged, so the branch ships as 0.16.0; Task 8's "both manifests at 0.15.0" reads 0.16.0.)
+6. **Version 0.15.0.** PR 199 (Codex provider) takes 0.14.0. (Update 2026-11-07: main reached 0.15.1 before this merged, so the branch ships as 0.16.0, and 0.17.0 once main shipped its own 0.16.0 (PR 222); Task 8's "both manifests at 0.15.0" reads 0.16.0.)
 
 ## Global constraints
 

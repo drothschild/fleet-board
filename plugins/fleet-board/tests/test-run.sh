@@ -132,6 +132,17 @@ new_case() {
   printf '#!/bin/sh\nprintf "settle\\n" >> "%s/order"\nprintf "run\\n" >> "%s/settle-count"\npwd -P >> "%s/settle-cwd"\necho "fake settle ran"\necho "fake settle stderr" >&2\nexit ${FAKE_SETTLE_EXIT:-0}\n' "$T" "$T" "$T" > "$SETTLE_FAKE"
   chmod +x "$SETTLE_FAKE"
 
+  PLAN_FAKE="$T/plan.sh"
+  cat > "$PLAN_FAKE" <<'PLAN'
+#!/usr/bin/env bash
+n="$(cat "$FAKE_CLAUDE_DIR/count")"
+f="$FAKE_CLAUDE_DIR/$n.jsonl"
+[ -f "$f" ] || f="$FAKE_CLAUDE_DIR/default.jsonl"
+signal="$(jq -s '[.[] | select(.type=="result")][-1].result // "" | contains("dispatchable: true")' "$f")"
+printf '{"dispatchable":%s,"cards":[]}\n' "$signal"
+PLAN
+  C_PLAN="$PLAN_FAKE"
+
   # Per-case knobs (empty means unset for the run)
   C_LOG_DIR="$LOGS"
   C_PLUGIN_DIR=""
@@ -158,6 +169,7 @@ case_env() {
   unset FLEET_BOARD_LOG_DIR FLEET_BOARD_PLUGIN_DIR FLEET_BOARD_TICK_PROMPT FLEET_BOARD_ISOLATE \
     FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB FLEET_BOARD_RUN_ID FAKE_CLAUDE_LEDGER || true
   [ -z "${C_LEDGER_FROM_ENV:-}" ] && export FAKE_CLAUDE_LEDGER="$LOGS/provider-spend.jsonl"
+  export FLEET_BOARD_TICK_PLAN="$C_PLAN"
   export HOME="$HOMEDIR" PATH="$BIN:$ORIG_PATH" FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" FAKE_CLAUDE_DIR="$FC"
   [ -n "$C_LOG_DIR" ] && export FLEET_BOARD_LOG_DIR="$C_LOG_DIR"
   [ -n "$C_PLUGIN_DIR" ] && export FLEET_BOARD_PLUGIN_DIR="$C_PLUGIN_DIR"
@@ -247,6 +259,89 @@ result_fixture() { # <file> <jq object>
 }
 
 ISO='[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
+
+echo "verification failure stops before cleanup or another tick"
+new_case
+seq_fixture 1 tick-idle
+printf '#!/bin/sh\nexit 3\n' > "$T/merge-failed.sh"
+FLEET_BOARD_MERGE_REVIEWED="$T/merge-failed.sh" run_wrapper --repo "$REPO"
+assert_exit "verification failure: run fails" 1
+assert_stdout_contains "verification failure: stop reason" "main-verification-failed"
+assert_false "verification failure: no cleanup" test -f "$T/cleanup-count"
+
+if [ "${FLEET_BOARD_TEST_CASE:-}" = verification ]; then
+  printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]
+  exit $?
+fi
+
+
+echo "fresh plan after settlement controls whether another tick runs"
+new_case
+seq_fixture 1 tick-idle
+seq_fixture 2 tick-idle
+cat > "$C_PLAN" <<'PLAN'
+#!/bin/sh
+printf 'refresh\n' >> "$FAKE_CLAUDE_DIR/../order"
+if [ ! -f "$FAKE_CLAUDE_DIR/refreshed" ]; then
+  touch "$FAKE_CLAUDE_DIR/refreshed"
+  printf '{"dispatchable":true,"cards":[]}\n'
+else
+  printf '{"dispatchable":false,"cards":[]}\n'
+fi
+PLAN
+run_wrapper --repo "$REPO"
+assert_exit "fresh plan: exit 0" 0
+assert_eq "fresh plan: newly available work gets a tick" "$(count)" 2
+assert_file_contains "fresh plan: refresh ran after settlement" "$T/order" refresh
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+cat > "$C_PLAN" <<'PLAN'
+#!/bin/sh
+printf '%s\n' '{"dispatchable":false,"cards":[]}'
+PLAN
+run_wrapper --repo "$REPO"
+assert_exit "fresh idle plan: exit 0" 0
+assert_eq "fresh idle plan: no unnecessary second tick" "$(count)" 1
+
+for mode in error malformed; do
+  new_case
+  seq_fixture 1 tick-idle
+  if [ "$mode" = error ]; then
+    printf '#!/bin/sh\nexit 1\n' > "$C_PLAN"
+  else
+    cat > "$C_PLAN" <<'PLAN'
+#!/bin/sh
+printf '%s\n' '{"dispatchable":"false","cards":[]}'
+PLAN
+  fi
+  run_wrapper --repo "$REPO"
+  assert_exit "$mode refresh: fails closed" 1
+  assert_stdout_contains "$mode refresh: stop reason" plan-refresh-failed
+done
+
+new_case
+seq_fixture 1 tick-idle
+seq_fixture 2 tick-idle
+cat > "$C_PLAN" <<'PLAN'
+#!/bin/sh
+if [ ! -f "$FAKE_CLAUDE_DIR/refreshed" ]; then
+  touch "$FAKE_CLAUDE_DIR/refreshed"
+  printf '%s\n' '{"dispatchable":false,"cards":[{"action":"file_pending"}]}'
+else
+  printf '%s\n' '{"dispatchable":false,"cards":[]}'
+fi
+PLAN
+run_wrapper --repo "$REPO"
+assert_eq "fresh pending followups get another tick" "$(count)" 2
+
+if [ "${FLEET_BOARD_TEST_CASE:-}" = throughput ]; then
+  printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]
+  exit $?
+fi
 
 echo "Test: fleet-board-run.sh"
 echo ""
@@ -1209,6 +1304,7 @@ case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
   *) fail "run-lock: line 2 is a ps start time" "$(cat "$FC_LOCKSEEN" 2>/dev/null)" ;;
 esac
 assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
+
 
 echo ""
 echo "-----------------------------------"
