@@ -86,6 +86,9 @@ if [ "$MODE" = tick ]; then
   export FLEET_BOARD_GIT_LOCK_TOKEN
   GIT_MUTEX="$COMMON/fleet-board-standalone-git-$FLEET_BOARD_GIT_LOCK_TOKEN.lock"
 fi
+if [ "$MODE" = tick ] && [ "${FLEET_BOARD_STANDALONE_FIXTURE:-}" != 1 ]; then
+  run_group bash "$SCRIPTS/standalone/profiles.sh" preflight || exit 1
+fi
 if [ "$MODE" = tick ]; then
   # Recover one incomplete action before planning: the card may be between
   # labels, or its move may have succeeded before its note was written.
