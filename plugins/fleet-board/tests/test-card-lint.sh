@@ -187,6 +187,35 @@ assert_eq "plan changed: new result needs a comment" "$(card comment_needed)" tr
 assert_eq "plan changed: marker differs" "$([ "$MARKER" != "$MARKER2" ] && echo yes)" yes
 
 echo ""
+echo "Test: bad-dependency"
+echo ""
+body="$(mktemp)"; CLEANUP_DIRS+=("$body")
+printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- #23 (PR #87, which adds scripts/lint.sh)\n' > "$body"
+setup_card "$body"
+run_check "$LINT" --body-file "$body"
+assert_eq "bad-dependency note after ref: exit 1" "$LAST_EXIT" 1
+assert_contains "bad-dependency note after ref: names rule and line" "$(grep '^bad-dependency:' <<<"$LAST_OUT")" "#23 (PR #87"
+printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- #23\n- drothschild/other#5\n' > "$body"
+run_check "$LINT" --body-file "$body"
+assert_not_contains "bad-dependency valid refs: no bad-dependency line" "$LAST_OUT" "bad-dependency"
+assert_eq "bad-dependency valid refs: exit 0" "$LAST_EXIT" 0
+printf '## Acceptance\n- clamp returns 3\n' > "$body"
+run_check "$LINT" --body-file "$body"
+assert_not_contains "bad-dependency no Depends on section: no bad-dependency line" "$LAST_OUT" "bad-dependency"
+
+echo ""
+echo "Test: bad-dependency reports every line"
+echo ""
+printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- #23 (PR #87, which adds scripts/lint.sh)\n- #24\n- see the other card\n- owner/repo#9 blocked on review\n' > "$body"
+run_check "$LINT" --body-file "$body"
+assert_eq "bad-dependency multiple: exit 1" "$LAST_EXIT" 1
+assert_eq "bad-dependency multiple: one diagnostic per malformed line" "$(grep -c '^bad-dependency:' <<<"$LAST_OUT")" 3
+assert_contains "bad-dependency multiple: first line named" "$(grep '^bad-dependency:' <<<"$LAST_OUT")" "#23 (PR #87"
+assert_contains "bad-dependency multiple: second line named" "$(grep '^bad-dependency:' <<<"$LAST_OUT")" "see the other card"
+assert_contains "bad-dependency multiple: third line named" "$(grep '^bad-dependency:' <<<"$LAST_OUT")" "owner/repo#9 blocked on review"
+assert_not_contains "bad-dependency multiple: valid ref not reported" "$(grep '^bad-dependency:' <<<"$LAST_OUT")" "#24"
+
+echo ""
 echo "Test: docs"
 echo ""
 section="$(sed -n '/^### Writing a card/,/^## /p' "$README")"
