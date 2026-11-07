@@ -5,7 +5,7 @@ Last verified: 2026-11-06
 ## Purpose
 
 Turns a GitHub issue board into a work queue for coding agents. A stateless manager
-advances every card one step per tick; role agents (implementor, reviewer, fixer) work in
+advances eligible cards as workers complete within bounded ticks; role agents (implementor, reviewer, fixer) work in
 worktrees; a PreToolUse hook enforces the human-QA and merge gates. Status: 0.1.0.
 
 This public repo carries only the clean-room specs from the implementation plan, under
@@ -67,6 +67,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   is a merge of the base whose tree equals the `git merge-tree` result for its parents
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
+- **Scope reservations.** A normal plan supplements open cards' declared Scope paths
+  with their complete PR file lists when ready cards exist. Missing or truncated PR
+  paths hold new starts, while existing work can continue. Selected starts reserve
+  scope in ascending card-number order; a waiting card reserves nothing. Normalized
+  directory scopes cover descendants with path-boundary matching. Settle plans do
+  not fetch scope files or start workers.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The manager and
@@ -154,7 +160,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Claude session that the wrapper runs after `settle.sh`. It merges only under
   `merge.policy: auto`, for a clean-reviewed, non-draft, green PR whose card is in_review or a review stage
   and needs no Human QA (it asks `tick-plan.sh --settle-merge`); under `human` it makes no
-  call. The wrapper never adds permission rules or `--dangerously-skip-permissions`, and no
+  call. The helper drains a bounded candidate snapshot with a fresh plan per attempt,
+  binds each merge to its planned head, and requires literal `main_check.ok == true`.
+  It recovers pending verification before new merges. Exit 3 stops the wrapper before
+  cleanup or another tick; other per-card failures remain warnings. The wrapper never adds permission rules or `--dangerously-skip-permissions`, and no
   tick merges headless. `FLEET_BOARD_MERGE_REVIEWED` overrides the script. Worktree removal runs in `cleanup-done.sh`, outside any
   Claude session. It reads a done card's note only when the worktrees base holds a
   `<n>-*` entry (a local prefilter), so its cost scales with the local dirs, not the Done
