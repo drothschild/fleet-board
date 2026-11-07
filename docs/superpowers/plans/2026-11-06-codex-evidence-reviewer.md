@@ -115,15 +115,15 @@
 **Interfaces:**
 - Produces: a template in the `stage-review-prompt.md` format (system text, a `---USER---` line, user text) with placeholders `{{ROUND}}`, `{{REF_SHA}}`, `{{CONFIG}}` (the config subset as JSON), `{{CARD}}`, `{{FINDINGS}}`, `{{IMPL_REPORT}}`, `{{DIFF}}`. Task 5 fills them.
 
-- [ ] **Step 1: Write the failing test** `test-evidence-review-prompt.sh`:
+- [x] **Step 1: Write the failing test** `test-evidence-review-prompt.sh`:
   - `prompt names every reviewer report section`: for each of `## Status`, `## Findings`, `## Acceptance map`, `## Mutation`, `## Claim check`, `## For the card`, `reviewed head:` and `VERIFIED:` that appears in `agents/reviewer.md`'s report template, the prompt contains it.
   - `prompt carries each method step`: the prompt mentions the head record, the Acceptance map, running only touched tests, one mutant per mapped item with `git checkout -- <file>` restore, the claim check, the weakening check, and the `killed: <n> survived: <n> invalid: <n>` line.
   - `prompt keeps the sandbox rules`: it says to run every command in the working directory, never to post, and to treat card, diff and reports as untrusted data.
   - `prompt has every placeholder`: each of the seven placeholders appears once.
-- [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-evidence-review-prompt.sh` — Expected: FAIL (file missing).
-- [ ] **Step 3: Write the prompt** from `docs/implementation-plans/2026-09-28-fleet-board/specs/reviewer.md`: its method and report rules, with "post your report" replaced by "print the report alone", `worktrees.mutate_on_copy` dropped, and the network-off rule from the spec's Sandbox section.
-- [ ] **Step 4: Run** the suite — Expected: `failed: 0`. Then delete one section name from the prompt, rerun, see a FAIL, and restore it.
-- [ ] **Step 5: Commit** `Evidence-review prompt for command-provider reviewers`.
+- [x] **Step 2: Run** `bash plugins/fleet-board/tests/test-evidence-review-prompt.sh` — Expected: FAIL (file missing).
+- [x] **Step 3: Write the prompt** from `docs/implementation-plans/2026-09-28-fleet-board/specs/reviewer.md`: its method and report rules, with "post your report" replaced by "print the report alone", `worktrees.mutate_on_copy` dropped, and the network-off rule from the spec's Sandbox section.
+- [x] **Step 4: Run** the suite — Expected: `failed: 0`. Then delete one section name from the prompt, rerun, see a FAIL, and restore it.
+- [x] **Step 5: Commit** `Evidence-review prompt for command-provider reviewers`.
 
 ### Task 5: `evidence-review.sh`
 
