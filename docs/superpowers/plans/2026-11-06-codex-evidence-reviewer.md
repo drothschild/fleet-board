@@ -136,7 +136,7 @@
 - Consumes: Task 1's `chat.sh --dir`; Task 2's merged `models.reviewer` and `providers.<p>.review_command`; Task 4's prompt; existing `worktree.sh review`, `parse-report.sh --role reviewer`, `board-comment.sh`, `board-read.sh`.
 - Produces: `evidence-review.sh <n> <pr> --round <r> [--prev-sha <sha>] [--findings <json-file>] [--impl-report <file>] [--card-file <f>] [--diff-file <f>] [--no-post]`, printing `{status, report_file, parsed, provider, model, sha, input_tokens, output_tokens, cost_usd, attempts}` on exit 0, and appending a ledger line with `"role":"reviewer"`. Exit codes as in Global Constraints. Stderr messages, verbatim: `evidence-review: <program> is not on PATH`, `evidence-review: setup failed`, `evidence-review: <path> changed during the review`, `evidence-review: reviewed head <x> is not the PR head <sha>`, `evidence-review: review.mutation is on but the report skipped mutation`.
 
-- [ ] **Step 1: Write the failing tests** in `test-evidence-review.sh`, offline, on a temp repo with a fake `gh` and `fake-reviewer-cmd.sh` set as `providers.fake.review_command` (`bash <tests>/fake-reviewer-cmd.sh {dir} {model}`):
+- [x] **Step 1: Write the failing tests** in `test-evidence-review.sh`, offline, on a temp repo with a fake `gh` and `fake-reviewer-cmd.sh` set as `providers.fake.review_command` (`bash <tests>/fake-reviewer-cmd.sh {dir} {model}`):
   - `good report: posted, prints sha, provider, model`
   - `wrong reviewed head: re-asked once, then exit 6`
   - `skipped mutation while review.mutation is on: re-asked once, then exit 6`
@@ -152,11 +152,11 @@
   - Review Focus 3: `timeout: exit 1, nothing posted, clone removed`
   - Review Focus 4: `worktrees.setup fails: exit 1 setup failed, provider not called`
   - `string reviewer: exit 2`
-- [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-evidence-review.sh` — Expected: FAIL (script missing).
-- [ ] **Step 3: Implement** `evidence-review.sh` following the spec's nine steps. Reuse `stage-review.sh`'s patterns for argument parsing, the re-ask message list, the ledger line, the marker refusal and the final JSON; take `chat.sh --command <review_command> --model <model> --timeout <timeout> --dir <clone>`. Exit 3 checks `command -v` on the first word of `review_command`. The tripwire compares `git status --porcelain` and `git rev-parse HEAD` of the repo root and the `-review` worktree before and after the call.
-- [ ] **Step 4: Run** the suite — Expected: `failed: 0`.
-- [ ] **Step 5: Prove it can fail:** copy the script to a temp path with the head check removed, point the suite at it with an override variable (`EVIDENCE_REVIEW_SCRIPT`), and see `wrong reviewed head` FAIL.
-- [ ] **Step 6: Commit** `evidence-review.sh: run the evidence review on a command provider`.
+- [x] **Step 2: Run** `bash plugins/fleet-board/tests/test-evidence-review.sh` — Expected: FAIL (script missing).
+- [x] **Step 3: Implement** `evidence-review.sh` following the spec's nine steps. Reuse `stage-review.sh`'s patterns for argument parsing, the re-ask message list, the ledger line, the marker refusal and the final JSON; take `chat.sh --command <review_command> --model <model> --timeout <timeout> --dir <clone>`. Exit 3 checks `command -v` on the first word of `review_command`. The tripwire compares `git status --porcelain` and `git rev-parse HEAD` of the repo root and the `-review` worktree before and after the call.
+- [x] **Step 4: Run** the suite — Expected: `failed: 0`.
+- [x] **Step 5: Prove it can fail:** copy the script to a temp path with the head check removed, point the suite at it with an override variable (`EVIDENCE_REVIEW_SCRIPT`), and see `wrong reviewed head` FAIL.
+- [x] **Step 6: Commit** `evidence-review.sh: run the evidence review on a command provider`.
 
 ### Task 6: Manager runs the script for a provider reviewer (clean-room)
 

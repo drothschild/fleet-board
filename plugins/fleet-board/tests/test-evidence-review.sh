@@ -37,7 +37,7 @@ cd "$TMP/repo"
 config() {
   cat > .fleet-board.yml <<YAML
 board: { backend: local, repo: test/toy }
-worktrees: { dir: .trees }
+worktrees: { dir: .trees${3:-} }
 review: { mutation: true }
 models:
   reviewer: $1
@@ -126,7 +126,7 @@ check "good report posts the expected head and model" output '.status == "posted
 check "good report was posted" test "$(comments)" = 1
 check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == null and .cost_usd == 0' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
 check "provider receives the working directory as dir" test "$(cat "$FAKE_REVIEWER_DIR/cwd")" = "$(cat "$FAKE_REVIEWER_DIR/clone")"
-check "round 1 reference is the merge-base" grep -Fq "$base" "$FAKE_REVIEWER_DIR/prompt.1"
+check "round 1 reference is the merge-base" grep -Fq "Review round 1. Reference SHA $base." "$FAKE_REVIEWER_DIR/prompt.1"
 check "scratch clone removed" clone_removed
 
 setup
@@ -151,7 +151,7 @@ printf 'reply wrong\n' > "$FAKE_REVIEWER_SCRIPT.1"
 run --no-post --round 2 --prev-sha "$head" --findings "$TMP/findings"
 check "corrected reply passes on attempt two" output '.status == "checked" and .attempts == 2'
 check "re-ask quotes the rejection" grep -Fq 'is not the PR head' "$FAKE_REVIEWER_DIR/prompt.2"
-for input in 'CARD BODY' 'PR DIFF' 'IMPLEMENTOR REPORT' 'PRIOR FINDING' "$head"; do
+for input in 'CARD BODY' 'PR DIFF' 'IMPLEMENTOR REPORT' 'PRIOR FINDING' "Review round 2. Reference SHA $head."; do
   check "round 2 prompt includes $input" grep -Fq "$input" "$FAKE_REVIEWER_DIR/prompt.1"
 done
 
@@ -192,7 +192,7 @@ check "missing program diagnostic" grep -Fq 'fleet-board-missing-reviewer is not
 check "missing program never called" test ! -e "$FAKE_REVIEWER_DIR/clone"
 
 setup
-printf 'worktrees: { dir: .trees, setup: "exit 9" }\n' >> .fleet-board.yml
+config "$reviewer" "$command" ', setup: "exit 9"'
 run
 check "setup failure exits 1" test "$rc" = 1
 check "setup failure diagnostic" grep -Fq 'evidence-review: setup failed' "$TMP/err"
