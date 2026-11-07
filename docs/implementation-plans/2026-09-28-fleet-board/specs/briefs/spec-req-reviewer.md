@@ -299,3 +299,8 @@ reads the diff of every changed file outside test_paths that a pre-existing test
 change there that makes a pre-existing assertion easier to satisfy (a stubbed return value, a
 loosened fixture, a skipped check) is classified Weakened, with the helper's path in the finding
 alongside the test it affects.
+
+
+## PR 215 integration requirements
+
+Implement the Conflict-resolved classification from the reviewer spec. Verify real merge provenance and reconstructed conflict boundaries, preserve both sides and coverage, require passing tests and configured mutation evidence, and keep prior weakening and unrelated edits subject to the ordinary rules. Permit this narrowly verified classification after a fixer report. Preserve unrelated behavior and numbering.
