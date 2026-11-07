@@ -579,6 +579,8 @@ if setup_case; then
   : > "$FAKE_CLAUDE_DIR/release"
   wait_for 'api GET /api/import/fixed4; body_is .state ready'
   rm -f "$FAKE_CLAUDE_DIR/slow"
+  if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
+  if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
 
   # GET after a create lists the created numbers; meta.json is never seen empty during a create
   export FLEET_BOARD_TEST_IMPORT_ID=fixed5
@@ -605,6 +607,30 @@ if setup_case; then
   stop_server
 fi
 unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
+
+echo "Case: atomic meta write"
+ATOMIC_OUT="$(SCRIPTS="$SCRIPTS" ATOMIC_DIR="$TMP" python3 -I - <<'PYEOF'
+import importlib.util, os, threading
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+path = Path(os.environ["ATOMIC_DIR"]) / "atomic-meta.json"
+big = "x" * 4000000
+m.write_private_atomic(path, big)
+stop = threading.Event(); bad = [0]
+def reader():
+    while not stop.is_set():
+        if os.path.getsize(str(path)) != len(big):
+            bad[0] += 1
+t = threading.Thread(target=reader); t.start()
+for _ in range(30):
+    m.write_private_atomic(path, big)
+stop.set(); t.join()
+print(bad[0])
+PYEOF
+)"
+if [ "$ATOMIC_OUT" = 0 ]; then pass "write_private_atomic is never observed partial by a concurrent reader"; else fail "write_private_atomic is never observed partial by a concurrent reader" "$ATOMIC_OUT partial reads"; fi
+rm -f "$TMP/atomic-meta.json" "$TMP/atomic-meta.json.tmp"
 
 echo "Case: server hardening"
 mkdir -p "$TMP/srvtmp"
