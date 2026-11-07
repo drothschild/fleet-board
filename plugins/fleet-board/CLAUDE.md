@@ -67,6 +67,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   is a merge of the base whose tree equals the `git merge-tree` result for its parents
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
+- **Scope reservations.** A normal plan supplements open cards' declared Scope paths
+  with their complete PR file lists when ready cards exist. Missing or truncated PR
+  paths hold new starts, while existing work can continue. Selected starts reserve
+  scope in ascending card-number order; a waiting card reserves nothing. Normalized
+  directory scopes cover descendants with path-boundary matching. Settle plans do
+  not fetch scope files or start workers.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The manager and

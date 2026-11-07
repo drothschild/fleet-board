@@ -224,3 +224,7 @@ After settlement, auto-policy runs drain up to `FLEET_BOARD_MERGE_LIMIT` merge a
 Verification must return literal `ok: true`. Red, malformed, missing, or unrecordable verification stops the wrapper with `main-verification-failed` (exit 1), before cleanup or another tick. Failed verification evidence remains in the card note; the card cannot finish until verification succeeds. The merge helper returns exit 3 for this stop condition. Other per-card errors remain warnings and are retried on a later tick.
 
 A lock directory named `fleet-board-merge.lock` in the Git common directory serializes direct drain invocations as well. Normal exits and handled signals release it. After an uncatchable termination, confirm no drain is running before removing that directory.
+
+### Scope-aware admission
+
+Ready cards are considered in ascending card-number order. Each selected start reserves its declared Scope paths for the rest of that plan, alongside cards already in progress or review. Directory paths cover descendants, so `src/` overlaps `src/model.js` but not `src-other/model.js`. Active PR changed files supplement the declared paths. If a PR file list cannot be read completely, new starts wait; existing review and fix actions can continue. Scope-free cards retain their existing behavior, so declare meaningful paths for work that may overlap.

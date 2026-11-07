@@ -15,9 +15,9 @@
 - [x] Run touched suites and clean-room checks; commit and push.
 
 ## Task 2: Scope reservations
-- [ ] Add and commit failing planner regressions for overlapping starts in one plan, disjoint starts and existing active scope.
-- [ ] Reserve scopes incrementally in deterministic order and account for actual PR paths when available.
-- [ ] Run touched suites and clean-room checks; commit and push.
+- [x] Add and commit failing planner regressions for overlapping starts in one plan, disjoint starts and existing active scope.
+- [x] Reserve scopes incrementally in deterministic order and account for actual PR paths when available.
+- [x] Run touched suites and clean-room checks; commit and push.
 
 ## Task 3: Completion-driven scheduling
 - [ ] Prepare spec and behavioral scenario for per-completion reconciliation, bounded advancement, shared worker slots, and fresh stop decisions.
