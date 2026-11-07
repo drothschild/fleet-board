@@ -137,6 +137,40 @@ assert_card_json() {
 
 assert_card_state() { assert_card_json "$1" '.state' "$2"; }
 
+# Run only the list-hardening regressions with --list-hardening.
+list_hardening() {
+  for invalid in null '[]' true 17; do
+    setup_case
+    seed_card 1 backlog Valid body
+    printf '%s\n' "$invalid" > "$REPO/.fleet-board/cards/2.json"
+    run_check_in "$REPO" "$BASH_EXE" "$SCRIPTS/board-list.sh" backlog
+    assert_exit "list rejects non-object $invalid" 1
+    assert_stderr_contains "list names corrupt file $invalid" '2.json'
+  done
+  setup_case
+  if python3 - "$REPO" "$SCRIPTS/board-list.sh" <<'PYTEST'
+import os, subprocess, sys
+script = os.path.abspath(sys.argv[2])
+p = subprocess.Popen(['bash', script, 'backlog'], cwd=sys.argv[1],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=3)
+    out, err = p.communicate()
+    assert p.returncode == 0 and out.strip() == b'[]', (p.returncode, out, err)
+except subprocess.TimeoutExpired:
+    p.kill()
+    p.communicate()
+    raise AssertionError('empty board listing waited for stdin to close')
+PYTEST
+  then pass "empty list returns [] with stdin held open"
+  else fail "empty list returns [] with stdin held open" "listing failed or blocked"; fi
+}
+list_hardening
+if [ "${1:-}" = --list-hardening ]; then
+  printf 'passed: %s failed: %s\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]; exit $?
+fi
+
 echo "Test: local board backend"
 echo ""
 
