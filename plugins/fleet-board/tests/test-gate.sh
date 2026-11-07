@@ -173,6 +173,11 @@ YML
       local_card 13 backlog "just a body"
       local_card 14 human_qa "## Acceptance
 - works"
+      # card fields: acceptance [] with a body that still has the heading; items with no heading
+      jq -n '{number: 15, title: "card 15", body: "## Acceptance\n- works\n", acceptance: [], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+        > "$REPO/.fleet-board/cards/15.json"
+      jq -n '{number: 16, title: "card 16", body: "", acceptance: ["works"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+        > "$REPO/.fleet-board/cards/16.json"
       ;;
     stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
@@ -467,6 +472,10 @@ run_hook bash.json "board-move.sh 13 ready"
 assert_blocked "local: ready needs Acceptance (#13)" "## Acceptance"
 run_hook bash.json "board-move.sh 12 ready"
 assert_silent_allow "local: ready with Acceptance (#12)"
+run_hook bash.json "board-move.sh 15 ready"
+assert_blocked "local: ready refused when acceptance is [] whatever the body says (#15)" "Acceptance"
+run_hook bash.json "board-move.sh 16 ready"
+assert_silent_allow "local: ready allowed when acceptance has items and the body has no heading (#16)"
 run_hook bash.json "gh pr merge 5"
 assert_blocked "local: auto policy blocks a red PR" "not green"
 run_hook bash.json "gh pr merge 4"

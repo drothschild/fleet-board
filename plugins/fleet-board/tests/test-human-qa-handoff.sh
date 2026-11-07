@@ -166,6 +166,27 @@ run_handoff
 assert_lacks "no unresolved findings: no findings section" "Unresolved findings"
 assert_lacks "no unresolved findings: no checklist" "- [ ]"
 
+# card fields on the local backend: the Acceptance quote comes from the field
+local_handoff() { # acceptance-json body
+  setup_case "$PLAIN_BODY" "$PR_OK"
+  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 13 > "$REPO/.fleet-board/next"
+  jq -n --argjson a "$1" --arg b "$2" \
+    '{number: 12, title: "Add subtract", body: $b, acceptance: $a, blocked_by: [], state: "human_qa", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$REPO/.fleet-board/cards/12.json"
+  /bin/bash "$SCRIPT" 12 34 > "$FAKE_GH_DIR/out" 2> "$FAKE_GH_DIR/err"
+  LAST_EXIT=$?
+  LAST_ERR="$(cat "$FAKE_GH_DIR/err")"
+  BODY="$(jq -r '.comments[-1].body // ""' "$REPO/.fleet-board/cards/12.json")"
+}
+local_handoff '["subtract(2,5) returns -3","divide by zero errors"]' $'## Human QA\n- Open the app\n'
+assert_has "local: acceptance field items are quoted" "> - subtract(2,5) returns -3"
+assert_has "local: every acceptance item is quoted" "> - divide by zero errors"
+assert_has "local: Human QA bullets still come from the body" "- [ ] Open the app"
+local_handoff '[]' $'## Acceptance\n- stale body bullet\n'
+assert_lacks "local: acceptance [] quotes nothing whatever the body says" "stale body bullet"
+
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]

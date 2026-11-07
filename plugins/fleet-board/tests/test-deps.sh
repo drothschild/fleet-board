@@ -371,6 +371,43 @@ assert_exit "check: local, another repo goes through gh, exit" 0
 assert_jq "check: local, another repo's closed issue is met" '.unmet' '[]'
 assert_eq "check: local, another repo is read with gh issue view" "$(grep -c 'issue view 3 --repo acme/other' "$FAKE_GH_DIR/calls.log")" 1
 
+# card fields: parse-card reads blocked_by; check reports a cycle
+# field_card <n> <state> <blocked_by json>: a local card with the fields
+field_card() {
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 30 > "$REPO/.fleet-board/next"
+  jq -n --argjson n "$1" --arg s "$2" --argjson b "$3" \
+    '{number: $n, title: "t", body: "", acceptance: ["x"], blocked_by: $b, state: $s, labels: [], next_comment_id: 1, comments: []}' \
+    > "$REPO/.fleet-board/cards/$1.json"
+}
+setup_check "$LOCAL_YML"
+RJ="$(mktemp)"; CLEANUP_DIRS+=("$RJ")
+jq -n '{number: 12, body: "## Depends on\n- #99\n", acceptance: ["x"], blocked_by: [22, 23]}' > "$RJ"
+run_check "$SCRIPT" parse-card "$RJ"
+assert_exit "parse-card: exit" 0
+assert_jq "parse-card: refs come from blocked_by, not the body" '.refs' '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"},{"repo":"acme/toy","number":23,"ref":"acme/toy#23"}]'
+assert_jq "parse-card: no warnings" '.warnings' '[]'
+jq -n '{number: 12, body: "## Depends on\n- #99\n"}' > "$RJ"
+run_check "$SCRIPT" parse-card "$RJ"
+assert_jq "parse-card: a card without the field falls back to the body" '[.refs[].number]' '[99]'
+jq -n '{number: 12, body: "## Depends on\n- #99\n", blocked_by: []}' > "$RJ"
+run_check "$SCRIPT" parse-card "$RJ"
+assert_jq "parse-card: blocked_by [] means no dependencies whatever the body says" '.refs' '[]'
+
+field_card 22 done '[]'
+field_card 5 ready '[6]'
+field_card 6 ready '[5]'
+run_check "$SCRIPT" check 5 '[{"repo":"acme/toy","number":6,"ref":"acme/toy#6"}]'
+assert_exit "check: a cycle is reported, not looped on (exit)" 0
+assert_jq "check: a cycle member is unmet" '.unmet' '[{"ref":"acme/toy#6","status":"in a dependency cycle"}]'
+assert_jq "check: a cycle warns with its members" '.warnings' '["#5 is in a dependency cycle: #5, #6"]'
+field_card 6 done '[5]'
+run_check "$SCRIPT" check 5 '[{"repo":"acme/toy","number":6,"ref":"acme/toy#6"}]'
+assert_jq "check: a cycle through a done card is still unmet" '.unmet[0].status' '"in a dependency cycle"'
+field_card 8 ready '[22]'
+run_check "$SCRIPT" check 8 '[{"repo":"acme/toy","number":22,"ref":"acme/toy#22"}]'
+assert_jq "check: no cycle, no cycle warning" '.warnings' '[]'
+
 # usage
 setup_check
 run_check "$SCRIPT" check

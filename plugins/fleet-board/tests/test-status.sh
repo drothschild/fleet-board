@@ -576,6 +576,35 @@ if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then
   fail "stages: read-only" "a mutating gh call was made"
 else pass "stages: read-only (no mutating gh call)"; fi
 
+# card fields on the local backend: blocked_by drives the waiting reason; a cycle is reported
+REPO="$(mktemp -d)"; CLEANUP_DIRS+=("$REPO")
+git init -q "$REPO"
+git -C "$REPO" config user.email "test@example.com"
+git -C "$REPO" config user.name "Test User"
+printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+git -C "$REPO" add .fleet-board.yml
+git -C "$REPO" commit -q -m initial
+mkdir -p "$REPO/.fleet-board/cards"
+echo 30 > "$REPO/.fleet-board/next"
+fcard() { # n state blocked_by-json
+  jq -n --argjson n "$1" --arg s "$2" --argjson b "$3" \
+    '{number: $n, title: ("card " + ($n | tostring)), body: "", acceptance: ["works"], blocked_by: $b, state: $s, labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$REPO/.fleet-board/cards/$1.json"
+}
+fcard 5 ready '[6]'
+fcard 6 ready '[5]'
+fcard 9 ready '[10]'
+fcard 10 in_progress '[]'
+fcard 11 ready '[]'
+cd "$REPO"
+PATH="$ORIG_PATH"; export PATH
+run_check "$SCRIPT"
+assert_exit "local cycle: status finishes (not looped on)" 0
+assert_stdout_contains "local cycle: #5 reports the cycle" "#5 card 5 · round — · PR — · —/— · waits for acme/toy#6 (in a dependency cycle)"
+assert_stdout_contains "local cycle: #6 reports the cycle" "#6 card 6 · round — · PR — · —/— · waits for acme/toy#5 (in a dependency cycle)"
+assert_stdout_contains "local: blocked_by gives the waiting reason" "#9 card 9 · round — · PR — · —/— · waits for acme/toy#10 (in_progress)"
+assert_stdout_not_contains "local: no blocked_by, no waiting reason" "#11 card 11 · round — · PR — · —/— · waits"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

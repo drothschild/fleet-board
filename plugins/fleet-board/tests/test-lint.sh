@@ -229,6 +229,23 @@ check "local: no gh call for this repo's refs" "$(cat "$LSTUB/calls" 2>/dev/null
 lcard 1 "$(printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- other/repo#5\n')"
 run_local 1
 has "local: another repo's ref still goes through gh" "$(cat "$LSTUB/calls" 2>/dev/null)" "issue view 5 --repo other/repo"
+lfcard() { # n acceptance-json blocked_by-json body
+  jq -n --argjson n "$1" --argjson a "$2" --argjson d "$3" --arg b "$4" '{number: $n, title: "t", body: $b, acceptance: $a, blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$LR/.fleet-board/cards/$1.json"
+}
+lfcard 1 '[]' '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
+run_local 1
+check "local fields: acceptance [] fails whatever the body says" "$RC" "1"
+has "local fields: acceptance [] is reported" "$OUT" "#1: empty-acceptance"
+lfcard 1 '["clamp returns 3"]' '[2]' ""
+run_local 1
+check "local fields: items and blocked_by pass" "$RC" "0"
+lfcard 1 '["clamp returns 3"]' '[2]' ""
+lfcard 2 '["clamp returns 3"]' '[1]' ""
+run_local 1 2
+check "local fields: a blocked_by cycle fails" "$RC" "1"
+has "local fields: the cycle is reported" "$OUT" "dependency-cycle"
+lcard 2 "$(printf '## Acceptance\n- clamp returns 3\n')"
 newset; card 1 "$GOOD\n## Depends on\n- #2\n"
 OUT="$(cd "$LR" && PATH="$LSTUB:$PATH" bash "$SCRIPT" --bodies "$BODIES" 2>"$SB/err")"; RC=$?
 check "local --bodies: #2 resolves from the card file" "$RC" "0"

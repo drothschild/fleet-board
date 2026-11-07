@@ -213,5 +213,54 @@ for f in ok-with-human-qa.md no-heading-bold.md plain-no-heading.md no-bullets.m
 done
 
 echo ""
+echo "Test: card fields on the local backend"
+echo ""
+# setup_local <acceptance-json> <body>: a local-backend repo whose ready card 13 has those fields
+setup_local() {
+  REPO="$(mktemp -d)"
+  git init -q "$REPO"
+  git -C "$REPO" config user.email t@example.com
+  git -C "$REPO" config user.name T
+  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  git -C "$REPO" add .fleet-board.yml
+  git -C "$REPO" commit -q -m initial
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 14 > "$REPO/.fleet-board/next"
+  jq -n --argjson a "$1" --arg b "$2" \
+    '{number: 13, title: "Add clamp", body: $b, acceptance: $a, blocked_by: [], state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$REPO/.fleet-board/cards/13.json"
+  PATH="$ORIG_PATH"; export PATH
+  CLEANUP_DIRS+=("$REPO")
+  cd "$REPO"
+}
+
+setup_local '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
+run_check "$LINT" 13
+assert_eq "local: acceptance [] fails whatever the body says (exit)" "$LAST_EXIT" 1
+assert_contains "local: acceptance [] reports empty-acceptance" "$LAST_OUT" "empty-acceptance"
+setup_local '["clamp returns 3","check the layout on device"]' ""
+run_check "$LINT" 13
+assert_eq "local: manual-check on a field item (exit)" "$LAST_EXIT" 1
+assert_contains "local: manual-check names the item" "$LAST_OUT" "manual-check: check the layout on device"
+assert_not_contains "local: items with no heading are not no-heading" "$LAST_OUT" "no-heading"
+setup_local '["clamp returns 3"]' ""
+run_check "$LINT" 13
+assert_eq "local: a clean field item passes" "$LAST_EXIT" 0
+setup_local '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
+run_check "$PLAN"
+assert_eq "local plan: acceptance [] is has_acceptance false" "$(card has_acceptance)" "false"
+setup_local '["clamp returns 3"]' ""
+run_check "$PLAN"
+assert_eq "local plan: field items are has_acceptance true" "$(card has_acceptance)" "true"
+setup_local '["clamp returns 3"]' ""
+echo 15 > "$REPO/.fleet-board/next"
+jq '.blocked_by = [14]' "$REPO/.fleet-board/cards/13.json" > "$REPO/t.json" && mv "$REPO/t.json" "$REPO/.fleet-board/cards/13.json"
+jq '.number = 14 | .blocked_by = [13]' "$REPO/.fleet-board/cards/13.json" > "$REPO/.fleet-board/cards/14.json"
+run_check "$PLAN"
+assert_eq "local plan: a blocked_by cycle waits, not loops (exit)" "$LAST_EXIT" 0
+assert_eq "local plan: a cycle member waits" "$(card action)" '"wait"'
+assert_contains "local plan: the plan warns about the cycle" "$(jq -c .warnings <<<"$LAST_OUT")" "dependency cycle"
+
+echo ""
 echo "Passed: $PASS  Failed: $FAIL"
 [ "$FAIL" -eq 0 ]
