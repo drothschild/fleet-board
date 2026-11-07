@@ -175,8 +175,9 @@ for n in $(jq -r '.[].number' "$WORK/board.json"); do
   fi
   jq -n --argjson i "$ISSUE" --slurpfile cs "$WORK/c-$n.json" --rawfile b "$WORK/fold-$n" \
     --argjson sp "$SPLIT" --argjson ni "$NOTEIDX" --argjson pi "$PRINFO" \
-    --arg me "$ME" --arg now "$NOW" --arg src "$SRC" --argjson names "$NAMES" --arg proj "$PROJECT" --arg m "$FB_MARKER" '
+    --arg me "$ME" --arg ghl "$GHLOGIN" --arg now "$NOW" --arg src "$SRC" --argjson names "$NAMES" --arg proj "$PROJECT" --arg m "$FB_MARKER" '
     # the note body with accepted.login rewritten from the gh login to the local login
+    # (an accept by any other login is left as it is, so tick-plan still refuses it)
     def fixnote:
       split("\n") as $l
       | ([$l | to_entries[] | select(.value | test("^```json")) | .key] | first) as $s
@@ -184,7 +185,7 @@ for n in $(jq -r '.[].number' "$WORK/board.json"); do
         else ([$l | to_entries[] | select(.key > $s and (.value | test("^```"))) | .key] | first) as $e
           | if $e == null then .
             else (($l[$s + 1:$e] | join("\n") | try fromjson catch null) as $j
-              | if ($j | type) == "object" and (($j.accepted | type) == "object")
+              | if ($j | type) == "object" and (($j.accepted | type) == "object") and $j.accepted.login == $ghl
                 then ($l[0:$s + 1] + [($j | .accepted.login = $me | tojson)] + $l[$e:]) | join("\n")
                 else . end)
             end

@@ -129,12 +129,19 @@ prepare() {
   fi
   git checkout -q -B main origin/main 2>/dev/null || bl_die "cannot check out main"
 
-  # Step 4: labels, with the throwaway config written elsewhere
+  # Step 4: init, with the throwaway config written elsewhere
   local initdir; initdir="$(mktemp -d)"
   bash "$S/init.sh" --repo "$SANDBOX_REPO" --test-one "node --test {file}" \
     --dir "$initdir" >/dev/null 2>"$WORK/init.err" || bl_die "init.sh failed: $(cat "$WORK/init.err")"
   rm -rf "$initdir"
   [ -z "$(git -C "$CLONE" status --porcelain .fleet-board.yml)" ] || bl_die "the committed .fleet-board.yml changed"
+  # the clone's local card store: init above wrote its store into the throwaway dir, and
+  # re-running init in the clone would rewrite the committed config, so make it here
+  local store; store="$CLONE/$(bash "$S/config.sh" board.dir)"
+  [ "$store" != "$CLONE/" ] || bl_die "config.sh board.dir is empty in the clone"
+  rm -rf "$store"
+  mkdir -p "$store/cards" || bl_die "cannot create the local store at $store"
+  echo 1 > "$store/next" || bl_die "cannot write $store/next"
   [ "$(bash "$S/config.sh" commands.test_one)" = "node --test {file}" ] \
     || bl_die "config.sh commands.test_one in the clone is not 'node --test {file}'"
   git -C "$CLONE" config user.name >/dev/null 2>&1 || git -C "$CLONE" config user.name "fleet-board behavioral"

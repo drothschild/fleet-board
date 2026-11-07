@@ -459,7 +459,7 @@ setup_ab() {
   mk_card "$BL_FIX/card-no-acceptance.md" backlog; B="$CARD"
   # a human dragging B to ready: board-move.sh refuses ready without acceptance, so the
   # drag is a direct edit of the card file (the state field), as a person would make
-  local bf; bf="$CLONE/.fleet-board/cards/$B.json"
+  local bf; bf="$CLONE/$(in_clone bash "$S/config.sh" board.dir)/cards/$B.json"
   jq '.state = "ready"' "$bf" >"$bf.new" && mv "$bf.new" "$bf" || bl_die "cannot drag #$B to ready"
   [ "$(card_state "$B")" = ready ] || bl_die "#$B is not in ready after the drag"
 }
