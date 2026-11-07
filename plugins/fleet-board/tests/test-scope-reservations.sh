@@ -251,5 +251,40 @@ for mode in failed truncated; do
   assert_jq "$mode PR file lookup holds new starts" "$(card 14 action)" '"wait"'
 done
 
+
+for root_first in yes no; do
+  new_scope
+  if [ "$root_first" = yes ]; then
+    scope_issue "$dir" 12 ready '- Modify `./`'
+    scope_issue "$dir" 13 ready '- Modify `src/a.sh`'
+  else
+    scope_issue "$dir" 12 ready '- Modify `src/a.sh`'
+    scope_issue "$dir" 13 ready '- Modify `./`'
+  fi
+  scope_routes "$dir" '13 12' ''
+  run_check "$SCRIPT"
+  assert_jq "repository root overlap ($root_first)" "$(card 13 action)" '"wait"'
+done
+new_scope
+scope_issue "$dir" 12 in_review '- Modify `./`'
+scope_review_note "$dir" 12
+scope_issue "$dir" 14 ready '- Modify `src/unrelated.sh`'
+scope_routes "$dir" '14' '12'
+run_check "$SCRIPT"
+assert_jq "active repository root scope" "$(card 14 action)" '"wait"'
+
+
+new_scope
+scope_issue "$dir" 12 in_review '- Modify `src/a.sh`'
+scope_issue "$dir" 14 ready '- Modify `src/unrelated.sh`'
+jq -cn '[{id:555,user:{login:"fleet-bot"},body:"<!-- fleet-board:manager-note -->\n```json\n{\"state\":\"in_review\",\"branch\":\"fleet/12-card\",\"pr\":34,\"round\":1}\n```\n"}]' > "$dir/comments-12.json"
+scope_routes "$dir" '14' '12'
+printf 'pr view 34 --repo acme/toy --json files*\t1\t-\n' | cat - "$FAKE_GH_ROUTES" > "$dir/next-routes"
+mv "$dir/next-routes" "$FAKE_GH_ROUTES"
+run_check "$SCRIPT"
+assert_jq "unknown scope holds starts" "$(card 14 action)" '"wait"'
+assert_jq "unknown scope leaves existing review runnable" "$(card 12 action)" '"review"'
+assert_jq "existing work remains dispatchable" '.dispatchable' true
+
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
