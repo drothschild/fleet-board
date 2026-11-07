@@ -630,7 +630,8 @@ EOF
   api POST /api/import/fixed3/create '{}';   assert_code 409
   assert_body "partial create lists the cards that exist" '.created|length' 1
   assert_body "partial create reports the number of the first card" '.created[0]' 6
-  assert_body "partial create carries the error" '.error' 'failed to create: second card'
+  assert_body "partial create carries the error" '.error|type' string
+  assert_body "partial create names the card that failed" '.error' 'failed to create: second card'
   if [ -f "$REPO/.fleet-board/cards/6.json" ]; then pass "the created card exists"; else fail "the created card exists" "no card 6"; fi
   api POST /api/import/fixed3/create '{}';   assert_code 409
   assert_body "a retry after a partial create says already created" '.error' '*already created*'
