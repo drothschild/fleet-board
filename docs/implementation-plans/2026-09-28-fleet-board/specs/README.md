@@ -1973,7 +1973,22 @@ The reviewer may classify a change as Conflict-resolved only after reconstructin
 
 **Merge with main (2026-11-07).** Card 70's revision was written as 21; main then recorded its own Revision 21 (PR 217, the command-provider evidence reviewer), so this one is renumbered 22. Plugin version 0.14.3 (this branch) and 0.15.0 (main) to 0.15.1. `agents/fixer.md` is unchanged by the merge. `agents/manager.md` and `agents/reviewer.md` are git merges: main's Revision 21 run output (manager) and Revision 20 run output (reviewer, card 175) with the owner-approved direct edits of the PR 215 integration repair. No single run produced either file, so both stay named exceptions in the manifest with their merged hashes. The owner confirmed the PR 215 exception and chose to keep the merge rather than re-author on 2026-11-07.
 
-### Revision 23 (2026-11-07, card 180): the manager records not_reproducible
+### Revision 23 (2026-11-07, PR #222): completion-driven manager
+
+Two owner-approved isolated runs updated the manager from its revised spec. Both used a fresh empty configuration directory, `--bare`, Opus, only Read/Edit, strict MCP configuration, the existing authentication helper, and staged spec/request inputs. The initial CLI cap was $2; the correction cap was $1, with total actual spend below the approved $2 combined budget.
+
+| Run | Turns | Reads / edits | Cost USD | Before SHA256 | After SHA256 |
+|---|---|---|---|---|---|
+| Initial | 29 | 6 / 22 | 0.7088088 | `4e886bfc2443913336` | `0506a52e861302c4` |
+| Correction | 19 | 6 / 12 | 0.5003600 | `0506a52e861302c4` | `3dbd20185dc55706` |
+
+Both init events passed isolation checks: tools exactly Read/Edit, built-in plugins only, no MCP servers or namespaced skills. Both path audits passed: reads only the staged inputs and target, edits only `agents/manager.md`. Frontmatter is unchanged. Sanitized init evidence is in `evidence/author-manager.r23.initial.init.json` and `evidence/author-manager.r23.correction.init.json`; their SHA256 is `26be61671232ffd48c70442f6ea55d40a84783d2425b59159e13ef9f15094856`. The manifest records the final generated output; the earlier integration exception remains documented above.
+
+The correction addressed strict verification progress, stale final-signal overrides, bounded provider retries, headless deferred merges, and fresh planning after branch updates. Structural checks passed 26/26 and clean-room checks passed 118/118; these checks do not establish runtime scheduling behavior. The separately approved behavioral run is recorded with the throughput validation evidence.
+
+**Revision cost:** $1.2091688. **Running authoring total:** approximately $44.47, excluding separately recorded behavioral validation.
+
+### Revision 24 (2026-11-07, card 180): the manager records not_reproducible
 
 **Cause.** `tick-plan.sh` (PR #179, card 143) plans a re-review instead of another fix when `note.last_fix` is `{"status":"not_reproducible","round":<n>}`, and `parse-report.sh` accepts a fixer Status `not_reproducible` only with `--commits-since-review 0`. Neither `specs/manager.md` nor `agents/manager.md` told the manager to pass that flag or write `last_fix`. PR #181 first added two lines to the agent file by hand, which broke `tests/test-clean-room.sh`, and its `last_fix` shape (`{"round", "not_reproducible": [...]}`) was not the one `tick-plan.sh` reads. The hand edit was dropped and the rule authored by an isolated run.
 
@@ -1996,3 +2011,5 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Revision cost:** $0.3162. **Running total, all API-key charges:** ~$43.38 (~$43.06 at Revision 21; Revision 22 made no run; plus this run). Plugin version 0.15.3 (main) to 0.15.4.
 
 **Merge with main (2026-11-07).** Main's PR 218 (card 210) then edited `agents/manager.md` 2.9a and 2.17b and `specs/manager.md` by hand, under the same named exception. Git merged it with this run's output with no conflict: PR 218's hunks are in 2.9a and 2.17b, this run's in 2.9 steps 4 and 5 and the 2.9 closing paragraph. No single run produced the merged file (`8d10d2fbd2e8ff9a`), and the manifest note says so.
+
+**Merge with main, second (2026-11-07).** Main's PR 222 re-authored `agents/manager.md` (Revision 23, completion-driven manager, run output sha256 `3dbd20185dc55706...`). The conflict was in 2.9 steps 4 to 6 and the closing paragraph of the agent file and `specs/manager.md`. It was resolved by hand with no API run: this card's step 4 and 5 text (`--commits-since-review`, `last_fix`) plus main's step 6 and closing paragraph, extended to name `not_reproducible` and `last_fix`. The agent file hash in the manifest was updated to the merged file, under the same named exception. Plugin version 0.16.0 (main) to 0.16.1.

@@ -61,7 +61,19 @@ setup_case() {
   FAKE_GH_DIR="$(mktemp -d)"
   FX="$FAKE_GH_DIR/fx"
   mkdir -p "$FX" "$FAKE_GH_DIR/bin"
-  ln -s "$SCRIPT_DIR/fake-gh.sh" "$FAKE_GH_DIR/bin/gh"
+  FAKE_GH_REAL="$SCRIPT_DIR/fake-gh.sh"; export FAKE_GH_REAL
+  unset FAKE_MERGE_QUEUED
+  cat > "$FAKE_GH_DIR/bin/gh" <<'GH'
+#!/usr/bin/env bash
+bash "$FAKE_GH_REAL" "$@"
+rc=$?
+if [ "$rc" = 0 ] && [ "$1 $2" = 'pr merge' ] && [ "${FAKE_MERGE_QUEUED:-}" != 1 ]; then
+  jq '.state="MERGED"' "$FAKE_GH_DIR/fx/pr-$3.json" > "$FAKE_GH_DIR/fx/merged.json"
+  mv "$FAKE_GH_DIR/fx/merged.json" "$FAKE_GH_DIR/fx/pr-$3.json"
+fi
+exit "$rc"
+GH
+  chmod +x "$FAKE_GH_DIR/bin/gh"
   PATH="$FAKE_GH_DIR/bin:$ORIG_PATH"
   FAKE_GH_ROUTES="$FAKE_GH_DIR/routes"
   export FAKE_GH_DIR FAKE_GH_ROUTES PATH
@@ -141,9 +153,19 @@ pr() {
 CLEAN='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}}'
 GREEN='[{"conclusion":"SUCCESS"}]'
 
+setup_pair() {
+  setup_case auto
+  card 12 in_review "$CLEAN"
+  card 13 in_review "$(jq -c '.pr=35 | .branch="fleet/13-next"' <<<"$CLEAN")"
+  pr 34 false "$GREEN"
+  pr 35 false "$GREEN"
+  finalize
+}
+
 echo "Test: merge-reviewed.sh"
 echo ""
 
+if [ "${FLEET_BOARD_TEST_CASE:-}" != ambiguous ]; then
 echo "usage"
 setup_case auto
 finalize
@@ -246,6 +268,121 @@ card 12 in_review '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34
 pr 34 false "$GREEN"
 finalize
 no_merge "PR not yet reviewed"
+
+echo "drain two reviewed cards, replan and pin each merge head"
+
+setup_pair
+run_merge
+assert_exit "drain: exit 0" 0
+assert_eq "drain: first merged once" "$(cnt "pr merge 34 ")" 1
+assert_eq "drain: second merged once" "$(cnt "pr merge 35 ")" 1
+assert_eq "drain: exact planned heads bound" "$(cnt --match-head-commit)" 2
+
+setup_pair
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<'VERIFY'
+#!/usr/bin/env bash
+# First integration changes the second PR: the old approval must not merge it.
+jq '.headRefOid="def5678"' "$FAKE_GH_DIR/fx/pr-35.json" > "$FAKE_GH_DIR/fx/next.json"
+mv "$FAKE_GH_DIR/fx/next.json" "$FAKE_GH_DIR/fx/pr-35.json"
+printf '{"commit":"abc1234","ok":true,"results":[]}\n'
+VERIFY
+run_merge
+assert_eq "drain: replan prevents stale second approval" "$(cnt "pr merge 35 ")" 0
+
+setup_pair
+printf 'pr merge 34 *\t1\t-\n' | cat - "$FAKE_GH_ROUTES" > "$FX/new-routes"
+mv "$FX/new-routes" "$FAKE_GH_ROUTES"
+run_merge
+assert_exit "failed candidate: exit 1" 1
+assert_eq "failed candidate: attempted once" "$(cnt "pr merge 34 ")" 1
+assert_eq "failed candidate: unrelated merge proceeds" "$(cnt "pr merge 35 ")" 1
+
+for result in false null '"true"'; do
+  setup_pair
+  cat > "$FLEET_BOARD_VERIFY_MAIN" <<VERIFY
+#!/bin/sh
+printf '%s\n' '{"commit":"abc1234","ok":$result,"results":[]}'
+VERIFY
+  run_merge
+  assert_exit "verification $result: fatal stop" 3
+  assert_eq "verification $result: no done" "$(cnt 'add-label fleet:done')" 0
+  assert_eq "verification $result: no second merge" "$(cnt 'pr merge 35 ')" 0
+done
+
+setup_pair
+printf '#!/bin/sh\nexit 1\n' > "$FLEET_BOARD_VERIFY_MAIN"
+run_merge
+assert_exit "verification command error: fatal stop" 3
+assert_eq "verification error: no second merge" "$(cnt 'pr merge 35 ')" 0
+
+setup_pair
+# Recovery must verify an earlier merged PR before admitting another merge.
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<VERIFY
+#!/bin/sh
+printf '%s\n' '{"commit":"abc1234","ok":false,"results":[]}'
+VERIFY
+run_merge
+assert_exit "pending verification: fatal stop" 3
+assert_eq "pending verification: no new merge" "$(cnt 'pr merge ')" 0
+
+setup_pair
+FLEET_BOARD_MERGE_LIMIT=1 run_merge
+assert_eq "merge budget: one merge" "$(cnt 'pr merge ')" 1
+
+
+setup_case auto
+card 12 in_review "$(jq -c '.main_check={commit:"abc1234",ok:false,results:[]}' <<<"$CLEAN")"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
+assert_eq "failed recorded verification: recover rather than finish" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
+
+fi
+echo "ambiguous merge failure recovers before another merge"
+setup_pair
+rm "$FAKE_GH_DIR/bin/gh"
+cat > "$FAKE_GH_DIR/bin/gh" <<'GH'
+#!/usr/bin/env bash
+if [ "$1 $2 ${3:-}" = 'pr merge 34' ]; then
+  jq '.state="MERGED"' "$FAKE_GH_DIR/fx/pr-34.json" > "$FAKE_GH_DIR/fx/merged.json"
+  mv "$FAKE_GH_DIR/fx/merged.json" "$FAKE_GH_DIR/fx/pr-34.json"
+fi
+exec bash "$FAKE_GH_REAL" "$@"
+GH
+chmod +x "$FAKE_GH_DIR/bin/gh"
+printf 'pr merge 34 *\t1\t-\n' | cat - "$FAKE_GH_ROUTES" > "$FX/new-routes"
+mv "$FX/new-routes" "$FAKE_GH_ROUTES"
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<'VERIFY'
+#!/bin/sh
+printf '%s\n' '{"commit":"abc1234","ok":false,"results":[]}'
+VERIFY
+FAKE_GH_REAL="$SCRIPT_DIR/fake-gh.sh" run_merge
+assert_exit "ambiguous merge: red main stops" 3
+assert_eq "ambiguous merge: no second merge" "$(cnt 'pr merge 35 ')" 0
+
+setup_pair
+FAKE_MERGE_QUEUED=1 run_merge
+assert_exit "queue acceptance is not a completed merge" 3
+assert_eq "queued PR never marked done" "$(cnt 'add-label fleet:done')" 0
+assert_eq "queued PR stops later merges" "$(cnt 'pr merge 35 ')" 0
+
+setup_case auto
+card 12 in_review "$(jq -c '.action_failures=10 | .main_check={commit:"abc1234",ok:false,results:[]} | .pending_followups={pr:34,bugs:[],out_of_scope:[]}' <<<"$CLEAN")"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
+assert_eq "verification precedes failure blocks and followups" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
+
+run_merge
+assert_exit "recovered followups: verification succeeds" 0
+assert_eq "recovered followups: no duplicate merge" "$(cnt 'pr merge ')" 0
+assert_eq "recovered followups: stay in review for filing" "$(cnt 'add-label fleet:done')" 0
 
 echo ""
 echo "-----------------------------------"
