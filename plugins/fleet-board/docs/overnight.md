@@ -24,7 +24,7 @@ bash <path from /fleet-board:status> --repo .
 
 ### One run per repo
 
-The wrapper holds a run lock for its whole life: `$HOME/.fleet-board/runs/<owner>-<name>.lock` (in `$FLEET_BOARD_LOG_DIR` when that is set, beside the run logs). The file holds the wrapper's pid on line 1 and that process's start time on line 2 (`ps -o lstart=` in the C locale and UTC). While the lock names a live process with that start time, a second wrapper for the same repo prints `fleet-board-run: another run holds <lock> (pid N)` and exits 1 before it writes a log. A lock whose pid is gone, or now belongs to a process started at another time, is stale: the next wrapper replaces it. The wrapper uses Python 3 and an advisory lock on the adjacent `.lock.guard` file to serialize claims and stale-lock replacement. A simultaneous claimant exits 1 before writing a run log. The wrapper removes its lock on exit, including after Ctrl-C or TERM; after `kill -9` the lock stays until the next start finds it stale. The board page reads the same file, so a run started from a terminal or launchd shows as running there and the page's Start refuses a second one.
+The wrapper holds a run lock for its whole life: `$HOME/.fleet-board/runs/<owner>-<name>.lock` (in `$FLEET_BOARD_LOG_DIR` when that is set, beside the run logs). The file holds the wrapper's pid on line 1 and that process's start time on line 2 (`ps -o lstart=` in the C locale and UTC). While the lock names a live process with that start time, a second wrapper for the same repo prints `fleet-board-run: another run holds <lock> (pid N)` and exits 1 before it writes a log. A lock whose pid is gone, or now belongs to a process started at another time, is stale: the next wrapper replaces it. The wrapper needs `python3` on every backend: it runs `scripts/claim-run-lock.py`, which takes an advisory lock on the adjacent `.lock.guard` file to serialize claims and stale-lock replacement. A simultaneous claimant exits 1 before writing a run log. The wrapper removes its lock on exit, including after Ctrl-C or TERM; after `kill -9` the lock stays until the next start finds it stale. The board page reads the same file, so a run started from a terminal or launchd shows as running there and the page's Start refuses a second one.
 
 ## When it stops
 
@@ -78,7 +78,7 @@ For an interrupt, the line is written on a best-effort basis, and the tick count
 | Exit | Meaning |
 |---|---|
 | 0 | stopped: `nothing-dispatchable`, `stop-file`, `max-hours` or `max-cost` |
-| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; `rate-limit-wait-cap`; or a setup failure (not a git repo, `claude` not found, the log cannot be written, another run holds the run lock) |
+| 1 | stopped: `consecutive-failures`, `cost-unknown` or `permission-mode-mismatch`; `rate-limit-wait-cap`; or a setup failure (not a git repo, `claude` not found, `python3` not found, the log cannot be written, another run holds the run lock) |
 | 2 | usage error, or `FLEET_BOARD_ISOLATE=1` |
 | 3 | no `.fleet-board.yml` |
 | 4, 5 | the config failed `config.sh --check`; 5 also for a limit that is not a valid number |
@@ -162,7 +162,7 @@ bash <scripts dir>/cleanup-done.sh
 
 The plugin ships no plist. This is an example to adapt. It starts a run at 22:00 every day.
 
-Save it as `~/Library/LaunchAgents/com.example.fleet-board.plist`. Replace `<repo>` with the absolute path of the repo. Replace `<plugin-dir>` with the plugin directory: the wrapper path that `/fleet-board:status` prints, without its trailing `/scripts/fleet-board-run.sh`. Replace `<PATH>` with the output of `echo $PATH` in a terminal where `claude`, `gh` and `jq` work.
+Save it as `~/Library/LaunchAgents/com.example.fleet-board.plist`. Replace `<repo>` with the absolute path of the repo. Replace `<plugin-dir>` with the plugin directory: the wrapper path that `/fleet-board:status` prints, without its trailing `/scripts/fleet-board-run.sh`. Replace `<PATH>` with the output of `echo $PATH` in a terminal where `claude`, `gh`, `jq` and `python3` work.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -200,7 +200,7 @@ Save it as `~/Library/LaunchAgents/com.example.fleet-board.plist`. Replace `<rep
 </plist>
 ```
 
-launchd starts a job with a minimal `PATH` that usually has none of `claude`, `gh` and `jq`, so the plist sets `PATH` itself. Running the wrapper through a login shell (`bash -l`) is not a substitute: a bash login shell reads `~/.bash_profile`, not the zsh files (`~/.zprofile`, `~/.zshrc`) where macOS's default shell, and Homebrew's setup, usually put those tools on `PATH`. The wrapper needs bash, so the program stays `/bin/bash`. Add `.fleet-board-launchd.log` to the repo's `.gitignore`, or point both paths elsewhere. The wrapper's own run log is written under `$HOME/.fleet-board/runs/` either way.
+launchd starts a job with a minimal `PATH` that usually has none of `claude`, `gh`, `jq` and `python3`, so the plist sets `PATH` itself. Running the wrapper through a login shell (`bash -l`) is not a substitute: a bash login shell reads `~/.bash_profile`, not the zsh files (`~/.zprofile`, `~/.zshrc`) where macOS's default shell, and Homebrew's setup, usually put those tools on `PATH`. The wrapper needs bash, so the program stays `/bin/bash`. Add `.fleet-board-launchd.log` to the repo's `.gitignore`, or point both paths elsewhere. The wrapper's own run log is written under `$HOME/.fleet-board/runs/` either way.
 
 Load it:
 

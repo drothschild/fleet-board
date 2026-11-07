@@ -90,7 +90,7 @@ for pair in "plugin CLAUDE.md:$PLUGIN_CLAUDE" "overnight.md:$OVERNIGHT" "spec:$S
   check "$name names claim-run-lock" "$r"
 done
 
-r=bad; grep -F '`.lock.guard`' "$PLUGIN_CLAUDE" "$SPEC" | wc -l | grep -qv '^ *[01]$' && r=ok
+r=bad; grep -q '\.lock\.guard' "$PLUGIN_CLAUDE" && grep -q '\.lock\.guard' "$SPEC" && r=ok
 check "plugin CLAUDE.md and spec both name .lock.guard" "$r"
 
 r=bad; grep -i 'python3' "$PLUGIN_CLAUDE" | grep -qi 'every backend' && r=ok

@@ -149,7 +149,7 @@ review:
 
 ## `board.dir` and `board.port`
 
-Both apply only when `board.backend` is `local`.
+Both are checked on every backend (`config.sh` validates them whatever `board.backend` is) and used only on `local`.
 
 `board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
 

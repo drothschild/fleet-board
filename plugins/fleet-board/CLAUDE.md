@@ -140,7 +140,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
   (Phase 4). Policy: add a residual to that list, do not claim the hook covers it.
 - **Headless wrapper** (`scripts/fleet-board-run.sh`): exit codes and stop reasons are
-  documented in `README.md`; keep the README table and the script in step. It exports
+  documented in `docs/overnight.md`; keep that table and the script in step. It requires
+  `python3` on every backend (`scripts/claim-run-lock.py` claims the lock under an advisory
+  lock on `<lock>.lock.guard`, serializing claims and stale-lock replacement). It exports
   `FLEET_BOARD_RUN_ID` before the first tick (see Provider stages). It holds the run lock
   `<LOG_DIR>/<owner>-<name>.lock` (pid, then `ps -o lstart=` in C/UTC; the board page's
   `run.pid` format) for its life and exits 1 while another live run holds it; `board-web.py`

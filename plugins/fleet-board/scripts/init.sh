@@ -119,6 +119,11 @@ TARGET="$DIR/.fleet-board.yml"
 for tool in gh jq git; do
   command -v "$tool" >/dev/null 2>&1 || die 1 "$tool is not on PATH"
 done
+# The headless wrapper and the board page need python3; the local backend is
+# the one that has a page, so check it there.
+if [ "$BACKEND" = local ]; then
+  command -v python3 >/dev/null 2>&1 || die 1 "python3 is not on PATH (the local board needs it)"
+fi
 
 # --- Step 2: scopes --------------------------------------------------------
 # The active account's scopes line decides (fb_token_scopes). With none, a
