@@ -26,13 +26,13 @@
   "independent_review": "No blocking findings; runtime coverage limits retained.",
   "behavioral": {
     "status": "not_validated",
-    "cost_usd": 0.1315963,
+    "cost_usd": 0.1918922,
     "turns": 7,
     "session_id": "08c516f8-3771-481c-9bd7-ad7f19f804bd",
-    "reason": "Bare-mode default tools omitted Write. Manager dispatched no reviews; event assertions failed because no events file existed.",
+    "reason": "Both approved attempts dispatched no reviews: bare mode filtered out Write, including with explicit --tools.",
     "startup_attempt": "An earlier CLI invocation failed agent lookup before any model call; explicit registration used the generated manager body verbatim.",
     "isolation": "Only copied fleet-board plugin and built-in plugins; no MCP servers; disposable board and fake GitHub.",
-    "next_step": "Harness explicitly enables tools; a new paid run requires separate approval.",
+    "next_step": "Harness now uses a fresh configuration and empty setting sources without bare mode. Offline unreachable-localhost inspection confirms Write is available. Another paid run requires approval.",
     "unexercised": [
       "completion ordering",
       "slot refill",
@@ -40,6 +40,18 @@
       "duplicate completions",
       "retry and action caps",
       "runtime failure recovery"
+    ],
+    "attempts": [
+      {
+        "cost_usd": 0.1315963,
+        "turns": 7,
+        "session_id": "08c516f8-3771-481c-9bd7-ad7f19f804bd"
+      },
+      {
+        "cost_usd": 0.0602959,
+        "turns": 8,
+        "session_id": "380efc69-dd06-4c8c-8497-fc36749fb819"
+      }
     ]
   }
 }

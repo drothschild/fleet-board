@@ -142,7 +142,7 @@ body=text.split('---',2)[2].lstrip()
 json.dump({'completion-manager': {'description':'Fleet board manager', 'prompt':body,
     'tools':['Agent','Skill','Read','Write','Bash','Grep','Glob']}},open(sys.argv[2],'w'))
 PYAGENT
-CLAUDE_CONFIG_DIR="$WORK/config" claude -p --bare --agents "$WORK/agents.json" --agent completion-manager --model sonnet \
+CLAUDE_CONFIG_DIR="$WORK/config" claude -p --setting-sources "" --agents "$WORK/agents.json" --agent completion-manager --model sonnet \
   --plugin-dir "$WORK/plugin" --add-dir "$WORK" --tools Bash,Read,Write,Skill,Agent,Grep,Glob --allowedTools Bash Read Write Skill --strict-mcp-config --settings "$AUTH_SETTINGS" \
   --permission-mode acceptEdits --max-turns 100 --max-budget-usd 3 \
   --verbose --output-format stream-json "$(cat "$WORK/prompt")" </dev/null > "$WORK/run.jsonl" 2> "$WORK/stderr"

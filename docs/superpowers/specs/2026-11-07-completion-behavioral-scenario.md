@@ -1,6 +1,6 @@
 # Completion-driven manager behavioral scenario
 
-Status: runtime validation pending. The approved attempt cost $0.1315963 and dispatched no reviews because bare mode omitted Write. Tool configuration is corrected; another paid attempt requires approval.
+Status: runtime validation pending. The two approved attempts cost $0.1918922 total and dispatched no reviews because bare mode omitted Write. Isolated non-bare tool configuration is confirmed offline; another paid attempt requires approval.
 
 ## Fixture and isolation
 
