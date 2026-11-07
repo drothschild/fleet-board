@@ -148,6 +148,9 @@ assert_eq "labels: note.sh get finds the re-authored note" "$(jq -r .branch <<<"
 assert_eq "labels: note.sh get returns the trusted note's pr, not the lookalike's" "$(jq -r .pr <<<"$LAST_OUT" 2>/dev/null)" "34"
 assert_eq "labels: pr_url agrees with note.sh get" "$(jq -r .pr_url "$STORE/cards/12.json")" "https://github.com/acme/toy/pull/$(jq -r .pr <<<"$LAST_OUT" 2>/dev/null)"
 assert_eq "labels: the note's accepted.login is rewritten to the local login" "$(jq -r '.accepted.login' <<<"$LAST_OUT" 2>/dev/null)" "localme"
+run_in "$REPO" "$BASH_EXE" "$SCRIPTS/note.sh" get 13
+assert_exit "labels: note.sh get 13 exits 0" 0
+assert_eq "labels: an accept by a login other than the gh login is not rewritten" "$(jq -r '.accepted.login' <<<"$LAST_OUT" 2>/dev/null)" "alice"
 
 echo "import-github: refuses a store that has cards"
 BEFORE="$(cat "$STORE/cards/12.json")"
