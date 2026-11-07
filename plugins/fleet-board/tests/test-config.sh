@@ -658,6 +658,28 @@ REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, provider: op
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stderr_exact "provider stage no model: exactly one message" "config.sh: invalid config: review.stages[0].model must be set when provider is set"
 
+# command providers (the codex preset)
+CODEX_STAGE='review: { stages: [ { name: s, provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } } ] }'
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { codex: {} }\n%s\n' "$CODEX_STAGE" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "codex preset with providers: {codex: {}}: valid" 0
+assert_stdout_exact_jq "codex preset: command from presets.json" '.providers.codex.command' '"codex exec --skip-git-repo-check -s read-only -m {model}"'
+assert_stdout_exact_jq "codex preset: no key variable, no base_url" '.providers.codex | [.base_url, .api_key_env]' '[null,null]'
+REPO="$(printf 'board:\n  repo: a/b\n%s\n' "$CODEX_STAGE" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "codex preset named only by a stage: valid" 0
+assert_stdout_exact_jq "codex preset named only by a stage: command present" '.providers.codex.command | type' '"string"'
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ %s ] }\n' "${SP/PROV/openai}" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "http preset has no command key" '.providers.openai | has("command")' 'false'
+REPO="$(printf 'board:\n  repo: a/b\nproviders: { mycmd: { command: "mytool --model {model}" } }\nreview: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "custom command provider: valid" 0
+invalid_field_case "command with base_url" "providers: { codex: { base_url: \"https://x.example/v1\" } }"$'\n'"$CODEX_STAGE" "providers.codex sets both command and base_url"
+invalid_field_case "command with api_key_env" "providers: { codex: { api_key_env: SOME_KEY } }"$'\n'"$CODEX_STAGE" "providers.codex.api_key_env must be null when command is set"
+invalid_field_case "command not a string" "providers: { mycmd: { command: 5 } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
+invalid_field_case "command empty" "providers: { mycmd: { command: \"\" } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
+
 # a local board: accepted, defaults filled, board.dir and board.port validated
 REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
@@ -705,6 +727,32 @@ assert_eq_count "no backend key: the merged config has no backend or project key
 assert_key "$REPO" "board.dir" ".fleet-board" "no backend key: board.dir default stays"
 assert_key "$REPO" "board.port" "8765" "no backend key: board.port default stays"
 assert_key "$REPO" "board.repo" "acme/toy" "no backend key: board.repo stays"
+
+reviewer='{ provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }'
+reviewer_cfg="models: { reviewer: $reviewer, escalation: opus }"
+invalid_field_case "reviewer invalid type" 'models: { reviewer: [] }' "models.reviewer must be a non-empty string or an object"
+invalid_field_case "reviewer unknown provider" "${reviewer_cfg/codex/unknown}" "models.reviewer.provider unknown names no provider"
+invalid_field_case "reviewer HTTP provider" "${reviewer_cfg/codex/openai}" "models.reviewer.provider openai has no review_command"
+invalid_field_case "reviewer invalid model" "${reviewer_cfg/gpt-6-astra/123}" "models.reviewer.model must be a non-empty string"
+invalid_field_case "reviewer invalid price" "${reviewer_cfg/input: 0/input: -1}" "models.reviewer.price must have non-negative input and output"
+invalid_field_case "reviewer invalid timeout" "${reviewer_cfg/model: gpt-6-astra/model: gpt-6-astra, timeout: 1501}" "models.reviewer.timeout must be an integer from 1 to 1500"
+invalid_field_case "reviewer missing escalation" "models: { reviewer: $reviewer }" "models.escalation must be set when models.reviewer is a provider"
+invalid_field_case "agent stage missing model" "$reviewer_cfg"$'\n''review: { stages: [{name: s, agent: reviewer}] }' "review.stages[0].model must be set when models.reviewer is a provider"
+invalid_field_case "review command missing dir" 'providers: { codex: { review_command: "codex exec" } }' "providers.codex.review_command must contain {dir}"
+for flag in --dangerously-bypass-approvals-and-sandbox danger-full-access --dangerously-bypass-hook-trust; do
+  invalid_field_case "review command rejects $flag" "providers: { codex: { review_command: \"codex $flag {dir}\" } }" "providers.codex.review_command must not contain $flag"
+done
+invalid_field_case "review command with HTTP" 'providers: { codex: { base_url: "https://example.com" } }' "providers.codex sets both review_command and base_url"
+
+REPO="$(printf 'board: { repo: a/b }\n%s\n' "$reviewer_cfg" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "reviewer object is accepted" 0
+assert_stdout_exact_jq "reviewer timeout defaults" '.models.reviewer.timeout' '1500'
+assert_stdout_exact_jq "codex review command preset" '.providers.codex.review_command' '"codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c sandbox_workspace_write.exclude_slash_tmp=true -C {dir} -m {model}"'
+REPO="$(printf 'board: { repo: a/b }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "default reviewer is accepted" 0
+assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"'
 
 echo ""
 echo "-----------------------------------"

@@ -5,8 +5,8 @@
 # clean-room output. Update this file whenever a revision is recorded in README.md.
 2d122bed1ab906b0f762b73d84ec900417f0770db7ba7a416785b19d5272e4ad  agents/fixer.md  # merge: git merge of the Revision 16 and Revision 18 run outputs, disjoint hunks; no single run produced this file
 913b1f6ad549f65b598464099454da6c621689253e5df618830bac68f1749b81  agents/implementor.md
-41799b377c41183147bedf2a8251e1d8933dc79cdff9ac44760138a5558fe059  agents/manager.md
-76c0e6bc7627a537abab8c32bde35fa5afcf7fdcca0b5e96cc5064ab5bfda243  agents/reviewer.md  # merge: git merge of the Revision 16 and Revision 18 run outputs, disjoint hunks; no single run produced this file
+83a650e092885482fa7dc99b47ea7a43b74e7a972accbb3222f4c3450bbe69c1  agents/manager.md
+013f0268883bcba37cc97d8d391313bbe6a2da949341d4e56f826e5d949ea92e  agents/reviewer.md
 86c3ada66c1bbb1bae2bcd2a82fd4b6103d814cb0dfe652b7291221cf20b5692  skills/reporting/SKILL.md
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
 6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md

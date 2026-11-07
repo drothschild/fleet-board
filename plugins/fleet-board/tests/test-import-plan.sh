@@ -72,6 +72,13 @@ case "$1 $2" in
     [ -f "$f" ] && cat "$f" ;;
   "project item-add")
     echo "{\"id\":\"ITEM_$(cat "$D/counter")\"}" ;;
+  "repo view") echo main ;;
+  "api repos/"*)
+    # gh api repos/<owner>/<name>/contents/<path>?ref=<branch>: ok only when the
+    # fixture file $D/files/<owner>_<name>/<path> exists
+    rp="${2#repos/}"; rp="${rp%%\?*}"
+    rrepo="${rp%%/contents/*}"; rfile="${rp#*/contents/}"
+    [ -f "$D/files/${rrepo//\//_}/$rfile" ] || exit 1 ;;
   *) : ;;
 esac
 EOF
@@ -227,6 +234,19 @@ check "a failing card makes the import exit 1" "$RC" "1"
 check "a failing card creates no issue" "$(cards_created)" "0"
 case "$(cat "$SB/err") $OUT" in *untestable-bullet*) pass "the import names the lint rule" ;; *) fail "the import names the lint rule" "$(cat "$SB/err")" ;; esac
 case "$(cat "$SKILL")" in *lint*) pass "SKILL.md mentions the linter" ;; *) fail "SKILL.md mentions the linter" "missing" ;; esac
+# ---------------------------------------------------------------- cross-repo file check
+echo "# cross-repo file check"
+printf '%s' '{"cards":[{"key":"b","title":"Web card","repo":"acme/web","acceptance":["`src/web-only.js` exports a limits panel"]}]}' > "$SB/webfile.json"
+reset_gh
+mkdir -p "$D/files/acme_web/src"; : > "$D/files/acme_web/src/web-only.js"
+run_import "" "$SB/webfile.json" --dry-run
+check "file exists only in repo B: the missing-file check passes (exit 0)" "$RC" "0"
+case "$(cat "$SB/err") $OUT" in *missing-file*) fail "file exists only in repo B: no missing-file violation" "$(cat "$SB/err")" ;; *) pass "file exists only in repo B: no missing-file violation" ;; esac
+reset_gh
+run_import "" "$SB/webfile.json" --dry-run
+check "file absent from repo B: the check fails (exit 1)" "$RC" "1"
+case "$(cat "$SB/err")" in *missing-file*"src/web-only.js"*"acme/web"*) pass "file absent from repo B: message names missing-file, the path and acme/web" ;; *) fail "file absent from repo B: message names missing-file, the path and acme/web" "$(cat "$SB/err")" ;; esac
+check "import-plan.sh passes no flag that disables the file check" "$(grep -c -- '--no-file-check' "$SCRIPT")" "0"
 # ---------------------------------------------------------------- parse
 echo "# parse"
 cat > "$SB/plan-parse.md" <<'EOP'

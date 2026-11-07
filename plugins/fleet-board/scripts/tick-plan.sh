@@ -186,6 +186,13 @@
 # "#<n>: in review, but no PR is known".
 # A clean, current review whose human-QA answer is unknown is skipped with
 # the warning "human-QA need unknown for #<n>".
+# Re-review, not fix: a current review with Critical or Important findings, an
+# unmoved head and either note.last_fix = {"status":"not_reproducible","round":<n>}
+# for the current round (the fixer re-ran the finding and committed nothing) or
+# note.state "blocked" on a card now in In review (a person moved it back) plans
+# review. The manager records last_fix when it reconciles a fixer report and
+# bumps round for the re-review, which ends the rule; its note upkeep sets
+# state in_review, which ends the other.
 # A current review with Critical or Important findings plans review, not fix,
 # when the open PR's headRefOid is no longer last_review.sha (compared by
 # prefix, so a short sha never reads as a move), with reason "PR head <h7>
@@ -667,6 +674,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
 
   $cfg.review.max_rounds as $max
   | $cfg.models as $m
+  | ($m.reviewer | if type == "object" then .model else . end) as $reviewer_model
 
   # The action table (AC1). $c is the card input, $n its note.
   | def decide($c; $n; $round):
@@ -723,6 +731,16 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
             then act($ra; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
           elif $ci_eff > 0 and head_moved($c; $lr)
             then act($ra; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
+          # Re-review instead of fixing again: a fixer that re-ran the finding and
+          # could not reproduce it (note.last_fix, for this round), or a card a
+          # person moved back to In review from Blocked (the note still says
+          # blocked) with the head still the reviewed one. The finding may be
+          # stale; fixing it again would only block again.
+          elif $ci_eff > 0 and ($n.last_fix | type) == "object" and $n.last_fix.status == "not_reproducible"
+               and ($n.last_fix.round // $round) == $round
+            then act($ra; "the round \($round) fixer could not reproduce the finding; review PR head \($c.pr_info.headRefOid[0:7]) again before fixing")
+          elif $ci_eff > 0 and $n.state == "blocked"
+            then act($ra; "moved back from Blocked with PR head unchanged since the round \($round) review; review it again before fixing")
           # A clean review covers a later head only when every commit since is a
           # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
           elif $ci_eff == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
@@ -752,7 +770,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
     # Models (AC6.2): from escalate_after_rounds on, implementor and fixer use
     # models.escalation, or the reviewer model when that is null
     | ($round >= $m.escalate_after_rounds) as $esc
-    | ($m.escalation // $m.reviewer) as $emodel
+    | ($m.escalation // ($m.reviewer | strings)) as $emodel
     | {implementor: (if $esc then $emodel else $m.implementor end),
        reviewer: $m.reviewer,
        fixer: (if $esc then $emodel else $m.fixer end)} as $models
@@ -809,11 +827,14 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
        (if $pre != "" then [$pre] else [] end)
-       + (if $m.implementor == $m.reviewer
+       + (if $m.implementor == $reviewer_model
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)
-       + (if $m.escalation != null and $m.escalation == $m.reviewer
+       + (if $m.escalation != null and $m.escalation == $reviewer_model
           then ["escalation and reviewer share model \($m.escalation); the escalated writer shares the reviewer'"'"'s blind spots"]
+          else [] end)
+       + (if ($m.reviewer | type) == "object" and $m.reviewer.price.input == 0 and $m.reviewer.price.output == 0
+          then ["reviewer \($m.reviewer.provider)/\($reviewer_model) has price 0; max_cost_usd does not count its spend"]
           else [] end)
        + [$cards[] | select(.action == "skip" and (.reason | startswith("lookup failed")))
           | "#\(.number): \(.reason)"]

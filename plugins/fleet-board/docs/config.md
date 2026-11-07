@@ -88,6 +88,24 @@ A stage is the state `review_<name>`, in config order between `in_review` and `h
 
 **A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider, and nothing else from the repo: it has no tools and no worktree, so it runs no tests.
 
+## `models.reviewer`
+
+A model string selects the Claude evidence reviewer and defaults to `opus`. To run
+evidence review through a command provider, configure it as follows.
+
+```yaml
+models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 }, timeout: 1500 }
+  escalation: opus
+```
+
+The provider must define a `review_command`. Set both non-negative prices and
+an escalation model. The timeout is an integer from 1 to 1500 seconds and
+defaults to 1500. Both attempts share this timeout. The Codex preset restricts
+writes to the scratch clone, where the runner sets the provider's `TMPDIR`.
+Custom review commands must provide equivalent isolation. With this form,
+each agent review stage must set its own model.
+
 ## `providers`
 
 A review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). A stage sets exactly one; `config.sh` exits 5 with `review.stages[<i>] must set exactly one of agent and provider` otherwise.
@@ -106,22 +124,37 @@ review:
       price: { input: 1.25, output: 10 }   # USD per million tokens
 ```
 
-Built-in presets are `openai`, `gemini`, `openrouter` and `ollama`; their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider a stage names or the file defines. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
+Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a command provider, below); their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider named by a stage or the evidence reviewer, or defined in the file. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
 
 | Key | Rule |
 |---|---|
 | provider name | matches `^[a-z][a-z0-9_-]*$` |
 | `base_url` | an https address, or an http address whose host is `localhost`, `127.0.0.1` or `[::1]` with an optional numeric port; no userinfo (`user@`) in either (`base_url must not contain userinfo`). `chat.sh` repeats both checks before any request |
 | `api_key_env` | the name of an environment variable, matching `^[A-Z_][A-Z0-9_]*$`; `null` only for a loopback `base_url` |
-| `max_tokens_param` | `max_tokens` or `max_completion_tokens` |
+| `max_tokens_param` | `max_tokens` or `max_completion_tokens`; ignored when `command` is set |
+| `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
+| `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
 
 If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed every tick; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
 
 Config never holds a key. `api_key`, `key`, `token` and `secret` under a provider are rejected, and the message does not repeat the value.
 
-A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and keeps `model` defaulting to `models.reviewer`.
+A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and defaults `model` to `models.reviewer` when it is a string.
 
-**Data egress.** A provider stage sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider. Use a provider only for repos whose code and cards you may send to it.
+**A command provider** (an entry with `command`, such as the `codex` preset) runs a local program instead of calling an HTTP API. `chat.sh` joins the prompt's system and user text, system first, and writes it to the command's stdin with the repo root as the working directory. Stdout is the reply; a non-zero exit or an empty stdout is a provider failure (exit 1, the command's stderr on stderr), and the stage's `timeout` applies to the command. The reply carries no token counts, so `stage-review.sh` records `input_tokens` and `output_tokens` as `null` in the ledger and counts `cost_usd` as 0; give such a stage `price: { input: 0, output: 0 }`. The model id must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, since it is placed into the command line. The `codex` preset is `codex exec --skip-git-repo-check -s read-only -m {model}`: it reviews under the Codex CLI's own login (a ChatGPT subscription, no API key) and needs `codex` on `PATH`.
+
+```yaml
+providers:
+  codex: {}                      # or omit; the preset is built in
+review:
+  stages:
+    - name: second-opinion
+      provider: codex
+      model: gpt-6-astra
+      price: { input: 0, output: 0 }
+```
+
+**Data egress.** A provider stage sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider. A command provider sends the same card, findings, report and diff to the program it runs, and whatever that program forwards (the `codex` preset sends them to OpenAI through the Codex CLI). A Codex evidence reviewer can read the whole repository and sends what it reads to OpenAI through the Codex CLI. Use a provider only for repos whose code and cards you may send to it.
 
 ## `limits` for the headless wrapper
 

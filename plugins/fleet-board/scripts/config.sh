@@ -134,7 +134,7 @@ STAGE_DEFAULTS='
             agent: ($s.agent // null),
             provider: ($s.provider // null),
             model: (if $s | has("model") then $s.model
-                    elif ($s.provider // null) != null then null
+                    elif ($s.provider // null) != null or ($root.models | objects | .reviewer | type) == "object" then null
                     else $root.models.reviewer end),
             paths: (if $s | has("paths") then $s.paths else [] end),
             label: (if $s | has("label") then $s.label
@@ -164,11 +164,14 @@ PROVIDER_DEFAULTS='
     if (.review | type) == "object" and (.review.stages | type) == "array"
     then [.review.stages[] | select(type == "object") | .provider | select(type == "string")]
     else [] end;
-  . as $root
+  if (.models | type) == "object" and (.models.reviewer | type) == "object" then
+    .models.reviewer |= (if has("timeout") then . else .timeout = 1500 end)
+  else . end
+  | . as $root
   | $presets[0] as $p
   | if (.providers | type) == "object" then
       .providers = (
-        ([($root.providers | keys[]), ($root | stage_providers[] | . as $sp | select($p | has($sp)))] | unique)
+        ([($root.providers | keys[]), ($root | (stage_providers[], (.models | objects | .reviewer | objects | .provider | strings)) | . as $sp | select($p | has($sp)))] | unique)
         | map(. as $n | ($root.providers[$n]) as $u
             | {key: $n,
                value: (if $u != null and ($u | type) != "object" then $u
@@ -215,7 +218,7 @@ VALIDATION_SCRIPT='
       (if (.review | type) == "object" then
         (if (.review.stages | type) != "array" then "review.stages must be a list"
          else
-          (.review.stages as $stages | .providers as $provs | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
+          (.review.stages as $stages | .providers as $provs | (.models | if type == "object" then .reviewer | type else "null" end) as $reviewer_type | $stages | to_entries[] | . as $e | $e.key as $i | $e.value as $s
             | if ($s | type) != "object" then "review.stages[\($i)] must be an object"
               else
                 (if ($s.name | type) != "string" or ($s.name | test("^[a-z][a-z0-9_]*$") | not) then "review.stages[\($i)].name must match ^[a-z][a-z0-9_]*$"
@@ -229,6 +232,7 @@ VALIDATION_SCRIPT='
                    else empty end)
                 else empty end),
                 (if $s.provider != null and $s.model == null then "review.stages[\($i)].model must be set when provider is set"
+                 elif $s.provider == null and $s.model == null and $reviewer_type == "object" then "review.stages[\($i)].model must be set when models.reviewer is a provider"
                  elif ($s.model | type) != "string" or $s.model == "" then "review.stages[\($i)].model must be a non-empty string" else empty end),
                 (if $s.provider != null then
                   (if $s.price == null then "review.stages[\($i)].price is required when provider is set"
@@ -257,20 +261,34 @@ VALIDATION_SCRIPT='
             else
               (("api_key", "key", "token", "secret") as $k
                 | if $v | has($k) then "providers.\($n).\($k) is not allowed; name an environment variable in api_key_env" else empty end),
-              # The authority (after the scheme, up to the first / ? # or end)
-              # must hold no userinfo ("localhost:@evil.example" is a request to
-              # evil.example). A plain-http host must itself be loopback, with
-              # an optional numeric port.
-              ((($v.base_url | type) == "string" and ($v.base_url | test("^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@"))) as $userinfo
-                | (($v.base_url | type) == "string" and ($userinfo | not)
-                   and ($v.base_url | test("^(https://[^/?#]|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"))) as $url_ok
-                | (if $userinfo then "providers.\($n).base_url must not contain userinfo"
-                   elif $url_ok | not then "providers.\($n).base_url must start with https:// or a loopback http:// address" else empty end),
-                  (if $v.api_key_env == null then
-                    (if ($url_ok and ($v.base_url | startswith("http://"))) | not then "providers.\($n).api_key_env may be null only for a loopback base_url" else empty end)
-                   elif ($v.api_key_env | type) != "string" or ($v.api_key_env | test("^[A-Z_][A-Z0-9_]*$") | not) then "providers.\($n).api_key_env must match ^[A-Z_][A-Z0-9_]*$"
-                   else empty end)),
-              (if $v.max_tokens_param != "max_tokens" and $v.max_tokens_param != "max_completion_tokens" then "providers.\($n).max_tokens_param must be max_tokens or max_completion_tokens" else empty end)
+              (if $v | has("review_command") then
+                (if ($v.review_command | type) != "string" or ($v.review_command | contains("{dir}") | not)
+                 then "providers.\($n).review_command must contain {dir}" else empty end),
+                (("--dangerously-bypass-approvals-and-sandbox", "danger-full-access", "--dangerously-bypass-hook-trust") as $flag
+                 | if ($v.review_command | type) == "string" and ($v.review_command | contains($flag))
+                   then "providers.\($n).review_command must not contain \($flag)" else empty end),
+                (if $v.base_url != null then "providers.\($n) sets both review_command and base_url" else empty end)
+              else empty end),
+              (if $v | has("command") then
+                (if ($v.command | type) != "string" or $v.command == "" then "providers.\($n).command must be a non-empty string" else empty end),
+                (if $v.base_url != null then "providers.\($n) sets both command and base_url" else empty end),
+                (if $v.api_key_env != null then "providers.\($n).api_key_env must be null when command is set" else empty end)
+              elif ($v | has("review_command")) | not then
+                # The authority (after the scheme, up to the first / ? # or end)
+                # must hold no userinfo ("localhost:@evil.example" is a request to
+                # evil.example). A plain-http host must itself be loopback, with
+                # an optional numeric port.
+                ((($v.base_url | type) == "string" and ($v.base_url | test("^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@"))) as $userinfo
+                  | (($v.base_url | type) == "string" and ($userinfo | not)
+                     and ($v.base_url | test("^(https://[^/?#]|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"))) as $url_ok
+                  | (if $userinfo then "providers.\($n).base_url must not contain userinfo"
+                     elif $url_ok | not then "providers.\($n).base_url must start with https:// or a loopback http:// address" else empty end),
+                    (if $v.api_key_env == null then
+                      (if ($url_ok and ($v.base_url | startswith("http://"))) | not then "providers.\($n).api_key_env may be null only for a loopback base_url" else empty end)
+                     elif ($v.api_key_env | type) != "string" or ($v.api_key_env | test("^[A-Z_][A-Z0-9_]*$") | not) then "providers.\($n).api_key_env must match ^[A-Z_][A-Z0-9_]*$"
+                     else empty end)),
+                (if $v.max_tokens_param != "max_tokens" and $v.max_tokens_param != "max_completion_tokens" then "providers.\($n).max_tokens_param must be max_tokens or max_completion_tokens" else empty end)
+              else empty end)
             end)
        end),
       (if (.merge | type) == "object" then
@@ -309,8 +327,23 @@ VALIDATION_SCRIPT='
         (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
       (if (.models | type) == "object" then
-        (("manager", "implementor", "reviewer", "fixer") as $r
-          | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end)
+        (("manager", "implementor", "fixer") as $r
+          | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end),
+        (.models.reviewer as $r
+         | if ($r | type) == "object" then
+             (if ($r.provider | type) != "string" or ((.providers | objects | has($r.provider)) // false | not)
+              then "models.reviewer.provider \($r.provider) names no provider"
+              elif (.providers[$r.provider].review_command | type) != "string"
+              then "models.reviewer.provider \($r.provider) has no review_command" else empty end),
+             (if ($r.model | type) != "string" or $r.model == "" then "models.reviewer.model must be a non-empty string" else empty end),
+             (if ($r.price | type) != "object" or ([$r.price.input, $r.price.output] | any(type != "number" or . < 0))
+              then "models.reviewer.price must have non-negative input and output" else empty end),
+             (if ($r.timeout | type) != "number" or ($r.timeout | floor) != $r.timeout or $r.timeout < 1 or $r.timeout > 1500
+              then "models.reviewer.timeout must be an integer from 1 to 1500" else empty end),
+             (if (.models.escalation | type) != "string" or .models.escalation == ""
+              then "models.escalation must be set when models.reviewer is a provider" else empty end)
+           elif ($r | type) != "string" or $r == "" then "models.reviewer must be a non-empty string or an object"
+           else empty end)
       else empty end),
       (if (.limits | type) == "object" then
         (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end),
@@ -321,7 +354,7 @@ VALIDATION_SCRIPT='
   ;
   def warnings:
     if (.providers | type) == "object" then
-      (stage_providers as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
+      ((stage_providers + [(.models | objects | .reviewer | objects | .provider | strings)]) as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
     else [] end;
   (errors | .[]), (warnings | .[])
 '

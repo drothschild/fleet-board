@@ -20,11 +20,13 @@
 #   unresolved-dependency  a "## Depends on" reference (#n or board.repo#n) is
 #                          neither a linted card nor a card file under
 #                          board.dir. A reference to another repo is outside
-#                          this board: it is not checked (create keeps it in
-#                          the body as prose).
+#                          this board: it is not checked; card creation keeps
+#                          it in the body as prose.
 #   missing-file           a backticked path (dir/name.ext) is not on the default
-#                          branch. A line with create, new or add(s) is skipped:
-#                          it names a file the card makes.
+#                          branch of the card's own repo (with --bodies, the
+#                          <dir>/<id>.repo file names it). Lines under a
+#                          "## Creates" heading are skipped: they name files
+#                          the card makes.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 a card could not be read.
 
@@ -147,15 +149,37 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
   ' "$F"; fi)
 
-  # missing-file
-  if [ -n "$DEFBR" ]; then
+  # missing-file: in the card's own repo. A card whose repo differs from the
+  # board repo (<dir>/<id>.repo, written by import-plan.sh) is checked on that
+  # repo's default branch through gh; any other card on this checkout's.
+  crepo=""; [ -r "$BODIES/$id.repo" ] && crepo="$(tr -d '\r\n' < "$BODIES/$id.repo")"
+  remote=0; [ -n "$crepo" ] && [ "$crepo" != "$REPO" ] && remote=1
+  rbr=""; rdone=0
+  # the remote default branch is looked up on the first path to check, so a card with none makes no gh call
+  rbranch() {
+    [ "$FILECHECK" -eq 1 ] || return 1
+    if [ "$remote" -eq 0 ]; then rbr="$DEFBR"
+    elif [ "$rdone" -eq 0 ]; then rdone=1; rbr="$(gh repo view "$crepo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)" || rbr=""; fi
+    [ -n "$rbr" ]
+  }
+  if [ "$FILECHECK" -eq 1 ]; then
+    inc=0
     while IFS= read -r line; do
-      grep -Eiq '(^|[^[:alpha:]])(create[sd]?|new|adds?)([^[:alpha:]]|$)' <<<"$line" && continue
+      case "$line" in
+        '##'*) if grep -Eiq '^##[ \t]+Creates[ \t]*$' <<<"$line"; then inc=1; else inc=0; fi; continue ;;
+      esac
+      [ "$inc" -eq 1 ] && continue
       while IFS= read -r span; do
         p="${span#\`}"; p="${p%\`}"
         grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
         case "$p" in http*|*..*) continue ;; esac
-        git -C "$ROOT" cat-file -e "$DEFBR:$p" 2>/dev/null || emit "$id" missing-file "$p is not on $DEFBR"
+        rbranch || continue
+        where="$rbr"; [ "$remote" -eq 1 ] && where="$rbr of $crepo"
+        if [ "$remote" -eq 1 ]; then
+          gh api "repos/$crepo/contents/$p?ref=$rbr" >/dev/null 2>&1 || emit "$id" missing-file "$p is not on $where"
+        else
+          git -C "$ROOT" cat-file -e "$rbr:$p" 2>/dev/null || emit "$id" missing-file "$p is not on $where"
+        fi
       done < <(grep -Eo '`[^`]+`' <<<"$line")
     done < "$F"
   fi

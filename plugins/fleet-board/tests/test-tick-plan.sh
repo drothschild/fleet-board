@@ -1003,6 +1003,61 @@ grep -qF 'commands.preflight' "$SCRIPT_DIR/../docs/config.md" \
   && pass "preflight-docs: docs/config.md names commands.preflight" \
   || fail "preflight-docs: docs/config.md names commands.preflight" "grep -F found nothing"
 
+# ---------------------------------------------------------------------------
+# Re-review instead of fixing again (not_reproducible, and a card returned
+# from Blocked). Variants of in-review-fix with a different note, built at run
+# time under a temp tree that links the shared fixtures.
+VROOT="$(mktemp -d)"
+CLEANUP_DIRS+=("$VROOT")
+mkdir -p "$VROOT/tick"
+ln -s "$TICK/common" "$VROOT/tick/common"
+ln -s "$SCRIPT_DIR/../fixtures/gh/labels" "$VROOT/labels"
+
+# variant <name> <pr json file under common> <note json>
+variant() {
+  local d="$VROOT/tick/$1"
+  mkdir -p "$d"
+  sed "s#comments-12.json#$d/comments-12.json#; s#\.\./common/pr-34-draft.json#../common/$2#" "$TICK/in-review-fix/routes" > "$d/routes"
+  jq -c --argjson note "$3" '
+    .[1].body = ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\n\n```json\n" + ($note | tojson) + "\n```\n")
+  ' "$TICK/in-review-fix/comments-12.json" > "$d/comments-12.json"
+  TICK="$VROOT/tick" plan "$1"
+}
+LR='"last_review":{"round":1,"sha":"abc1234","critical":0,"important":1,"findings":[{"severity":"Important","text":"subtract ignores negatives"}]}'
+BASE_NOTE='"branch":"fleet/12-add-subtract","pr":34,"round":1'
+
+# The latest fixer report is not_reproducible: plan review, not fix
+variant fixer-not-reproducible pr-34-draft.json \
+  "{\"state\":\"in_review\",$BASE_NOTE,$LR,\"last_fix\":{\"status\":\"not_reproducible\",\"round\":1}}"
+assert_exit "fixer-not-reproducible: exit" 0
+assert_jq "fixer-not-reproducible: action" "$(card 12 action)" '"review"'
+assert_jq "fixer-not-reproducible: dispatchable" '.dispatchable' 'true'
+
+# A fixer report that was a plain failure (blocked) still plans fix
+variant fixer-blocked-last-fix pr-34-draft.json \
+  "{\"state\":\"in_review\",$BASE_NOTE,$LR,\"last_fix\":{\"status\":\"blocked\",\"round\":1}}"
+assert_jq "fixer-blocked-last-fix: action stays fix" "$(card 12 action)" '"fix"'
+
+# Returned from Blocked to In review: the note still says blocked, the head is
+# the reviewed head, and an Important finding is open
+variant returned-from-blocked pr-34-draft.json \
+  "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
+assert_exit "returned-from-blocked: exit" 0
+assert_jq "returned-from-blocked: action" "$(card 12 action)" '"review"'
+assert_jq "returned-from-blocked: dispatchable" '.dispatchable' 'true'
+
+# The head moved after the finding: unchanged from today (review, same reason)
+variant returned-head-moved pr-34-draft-head-moved.json \
+  "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
+assert_jq "returned-head-moved: action" "$(card 12 action)" '"review"'
+assert_jq "returned-head-moved: reason is today's head-moved reason" "$(card 12 reason)" \
+  '"PR head def5678 differs from the round 1 review at abc1234; review the new commits before fixing again"'
+
+# An ordinary in-review card with an open finding and an unchanged head still fixes
+variant in-review-note-state pr-34-draft.json \
+  "{\"state\":\"in_review\",$BASE_NOTE,$LR}"
+assert_jq "in-review-note-state: action stays fix" "$(card 12 action)" '"fix"'
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra
@@ -1209,6 +1264,21 @@ run_check "$NEXT_STUB/tick-plan.sh"
 assert_jq "no_stages_no_next_lookup control: lookup failed (match runs first)" "$(card 12 reason)" '"lookup failed: review-stages.sh match 34"'
 assert_eq "no_stages_no_match_lookup: the stub ran match first" "$(sed -n 1p "$NEXT_STUB/next-calls")" "match 34"
 assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
+
+provider_models='models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }
+  escalation: opus'
+zero_price='reviewer codex/gpt-6-astra has price 0; max_cost_usd does not count its spend'
+plan escalation-round2 "$provider_models"
+assert_exit "provider reviewer: planner exits 0" 0
+assert_jq "provider reviewer: passes merged object through" "$(card 12 models.reviewer)" '{"provider":"codex","model":"gpt-6-astra","price":{"input":0,"output":0},"timeout":1500}'
+assert_jq "provider reviewer: escalation applies to both writers" "$(card 12 models) | [.implementor,.fixer]" '["opus","opus"]'
+assert_jq "provider reviewer: only the zero price warning" '.warnings' "$(warns_json "$zero_price")"
+plan escalation-round2 "$provider_models
+  implementor: gpt-6-astra"
+assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | select(startswith("implementor and reviewer share model gpt-6-astra"))] | length' 1
+plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
+assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
