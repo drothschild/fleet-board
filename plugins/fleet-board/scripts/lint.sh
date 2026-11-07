@@ -12,17 +12,19 @@
 # Prints one line per violation, "#<id>: <rule>: <detail>", and exits 1; prints
 # nothing and exits 0 when every card passes. Rules:
 #   (all of card-lint.sh's rules: no-heading, no-bullets, manual-check; this
-#    script runs card-lint.sh --body-file on each card rather than reimplement them)
-#   untestable-bullet      an Acceptance bullet holds "manual", "manually",
+#    script runs card-lint.sh on each card's fields (--read-file) rather than
+#    reimplement them; with --bodies it lints the file as a body)
+#   untestable-bullet      an acceptance item holds "manual", "manually",
 #                          "visually" or "looks"; it is not a testable assertion.
-#   dependency-cycle       the card is in a cycle of "## Depends on" references
+#   dependency-cycle       the card is in a cycle of blocked_by references
 #                          among the linted cards; the detail names every card in it.
-#   unresolved-dependency  a "## Depends on" reference (#n or board.repo#n) is
+#   unresolved-dependency  a blocked_by reference (a card number) is
 #                          neither a linted card nor a card file under
 #                          board.dir. A reference to another repo is outside
 #                          this board: it is not checked; card creation keeps
 #                          it in the body as prose.
-#   missing-file           a backticked path (dir/name.ext) is not on the default
+#   missing-file           a backticked path (dir/name.ext; in the body or an
+#                          acceptance item) is not on the default
 #                          branch of the card's own repo (with --bodies, the
 #                          <dir>/<id>.repo file names it). Lines under a
 #                          "## Creates" heading are skipped: they name files
@@ -83,7 +85,7 @@ else
   for id in ${IDS[@]+"${IDS[@]}"}; do
     fb_valid_number "$id" || fb_die 2 "card number must be numeric, got: $id"
     READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$id")" || fb_die 3 "cannot read card #$id"
-    jq -r '.body // ""' <<<"$READ" | tr -d '\r' > "$WORK/$id.md" || fb_die 3 "cannot parse card #$id"
+    fb_card_text "$READ" | tr -d '\r' > "$WORK/$id.md" || fb_die 3 "cannot parse card #$id"
     # a card is linted on its fields (see card-lint.sh --read-file)
     printf '%s\n' "$READ" > "$WORK/$id.read"
   done

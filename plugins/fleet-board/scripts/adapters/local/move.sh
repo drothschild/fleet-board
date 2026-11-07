@@ -9,7 +9,7 @@ fl_require_store
 fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
 if [ "$TARGET" = ready ] && ! fb_card_has_acceptance "$CARD"; then
-  fb_die 1 "card #$N has no '## Acceptance' section; refusing to move it to ready"
+  fb_die 1 "card #$N has no acceptance criteria (its acceptance field is empty); refusing to move it to ready"
 fi
 [ "$(jq -r '.state // ""' <<<"$CARD")" = "$TARGET" ] && exit 0
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"

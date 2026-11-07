@@ -133,6 +133,15 @@ newset; card 1 "$GOOD\n## Scope\n- edit \`src/real.js\`\n"
 run_lint
 check "existing file passes" "$RC" "0"
 
+echo "# missing-file: a path in an acceptance item (board path)"
+jq -n '{number: 9, title: "t", body: "Prose only.\n", acceptance: ["`src/gone.js` exports clamp", "`src/real.js` is untouched"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+  > "$ROOT/.fleet-board/cards/9.json"
+BOUT="$(cd "$ROOT" && PATH="$STUBS:$PATH" bash "$SCRIPT" 9 2>"$SB/err")"; BRC=$?
+check "board card: a missing path in an acceptance item exits 1" "$BRC" "1"
+has "board card: missing-file names the path from the acceptance field" "$BOUT" "src/gone.js"
+hasnt "board card: an existing path in an acceptance item is not reported" "$BOUT" "src/real.js"
+rm -f "$ROOT/.fleet-board/cards/9.json"
+
 echo "# missing-file: ## Creates heading, not create/new/add wording"
 newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
 run_lint

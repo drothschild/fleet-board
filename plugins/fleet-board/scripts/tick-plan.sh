@@ -95,8 +95,8 @@
 # note.sh merge refuses to write over an invalid note, so no action could
 # record its effect (an attempt count, a round), and the card would loop.
 #
-# Dependency gate: a ready card with an Acceptance section and any unmet
-# dependency (its "## Depends on" bullets) gets action wait, with reason
+# Dependency gate: a ready card with acceptance criteria and any unmet
+# dependency (its blocked_by field) gets action wait, with reason
 # "waits for <ref> (<state or column>)[, <ref> (...)]", and stays in ready.
 # The card's waiting_on lists the unmet refs (null for any other card). Only
 # ready cards are gated; the card is not dispatchable for itself, while the
@@ -714,8 +714,8 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
           if $c.has_acceptance then
             if ($c.deps_unmet | length) > 0
             then act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))")
-            else act("start"; "ready, with an Acceptance section") end
-          else act("skip_no_acceptance"; "no ## Acceptance section") end
+            else act("start"; "ready, with acceptance criteria") end
+          else act("skip_no_acceptance"; "no acceptance criteria") end
         elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
              and ($c.pr_info.state // null) == "OPEN" and $c.mergeable == "CONFLICTING"
           then act("update_branch"; "PR #\($c.pr) has merge conflicts with its base branch")

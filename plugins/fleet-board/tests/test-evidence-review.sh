@@ -156,6 +156,15 @@ for input in 'CARD BODY' 'PR DIFF' 'IMPLEMENTOR REPORT' 'PRIOR FINDING' "Review 
   check "round 2 prompt includes $input" grep -Fq "$input" "$FAKE_REVIEWER_DIR/prompt.1"
 done
 
+# the production path: no --card-file, the card is read from the board and its
+# acceptance field reaches the reviewer as an "## Acceptance" section
+setup
+rc=0
+bash "$SCRIPT" "$card" 7 --round 1 --diff-file "$TMP/diff" --impl-report "$TMP/impl" --no-post > "$TMP/out" 2> "$TMP/err" || rc=$?
+check "board path (no --card-file) exits 0" test "$rc" = 0
+check "board path prompt has the Acceptance heading" grep -Fxq '## Acceptance' "$FAKE_REVIEWER_DIR/prompt.1"
+check "board path prompt has the acceptance item from the field" grep -Fxq -- '- behavior' "$FAKE_REVIEWER_DIR/prompt.1"
+
 setup
 printf 'write %s/feature\nreply good\n' "$PWD" > "$FAKE_REVIEWER_SCRIPT.1"
 run

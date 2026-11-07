@@ -186,6 +186,16 @@ fb_card_has_acceptance() {
   jq -e '(.acceptance | type) == "array" and (.acceptance | length) > 0' <<<"$1" >/dev/null 2>&1
 }
 
+# fb_card_text <board-read-json>: the card as text for a reader that scans
+# prose (the reviewers, lint's missing-file scan): the body with its trailing
+# newlines trimmed, then "## Acceptance" and one "- " line per acceptance item
+# when there are any. Prints nothing extra for a card without acceptance.
+fb_card_text() {
+  jq -r '((.body // "") | sub("\n+$"; "")) as $b | ((.acceptance // []) | map(select(type == "string"))) as $a
+    | if ($a | length) == 0 then (.body // "")
+      else (if $b == "" then "" else $b + "\n\n" end) + "## Acceptance\n" + ($a | map("- " + .) | join("\n")) + "\n" end' <<<"$1"
+}
+
 # fb_list_limit DEFAULT: the --limit import-github.sh passes to its gh list
 # calls, FLEET_BOARD_LIST_LIMIT when set. Dies (1) on a value that is not a
 # positive integer. Callers run it in $(...), so they must add `|| exit 1`.
