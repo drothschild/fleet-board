@@ -458,17 +458,27 @@ assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 # migration
 setup_case
 seed_card 1 backlog 'Old one' $'Why\n\n## Acceptance\n- a1\n- a2\n\n## Depends on\n- #2\n- other/repo#3\n'
-seed_card 2 in_review 'Old two' 'Prose only'; echo 3 > "$REPO/.fleet-board/next"
-jq --arg m '<!-- fleet-board:manager-note -->' '.comments = [{id:1, author:"x", body:($m + "\n### note\n\n```json\n{\"state\":\"in_review\",\"pr\":12}\n```\n"), created_at:"2026-01-01T00:00:00Z"}] | .next_comment_id = 2' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+seed_card 2 in_review 'Old two' 'Prose only'
+seed_card 3 in_review 'Old three' 'Prose only'
+seed_card 4 backlog 'Old four' $'Why\n\n## Depends on\n- #1\n- #4\n- #99\n'
+echo 5 > "$REPO/.fleet-board/next"
+jq --arg m '<!-- fleet-board:manager-note -->' '.comments = [{id:1, author:"mallory", body:($m + "\n### note\n\n```json\n{\"state\":\"in_review\",\"pr\":77}\n```\n"), created_at:"2026-01-01T00:00:00Z"}] | .next_comment_id = 2' "$REPO/.fleet-board/cards/3.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/3.json"
+jq --arg m '<!-- fleet-board:manager-note -->' '.comments = [{id:1, author:"robot", body:($m + "\n### note\n\n```json\n{\"state\":\"in_review\",\"pr\":12}\n```\n"), created_at:"2026-01-01T00:00:00Z"}] | .next_comment_id = 2' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.before"
-run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh" --dry-run
+FLEET_BOARD_USER=robot run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh" --dry-run
 assert_exit "migrate --dry-run exit 0" 0
 assert_stdout_contains "dry run names card 1" "#1"
 assert_stdout_contains "dry run names card 2" "#2"
 assert_stderr_contains "dry run warns on the outside ref" "other/repo#3"
 cmp -s "$REPO/c1.before" "$REPO/.fleet-board/cards/1.json" && pass "dry run writes nothing" || fail "dry run writes nothing" "card 1 changed"
-run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
+FLEET_BOARD_USER=robot run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
 assert_exit "migrate exit 0" 0
+assert_card_json 3 '.pr_url' null
+assert_card_json 3 '.pr_url_source' null
+assert_card_json 4 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 4 '.body|contains("Depends on (outside this board): #4")' true
+assert_card_json 4 '.body|contains("Depends on (outside this board): #99")' true
+assert_stderr_contains "migrate warns on a missing blocker" "#99"
 assert_card_json 1 '.acceptance|join("|")' 'a1|a2'
 assert_card_json 1 '.blocked_by|map(tostring)|join(",")' 2
 assert_card_json 1 '.pr_url' null
@@ -483,7 +493,7 @@ run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
 assert_json "migrated read body has no Acceptance section" '.body|contains("## Acceptance")' false
 assert_json "migrated read returns the acceptance field" '.acceptance|join("|")' 'a1|a2'
 cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.after"; cp "$REPO/.fleet-board/cards/2.json" "$REPO/c2.after"
-run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
+FLEET_BOARD_USER=robot run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
 assert_exit "second migrate exit 0" 0
 assert_stdout_exact "second migrate changes nothing" ""
 cmp -s "$REPO/c1.after" "$REPO/.fleet-board/cards/1.json" && cmp -s "$REPO/c2.after" "$REPO/.fleet-board/cards/2.json" && pass "second migrate leaves the files identical" || fail "second migrate leaves the files identical" "a card changed"
