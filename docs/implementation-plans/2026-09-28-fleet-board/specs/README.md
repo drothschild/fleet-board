@@ -1907,3 +1907,13 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 **Revision cost:** $0.4933. **Running total, all API-key charges:** ~$42.47: Revision 17's ~$41.29, plus card 115's $0.0696 and Revision 18's $0.6183 (both counted in Revision 18's ~$41.13, which left out Revision 17), plus this revision.
 
 **Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
+
+### Revision 19 (2026-11-06, card 149): settle and clean up after each tick
+
+**Cause.** The headless wrapper runs `settle.sh` and then `cleanup-done.sh` after each successful tick; the `run` skill ran neither, so an interactive run left done cards' worktrees on disk (34 worktrees, 8.2 GB on one repo) and board moves waited a tick.
+
+**Spec and brief changes** (hand edits to the text): `specs/run.md` (new step 7a, the Must never exception for those two scripts, an Output bullet) and a "Revision 19" bullet in `briefs/spec-req-run.md`.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `< /dev/null`, cwd `plugins/fleet-board/`, only `--add-dir` a staging dir holding the revised spec and the edit request. The init event listed only the four built-in `cc-plugin-*` plugins and the tools `Edit` and `Read`. Cost: $0.1024. The repo owner approved the spend on the card.
+
+Manifest hash updated for `skills/run/SKILL.md`. Plugin version 0.14.0 to 0.14.1. `tests/test-run.sh` greps the skill, spec and brief for both scripts, in order, and the warning.

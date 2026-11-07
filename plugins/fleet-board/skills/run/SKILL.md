@@ -8,7 +8,7 @@ user-invocable: true
 
 ## Principle
 
-This skill is a loop around the `tick` skill and nothing more. It runs one tick at a time through the Skill tool, waits the configured `limits.tick_interval` seconds between ticks, and stops when a tick reports `dispatchable: false`, when `<repo root>/.fleet-board.stop` exists, or when a tick gives no stop signal. It does none of the tick's or the manager's work itself, sets no limits of its own, and never guesses a stop signal. After every tick it prints one summary line, and when it ends it prints one final line saying why.
+This skill is a loop around the `tick` skill and nothing more. It runs one tick at a time through the Skill tool, waits the configured `limits.tick_interval` seconds between ticks, and stops when a tick reports `dispatchable: false`, when `<repo root>/.fleet-board.stop` exists, or when a tick gives no stop signal. It does none of the tick's or the manager's work itself, sets no limits of its own, and never guesses a stop signal. After every tick it prints one summary line, then runs `settle.sh` and `cleanup-done.sh` (a failure there only warns), and when it ends it prints one final line saying why.
 
 ## Locating the scripts
 
@@ -51,6 +51,12 @@ The skill takes no arguments. Ignore any words after `/fleet-board:run` for cont
 
    `<cost>` is the report's `cost_estimate_usd` value, exactly as the report gives it. If the report has no cost estimate, `<cost>` is the literal `cost n/a`.
 
+7a. **Settle and clean up.** Only after a tick that gave a stop signal (step 6), and after the summary line, run these two scripts one after the other, from the repo root, in the foreground, each with `bash`:
+    - First `bash "<base directory>/../../scripts/settle.sh"`, which moves the cards whose next step starts no agent.
+    - Then `bash "<base directory>/../../scripts/cleanup-done.sh"`, which removes the worktrees of done cards.
+    - If either fails (a non-zero exit, or it could not be run), print one line starting `warning:` that names the script and its exit code. Do not stop the loop: still run the other script, and go on to step 8 or 9 as if the script had succeeded.
+    - A failed tick (step 6) runs neither script.
+
 8. **Stop when nothing is dispatchable.** If the signal is `dispatchable: false`, print `stopped: nothing dispatchable after <i> ticks` and stop.
 
 9. **Announce the wait.** If the signal is `dispatchable: true`, print one line saying the next tick starts after `N` seconds and that creating `<repo root>/.fleet-board.stop` stops the loop, for example:
@@ -89,6 +95,7 @@ Print this, in order, and nothing else:
 2. For each tick `i` (1, 2, …):
    - The tick's report, as the `tick` skill returned it.
    - `tick <i>: dispatchable: <true|false>, <cost_estimate_usd value or "cost n/a">`
+   - The output of `settle.sh` and `cleanup-done.sh`, and a `warning:` line for each that failed.
    - If the loop continues, one line saying the next tick starts after `<N>` seconds and that `<repo root>/.fleet-board.stop` stops the loop.
 3. One final line, exactly one of:
    - `stopped: nothing dispatchable after <i> ticks`
@@ -111,7 +118,7 @@ stopped: nothing dispatchable after 2 ticks
 - Never create, modify or delete `.fleet-board.stop`.
 - Never create or edit `.fleet-board.yml`, and never proceed with any tick when `config.sh` exits non-zero.
 - Never do any of the tick's or the manager's work yourself:
-  - Never run `tick-plan.sh` or any `board-*.sh` script.
+  - Never run `tick-plan.sh` or any `board-*.sh` script. The only scripts you run, besides `config.sh`, are `settle.sh` and `cleanup-done.sh` in step 7a.
   - Never move, comment on or note a card.
   - Never run `gh` against issues, projects or PRs.
   - Never create worktrees.

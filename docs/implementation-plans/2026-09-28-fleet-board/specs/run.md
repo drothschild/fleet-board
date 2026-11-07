@@ -51,6 +51,11 @@ Frontmatter holds exactly `name: run`, the `description` above, and `user-invoca
    - `<cost>` is the report's `cost_estimate_usd` value, as the report gives it.
    - If the report has no cost estimate, `<cost>` is the literal `cost n/a`.
    - On a failed tick (step 6) the summary line is not printed. Only the `stopped:` line is.
+7a. **Settle and clean up.** Only after a tick that gave a stop signal (step 6), and after the summary line, run these two scripts one after the other, from the repo root, in the foreground, each with `bash`:
+    - First `bash "<base directory>/../../scripts/settle.sh"`, which moves the cards whose next step starts no agent.
+    - Then `bash "<base directory>/../../scripts/cleanup-done.sh"`, which removes the worktrees of done cards.
+    - A failure of either (a non-zero exit, or it could not be run) prints one line starting `warning:` that names the script and its exit code. It does not stop the loop: the other script still runs, and the loop goes on to step 8 or 9 as if the script had succeeded.
+    - A failed tick (step 6) runs neither script.
 8. **Stop when nothing is dispatchable.** If the signal is `dispatchable: false`, print `stopped: nothing dispatchable after <i> ticks` and stop.
 9. **Announce the wait.** If the signal is `dispatchable: true`, print a line saying that the next tick will start after `N` seconds and that creating `<repo root>/.fleet-board.stop` will stop the loop.
 10. **Sleep in bounded chunks.**
@@ -73,7 +78,7 @@ Frontmatter holds exactly `name: run`, the `description` above, and `user-invoca
 - Create, modify or delete `.fleet-board.stop`.
 - Create or edit `.fleet-board.yml`, or proceed with any tick when `config.sh` exits non-zero.
 - Do any of the tick's or the manager's work itself:
-  - It never runs `tick-plan.sh` or any `board-*.sh` script.
+  - It never runs `tick-plan.sh` or any `board-*.sh` script. The only scripts it runs, besides `config.sh`, are `settle.sh` and `cleanup-done.sh` in step 7a.
   - It never moves, comments on or notes a card.
   - It never runs `gh` against issues, projects or PRs.
   - It never creates worktrees.
@@ -100,6 +105,7 @@ This is printed in order, and nothing else:
 2. For each tick `i` (1, 2, …):
    - The tick's report, as the `tick` skill returned it.
    - `tick <i>: dispatchable: <true|false>, <cost_estimate_usd value or "cost n/a">`
+   - The output of `settle.sh` and `cleanup-done.sh`, and a `warning:` line for each that failed.
    - If the loop continues, one line saying the next tick starts after `<N>` seconds and that `<repo root>/.fleet-board.stop` stops the loop.
 3. One final line, exactly one of:
    - `stopped: nothing dispatchable after <i> ticks`

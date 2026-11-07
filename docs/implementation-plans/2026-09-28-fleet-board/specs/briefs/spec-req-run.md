@@ -54,6 +54,8 @@ Clarifications (the spec must carry each):
 
 - **Revision 15 (card 152): a tick finishes when its report arrives.** The `tick` skill may have to wait for a background manager's completion notice, so the Skill tool can return before the report exists. The spec must say a tick is finished only once its report has arrived, and that the loop never starts the next tick, reads a stop signal, or prints the summary before then. A launch acknowledgement is a tick still in progress, not a failed tick.
 
+- **Revision 19 (card 149): settle and clean up after each tick.** The headless wrapper runs `settle.sh` and then `cleanup-done.sh` after each successful tick; the in-session loop must too. After each tick that gives a stop signal (step 6 of the spec, `dispatchable: true` or `false`), after the per-tick summary line and before the stop test on `dispatchable: false`, the loop runs, from the repo root, `bash "<base directory>/../../scripts/settle.sh"` and then `bash "<base directory>/../../scripts/cleanup-done.sh"`, one after the other, in the foreground. A failure of either (a non-zero exit or no way to run it) prints one line starting `warning:` naming the script and its exit code, and does not stop the loop: the other script still runs, and the loop goes on to its next step as if the script had succeeded. A failed tick (no stop signal) runs neither. These two scripts are the only scripts the loop runs apart from `config.sh`; the prohibition on `board-*.sh` and `tick-plan.sh` stands. The Must never list makes this exception explicit.
+
 ## Acceptance criteria
 
 None directly. (The headless wrapper, not this skill, carries AC6.5.)

@@ -46,7 +46,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
 
 4. **Write one small card**: an issue with an `## Acceptance` section of testable `- ` bullets (see [Writing a card](#writing-a-card)). Add `needs-human-qa` to check the result by hand before any PR is marked ready.
 5. **Label it `fleet:ready`.**
-6. **Run `/fleet-board:tick`** a few times, or `/fleet-board:run` to keep going until nothing is left. Each tick ends its report with `dispatchable: true` or `false`.
+6. **Run `/fleet-board:tick`** a few times, or `/fleet-board:run` to keep going until nothing is left (it settles the board and cleans up done worktrees after each tick). Each tick ends its report with `dispatchable: true` or `false`.
 7. **Watch it move.** With a clean review:
 
    | After | Card | What appears |
@@ -161,7 +161,7 @@ The headless wrapper runs ticks one after another until the board is settled or 
 bash <path from /fleet-board:status> --repo .
 ```
 
-After each successful tick the wrapper also runs `scripts/settle.sh`, a plain shell script that starts no Claude session. It moves the cards whose next step needs no agent (for example a clean review to Human QA) right away instead of a whole tick later. It never merges and never moves a card out of Human QA. A person's interactive `/fleet-board:tick` does not run it.
+After each successful tick the wrapper also runs `scripts/settle.sh`, a plain shell script that starts no Claude session. It moves the cards whose next step needs no agent (for example a clean review to Human QA) right away instead of a whole tick later. It never merges and never moves a card out of Human QA. The in-session `/fleet-board:run` loop does the same after each tick that gives a stop signal: it runs `settle.sh`, then `cleanup-done.sh` (which removes the worktrees of done cards), and a failure of either prints a warning and does not stop the loop. A single `/fleet-board:tick` runs neither.
 
 Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Under `merge.policy: auto` an overnight run merges reviewed, non-draft, green PRs itself and moves their cards to Done; under `human` (the default) it merges nothing. Stop reasons, exit codes, the run log, cost estimates and scheduling with launchd are in [docs/overnight.md](docs/overnight.md).
 
