@@ -10,7 +10,7 @@
 # with the values from the card's manager note and "—" for a missing one
 # ("PR —" when there is no PR). An empty section prints "(none)". A card
 # whose note cannot be read prints "#<n> <title> · note unreadable".
-# A ready card with an Acceptance section and unmet dependencies (deps.sh)
+# A ready card with acceptance items and unmet blockers (deps.sh)
 # ends its line with " · waits for <ref> (<state or column>)[, ...]", the
 # reason tick-plan.sh plans wait with; if they cannot be looked up, with
 # " · dependencies unreadable" (exit 1).

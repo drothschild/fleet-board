@@ -554,8 +554,8 @@ assert_jq "action-failures: blocked 2 of 3: no warning" '.warnings' '[]'
 plan action-failures-blocked
 assert_exit "action-failures: blocked 3 of 3: exit" 0
 assert_jq "action-failures: blocked 3 of 3 -> skip" "$(card 20 action)" '"skip"'
-assert_jq "action-failures: blocked 3 of 3: reason" "$(card 20 reason)" '"unblock made no progress after 3 attempts: card #20 has no '"'"'## Acceptance'"'"' section"'
-assert_jq "action-failures: blocked 3 of 3: warning" '.warnings' "$(warns_json "#20: unblock made no progress after 3 attempts: card #20 has no '## Acceptance' section; move the card by hand, then run: bash $SCRIPTS_ABS/note.sh reset-failures 20")"
+assert_jq "action-failures: blocked 3 of 3: reason" "$(card 20 reason)" '"unblock made no progress after 3 attempts: card #20 has no acceptance criteria"'
+assert_jq "action-failures: blocked 3 of 3: warning" '.warnings' "$(warns_json "#20: unblock made no progress after 3 attempts: card #20 has no acceptance criteria; move the card by hand, then run: bash $SCRIPTS_ABS/note.sh reset-failures 20")"
 assert_jq "action-failures: blocked 3 of 3: dispatchable" '.dispatchable' 'false'
 plan action-failures-blocked "$(printf 'review:\n  max_rounds: 5')"
 assert_jq "action-failures: blocked 3 of max_rounds 5 -> unblock" "$(card 20 action)" '"unblock"'
@@ -627,7 +627,7 @@ setup_case action-failures-blocked
 run_check "$SPACED/scripts/tick-plan.sh"
 assert_exit "action-failures: scripts dir with a space: exit" 0
 assert_jq "action-failures: scripts dir with a space: warning quotes the command path" '.warnings' \
-  "$(warns_json "#20: unblock made no progress after 3 attempts: card #20 has no '## Acceptance' section; move the card by hand, then run: bash '$SPACED/scripts/note.sh' reset-failures 20")"
+  "$(warns_json "#20: unblock made no progress after 3 attempts: card #20 has no acceptance criteria; move the card by hand, then run: bash '$SPACED/scripts/note.sh' reset-failures 20")"
 
 # A column that cannot be listed fails the whole plan
 plan list-failure
@@ -635,7 +635,7 @@ assert_exit "list-failure: exit 1" 1
 assert_stdout_exact "list-failure: no plan printed" ""
 
 # ---------------------------------------------------------------------------
-# Dependency gate: a Ready card with an unmet "## Depends on" waits
+# Dependency gate: a Ready card with an unmet blocker (blocked_by) waits
 
 plan deps-wait
 assert_exit "deps-wait: exit" 0

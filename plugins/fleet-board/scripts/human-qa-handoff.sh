@@ -4,7 +4,7 @@
 # Usage: human-qa-handoff.sh [--qa-summary <file>] <card-n> <pr-n>
 #
 # The comment is headed "What to check in Human QA" and holds:
-#   - the card's ## Acceptance section as a blockquote;
+#   - the card's acceptance items as a blockquote;
 #   - a checklist of the pre-merge steps a person must do, from the PR's state
 #     (draft, conflicting, no checks) and each bullet of the card's
 #     ## Human QA section. No steps means no checklist at all;
