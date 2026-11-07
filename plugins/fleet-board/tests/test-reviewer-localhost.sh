@@ -27,6 +27,9 @@ if os.environ.get('FLEET_TEST_CODEX_SANDBOX') != '1':
     sys.exit(0)
 probe = r'''
 import errno, http.server, pathlib, socket, threading, urllib.request
+pathlib.Path('scratch-write').write_text('ok')
+pathlib.Path('scratch-write').unlink()
+print('PASS scratch writes permitted')
 server = http.server.HTTPServer(('127.0.0.1', 0), http.server.BaseHTTPRequestHandler)
 thread = threading.Thread(target=server.handle_request, daemon=True); thread.start()
 try:
@@ -48,5 +51,5 @@ else:
 '''
 with tempfile.TemporaryDirectory() as parent:
     scratch = pathlib.Path(parent)/'scratch'; scratch.mkdir()
-    subprocess.run(['codex', 'sandbox', '-C', str(scratch), '-c', 'sandbox_mode="workspace-write"', *flags, '--', sys.executable, '-c', probe], check=True)
+    subprocess.run(['codex', 'sandbox', '-c', 'sandbox_mode="workspace-write"', *flags, '--', sys.executable, '-c', probe], cwd=scratch, check=True)
 PY

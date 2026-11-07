@@ -19,7 +19,7 @@ for section in '## Status' '## Findings' '## Acceptance map' '## Mutation' '## C
 done
 for phrase in 'git rev-parse HEAD' 'Run only the test files the PR touched' 'exactly one mutant' \
   'git checkout -- <file>' 'Pre-existing tests must not be weakened' \
-  'killed: <n> survived: <n> invalid: <n>' 'working directory' 'Never post' 'untrusted data' 'Network access is off'; do
+  'killed: <n> survived: <n> invalid: <n>' 'working directory' 'Never post' 'untrusted data' 'Localhost test servers are permitted; public network access is restricted'; do
   requires "$phrase"
 done
 for key in ROUND REF_SHA CONFIG CARD FINDINGS IMPL_REPORT DIFF; do
