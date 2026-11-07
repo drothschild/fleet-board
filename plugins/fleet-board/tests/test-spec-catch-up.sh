@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Card 115: rules that PRs added to clean-room files by hand must also be in their specs, so a full
 # regeneration from the spec keeps them. Checks specs/manager.md (and agents/manager.md), specs/status.md
-# (and skills/status/SKILL.md), the Revision 21 audit record, and the version bump.
+# (and skills/status/SKILL.md), the Revision 23 audit record, and the version bump.
 set -u
 unset CDPATH
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -66,17 +66,17 @@ if [ -f "$SPECS/status.md" ]; then
   has "spec: --forecast prints the nothing-to-warn line" "$SPECS/status.md" 'forecast: nothing to warn about'
   has "spec: --forecast output is passed through verbatim" "$SPECS/status.md" 'forecast output'
   has "brief: status requirements name --forecast" "$SPECS/briefs/spec-req-status.md" 'status.sh --forecast'
-  has "brief: manager requirements record the Revision 21 catch-up" "$SPECS/briefs/spec-req-manager.md" 'Revision 21'
+  has "brief: manager requirements record the Revision 23 catch-up" "$SPECS/briefs/spec-req-manager.md" 'Revision 23'
 
   # the audit record in specs/README.md
   R="$SPECS/README.md"
-  has "README: Revision 21 is recorded" "$R" '### Revision 21'
-  rev="$(awk '/^### Revision 21/{f=1;next} f&&/^### /{exit} f' "$R")"
+  has "README: Revision 23 is recorded" "$R" '### Revision 23'
+  rev="$(awk '/^### Revision 23/{f=1;next} f&&/^### /{exit} f' "$R")"
   for need in 'Brief sha256' 'Init sha256' 'Isolation' 'Path audit' 'Cost' 'Output sha256' 'Running total'; do
-    if printf '%s\n' "$rev" | grep -qF -e "$need"; then ok "README Revision 21 records: $need"; else bad "README Revision 21 records: $need"; fi
+    if printf '%s\n' "$rev" | grep -qF -e "$need"; then ok "README Revision 23 records: $need"; else bad "README Revision 23 records: $need"; fi
   done
   sk="$(shasum -a 256 "$PLUGIN/skills/status/SKILL.md" | cut -c1-16)"
-  if printf '%s\n' "$rev" | grep -qF "$sk"; then ok "README Revision 21 records the output sha256 of skills/status/SKILL.md ($sk)"; else bad "README Revision 21 records the output sha256 of skills/status/SKILL.md ($sk)"; fi
+  if printf '%s\n' "$rev" | grep -qF "$sk"; then ok "README Revision 23 records the output sha256 of skills/status/SKILL.md ($sk)"; else bad "README Revision 23 records the output sha256 of skills/status/SKILL.md ($sk)"; fi
 else
   echo "skip - no spec at $SPECS/status.md (installed plugin)"
 fi

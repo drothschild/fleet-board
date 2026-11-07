@@ -56,7 +56,7 @@ Clarifications (the spec must carry each):
 
 None directly (operator convenience; the design names a `status` skill).
 
-## Revision 21 requirements (2026-11-03: `--forecast`, added to the skill by hand in #76; these win over anything above)
+## Revision 23 requirements (2026-11-03: `--forecast`, added to the skill by hand in #76; these win over anything above)
 
 `status.sh` also takes `--forecast` (usage `status.sh [--all | --forecast]`, never both). It prints an overnight preflight instead of the board, reads every card in `ready`, `in_progress`, `in_review`, `human_qa`, `blocked` and `backlog`, and writes nothing. Its sections, each only when it has entries: the critical-path human gates (`needs-human-qa` cards that another Ready or Backlog card depends on), the dependencies needing a manual step (`needs-manual-step` cards that another Ready or Backlog card depends on), and the Ready cards waiting on Backlog. Then `can finish unattended: ...` and `run stops at: ...`. With no entry in the first three sections it prints the one line `forecast: nothing to warn about`. Exit codes are those of the board.
 

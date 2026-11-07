@@ -88,6 +88,24 @@ A stage is the state `review_<name>`, in config order between `in_review` and `h
 
 **A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider, and nothing else from the repo: it has no tools and no worktree, so it runs no tests.
 
+## `models.reviewer`
+
+A model string selects the Claude evidence reviewer and defaults to `opus`. To run
+evidence review through a command provider, configure it as follows.
+
+```yaml
+models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 }, timeout: 1500 }
+  escalation: opus
+```
+
+The provider must define a `review_command`. Set both non-negative prices and
+an escalation model. The timeout is an integer from 1 to 1500 seconds and
+defaults to 1500. Both attempts share this timeout. The Codex preset restricts
+writes to the scratch clone, where the runner sets the provider's `TMPDIR`.
+Custom review commands must provide equivalent isolation. With this form,
+each agent review stage must set its own model.
+
 ## `providers`
 
 A review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). A stage sets exactly one; `config.sh` exits 5 with `review.stages[<i>] must set exactly one of agent and provider` otherwise.
@@ -106,7 +124,7 @@ review:
       price: { input: 1.25, output: 10 }   # USD per million tokens
 ```
 
-Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a command provider, below); their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider a stage names or the file defines. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
+Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a command provider, below); their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider named by a stage or the evidence reviewer, or defined in the file. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
 
 | Key | Rule |
 |---|---|
@@ -115,12 +133,13 @@ Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a c
 | `api_key_env` | the name of an environment variable, matching `^[A-Z_][A-Z0-9_]*$`; `null` only for a loopback `base_url` |
 | `max_tokens_param` | `max_tokens` or `max_completion_tokens`; ignored when `command` is set |
 | `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
+| `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
 
 If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed every tick; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
 
 Config never holds a key. `api_key`, `key`, `token` and `secret` under a provider are rejected, and the message does not repeat the value.
 
-A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and keeps `model` defaulting to `models.reviewer`.
+A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and defaults `model` to `models.reviewer` when it is a string.
 
 **A command provider** (an entry with `command`, such as the `codex` preset) runs a local program instead of calling an HTTP API. `chat.sh` joins the prompt's system and user text, system first, and writes it to the command's stdin with the repo root as the working directory. Stdout is the reply; a non-zero exit or an empty stdout is a provider failure (exit 1, the command's stderr on stderr), and the stage's `timeout` applies to the command. The reply carries no token counts, so `stage-review.sh` records `input_tokens` and `output_tokens` as `null` in the ledger and counts `cost_usd` as 0; give such a stage `price: { input: 0, output: 0 }`. The model id must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, since it is placed into the command line. The `codex` preset is `codex exec --skip-git-repo-check -s read-only -m {model}`: it reviews under the Codex CLI's own login (a ChatGPT subscription, no API key) and needs `codex` on `PATH`.
 
@@ -135,7 +154,7 @@ review:
       price: { input: 0, output: 0 }
 ```
 
-**Data egress.** A provider stage sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider. A command provider sends the same card, findings, report and diff to the program it runs, and whatever that program forwards (the `codex` preset sends them to OpenAI through the Codex CLI). Use a provider only for repos whose code and cards you may send to it.
+**Data egress.** A provider stage sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider. A command provider sends the same card, findings, report and diff to the program it runs, and whatever that program forwards (the `codex` preset sends them to OpenAI through the Codex CLI). A Codex evidence reviewer can read the whole repository and sends what it reads to OpenAI through the Codex CLI. Use a provider only for repos whose code and cards you may send to it.
 
 ## `limits` for the headless wrapper
 
@@ -169,7 +188,7 @@ Both apply only when `board.backend` is `local`.
 
 **One step per tick.** Each tick, `tick-plan.sh` reads the Ready, In Progress, In Review and Blocked columns and picks exactly one action per card. The manager carries out those actions, dispatching up to `limits.concurrency` role agents at once, and prints the tick report.
 
-**Conflicting PRs.** An open PR on an In Progress or In Review card whose `gh pr view --json mergeable` answer is `CONFLICTING` gets the action `update_branch` from `tick-plan.sh` (reason `PR #<pr> has merge conflicts with its base branch`) instead of `start_review`, `review`, `fix` or any other action for that tick. The lookup is best effort: a failed or unreadable answer reads as unknown and plans nothing. `scripts/update-branch.sh <n> <pr> <branch> <worktree>` carries the action out: it fetches `origin`, merges `origin/<base>` into the branch with a merge commit and pushes with a plain `git push`; it never rebases and never force-pushes. A clean merge leaves the card in its column and adds `last_update` (`sha`, `base`, `changed`) to the manager note. It leaves the note's `last_review` as it is: a clean merge of the base needs no new review, and the next tick plans a `review` only when a commit after `last_review` is not a clean merge (see Reviewed heads). A merge that needs a manual resolution is aborted and not pushed; the script comments with the conflicted files and moves the card to Blocked. It never resolves a conflict itself.
+**Conflicting PRs.** An open PR on an In Progress or In Review card whose `gh pr view --json mergeable` answer is `CONFLICTING` gets the action `update_branch` from `tick-plan.sh` (reason `PR #<pr> has merge conflicts with its base branch`) instead of `start_review`, `review`, `fix` or any other action for that tick. The lookup is best effort: a failed or unreadable answer reads as unknown and plans nothing. `scripts/update-branch.sh <n> <pr> <branch> <worktree>` carries the action out: it fetches `origin`, merges `origin/<base>` into the branch with a merge commit and pushes with a plain `git push`; it never rebases and never force-pushes. A clean merge leaves the card in its column and adds `last_update` (`sha`, `base`, `changed`) to the manager note. It leaves the note's `last_review` as it is: a clean merge of the base needs no new review, and the next tick plans a `review` only when a commit after `last_review` is not a clean merge (see Reviewed heads). A merge that conflicts is aborted and not pushed; the script comments with the conflicted files, leaves the card where it is, adds `conflicted_files` (every file, test files included) to the manager note, counts the conflict toward `action_failures` and exits 1. It never resolves a conflict itself: a note with `conflicted_files` plans the action `fix` from `tick-plan.sh`, with one finding `merge conflict in <file>` per file, so the fixer re-runs the merge of the base, resolves every conflict and commits a merge commit (never a rebase or a force-push). In a conflict region of a test file the fixer keeps every test and assertion from both sides; when both cannot be kept, or a touched test fails after resolving, it reports `blocked`, pushes nothing, and the card moves to Blocked with the conflicted files named. A resolved merge resets `last_review`, so the next tick plans a `review`: a merge with conflict resolution never skips review.
 
 **The manager note.** The manager keeps no state between ticks. Everything it needs to resume a card lives in one comment on that card, starting `<!-- fleet-board:manager-note -->`, with a JSON block holding the branch, worktree, PR, review round, models and failure counts. Leave it alone unless the tick report asks for a `note.sh reset-failures` command.
 
