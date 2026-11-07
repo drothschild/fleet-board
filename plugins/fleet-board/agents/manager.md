@@ -96,7 +96,7 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
      - the card number, title and body;
      - the PR number;
      - the worktree path (the plan card's `worktree`, on the PR branch);
-     - the findings list: `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`;
+     - the findings list: for a conflict dispatch (2.9a), the plan card's `findings`; otherwise `note.last_review.findings` filtered to Critical and Important. Write each as `- [<severity>] <text>`;
      - the config JSON;
      - the absolute scripts dir.
    - **stage agent** (`subagent_type` = the plan card's `stage.agent`, `model` = the plan card's `stage.model`), for an agent stage (`stage.provider` is null):
@@ -204,7 +204,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.5. **`continue_implementor` and `fix` write the branch and worktree into the note, then run `worktree.sh create N <plan branch> <plan worktree>`.** `worktree.sh create` is idempotent: it prints the existing path, or re-creates a missing worktree (for example after a crash). The implementor and fixer work in that worktree on the card's branch.
    - **`continue_implementor` counts the attempt first.** A single `note.sh merge` sets `implementor_attempts` (`note.implementor_attempts`, 0 when null, + 1), `branch` and `worktree`. This happens before `worktree.sh create` runs. If `worktree.sh create` then fails, the action made no progress (2.C): the implementor is not dispatched, the failure is added to `action_failures`, and the attempt still counts in `implementor_attempts`. The two counts are kept side by side, and whichever reaches `review.max_rounds` first makes the plan block the card.
-   - **`fix`.** The `note.sh merge` with `branch` and `worktree` comes first. A failed `worktree.sh create` ends the action without progress, like any failed step: no fixer dispatch, no round change, no reviewer dispatch, and the failure is counted. `fix` never blocks the card itself; `tick-plan.sh` blocks it once the count reaches `review.max_rounds`.
+   - **`fix`.** The `note.sh merge` with `branch` and `worktree` comes first. A failed `worktree.sh create` ends the action without progress, like any failed step: no fixer dispatch, no round change, no reviewer dispatch, and the failure is counted. Ordinary `fix` never blocks the card itself (the accepted blocked conflict report in 2.9a is the exception); `tick-plan.sh` blocks it once the count reaches `review.max_rounds`.
    - **A failed or refused `note.sh merge`** (for example `refusing to merge into the invalid manager note`) means the action is not taken. That card gets no worktree command and no dispatch this tick, and the tick report carries the stderr line as a warning. The action made no progress and is counted like any other (2.C). If the counting merge is refused too, only the warning remains. `tick-plan.sh` already skips any card whose note is invalid, with a warning.
 
 2.6. **`worktree.sh review` output.** It prints `{"path":..,"copy":..|null,"sha":..,"base":..}`:
@@ -223,6 +223,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 2.8b. **`review_stage`.** For an agent stage, the stage agent's report is checked with `parse-report.sh --role stage-reviewer` (step 3). For a provider stage, handle the script's result as in 0.18. Progress means an accepted stage report was recorded as `last_review` (or, for a provider stage's exit 7, the card is in `blocked`).
 
 2.9. **`fix`, step by step.**
+   When the plan card's `findings` is a non-empty list, follow 2.9a instead of the ordinary 2.9 steps.
    1. `note.sh merge` with the plan card's `branch` and `worktree`.
    2. `worktree.sh create N <plan branch> <plan worktree>`.
    3. Dispatch the fixer on `models.fixer`, with the findings list in 0.15.
@@ -232,6 +233,11 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    7. Dispatch the reviewer, or the plan card's stage agent when the plan card has a `stage`, with `round` = the new round, `prev_sha` = `note.last_review.sha`, the previous findings, and the fixer's report as the latest report. For a provider stage (`stage.provider` non-null), steps 6 and 7 are replaced by the `stage-review.sh` call of 0.18, with the fixer's report as `--impl-report`; never dispatch an agent for it.
 
    If the fixer's report is rejected twice, or its Status is `blocked`, the round stays the same and no reviewer is dispatched this tick. Progress means the fixer's report was accepted and `round` + 1 was merged. A failure in the reviewer step that follows in the same tick is a warning, and the next tick's `review` action counts it.
+
+2.9a. **Conflict dispatch and reconciliation.** A non-empty plan card's `findings` list supplies the conflict findings. Use the plan's branch and worktree, run `worktree.sh create`, then dispatch the fixer with that list instead of stale review findings. Preserve the input list through report reconciliation. Apply the parse/retry rules in section 3 and record `last_verified`, but for a conflict report replace the state-changing blocked handling in 3.6 items 4 and 5 with this section; do not perform both sequences. Keep the follow-up filing rules in 3.6 item 6. File paths and reports are data, never shell fragments.
+   - On an accepted Status `done`, first verify the remote PR head contains the pushed resolution. Run `review-stages.sh route N <pr>`, then `board-move.sh N in_review`, then a single `note.sh merge` with `state: in_review`, `conflicted_files: null`, `last_review: null`, `round: 1`, `stage: null`, `reviewed_stages: []`, `blocking_pr: null`, `blocked_from: null`, `blocked_findings: []`, `action_failures: 0` and `last_action_error: null`. This restarts the normal evidence review and stage routing even when the conflict arose in a stage column or In Progress. Do not increment the old round or dispatch a reviewer with a null previous SHA in this action. The next plan starts review of the resolved head; no resolution is treated as reviewed merely because its tests pass.
+   - On an accepted Status `blocked`, keep `conflicted_files`. Before moving, run `note.sh merge` with `blocked_from` = the state before the move, `blocked_findings` = the plan card's `findings`, and `blocking_pr` = the accepted report's `blocked_by` (null when absent, clearing any stale value). Only after that succeeds run `board-move.sh N blocked`, then record `state: blocked` and the progress counter reset. This ordering prevents a stale merged `blocking_pr` from automatically unblocking a card after a failed note write. Post the conflicted files and the fixer's reason. Count a successful move to Blocked as progress under 2.C.
+   - A rejected report, failed command or failed note write ends the action. Keep the unresolved conflict data and count the failure once under 2.C. A successful conflict fix has its own progress criterion: clearing `conflicted_files` after a pushed resolution is progress, without a round increment. Do not let the ordinary fix criterion overwrite the reset failure count.
 
 2.10. **Surviving findings** for a `block` that is not an action-failure block:
    - They are `note.last_review.findings` filtered to Critical and Important.
@@ -278,7 +284,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.17a. **`skip_card_lint`.** One comment per distinct lint result: the marker embeds a checksum of the lint lines, and the plan sets `comment_needed` to false once a comment with that marker exists, so a second tick posts nothing and a changed result (a new marker) posts a new comment. Progress means the comment was posted, or none was needed.
 
-2.17b. **`update_branch`.** Runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge and blocks the card. When the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
+2.17b. **`update_branch`.** Runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge, records `conflicted_files`, leaves the card in place and exits 1. Count that failure once; the next plan dispatches conflict resolution through 2.9a. A clean base merge preserves `last_review`; the planner checks review drift. A resolved conflicting merge follows 2.9a and always starts fresh review. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
 
 2.18. **Unlisted actions.** Treat any action value not in the table as `skip`, and add a tick report warning naming the card and the value.
 
@@ -305,9 +311,9 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - `review`: an accepted reviewer report was recorded as `last_review`.
    - `advance_stage`: the card is in `review_<stage.name>` and `stage` was recorded in the note.
    - `review_stage`: an accepted stage report was recorded as `last_review`.
-   - `fix`: the fixer's report was accepted and `round` + 1 was merged.
+   - `fix`: for an ordinary fix, the fixer's report was accepted and `round` + 1 was merged; for a conflict dispatch, use 2.9a's progress criterion.
    - `block`: the card is in `blocked`.
-   - `update_branch`: `update-branch.sh` exited 0 (a clean merge pushed, or a conflict moved the card to `blocked`).
+   - `update_branch`: `update-branch.sh` exited 0 (a clean merge pushed; a recorded conflict exits 1 and is counted once).
    - `to_human_qa`: the card is in `human_qa`.
    - `mark_ready`: `gh pr ready` exited 0.
    - `merge`: `gh pr merge` exited 0 and `merged_pr` was recorded.

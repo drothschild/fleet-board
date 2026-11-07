@@ -1,0 +1,74 @@
+[
+  {
+    "name": "candidate_1",
+    "classification": "Conflict-resolved",
+    "reason": "Both parents assertions are retained and reachable; all content outside the reconstructed conflict matches the automatic merge. No prior weakening. Named test passes and relevant mutant is killed.",
+    "evidence": {
+      "merge_sha": "8bbccfbaf5bfc6f259b89f640d9f4597658645b0",
+      "parents": [
+        "a4e9f176ae43bdf41846710e5e5743b5a349b962",
+        "48b4a39525d5383b0ff9096945fbed77f842d73d"
+      ],
+      "merge_base": "08e3a0ef764d8c97be8b5eca5fa0dd9a78dfeb55",
+      "automatic_tree": "fb71c486441d66894b806f0d6e501c3bb634f994",
+      "checked_regions": "Only value(1)/value(2) lines conflict; import, value(0), eight blank lines, and value(9) are outside conflict. calc.py unchanged. First-parent diff only adds value(1) assertion; no later commits.",
+      "test_command": "python3 test_calc.py",
+      "test_exit": 0,
+      "mutation": "calc.py return x -> return x + (1 if x == 2 else 0)",
+      "mutation_exit": 1,
+      "mutation_output": "Traceback (most recent call last):\n  File \"<scratch>/test_calc.py\", line 4, in <module>\n    assert value(2) == 2\n           ^^^^^^^^^^^^^\nAssertionError\n",
+      "restored_test_exit": 0,
+      "clean_worktree": true
+    },
+    "test_passed": true,
+    "mutation_killed": true
+  },
+  {
+    "name": "candidate_2",
+    "classification": "Weakened",
+    "reason": "Resolution discards second-parent assertion assert value(2) == 2 from the reconstructed conflict. It cannot qualify as Conflict-resolved despite being identical to the first parent; relevant mutant survives.",
+    "evidence": {
+      "merge_sha": "532a572ce07224deebb17a22d862da340e670566",
+      "parents": [
+        "a4e9f176ae43bdf41846710e5e5743b5a349b962",
+        "48b4a39525d5383b0ff9096945fbed77f842d73d"
+      ],
+      "merge_base": "08e3a0ef764d8c97be8b5eca5fa0dd9a78dfeb55",
+      "automatic_tree": "fb71c486441d66894b806f0d6e501c3bb634f994",
+      "checked_regions": "Only value(1)/value(2) lines conflict; import, value(0), eight blank lines, and value(9) are outside conflict. calc.py unchanged. First-parent diff only adds value(1) assertion; no later commits.",
+      "test_command": "python3 test_calc.py",
+      "test_exit": 0,
+      "mutation": "calc.py return x -> return x + (1 if x == 2 else 0)",
+      "mutation_exit": 0,
+      "mutation_output": "",
+      "restored_test_exit": 0,
+      "clean_worktree": true
+    },
+    "test_passed": true,
+    "mutation_killed": false
+  },
+  {
+    "name": "candidate_3",
+    "classification": "Weakened",
+    "reason": "Resolution retains both conflict assertions but deletes assert value(9) == 9 outside the reconstructed conflict; outside-region tree differs from the automatic result, losing existing coverage.",
+    "evidence": {
+      "merge_sha": "856e5a3f872042fc70d71580461e839693cdd637",
+      "parents": [
+        "a4e9f176ae43bdf41846710e5e5743b5a349b962",
+        "48b4a39525d5383b0ff9096945fbed77f842d73d"
+      ],
+      "merge_base": "08e3a0ef764d8c97be8b5eca5fa0dd9a78dfeb55",
+      "automatic_tree": "fb71c486441d66894b806f0d6e501c3bb634f994",
+      "checked_regions": "Only value(1)/value(2) lines conflict; import, value(0), eight blank lines, and value(9) are outside conflict. calc.py unchanged. First-parent diff only adds value(1) assertion; no later commits.",
+      "test_command": "python3 test_calc.py",
+      "test_exit": 0,
+      "mutation": "calc.py return x -> return x + (1 if x == 2 else 0)",
+      "mutation_exit": 1,
+      "mutation_output": "Traceback (most recent call last):\n  File \"<scratch>/test_calc.py\", line 4, in <module>\n    assert value(2) == 2\n           ^^^^^^^^^^^^^\nAssertionError\n",
+      "restored_test_exit": 0,
+      "clean_worktree": true
+    },
+    "test_passed": true,
+    "mutation_killed": true
+  }
+]
