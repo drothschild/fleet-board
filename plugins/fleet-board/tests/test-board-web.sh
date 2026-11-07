@@ -108,8 +108,9 @@ export FAKE_RUN_DIR FLEET_BOARD_RUN
 # new_repo <yml>: prints a fresh git repo path holding <yml> as .fleet-board.yml
 # (no config when <yml> is empty).
 new_repo() {
-  local r
-  r="$(mktemp -d)"
+  local r repo_temp_base
+  repo_temp_base="${TMPDIR:-/tmp}"
+  r="$(mktemp -d "${repo_temp_base%/}/tmp.XXXXXX")"
   CLEANUP_DIRS+=("$r")
   git init -q "$r"
   git -C "$r" config user.email "test@example.com"
@@ -137,8 +138,8 @@ seed_card() {
     > "$REPO/.fleet-board/cards/$1.json"
 }
 
-# setup_case: REPO = a local-backend repo with three seeded cards; starts the
-# server on an ephemeral port (PORT).
+# setup_case [server-temp-dir]: create a seeded repo outside the optional
+# server-only temp directory, then start the server on an ephemeral port.
 setup_case() {
   REPO="$(new_repo "$LOCAL_YML")"
   mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
@@ -156,7 +157,11 @@ setup_case() {
 - yes" "$(jq -n --arg b "$note_body" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
   seed_card 3 human_qa "Third" "No acceptance here."
   : > "$REPO/.fleet-board/active/2"
-  start_server "$REPO"
+  if [ -n "${1:-}" ]; then
+    TMPDIR="$1" start_server "$REPO"
+  else
+    start_server "$REPO"
+  fi
 }
 
 # start_server <repo>: starts board-web.py on an ephemeral port (PORT).
@@ -581,9 +586,107 @@ if setup_case; then
   rm -f "$FAKE_CLAUDE_DIR/slow"
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
+
+  # GET after a create lists the created numbers; meta.json is never seen empty during a create
+  export FLEET_BOARD_TEST_IMPORT_ID=fixed5
+  stop_server
+  start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for 'api GET /api/import/fixed5; body_is .state ready'
+  api GET /api/import/fixed5;       assert_body "an uncreated import has created null" '.created' null
+  META="$TMP/logs/web/acme-toy/imports/fixed5/meta.json"
+  api POST /api/import/fixed5/create '{}' &
+  CREATE_PID=$!
+  EMPTY=0; i=0
+  while [ $i -lt 100 ]; do
+    [ -s "$META" ] || EMPTY=$((EMPTY + 1))
+    i=$((i + 1))
+  done
+  wait "$CREATE_PID"
+  if [ "$EMPTY" = 0 ]; then pass "meta.json never empty in 100 polls during a create"; else fail "meta.json never empty in 100 polls during a create" "$EMPTY empty reads"; fi
+  api GET /api/import/fixed5
+  assert_body "GET after a create returns created numbers" '.created|join(",")' '*,*'
+  assert_body "created numbers are integers" '.created[0]|type' number
+  if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
+  if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
   stop_server
 fi
 unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
+
+echo "Case: atomic meta write"
+ATOMIC_OUT="$(SCRIPTS="$SCRIPTS" ATOMIC_DIR="$TMP" python3 -I - <<'PYEOF'
+import importlib.util, os, threading
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+path = Path(os.environ["ATOMIC_DIR"]) / "atomic-meta.json"
+big = "x" * 4000000
+m.write_private_atomic(path, big)
+stop = threading.Event(); bad = [0]
+def reader():
+    while not stop.is_set():
+        if os.path.getsize(str(path)) != len(big):
+            bad[0] += 1
+t = threading.Thread(target=reader); t.start()
+for _ in range(30):
+    m.write_private_atomic(path, big)
+stop.set(); t.join()
+print(bad[0])
+PYEOF
+)"
+if [ "$ATOMIC_OUT" = 0 ]; then pass "write_private_atomic is never observed partial by a concurrent reader"; else fail "write_private_atomic is never observed partial by a concurrent reader" "$ATOMIC_OUT partial reads"; fi
+rm -f "$TMP/atomic-meta.json" "$TMP/atomic-meta.json.tmp"
+
+echo "Case: server hardening"
+mkdir -p "$TMP/srvtmp"
+if setup_case "$TMP/srvtmp"; then
+  # a Content-Length far beyond the body: refused up front, not waited for
+  LAST_CODE="$(curl -s -o "$BODY_FILE" -w '%{http_code}' --max-time 5 -X POST -H 'X-Fleet-Board: 1' \
+    -H 'Content-Type: application/json' -H 'Content-Length: 2000000' --data-binary '{"a":"bc"}' \
+    "http://127.0.0.1:$PORT/api/cards")"
+  LAST_REQ="POST /api/cards with Content-Length 2000000"
+  assert_code 413
+  api GET /api/board
+  assert_code 200
+
+  # a corrupt card file is a 500 naming the file, not a 404
+  printf '{' > "$REPO/.fleet-board/cards/3.json"
+  api GET /api/cards/3
+  assert_code 500
+  assert_body "corrupt card error names the file" '.error' '*3.json*'
+  seed_card 3 human_qa "Third" "No acceptance here."
+
+  # PATCH leaves no temp file of the server's behind
+  i=0
+  while [ $i -lt 50 ]; do
+    api PATCH /api/cards/1 "{\"title\":\"T$i\",\"body\":\"B$i\"}" >/dev/null
+    i=$((i + 1))
+  done
+  assert_code 200
+  LEFT="$(find "$TMP/srvtmp" -type f | wc -l | tr -d ' ')"
+  if [ "$LEFT" = 0 ]; then pass "50 PATCH calls leave no temp files"; else fail "50 PATCH calls leave no temp files" "$LEFT left: $(ls "$TMP/srvtmp")"; fi
+
+  # the url names the port the server listens on, not board.port
+  api POST /api/cards '{"title":"Url","body":"b"}'
+  assert_code 200
+  assert_body "create url carries the listening port" '.url' "http://127.0.0.1:$PORT/cards/*"
+
+  # run.pid and run.out are tightened to 600 even when they pre-existed as 644
+  SD="$TMP/logs/web/acme-toy"
+  : > "$SD/run.pid"; : > "$SD/run.out"
+  chmod 644 "$SD/run.pid" "$SD/run.out"
+  rm -f "$FAKE_RUN_DIR/release"
+  api POST /api/run/start
+  assert_code 200
+  for f in run.pid run.out; do
+    mode="$(ls -l "$SD/$f" | cut -c1-10)"
+    if [ "$mode" = "-rw-------" ]; then pass "$f has mode 600 after Start"; else fail "$f has mode 600 after Start" "got $mode"; fi
+  done
+  api POST /api/run/stop
+  : > "$FAKE_RUN_DIR/release"
+  wait_for 'api GET /api/run; body_is .state stopped'
+  stop_server
+fi
 
 echo "Case: review stages appear in the board states"
 STAGES_REPO="$(new_repo "$LOCAL_YML
