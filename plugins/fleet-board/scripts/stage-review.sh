@@ -123,7 +123,7 @@ trap 'rm -rf "$TMP"; [ -z "$FB_ACTIVE_FILE" ] || rm -f "$FB_ACTIVE_FILE"' EXIT
 if [ -n "$CARD_FILE" ]; then
   cp "$CARD_FILE" "$TMP/card"
 else
-  bash "$HERE/board-read.sh" "$N" | jq -r '.body // ""' > "$TMP/card" || die "cannot read card #$N" 1
+  bash "$HERE/board-read.sh" "$N" | jq -r '(.body // "") + (if ((.acceptance // []) | length) == 0 then "" else "\n\n## Acceptance\n" + ((.acceptance // []) | map("- " + .) | join("\n")) + "\n" end)' > "$TMP/card" || die "cannot read card #$N" 1
 fi
 if [ -n "$DIFF_FILE" ]; then
   cp "$DIFF_FILE" "$TMP/diff"
