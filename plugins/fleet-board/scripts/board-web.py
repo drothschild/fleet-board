@@ -637,12 +637,22 @@ def card_acceptance(card: dict) -> list:
     return [a for a in (card.get("acceptance") or []) if isinstance(a, str)]
 
 
+def pr_url_ok(cfg: dict, v) -> bool:
+    """True for exactly https://github.com/<board.repo>/pull/<positive int>
+    (owner/name compared case-insensitively)."""
+    repo = (cfg.get("board") or {}).get("repo") or ""
+    m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9][0-9]*)", v) if isinstance(v, str) else None
+    return bool(m and repo and m.group(1).lower() == repo.lower())
+
+
 def card_pr_url(cfg: dict, card: dict, note):
-    """The card's pr_url field; a card written before the field existed falls
-    back to the note's pr on board.repo."""
+    """The card's pr_url field when it passes pr_url_ok (a hand-edited or
+    imported value that does not reads as None, so no unchecked URL leaves the
+    server); a card written before the field existed falls back to the note's
+    pr on board.repo."""
     if "pr_url" in card:
         v = card.get("pr_url")
-        return v if isinstance(v, str) and v else None
+        return v if pr_url_ok(cfg, v) else None
     pr = note.get("pr") if note else None
     repo = (cfg.get("board") or {}).get("repo")
     return "https://github.com/%s/pull/%d" % (repo, pr) if is_int(pr) and repo else None
@@ -804,13 +814,17 @@ def require_acceptance(body: dict):
     return v
 
 
-def require_blocked_by(dir: Path, n: int, body: dict):
+def require_blocked_by(dir: Path, n: int, body: dict, stored: list = ()):
+    """The blocked_by list, or None when absent. Refs already in <stored> are
+    kept unchecked (edit.sh's rule): a stale one never blocks a save."""
     v = body.get("blocked_by")
     if v is None:
         return None
     if not isinstance(v, list) or not all(is_int(x) and x > 0 for x in v):
         raise ApiError(400, "blocked_by must be a list of card numbers")
     for b in v:
+        if b in stored:
+            continue
         if b == n:
             raise ApiError(400, "blocked_by names #%d, the card itself" % b)
         if not (Path(dir) / "cards" / ("%d.json" % b)).is_file():
@@ -825,9 +839,8 @@ def require_pr_url(cfg: dict, body: dict):
     v = body["pr_url"]
     if v is None:
         return ""
-    repo = (cfg.get("board") or {}).get("repo") or ""
-    m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9][0-9]*)", v) if isinstance(v, str) else None
-    if not m or m.group(1).lower() != repo.lower():
+    if not pr_url_ok(cfg, v):
+        repo = (cfg.get("board") or {}).get("repo") or "<board.repo>"
         raise ApiError(400, "pr_url must be https://github.com/%s/pull/<number>, or null" % repo)
     return v
 
@@ -840,7 +853,7 @@ def edit_card(params, body):
     text = require_str(body, "body", required=False)
     labels = require_labels(body)
     acceptance = require_acceptance(body)
-    blocked_by = require_blocked_by(dir, n, body)
+    blocked_by = require_blocked_by(dir, n, body, card_blocked_by(card))
     pr_url = require_pr_url(cfg, body)
     if text is not None:
         # edit.sh treats a body as the whole truth about its sections: a prose

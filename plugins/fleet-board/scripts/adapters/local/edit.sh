@@ -55,7 +55,11 @@ if [ -n "$BODY_FILE" ]; then
 fi
 if [ "$BLOCKED" != null ]; then
   BLOCKED="$(fl_uniq_json <<<"$BLOCKED")"
-  fl_check_blocked_by "$N" "$BLOCKED"
+  # only refs this edit adds are checked: one already stored stays even when
+  # its card is gone (a hand edit or an import), so a prose save still works
+  NEWREFS="$(jq -c --argjson s "$(jq -c '[.blocked_by[]?]' <<<"$CARD")" \
+    'if type == "array" then map(. as $x | select($s | index([$x]) | not)) else . end' <<<"$BLOCKED")"
+  fl_check_blocked_by "$N" "$NEWREFS"
 fi
 jq --rawfile t "${TITLE_FILE:-/dev/null}" --rawfile b "$BODYTMP" \
   --arg title_file "$TITLE_FILE" --arg body_file "$BODY_FILE" \

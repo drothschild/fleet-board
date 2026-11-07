@@ -419,6 +419,16 @@ assert_stderr_contains "edit names the missing ref" "#99"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[2]'
 assert_exit "edit blocked by itself exits 2" 2
 assert_card_json 2 '.blocked_by|length' 0
+# a ref already stored is kept even when its card is gone; only new refs are checked
+jq '.blocked_by = [99]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[99]'
+assert_exit "edit keeping a stored missing ref exits 0" 0
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 99
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[99,98]'
+assert_exit "edit adding a new missing ref exits 2" 2
+assert_stderr_contains "edit names the new missing ref" "#98"
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 99
+jq '.blocked_by = []' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 # a body edit is the whole truth about the sections: removing one clears its field
 jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 printf 'Why\n\n## Acceptance\n- a1\n\n## Depends on\n- #1\n' > "$bf"

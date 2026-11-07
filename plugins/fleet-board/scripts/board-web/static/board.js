@@ -1195,8 +1195,10 @@ function renderPr() {
   const d = S.drawer;
   const view = $("dr-pr-view");
   const n = prNumber(d.pr);
-  if (d.pr) {
-    view.replaceChildren(prLink(d.pr, n !== null ? prRepo(d.pr) + "#" + n : d.pr));
+  if (d.pr && n !== null) {
+    view.replaceChildren(prLink(d.pr, prRepo(d.pr) + "#" + n));
+  } else if (d.pr) {
+    view.replaceChildren(el("span", null, d.pr)); // never a link to an unchecked URL
   } else {
     view.replaceChildren(el("span", "dr-pr-none", "None"));
   }

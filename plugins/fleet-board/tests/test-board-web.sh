@@ -574,6 +574,35 @@ if start_server "$REPO"; then
   api POST /api/cards '{"title":"No prose","body":"","acceptance":["only this"]}'
   assert_code 200
   [ "$(card_json 6 '.acceptance|join("|")')" = "only this" ] && pass "create with an empty body" || fail "create with an empty body" "got $(cat "$REPO/.fleet-board/cards/6.json" 2>/dev/null)"
+  # a stored blocker that no longer exists does not stop a prose save, and stays
+  api PATCH /api/cards/4 '{"body":"Prose four, edited."}'
+  assert_code 200
+  if [ "$(card_json 4 '.blocked_by|map(tostring)|join(",")')|$(card_json 4 .body)" = "99|Prose four, edited." ]; then
+    pass "prose save keeps a stored blocker on a missing card"
+  else
+    fail "prose save keeps a stored blocker on a missing card" "got $(cat "$REPO/.fleet-board/cards/4.json")"
+  fi
+  api PATCH /api/cards/4 '{"blocked_by":[99,3]}'
+  assert_code 200
+  [ "$(card_json 4 '.blocked_by|map(tostring)|join(",")')" = "99,3" ] && pass "adding a blocker beside a stale one saves" || fail "adding a blocker beside a stale one saves" "got $(card_json 4 .blocked_by)"
+  api PATCH /api/cards/4 '{"blocked_by":[99,98]}'
+  assert_code 400
+  assert_body "a new missing blocker is still refused" '.error' '*#98*'
+
+  # only a checked PR URL leaves the server: anything else in a card file reads as null
+  set_fields 2 '.pr_url = "javascript:alert(1)" | .pr_url_source = "person"'
+  set_fields 3 '.pr_url = "https://github.com/other/repo/pull/5" | .pr_url_source = "person"'
+  api GET /api/board
+  assert_body "javascript: pr_url reads as null in the summary" '.cards[]|select(.number==2)|.pr_url' null
+  assert_body "another repo's pr_url reads as null in the summary" '.cards[]|select(.number==3)|.pr_url' null
+  api GET /api/cards/2
+  assert_body "javascript: pr_url reads as null in the detail" '.pr_url' null
+  api GET /api/cards/3
+  assert_body "another repo's pr_url reads as null in the detail" '.pr_url' null
+  set_fields 3 '.pr_url = "https://github.com/Acme/TOY/pull/5"'
+  api GET /api/cards/3
+  assert_body "a board.repo pr_url in another case still reads" '.pr_url' 'https://github.com/Acme/TOY/pull/5'
+
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr"; fi
   stop_server
 fi
