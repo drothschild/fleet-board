@@ -184,7 +184,8 @@ assert_stdout_exact "create prints number and url" '{"number":1,"url":"http://12
 run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
 assert_exit "read exit 0" 0
 assert_json "read title round-trips" '.title' 'Title with "quotes"'
-assert_json "read body round-trips" '.body' "$(cat "$body")"
+assert_json "read body is the prose of what was created (sections split off)" '.body+"|"' $'## Why\nx\n|'
+assert_json "read acceptance is the bullet of the created body" '.acceptance|join("|")' 'a "quoted" \ thing'
 assert_json "read state backlog" '.state' backlog
 assert_json "read labels" '.labels|join(",")' bug
 assert_json "read note null" '.manager_note' null
