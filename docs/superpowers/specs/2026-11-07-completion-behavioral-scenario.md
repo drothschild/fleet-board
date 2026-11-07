@@ -1,6 +1,6 @@
 # Completion-driven manager behavioral scenario
 
-Status: runtime validation pending. The two approved attempts cost $0.1918922 total and dispatched no reviews because bare mode omitted Write. Isolated non-bare tool configuration is confirmed offline; another paid attempt requires approval.
+Status: core scenario passed at commit `8ed99cc` for $0.4239047. The earlier two attempts cost $0.1918922 and dispatched no reviews because bare mode omitted Write. Full results and coverage limits are recorded in `2026-11-07-board-throughput-validation.json`.
 
 ## Fixture and isolation
 

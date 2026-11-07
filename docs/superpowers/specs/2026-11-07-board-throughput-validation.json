@@ -25,18 +25,16 @@
   },
   "independent_review": "No blocking findings; runtime coverage limits retained.",
   "behavioral": {
-    "status": "not_validated",
-    "cost_usd": 0.1918922,
-    "turns": 7,
-    "session_id": "08c516f8-3771-481c-9bd7-ad7f19f804bd",
-    "reason": "Both approved attempts dispatched no reviews: bare mode filtered out Write, including with explicit --tools.",
+    "status": "passed",
+    "cost_usd": 0.6157969,
+    "turns": 41,
+    "session_id": "1e7fd67e-7e38-44fc-a4b7-5191e8c4be00",
+    "reason": "Core fixture passed: fast review reconciled and a free slot refilled while the slow review was still running.",
     "startup_attempt": "An earlier CLI invocation failed agent lookup before any model call; explicit registration used the generated manager body verbatim.",
     "isolation": "Only copied fleet-board plugin and built-in plugins; no MCP servers; disposable board and fake GitHub.",
-    "next_step": "Harness now uses a fresh configuration and empty setting sources without bare mode. Offline unreachable-localhost inspection confirms Write is available. Another paid run requires approval.",
     "unexercised": [
-      "completion ordering",
-      "slot refill",
       "Agent-role notifications",
+      "implementation-to-review chaining",
       "duplicate completions",
       "retry and action caps",
       "runtime failure recovery"
@@ -51,7 +49,53 @@
         "cost_usd": 0.0602959,
         "turns": 8,
         "session_id": "380efc69-dd06-4c8c-8497-fc36749fb819"
+      },
+      {
+        "status": "passed",
+        "tested_commit": "8ed99cc",
+        "cost_usd": 0.42390469999999997,
+        "turns": 41,
+        "session_id": "1e7fd67e-7e38-44fc-a4b7-5191e8c4be00"
       }
-    ]
+    ],
+    "events": [
+      "start 1",
+      "start 2",
+      "finish 1",
+      "start 3",
+      "finish 3",
+      "checkpoint fast-reconciled-and-refilled",
+      "finish 2"
+    ],
+    "assertions": [
+      "No fixture timeout",
+      "Two initial concurrent reviews",
+      "Fast review finished before third started, and third started before slow review finished",
+      "Current-head review note and Human QA transition persisted before slow completion",
+      "At most two active workers",
+      "Exactly one review launch per card",
+      "All three final review notes preserve dispatched SHA and round one",
+      "All three cards finish in Human QA",
+      "No merge command issued",
+      "Manager returned successful tick report"
+    ],
+    "tools": [
+      "Task",
+      "Skill",
+      "Read",
+      "Write",
+      "Bash",
+      "Grep",
+      "Glob"
+    ],
+    "plugins": [
+      "fleet-board",
+      "cc-plugin-agents-md",
+      "cc-plugin-telemetry",
+      "cc-plugin-privacy",
+      "cc-plugin-plugin-authoring"
+    ],
+    "mcp_servers": [],
+    "prior_attempts_reason": "The first two paid attempts dispatched no reviews because bare mode omitted Write. The passing attempt used a fresh configuration and empty setting sources without bare mode."
   }
 }

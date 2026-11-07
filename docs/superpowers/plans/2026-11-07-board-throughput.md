@@ -25,6 +25,6 @@
 - [x] Obtain approval for paid isolated manager re-authoring (user approved in chat).
 - [x] Obtain separate approval for the core behavioral validation run once its harness is ready.
 - [x] Re-author, run structural checks, independently review and push approved changes.
-- [ ] Pass runtime completion validation: two approved attempts cost $0.1918922 total but dispatched no reviews because bare mode omitted Write. Harness now uses isolated non-bare mode, confirmed offline to expose Write; another paid attempt needs separate approval.
+- [x] Pass runtime completion validation: approved core scenario passed at 8ed99cc for $0.4239047; all behavioral attempts total $0.6157969. Evidence and coverage limits are recorded in the validation JSON.
 
 All source paths above are relative to plugins/fleet-board/. Never edit clean-room primitives by hand. Follow test-first commits and run only touched suites plus test-clean-room.sh. No paid calls without explicit approval.
