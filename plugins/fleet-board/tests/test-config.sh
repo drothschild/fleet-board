@@ -735,6 +735,32 @@ REPO="$(make_test_repo bad-backend.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_stderr_contains "backend list names all three" "github-labels, github-projects or local"
 
+reviewer='{ provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }'
+reviewer_cfg="models: { reviewer: $reviewer, escalation: opus }"
+invalid_field_case "reviewer invalid type" 'models: { reviewer: [] }' "models.reviewer must be a non-empty string or an object"
+invalid_field_case "reviewer unknown provider" "${reviewer_cfg/codex/unknown}" "models.reviewer.provider unknown names no provider"
+invalid_field_case "reviewer HTTP provider" "${reviewer_cfg/codex/openai}" "models.reviewer.provider openai has no review_command"
+invalid_field_case "reviewer invalid model" "${reviewer_cfg/gpt-6-astra/123}" "models.reviewer.model must be a non-empty string"
+invalid_field_case "reviewer invalid price" "${reviewer_cfg/input: 0/input: -1}" "models.reviewer.price must have non-negative input and output"
+invalid_field_case "reviewer invalid timeout" "${reviewer_cfg/model: gpt-6-astra/model: gpt-6-astra, timeout: 1501}" "models.reviewer.timeout must be an integer from 1 to 1500"
+invalid_field_case "reviewer missing escalation" "models: { reviewer: $reviewer }" "models.escalation must be set when models.reviewer is a provider"
+invalid_field_case "agent stage missing model" "$reviewer_cfg"$'\n''review: { stages: [{name: s, agent: reviewer}] }' "review.stages[0].model must be set when models.reviewer is a provider"
+invalid_field_case "review command missing dir" 'providers: { codex: { review_command: "codex exec" } }' "providers.codex.review_command must contain {dir}"
+for flag in --dangerously-bypass-approvals-and-sandbox danger-full-access --dangerously-bypass-hook-trust; do
+  invalid_field_case "review command rejects $flag" "providers: { codex: { review_command: \"codex $flag {dir}\" } }" "providers.codex.review_command must not contain $flag"
+done
+invalid_field_case "review command with HTTP" 'providers: { codex: { base_url: "https://example.com" } }' "providers.codex sets both review_command and base_url"
+
+REPO="$(printf 'board: { repo: a/b }\n%s\n' "$reviewer_cfg" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "reviewer object is accepted" 0
+assert_stdout_exact_jq "reviewer timeout defaults" '.models.reviewer.timeout' '1500'
+assert_stdout_exact_jq "codex review command preset" '.providers.codex.review_command' '"codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -C {dir} -m {model}"'
+REPO="$(printf 'board: { repo: a/b }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "default reviewer is accepted" 0
+assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"'
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
