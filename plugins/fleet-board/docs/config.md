@@ -12,7 +12,7 @@ When `models.implementor` and `models.reviewer` are the same, every tick warns t
 
 Unset by default. A command that checks the environment works, for example that a generated client is current or a service answers. `tick-plan.sh` runs it once per tick, from the repo root, before planning. When it exits non-zero, the plan holds every card (no start, review, fix or other action), `dispatchable` is false so the loop stops, and the plan carries one warning, `preflight failed: <command> (exit <n>)`, followed by the last 20 lines of the output. No card's state or `action_failures` changes. When it exits 0 the plan is the same as with the key unset. Settle plans never run it.
 
-Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is unset, and `review-stages.sh setup` creates the stage labels.
+Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is unset, and `review-stages.sh setup` (nothing to create on the local store) exits 0.
 
 ## `merge.policy`
 
@@ -33,19 +33,19 @@ The manager records each command's exit status in the card's note. A command wit
 
 ## `board.states`
 
-Canonical states are `backlog`, `ready`, `in_progress`, `in_review`, `human_qa`, `blocked`, `done` and `wont_do`. On the labels board each defaults to `fleet:<state>`. On a Projects board they default to `Backlog`, `Ready`, `In Progress`, `In Review`, `Human QA`, `Blocked`, `Done` and `Won't Do`. Map only the ones that differ, for example a Projects board that keeps its existing column names:
+Canonical states are `backlog`, `ready`, `in_progress`, `in_review`, `human_qa`, `blocked`, `done` and `wont_do`. The board is always local, so a card's state is stored in its file; the names the page shows default to `Backlog`, `Ready`, `In Progress`, `In Review`, `Human QA`, `Blocked`, `Done` and `Won't Do`, and `Review: <stage>` for a review stage. Map only the ones that differ:
 
 ```yaml
 board:
-  backend: github-projects
   repo: user/myProject
-  project_number: 1
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Human QA", wont_do: "Won't Do" }
 ```
 
+`board.backend`, `board.project_number` and `board.project_owner` are no longer settings: `config.sh` exits 5 naming each one it finds. Delete them from `.fleet-board.yml`. To bring an existing GitHub board over, see [Moving an existing GitHub board](../README.md#moving-an-existing-github-board).
+
 ## `followups.status`
 
-Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with a `## Acceptance` section drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). The Acceptance command is the first backticked span with a non-blank character; spans are paired single backticks, so a detail with an odd number of backticks or a double backtick has none. An out-of-scope item with no such span, or whose detail holds the words `no testable check` (even beside a backticked path, and even when quoted), gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. Roles are told to write the check command before any other backticked text; a backticked file path written first is taken as the command, and invisible characters inside a span are not checked. A follow-up whose detail says "depends on this card" carries `## Depends on` naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
+Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with an `acceptance` field drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). The Acceptance command is the first backticked span with a non-blank character; spans are paired single backticks, so a detail with an odd number of backticks or a double backtick has none. An out-of-scope item with no such span, or whose detail holds the words `no testable check` (even beside a backticked path, and even when quoted), gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. Roles are told to write the check command before any other backticked text; a backticked file path written first is taken as the command, and invisible characters inside a span are not checked. A follow-up whose detail says "depends on this card" carries a `blocked_by` entry naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
 
 ## `review.stages`
 
@@ -72,13 +72,13 @@ review:
       max_diff_bytes: 400000          # default 400000
 ```
 
-A stage is the state `review_<name>`, in config order between `in_review` and `human_qa`. On the labels backend its column is the label `fleet:review_<name>`; on Projects it is the Status option `Review: <name>`. `board.states.review_<name>` renames it; a `review_` key naming no stage is rejected.
+A stage is the state `review_<name>`, in config order between `in_review` and `human_qa`. Its column is named `Review: <name>` by default; `board.states.review_<name>` renames it; a `review_` key naming no stage is rejected.
 
 **Routing.** A stage applies to a card when the card carries the stage's label, or when a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next tick retries. A person can add a label before a stage begins to force a visit; a stage already reviewed is not visited again. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
 
 **Re-matching.** Routing adds labels once, but a fixer's commit or a later push can touch a stage's `paths` after it. So at every clean, current review (in In Review or a stage column) `tick-plan.sh` runs `review-stages.sh match <pr>`, which reads the PR's files now and adds no label, and counts each stage those files match as routed. The next stage is the first one in config order that is routed, is not the current column and is not in the note's `reviewed_stages`; it can be a stage before the current column that was never visited. The trade-off: removing a label skips a stage only when its `paths` do not match the PR's current files. A stage whose globs match cannot be skipped that way; a label-only stage (empty `paths`) still can. A failed `match` skips the card for the tick (`lookup failed: review-stages.sh match <pr>`).
 
-**Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). It creates each stage's routing label on both backends and its state label on the labels backend. On Projects it checks the Status field has a column for each stage and exits 1 naming the missing ones; add them by hand, or map the stage onto an existing column with `board.states`.
+**Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). On the local store there is nothing to create (routing labels are added to a card when it is routed), so it exits 0.
 
 **Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there in the same tick. Critical or Important findings go to the fixer and the same stage re-reviews, up to the stage's `max_rounds`; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
 
@@ -168,8 +168,6 @@ review:
 
 ## `board.dir` and `board.port`
 
-Both apply only when `board.backend` is `local`.
-
 `board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
 
 `board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
@@ -184,7 +182,7 @@ Both apply only when `board.backend` is `local`.
 
 ## How the board works in detail
 
-**One writer per card.** `gh issue edit` sends label additions and removals as separate mutations, so two writers on one issue can leave it with the wrong labels.
+**One writer per card.** Every card write takes a per-card lock and rewrites the file whole, so two writers on one card never leave it half-written. The page's edit and the agents' comments change disjoint fields (`edit.sh` never touches `comments` or `state`).
 
 **One step per tick.** Each tick, `tick-plan.sh` reads the Ready, In Progress, In Review and Blocked columns and picks exactly one action per card. The manager carries out those actions, dispatching up to `limits.concurrency` role agents at once, and prints the tick report.
 
@@ -196,9 +194,11 @@ Both apply only when `board.backend` is `local`.
 
 **Accepting a change.** When a card is Blocked for something a person has looked at and accepted (an unreviewed merge of `main`, a test edit a fixer may not touch), run `bash <scripts>/accept.sh <n>` (the scripts directory is the plugin's `scripts/`). In one `note.sh merge` it sets the note's `action_failures` to 0 and `last_action_error` to null, moves the reviewed-sha baseline (`last_review.sha`) to the PR's current head, clears the previous review's findings and what the block left in the note (`blocked_findings`, `blocking_pr`, `blocked_from`), and records `accepted` (`login`, `at`, `sha`) in the note. After that the next tick reviews the PR again from that sha: the commits and test edits up to it are not flagged, and an open finding that a test was weakened is forgiven. Every other check runs again and raises whatever is still wrong. A commit pushed later is flagged again. The exception is an Acceptance item the reviewer maps with `CHECKED` that says no test was weakened: that check reads the whole PR, so it raises the accepted edit again and the fixer may restore the test. Remove that item from the card before you accept such an edit. The command exits 1 with a message, and leaves the note unchanged, when the card is not Blocked, the note names no PR, or the PR head cannot be read. An `accepted` entry counts only when its `login` is the authenticated `gh` login; otherwise the plan reviews the PR head instead of fixing. After the note write it moves the card out of Blocked, to the state in the note's `blocked_from` (`ready`, `in_progress` or `in_review`; `in_review` when the note has none). A card still in round 0 goes to `in_progress` instead of `in_review`, so the plan starts a review rather than treating the PR as clean. A card returned to `ready` is started again, so the implementor runs before the next review. If the note write fails the card is not moved; if the move fails `accept.sh` exits 3 with the reason, the note stays written, and you move the card by hand.
 
-**Dependencies.** A card body may hold a `## Depends on` section (heading in any case, ending at the next heading) with one bullet per dependency: `- #22` (an issue in `board.repo`) or `- owner/repo#22`. Blank lines are ignored; any other line in the section is ignored with the tick warning `#<n>: unrecognized dependency line: <line>`. A dependency is met when its issue is closed with state reason completed, or, on the Projects backend, when it is an item on the board's project with Status equal to the Done column, in `board.repo` or any other repo. On the labels backend every dependency is judged by its issue state only. The issue is read with `gh issue view <N> --repo <owner/repo> --json state,stateReason`, and the Status through the Projects adapter. Closed as not planned, or Status Won't Do, counts as unmet and adds the warning `#<n> depends on <ref>, which was closed as not planned`. A dependency closed any other way (as a duplicate, say) is unmet too, without the warning. A failed lookup skips the card for that tick with the reason `lookup failed: <command>`, like every other lookup in `tick-plan.sh`.
+**Dependencies.** A card's `blocked_by` field lists the card numbers on this board that must be Done first. Set it in the page's drawer, with `board-create.sh`/`edit.sh` (a missing card or the card itself is refused with exit 2), or by a `## Depends on` section in a body you give `board-create.sh`, which is split into the field (`- #22` per bullet; a dependency in another repo cannot be a blocker and stays in the body as prose with a warning). A blocker is met when its card is in `done`. A `wont_do` blocker counts as unmet and adds the warning `#<n> depends on <ref>, which was closed as not planned`. A blocker in another repo is outside this board: it is not looked up and adds a warning. A card file that cannot be read skips the card for that tick with the reason `lookup failed: <command>`, like every other lookup in `tick-plan.sh`.
 
-Only a Ready card with an `## Acceptance` section is gated, and only at the start: `tick-plan.sh` plans `wait` with the reason `waits for <ref> (<state or column>)[, <ref> (...)]` and lists the refs in the card's `waiting_on`. The card stays in Ready and does not count towards the plan's `dispatchable`. In Progress, In Review and Blocked cards are never gated. On a `wait` the manager posts `Waiting for <refs>` once and records the refs in the note's `deps_commented`; it posts again only when the unmet set differs. Nothing promotes a card from Backlog: when the dependency finishes, the next tick starts the card if a person has already moved it to Ready. `deps.sh parse` and `deps.sh check` are the two halves; `/fleet-board:status` runs them to show the reason.
+Only a Ready card with acceptance items is gated, and only at the start: `tick-plan.sh` plans `wait` with the reason `waits for <ref> (<state>)[, <ref> (...)]` and lists the refs in the card's `waiting_on`. The card stays in Ready and does not count towards the plan's `dispatchable`. In Progress, In Review and Blocked cards are never gated. On a `wait` the manager posts `Waiting for <refs>` once and records the refs in the note's `deps_commented`; it posts again only when the unmet set differs. Nothing promotes a card from Backlog: when the blocker finishes, the next tick starts the card if a person has already moved it to Ready. `deps.sh parse-card` and `deps.sh check` are the two halves; `/fleet-board:status` runs them to show the reason.
+
+**Card fields.** A card holds `acceptance` (a list of testable bullets), `blocked_by` (card numbers) and `pr_url` beside its prose `body`. `pr_url` follows the manager note's `pr` (`pr_url_source: note`); a URL a person sets in the drawer is kept until a note names a different PR. Existing stores gain the fields with `migrate-card-fields.sh`.
 
 **Worktree cleanup.** The manager moves a finished card to Done but never removes its worktrees, because Claude Code's safety classifier blocks that deletion in unattended sessions. The headless wrapper runs `cleanup-done.sh` after each successful tick. When ticking interactively, `/fleet-board:status` lists done cards that still have worktree directories and prints the exact command to remove them.
 
