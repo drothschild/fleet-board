@@ -29,7 +29,7 @@ Status: design and implementation proposal based on the agreed discussion; no ru
 
 ## Existing implementation and reuse
 
-Baseline inspected: main commit `28866b0` (2026-11-07). `board-web.py:start_run` already detaches `fleet-board-run.sh`. The manager can refill slots as completions arrive, but its transient registry requires every dispatched task to complete before the tick ends. Headless merges and wrapper budget checks occur after the tick. New cards are excluded from an already-running tick.
+Baseline revalidated: main commit `db52f9f313adf2d6d5cd6c70c793296a13abb679` (2026-11-07), updated from original baseline `28866b0`. `board-web.py:start_run` already detaches `fleet-board-run.sh`. The manager can refill slots as completions arrive, but its transient registry requires every dispatched task to complete before the tick ends. Headless merges and wrapper budget checks occur after the tick. New cards are excluded from an already-running tick.
 
 Reuse these existing boundaries:
 
@@ -44,6 +44,15 @@ Reuse these existing boundaries:
 | `scripts/claim-run-lock.py`, `fleet-board-run.sh` | Shared legacy/new ownership exclusion during migration |
 
 Paths above are relative to `plugins/fleet-board/`. Current main has no `scripts/standalone/` controller. The local `codex/standalone-profiles` branch has journal/action prototypes, but they are not a merged production prerequisite. Implement against main; reuse separately reviewed work only after verifying its actual merged contracts. Do not assume a fixture worker is a production provider adapter.
+
+### Main compatibility review (2026-11-07)
+
+Two PRs merged after the original baseline; neither introduces a supervisor, changes the tick planner/merge contracts, or changes the seven-phase architecture:
+
+- [PR #200](https://github.com/drothschild/fleet-board/pull/200), `bf5152e`: board summaries expose `known`, unknown states remain visible in an Unknown state group, and the drawer preserves the stored value until a person chooses a valid state. Preserve these API/rendering/edit behaviors when adding execution status. Unknown workflow state is distinct from supervisor unreachability or job attention: do not hide it, normalize it silently, or schedule it. Retain any existing execution/scope claims pending reconciliation.
+- [PR #207](https://github.com/drothschild/fleet-board/pull/207), `db52f9f`: request body/time bounds, corrupt-card error reporting, temporary-file cleanup, atomic import metadata replacement, per-import create locks, created-card status, cached legacy log parsing, private run-file modes, and actual-listen-port card URLs are now existing behavior. Preserve these contracts in the supervisor proxy and legacy compatibility path; do not replace per-import locks with a global supervisor lock.
+
+New reusable regression assets are `tests/test-board-unknown-interaction.sh`, `board-dom-harness.js`, `board-interaction-harness.js`, `board-unknown-interaction.js`, and `tests/test-board-web-atomic.sh` under `plugins/fleet-board/`. The DOM harness requires Node for those tests, not for the production supervisor. Existing `write_private_atomic` supplies atomic visibility for import metadata; it does not flush files/directories and therefore is not sufficient by itself for the design's crash-durable result/receipt protocol.
 
 ## Architecture and authority
 
@@ -199,7 +208,7 @@ With `start_on_boot: true`, boot service restores running -> recovery then sched
 
 ## UI and control contracts
 
-Keep the board server as loopback HTTP frontend with existing Host/CSRF protections; authenticate its private local control socket using filesystem ownership/permissions. A missing supervisor can be started by the lifecycle adapter, but UI/CLI cannot directly edit job tables. The stopped-state lifecycle adapter can persist Start intent under exclusive domain lock when no supervisor exists. Running-state commands route through the owner.
+Keep the board server as loopback HTTP frontend with existing Host/CSRF protections, 1 MiB request-body limit, and 30-second silent-client timeout; authenticate its private local control socket using filesystem ownership/permissions. A missing supervisor can be started by the lifecycle adapter, but UI/CLI cannot directly edit job tables. The stopped-state lifecycle adapter can persist Start intent under exclusive domain lock when no supervisor exists. Running-state commands route through the owner.
 
 Derive actor identity from the authenticated local control channel and board-server session, never from a caller-supplied actor string. Worker IPC permits only its own heartbeat, progress, result and scope-expansion requests; it cannot issue lifecycle, resolution or reservation-release commands. Commands carry `{request_id, expected_revision, ...arguments}`. Deduplicate request IDs durably; stale revisions return 409 with current state. Accepted asynchronous commands return 202 with `{command_id, state_revision, desired_mode, phase}`; acknowledgement is not completion. Status is authoritative only after supervisor acknowledgement. Repeated Start requests connect to the existing owner without creating a second process/session.
 

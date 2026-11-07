@@ -26,7 +26,7 @@ For each executed case, record the tested commit, case ID, exact command, expect
 | S6 | S6.1-S6.4 | 1.2, 3.1, 4.2, 5.1 | None beyond integrated qualification |
 | S7 | S7.1-S7.4 | 3.2, 4.1, 5.2 | Reservation conflict rehearsal in 7.2 |
 | S8 | S8.1-S8.4 | 3.1, 4.1, 4.2, 4.3, 7.1 | Production role contracts in 7.2 |
-| S9 | S9.1-S9.4 | 5.1, 5.2 | Human visual/keyboard check in 5.2 |
+| S9 | S9.1-S9.5 | 3.1, 5.1, 5.2 | Human visual/keyboard check in 5.2 |
 | S10 | S10.1-S10.4 | 1.1, 1.2, 5.1, 6.1, 6.2 | Actual supported-host reboot in 6.2 |
 | S11 | S11.1-S11.4 | 1.1, 1.2, 3.1, 4.2, 4.3, 5.1, 5.2 | Provider usage observations in 7.2 |
 | S12 | S12.1-S12.4 | 5.1, 6.1, 6.2, 7.1, 7.2 | Host, provenance, independent review gates |
@@ -103,12 +103,14 @@ For each executed case, record the tested commit, case ID, exact command, expect
 
 ## S9 — Lifecycle controls and truthful monitoring
 
-**Suites:** `plugins/fleet-board/tests/test-supervisor-lifecycle.sh`, `plugins/fleet-board/tests/test-board-web.sh`, `plugins/fleet-board/tests/test-supervisor-web.sh`.
+**Suites:** `plugins/fleet-board/tests/test-supervisor-lifecycle.sh`, `plugins/fleet-board/tests/test-board-web.sh`, `plugins/fleet-board/tests/test-supervisor-web.sh`, `plugins/fleet-board/tests/test-board-unknown-interaction.sh`, `plugins/fleet-board/tests/test-board-web-atomic.sh`, `plugins/fleet-board/tests/test-supervisor-scheduler.sh` (run individually for their corresponding change slices).
 
 - **S9.1 (Task 5.1):** Repeat/race Start with the same and different command IDs; pause and resume; drain-stop and cancel-stop; crash during each transition. Evidence: durable commands have one outcome, one owner exists, pause closes dispatch/new merges but records results, drain waits only for current attempts, and cancel confirms termination or reports unresolved shutdown.
 - **S9.2 (Task 5.2):** Hold service readiness, sever its socket, and return stale revisions. Evidence: spawn acknowledgement is not shown as Running; unreachable differs from Stopped; unsafe controls are disabled or rejected with an actionable reason.
 - **S9.3 (Task 5.2):** Disconnect/reconnect event polling, replay a cursor, expire a cursor, and deliver duplicate commands. Evidence: stable ordered history, bounded replay, snapshot recovery after expiration, and no repeated effects. Test all routes with CSRF/Host enforcement and reject arbitrary log paths.
 - **S9.4 (Task 5.2):** Render structured capacity, spend/unknown-spend, heartbeat, semantic progress, wait reasons, attempt/retry history, reserved paths and release audit. Evidence: HTTP snapshots expose the correct fields; manual keyboard/narrow-layout review confirms usable controls without relying on source-string assertions.
+
+- **S9.5 (Tasks 3.1, 5.2; current-main compatibility at `db52f9f`):** Preserve PR #200 unknown-state visibility/repair while supervisor status changes: `known: false` cards remain visible, drawer edits preserve the original state until explicitly repaired, scheduler admission does not normalize/dispatch them, and unresolved execution reservations remain held. Preserve PR #207 oversized-request rejection/silent-client timeout, corrupt-card errors, temp cleanup, per-import concurrency/atomic metadata, created-card status, private run-file modes, actual server-port URLs and cached legacy log behavior. Evidence: existing DOM interaction and atomic-import suites remain valid, plus focused API/scheduler cases exercising supervisor-active and unreachable conditions. Import metadata rename is not evidence of result-artifact power-loss durability; retain Task 2.1's separate flush/hash/publication cases.
 
 ## S10 — Boot setting and durable operating intent
 

@@ -4,9 +4,15 @@
 
 **Goal:** Replace tick-wide waits with independently running durable attempts, completion-driven scheduling, recoverable controller effects, and board lifecycle controls.
 
-**Baseline:** `28866b0`. All existing paths below were checked against this revision. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
+**Baseline:** `db52f9f313adf2d6d5cd6c70c793296a13abb679` (revalidated 2026-11-07; originally `28866b0`). All existing paths below were checked against the original baseline and the intervening PR #200/#207 changes. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
 
 **Status:** Planning only. Every execution checkbox is intentionally unchecked. Numeric policy defaults and internal module/API choices in the design are proposed implementation decisions. This plan defines contracts, sequence, focused verification, and execution gates; it does not assert that the production runner or boot service already exists.
+
+## Current-main impact assessment
+
+PR #200 (`bf5152e`) and PR #207 (`db52f9f`) are merged into this planning branch. They affect board rendering/API and server hardening, not the supervisor architecture, phase ordering, retry policy, boot default, or scope lifecycle. Task 5.2 and acceptance coverage now explicitly preserve their behavior. The runtime implementation remains unstarted.
+
+Reuse the new DOM interaction harness and atomic-import regression suite rather than recreate them. Preserve per-import concurrency independently from execution scheduling. Do not mistake import metadata's atomic rename helper for the flush-and-publish durability required by Task 2.1.
 
 ## Execution rules
 
@@ -95,6 +101,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 - [ ] First extend `test-tick-plan.sh` with candidate-mode workflow parity and invalid-mode cases; demonstrate failure, commit, implement, and run this suite plus clean-room.
 - [ ] Write scheduler cases for a blocked A while B finishes and C launches, racing admission requests, global/provider/card caps, independent candidates bypassing conflicts, lowering caps, priority/aging ties and age persistence across restart, including a sustained stream of new high-priority reviews while an old low-priority start eventually runs.
+- [ ] Add an unknown-workflow-state case matching PR #200: no admission or silent state normalization, existing claims retained for reconciliation, and a visible wait/attention reason for status consumers.
 - [ ] Add fake-clock cases for retry backoff, launch-rate spacing, rate-limit wait caps, session deadlines/cost stops, unknown spend and invalid reload; no sleeps proportional to configured production timeouts.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-scheduler.sh` to failure; commit tests.
 - [ ] Implement coalesced bounded cycles, async planning snapshots, fresh precondition checks and atomic claim/attempt preparation. Implement normal priority default plus explicit labels `fleet:priority:high|normal|low`; conflicting priority labels require attention. Age the full combined class-and-priority rank until any eligible card reaches the highest rank, preserving initial eligibility sequence as the tie breaker.
@@ -183,8 +190,11 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Modify:** `scripts/board-web.py` (`is_active`, `run_status`, `start_run`, `stop_run`, routes); `scripts/board-web/static/{board.js,board.css,index.html}`; `tests/test-board-web.sh`.
 **Create:** `tests/test-supervisor-web.sh`; `fixtures/supervisor/web_cases.py`.
+**Reuse:** `tests/board-dom-harness.js`, `board-interaction-harness.js`, `board-unknown-interaction.js`; focused regressions `tests/test-board-unknown-interaction.sh` and `tests/test-board-web-atomic.sh` (already merged). Check Node availability for DOM tests; it is not a new production runtime requirement.
 
-- [ ] Preserve legacy-mode API cases in `test-board-web.sh`; add focused routing assertions where its handlers change. New-mode lifecycle cases belong to the new suite.
+- [ ] Preserve legacy-mode API cases in `test-board-web.sh`; add focused routing assertions where its handlers change. New-mode lifecycle cases belong to the new suite. Retain PR #207 request-size/time limits, corrupt-card errors, temp cleanup, per-import create locks/atomic metadata, `created` status, private run-file modes, actual-listen-port URLs, and legacy log-cache behavior.
+- [ ] Reuse the existing DOM harness to test `known: false`, the Unknown state group and drawer repair while supervisor status is active/unreachable. Never auto-normalize or dispatch an unknown-state card; retain existing reservations pending reconciliation. Run `bash plugins/fleet-board/tests/test-board-unknown-interaction.sh` only for this rendering slice, plus clean-room checks.
+- [ ] Preserve import independence while the supervisor is saturated or unreachable: separate imports can create concurrently, one import remains serialized, and metadata readers see a complete old or new value. For the import-metadata slice, run `bash plugins/fleet-board/tests/test-board-web-atomic.sh` plus clean-room; do not reuse its non-fsync helper as the durable runner publication implementation.
 - [ ] Add API cases for every design route, CSRF/Host enforcement, idempotency and stale revisions, acknowledgement versus ready status, unreachable versus stopped, bounded event replay/cursor expiration, safe log IDs, explicit reservation release audit, and QA-preserving resume. Include audited resolution cases for manual retry after exhaustion (automatic count/budget unchanged), evidence-backed usage recording, verified external-effect confirmation, and safe abandonment; reject resolution while a writer/effect remains uncertain.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-web.sh` to failure; commit tests.
 - [ ] Implement HTTP-to-socket proxy and compatibility `/api/run` projection. Remove marker clearing/PID inference in supervisor mode. Render health/slots/budgets/boot status, wait reasons, attempt history and reservation controls; show dates/ages from structured data rather than log parsing.
