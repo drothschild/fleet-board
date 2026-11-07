@@ -76,15 +76,15 @@
   - `providers.<name>.review_command must not contain <flag>`
   - `providers.<name> sets both review_command and base_url`
 
-- [ ] **Step 1: Write the failing tests** in `test-config.sh`, one case per message above (exit 5, stderr contains the message), plus:
+- [x] **Step 1: Write the failing tests** in `test-config.sh`, one case per message above (exit 5, stderr contains the message), plus:
   - `reviewer object is accepted`: `models.reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }` with `models.escalation: opus` exits 0, `.models.reviewer.timeout` is `1500`, and `.providers.codex.review_command` equals the Global Constraints string.
   - `reviewer string is unchanged`: a config that does not set `models.reviewer` yields `.models.reviewer == "opus"` (the default in `config-defaults.json`), and no `models.escalation` error.
   - `codex stage keeps its read-only command`: a stage with `provider: codex` still reads `.providers.codex.command` with `-s read-only`.
-- [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-config.sh` — Expected: new cases FAIL.
-- [ ] **Step 3: Implement** in `config.sh`: include `models.reviewer.provider` in the providers filled by `PROVIDER_DEFAULTS`; fill the reviewer object's `timeout`; make `STAGE_DEFAULTS` leave an agent stage's `model` `null` when `models.reviewer` is an object (validation then names it); replace the `reviewer` arm of the `models.<role> must be a non-empty string` rule with the reviewer rules; add the `review_command` rules beside the `command` rules. Add `review_command` to the `codex` preset.
-- [ ] **Step 4: Run** `bash plugins/fleet-board/tests/test-config.sh` — Expected: `failed: 0`.
-- [ ] **Step 5: Docs.** In `docs/config.md`, document the object form under a `models.reviewer` heading, `review_command` in the `providers` key table, and add the egress sentence from the spec's "Data egress". Add the README config-table rows.
-- [ ] **Step 6: Commit** `config: models.reviewer may name a command provider`.
+- [x] **Step 2: Run** `bash plugins/fleet-board/tests/test-config.sh` — Expected: new cases FAIL.
+- [x] **Step 3: Implement** in `config.sh`: include `models.reviewer.provider` in the providers filled by `PROVIDER_DEFAULTS`; fill the reviewer object's `timeout`; make `STAGE_DEFAULTS` leave an agent stage's `model` `null` when `models.reviewer` is an object (validation then names it); replace the `reviewer` arm of the `models.<role> must be a non-empty string` rule with the reviewer rules; add the `review_command` rules beside the `command` rules. Add `review_command` to the `codex` preset.
+- [x] **Step 4: Run** `bash plugins/fleet-board/tests/test-config.sh` — Expected: `failed: 0`.
+- [x] **Step 5: Docs.** In `docs/config.md`, document the object form under a `models.reviewer` heading, `review_command` in the `providers` key table, and add the egress sentence from the spec's "Data egress". Add the README config-table rows.
+- [x] **Step 6: Commit** `config: models.reviewer may name a command provider`.
 
 ### Task 3: The planner passes the reviewer object through
 
