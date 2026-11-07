@@ -492,6 +492,7 @@ if [ "${1:-start}" = local-web ]; then
   [ "$code" = 200 ] || { cat "$TMP/stop-response" >&2; echo 'FAIL: web stop failed' >&2; exit 1; }
   for i in {1..120}; do curl -fsS "http://127.0.0.1:$PORT/api/run" > "$TMP/status"; [ "$(jq -r .state "$TMP/status")" = stopped ] && break; sleep 0.1; done
   [ "$(jq -r .state "$TMP/status")" = stopped ] || { echo 'FAIL: web run did not stop' >&2; exit 1; }
+  jq -e '.stop_reason == "stop-file" and (.hours | type == "number")' "$TMP/status" >/dev/null || { echo 'FAIL: stop status was not reported' >&2; exit 1; }
   echo 'PASS: local-web'; exit 0
 fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi

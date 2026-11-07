@@ -62,7 +62,7 @@ now() { if [ -n "${FLEET_BOARD_NOW_FILE:-}" ]; then cat "$FLEET_BOARD_NOW_FILE";
 greater() { LC_ALL=C awk -v a="$1" -v b="$2" 'BEGIN { exit !(a > b) }'; }
 add() { LC_ALL=C awk -v a="$1" -v b="$2" 'BEGIN { printf "%.10f", a+b }'; }
 START="$(now)"; LAST=""; TICKS=0; FAILS=0; COST=0
-stop() { printf 'fleet-board-run: stopped: %s after %s ticks, cost_estimate_usd %s (estimate)\n' "$1" "$TICKS" "$COST" | tee -a "$LOG"; exit "$2"; }
+stop() { local hours; hours="$(LC_ALL=C awk -v elapsed="$(($(now) - START))" 'BEGIN {printf "%.2f", elapsed / 3600}')"; printf 'fleet-board-run: stopped: %s after %s ticks, %s h, cost_estimate_usd %s (estimate)\n' "$1" "$TICKS" "$hours" "$COST" | tee -a "$LOG"; exit "$2"; }
 echo "fleet-board-run: log: $LOG"
 while :; do
   [ -e "$ROOT/.fleet-board.stop" ] && stop stop-file 0
@@ -74,6 +74,7 @@ while :; do
     if greater "$GAP" 0; then run_group "$SLEEP_CMD" "$GAP" || exit 1; continue; fi
   fi
   LAST="$(now)"; TICKS=$((TICKS + 1))
+  printf '=== tick %s ===\n' "$TICKS" >> "$LOG"
   run_group bash "$TICK_CMD" tick </dev/null > "$WORK/tick" 2> "$WORK/err"; RC=$?
   cat "$WORK/tick" "$WORK/err" >> "$LOG" || exit 1
   # Account for every attempt, including failures, before another tick can run.
