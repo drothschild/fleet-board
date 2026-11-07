@@ -83,7 +83,20 @@ lookup_failed() { printf 'deps-lookup-failed: %s\n' "$1" >&2; exit 1; }
 
 # check_ref <repo> <number>: prints {"met": bool, "status": s, "not_planned": bool}
 check_ref() {
-  local repo="$1" num="$2" cmd out state reason item pstatus status="" met=false np=false
+  local repo="$1" num="$2" cmd out state reason item pstatus status="" met=false np=false card
+  if [ "$(fb_cfg board.backend)" = local ] \
+     && [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ]; then
+    . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
+    card="$(fl_read_card "$num" 2>/dev/null)" || lookup_failed "local card #$num"
+    state="$(jq -r '.state // ""' <<<"$card" 2>/dev/null)" || lookup_failed "local card #$num"
+    case "$state" in
+      done) met=true ;;
+      wont_do) np=true; status=wont_do ;;
+      *) status="$state" ;;
+    esac
+    jq -cn --argjson met "$met" --arg status "$status" --argjson np "$np" '{met: $met, status: $status, not_planned: $np}'
+    return 0
+  fi
   cmd="gh issue view $num --repo $repo --json state,stateReason"
   out="$(gh issue view "$num" --repo "$repo" --json state,stateReason)" || lookup_failed "$cmd"
   state="$(jq -r 'if (.state == "OPEN" or .state == "CLOSED") then .state else error("unexpected") end' <<<"$out" 2>/dev/null)" \

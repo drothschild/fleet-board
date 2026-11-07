@@ -414,6 +414,64 @@ run_ff
 assert_exit "note-read-failure-files-nothing: exit" 1
 assert_eq "note-read-failure-files-nothing: no calls besides api reads" "$(non_api_calls)" 0
 
+# ---------------------------------------------------------------------------
+# local backend: searches and comments use the card files; gh answers only the
+# PR comment, so any issue search, create or comment has no route and exits 99
+
+# local_card <n> <title> <state> [updated_at]: writes a card file
+local_card() {
+  jq -n --argjson n "$1" --arg t "$2" --arg s "$3" --arg u "${4:-2026-11-06T00:00:00Z}" \
+    '{number: $n, title: $t, body: "b", state: $s, labels: [], next_comment_id: 1, comments: [],
+      created_at: "2026-11-01T00:00:00Z", updated_at: $u}' > "$REPO/.fleet-board/cards/$1.json"
+}
+
+setup_local() {
+  setup_case
+  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 13 > "$REPO/.fleet-board/next"
+  local_card 12 "The card" in_progress
+  printf 'pr comment 34 *\t0\t-\n' > "$ROUTES"
+}
+
+# local: an open card with the same title is the match; the comment lands on it
+setup_local
+local_card 5 "Add() overflows on large ints" ready
+local_card 6 "add() overflows on large ints sometimes" ready
+report '[]' "[$(bug "add() overflows on large ints")]"
+run_ff
+assert_exit "local open match: exit" 0
+assert_eq "local open match: bugs_filed" "$(jqc .bugs_filed)" '[{"title":"add() overflows on large ints","number":5,"existing":true,"matched":"open"}]'
+assert_eq "local open match: comment on card 5" "$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/5.json")" "Also seen while working #12 (PR #34)."
+assert_eq "local open match: no comment on the near miss" "$(jq '.comments | length' "$REPO/.fleet-board/cards/6.json")" 0
+assert_eq "local open match: no card created" "$(cat "$REPO/.fleet-board/next")" 13
+assert_eq "local open match: only the PR comment reached gh" "$(calls_starting pr comment 34)/$(ls "$FAKE_GH_DIR/argv" | wc -l | tr -d ' ')" "1/1"
+
+# local: a done card is not an open match (and an old one is not a recent closed one)
+setup_local
+local_card 5 "Extract math utils" done 2020-01-01T00:00:00Z
+report '[{"title":"Extract math utils","detail":"calc.js mixes parsing and math"}]' '[]'
+run_ff
+assert_exit "local no match: exit" 0
+assert_eq "local no match: created #13" "$(jqc .out_of_scope_created)" '[{"title":"Extract math utils","number":13,"existing":false}]'
+assert_eq "local no match: #13 in backlog" "$(jq -r .state "$REPO/.fleet-board/cards/13.json")" backlog
+case "$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/13.json")" in
+  "Filed in Backlog: the finding gave no testable Acceptance bullet"*) pass "local no match: Backlog comment on card 13" ;;
+  *) fail "local no match: Backlog comment on card 13" "$(jq -c .comments "$REPO/.fleet-board/cards/13.json")" ;;
+esac
+assert_eq "local no match: old done card untouched" "$(jq '.comments | length' "$REPO/.fleet-board/cards/5.json")" 0
+assert_eq "local no match: only the PR comment reached gh" "$(ls "$FAKE_GH_DIR/argv" | wc -l | tr -d ' ')" 1
+case "$LAST_ERR" in *"Backlog comment failed"*) fail "local no match: Backlog comment posted" "$LAST_ERR" ;; *) pass "local no match: Backlog comment posted" ;; esac
+
+# local: an unparsable card file fails the search closed, nothing filed
+setup_local
+printf '{not json' > "$REPO/.fleet-board/cards/7.json"
+report '[]' "[$(bug "Division by zero crashes")]"
+run_ff
+assert_exit "local corrupt card: exit" 1
+assert_eq "local corrupt card: nothing created" "$(cat "$REPO/.fleet-board/next")" 13
+assert_eq "local corrupt card: no stdout" "$LAST_OUT" ""
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

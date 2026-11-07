@@ -24,6 +24,13 @@
 #      after a KILL at most a 1 s sleep outlives it
 #   5. touches every path listed in N.touch (one per line), when present
 #   6. exits with the contents of N.exit, default 0
+#
+# Provider spend: when N.ledger exists, the tick appends its lines to FAKE_CLAUDE_LEDGER,
+# or when that is unset to ${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/provider-spend.jsonl
+# resolved from the tick's cwd (as a provider stage would),
+# with every @RUN@ replaced by FLEET_BOARD_RUN_ID (just before the output in
+# step 3). Every invocation also appends FLEET_BOARD_RUN_ID (empty when unset)
+# to runid.log.
 
 set -uo pipefail
 
@@ -51,6 +58,13 @@ pwd -P >> "$D/cwd.log"
 printf '%d\n' "$$" >> "$D/pids.log"
 printf '%s\n' "${LC_ALL-}" >> "$D/locale.log"
 if { true >&3; } 2>/dev/null; then echo open; else echo closed; fi >> "$D/fd3.log"
+
+printf '%s\n' "${FLEET_BOARD_RUN_ID-}" >> "$D/runid.log"
+if [ -f "$D/$N.ledger" ]; then
+  L="${FAKE_CLAUDE_LEDGER:-${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/provider-spend.jsonl}"
+  mkdir -p "$(dirname "$L")"
+  sed "s/@RUN@/${FLEET_BOARD_RUN_ID-}/g" "$D/$N.ledger" >> "$L"
+fi
 
 if [ -f "$D/$N.jsonl" ]; then
   cat "$D/$N.jsonl"

@@ -746,6 +746,44 @@ assert_jq "update_branch: an unknown mergeable state gets no update_branch" "$(c
 plan_mergeable in-progress-draft-pr 34 MERGEABLE
 assert_jq "update_branch: in progress, mergeable PR keeps start_review" "$(card 12 action)" '"start_review"'
 
+# Conflicted files in the note: update-branch.sh recorded them after aborting a
+# conflicting merge, so the card plans the fixer with those files as findings.
+# plan_note builds the card's comments at run time from an existing in-review
+# scenario and the given note JSON, so no fixture directory is needed.
+plan_note() { # <note-json> [mergeable]
+  setup_case action-failures-in-review-3
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  jq -cn --arg note "$1" '[{id: 555, user: {login: "fleet-bot"},
+    body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n" + $note + "\n```\n"),
+    created_at: "2026-09-28T00:01:00Z"}]' > "$d/comments.json"
+  {
+    if [ -n "${2:-}" ]; then
+      printf '{"mergeable":"%s"}\n' "$2" > "$d/mergeable.json"
+      printf 'pr view 34 --repo acme/toy --json mergeable\t0\t%s\n' "$d/mergeable.json"
+    fi
+    sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-12.json#	$d/comments.json#" "$TICK/action-failures-in-review-3/routes"
+  } > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+CONFLICT_NOTE='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]},"action_failures":1,"last_action_error":"merge conflicts","conflicted_files":["src/calc.js","src/util.js","test/calc.test.js"]}'
+
+plan_note "$CONFLICT_NOTE"
+assert_exit "conflict files: exit" 0
+assert_jq "conflict files: a note recording conflicted files plans the fixer" "$(card 12 action)" '"fix"'
+assert_jq "conflict files: the findings are every conflicted file, test files included" \
+  "$(card 12 findings)" '[{"severity":"Important","text":"merge conflict in src/calc.js"},{"severity":"Important","text":"merge conflict in src/util.js"},{"severity":"Important","text":"merge conflict in test/calc.test.js"}]'
+plan_note "$CONFLICT_NOTE" CONFLICTING
+assert_jq "conflict files: a still-conflicting PR plans fix, not update_branch again" "$(card 12 action)" '"fix"'
+
+plan_note '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":null,"action_failures":0,"last_action_error":null,"conflicted_files":[]}'
+assert_jq "resolved merge: last_review reset on the merged head plans review, not merge" "$(card 12 action)" '"review"'
+assert_jq "resolved merge: no findings are planned" "$(card 12 findings)" 'null'
+
+plan_note '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":null,"action_failures":3,"last_action_error":"merge conflicts","conflicted_files":["src/calc.js"]}'
+assert_jq "conflict failures: action_failures at review.max_rounds on a conflicted card plans block" "$(card 12 action)" '"block"'
+
 # ---------------------------------------------------------------------------
 # settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
 # settle <case> <n> [extra YAML]: set up the case and run --settle <n>
@@ -872,10 +910,431 @@ plan_real nonmerge
 assert_exit "merge-only-reviewed: non-merge commit: exit" 0
 assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
 
+# Scope overlap and one merge per tick. Fixtures are built at run time.
+# scope_issue <dir> <n> <label> <scope section text, or NONE>: writes the issue
+scope_issue() {
+  local dir="$1" n="$2" label="$3" scope="$4" body
+  body="Work."$'\n\n'
+  if [ "$scope" != NONE ]; then body="$body## Scope"$'\n'"$scope"$'\n\n'; fi
+  body="$body## Acceptance"$'\n'"- it works"$'\n'
+  jq -n --argjson n "$n" --arg l "fleet:$label" --arg b "$body" \
+    '{number: $n, title: "Card \($n)", html_url: "https://github.com/acme/toy/issues/\($n)", body: $b, labels: [{name: $l}]}' \
+    > "$dir/issue-$n.json"
+}
+
+# scope_routes <dir> <ready numbers> <in_review numbers> [<stage columns>]:
+# routes for those cards. <stage columns> is "review_<name>:<numbers> ...",
+# one word per configured stage (cards in a stage column get PR routes too).
+scope_routes() {
+  local dir="$1" n pr stage_nums="" sc
+  for sc in ${4:-}; do stage_nums="$stage_nums ${sc#*:}"; done
+  {
+    printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
+    for n in $2 $3 $stage_nums; do
+      printf 'api repos/acme/toy/issues/%s\t0\t%s/issue-%s.json\n' "$n" "$dir" "$n"
+      if [ -f "$dir/comments-$n.json" ]; then
+        printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/comments-%s.json\n' "$n" "$dir" "$n"
+      else
+        printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/common/empty.json\n' "$n" "$TICK"
+      fi
+    done
+    for n in $3 $stage_nums; do
+      pr=$((n + 22))
+      printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/common/pr-34-open-green.json\n' "$pr" "$TICK"
+      printf 'pr view %s --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$pr" "$TICK"
+    done
+    for st in ready:"$2" in_progress: in_review:"$3" ${4:-} blocked:; do
+      local col="${st%%:*}" nums="${st#*:}" arr="[]" x
+      arr="$(for x in $nums; do jq -cn --argjson n "$x" --arg l "fleet:$col" '{number: $n, title: "Card \($n)", url: "u", labels: [{name: $l}]}'; done | jq -cs '.')"
+      printf '%s\n' "$arr" > "$dir/list-$col.json"
+      printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s/list-%s.json\n' "$col" "$dir" "$col"
+    done
+  } > "$dir/routes"
+  FAKE_GH_ROUTES="$dir/routes"; export FAKE_GH_ROUTES
+}
+
+# scope_review_note <dir> <n>: a clean round 1 review note for card n, PR n+22
+scope_review_note() {
+  sed -e "s/fleet\\/12-add-subtract/fleet\\/$2-card/" -e "s/\\\\\"pr\\\\\":34/\\\\\"pr\\\\\":$(($2 + 22))/" \
+    "$TICK/in-review-merge-auto/comments-12.json" > "$1/comments-$2.json"
+}
+
+# plan_scope <ready card's scope text or NONE>: ready card 14, in_review card 12 naming src/a.sh
+plan_scope() {
+  setup_case ready-start
+  local dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+  scope_issue "$dir" 12 in_review '- Modify `src/a.sh`: the change'
+  scope_issue "$dir" 14 ready "$1"
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "14" "12"
+  run_check "$SCRIPT"
+}
+
+plan_scope '- Modify `src/a.sh`: another change'
+assert_exit "scope-overlap: exit" 0
+assert_jq "scope-overlap: a Ready card sharing a path with an in_review card waits" "$(card 14 action)" '"wait"'
+assert_jq "scope-overlap: the reason names the other card" "$(card 14 reason | sed 's/^/(/; s/$/ | contains("#12"))/')" 'true'
+
+plan_scope '- Modify `src/b.sh`: another change'
+assert_exit "scope-disjoint: exit" 0
+assert_jq "scope-disjoint: cards naming different paths start" "$(card 14 action)" '"start"'
+
+plan_scope 'Everything in the card, no file named here.'
+assert_exit "scope-none: exit" 0
+assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
+
+# Three cards eligible to merge: exactly one merge, lowest number first
+setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto')"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+for n in 12 13 15; do
+  scope_issue "$dir" "$n" in_review NONE
+  scope_review_note "$dir" "$n"
+done
+scope_routes "$dir" "" "15 12 13"
+run_check "$SCRIPT"
+assert_exit "merge-one: exit" 0
+assert_jq "merge-one: exactly one of three eligible cards is merge" '[.cards[] | select(.action == "merge")] | length' 1
+assert_jq "merge-one: the merge is the lowest card number" '[.cards[] | select(.action == "merge") | .number]' '[12]'
+assert_jq "merge-one: the others wait" '[.cards[] | select(.action == "wait") | .number] | sort' '[13,15]'
+
+# commands.preflight: one board-level alert instead of a failure on each card
+PRE_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$PRE_DIR")
+printf '#!/usr/bin/env bash\necho ran >> "%s/ran"\nfor i in $(seq 1 25); do echo "preflight line $i"; done\nexit 1\n' "$PRE_DIR" > "$PRE_DIR/fail.sh"
+printf '#!/usr/bin/env bash\necho ran >> "%s/ran"\necho fine\nexit 0\n' "$PRE_DIR" > "$PRE_DIR/ok.sh"
+
+# mutating_calls: gh calls that edit, comment or write (a plan only reads)
+mutating_calls() {
+  local f n=0
+  for f in "$FAKE_GH_DIR"/argv/*; do
+    [ -f "$f" ] || continue
+    grep -qxE 'edit|comment|create|close|-X|--method|--input' "$f" && n=$((n + 1))
+  done
+  echo "$n"
+}
+
+for pcase in ready-start in-review-needs-review action-failures-ready-3; do
+  plan "$pcase"
+  UNSET_OUT="$LAST_OUT"
+  rm -f "$PRE_DIR/ran"
+  plan "$pcase" "$(printf 'commands:\n  preflight: bash %s/fail.sh' "$PRE_DIR")"
+  assert_exit "preflight-fail $pcase: exit" 0
+  assert_jq "preflight-fail $pcase: no start, review, fix or other dispatch action" \
+    '[.cards[] | select(.action | IN("start","continue_implementor","start_review","review","fix","merge","block","unblock","file_pending","verify_main","finish","update_branch","mark_ready","to_human_qa"))] | length' 0
+  assert_jq "preflight-fail $pcase: exactly one warning starts with 'preflight failed:'" \
+    '[.warnings[] | select(startswith("preflight failed:"))] | length' 1
+  assert_jq "preflight-fail $pcase: the warning holds the command" \
+    '[.warnings[] | select(startswith("preflight failed:") and contains("fail.sh"))] | length' 1
+  assert_jq "preflight-fail $pcase: the warning holds the last 20 lines of output" \
+    '.warnings[] | select(startswith("preflight failed:")) | [contains("preflight line 25"), contains("preflight line 6"), contains("preflight line 5")]' '[true,true,false]'
+  assert_jq "preflight-fail $pcase: dispatchable is false" '.dispatchable' 'false'
+  assert_eq "preflight-fail $pcase: every card keeps its state" \
+    "$(jq -c '[.cards[] | [.number, .state, .round]]' <<<"$LAST_OUT")" \
+    "$(jq -c '[.cards[] | [.number, .state, .round]]' <<<"$UNSET_OUT")"
+  assert_eq "preflight-fail $pcase: nothing is written to the board" "$(mutating_calls)" "0"
+  assert_eq "preflight-fail $pcase: the preflight ran once" "$(wc -l < "$PRE_DIR/ran" | tr -d ' ')" "1"
+done
+
+# exit 0: the plan equals the plan with the key unset
+for pcase in ready-start in-review-needs-review; do
+  plan "$pcase"
+  UNSET_OUT="${LAST_OUT//$BASE/BASE}" # the worktree base differs per run
+  rm -f "$PRE_DIR/ran"
+  plan "$pcase" "$(printf 'commands:\n  preflight: bash %s/ok.sh' "$PRE_DIR")"
+  assert_exit "preflight-ok $pcase: exit" 0
+  assert_eq "preflight-ok $pcase: plan equals the plan with the key unset" "${LAST_OUT//$BASE/BASE}" "$UNSET_OUT"
+  assert_eq "preflight-ok $pcase: the preflight ran once" "$(wc -l < "$PRE_DIR/ran" | tr -d ' ')" "1"
+done
+
+# key unset: no preflight command runs (another commands key must not be run)
+rm -f "$PRE_DIR/ran"
+plan ready-start "$(printf 'commands:\n  test_one: bash %s/ok.sh {file}' "$PRE_DIR")"
+assert_exit "preflight-unset: exit" 0
+assert_eq "preflight-unset: no command ran" "$([ -e "$PRE_DIR/ran" ] && echo ran || echo none)" "none"
+assert_jq "preflight-unset: no preflight warning" '[.warnings[] | select(startswith("preflight"))] | length' 0
+
+# the docs name the key
+grep -qF 'commands.preflight' "$SCRIPT_DIR/../docs/config.md" \
+  && pass "preflight-docs: docs/config.md names commands.preflight" \
+  || fail "preflight-docs: docs/config.md names commands.preflight" "grep -F found nothing"
+
+# ---------------------------------------------------------------------------
+# Re-review instead of fixing again (not_reproducible, and a card returned
+# from Blocked). Variants of in-review-fix with a different note, built at run
+# time under a temp tree that links the shared fixtures.
+VROOT="$(mktemp -d)"
+CLEANUP_DIRS+=("$VROOT")
+mkdir -p "$VROOT/tick"
+ln -s "$TICK/common" "$VROOT/tick/common"
+ln -s "$SCRIPT_DIR/../fixtures/gh/labels" "$VROOT/labels"
+
+# variant <name> <pr json file under common> <note json>
+variant() {
+  local d="$VROOT/tick/$1"
+  mkdir -p "$d"
+  sed "s#comments-12.json#$d/comments-12.json#; s#\.\./common/pr-34-draft.json#../common/$2#" "$TICK/in-review-fix/routes" > "$d/routes"
+  jq -c --argjson note "$3" '
+    .[1].body = ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\n\n```json\n" + ($note | tojson) + "\n```\n")
+  ' "$TICK/in-review-fix/comments-12.json" > "$d/comments-12.json"
+  TICK="$VROOT/tick" plan "$1"
+}
+LR='"last_review":{"round":1,"sha":"abc1234","critical":0,"important":1,"findings":[{"severity":"Important","text":"subtract ignores negatives"}]}'
+BASE_NOTE='"branch":"fleet/12-add-subtract","pr":34,"round":1'
+
+# The latest fixer report is not_reproducible: plan review, not fix
+variant fixer-not-reproducible pr-34-draft.json \
+  "{\"state\":\"in_review\",$BASE_NOTE,$LR,\"last_fix\":{\"status\":\"not_reproducible\",\"round\":1}}"
+assert_exit "fixer-not-reproducible: exit" 0
+assert_jq "fixer-not-reproducible: action" "$(card 12 action)" '"review"'
+assert_jq "fixer-not-reproducible: dispatchable" '.dispatchable' 'true'
+
+# A fixer report that was a plain failure (blocked) still plans fix
+variant fixer-blocked-last-fix pr-34-draft.json \
+  "{\"state\":\"in_review\",$BASE_NOTE,$LR,\"last_fix\":{\"status\":\"blocked\",\"round\":1}}"
+assert_jq "fixer-blocked-last-fix: action stays fix" "$(card 12 action)" '"fix"'
+
+# Returned from Blocked to In review: the note still says blocked, the head is
+# the reviewed head, and an Important finding is open
+variant returned-from-blocked pr-34-draft.json \
+  "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
+assert_exit "returned-from-blocked: exit" 0
+assert_jq "returned-from-blocked: action" "$(card 12 action)" '"review"'
+assert_jq "returned-from-blocked: dispatchable" '.dispatchable' 'true'
+
+# The head moved after the finding: unchanged from today (review, same reason)
+variant returned-head-moved pr-34-draft-head-moved.json \
+  "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
+assert_jq "returned-head-moved: action" "$(card 12 action)" '"review"'
+assert_jq "returned-head-moved: reason is today's head-moved reason" "$(card 12 reason)" \
+  '"PR head def5678 differs from the round 1 review at abc1234; review the new commits before fixing again"'
+
+# An ordinary in-review card with an open finding and an unchanged head still fixes
+variant in-review-note-state pr-34-draft.json \
+  "{\"state\":\"in_review\",$BASE_NOTE,$LR}"
+assert_jq "in-review-note-state: action stays fix" "$(card 12 action)" '"fix"'
+
 # usage
 plan ready-start
 run_check "$SCRIPT" extra
 assert_exit "usage: arguments rejected" 2
+
+# ---------------------------------------------------------------------------
+# Review stages: stage columns, advance_stage and review_stage. The config has
+# the three stages of fixtures/config/stages.yml (security with max_rounds 2).
+STAGES_YAML="$(printf '%s\n' \
+  'review:' \
+  '  stages:' \
+  '    - name: security' \
+  '      agent: "acme:sec"' \
+  '      model: opus' \
+  '      paths: ["src/auth/**"]' \
+  '      max_rounds: 2' \
+  '    - name: ux' \
+  '      agent: ux-reviewer' \
+  '      model: sonnet' \
+  '      advisory: true' \
+  '    - name: compliance' \
+  '      provider: openai' \
+  '      model: gpt-test' \
+  '      price: { input: 1, output: 2 }')"
+unset OPENAI_API_KEY || true
+splan() { plan "$1" "$STAGES_YAML"; }
+ssettle() { settle "$1" "$2" "$STAGES_YAML"; }
+
+# in_review, clean current review, label needs-security-review -> advance_stage
+splan stage-advance-from-review
+assert_exit "stage-advance: exit" 0
+assert_jq "stage-advance: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "stage-advance: reason" "$(card 12 reason)" '"review clean; next stage security"'
+assert_jq "stage-advance: entering security" "$(card 12 stage.name)" '"security"'
+assert_jq "stage-advance: agent carried" "$(card 12 stage.agent)" '"acme:sec"'
+assert_eq "stage-advance: one files lookup (match; no needs-human-qa)" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
+assert_jq "stage-advance: dispatchable" '.dispatchable' 'true'
+# the security column is listed
+assert_eq "stage columns listed" "$(grep -c 'issue list --repo acme/toy --label fleet:review_security' "$FAKE_GH_DIR/calls.log")" 1
+# in review_security, note stage security round 1, no last_review -> review_stage
+splan stage-review-needed
+assert_exit "stage-review: exit" 0
+assert_jq "stage-review: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-review: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+assert_jq "stage-review: model" "$(card 12 stage.model)" '"opus"'
+assert_jq "stage-review: dispatchable" '.dispatchable' 'true'
+# agent_stage_plan_card_has_null_provider
+assert_jq "agent_stage_plan_card_has_null_provider: provider" "$(card 12 stage.provider)" 'null'
+assert_jq "agent_stage_plan_card_has_null_provider: agent" "$(card 12 stage.agent)" '"acme:sec"'
+assert_jq "stage-review: stage object is the config stage whole" "$(card 12 stage) | keys" \
+  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","price","provider","timeout"]'
+# no_warning_when_stage_not_acted_on: no card in the provider stage
+assert_jq "no_warning_when_stage_not_acted_on: no card in the stage" '.warnings' '[]'
+# last_review from in_review (stage null, round 1) does not count
+splan stage-stale-record
+assert_jq "stage-stale: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-stale: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+# findings in round 1 of 2 -> fix with stage
+splan stage-fix
+assert_jq "stage-fix: action" "$(card 12 action)" '"fix"'
+assert_jq "stage-fix: stage present" "$(card 12 stage.name)" '"security"'
+# findings in round 2 of 2 -> block at the stage's max
+splan stage-block
+assert_jq "stage-block: action" "$(card 12 action)" '"block"'
+assert_jq "stage-block: reason" "$(card 12 reason)" '"1 Critical/Important findings survive round 2 of 2 in security"'
+# advisory stage with findings and no later label -> tail (draft PR -> mark_ready)
+splan stage-advisory-tail
+assert_jq "stage-advisory: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "stage-advisory: stage ux" "$(card 12 stage.name)" '"ux"'
+# clean in security, ux label present -> advance to ux
+splan stage-advance-next
+assert_jq "stage-advance-next: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "stage-advance-next: ux" "$(card 12 stage.name)" '"ux"'
+assert_jq "stage-advance-next: reason" "$(card 12 reason)" '"review clean; next stage ux"'
+# clean in security, ux label present but reviewed_stages has ux -> tail
+splan stage-skip-done
+assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
+# Re-matching: the PR's current files are matched against every stage's paths
+# at each clean, current review, so a file added after routing still routes.
+# in_review, no routing label, PR files now include src/auth/login.js
+splan stage-rematch-in-review
+assert_exit "rematch in_review: exit" 0
+assert_jq "rematch in_review: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch in_review: into security" "$(card 12 stage.name)" '"security"'
+assert_eq "rematch in_review: adds no label" "$(grep -c $'\tissue edit' "$FAKE_GH_DIR/calls.log")" 0
+# review_ux, clean, security never visited and now matched -> back to security
+splan stage-rematch-earlier
+assert_jq "rematch earlier stage: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch earlier stage: into security" "$(card 12 stage.name)" '"security"'
+assert_jq "rematch earlier stage: reason" "$(card 12 reason)" '"review clean; next stage security"'
+# review_ux, clean, security already in reviewed_stages -> not revisited
+splan stage-rematch-done
+assert_jq "rematch done stage: not revisited" "$(card 12 action)" '"mark_ready"'
+# head moved after a clean stage review -> review_stage
+splan stage-head-moved
+assert_jq "stage-head-moved: action" "$(card 12 action)" '"review_stage"'
+# a card labelled fleet:review_legacy with no such stage in the config: settle plan by number
+ssettle stage-not-configured 12
+assert_exit "stage-missing: exit 0" 0
+assert_jq "stage-missing: action skip" "$(card 12 action)" '"skip"'
+assert_jq "stage-missing: not dispatchable" '.dispatchable' 'false'
+# settle keeps advance_stage, drops review_stage
+ssettle stage-advance-from-review 12
+assert_jq "settle: advance_stage kept" "$(card 12 action)" '"advance_stage"'
+ssettle stage-review-needed 12
+assert_jq "settle: review_stage skipped" "$(card 12 action)" '"skip"'
+assert_jq "settle: review_stage waits" "$(card 12 reason)" '"review_stage waits for the next tick"'
+# action_failures rule covers a stage column (note action_failures 3, review.max_rounds 3)
+splan stage-action-failures-3
+assert_jq "stage failures: block" "$(card 12 action)" '"block"'
+assert_jq "stage failures: reason" "$(card 12 reason)" '"no progress after 3 attempts: fleet-board: cannot fetch the head of PR #34"'
+
+# Provider stages
+COMPLIANCE_WARN='stage compliance: OPENAI_API_KEY is not set; provider reviews will fail'
+# review_stage_plan_card_has_provider
+splan stage-provider-review
+assert_exit "review_stage_plan_card_has_provider: exit" 0
+assert_jq "review_stage_plan_card_has_provider: provider" "$(card 12 stage.provider)" '"openai"'
+assert_jq "review_stage_plan_card_has_provider: agent null" "$(card 12 stage.agent)" 'null'
+assert_jq "review_stage_plan_card_has_provider: model" "$(card 12 stage.model)" '"gpt-test"'
+assert_jq "review_stage_plan_card_has_provider: key unset holds as wait" "$(card 12 action)" '"wait"'
+assert_jq "review_stage_plan_card_has_provider: hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "review_stage_plan_card_has_provider: nothing else dispatchable" '.dispatchable' 'false'
+assert_jq "review_stage_plan_card_has_provider: key unset warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# unset_key_warns_once: card 12 review_stage and card 13 fix, both in review_compliance
+splan stage-provider-two
+assert_jq "unset_key_warns_once: card 12 review_stage held" "$(card 12 action)" '"wait"'
+assert_jq "unset_key_warns_once: card 12 hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "unset_key_warns_once: dispatchable through the fix" '.dispatchable' 'true'
+assert_jq "unset_key_warns_once: card 13 fix" "$(card 13 action)" '"fix"'
+assert_jq "unset_key_warns_once: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# set_key_no_warning
+setup_case stage-provider-two "$STAGES_YAML"
+OPENAI_API_KEY=x; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "set_key_no_warning: review_stage planned" "$(card 12 action)" '"review_stage"'
+assert_jq "set_key_no_warning: actions unchanged" '[.cards[].action]' '["review_stage","fix"]'
+assert_jq "set_key_no_warning: no warning" '.warnings' '[]'
+# an empty variable counts as unset
+setup_case stage-provider-two "$STAGES_YAML"
+OPENAI_API_KEY=; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "empty key warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+# no_warning_when_stage_not_acted_on: a clean provider review plans the tail
+splan stage-provider-clean
+assert_jq "no_warning_when_stage_not_acted_on: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "no_warning_when_stage_not_acted_on: no warning" '.warnings' '[]'
+# settle: review_stage is skipped there, so no warning
+ssettle stage-provider-review 12
+assert_jq "no_warning_when_stage_not_acted_on: settle skip" '.warnings' '[]'
+# advance_into_provider_stage_warns: the manager runs review_stage right after
+# advance_stage, so entering a provider stage with its key unset warns once
+splan stage-advance-to-provider
+assert_exit "advance_into_provider_stage_warns: exit" 0
+assert_jq "advance_into_provider_stage_warns: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "advance_into_provider_stage_warns: stage" "$(card 12 stage.name)" '"compliance"'
+assert_jq "advance_into_provider_stage_warns: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+setup_case stage-advance-to-provider "$STAGES_YAML"
+OPENAI_API_KEY=x; export OPENAI_API_KEY
+run_check "$SCRIPT"
+unset OPENAI_API_KEY
+assert_jq "advance_into_provider_stage_warns: key set, no warning" '.warnings' '[]'
+# a failed preflight holds a stage action too (advance_stage into a provider stage)
+rm -f "$PRE_DIR/ran"
+plan stage-advance-to-provider "$STAGES_YAML
+$(printf 'commands:\n  preflight: bash %s/fail.sh' "$PRE_DIR")"
+assert_jq "preflight-fail stage-advance-to-provider: held as wait" "$(card 12 action)" '"wait"'
+assert_jq "preflight-fail stage-advance-to-provider: dispatchable is false" '.dispatchable' 'false'
+assert_jq "preflight-fail stage-advance-to-provider: one preflight warning" '[.warnings[] | select(startswith("preflight failed:"))] | length' 1
+# advance into an agent stage never warns
+splan stage-advance-from-review
+assert_jq "advance into an agent stage: no warning" '.warnings' '[]'
+
+# scope overlap covers stage columns: a Ready card whose Scope names a path a
+# card in review_security names waits, as it does for an in_review card
+setup_case ready-start "$STAGES_YAML"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+scope_issue "$dir" 12 review_security '- Modify `src/a.sh`: the change'
+scope_issue "$dir" 14 ready '- Modify `src/a.sh`: another change'
+scope_review_note "$dir" 12
+scope_routes "$dir" "14" "" "review_security:12 review_ux: review_compliance:"
+run_check "$SCRIPT"
+assert_exit "scope-overlap stage column: exit" 0
+assert_jq "scope-overlap stage column: the review_security card is planned" "$(card 12 action) != null" 'true'
+assert_jq "scope-overlap stage column: the Ready card waits" "$(card 14 action)" '"wait"'
+assert_jq "scope-overlap stage column: the reason names the stage card" "$(card 14 reason)" '"Scope overlaps #12 on src/a.sh"'
+
+# no_stages_no_next_lookup: with no review stages configured, a clean, current
+# in_review card never runs review-stages.sh next and plans the old tail. A
+# copy of the scripts dir whose review-stages.sh records its call and fails
+# stands in for it.
+NEXT_STUB="$(mktemp -d)"
+CLEANUP_DIRS+=("$NEXT_STUB")
+cp -R "$SCRIPT_DIR/../scripts/." "$NEXT_STUB/"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/next-calls"\nexit 1\n' "$NEXT_STUB" > "$NEXT_STUB/review-stages.sh"
+setup_case in-review-mark-ready-human
+run_check "$NEXT_STUB/tick-plan.sh"
+assert_exit "no_stages_no_next_lookup: exit" 0
+assert_jq "no_stages_no_next_lookup: old tail" "$(card 12 action)" '"mark_ready"'
+assert_eq "no_stages_no_next_lookup: review-stages.sh (match or next) not run" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" none
+# control: with stages configured the same stub is run (and its failure skips the card)
+setup_case stage-advance-from-review "$STAGES_YAML"
+run_check "$NEXT_STUB/tick-plan.sh"
+assert_jq "no_stages_no_next_lookup control: lookup failed (match runs first)" "$(card 12 reason)" '"lookup failed: review-stages.sh match 34"'
+assert_eq "no_stages_no_match_lookup: the stub ran match first" "$(sed -n 1p "$NEXT_STUB/next-calls")" "match 34"
+assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
+
+provider_models='models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }
+  escalation: opus'
+zero_price='reviewer codex/gpt-6-astra has price 0; max_cost_usd does not count its spend'
+plan escalation-round2 "$provider_models"
+assert_exit "provider reviewer: planner exits 0" 0
+assert_jq "provider reviewer: passes merged object through" "$(card 12 models.reviewer)" '{"provider":"codex","model":"gpt-6-astra","price":{"input":0,"output":0},"timeout":1500}'
+assert_jq "provider reviewer: escalation applies to both writers" "$(card 12 models) | [.implementor,.fixer]" '["opus","opus"]'
+assert_jq "provider reviewer: only the zero price warning" '.warnings' "$(warns_json "$zero_price")"
+plan escalation-round2 "$provider_models
+  implementor: gpt-6-astra"
+assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | select(startswith("implementor and reviewer share model gpt-6-astra"))] | length' 1
+plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
+assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

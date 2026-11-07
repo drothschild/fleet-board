@@ -34,8 +34,8 @@ worktrees:
 EOF
 cat > "$SB/cards.json" <<'EOF'
 {"cards":[
- {"key":"A","title":"Parse a|b input","repo":"acme/api","labels":["backend"]},
- {"key":"B","title":"Plain title","repo":"acme/api","labels":["docs"],"depends_on":["A"]}
+ {"key":"A","title":"Parse a|b input","repo":"acme/api","labels":["backend"],"acceptance":["The table prints"]},
+ {"key":"B","title":"Plain title","repo":"acme/api","labels":["docs"],"depends_on":["A"],"acceptance":["The table prints"]}
 ]}
 EOF
 OUT="$(cd "$ROOT" && bash "$SCRIPT" "$SB/cards.json" --dry-run 2>"$SB/err")"

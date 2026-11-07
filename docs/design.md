@@ -6,6 +6,7 @@ fleet-board turns a GitHub issue board into a work queue for coding agents. A ma
 
 ```mermaid
 stateDiagram-v2
+    state "review_#lt;stage#gt;" as review_stage
     [*] --> backlog
     backlog --> ready: has Acceptance
     ready --> in_progress: implementor starts
@@ -15,6 +16,11 @@ stateDiagram-v2
     in_review --> human_qa: card needs a person
     in_progress --> blocked: no progress
     in_review --> blocked: no progress
+    in_review --> review_stage: review clean, a stage applies
+    review_stage --> review_stage: fix, re-review
+    review_stage --> human_qa: last stage clean, card needs a person
+    review_stage --> done: last stage clean, PR merged
+    review_stage --> blocked: findings survive the stage's rounds
     blocked --> ready: unblocked
     human_qa --> done: a person finishes it
     ready --> wont_do
@@ -76,6 +82,28 @@ Alternative: a reviewer that reads the code and judges it, which is cheaper and 
 
 Because an agent reviewing an agent's work is persuaded easily by confident prose, and tests that pass prove little if they would also pass on broken code. Mutation testing makes that gap concrete. On HMB Workout, card 393 is the example: the reviewer's mutation run reported survivors, meaning changes to the implementation that the new tests did not catch. Every test passed, yet some of the behavior was not actually pinned down. A plain read-through would have called that card clean. The survivors went back to the fixer as findings, and the fix was to add assertions that killed them. The cost is time and compute on every review, and some mutants are equivalent or invalid and need to be counted separately, which is why the report separates killed, survived and invalid.
 
+## Review stages are columns
+
+A repo can configure extra review stages (security, UX, compliance). Each is a real board column, `review_<name>`, between In Review and Human QA, with its own reviewer, model and routing: path globs, or a label a person can add or remove. A clean evidence review moves the card into the first stage that applies; the stage's findings go through the same fix and re-review loop, in that stage only; the last clean stage hands the card to Human QA, a ready PR or a merge as before. In the diagram, `review_stage` stands for any of them.
+
+Alternative: phases inside In Review. The card stays in one column and the manager note says which reviewer is current.
+
+Reason for the choice: the board is the only shared, human-visible state, so a card waiting on the security reviewer should say so on the board, not in a JSON field. A column can be filtered, counted and moved by hand with the tools people already use, and the plan's decision table stays one table: a stage column goes through the In Review branch with a few substitutions, instead of a second state machine hidden inside one column. The cost is configuration on the board (a label or Status column per stage, created by `review-stages.sh setup`) and a longer state list, which is why `FB_STATES` is built from the config.
+
+Accepted trade-off: a stage's fix is reviewed again by that stage only. The evidence reviewer, which ran tests and mutation in In Review, does not see a later stage's fix, and neither does an earlier stage. I chose this because re-running every earlier reviewer after every later fix multiplies cost and can loop (a security fix breaks a UX finding, whose fix reopens security). What still holds is the reviewed-heads rule: a PR merges only at a head some reviewer saw. What it does not give you is a fresh evidence review of the final tree.
+
+Routing labels are added once, at the move to In Review, but each clean review matches the stage globs against the PR's current files again (`review-stages.sh match`, read-only), because a fixer's commit can touch a stage's paths after routing and a stage evaluated once could then be skipped on the way to a merge; the cost is that removing a label no longer skips a stage whose globs match the current diff (a label-only stage can still be skipped that way).
+
+## Provider stages are a script, not an agent
+
+A stage can name a `provider` instead of an `agent`, to get a review from a model family that does not share the writer's blind spots. It is not an Agent dispatch. The manager runs one script, `stage-review.sh`, which builds a prompt from the card, the stage brief and the PR diff, calls an OpenAI-compatible chat endpoint through `providers/chat.sh`, and posts the reply as the stage's report.
+
+Alternative: run an external agent CLI (Codex, Gemini) in a worktree, so the external reviewer has tools like the Claude reviewers.
+
+Reason for the choice: a plugin cannot assume either CLI is installed, and a one-shot API call needs only `curl` and `jq`. With no tools and no worktree the reviewer cannot change anything, which makes it safe to run unattended, and diff-only input makes its cost bounded and predictable (`max_diff_bytes`, `max_output_tokens`, a required `price`). The reply goes through the same check as every other report, `parse-report.sh --role stage-reviewer`, with one re-ask on a rejection, so there is one code path for what counts as a valid report, and a provider cannot post anything an agent could not. Spend is appended to a ledger that the headless wrapper adds to each tick's cost, so `limits.max_cost_usd` still holds. The key stays in an environment variable, reaches `curl` only through a private header file, and is redacted from anything the script prints.
+
+The trade-off, named plainly: a provider stage runs no tests. It reads a diff, so it cannot confirm that code does what it claims, and it can miss anything that needs the rest of the repo. It also sends the card body, the stage brief, the previous round's findings, the latest implementor or fixer report and the diff to a third party. It complements the evidence reviewer; it does not replace it.
+
 ## Escalation and shared blind spots
 
 When a card keeps failing review, the work escalates: after a bounded number of rounds, the card is blocked, and later skipped until a person clears it. Configuration also lets a different model take over the fixing.
@@ -99,6 +127,18 @@ The agent definitions and the core skills were not hand-written. Each was author
 Alternative: write the agent prompts by hand, iterating in place, which is faster and more familiar.
 
 Because hand-written prompts accumulate the author's assumptions and private context, and they can quietly depend on tools or files that exist only on one machine. A spec-first process forces the behavior to be written down, and a fresh session with no local setup shows whether the spec alone is enough. It also keeps the plugin portable. What it protects against is hidden coupling: a prompt that works only because of the author's own configuration. What it cost is real: slower iteration, a ceiling on API spend for each authoring run, a rule against hand-editing the generated files, and a harder time debugging when the output is slightly off. Specs get re-authored rather than patched.
+
+## A local board instead of GitHub issues
+
+The board can live as JSON files under the repo (`board.backend: local`), with a localhost page to drag cards, start and stop the run, and import a plan.
+
+Alternative: keep GitHub issues and cache the board locally, so a tick reads the cache and only refreshes what changed.
+
+Because the quota is spent on issue reads: every tick lists columns, reads each card and its comments, and writes notes and reports. A cache keeps two copies of the truth, needs invalidation when a person edits a card on github.com, and still writes through. A backend with no remote issue side removes those calls outright. PR calls remain, so a tick still costs some quota, but much less.
+
+It costs two things. The card is no longer durable, shared state: it lives on one machine, so a lost laptop loses the board unless you commit it, and a teammate on another machine cannot see it. And the note's trust boundary weakens. On GitHub only a comment by the authenticated login counts; locally the author is `FLEET_BOARD_USER` or `$USER`, so the boundary is filesystem access, and a raw write into the store is not caught by the gate hook.
+
+The adapter seam made this cheap. Callers only run the `board-*.sh` contract scripts, which dispatch to `adapters/<backend>/<verb>.sh`, so the manager, the tick plan and the roles did not change. The new backend implements the same verbs, plus a few helpers for the page.
 
 ## What I would do next
 

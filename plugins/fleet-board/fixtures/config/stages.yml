@@ -1,0 +1,27 @@
+board:
+  backend: github-labels
+  repo: acme/toy
+worktrees:
+  dir: "../.fleet-worktrees"
+commands:
+  test_one: "npm test -- --runTestsByPath {file}"
+  typecheck: "npx tsc --noEmit"
+  lint: "npm run lint"
+merge: { policy: human }
+models: { reviewer: opus }
+review:
+  max_rounds: 3
+  stages:
+    - name: security
+      agent: "acme:security-reviewer"
+      model: opus
+      paths: ["src/auth/**", "**/*.sql"]
+      brief: "Focus on authz, secrets, injection."
+    - name: ux
+      agent: ux-reviewer
+      model: sonnet
+      advisory: true
+    - name: compliance
+      provider: openai
+      model: gpt-test
+      price: { input: 1, output: 2 }
