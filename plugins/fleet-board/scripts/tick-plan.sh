@@ -188,6 +188,13 @@
 # "#<n>: in review, but no PR is known".
 # A clean, current review whose human-QA answer is unknown is skipped with
 # the warning "human-QA need unknown for #<n>".
+# Re-review, not fix: a current review with Critical or Important findings, an
+# unmoved head and either note.last_fix = {"status":"not_reproducible","round":<n>}
+# for the current round (the fixer re-ran the finding and committed nothing) or
+# note.state "blocked" on a card now in In review (a person moved it back) plans
+# review. The manager records last_fix when it reconciles a fixer report and
+# bumps round for the re-review, which ends the rule; its note upkeep sets
+# state in_review, which ends the other.
 # A current review with Critical or Important findings plans review, not fix,
 # when the open PR's headRefOid is no longer last_review.sha (compared by
 # prefix, so a short sha never reads as a move), with reason "PR head <h7>
@@ -730,6 +737,16 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
             then act($ra; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
           elif $ci_eff > 0 and head_moved($c; $lr)
             then act($ra; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
+          # Re-review instead of fixing again: a fixer that re-ran the finding and
+          # could not reproduce it (note.last_fix, for this round), or a card a
+          # person moved back to In review from Blocked (the note still says
+          # blocked) with the head still the reviewed one. The finding may be
+          # stale; fixing it again would only block again.
+          elif $ci_eff > 0 and ($n.last_fix | type) == "object" and $n.last_fix.status == "not_reproducible"
+               and ($n.last_fix.round // $round) == $round
+            then act($ra; "the round \($round) fixer could not reproduce the finding; review PR head \($c.pr_info.headRefOid[0:7]) again before fixing")
+          elif $ci_eff > 0 and $n.state == "blocked"
+            then act($ra; "moved back from Blocked with PR head unchanged since the round \($round) review; review it again before fixing")
           # A clean review covers a later head only when every commit since is a
           # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
           elif $ci_eff == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
