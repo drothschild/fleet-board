@@ -11,7 +11,8 @@
 # string runs with sh -c in the repo root, {model} replaced by --model, the
 # prompt (message contents joined by a blank line) on stdin. Stdout is the
 # reply, with null token counts; a non-zero exit, a timeout or an empty stdout
-# exits 1.
+# exits 1. With --dir <path>, it runs in that directory and substitutes {dir}
+# with the shell-quoted path.
 #
 # The key is read from the environment variable named by --key-env ('-' sends
 # no Authorization header, for a loopback server). It reaches curl only through
@@ -48,6 +49,7 @@ usage() {
 }
 
 BASE_URL="" KEY_ENV="" MODEL="" MAX_TOKENS="" MAX_PARAM="" TIMEOUT="" COMMAND=""
+unset COMMAND_DIR
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage "missing value for $1"
   case "$1" in
@@ -58,11 +60,15 @@ while [ $# -gt 0 ]; do
     --max-tokens-param) MAX_PARAM="$2" ;;
     --timeout) TIMEOUT="$2" ;;
     --command) COMMAND="$2" ;;
+    --dir) COMMAND_DIR="$2" ;;
     *) usage "unknown argument: $1" ;;
   esac
   shift 2
 done
 if [ -n "$COMMAND" ]; then
+  if [ "${COMMAND_DIR+x}" ]; then
+    [ -d "$COMMAND_DIR" ] || usage "--dir must name a directory"
+  fi
   # Command mode: no HTTP; --base-url, --key-env, --max-tokens and --max-tokens-param are not used.
   [ -n "$MODEL" ] && [ -n "$TIMEOUT" ] || usage "--command needs --model and --timeout"
   [ -z "$BASE_URL" ] || usage "--command and --base-url are exclusive"
@@ -71,6 +77,7 @@ if [ -n "$COMMAND" ]; then
   printf '%s' "$MODEL" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._:/-]*$' || die "model id holds characters not allowed in a command provider" 2
   case "$COMMAND" in *[[:cntrl:]]*) die "command holds a control character" 2 ;; esac
 else
+  [ ! "${COMMAND_DIR+x}" ] || usage "--dir requires --command"
   [ -n "$BASE_URL" ] && [ -n "$KEY_ENV" ] && [ -n "$MODEL" ] && [ -n "$MAX_TOKENS" ] \
     && [ -n "$MAX_PARAM" ] && [ -n "$TIMEOUT" ] || usage "all of --base-url --key-env --model --max-tokens --max-tokens-param --timeout are required"
   case "$MAX_TOKENS" in *[!0-9]*) usage "--max-tokens must be an integer" ;; esac
@@ -96,10 +103,17 @@ if [ -n "$COMMAND" ]; then
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT
   trap 'exit 130' INT TERM
-  ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
   RUN="${COMMAND//\{model\}/$MODEL}"
+  if [ "${COMMAND_DIR+x}" ]; then
+    # Preserve an absolute argument even when the caller supplied a relative path.
+    case "$COMMAND_DIR" in /*) ;; *) COMMAND_DIR="$PWD/$COMMAND_DIR" ;; esac
+    QUOTED_DIR="$(jq -nr --arg dir "$COMMAND_DIR" '$dir | @sh')"
+    RUN="${RUN//\{dir\}/$QUOTED_DIR}"
+  else
+    COMMAND_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  fi
   printf '%s' "$PROMPT" > "$TMP/prompt.txt"
-  ( cd "$ROOT" && exec sh -c "$RUN" ) < "$TMP/prompt.txt" > "$TMP/out.txt" 2> "$TMP/err.txt" &
+  ( cd "$COMMAND_DIR" && exec sh -c "$RUN" ) < "$TMP/prompt.txt" > "$TMP/out.txt" 2> "$TMP/err.txt" &
   cpid=$!
   ( sleep "$TIMEOUT"; : > "$TMP/timedout"; kill "$cpid" 2>/dev/null ) > /dev/null 2>&1 &
   wpid=$!

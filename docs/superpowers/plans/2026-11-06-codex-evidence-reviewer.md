@@ -42,16 +42,16 @@
 **Interfaces:**
 - Produces: `chat.sh --command <string> --model <id> --timeout <s> [--dir <path>]`. With `--dir`, the command runs with `<path>` as its working directory and `{dir}` in the string is replaced by `<path>` single-quoted for `sh -c` (`'` inside becomes `'\''`). Without `--dir`, behavior is unchanged: repo root, `{dir}` left as written. `--dir` without `--command` is a usage error (exit 2). A `--dir` that is not a directory exits 2.
 
-- [ ] **Step 1: Write the failing tests** in `test-providers.sh`, using a fake command `sh -c 'pwd; printf "%s\n" "$0"' {dir}` style or an equivalent fake script:
+- [x] **Step 1: Write the failing tests** in `test-providers.sh`, using a fake command `sh -c 'pwd; printf "%s\n" "$0"' {dir}` style or an equivalent fake script:
   - `command mode --dir runs in the given directory`: stdout's text starts with the given dir.
   - `command mode --dir substitutes {dir}`: the fake echoes its argument; it equals the dir.
   - `command mode --dir quotes a path with a space and a quote`: dir `"$TMP/a b'c"`; the echoed argument equals it exactly.
   - `--dir without --command is a usage error`: exit 2.
   - `--dir naming a missing directory exits 2`.
-- [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-providers.sh` — Expected: the five new cases FAIL, the rest pass.
-- [ ] **Step 3: Implement `--dir`** in `chat.sh`: parse it, validate it, quote it, substitute `{dir}` after `{model}`, and `cd` into it instead of `$ROOT`.
-- [ ] **Step 4: Run** `bash plugins/fleet-board/tests/test-providers.sh` — Expected: `failed: 0`.
-- [ ] **Step 5: Commit** `chat.sh: run a command provider in a given directory`.
+- [x] **Step 2: Run** `bash plugins/fleet-board/tests/test-providers.sh` — Expected: the five new cases FAIL, the rest pass.
+- [x] **Step 3: Implement `--dir`** in `chat.sh`: parse it, validate it, quote it, substitute `{dir}` after `{model}`, and `cd` into it instead of `$ROOT`.
+- [x] **Step 4: Run** `bash plugins/fleet-board/tests/test-providers.sh` — Expected: `failed: 0`.
+- [x] **Step 5: Commit** `chat.sh: run a command provider in a given directory`.
 
 ### Task 2: Config accepts a command-provider reviewer
 
