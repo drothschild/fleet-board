@@ -138,8 +138,8 @@ seed_card() {
     > "$REPO/.fleet-board/cards/$1.json"
 }
 
-# setup_case: REPO = a local-backend repo with three seeded cards; starts the
-# server on an ephemeral port (PORT).
+# setup_case [server-temp-dir]: create a seeded repo outside the optional
+# server-only temp directory, then start the server on an ephemeral port.
 setup_case() {
   REPO="$(new_repo "$LOCAL_YML")"
   mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
@@ -157,7 +157,11 @@ setup_case() {
 - yes" "$(jq -n --arg b "$note_body" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
   seed_card 3 human_qa "Third" "No acceptance here."
   : > "$REPO/.fleet-board/active/2"
-  start_server "$REPO"
+  if [ -n "${1:-}" ]; then
+    TMPDIR="$1" start_server "$REPO"
+  else
+    start_server "$REPO"
+  fi
 }
 
 # start_server <repo>: starts board-web.py on an ephemeral port (PORT).
@@ -635,7 +639,7 @@ rm -f "$TMP/atomic-meta.json" "$TMP/atomic-meta.json.tmp"
 
 echo "Case: server hardening"
 mkdir -p "$TMP/srvtmp"
-if TMPDIR="$TMP/srvtmp" setup_case; then
+if setup_case "$TMP/srvtmp"; then
   # a Content-Length far beyond the body: refused up front, not waited for
   LAST_CODE="$(curl -s -o "$BODY_FILE" -w '%{http_code}' --max-time 5 -X POST -H 'X-Fleet-Board: 1' \
     -H 'Content-Type: application/json' -H 'Content-Length: 2000000' --data-binary '{"a":"bc"}' \
