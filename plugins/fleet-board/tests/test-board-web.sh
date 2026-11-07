@@ -492,8 +492,9 @@ if start_server "$REPO"; then
   assert_body "detail acceptance" '.acceptance|join("|")' 'first|second'
   assert_body "detail blocked_by" '.blocked_by|map(tostring)|join(",")' 2,3
   assert_body "detail pr_url is the card field" '.pr_url' 'https://github.com/acme/toy/pull/7'
-  assert_body "detail body_prose is the stored body" '.body_prose' 'Prose one.'
-  assert_body "detail body still renders the sections" '.body' '*## Acceptance*'
+  assert_body "detail body is the stored prose" '.body' 'Prose one.'
+  assert_body "detail body has no rendered Acceptance section" '.body|contains("## Acceptance")' false
+  assert_body "detail has no body_prose key" 'has("body_prose")' false
 
   api PATCH /api/cards/1 '{"acceptance":["x","y","z"]}'
   assert_code 200
@@ -508,7 +509,7 @@ if start_server "$REPO"; then
 
   api PATCH /api/cards/1 '{"body":"New prose."}'
   assert_code 200
-  assert_body "prose patch returns body_prose" '.body_prose' 'New prose.*'
+  assert_body "prose patch returns the prose as body" '.body' 'New prose.*'
   if [ "$(card_json 1 '.acceptance|join("|")')|$(card_json 1 '.blocked_by|map(tostring)|join(",")')" = "x|y|z|3" ]; then
     pass "a prose-only body keeps acceptance and blocked_by"
   else

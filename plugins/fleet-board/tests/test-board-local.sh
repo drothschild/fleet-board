@@ -321,7 +321,7 @@ if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card'
 
 # --- card fields: split, render, create, edit, migrate ---
 split_of() { run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; fl_split_body "$1"' _ "$1"; }
-render_of() { run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; fl_render_body "$1"; printf x' _ "$1"; }
+gone_of() { run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; declare -F "$1" >/dev/null && echo present || echo gone' _ "$1"; }
 setup_case
 S="$REPO/sample.md"
 printf 'Intro\n\nMore prose\n\n## Acceptance\n- one\n- two `code`\n\n## Depends on\n- #3\n- #7\n' > "$S"
@@ -331,9 +331,10 @@ assert_json "split body is the prose" '.body+"|"' $'Intro\n\nMore prose\n|'
 assert_json "split acceptance bullets" '.acceptance|join("|")' 'one|two `code`'
 assert_json "split blocked_by numbers" '.blocked_by|map(tostring)|join(",")' '3,7'
 assert_json "split outside empty" '.outside|length' 0
-jq -c '. + {number: 1}' <<<"$LAST_OUT" > "$REPO/rt.json"
-render_of "$REPO/rt.json"
-if [ "$LAST_OUT" = "$(cat "$S"; printf x)" ]; then pass "split then render round-trips byte for byte"; else fail "split then render round-trips byte for byte" "got: $LAST_OUT"; fi
+gone_of fl_render_body
+assert_stdout_exact "fl_render_body is gone (nothing re-renders the sections)" "gone"
+gone_of fl_render_card_json
+assert_stdout_exact "fl_render_card_json is gone" "gone"
 printf 'Plain, no sections\nat all' > "$S"
 split_of "$S"
 assert_json "split body without sections is unchanged" '.body' $'Plain, no sections\nat all'
@@ -370,7 +371,7 @@ run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
 assert_json "read returns acceptance" '.acceptance|join("|")' 'alpha|beta "q"'
 assert_json "read returns blocked_by" '.blocked_by|map(tostring)|join(",")' 1
 assert_json "read returns pr_url" '.pr_url' null
-assert_json "read body renders the sections" '.body+"|"' $'Prose only\n\n## Acceptance\n- alpha\n- beta "q"\n\n## Depends on\n- #1\n|'
+assert_json "read body is the stored prose, without the sections" '.body+"|"' $'Prose only\n|'
 printf 'Why\n\n## Acceptance\n- from body\n\n## Depends on\n- #1\n' > "$bf"
 run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Old style body' "$bf"
 assert_card_json 3 '.acceptance|join("|")' 'from body'
@@ -478,7 +479,8 @@ assert_card_json 2 '.pr_url' 'https://github.com/acme/toy/pull/12'
 assert_card_json 2 '.pr_url_source' note
 assert_card_json 2 '.comments|length' 1
 run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
-assert_json "migrated read renders Acceptance" '.body|contains("## Acceptance\n- a1\n- a2")' true
+assert_json "migrated read body has no Acceptance section" '.body|contains("## Acceptance")' false
+assert_json "migrated read returns the acceptance field" '.acceptance|join("|")' 'a1|a2'
 cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.after"; cp "$REPO/.fleet-board/cards/2.json" "$REPO/c2.after"
 run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
 assert_exit "second migrate exit 0" 0
