@@ -854,3 +854,7 @@ the existing 0.18 Provider stages as 0.19 and use that number in references.
    by the runner as well as those from the report checker.
 4. Update the corresponding reviewer reconciliation, provider-call rule, and
    tick cost calculation. The evidence-review script has no Agent token count.
+
+## PR 215 integration requirements
+
+Implement spec 2.9a and its override of ordinary fix handling. Pass plan findings, clear conflict/review state only after a pushed resolution, restart In Review at round 1 with no completed stages, retain blocked findings, and apply the conflict-specific progress rule. Update the fixer input list and stale update_branch descriptions consistently. Preserve unrelated behavior and numbering.
