@@ -770,6 +770,44 @@ assert_jq "update_branch: an unknown mergeable state gets no update_branch" "$(c
 plan_mergeable in-progress-draft-pr 34 MERGEABLE
 assert_jq "update_branch: in progress, mergeable PR keeps start_review" "$(card 12 action)" '"start_review"'
 
+# Conflicted files in the note: update-branch.sh recorded them after aborting a
+# conflicting merge, so the card plans the fixer with those files as findings.
+# plan_note builds the card's comments at run time from an existing in-review
+# scenario and the given note JSON, so no fixture directory is needed.
+plan_note() { # <note-json> [mergeable]
+  setup_case action-failures-in-review-3
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  jq -cn --arg note "$1" '[{id: 555, user: {login: "fleet-bot"},
+    body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n" + $note + "\n```\n"),
+    created_at: "2026-09-28T00:01:00Z"}]' > "$d/comments.json"
+  {
+    if [ -n "${2:-}" ]; then
+      printf '{"mergeable":"%s"}\n' "$2" > "$d/mergeable.json"
+      printf 'pr view 34 --repo acme/toy --json mergeable\t0\t%s\n' "$d/mergeable.json"
+    fi
+    sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-12.json#	$d/comments.json#" "$TICK/action-failures-in-review-3/routes"
+  } > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+CONFLICT_NOTE='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]},"action_failures":1,"last_action_error":"merge conflicts","conflicted_files":["src/calc.js","src/util.js","test/calc.test.js"]}'
+
+plan_note "$CONFLICT_NOTE"
+assert_exit "conflict files: exit" 0
+assert_jq "conflict files: a note recording conflicted files plans the fixer" "$(card 12 action)" '"fix"'
+assert_jq "conflict files: the findings are every conflicted file, test files included" \
+  "$(card 12 findings)" '[{"severity":"Important","text":"merge conflict in src/calc.js"},{"severity":"Important","text":"merge conflict in src/util.js"},{"severity":"Important","text":"merge conflict in test/calc.test.js"}]'
+plan_note "$CONFLICT_NOTE" CONFLICTING
+assert_jq "conflict files: a still-conflicting PR plans fix, not update_branch again" "$(card 12 action)" '"fix"'
+
+plan_note '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":null,"action_failures":0,"last_action_error":null,"conflicted_files":[]}'
+assert_jq "resolved merge: last_review reset on the merged head plans review, not merge" "$(card 12 action)" '"review"'
+assert_jq "resolved merge: no findings are planned" "$(card 12 findings)" 'null'
+
+plan_note '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":null,"action_failures":3,"last_action_error":"merge conflicts","conflicted_files":["src/calc.js"]}'
+assert_jq "conflict failures: action_failures at review.max_rounds on a conflicted card plans block" "$(card 12 action)" '"block"'
+
 # ---------------------------------------------------------------------------
 # settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
 # settle <case> <n> [extra YAML]: set up the case and run --settle <n>
@@ -1306,6 +1344,21 @@ run_check "$NEXT_STUB/tick-plan.sh"
 assert_jq "no_stages_no_next_lookup control: lookup failed (match runs first)" "$(card 12 reason)" '"lookup failed: review-stages.sh match 34"'
 assert_eq "no_stages_no_match_lookup: the stub ran match first" "$(sed -n 1p "$NEXT_STUB/next-calls")" "match 34"
 assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
+
+provider_models='models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }
+  escalation: opus'
+zero_price='reviewer codex/gpt-6-astra has price 0; max_cost_usd does not count its spend'
+plan escalation-round2 "$provider_models"
+assert_exit "provider reviewer: planner exits 0" 0
+assert_jq "provider reviewer: passes merged object through" "$(card 12 models.reviewer)" '{"provider":"codex","model":"gpt-6-astra","price":{"input":0,"output":0},"timeout":1500}'
+assert_jq "provider reviewer: escalation applies to both writers" "$(card 12 models) | [.implementor,.fixer]" '["opus","opus"]'
+assert_jq "provider reviewer: only the zero price warning" '.warnings' "$(warns_json "$zero_price")"
+plan escalation-round2 "$provider_models
+  implementor: gpt-6-astra"
+assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | select(startswith("implementor and reviewer share model gpt-6-astra"))] | length' 1
+plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
+assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
