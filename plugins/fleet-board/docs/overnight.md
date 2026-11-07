@@ -130,7 +130,7 @@ Merges stay human by default: under `merge.policy: human` an overnight run merge
 
 **How.** Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session ("Merge Without Review"), so no tick merges. Instead, after `settle.sh` and before `cleanup-done.sh`, the wrapper runs `scripts/merge-reviewed.sh` from the repo root, as a plain shell step outside any Claude session, the same way it runs `settle.sh` and `cleanup-done.sh`. The classifier is never involved. The wrapper adds no permission rule and never uses `--dangerously-skip-permissions`.
 
-**What it merges.** It lists the in_review column and every review stage column and asks `tick-plan.sh --settle-merge` for a plan. It merges (`gh pr merge <pr> --squash`, never `--admin`) only a card whose review is clean for the PR head, whose PR is open, not a draft and has every check green (a failing or pending check waits), and which does not need Human QA. A card in Human QA is never listed and never merged. The gate hook G2 still applies to any merge a Claude session makes. After the merge it records `merged_pr`, runs `verify-main.sh`, moves the card to Done and writes the note. A card with an `## After merge` section is left for the manager's finish step, which runs those commands under the allowlist. A failure is logged as `warning: merge-reviewed.sh exited <rc>` and the next tick plans what is left. Set `FLEET_BOARD_MERGE_REVIEWED` to use another script.
+**What it merges.** It lists the in_review column and every review stage column and asks `tick-plan.sh --settle-merge` for a plan. It merges (`gh pr merge <pr> --squash`, never `--admin`) only a card whose review is clean for the PR head, whose PR is open, not a draft and has every check green (a failing or pending check waits), and which does not need Human QA. A card in Human QA is never listed and never merged. The gate hook G2 still applies to any merge a Claude session makes. After the merge it records `merged_pr`, runs `verify-main.sh`, moves the card to Done and writes the note. A card with an `## After merge` section is left for the manager's finish step, which runs those commands under the allowlist. An ordinary per-card failure is logged and the next tick plans what is left. Verification or recovery failures stop the wrapper with `main-verification-failed` before cleanup or another tick. Set `FLEET_BOARD_MERGE_REVIEWED` to use another script.
 
 **Why not the alternatives.** A user allow rule for `gh pr merge` in their own Claude Code settings depends on personal settings, which a plugin must not assume. `gh pr merge --auto` depends on branch protection being configured on the repo.
 
@@ -216,3 +216,11 @@ rm ~/Library/LaunchAgents/com.example.fleet-board.plist
 ```
 
 The plugin path changes when the plugin updates. After an update, run `/fleet-board:status` again and fix `<plugin-dir>` in the plist.
+
+### Verified merge draining
+
+After settlement, auto-policy runs drain up to `FLEET_BOARD_MERGE_LIMIT` merge attempts (default 10) from the review-column snapshot. Each attempt uses a fresh plan and binds the merge to its planned head. Failed candidates are attempted once per drain; unrelated eligible cards can proceed. Previously merged cards needing verification are recovered first.
+
+Verification must return literal `ok: true`. Red, malformed, missing, or unrecordable verification stops the wrapper with `main-verification-failed` (exit 1), before cleanup or another tick. Failed verification evidence remains in the card note; the card cannot finish until verification succeeds. The merge helper returns exit 3 for this stop condition. Other per-card errors remain warnings and are retried on a later tick.
+
+A lock directory named `fleet-board-merge.lock` in the Git common directory serializes direct drain invocations as well. Normal exits and handled signals release it. After an uncatchable termination, confirm no drain is running before removing that directory.

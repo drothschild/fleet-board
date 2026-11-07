@@ -14,13 +14,13 @@
 #   2. Lists the in_review column and every review stage column (a card in
 #      Human QA is never listed). A
 #      listing that fails ends the run with exit 1 before anything is written.
-#   3. Runs tick-plan.sh --settle-merge on those cards. The planner plans
+#   3. Repeatedly runs tick-plan.sh --settle-merge on remaining cards. The planner plans
 #      `merge` only for a card whose review is clean for the current head,
 #      whose PR is open, non-draft and has all checks green, and which does
 #      not need Human QA. Every other card is left alone.
-#   4. For each card planned `merge` that is still in_review or in a review
+#   4. For each card planned `merge` or recovery `verify_main` in a review
 #      stage (review_<name>):
-#        gh pr merge <pr> --repo <board.repo> --squash   (never --admin, never --auto)
+#        gh pr merge <pr> --repo <board.repo> --squash --match-head-commit <head>
 #        note.sh merge: merged_pr
 #        verify-main.sh N <pr> (a failure is left for the next tick)
 #        board-move.sh N done, then note.sh merge: state done, action_failures 0
@@ -34,6 +34,11 @@
 #   0 - nothing to do, or every planned merge succeeded
 #   1 - the column or the plan could not be read, or some step failed
 #   2 - usage error
+#   3 - verification/recovery failed; the wrapper must stop before another tick
+#
+# The candidate snapshot and FLEET_BOARD_MERGE_LIMIT (default 10) bound a drain.
+# Attempt each candidate once, and replan after each attempt. A failed merge
+# does not starve other cards. Verification must return literal ok:true.
 
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
@@ -48,8 +53,19 @@ fb_load_config
 warn() { printf 'fleet-board: warning: %s\n' "$1" >&2; }
 VERIFY="${FLEET_BOARD_VERIFY_MAIN:-$FLEET_SCRIPTS/verify-main.sh}"
 
+LIMIT="${FLEET_BOARD_MERGE_LIMIT:-10}"
+case "$LIMIT" in ''|*[!0-9]*|0|0*) fb_die 2 "FLEET_BOARD_MERGE_LIMIT must be a positive integer" ;; esac
+[ "${#LIMIT}" -le 6 ] || fb_die 2 "FLEET_BOARD_MERGE_LIMIT is too large"
+
+# A fail-closed lock also protects direct invocations across linked worktrees.
+COMMON="$(fb_git_common_dir "$FLEET_ROOT")" || fb_die 1 "cannot locate the git common directory"
+LOCK="$COMMON/fleet-board-merge.lock"
+mkdir "$LOCK" 2>/dev/null || fb_die 1 "merge drain already locked: $LOCK"
+TMPD=""
+trap 'rmdir "$LOCK"; [ -z "$TMPD" ] || rm -rf "$TMPD"' EXIT
+trap 'exit 3' INT TERM
 TMPD="$(mktemp -d)" || fb_die 1 "mktemp failed"
-trap 'rm -rf "$TMPD"' EXIT
+
 
 NUMS=""
 for st in in_review $(fb_stage_states); do
@@ -63,45 +79,74 @@ for st in in_review $(fb_stage_states); do
 done
 [ -n "$NUMS" ] || exit 0
 
-# shellcheck disable=SC2086 # word splitting intended: a list of card numbers
-PLAN="$(bash "$FLEET_SCRIPTS/tick-plan.sh" --settle-merge $NUMS </dev/null)" || fb_die 1 "cannot build the plan; nothing merged"
-CARDS="$(jq -c 'if (.cards | type) == "array" then .cards[] | select(.action == "merge") else error("no cards") end' <<<"$PLAN" 2>/dev/null)" \
-  || fb_die 1 "cannot parse the plan; nothing merged"
-
 RC=0
+ATTEMPTS=0
 fail() { warn "#$1: $2; leaving the card for the next tick"; RC=1; }
 merge_note() { # <card> <json patch>
   printf '%s\n' "$2" > "$TMPD/patch.json" || return 1
   bash "$FLEET_SCRIPTS/note.sh" merge "$1" "$TMPD/patch.json" </dev/null >/dev/null
 }
 
-while IFS= read -r card; do
-  [ -n "$card" ] || continue
+while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
+  bash "$FLEET_SCRIPTS/board-cache-clear.sh" </dev/null >/dev/null || fb_die 3 "cannot refresh board state"
+  # shellcheck disable=SC2086 # validated card numbers, intentional splitting
+  PLAN="$(bash "$FLEET_SCRIPTS/tick-plan.sh" --settle-merge $NUMS </dev/null)" || fb_die 3 "cannot refresh the merge plan"
+  # An unreadable card could hold an unverified earlier merge: fail closed.
+  jq -e '.cards | type == "array"' <<<"$PLAN" >/dev/null 2>&1 || fb_die 3 "cannot parse the merge plan"
+  if jq -e 'any(.cards[]; .action == "skip" and (.reason | test("^(lookup failed|invalid manager note)")))' <<<"$PLAN" >/dev/null; then
+    fb_die 3 "merge recovery state is unreadable; nothing further merged"
+  fi
+  card="$(jq -c '([.cards[] | select(.action == "verify_main")] + [.cards[] | select(.action == "merge")]) | .[0] // empty' <<<"$PLAN")" || fb_die 3 "cannot select a merge candidate"
+  [ -n "$card" ] || break
   n="$(jq -r '.number' <<<"$card")"
   pr="$(jq -r '.pr' <<<"$card")"
-  fb_valid_number "$n" || { warn "the plan names a non-numeric card: $n"; RC=1; continue; }
-  # Never merge a card that is not in review (G1: Human QA stays with a person)
+  fb_valid_number "$n" && fb_valid_number "$pr" || fb_die 3 "invalid card or PR in merge plan"
+  # Remove before attempting so even an unchanged fake/remote response cannot spin.
+  REST=""
+  for candidate in $NUMS; do [ "$candidate" = "$n" ] || REST="$REST $candidate"; done
+  NUMS="$REST"
   case "$(jq -r '.state' <<<"$card")" in in_review|review_*) ;; *) continue ;; esac
-  fb_valid_number "$pr" || { fail "$n" "the plan has no PR to merge"; continue; }
 
-  gh pr merge "$pr" --repo "$FLEET_REPO" --squash </dev/null >/dev/null || { fail "$n" "gh pr merge $pr failed"; continue; }
-  printf 'merged #%s PR #%s\n' "$n" "$pr"
-  merge_note "$n" "$(jq -cn --argjson pr "$pr" '{merged_pr: $pr}')" || { fail "$n" "the manager note write failed"; continue; }
-
-  if main_check="$(bash "$VERIFY" "$n" "$pr" </dev/null 2>"$TMPD/verify.err")" \
-     && jq -e 'type == "object" and has("commit") and has("ok") and has("results")' <<<"$main_check" >/dev/null 2>&1; then
-    merge_note "$n" "$(jq -c '{main_check: {commit, ok, results}}' <<<"$main_check")" || { fail "$n" "the main_check note write failed"; continue; }
-  else
-    cat "$TMPD/verify.err" >&2
-    fail "$n" "verify-main.sh failed"
-    continue
+  if [ "$(jq -r '.action' <<<"$card")" = merge ]; then
+    head="$(jq -r '.head_sha // empty' <<<"$card")"
+    case "$head" in ''|*[!0-9a-fA-F]*) fb_die 3 "missing or invalid planned head for #$n" ;; esac
+    ATTEMPTS=$((ATTEMPTS + 1))
+    merge_rc=0
+    gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$head" </dev/null >/dev/null || merge_rc=$?
+    # Both exit paths are ambiguous: success may mean queued, while a lost
+    # response may follow a completed merge. Only MERGED permits verification.
+    state="$(gh pr view "$pr" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid \
+      | jq -er '.state')" || fb_die 3 "#$n: cannot resolve merge result; recovery required"
+    case "$state" in
+      MERGED) ;;
+      OPEN|CLOSED)
+        if [ "$merge_rc" -ne 0 ]; then fail "$n" "gh pr merge $pr failed"; continue; fi
+        fb_die 3 "#$n: merge not completed (possibly queued); stopping until remote state resolves" ;;
+      *) fb_die 3 "#$n: unknown state after merge; recovery required" ;;
+    esac
+    printf 'merged #%s PR #%s\n' "$n" "$pr"
+    merge_note "$n" "$(jq -cn --argjson pr "$pr" '{merged_pr: $pr}')" || fb_die 3 "#$n: cannot record merged PR; recovery required"
   fi
 
-  body="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null 2>/dev/null | jq -r '.body // ""' 2>/dev/null)"
+  if ! main_check="$(bash "$VERIFY" "$n" "$pr" </dev/null 2>"$TMPD/verify.err")"; then
+    cat "$TMPD/verify.err" >&2
+    fb_die 3 "#$n: verify-main.sh failed; stopping merge drain"
+  fi
+  jq -e 'type == "object" and (.commit | type == "string" and length > 0) and (.ok | type == "boolean") and (.results | type == "array")' <<<"$main_check" >/dev/null 2>&1 \
+    || fb_die 3 "#$n: invalid main verification result; stopping merge drain"
+  # Preserve red evidence too, but never finish the card or merge another PR.
+  merge_note "$n" "$(jq -c '{main_check: .}' <<<"$main_check")" || fb_die 3 "#$n: cannot record main verification"
+  [ "$(jq -r '.ok' <<<"$main_check")" = true ] || fb_die 3 "#$n: main verification failed; stopping merge drain"
+
+  note="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null)" || { fail "$n" "cannot read pending follow-ups"; continue; }
+  if jq -e '.pending_followups != null' <<<"$note" >/dev/null; then
+    continue # verification recovery precedes filing; the manager still owes it
+  fi
+  body="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null | jq -er '.body // ""')" || { fail "$n" "cannot read after-merge instructions"; continue; }
   if printf '%s\n' "$body" | grep -q '^## After merge'; then
-    continue # the manager's finish step runs the allowlisted commands
+    continue # the manager finishes the allowlisted commands
   fi
   bash "$FLEET_SCRIPTS/board-move.sh" "$n" done </dev/null >/dev/null || { fail "$n" "board-move to done failed"; continue; }
   merge_note "$n" '{"state":"done","action_failures":0,"last_action_error":null}' || fail "$n" "the manager note write failed"
-done <<<"$CARDS"
+done
 exit "$RC"

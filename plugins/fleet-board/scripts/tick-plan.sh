@@ -11,7 +11,7 @@
 #
 #   {"dispatchable": bool, "warnings": [..], "cards": [
 #     {"number", "title", "state", "action", "reason", "branch", "worktree", "pr",
-#      "round", "models": {"implementor","reviewer","fixer"}, "escalated",
+#      "head_sha", "round", "models": {"implementor","reviewer","fixer"}, "escalated",
 #      "needs_human_qa": bool|null, "stage": object|null,
 #      "comment_needed": bool|null}]}
 #
@@ -144,7 +144,7 @@
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
 # dispatchable false. A plan without --settle never emits move_to_review.
-# --settle-merge is --settle that also keeps a merge action (merge-reviewed.sh
+# --settle-merge is --settle that also keeps merge and verify_main actions (merge-reviewed.sh
 # carries it out; settle.sh never asks for it).
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle has no card or a non-numeric card.
@@ -705,6 +705,10 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
       | ($n.last_action_error // "no error recorded") as $err
       | if $c.lookup_failed != null then act("skip"; "lookup failed: \($c.lookup_failed)")
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
+        # Never let failure limits or follow-ups move an unverified merge out
+        # of review, where the headless recovery pass can still find it.
+        elif is_review($c) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
+          then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
         elif $n.pending_followups != null and ($n.pending_followups.pr // $n.pr // $c.pr) != null
           then act("file_pending"; "pending follow-ups")
         elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c))
@@ -739,7 +743,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
         elif is_review($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in review, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
-            if $n.main_check == null then act("verify_main"; "PR #\($c.pr) merged; main not yet verified")
+            if $n.main_check.ok != true then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
             else act("finish"; "PR #\($c.pr) merged and main verified") end
           elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
           # A record from another stage (or from in_review) never counts
@@ -785,6 +789,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
   | [$all[] | select(.state == "in_progress" or is_review(.))] as $open
+  | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
   | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger
   | [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
@@ -804,12 +809,14 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
                 | select($p != null) | {num: $o.number, path: $p}) // null)
         else null end) as $ov
     | (if $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
+       elif $d00.action == "merge" and $verify_pending
+         then act("wait"; "successful main verification required before another merge")
        elif $d00.action == "merge" and $merger != $c.number
          then act("wait"; "one merge per tick: #\($merger) merges first")
        else $d00 end) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0
-       elif ($d0.action == "to_human_qa" or $d0.action == "advance_stage" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and $d0.action == "merge")) then $d0
+       elif ($d0.action == "to_human_qa" or $d0.action == "advance_stage" or $d0.action == "block" or $d0.action == "mark_ready" or $d0.action == "skip" or ($keepmerge and ($d0.action == "merge" or $d0.action == "verify_main"))) then $d0
        elif $d0.action == "start_review" then act("move_to_review"; "\($d0.reason); move to in_review without dispatching")
        else act("skip"; "\($d0.action) waits for the next tick") end) as $d
     # A failed preflight holds every card: no role runs, nothing is recorded
@@ -827,7 +834,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
     | {key_held: $keyheld, number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
-       pr: $c.pr, round: $n.round, models: $models, escalated: $esc,
+       pr: $c.pr, head_sha: $c.pr_info.headRefOid, round: $n.round, models: $models, escalated: $esc,
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files

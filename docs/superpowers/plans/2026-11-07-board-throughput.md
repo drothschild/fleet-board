@@ -9,10 +9,10 @@
 **Spec:** `docs/superpowers/specs/2026-11-07-board-throughput-design.md`
 
 ## Task 1: Merge draining and verification
-- [ ] Add failing regressions to tests/test-merge-reviewed.sh and focused planner tests; run and commit tests.
-- [ ] Drain a bounded snapshot of eligible cards, replanning after every attempt; never retry a failed card in the same pass.
-- [ ] Enforce literal successful main verification, preserve failed evidence, stop subsequent merges on verification/recovery failure.
-- [ ] Run touched suites and clean-room checks; commit and push.
+- [x] Add failing regressions to tests/test-merge-reviewed.sh and focused planner tests; run and commit tests.
+- [x] Drain a bounded snapshot of eligible cards, replanning after every attempt; never retry a failed card in the same pass.
+- [x] Enforce literal successful main verification, preserve failed evidence, stop subsequent merges on verification/recovery failure.
+- [x] Run touched suites and clean-room checks; commit and push.
 
 ## Task 2: Scope reservations
 - [ ] Add and commit failing planner regressions for overlapping starts in one plan, disjoint starts and existing active scope.

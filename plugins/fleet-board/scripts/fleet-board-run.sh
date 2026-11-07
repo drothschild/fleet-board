@@ -54,6 +54,7 @@
 # is waited out (until the reset plus limits.rate_limit_margin) and the next
 # tick runs; it does not count as a failed tick. With limits.min_tick_gap > 0,
 # tick starts of runs sharing FLEET_BOARD_TOKEN_LOCK are that far apart.
+#   main-verification-failed  merge verification/recovery failed      exit 1
 #   cost-unknown          a successful tick gives no cost at all       exit 1
 #   interrupted (<sig>)   INT or TERM: the running claude, settle, cleanup or sleep
 #                         (every background job) gets TERM, then KILL if it is
@@ -443,7 +444,7 @@ run_settle() {
 }
 
 # run_merge_reviewed: merge-reviewed.sh from the repo root (it merges only under
-# merge.policy: auto); a failure is only a warning
+# merge.policy: auto); verification/recovery failure stops the run
 run_merge_reviewed() {
   local rc
   run_bg bash "$MERGE_REVIEWED" </dev/null >"$WORK/merge.out" 2>"$WORK/merge.err"
@@ -454,6 +455,7 @@ run_merge_reviewed() {
     log "warning: merge-reviewed.sh exited $rc"
   fi
   logfile "$WORK/merge.err"
+  [ "$rc" -ne 3 ] || stop main-verification-failed 1
 }
 
 # clear_active: on the local backend, removes every active marker once a
