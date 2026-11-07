@@ -124,7 +124,7 @@ if [ -n "$CARD_FILE" ]; then
   cp "$CARD_FILE" "$TMP/card"
 else
   CARD_READ="$(bash "$HERE/board-read.sh" "$N")" || die "cannot read card #$N" 1
-  fb_card_text "$CARD_READ" > "$TMP/card"
+  fb_card_text "$CARD_READ" > "$TMP/card" || die "cannot render the text of card #$N" 1
 fi
 if [ -n "$DIFF_FILE" ]; then
   cp "$DIFF_FILE" "$TMP/diff"

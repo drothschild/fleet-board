@@ -203,6 +203,7 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaults to `github-labels`, so deleting the key before updating would quietly switch a local board to GitHub labels.
 
+0. Stop a running `fleet-board-run.sh` first (`touch .fleet-board.stop` and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
 1. Update the plugin (`/plugin marketplace update fleet-board`, then update or reinstall it) and start a new session.
 2. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 naming the key until you do.
 3. Run `migrate-card-fields.sh` on the local store. If your cards are GitHub issues (`backend: github-labels`, `github-projects`, or no `backend` key: the old default was labels), skip this step and follow "Moving an existing GitHub board" below instead.
@@ -217,10 +218,10 @@ First, run `/fleet-board:init` (or write `.fleet-board.yml` by hand) so the loca
 bash <scripts directory>/import-github.sh --repo OWNER/NAME --dry-run
 ```
 
-- `--repo OWNER/NAME` names the repo whose issues are imported (required).
+- `--repo OWNER/NAME` names the repo whose issues are imported (required). It must be the same as `board.repo` (case-insensitive); otherwise the import exits 2.
 - `--project N` imports a Projects board instead of labels, reading each item's Status column; `N` is the `project_number` from the old config; `--owner LOGIN` names the project's owner when it is not the repo owner.
 - `--dry-run` prints one line per card and writes nothing; run it first.
-- `--force` imports into a store that already has cards, overwriting the imported numbers and leaving other cards. Without it the import refuses a non-empty store.
+- `--force` imports into a store that already has cards, overwriting the imported numbers and leaving other cards. A card that is in Human QA in the store is kept as it is, with a warning. Without it the import refuses a non-empty store.
 
 Each card keeps its issue number, title, dates, labels (without the `fleet:<state>` ones), comments and manager note (re-authored to the local login). Acceptance and dependencies are split into the fields; a dependency on an issue that is not imported, or in another repo, stays in the body as prose with a warning. An issue with no state label, or not on the project, is not a card and is skipped with a warning; a Projects column that maps to no state stops the run (map it in `board.states`, or add the review stage).
 

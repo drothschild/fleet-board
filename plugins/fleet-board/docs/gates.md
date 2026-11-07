@@ -4,7 +4,7 @@
 
 `hooks/gate.sh` is a `PreToolUse` hook on Bash. It reads every Bash command the manager or a role agent is about to run, and blocks it with exit 2 and a one-line reason:
 
-1. **Human QA.** Nothing moves a card out of `human_qa`: not `board-move.sh` or an adapter's `move.sh`. Cards live in files under `board.dir`, so there are no GitHub label or Status writes to gate; see the raw-write residual below.
+1. **Human QA.** Nothing moves a card out of `human_qa`: not `board-move.sh` or an adapter's `move.sh`, and `import-github.sh --force` keeps a card that is in `human_qa` instead of overwriting it. Cards live in files under `board.dir`, so there are no GitHub label or Status writes to gate; see the raw-write residual below.
 2. **Merges.** Under `merge.policy: human`, every `gh pr merge` is blocked. Under `auto`, a merge is blocked when it uses `--admin`, names no PR, targets a draft, or the PR's checks are not green. Raw merges through the API are blocked.
 3. **Ready.** `board-move.sh N ready` is blocked when the card's `acceptance` field is empty, whatever its body says.
 

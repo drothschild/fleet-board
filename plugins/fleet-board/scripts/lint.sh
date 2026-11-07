@@ -137,7 +137,7 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
       */*#[0-9]*) ;;
       *) emit "$id" unresolved-dependency "$tok is not a card in this set"; continue ;;
     esac
-    if [ -n "$REPO" ] && [ "$drepo" != "$REPO" ]; then
+    if [ -n "$REPO" ] && [ "$(printf '%s' "$drepo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" ]; then
       continue # outside this board: nothing to look it up in
     fi
     if [ -z "$LCARDS" ] || [ ! -f "$LCARDS/$num.json" ]; then

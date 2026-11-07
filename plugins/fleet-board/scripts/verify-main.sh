@@ -174,7 +174,7 @@ if [ "$(jq -r .ok <<<"$OUT")" != true ]; then
       printf 'Card: #%s\n' "$CARD"
     } > "$BODY" || fb_die 1 "cannot write the P0 card body"
     ACC="$(mktemp)" || fb_die 1 "cannot create a temp file"
-    jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exits 0 on main"' <<<"$OUT" > "$ACC" \
+    jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exits 0 on main" | gsub("[\r\n]+"; " ")' <<<"$OUT" > "$ACC" \
       || fb_die 1 "cannot write the P0 card acceptance"
     CREATED="$(bash "$FLEET_SCRIPTS/board-create.sh" "$TITLE" "$BODY" --state "$(fb_cfg followups.status)" --acceptance-file "$ACC")" \
       || fb_die 1 "main is red at $COMMIT, and the P0 card could not be created"

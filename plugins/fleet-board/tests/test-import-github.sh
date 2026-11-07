@@ -126,7 +126,7 @@ assert_eq "labels: a marker comment by another login is prefixed github:" "$(jq 
 assert_eq "labels: a commenter whose login equals the local login is prefixed too" "$(jq -r '.comments[3].author' <<<"$C12" 2>/dev/null)" "github:localme"
 assert_eq "labels: no imported comment but the note carries the local login" "$(jq -c '[.comments[] | select(.author == "localme") | .id]' <<<"$C12" 2>/dev/null)" "[2]"
 assert_eq "labels: an untrusted marker comment no longer starts with the marker" "$(jq -r '[.comments[] | select(.id != 2 and (.body | startswith("<!-- fleet-board:")))] | length' <<<"$C12" 2>/dev/null)" "0"
-assert_eq "labels: the note's accepted.login is rewritten to the local login" "$(bash "$SCRIPTS/note.sh" get 12 2>/dev/null | jq -r '.accepted.login' 2>/dev/null)" "localme"
+
 C14="$(cat "$STORE/cards/14.json" 2>/dev/null)"
 assert_eq "labels: #14 outside dependency kept as prose" "$(jq -r .body <<<"$C14" 2>/dev/null | grep -c 'other/repo#3')" "1"
 assert_eq "labels: #14 blocked_by empty" "$(jq -c .blocked_by <<<"$C14" 2>/dev/null)" "[]"
@@ -147,6 +147,7 @@ assert_exit "labels: note.sh get on the imported card exits 0" 0
 assert_eq "labels: note.sh get finds the re-authored note" "$(jq -r .branch <<<"$LAST_OUT" 2>/dev/null)" "fleet/12-add-subtract"
 assert_eq "labels: note.sh get returns the trusted note's pr, not the lookalike's" "$(jq -r .pr <<<"$LAST_OUT" 2>/dev/null)" "34"
 assert_eq "labels: pr_url agrees with note.sh get" "$(jq -r .pr_url "$STORE/cards/12.json")" "https://github.com/acme/toy/pull/$(jq -r .pr <<<"$LAST_OUT" 2>/dev/null)"
+assert_eq "labels: the note's accepted.login is rewritten to the local login" "$(jq -r '.accepted.login' <<<"$LAST_OUT" 2>/dev/null)" "localme"
 
 echo "import-github: refuses a store that has cards"
 BEFORE="$(cat "$STORE/cards/12.json")"
@@ -237,7 +238,7 @@ assert_eq "projects: #21 labels kept" "$(jq -c .labels "$STORE/cards/21.json" 2>
 assert_eq "projects: #21 acceptance" "$(jq -c .acceptance "$STORE/cards/21.json" 2>/dev/null)" '["bad passwords are refused"]'
 assert_eq "projects: #19 blocked_by from the board-repo ref" "$(jq -c .blocked_by "$STORE/cards/19.json" 2>/dev/null)" '[20]'
 assert_stderr_contains "projects: a dependency on an issue not imported is warned about" "#22"
-assert_eq "projects: #21 foreign marker comment is not the note" "$(jq -r '.comments[0].author' "$STORE/cards/21.json" 2>/dev/null)" "mallory"
+assert_eq "projects: #21 foreign marker comment is not the note" "$(jq -r '.comments[0].author' "$STORE/cards/21.json" 2>/dev/null)" "github:mallory"
 assert_eq "projects: #21 no pr_url from an untrusted note" "$(jq -r .pr_url "$STORE/cards/21.json" 2>/dev/null)" "null"
 assert_eq "projects: next" "$(tr -d '[:space:]' < "$STORE/next")" "22"
 assert_eq "projects: owner defaults to the repo owner" "$(grep -c 'project item-list 1 --owner acme --format json' "$FAKE_GH_DIR/calls.log")" "1"

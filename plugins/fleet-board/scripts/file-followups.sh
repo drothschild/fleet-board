@@ -161,7 +161,7 @@ while IFS= read -r item; do
     jq -r --arg c "$CARD" --arg p "$PR" '
       "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c) (PR #\($p))."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
-    jq -r '"- `\(.repro)` gives the expected result: \(.expected)"' <<<"$item" > "$ACC" || stop "cannot write the card acceptance for: $title"
+    jq -r '"- `\(.repro)` gives the expected result: \(.expected)" | gsub("[\r\n]+"; " ")' <<<"$item" > "$ACC" || stop "cannot write the card acceptance for: $title"
     created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" --acceptance-file "$ACC" </dev/null)" || stop "cannot create the card for: $title"
   else
     # Acceptance is drafted from the first backticked command in the detail;
@@ -174,7 +174,7 @@ while IFS= read -r item; do
       + "Found while working #\($c) (PR #\($p))."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
     if [ -n "$cmd" ]; then
-      jq -rn --arg cmd "$cmd" '"- `\($cmd)` gives the result the description above expects"' > "$ACC" \
+      jq -rn --arg cmd "$cmd" '"- `\($cmd)` gives the result the description above expects" | gsub("[\r\n]+"; " ")' > "$ACC" \
         || stop "cannot write the card acceptance for: $title"
     else
       : > "$ACC"

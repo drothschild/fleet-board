@@ -23,12 +23,21 @@
 # from the body (fl_split_body); a dependency on an issue that is not imported,
 # or in another repo, stays in the body as prose with a warning. The manager
 # note (the last marker comment by the gh login) is re-authored to the local
-# login (FLEET_BOARD_USER, else $USER, else id -un), and its "pr" sets pr_url
-# (source "note"). Comments get local ids 1..k in their GitHub order. next
+# login (FLEET_BOARD_USER, else $USER, else id -un), its accepted.login (if any)
+# is rewritten to the local login too, and its "pr" sets pr_url (source "note").
+# Trust: no other imported comment can carry the local login or the marker. Every
+# other comment's author becomes "github:<login>" (so a GitHub user whose login
+# equals the local login is not trusted), and a marker comment other than the
+# chosen note gets "[imported] " put before its body so note.sh cannot match it.
+# Comments get local ids 1..k in their GitHub order. next
 # becomes one more than the highest card number (or stays, if higher).
+# --repo must equal board.repo (case-insensitive): pr_url and "#n" refs are built
+# against it. A mismatch exits 2.
 #
 # Refuses (exit 1) when the store already has a card, unless --force, which
-# overwrites the imported numbers and leaves other cards. Reads and checks
+# overwrites the imported numbers and leaves other cards, except a card that is
+# in human_qa in the store: it is kept as it is, with a warning (nothing moves a
+# card out of human_qa but a person). Reads and checks
 # everything before writing anything. Prints one line per card; --dry-run
 # prints the same lines and writes nothing.
 # Exit: 0 imported; 1 a failed read, bad data, an existing store or a failed
@@ -59,6 +68,10 @@ done
 
 fb_load_config
 ME="$(fb_login)" || exit 1
+BOARD_REPO="$(fb_cfg board.repo)"
+if [ -n "$BOARD_REPO" ] && [ "$(printf '%s' "$SRC" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$BOARD_REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+  fb_die 2 "--repo $SRC is not this board's repo (board.repo is $BOARD_REPO); pr_url and issue refs are built against board.repo"
+fi
 . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
 DIR="$(fl_dir)"
 CARDS="$(fl_cards_dir)"
@@ -162,7 +175,20 @@ for n in $(jq -r '.[].number' "$WORK/board.json"); do
   fi
   jq -n --argjson i "$ISSUE" --slurpfile cs "$WORK/c-$n.json" --rawfile b "$WORK/fold-$n" \
     --argjson sp "$SPLIT" --argjson ni "$NOTEIDX" --argjson pi "$PRINFO" \
-    --arg me "$ME" --arg now "$NOW" --arg src "$SRC" --argjson names "$NAMES" --arg proj "$PROJECT" '
+    --arg me "$ME" --arg now "$NOW" --arg src "$SRC" --argjson names "$NAMES" --arg proj "$PROJECT" --arg m "$FB_MARKER" '
+    # the note body with accepted.login rewritten from the gh login to the local login
+    def fixnote:
+      split("\n") as $l
+      | ([$l | to_entries[] | select(.value | test("^```json")) | .key] | first) as $s
+      | if $s == null then .
+        else ([$l | to_entries[] | select(.key > $s and (.value | test("^```"))) | .key] | first) as $e
+          | if $e == null then .
+            else (($l[$s + 1:$e] | join("\n") | try fromjson catch null) as $j
+              | if ($j | type) == "object" and (($j.accepted | type) == "object")
+                then ($l[0:$s + 1] + [($j | .accepted.login = $me | tojson)] + $l[$e:]) | join("\n")
+                else . end)
+            end
+        end;
     $cs[0] as $c
     | (if $pi.ok and $pi.has and $pi.pr != null then "https://github.com/" + $src + "/pull/" + ($pi.pr | tostring) else null end) as $pr
     | {
@@ -178,8 +204,9 @@ for n in $(jq -r '.[].number' "$WORK/board.json"); do
         next_comment_id: (($c | length) + 1),
         comments: [range(0; $c | length) as $k | $c[$k]
                    | {id: ($k + 1),
-                      author: (if $k == $ni then $me else (.user.login // "unknown") end),
-                      body: (.body // ""),
+                      author: (if $k == $ni then $me else "github:" + (.user.login // "unknown") end),
+                      body: ((.body // "") | if $k == $ni then fixnote
+                                             elif startswith($m) then "[imported] " + . else . end),
                       created_at: (.created_at // $now)}],
         created_at: ($i.createdAt // $now),
         updated_at: ($i.updatedAt // $i.createdAt // $now)
@@ -187,6 +214,11 @@ for n in $(jq -r '.[].number' "$WORK/board.json"); do
 done
 
 for n in $(jq -r '.[].number' "$WORK/board.json"); do
+  if [ "$FORCE" = 1 ] && [ -f "$(fl_card_file "$n")" ] && [ "$(jq -r '.state // ""' "$(fl_card_file "$n")" 2>/dev/null)" = human_qa ]; then
+    printf 'fleet-board: warning: #%s is in human_qa in the store; --force keeps it as it is\n' "$n" >&2
+    printf 'kept #%s human_qa (not overwritten)\n' "$n"
+    continue
+  fi
   if [ "$DRY" = 0 ]; then
     mkdir -p "$CARDS" || fb_die 1 "cannot create $CARDS"
     fb_lock "$n"
