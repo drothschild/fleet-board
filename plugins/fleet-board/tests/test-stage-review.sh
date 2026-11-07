@@ -484,6 +484,14 @@ export OPENAI_API_KEY="$KEEP_KEY"
 assert_exit "stage-review local key unset: exit 3" 3
 assert_eq "stage-review key unset: active/ is empty" "$(active_count)" "0"
 
+# an unrenderable card (fb_card_text fails) stops the run instead of reviewing an empty card
+setup
+replies "200 r-clean.json"
+FLEET_BOARD_CONFIG="$CASE/cfg.yml" bash "$SCRIPT_DIR/routes-store.sh" "$FAKE_GH_ROUTES" "$CASE" >/dev/null
+jq '.body = 5' "$CASE/.fleet-board/cards/12.json" > "$CASE/card12.new" && mv "$CASE/card12.new" "$CASE/.fleet-board/cards/12.json"
+SR_NO_STORE=1 sr 12 34 --stage compliance --round 1 --no-post
+assert_eq "stage-review card text failure: exits non-zero" "$([ "$LAST_EXIT" != 0 ] && echo yes)" "yes"
+assert_eq "stage-review card text failure: no provider call" "$(calls)" "0"
 
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"

@@ -336,6 +336,13 @@ jq '.state = "done"' "$REPO/.fleet-board/cards/1.json" > "$REPO/.fleet-board/car
 run_check "$SCRIPT" 12 7
 assert_eq "p0-local: a done P0 card is not reused" "$(jqc .p0_card)" "2"
 
+# a failing command whose text holds a newline (an unsafe test path) is one acceptance item, not two
+setup_case 'false\nzzfrag'
+run_check "$SCRIPT" 12 7
+assert_eq "nl-cmd: p0 card filed" "$(jqc .p0_card)" "1"
+assert_eq "nl-cmd: the newline cmd is one acceptance item" "$(jq -c '.acceptance | length' "$REPO/.fleet-board/cards/1.json" 2>/dev/null)" "1"
+assert_eq "nl-cmd: no acceptance item is a bare fragment" "$(jq -r '.acceptance[]' "$REPO/.fleet-board/cards/1.json" 2>/dev/null | grep -c '^zzfrag')" "0"
+
 # green never searches
 setup_case true
 run_check "$SCRIPT" 12 7

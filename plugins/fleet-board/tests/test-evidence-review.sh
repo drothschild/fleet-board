@@ -238,5 +238,13 @@ run --no-post
 check "mid-review push preserves original reviewed sha" output '.sha == $head'
 check "fixture pushed a new head" test "$(git --git-dir="$TMP/origin" rev-parse refs/pull/7/head)" != "$head"
 
+# an unrenderable card (fb_card_text fails) stops the run
+setup
+jq '.body = 5' ".fleet-board/cards/$card.json" > "$TMP/card.new" && mv "$TMP/card.new" ".fleet-board/cards/$card.json"
+rc=0
+bash "$SCRIPT" "$card" 7 --round 1 --diff-file "$TMP/diff" --impl-report "$TMP/impl" --no-post > "$TMP/out" 2> "$TMP/err" || rc=$?
+check "an unrenderable card exits non-zero" test "$rc" != 0
+check "an unrenderable card dispatches no reviewer" test ! -e "$FAKE_REVIEWER_DIR/attempt"
+
 printf 'passed: %d   failed: %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

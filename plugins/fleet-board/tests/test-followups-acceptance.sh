@@ -227,6 +227,14 @@ ACC="$(printf '%s\n' "$B" | sed -n '/^## Acceptance/,$p')"
 case "$ACC" in *$'\n- '*) pass "bug-acceptance: at least one - bullet" ;; *) fail "bug-acceptance: at least one - bullet" "$ACC" ;; esac
 case "$ACC" in *"require('./calc').div(1,0)"*"an error"*) pass "bug-acceptance: bullet names the failing command and expected result" ;; *) fail "bug-acceptance: bullet names the failing command and expected result" "$ACC" ;; esac
 
+# --- a newline in repro or expected does not split the acceptance item
+setup_case
+report '[]' "[$(jq -cn '{title:"Multi line bug", repro:"node -e x", expected:"first line\nsecond line", observed:"o"}')]"
+run_ff
+ACCJ="$(jq -c 'select(.title == "Multi line bug") | .acceptance' "$REPO/.fleet-board/cards/"*.json 2>/dev/null | head -n 1)"
+assert_eq "bug-acceptance-newline: one acceptance item" "$(jq -r 'length' <<<"$ACCJ" 2>/dev/null)" "1"
+case "$ACCJ" in *"first line second line"*) pass "bug-acceptance-newline: newline became a space" ;; *) fail "bug-acceptance-newline: newline became a space" "$ACCJ" ;; esac
+
 # --- oos with a command in the detail: Acceptance drafted
 setup_case
 report "$OOS_CMD" '[]'

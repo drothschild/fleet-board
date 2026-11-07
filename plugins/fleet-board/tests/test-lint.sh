@@ -115,6 +115,10 @@ run_lint
 check "unresolved exits 1" "$RC" "1"
 has "unresolved reports the rule" "$OUT" "unresolved-dependency"
 has "unresolved names the reference" "$OUT" "#404"
+newset; card 1 "$GOOD\n## Depends on\n- ACME/Toy#404\n"
+run_lint
+check "a board-repo ref in another case is checked, not skipped as outside" "$RC" "1"
+has "a board-repo ref in another case is unresolved" "$OUT" "ACME/Toy#404"
 newset; card 1 "$GOOD\n## Depends on\n- #7\n"
 run_lint
 check "an existing dependency passes" "$RC" "0"

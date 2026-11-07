@@ -118,11 +118,15 @@ assert_eq "labels: #12 pr_url from the note's pr" "$(jq -r .pr_url <<<"$C12" 2>/
 assert_eq "labels: #12 pr_url_source is note" "$(jq -r .pr_url_source <<<"$C12" 2>/dev/null)" "note"
 assert_eq "labels: #12 created_at kept" "$(jq -r .created_at <<<"$C12" 2>/dev/null)" "2026-10-01T10:00:00Z"
 assert_eq "labels: #12 updated_at kept" "$(jq -r .updated_at <<<"$C12" 2>/dev/null)" "2026-10-02T11:00:00Z"
-assert_eq "labels: #12 local comment ids" "$(jq -c '[.comments[].id]' <<<"$C12" 2>/dev/null)" "[1,2,3]"
-assert_eq "labels: #12 next_comment_id follows" "$(jq -r .next_comment_id <<<"$C12" 2>/dev/null)" "4"
-assert_eq "labels: plain comment keeps its author" "$(jq -r '.comments[0].author' <<<"$C12" 2>/dev/null)" "alice"
+assert_eq "labels: #12 local comment ids" "$(jq -c '[.comments[].id]' <<<"$C12" 2>/dev/null)" "[1,2,3,4]"
+assert_eq "labels: #12 next_comment_id follows" "$(jq -r .next_comment_id <<<"$C12" 2>/dev/null)" "5"
+assert_eq "labels: plain comment author is prefixed github:" "$(jq -r '.comments[0].author' <<<"$C12" 2>/dev/null)" "github:alice"
 assert_eq "labels: note re-authored to the local login" "$(jq -r '.comments[1].author' <<<"$C12" 2>/dev/null)" "localme"
-assert_eq "labels: a marker comment by another login keeps its author" "$(jq -r '.comments[2].author' <<<"$C12" 2>/dev/null)" "mallory"
+assert_eq "labels: a marker comment by another login is prefixed github:" "$(jq -r '.comments[2].author' <<<"$C12" 2>/dev/null)" "github:mallory"
+assert_eq "labels: a commenter whose login equals the local login is prefixed too" "$(jq -r '.comments[3].author' <<<"$C12" 2>/dev/null)" "github:localme"
+assert_eq "labels: no imported comment but the note carries the local login" "$(jq -c '[.comments[] | select(.author == "localme") | .id]' <<<"$C12" 2>/dev/null)" "[2]"
+assert_eq "labels: an untrusted marker comment no longer starts with the marker" "$(jq -r '[.comments[] | select(.id != 2 and (.body | startswith("<!-- fleet-board:")))] | length' <<<"$C12" 2>/dev/null)" "0"
+assert_eq "labels: the note's accepted.login is rewritten to the local login" "$(bash "$SCRIPTS/note.sh" get 12 2>/dev/null | jq -r '.accepted.login' 2>/dev/null)" "localme"
 C14="$(cat "$STORE/cards/14.json" 2>/dev/null)"
 assert_eq "labels: #14 outside dependency kept as prose" "$(jq -r .body <<<"$C14" 2>/dev/null | grep -c 'other/repo#3')" "1"
 assert_eq "labels: #14 blocked_by empty" "$(jq -c .blocked_by <<<"$C14" 2>/dev/null)" "[]"
@@ -141,6 +145,8 @@ assert_eq "labels: no comments read for the skipped issue" "$(grep -c 'issues/15
 run_in "$REPO" "$BASH_EXE" "$SCRIPTS/note.sh" get 12
 assert_exit "labels: note.sh get on the imported card exits 0" 0
 assert_eq "labels: note.sh get finds the re-authored note" "$(jq -r .branch <<<"$LAST_OUT" 2>/dev/null)" "fleet/12-add-subtract"
+assert_eq "labels: note.sh get returns the trusted note's pr, not the lookalike's" "$(jq -r .pr <<<"$LAST_OUT" 2>/dev/null)" "34"
+assert_eq "labels: pr_url agrees with note.sh get" "$(jq -r .pr_url "$STORE/cards/12.json")" "https://github.com/acme/toy/pull/$(jq -r .pr <<<"$LAST_OUT" 2>/dev/null)"
 
 echo "import-github: refuses a store that has cards"
 BEFORE="$(cat "$STORE/cards/12.json")"
@@ -152,6 +158,24 @@ printf '40\n' > "$STORE/next"
 run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy --force
 assert_exit "refusal: --force run exits 0" 0
 assert_eq "refusal: --force keeps a higher next" "$(tr -d '[:space:]' < "$STORE/next")" "40"
+
+echo "import-github: --repo must be the board repo"
+setup_repo labels
+run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo other/toy
+assert_exit "repo mismatch: exits 2" 2
+assert_stderr_contains "repo mismatch: names board.repo" "acme/toy"
+assert_eq "repo mismatch: nothing written" "$(find "$STORE/cards" -name '*.json' | wc -l | tr -d ' ')" "0"
+
+echo "import-github: --force keeps a card in human_qa"
+setup_repo labels
+run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy
+jq '.state = "human_qa"' "$STORE/cards/12.json" > "$STORE/cards/12.new" && mv "$STORE/cards/12.new" "$STORE/cards/12.json"
+jq '.state = "ready"' "$STORE/cards/13.json" > "$STORE/cards/13.new" && mv "$STORE/cards/13.new" "$STORE/cards/13.json"
+run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy --force
+assert_exit "force human_qa: exits 0" 0
+assert_eq "force human_qa: #12 stays in human_qa" "$(jq -r .state "$STORE/cards/12.json")" "human_qa"
+assert_stderr_contains "force human_qa: warns" "#12 is in human_qa"
+assert_eq "force human_qa: another card is still overwritten" "$(jq -r .state "$STORE/cards/13.json")" "done"
 
 echo "import-github: next is written under the lock fl_next_number takes"
 setup_repo labels
