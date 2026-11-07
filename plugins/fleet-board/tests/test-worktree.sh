@@ -452,6 +452,25 @@ run_wt remove 12
 assert_exit "marker-local-remove: exit" 0
 assert_true "remove leaves the active marker alone" test -f "$REPO/.fleet-board/active/12"
 
+# an unwritable active/ is a warning on stderr, never an error
+if [ "$(id -u)" = 0 ]; then
+  echo "  skip marker-unwritable: root can write to a read-only directory"
+else
+  setup_case false local
+  rm -rf "$REPO/.fleet-board/active"
+  mkdir -p "$REPO/.fleet-board/active"
+  chmod 555 "$REPO/.fleet-board/active"
+  run_wt create 12 fleet/12-marker "$BASE/12-marker"
+  chmod 755 "$REPO/.fleet-board/active"
+  assert_exit "marker-unwritable: exit" 0
+  case "$LAST_ERR" in
+    *"warning: cannot write the active marker for #12"*) pass "marker-unwritable: warning on stderr" ;;
+    *) fail "marker-unwritable: warning on stderr" "stderr: $LAST_ERR" ;;
+  esac
+  assert_stdout_exact "marker-unwritable: still prints the path" "$BASE/12-marker"
+  assert_false "marker-unwritable: no marker written" test -e "$REPO/.fleet-board/active/12"
+fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

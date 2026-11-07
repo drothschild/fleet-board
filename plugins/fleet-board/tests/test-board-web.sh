@@ -163,7 +163,7 @@ setup_case() {
 start_server() {
   local out="$TMP/server.out"
   : > "$out"
-  FLEET_BOARD_LOG_DIR="$TMP/logs" python3 "$SCRIPTS/board-web.py" --root "$1" --port 0 --scripts "$SCRIPTS" \
+  FLEET_BOARD_LOG_DIR="$TMP/logs" python3 "${SERVER_PY:-$SCRIPTS/board-web.py}" --root "$1" --port 0 --scripts "$SCRIPTS" \
     > "$out" 2> "$TMP/server.err" < /dev/null &
   SERVER_PID=$!
   PORT=""
@@ -176,8 +176,14 @@ start_server() {
     sleep 0.1
     i=$((i + 1))
   done
+  if [ -z "$PORT" ] && [ "${EXPECT_START_FAIL:-0}" = 1 ]; then
+    pass "a start that never listens is reported as failed"
+    stop_server
+    return 1
+  fi
   if [ -z "$PORT" ]; then
     fail "server starts" "no 'listening on' line in 5 s; stderr: $(cat "$TMP/server.err" 2>/dev/null)"
+    stop_server
     return 1
   fi
   pass "server starts and prints its port"
@@ -454,6 +460,61 @@ if setup_case; then
   stop_server
 fi
 
+echo "Case: API gaps"
+if setup_case; then
+  ORIGIN="http://localhost:$PORT" api POST /api/cards '{"title":"Via localhost","body":"b"}'
+  assert_code 200
+  assert_body "an Origin of http://localhost:<port> is accepted" '.number' 4
+  ORIGIN="http://localhost:1" api POST /api/cards '{"title":"Wrong port","body":"b"}'
+  assert_code 403
+
+  # a missing card is refused before any script runs
+  api PATCH /api/cards/999 '{"title":"x"}'
+  assert_code 404
+  api POST /api/cards/999/comments '{"body":"x"}'
+  assert_code 404
+
+  # a script that refuses the write answers 409 with its message, on PATCH and on comment
+  stop_server
+  REFUSE_SCRIPTS="$TMP/scripts-refuse"
+  cp -R "$SCRIPTS" "$REFUSE_SCRIPTS"
+  printf '#!/bin/sh\necho "refused by test" >&2\nexit 1\n' > "$REFUSE_SCRIPTS/adapters/local/edit.sh"
+  printf '#!/bin/sh\necho "refused by test" >&2\nexit 1\n' > "$REFUSE_SCRIPTS/board-comment.sh"
+  SCRIPTS="$REFUSE_SCRIPTS" start_server "$REPO"
+  api PATCH /api/cards/1 '{"title":"x"}'
+  assert_code 409
+  assert_body "PATCH 409 carries the script's message" '.error' 'refused by test'
+  api POST /api/cards/1/comments '{"body":"x"}'
+  assert_code 409
+  assert_body "comment 409 carries the script's message" '.error' 'refused by test'
+  stop_server
+
+  # an unexpected exception answers 500 JSON, and the server keeps serving
+  jq -n '{number: 9, title: "Broken", body: "b", state: "backlog", labels: [], comments: 5,
+          created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z", next_comment_id: 1}' \
+    > "$REPO/.fleet-board/cards/9.json"
+  start_server "$REPO"
+  api GET /api/cards/9
+  assert_code 500
+  assert_body "the 500 error is a JSON string" '.error|type' string
+  api GET /api/cards/1
+  assert_code 200
+  stop_server
+
+  # a start that never prints its port is killed, not left running
+  NEVER_PY="$TMP/never-listens.py"
+  printf 'import os, time\nwith open(os.environ["NEVER_PID_FILE"], "w") as f:\n    f.write(str(os.getpid()))\ntime.sleep(60)\n' > "$NEVER_PY"
+  NEVER_PID_FILE="$TMP/never.pid" EXPECT_START_FAIL=1 SERVER_PY="$NEVER_PY" start_server "$REPO"
+  NEVER_PID="$(cat "$TMP/never.pid" 2>/dev/null)"
+  if [ -n "$NEVER_PID" ] && kill -0 "$NEVER_PID" 2>/dev/null; then
+    fail "a failed start leaves no server process behind" "pid $NEVER_PID still running"
+    kill "$NEVER_PID" 2>/dev/null || true
+  else
+    pass "a failed start leaves no server process behind"
+  fi
+  SERVER_PID=""
+fi
+
 echo "Case: import API"
 # A fake claude: logs its argv, writes the two-card fixture to the --preview path
 # (or fails when $FAKE_CLAUDE_DIR/fail exists) and prints stream-json lines.
@@ -546,25 +607,65 @@ if setup_case; then
   start_server "$REPO"
   api GET /api/import/fixed2;       assert_body "restarted server reads an unfinished import as failed" '.state' failed
 
-  # A partial create: card B's 2 MB title overflows the exec argument limit, so board-create.sh
-  # cannot be started for it after A exists.
+  # A partial create: FLEET_BOARD_CREATE names a fake create script that creates card A through
+  # board-create.sh and then fails, as import-plan.sh does when the second card fails.
   rm -f "$FAKE_CLAUDE_DIR/fail"
-  jq '.cards[1].title = ("x" * 2000000)' "$IMPORT_FIXTURE" > "$TMP/import-cards-partial.json"
-  printf '%s' "$TMP/import-cards-partial.json" > "$FAKE_CLAUDE_DIR/fixture"
+  FAKE_CREATE_PARTIAL="$TMP/fake-create-partial.sh"
+  cat > "$FAKE_CREATE_PARTIAL" <<'EOF'
+#!/bin/bash
+cat > /dev/null
+title="$(jq -r '.cards[0].title' "$1")"
+bf="$(mktemp)"; printf 'body\n' > "$bf"
+out="$(bash "$SCRIPTS/board-create.sh" "$title" "$bf")" || exit 1
+rm -f "$bf"
+echo "Created #$(jq -r .number <<<"$out"): $title"
+echo "failed to create: second card" >&2
+exit 1
+EOF
   stop_server
   export FLEET_BOARD_TEST_IMPORT_ID=fixed3
-  start_server "$REPO"
+  FLEET_BOARD_CREATE="$FAKE_CREATE_PARTIAL" start_server "$REPO"
   api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
   wait_for 'api GET /api/import/fixed3; body_is .state ready'
   api POST /api/import/fixed3/create '{}';   assert_code 409
   assert_body "partial create lists the cards that exist" '.created|length' 1
   assert_body "partial create reports the number of the first card" '.created[0]' 6
   assert_body "partial create carries the error" '.error|type' string
+  assert_body "partial create names the card that failed" '.error' 'failed to create: second card'
   if [ -f "$REPO/.fleet-board/cards/6.json" ]; then pass "the created card exists"; else fail "the created card exists" "no card 6"; fi
   api POST /api/import/fixed3/create '{}';   assert_code 409
   assert_body "a retry after a partial create says already created" '.error' '*already created*'
   api GET /api/board;               assert_body "the retry adds no cards" '.cards|length' 6
+
+  # embed_docs picks the answer sent to import-plan.sh's docs prompt: true is e, false (or absent) is m.
+  FAKE_CREATE_LOG="$TMP/fake-create-stdin.log"
+  FAKE_CREATE_STDIN="$TMP/fake-create-stdin.sh"
+  cat > "$FAKE_CREATE_STDIN" <<'EOF'
+#!/bin/bash
+cat > "$FAKE_CREATE_LOG"
+echo "Created #99: stub"
+EOF
+  stop_server
+  export FLEET_BOARD_TEST_IMPORT_ID=fixed5 FAKE_CREATE_LOG
+  FLEET_BOARD_CREATE="$FAKE_CREATE_STDIN" start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for 'api GET /api/import/fixed5; body_is .state ready'
+  api POST /api/import/fixed5/create '{"embed_docs":"yes"}';  assert_code 400
+  assert_body "a non-boolean embed_docs is named in the error" '.error' '*embed_docs*'
+  if [ ! -e "$FAKE_CREATE_LOG" ]; then pass "a refused embed_docs never ran the create script"; else fail "a refused embed_docs never ran the create script" "log: $(cat "$FAKE_CREATE_LOG")"; fi
+  api POST /api/import/fixed5/create '{"embed_docs":false}';  assert_code 200
+  if [ "$(tr '\n' ',' < "$FAKE_CREATE_LOG" 2>/dev/null)" = "y,m," ]; then pass "embed_docs false sends m"; else fail "embed_docs false sends m" "stdin: $(tr '\n' ',' < "$FAKE_CREATE_LOG" 2>/dev/null)"; fi
   rm -f "$FAKE_CLAUDE_DIR/fixture"
+
+  # FLEET_BOARD_PLUGIN_DIR adds --plugin-dir to the session's argv; without it there is none.
+  if ! grep -q -- '--plugin-dir' "$FAKE_CLAUDE_DIR/args.log"; then pass "no --plugin-dir without FLEET_BOARD_PLUGIN_DIR"; else fail "no --plugin-dir without FLEET_BOARD_PLUGIN_DIR" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  : > "$FAKE_CLAUDE_DIR/args.log"
+  stop_server
+  export FLEET_BOARD_TEST_IMPORT_ID=fixed6
+  FLEET_BOARD_PLUGIN_DIR=/x start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for 'api GET /api/import/fixed6; body_is .state ready'
+  if grep -q -- '--plugin-dir /x ' "$FAKE_CLAUDE_DIR/args.log"; then pass "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv"; else fail "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
 
   # A session outliving a server restart is still running, then ready.
   : > "$FAKE_CLAUDE_DIR/slow"

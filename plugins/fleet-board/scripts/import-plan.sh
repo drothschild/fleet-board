@@ -233,7 +233,8 @@ $text
   while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
   if [ "$BACKEND" = "local" ]; then
     OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" ${largs[@]+"${largs[@]}"} --state "$STATUS")" || fb_die 1 "failed to create: $title"
-    num="$(jq -r .number <<<"$OUT")"
+    num="$(jq -r '.number | select(type == "number")' <<<"$OUT" 2>/dev/null)"
+    case "$num" in ''|*[!0-9]*) fb_die 1 "failed to create: $title" ;; esac
     CREATED="#$num"
     repo="$FLEET_REPO" # a ref must name the board repo: deps.sh reads the local store only for it
   else

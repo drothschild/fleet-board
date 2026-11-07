@@ -356,6 +356,18 @@ check "local board: card 1 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-bo
 check "local board: card 2 is in state ready" "$(jq -r .state "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" "ready"
 check "local board: card labels are stored" "$(jq -c .labels "$ROOT_L/.fleet-board/cards/2.json" 2>/dev/null)" '["frontend"]'
 check "local board: no gh issue create is called" "$(cat "$D/calls.log" 2>/dev/null | grep -c "^issue create")" "0"
+check "local board: the gh stub was never invoked" "$([ -e "$D/calls.log" ] && wc -l < "$D/calls.log" | tr -d ' ' || echo 0)" "0"
+
+# board-create.sh printing no number: import-plan stops with failed to create
+SCRIPTS_COPY="$SB/scripts-copy"
+cp -R "$PLUGIN/scripts" "$SCRIPTS_COPY"
+printf '#!/usr/bin/env bash\necho "{}"\n' > "$SCRIPTS_COPY/board-create.sh"
+reset_gh
+OUT="$(cd "$ROOT_L" && printf 'y\n' | FAKE_D="$D" PATH="$STUBS:$PATH" bash "$SCRIPTS_COPY/import-plan.sh" "$SB/cards-local.json" --status ready 2>"$SB/err")"
+RC=$?
+check "local board, no number printed: exits 1" "$RC" "1"
+case "$(cat "$SB/err")" in *"failed to create: A"*) pass "local board, no number printed: stderr says failed to create: A" ;; *) fail "local board, no number printed: stderr says failed to create: A" "$(cat "$SB/err")" ;; esac
+case "$OUT" in *"Created #"*) fail "local board, no number printed: nothing reported created" "$OUT" ;; *) pass "local board, no number printed: nothing reported created" ;; esac
 cat > "$SB/cards-local-x.json" <<'EOF'
 {"cards":[
  {"key":"b","title":"B2","repo":"acme/toy","labels":[],
