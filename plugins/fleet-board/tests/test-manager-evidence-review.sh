@@ -36,7 +36,7 @@ check_manager() {
     has "$name exits 1, 3 or 6 handle $rule" "$row" "$rule"
   done
   row="$(grep -F '**Exit 2' <<<"$contract")"
-  has "$name exit 2 is the manager's own error" "$row" "manager's own call"
+  has "$name exit 2 is the manager's own error" "$row" "own call"
   for action in start_review review fix; do
     row="$(grep -F "| \`$action\` |" "$file")"
     has "$name $action routes the command reviewer" "$row" 'evidence-review.sh'

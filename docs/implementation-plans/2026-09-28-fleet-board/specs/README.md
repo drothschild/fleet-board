@@ -1907,3 +1907,17 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 **Revision cost:** $0.4933. **Running total, all API-key charges:** ~$42.47: Revision 17's ~$41.29, plus card 115's $0.0696 and Revision 18's $0.6183 (both counted in Revision 18's ~$41.13, which left out Revision 17), plus this revision.
 
 **Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
+
+### Revision 20 (2026-11-06, PR #217)
+
+One approved isolated edit used `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40` with a $1.50 CLI budget, strict MCP configuration, a fresh empty configuration directory, and stdin from `/dev/null`. The working directory was the plugin root. The only added directory held `edit-req.md` (hash `07cc754a9074311a`) and the manager spec copy (hash `14220cebb2e0dbb0`). Prompt hash `777d16b5b12c61d9`. Claude Code 2.1.319 used `claude-opus-5-5` and `apiKeyHelper`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/manager.md` | `417e66154bd561bf` | PASS | PASS (4 reads, 11 edits) | 16 | 0.4341 | `41799b377c411831` | `83a650e092885482` |
+
+The init event showed four built-in plugins, only Read and Edit, no namespaced skills, agents or commands, and no MCP servers. Reads were limited to the two staged inputs and the manager file. Every edit targeted the manager file. No tool call failed. Sanitized evidence is in `evidence/author-manager.r20.init.json`.
+
+The zero-context diff contains ten hunks, covering dispatch, concurrency, action routing, reconciliation, cost and provider restrictions. Frontmatter is unchanged. The manager evidence-review, manager stages, clean-room and clean-room manifest suites passed. The behavioral and live checks remain pending.
+
+Revision cost was $0.4341. The recorded running total is approximately $42.90.

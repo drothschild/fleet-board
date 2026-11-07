@@ -175,11 +175,11 @@ This task spends API money on an isolated run. Check the ceiling in the plan's `
 - [x] **Step 1: Write the failing test** `test-manager-evidence-review.sh`, checking both the spec and the agent file for: `evidence-review.sh`; `run_in_background`; the timeout expression; "no Agent call"; exit 0 reconciliation with `provider` and `model` in `last_review`; exits 1, 3, 6 as report errors with `"role": "reviewer"`; exit 2 as the manager's own error; "counts against `limits.concurrency`".
 - [x] **Step 2: Run** it — Expected: every case FAILS.
 - [x] **Step 3: Edit the spec** `specs/manager.md` (and the brief, as previous Revisions did) with the rules above. Rerun: spec-side cases pass, agent-side cases still fail.
-- [ ] **Step 4: Isolated in-place edit** of `agents/manager.md`, in the form the last Revision used: `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40`, fresh empty `CLAUDE_CONFIG_DIR`, cwd `plugins/fleet-board/`, `< /dev/null`, one staged `edit-req.md`. Assert isolation on the `system/init` event.
-- [ ] **Step 5: Minimality check:** read `git diff -U0 agents/manager.md` hunk by hunk; every hunk must be one of this task's rules. Discard and re-run otherwise.
-- [ ] **Step 6: Run** `test-manager-evidence-review.sh`, `test-manager-stages.sh`, `test-clean-room.sh` and `test-clean-room-manifest.sh` — Expected: `failed: 0` each.
-- [ ] **Step 7: Record** the next free Revision number in `specs/README.md` (run, init hash, isolation, path audit, turns, cost, before and after hashes, minimality, tests, known limits), and update the manifest line for `agents/manager.md`.
-- [ ] **Step 8: Commit** `Manager: run evidence-review.sh for a provider reviewer (Revision <n>)`.
+- [x] **Step 4: Isolated in-place edit** of `agents/manager.md`, in the form the last Revision used: `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40`, fresh empty `CLAUDE_CONFIG_DIR`, cwd `plugins/fleet-board/`, `< /dev/null`, one staged `edit-req.md`. Assert isolation on the `system/init` event.
+- [x] **Step 5: Minimality check:** read `git diff -U0 agents/manager.md` hunk by hunk; every hunk must be one of this task's rules. Discard and re-run otherwise.
+- [x] **Step 6: Run** `test-manager-evidence-review.sh`, `test-manager-stages.sh`, `test-clean-room.sh` and `test-clean-room-manifest.sh` — Expected: `failed: 0` each.
+- [x] **Step 7: Record** the next free Revision number in `specs/README.md` (run, init hash, isolation, path audit, turns, cost, before and after hashes, minimality, tests, known limits), and update the manifest line for `agents/manager.md`.
+- [x] **Step 8: Commit** `Manager: run evidence-review.sh for a provider reviewer (Revision <n>)`.
 
 ### Task 7: Version, behavioral scenario, live check
 
