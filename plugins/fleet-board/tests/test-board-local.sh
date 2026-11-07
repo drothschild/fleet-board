@@ -139,7 +139,7 @@ assert_card_state() { assert_card_json "$1" '.state' "$2"; }
 
 # Run only the list-hardening regressions with --list-hardening.
 list_hardening() {
-  for invalid in null '[]' true 17; do
+  for invalid in null '[]' true 17 '' '   ' '{} {}'; do
     setup_case
     seed_card 1 backlog Valid body
     printf '%s\n' "$invalid" > "$REPO/.fleet-board/cards/2.json"
