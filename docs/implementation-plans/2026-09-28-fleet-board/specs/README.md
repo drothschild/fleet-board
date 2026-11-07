@@ -1907,3 +1907,17 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 **Revision cost:** $0.4933. **Running total, all API-key charges:** ~$42.47: Revision 17's ~$41.29, plus card 115's $0.0696 and Revision 18's $0.6183 (both counted in Revision 18's ~$41.13, which left out Revision 17), plus this revision.
 
 **Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
+
+### Revision 20 (2026-11-06, card 70): the fixer resolves merge conflicts, test files included
+
+**Cause.** `update-branch.sh` blocked every conflicting merge and never dispatched the fixer, so a person resolved each one, including conflicts across several files and a shared test file (HMB Workout PRs 59, 60 and 62).
+
+**Spec change** (hand edit, as in Revision 11): `specs/fixer.md` gains behavior 3a (re-run the merge of the base, resolve every conflict, commit a merge commit; never rebase or force-push), a narrow conflict-region exception to the ban on editing existing tests (keep every test and assertion from both sides, change no line outside a conflict region, report `blocked` when both cannot be kept, push nothing when a touched test fails), and two Must never edits. `tests/test-conflict-fixer-docs.sh` checks the spec, the agent and `docs/config.md`; it is not clean-room and was written test-first (6 checks failed before the change).
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, `claude-opus-5-5`, `--add-dir` a staging dir holding `edit-req.md` and a copy of the edited spec. Cost $0.2006. The init event and path audit were not re-asserted for this run (not recorded: the log was kept outside the repo and only the cost was read), so the isolation row is unverified.
+
+**Minimality check.** `git diff -U0 agents/fixer.md` was read: the frontmatter description, the Principle sentence, the step 3 exception sentence, the new step 3a, and the two Never bullets. **Kept.**
+
+**Known limits, not re-run.** `agents/manager.md` (clean-room, outside this card's Scope) still describes `update_branch` as blocking the card on a conflict and does not yet tell the manager to pass the plan's `findings` to the fixer, clear `conflicted_files` and `last_review` after a resolved merge, or block with the conflicted files when the fixer reports blocked. No behavioral run exercised step 3a.
+
+**Output sha256 (20):** `agents/fixer.md` `2d122bed1ab906b0` → `7d93223e9200e45e`.
