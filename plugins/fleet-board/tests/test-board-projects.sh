@@ -750,6 +750,47 @@ edit1="$(calls_of project item-edit | head -n 1)"
 assert_call_pair "projects-create: item-edit to Backlog" "$edit1" --single-select-option-id "$backlog_opt"
 assert_call_pair "projects-create: item-edit uses the added item PVTI_new" "$edit1" --id PVTI_new
 
+# create-item-add-already-exists: gh says the issue is already on the project;
+# the issue was created and is on the board, so the create succeeds
+setup_case
+printf 'Content already exists in this project\n' > "$FAKE_GH_DIR/already-exists.txt"
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+project view 1 --owner drothschild --format json	0	$FIXTURES/projects/project-view.json
+project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list.json
+api user	0	$FIXTURES/labels/user.json
+issue create*	0	$FIXTURES/projects/issue-created.txt
+project item-add 1 --owner drothschild --url https://github.com/drothschild/HMBWorkout/issues/901*	1	$FAKE_GH_DIR/already-exists.txt
+project item-edit*	0	$FIXTURES/projects/item-edit-ok.json
+ROUTESEOF
+export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH="$BIN:$PATH"
+printf 'Body text\n' > body.md
+run_check "$SCRIPT_DIR/../scripts/board-create.sh" "Out of scope: x" body.md
+assert_exit "create-item-add-already-exists: exit" 0
+if [ "$(echo "$LAST_OUT" | jq -c)" = '{"number":901,"url":"https://github.com/drothschild/HMBWorkout/issues/901"}' ]; then
+  pass "create-item-add-already-exists: stdout has the issue number"
+else
+  fail "create-item-add-already-exists: stdout has the issue number" "got: $LAST_OUT"
+fi
+
+# create-item-add-other-failure: any other item-add failure still fails
+setup_case
+printf 'GraphQL: Could not resolve to a ProjectV2\n' > "$FAKE_GH_DIR/other-failure.txt"
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+project view 1 --owner drothschild --format json	0	$FIXTURES/projects/project-view.json
+project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list.json
+api user	0	$FIXTURES/labels/user.json
+issue create*	0	$FIXTURES/projects/issue-created.txt
+project item-add 1 --owner drothschild --url https://github.com/drothschild/HMBWorkout/issues/901*	1	$FAKE_GH_DIR/other-failure.txt
+project item-edit*	0	$FIXTURES/projects/item-edit-ok.json
+ROUTESEOF
+export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH="$BIN:$PATH"
+printf 'Body text\n' > body.md
+run_check "$SCRIPT_DIR/../scripts/board-create.sh" "Out of scope: x" body.md
+assert_exit "create-item-add-other-failure: exit" 1
+assert_logs_not_contain "project item-edit" "create-item-add-other-failure: no item-edit"
+
 # create-backlog-option-missing: an unknown Backlog column fails before anything is created
 setup_case
 cat > "$REPO/.fleet-board.yml" << 'YML'
