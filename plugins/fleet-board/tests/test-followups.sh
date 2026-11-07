@@ -472,6 +472,33 @@ assert_exit "local corrupt card: exit" 1
 assert_eq "local corrupt card: nothing created" "$(cat "$REPO/.fleet-board/next")" 13
 assert_eq "local corrupt card: no stdout" "$LAST_OUT" ""
 
+# ---------------------------------------------------------------------------
+# no PR (a blocked card's pending follow-ups): the cards are filed, no PR comment
+setup_case
+report "$TWO_OOS" "[$(bug "Division by zero crashes")]"
+run_check "$SCRIPT" 12 "" "$REPORT"
+assert_exit "no-pr: exit" 0
+assert_eq "no-pr: 3 issue create" "$(calls_starting issue create)" 3
+assert_eq "no-pr: no gh pr comment" "$(grep -c 'pr comment' "$FAKE_GH_DIR/calls.log" || true)" 0
+assert_eq "no-pr: 3 cards reported filed" "$(jq -c '(.out_of_scope_created + .bugs_filed) | length' <<<"$LAST_OUT" 2>/dev/null)" 3
+N_OK=0
+for f in "$FAKE_GH_DIR"/bodies/*; do
+  [ -f "$f" ] || continue
+  grep -qF 'while working #12.' "$f" && ! grep -qF 'PR #' "$f" && N_OK=$((N_OK + 1))
+done
+assert_eq "no-pr: each body says Found while working #12 with no PR number" "$N_OK" 3
+
+# no PR, existing match: the issue comment names no PR, and no PR comment is made
+EXTRA_ROUTES="$(printf 'issue list --repo acme/toy --state open --search*\topen-55.json\n' | awk -F'\t' '{print $1 "\t0\t" $2}')
+"
+setup_case
+printf '[{"number":55,"title":"Extract math utils"}]\n' > "$FAKE_GH_DIR/open-55.json"
+report '[{"title":"Extract math utils","detail":"calc.js mixes parsing and math"}]' '[]'
+run_check "$SCRIPT" 12 "" "$REPORT"
+assert_exit "no-pr existing: exit" 0
+assert_eq "no-pr existing: no gh pr comment" "$(grep -c 'pr comment' "$FAKE_GH_DIR/calls.log" || true)" 0
+assert_eq "no-pr existing: issue comment names no PR" "$(bodies_of issue comment 55)" "Also seen while working #12."
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -3,6 +3,10 @@
 #
 # Usage: file-followups.sh <card-n> <pr> <parsed-report-json-file>
 #
+# <pr> may be empty (a blocked card with no PR): no PR comment is made, and the
+# comments and card bodies say "Found while working #<card>." with no PR number.
+# The manager clears pending_followups of the items filed (note.sh merge).
+#
 # The report file is parse-report.sh output; its out_of_scope items
 # ({title, detail}) and bugs ({title, repro, expected, observed}) are filed.
 #
@@ -61,7 +65,7 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 
 [ $# -eq 3 ] || fb_die 2 "usage: file-followups.sh <card-n> <pr> <parsed-report-json-file>"
 fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
-fb_valid_number "$2" || fb_die 2 "PR number must be numeric, got: $2"
+[ -z "$2" ] || fb_valid_number "$2" || fb_die 2 "PR number must be numeric or empty, got: $2"
 [ -f "$3" ] || fb_die 2 "file not found: $3"
 CARD="$1"
 PR="$2"
@@ -168,7 +172,11 @@ local_comment() {
   return $rc
 }
 
+# pr_ref: " (PR #<pr>)", or nothing when there is no PR
+pr_ref() { [ -z "$PR" ] || printf ' (PR #%s)' "$PR"; }
+
 pr_comment() {
+  [ -n "$PR" ] || return 0
   gh pr comment "$PR" --repo "$FLEET_REPO" --body "$1" </dev/null >/dev/null \
     || printf 'fleet-board: warning: PR comment failed for #%s\n' "$2" >&2
 }
@@ -184,10 +192,10 @@ while IFS= read -r item; do
   title="$(jq -r .title <<<"$item")"
   if [ "$m" != none ]; then
     if [ "$BACKEND" = local ]; then
-      local_comment "$m" "Also seen while working #$CARD (PR #$PR)." \
+      local_comment "$m" "Also seen while working #$CARD$(pr_ref)." \
         || stop "cannot comment on the existing card #$m for: $title"
     else
-      gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
+      gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD$(pr_ref)." </dev/null >/dev/null \
         || stop "cannot comment on the existing issue #$m for: $title"
     fi
     record "$kind" "$title" "$m" true "$how" || stop "cannot record #$m"
@@ -198,7 +206,7 @@ while IFS= read -r item; do
   BODY="$(mktemp)" || stop "cannot create a temp file"
   if [ "$kind" = bug ]; then
     jq -r --arg c "$CARD" --arg p "$PR" '
-      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\n## Acceptance\n- `\(.repro)` gives the expected result: \(.expected)\n\nFound by fleet-board while working #\($c) (PR #\($p))."' \
+      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\n## Acceptance\n- `\(.repro)` gives the expected result: \(.expected)\n\nFound by fleet-board while working #\($c)\(if $p == "" then "" else " (PR #\($p))" end)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
     created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" </dev/null)" || stop "cannot create the card for: $title"
   else
@@ -211,7 +219,7 @@ while IFS= read -r item; do
       (if .detail == "" then "" else "\(.detail)\n\n" end)
       + (if $cmd == "" then "" else "## Acceptance\n- `\($cmd)` gives the result the description above expects\n\n" end)
       + (if (.detail | test("depends on this card"; "i")) then "## Depends on\n- #\($c)\n\n" else "" end)
-      + "Found while working #\($c) (PR #\($p))."' \
+      + "Found while working #\($c)\(if $p == "" then "" else " (PR #\($p))" end)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
     state="$STATUS"
     [ -n "$cmd" ] || state=backlog

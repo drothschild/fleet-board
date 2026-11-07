@@ -466,11 +466,13 @@ plan pending-followups-none
 assert_jq "pending-followups-hold-card: null pending -> mark_ready" "$(card 12 action)" '"mark_ready"'
 assert_jq "pending-followups-hold-card: with a PR, no wait-for-PR warning" '[.warnings[] | select(contains("wait for a PR"))] | length' 0
 # Pending follow-ups with no PR anywhere (pending.pr, note.pr, the plan's own
-# lookup) cannot be filed: the card is not held; it falls through with a warning
+# lookup): a blocked card files them without a PR (they would otherwise be lost
+# when the card closes); an in_progress card still waits for a PR
 plan pending-followups-blocked
-assert_jq "pending-followups-no-pr: blocked with merged blocker -> unblock" "$(card 20 action)" '"unblock"'
-assert_jq "pending-followups-no-pr: blocked warning" '.warnings' '["pending follow-ups on #20 wait for a PR"]'
-assert_jq "pending-followups-no-pr: blocked dispatchable" '.dispatchable' 'true'
+assert_jq "pending-followups-no-pr: blocked -> file_pending" "$(card 20 action)" '"file_pending"'
+assert_jq "pending-followups-no-pr: blocked reason" "$(card 20 reason)" '"pending follow-ups"'
+assert_jq "pending-followups-no-pr: blocked no warning" '.warnings' '[]'
+assert_jq "pending-followups-no-pr: blocked dispatchable" '.dispatchable' 'false'
 plan pending-followups-no-pr-in-progress
 assert_exit "pending-followups-no-pr: in_progress exit" 0
 assert_jq "pending-followups-no-pr: in_progress -> continue_implementor" "$(card 12 action)" '"continue_implementor"'
@@ -481,6 +483,28 @@ plan pending-followups-discovered-pr
 assert_jq "pending-followups-discovered-pr: -> file_pending" "$(card 12 action)" '"file_pending"'
 assert_jq "pending-followups-discovered-pr: pr 34" "$(card 12 pr)" '34'
 assert_jq "pending-followups-discovered-pr: no warning" '.warnings' '[]'
+
+# A card seen closed (settle mode reads it directly) with pending items warns,
+# naming each title. The fixture is written here, at run time.
+CLOSED_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$CLOSED_DIR")
+mkdir -p "$CLOSED_DIR/pending-followups-closed"
+cat > "$CLOSED_DIR/pending-followups-closed/comments-12.json" << 'CEOF'
+[{"id":555,"user":{"login":"fleet-bot"},"body":"<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: done\n\n```json\n{\"state\":\"done\",\"branch\":\"fleet/12-add-subtract\",\"pr\":null,\"round\":1,\"pending_followups\":{\"out_of_scope\":[{\"title\":\"Run prisma generate in e2e global setup\",\"detail\":\"no testable check\"}],\"bugs\":[{\"title\":\"calc crashes on NaN\",\"repro\":\"node -e x\",\"expected\":\"NaN\",\"observed\":\"throws\"}],\"pr\":null}}\n```\n","created_at":"2026-09-28T00:01:00Z"}]
+CEOF
+printf '{"number":12,"title":"Add subtract","html_url":"https://github.com/acme/toy/issues/12","body":"Subtract.\\n\\n## Acceptance\\n- subtract(2,5) returns -3\\n","labels":[{"name":"fleet:done"}]}\n' > "$CLOSED_DIR/pending-followups-closed/issue-12.json"
+{
+  printf 'api user\t0\t%s/../labels/user.json\n' "$TICK"
+  printf 'api repos/acme/toy/issues/12\t0\t%s/pending-followups-closed/issue-12.json\n' "$CLOSED_DIR"
+  printf 'api --paginate repos/acme/toy/issues/12/comments\t0\t%s/pending-followups-closed/comments-12.json\n' "$CLOSED_DIR"
+} > "$CLOSED_DIR/pending-followups-closed/routes"
+TICK_REAL="$TICK"; TICK="$CLOSED_DIR"
+setup_case pending-followups-closed; run_check "$SCRIPT" --settle 12
+TICK="$TICK_REAL"
+assert_exit "pending-followups-closed: exit" 0
+assert_jq "pending-followups-closed: warning names the out-of-scope title" '[.warnings[] | select(contains("Run prisma generate in e2e global setup"))] | length' 1
+assert_jq "pending-followups-closed: warning names the bug title" '[.warnings[] | select(contains("calc crashes on NaN"))] | length' 1
+assert_jq "pending-followups-closed: warning names the card" '[.warnings[] | select(startswith("#12: closed with pending follow-ups"))] | length' 1
+assert_jq "pending-followups-closed: no wait-for-PR warning" '[.warnings[] | select(contains("wait for a PR"))] | length' 0
 
 # ---------------------------------------------------------------------------
 # lookup-failure-fails-closed
