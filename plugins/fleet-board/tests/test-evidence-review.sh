@@ -130,6 +130,7 @@ check "round 1 reference is the merge-base" grep -Fq "Review round 1. Reference 
 check "review prompt requires non-login command tools" grep -Fq 'login=false on every call' "$FAKE_REVIEWER_DIR/prompt.1"
 check "review prompt verifies temp helper resolution" grep -Fq 'command -v mktemp' "$FAKE_REVIEWER_DIR/prompt.1"
 check "review prompt verifies process helper resolution" grep -Fq 'command -v ps' "$FAKE_REVIEWER_DIR/prompt.1"
+check "failed preflight cannot report clean" grep -Fq 'report an Important environment finding and Status findings' "$FAKE_REVIEWER_DIR/prompt.1"
 check "provider temp directory is inside clone" test "$(cat "$FAKE_REVIEWER_DIR/tmpdir")" = "$(cat "$FAKE_REVIEWER_DIR/clone")/.fleet-board-tmp"
 check "provider mktemp file is inside clone" test "$(dirname "$(cat "$FAKE_REVIEWER_DIR/temp-file")")" = "$(cat "$FAKE_REVIEWER_DIR/tmpdir")"
 check "provider mktemp directory is inside clone" test "$(dirname "$(cat "$FAKE_REVIEWER_DIR/temp-dir")")" = "$(cat "$FAKE_REVIEWER_DIR/tmpdir")"
