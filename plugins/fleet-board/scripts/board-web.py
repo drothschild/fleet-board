@@ -647,6 +647,8 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out = dict(card)
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
+    nc = note_comment(card)
+    out["manager_note_id"] = nc.get("id") if nc else None
     ok = isinstance(pr, int) and not isinstance(pr, bool) and repo
     out["pr_url"] = "https://github.com/%s/pull/%d" % (repo, pr) if ok else None
     return out
