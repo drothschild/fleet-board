@@ -240,3 +240,26 @@ A new report role, `stage-reviewer`, for a review stage's report: the report of 
 5. Rows `status clean needs ...` and `status findings needs ...`: they hold for the stage-reviewer as for the reviewer.
 6. Report section: Status values by role, Role sections (stage-reviewer: none), and the With `--role` rule name the stage-reviewer; the rejection-messages usage line reads `[--role implementor|reviewer|fixer|stage-reviewer]`.
 7. Role-specific table: a `stage-reviewer` row (`clean`/`findings`, no role sections, no `## PR` rule).
+
+## Revision 22 requirements (2026-11-06, card fields and the local board; these win over anything above)
+
+Cards now carry first-class fields, and the board is the local card store. `board-read.sh <n>`
+prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on
+this board) and `pr_url`. A card's acceptance items are its `acceptance` field, not a
+`## Acceptance` section of the body. Change only what the items below name; keep the frontmatter
+and every other line unchanged. The `Blocked by: #N` report line and the checker's `blocked_by`
+JSON field are unchanged.
+
+1. The backtick rule's example: card text that holds backticks is read with
+   `board-read.sh <n> | jq -r '.body'` rather than pasted (in place of `gh issue view <n>
+   --json body --jq .body`).
+2. Blocked before any work: the example cause is a card with no acceptance items (in place of
+   "no Acceptance section"), and the VERIFIED example is
+   ``VERIFIED: `board-read.sh 12 | jq '.acceptance | length'` -> 0 acceptance items``.
+3. The role-specific point on a blocked implementor: "a card without acceptance items", and its
+   VERIFIED line counts `-> 0` acceptance items (in place of Acceptance sections).
+4. Bugs found become `bug`-labelled Backlog cards deduplicated against open cards on this board
+   (in place of "open issues").
+5. The blocked implementor example report: the For-the-card line is
+   `Stopped before writing a test: the card has no acceptance items.` and the VERIFIED line is
+   ``VERIFIED: `board-read.sh 12 | jq '.acceptance | length'` -> 0 acceptance items``.
