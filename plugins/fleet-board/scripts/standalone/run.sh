@@ -13,6 +13,7 @@ ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo 'not a repository'
 cd "$ROOT" || exit 1
 bash "$HERE/config.sh" --dir "$ROOT" --check </dev/null || exit $?
 cfg() { bash "$HERE/config.sh" --dir "$ROOT" "$1" </dev/null; }
+REPO_SLUG="$(cfg board.repo)" || exit 1
 MAX_HOURS="$(cfg limits.max_hours)" || exit 1
 MAX_COST="$(cfg limits.max_cost_usd)" || exit 1
 INTERVAL="$(cfg limits.tick_interval)" || exit 1
@@ -25,11 +26,15 @@ SLEEP_CMD="${FLEET_BOARD_SLEEP:-sleep}"
 LOG_DIR="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
 case "$LOG_DIR" in /*) ;; *) LOG_DIR="$CALLER/$LOG_DIR" ;; esac
 (umask 077; mkdir -p "$LOG_DIR") || exit 1
+RUN_LOCK="$LOG_DIR/$(printf '%s' "$REPO_SLUG" | tr '/' '-').lock"
+python3 "$HERE/claim-run-lock.py" "$RUN_LOCK" "$$" || exit 1
+release_run_lock() { [ "$(sed -n 1p "$RUN_LOCK" 2>/dev/null)" != "$$" ] || rm -f "$RUN_LOCK"; }
+trap release_run_lock EXIT
 LOG="$LOG_DIR/standalone-$(date +%Y%m%d-%H%M%S)-$$.log"
 (umask 077; set -C; : > "$LOG") || exit 1
 WORK="$(mktemp -d)" || exit 1
 CHILD=""
-cleanup() { rm -rf "$WORK"; }
+cleanup() { rm -rf "$WORK"; release_run_lock; }
 cancel() {
   local code="$1" target="$CHILD" watchdog=""
   trap '' INT TERM

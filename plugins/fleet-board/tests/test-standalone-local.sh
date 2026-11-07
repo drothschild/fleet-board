@@ -23,7 +23,7 @@ TICK
   export FLEET_BOARD_STANDALONE_TICK="$TMP/tick" FLEET_BOARD_LOG_DIR="$TMP/logs"
   bash "$SCRIPTS/standalone/run.sh" --repo "$PWD" > "$TMP/first" 2>&1 & run_pid=$!
   for i in {1..100}; do [ -e "$TMP/tick-started" ] && break; sleep 0.1; done
-  [ -e "$TMP/tick-started" ] || { kill "$run_pid" 2>/dev/null || true; wait "$run_pid" 2>/dev/null || true; echo 'FAIL: first run did not start' >&2; exit 1; }
+  [ -e "$TMP/tick-started" ] || { kill "$run_pid" 2>/dev/null || true; wait "$run_pid" 2>/dev/null || true; cat "$TMP/first" >&2; echo 'FAIL: first run did not start' >&2; exit 1; }
   if bash "$SCRIPTS/standalone/run.sh" --repo "$PWD" > "$TMP/second" 2>&1; then
     kill "$run_pid" 2>/dev/null || true; wait "$run_pid" 2>/dev/null || true
     echo 'FAIL: duplicate standalone run accepted' >&2; exit 1
