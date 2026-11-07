@@ -302,7 +302,7 @@ if setup_case; then
 
   api POST /api/cards/3/move '{"state":"ready"}'
   assert_code 409
-  assert_body "refused move names Acceptance" '.error' '*Acceptance*'
+  assert_body "refused move says no acceptance criteria" '.error' '*no acceptance criteria*'
   [ "$(card_json 3 .state)" = human_qa ] && pass "card 3 stays in human_qa" || fail "card 3 stays in human_qa" "state $(card_json 3 .state)"
 
   api PATCH /api/cards/4 '{"title":"Renamed"}'
