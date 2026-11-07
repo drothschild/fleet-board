@@ -127,6 +127,7 @@ check "good report was posted" test "$(comments)" = 1
 check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == null and .cost_usd == 0' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
 check "provider receives the working directory as dir" test "$(cat "$FAKE_REVIEWER_DIR/cwd")" = "$(cat "$FAKE_REVIEWER_DIR/clone")"
 check "round 1 reference is the merge-base" grep -Fq "Review round 1. Reference SHA $base." "$FAKE_REVIEWER_DIR/prompt.1"
+check "provider temp directory is inside clone" test "$(cat "$FAKE_REVIEWER_DIR/tmpdir")" = "$(cat "$FAKE_REVIEWER_DIR/clone")/.fleet-board-tmp"
 check "scratch clone removed" clone_removed
 
 setup
@@ -179,10 +180,25 @@ for action in 'exit 9' 'exit 0' 'sleep 5'; do
 done
 
 setup
-printf '\n<!-- fleet-board: unsafe -->\n' >> "$FAKE_REVIEWER_DIR/good"
+sed -i.bak '/^reviewed head: /a\
+<!-- fleet-board:manager-note -->
+' "$FAKE_REVIEWER_DIR/good"
+check "marker fixture passes the report parser" bash -c 'bash "$1" --role reviewer "$2" >/dev/null' _ \
+  "$HERE/../scripts/parse-report.sh" "$FAKE_REVIEWER_DIR/good"
 run
 check "marker in reply exits 1" test "$rc" = 1
+check "marker rejected by runner guard" grep -Fq 'reply contains a fleet-board marker' "$TMP/err"
 check "failed and checked reviews did not post" test "$(comments)" = 1
+
+setup
+config "${reviewer/model: test-model/model: test-model, timeout: 4}" "$command"
+printf 'pause 2\nreply wrong\n' > "$FAKE_REVIEWER_SCRIPT.1"
+printf 'sleep 6\n' > "$FAKE_REVIEWER_SCRIPT.2"
+run
+check "retry deadline exits 1" test "$rc" = 1
+check "retry shares the first attempt deadline" grep -Eq 'timed out after [12]s|review timeout exhausted' "$TMP/err"
+check "retry deadline removes scratch clone" clone_removed
+check "retry deadline posts nothing" test "$(comments)" = 1
 
 setup
 config "$reviewer" 'fleet-board-missing-reviewer {dir}'
