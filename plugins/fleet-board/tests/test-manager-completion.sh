@@ -17,6 +17,9 @@ for f in "$ROOT/docs/implementation-plans/2026-09-28-fleet-board/specs/manager.m
   has "$f" 'duplicate completion' 'duplicate completion handling'
   has "$f" 'fresh.*plan|replan' 'fresh decisions'
   has "$f" 'headless.*merg|merg.*headless' 'headless merge boundary'
+  has "$f" 'malformed result|malformed.*verification|verification.*malformed' 'malformed verification stops admissions'
+  has "$f" 'literal.*ok.*true|ok.*true.*required' 'literal verification success required'
+  absent "$f" 'or when any.*file_pending.*exited 0' 'stop signal excludes stale filing success'
 done
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

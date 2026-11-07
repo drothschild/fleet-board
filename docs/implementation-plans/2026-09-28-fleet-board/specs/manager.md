@@ -154,7 +154,7 @@ Step 1 initializes the tick. The completion scheduler repeats steps 1a, 2, 3 and
 
 1a.4. A retry never files an item twice. Items already filed are skipped by `file-followups.sh`'s note-history and open-issue checks. Nothing reported is ever dropped: every item is filed or stays in `pending_followups`.
 
-1a.5. When any `file_pending` filing exits 0 in this tick, the tick report's last line is `dispatchable: true` (5.5).
+1a.5. A successful filing does not override the fresh final plan. Determine the stop signal only under 5.5.
 
 ### 2. Card actions
 
