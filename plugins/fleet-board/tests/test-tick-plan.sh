@@ -1283,6 +1283,21 @@ assert_jq "no_stages_no_next_lookup control: lookup failed (match runs first)" "
 assert_eq "no_stages_no_match_lookup: the stub ran match first" "$(sed -n 1p "$NEXT_STUB/next-calls")" "match 34"
 assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-calls" ] && echo called || echo none)" called
 
+provider_models='models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }
+  escalation: opus'
+zero_price='reviewer codex/gpt-6-astra has price 0; max_cost_usd does not count its spend'
+plan escalation-round2 "$provider_models"
+assert_exit "provider reviewer: planner exits 0" 0
+assert_jq "provider reviewer: passes merged object through" "$(card 12 models.reviewer)" '{"provider":"codex","model":"gpt-6-astra","price":{"input":0,"output":0},"timeout":1500}'
+assert_jq "provider reviewer: escalation applies to both writers" "$(card 12 models) | [.implementor,.fixer]" '["opus","opus"]'
+assert_jq "provider reviewer: only the zero price warning" '.warnings' "$(warns_json "$zero_price")"
+plan escalation-round2 "$provider_models
+  implementor: gpt-6-astra"
+assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | select(startswith("implementor and reviewer share model gpt-6-astra"))] | length' 1
+plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
+assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

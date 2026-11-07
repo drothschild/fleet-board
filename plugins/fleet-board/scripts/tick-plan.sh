@@ -681,6 +681,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
 
   $cfg.review.max_rounds as $max
   | $cfg.models as $m
+  | ($m.reviewer | if type == "object" then .model else . end) as $reviewer_model
 
   # The action table (AC1). $c is the card input, $n its note.
   | def decide($c; $n; $round):
@@ -776,7 +777,7 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
     # Models (AC6.2): from escalate_after_rounds on, implementor and fixer use
     # models.escalation, or the reviewer model when that is null
     | ($round >= $m.escalate_after_rounds) as $esc
-    | ($m.escalation // $m.reviewer) as $emodel
+    | ($m.escalation // ($m.reviewer | strings)) as $emodel
     | {implementor: (if $esc then $emodel else $m.implementor end),
        reviewer: $m.reviewer,
        fixer: (if $esc then $emodel else $m.fixer end)} as $models
@@ -833,11 +834,14 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
        (if $pre != "" then [$pre] else [] end)
-       + (if $m.implementor == $m.reviewer
+       + (if $m.implementor == $reviewer_model
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)
-       + (if $m.escalation != null and $m.escalation == $m.reviewer
+       + (if $m.escalation != null and $m.escalation == $reviewer_model
           then ["escalation and reviewer share model \($m.escalation); the escalated writer shares the reviewer'"'"'s blind spots"]
+          else [] end)
+       + (if ($m.reviewer | type) == "object" and $m.reviewer.price.input == 0 and $m.reviewer.price.output == 0
+          then ["reviewer \($m.reviewer.provider)/\($reviewer_model) has price 0; max_cost_usd does not count its spend"]
           else [] end)
        + [$cards[] | select(.action == "skip" and (.reason | startswith("lookup failed")))
           | "#\(.number): \(.reason)"]

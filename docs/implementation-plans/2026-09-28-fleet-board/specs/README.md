@@ -1907,6 +1907,7 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 **Revision cost:** $0.4933. **Running total, all API-key charges:** ~$42.47: Revision 17's ~$41.29, plus card 115's $0.0696 and Revision 18's $0.6183 (both counted in Revision 18's ~$41.13, which left out Revision 17), plus this revision.
 
 **Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
+
 ### Revision 20 (2026-11-06, card #175): helpers and fixtures outside test_paths in the reviewer agent
 
 **Cause.** `specs/reviewer.md` has carried the "Helpers and fixtures outside test_paths" bullet in its weakened-test step since PR #131, but `agents/reviewer.md` never got it. PR #176 first added it to the agent file by hand, which broke `tests/test-clean-room.sh`. The hand edit was dropped and the bullet authored by an isolated run.
@@ -1928,3 +1929,19 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Revision cost:** $0.1620. **Running total, all API-key charges:** ~$42.63 (~$42.47 at Revision 19 plus this run).
 
 **Merge with main (2026-11-06).** Written as Revision 19; main then recorded its own Revision 19 (PR #174), so this revision was renumbered 20, with its brief section and init evidence file (`r19` to `r20`). Main did not change `agents/reviewer.md` or `specs/reviewer.md` after this branch's merge-base, so this run's output stands unchanged. Plugin version 0.14.0 (main) to 0.14.1.
+
+### Revision 21 (2026-11-06, PR #217): command-provider evidence reviewer in the manager
+
+One approved isolated edit used `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits --max-turns 40` with a $1.50 CLI budget, strict MCP configuration, a fresh empty configuration directory, and stdin from `/dev/null`. The working directory was the plugin root. The only added directory held `edit-req.md` (hash `07cc754a9074311a`) and the manager spec copy (hash `14220cebb2e0dbb0`). Prompt hash `777d16b5b12c61d9`. Claude Code 2.1.319 used `claude-opus-5-5` and `apiKeyHelper`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/manager.md` | `417e66154bd561bf` | PASS | PASS (4 reads, 11 edits) | 16 | 0.4341 | `41799b377c411831` | `83a650e092885482` |
+
+The init event showed four built-in plugins, only Read and Edit, no namespaced skills, agents or commands, and no MCP servers. Reads were limited to the two staged inputs and the manager file. Every edit targeted the manager file. No tool call failed. Sanitized evidence is in `evidence/author-manager.r21.init.json`.
+
+The zero-context diff contains ten hunks, covering dispatch, concurrency, action routing, reconciliation, cost and provider restrictions. Frontmatter is unchanged. The manager evidence-review, manager stages, clean-room and clean-room manifest suites passed. A behavioral tick (13/13) and one live `gpt-6-astra` review were run afterwards, at `ebc3ab7`, and reported on PR #217.
+
+**Revision cost:** $0.4341. **Running total, all API-key charges:** ~$43.06 (~$42.63 at Revision 20 plus this run).
+
+**Merge with main (2026-11-06).** Written as Revision 20; main then recorded its own Revision 20 (card #175, PR #176), so this revision was renumbered 21, with its brief section and init evidence file (`r20` to `r21`). Main's Revision 20 changed only `agents/reviewer.md`, so this run's `agents/manager.md` output stands unchanged. Plugin version 0.14.1 (main) to 0.15.0.
