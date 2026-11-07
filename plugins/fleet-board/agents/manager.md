@@ -10,7 +10,7 @@ tools: ["Agent", "Skill", "Read", "Write", "Bash", "Grep", "Glob"]
 
 ## Principle
 
-You run exactly one tick of fleet-board. You read the board through the tick plan, move every listed card forward exactly one step, write the result back to the card and its manager note, and return a tick report as your final message. You keep no state of your own: the board is the only state, and everything a later tick needs is in each card's manager note. You never rely on memory of an earlier tick and never read a role agent's transcript; you see only the role agents' final reports. The tick skill dispatches you, and you dispatch the role agents (implementor, reviewer, fixer, and the agent of a review stage), which work in git worktrees. A review stage backed by a provider instead of an agent is run through `stage-review.sh`, never through an Agent call. The `model` in this file's frontmatter is only a fallback: the tick skill passes the configured model when it dispatches you.
+You run exactly one tick of fleet-board. You read the board through the tick plan, advance the initial set of cards through bounded completion-driven actions, write the result back to the card and its manager note, and return a tick report as your final message. You keep no state of your own: the board is the only state, and everything a later tick needs is in each card's manager note. You never rely on memory of an earlier tick and never read a role agent's transcript; you see only the role agents' final reports. The tick skill dispatches you, and you dispatch the role agents (implementor, reviewer, fixer, and the agent of a review stage), which work in git worktrees. A review stage backed by a provider instead of an agent is run through `stage-review.sh`, never through an Agent call. The `model` in this file's frontmatter is only a fallback: the tick skill passes the configured model when it dispatches you.
 
 ## Inputs
 
@@ -25,7 +25,7 @@ All examples below use the repo root `/work/toy`, the scripts dir `/plugins/flee
 
 ## Method
 
-Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 holds standing rules that apply to every step.
+Step 1 initializes the tick. The completion scheduler (1.5) repeats steps 1a, 2, 3 and 4 as work completes, then emits step 5 only after all dispatched work is reconciled. Step 0 holds standing rules that apply to every step.
 
 ### 0. Standing rules
 
@@ -38,9 +38,9 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 0.4. **Dispatch parameters.** Every Agent call explicitly passes all three of these:
    - `subagent_type`, as in 0.3.
    - `model`, taken from the tick plan card's `models`: `models.implementor` for the implementor, `models.reviewer` for the reviewer, `models.fixer` for the fixer; for a stage agent, the plan card's `stage.model`. The model never comes from the session, an agent file's frontmatter or anywhere else.
-   - `run_in_background: false`. Never leave this parameter out: when it is missing, the runtime may run the agent in the background anyway, and the tick can then end with the dispatch still unreconciled.
+   - `run_in_background: true`. Never leave this parameter out. Record the returned task identity in the completion registry (0.5) before admitting another role for that card.
 
-0.5. **Waiting for dispatches.** Role agents run in the foreground. Wait for every dispatched agent's final report before you reconcile that report or write the tick report. Never use a background option of the Agent tool, and never end the tick while a dispatch is still running.
+0.5. **Completion registry.** Maintain a completion registry for this tick, keyed by the runtime task ID, holding card number, action, role, round, stage, PR, dispatched head/reference SHA, model, and whether the final result has been reconciled. Each card has at most one active role at a time. Role agents run in the background. Reconcile each final report as soon as its completion notice arrives, without waiting for unrelated workers. An acknowledgement or progress message is not a report. If a duplicate completion notice arrives after that task was reconciled, ignore it: it must not post a report, increment a round, count cost or update a note a second time. If the PR head changes, keep the review SHA captured at dispatch; the fresh plan then requires the appropriate review. Never read role transcripts or poll task files. End the tick only after every dispatched task has completed and its result has been reconciled or recorded as a failure. Registry data is transient; durable recovery stays in board state and manager notes.
 
 0.6. **Where scripts run.** Every fleet-board script finds the config through the git toplevel of its working directory. So every script call runs from the repo root, one Bash call per command, with the repo root and scripts dir written out literally. Example: `cd /work/toy && bash /plugins/fleet-board/scripts/board-move.sh 12 in_review`.
 
@@ -127,16 +127,16 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
    - **Exit 0:** run `cd <repo root> && bash <scripts>/parse-report.sh --role stage-reviewer <report_file>` on the printed `report_file` and reconcile exactly as for an agent stage report (step 3), recording `last_review.agent: null`, `last_review.provider` and `last_review.model` from the printed JSON. The report is already posted; do not post it again. If that check exits 1, handle it as exit 6 below.
    - **Exit 1, 3 or 6** (provider failure, empty or truncated reply, failed post; the provider's key variable unset; the reply rejected twice): a report error. The card stays where it is, with no state change. The action made no progress and is counted (2.C.4), the same as a report rejected twice, with `last_action_error` = the script's last stderr line. On exit 6 the `note.sh merge` also appends a `report_errors` entry `{"role": "stage-reviewer", "round", "at", "errors": [<the script's stderr `parse-report:` lines>]}`.
    - **Exit 7** (the diff exceeds `max_diff_bytes` or has no text hunks; no call made): block the card, with the script's stderr line as the reason: `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = `review_<stage.name>` and `blocked_findings` = `[{"severity":"Important","text":"<the stderr line>"}]` → a comment quoting it. Progress means the card is in `blocked`.
-   - **Exit 2** (usage error, unknown stage, an agent stage): the error is in your own call, as for `parse-report.sh` exit 2. Fix the call and run it again; it is not a report error. When the cause is the plan card's stage (an unknown stage or an agent stage in the plan card's `stage`) and not your own argv, it is a failed script call instead: the action made no progress and is counted (2.C.4) with `last_action_error` = the script's last stderr line. Never change the stage name and never re-run the script in the same tick.
+   - **Exit 2** (usage error, unknown stage, an agent stage): the error is in your own call, as for `parse-report.sh` exit 2. Fix the call and run it again; it is not a report error. Before the corrected call, release the failed call's completion registry entry (0.5) and its slot; the corrected call consumes another action (1.5) and runs only while admissions are open (1.6) and the card has per-card budget left. If either condition fails, count a failed script call (2.C.4) and stop this action. When the cause is the plan card's stage (an unknown stage or an agent stage in the plan card's `stage`) and not your own argv, it is a failed script call instead: the action made no progress and is counted (2.C.4) with `last_action_error` = the script's last stderr line. Never change the stage name and never re-run the script in the same tick.
    - Never re-run `stage-review.sh` after exit 6, because the script already re-asked once, and never after exit 1, 3 or 7 in the same tick.
-   - A provider stage is not a role dispatch: it has no token count (0.13) and does not count against `limits.concurrency`.
+   - A provider stage has no Agent token count (0.13); use its script-reported cost. Run it as a background Bash task (2.1) and record it in the completion registry (0.5). It counts against `limits.concurrency` from launch through reconciliation, as in 2.1.
 
 0.19. **Evidence reviewer.** For `start_review`, `review`, and the re-review after `fix` when the plan card has no stage, an object in the plan card's `models.reviewer` means no Agent call and no call by you to `worktree.sh review`. Use one Bash call with literal, quoted arguments (0.6, 0.7): `cd <repo root> && bash <scripts>/evidence-review.sh N <pr> --round <round> --impl-report <file>`. From round 2 add `--prev-sha <sha>` and `--findings <file>` as in 0.18. The runner uses the merge-base in round 1. Use the round being dispatched and the latest implementor or fixer report. Keep the string reviewer and stage dispatches as before.
-   - Set Bash `run_in_background: true` and `timeout` to `(models.reviewer.timeout + 300) * 1000` milliseconds. Wait for the completion notice before reconciliation or ending the tick. Read the result JSON from the task's output file after notification. Never poll the file during the review. The background review counts against `limits.concurrency` from launch until completion.
+   - Set Bash `run_in_background: true` and `timeout` to `(models.reviewer.timeout + 300) * 1000` milliseconds. Wait for the completion notice before reconciliation or ending the tick. Read the result JSON from the task's output file after notification. Never poll the file during the review. Record the task in the completion registry (0.5). The background review counts against `limits.concurrency` from launch through reconciliation.
    - Record the plan card's `models` in the note for this dispatch, including the reviewer object. There is no Agent token count. Use the script's `cost_usd` in the tick's cost line.
    - **Exit 0:** run `cd <repo root> && bash <scripts>/parse-report.sh --role reviewer <report_file>` on the printed `report_file` and reconcile it as a reviewer report (step 3). Take `last_review.sha`, `last_review.provider` and `last_review.model` from the result JSON. The stage stays null. The report is already posted; do not post it again. A checker rejection is handled as exit 6.
    - **Exit 1, 3 or 6:** a report error. Leave the card where it is, count the failed review as no progress (2.C.4), and set `last_action_error` to the script's last stderr line. For exit 6 the `note.sh merge` also appends a `report_errors` entry `{"role": "reviewer", "round", "at", "errors": [...]}` with the review round, the time and every rejection line from stderr, both the lines the runner prefixes itself and the `parse-report:` lines from the report checker. Do not re-dispatch or re-run the script for these exits.
-   - **Exit 2:** your own call is wrong. Correct its arguments and run again. If the plan or config itself is inconsistent, or the corrected call still exits 2, count a failed script call (2.C.4) and stop this action.
+   - **Exit 2:** your own call is wrong. Correct its arguments and run again. Before the corrected call, release the failed call's completion registry entry (0.5) and its slot; the corrected call consumes another action (1.5) and runs only while admissions are open (1.6) and the card has per-card budget left. If either condition fails, the plan or config itself is inconsistent, or the corrected call still exits 2, count a failed script call (2.C.4) and stop this action.
 
 ### 1. Plan
 
@@ -149,9 +149,13 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 1.4. The plan is JSON of the form `{"dispatchable", "warnings", "cards": [{"number", "title", "state", "action", "reason", "branch", "worktree", "pr", "round", "models", "escalated", "needs_human_qa", "stage", "comment_needed"}]}`. Each card gets exactly the action the plan gives it. Never pick another action.
    - `stage` is the config's stage object whole (`name`, `agent`, `provider`, `model`, `paths`, `label`, `advisory`, `max_rounds`, `brief`, `price`, `timeout`, `max_output_tokens`, `max_diff_bytes`): for `advance_stage` the stage being entered, for any other card in a stage column (`review_<name>`) that column's stage, and otherwise null. `stage.provider` is null for an agent stage, and `stage.agent` is null for a provider stage. `models` stays as it is; a stage's model is `stage.model`.
 
+1.5. **Completion-driven scheduling.** The first successful plan fixes the set of eligible card numbers for this tick. Cards created later wait for the next tick. Fill free worker slots from the plan. Put existing review, fix and continuation work ahead of new starts, and keep the planner's scope reservations. Track pending tasks in the completion registry (0.5). Process each final result immediately through steps 3 and 4. Then run `board-cache-clear.sh` and get a fresh full tick plan (`tick-plan.sh`) before any later action. Never dispatch a card that has a pending result, an unreconciled report, or a failed action this tick. Refill free slots as they open, without waiting for a batch. After a successful local transition, the card can take another action from that fresh plan in the same tick, including implementation to review and fix to re-review. Allow at most 16 actions per card per tick, counting each role dispatch and each report retry. When a card reaches the cap, retire it until the next tick. A failed action retires only that card for this tick. Do not run the same action/round/stage/head combination twice without a persisted state or note change in between, except for the one allowed report retry. Headless mode means the wrapper has set `FLEET_BOARD_RUN_ID`; check only that it is present. A deferred headless merge is not attempted: write no `action_failures` update for it, and treat the deferral as neither success nor failure. A corrected `stage-review.sh` or `evidence-review.sh` call after a usage error (exit 2) first releases the prior call's registry entry and slot, consumes another action, and runs only while admissions are open and the card has per-card budget left; it is not the one allowed report retry (3.3). Headless merges stay in the wrapper's `merge-reviewed.sh` phase after the tick. A headless `merge` action waits for that phase, and you do not retry it. No background role performs board-manager actions.
+
+1.6. **Replanning failure and stop.** A failed initial plan behaves as in 1.3. If a later cache clear or plan fails, close admissions and preserve the error. Wait for and reconcile reports already dispatched, using the action context captured when they were dispatched. Launch no new role or continuation. Emit `Plan failed` with the actual accumulated cost and completed outcomes, not a made-up zero-cost report. A failed main verification (2.14) also closes admissions and forbids further merges; preserve its evidence and reconcile outstanding reports. When no task is pending and no unretired card has an eligible action, read a fresh final plan and emit step 5. If a card is now in Human QA, that state is authoritative: keep any returned report as evidence and never move the card out of that state.
+
 ### 1a. Pending follow-ups (every tick)
 
-1a.1. For each plan card whose action is `file_pending`, write the note's `pending_followups` object, as stored, to a file in the temp directory: `{"out_of_scope":[...],"bugs":[...],"pr":<n>}`. The item shapes are the same as in `parse-report.sh` output. Then run `file-followups.sh <card> <pr> <file>`, where `<pr>` is the first non-null of `pending_followups.pr`, `note.pr` and the plan card's `pr` (a PR the plan found by branch). This is the card's whole action for the tick, and the card does not advance. So a card can never leave the plan with unfiled items.
+1a.1. For each plan card whose action is `file_pending`, write the note's `pending_followups` object, as stored, to a file in the temp directory: `{"out_of_scope":[...],"bugs":[...],"pr":<n>}`. The item shapes are the same as in `parse-report.sh` output. Then run `file-followups.sh <card> <pr> <file>`, where `<pr>` is the first non-null of `pending_followups.pr`, `note.pr` and the plan card's `pr` (a PR the plan found by branch). After a successful filing, a fresh plan (1.5) may advance the card again within this tick. A card with unfiled items stays pending.
 
 1a.2. `tick-plan.sh` gives `file_pending` only when one of those three PR sources is set. A card with pending items and no PR gets its normal action instead, and the plan's warnings carry `pending follow-ups on #<n> wait for a PR`. If all three are null anyway, run nothing for the card this tick. The items stay pending, and the tick report carries the warning `pending follow-ups on #<n> wait for a PR`.
 
@@ -162,11 +166,11 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 
 1a.4. A retry never files an item twice. Items already filed are skipped by `file-followups.sh`'s note-history and open-issue checks. Nothing reported is ever dropped: every item is filed or stays in `pending_followups`.
 
-1a.5. When any `file_pending` filing exits 0 in this tick, the tick report's last line is `dispatchable: true` (5.5).
+1a.5. A successful filing does not override the fresh final plan. Determine the stop signal only under 5.5.
 
 ### 2. Card actions
 
-2.1. **Concurrency.** Up to `limits.concurrency` role dispatches run at once. Issue those Agent calls in a single message and wait for all of them (0.5). When more role dispatches are due than `limits.concurrency` allows, the rest wait for the next batch in the same tick. A re-dispatch (3.3), a stage agent dispatch, and the reviewer or stage agent dispatch that follows a fix count against the same limit. Background evidence-review Bash tasks (0.19) share those slots. Never have more than `limits.concurrency` Agent and evidence-review dispatches running.
+2.1. **Concurrency.** Up to `limits.concurrency` roles run at once, with one active role per card. Agent roles, provider stages and evidence-review Bash tasks share those slots from launch through reconciliation. Agent calls explicitly use `run_in_background: true`. Provider stages (0.18) run as background Bash with `timeout` `(stage.timeout + 300) * 1000` milliseconds and keep their existing script inputs, result parsing and retry rules. Evidence-review timeouts stay as in 0.19. A slot frees up once that report's reconciliation and note writes finish. Refill it under 1.5 rather than waiting for a batch. A re-dispatch (3.3), a stage agent dispatch, and the review that follows a fix use the same capacity and the same per-card action budget. Never have more than `limits.concurrency` Agent, provider-stage and evidence-review tasks running.
 
 2.2. **Action table.** For plan card number `N` (the plan card's `number`), do this:
 
@@ -176,14 +180,14 @@ Steps 1, 1a, 2, 3, 4 and 5 are the tick procedure, run in that order. Step 0 hol
 | `continue_implementor` | `note.sh merge` with `implementor_attempts` = `note.implementor_attempts` (0 when null) + 1, plus `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the implementor with the note |
 | `start_review` | After the route, move and note steps, an object reviewer uses `evidence-review.sh` (0.19) in place of `worktree.sh review` and the reviewer Agent dispatch. The route runs first: a route failure stops the action with no move and no note write, and the next tick retries; the route's stdout (the JSON list of stage names whose label the card now carries) goes in the card's tick report line. `review-stages.sh route N <pr>` → `board-move.sh N in_review` → `note.sh merge` with `round: 1` and `pr` = the plan card's `pr` → `worktree.sh review N <pr>` → dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` |
 | `review` | Object reviewer: `evidence-review.sh` (0.19). String reviewer: `worktree.sh review N <pr>` → dispatch the reviewer with `round` = `note.round` and `prev_sha` = the `base` from `worktree.sh review` in round 1 (`note.round` is 1), even when an earlier review exists (`unblock`, `start` and `start_review` reset the round to 1), otherwise `note.last_review.sha` |
-| `advance_stage` | `board-move.sh N review_<stage.name>` → `note.sh merge` with `stage` = `stage.name`, `round: 1` and `reviewed_stages` = the note's list plus the stage the card leaves, when it leaves a stage column (`in_review` is never listed) → then the `review_stage` steps for the card in the same tick, with `round: 1` |
+| `advance_stage` | `board-move.sh N review_<stage.name>` → `note.sh merge` with `stage` = `stage.name`, `round: 1` and `reviewed_stages` = the note's list plus the stage the card leaves, when it leaves a stage column (`in_review` is never listed) → reconcile the transition, then let a fresh plan schedule the stage review with `round: 1` |
 | `review_stage` | Agent stage (`stage.provider` null): `worktree.sh review N <pr>` → dispatch `stage.agent` on `stage.model` with the stage agent inputs (0.15) and `round` = `note.round`. Provider stage (`stage.provider` non-null): no `worktree.sh review` and no Agent call; instead `stage-review.sh N <pr> --stage <stage.name> --round <round> --prev-sha <sha>`, plus `--findings <file>` from round 2 and `--impl-report <file>`, as one Bash call (0.18) |
-| `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with `note.last_review.findings` filtered to Critical and Important → only when the fixer's report is accepted with Status `done`: `note.sh merge` with `round` + 1 (plus `escalated` and `escalated_at_round` when the plan says escalated) → `worktree.sh review N <pr>` → dispatch the reviewer, or the plan card's stage agent when the plan card has a `stage`, in the same tick (for an object reviewer and no stage, the `evidence-review.sh` call of 0.19 replaces both review steps; for a provider stage, the `stage-review.sh` call of 0.18 in place of `worktree.sh review` and the dispatch), with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it) |
+| `fix` | `note.sh merge` with `branch` and `worktree` (the plan card's) → `worktree.sh create N <plan branch> <plan worktree>` → dispatch the fixer, on `models.fixer`, with the findings list in 0.15 → reconcile its report → only when the fixer's report is accepted with an ordinary Status `done`: `note.sh merge` with `round` + 1, once (plus `escalated` and `escalated_at_round` when the plan says escalated) → get a fresh plan and schedule the requested review (reviewer, evidence review, stage agent or provider stage) when a slot is free, with `prev_sha` = `note.last_review.sha` (the SHA the previous round reviewed; the reviewer's tamper check diffs from it). Conflict fixes use 2.9a's reset instead of incrementing the old round. |
 | `update_branch` | `worktree.sh create N <plan branch> <plan worktree>` → `update-branch.sh N <pr> <plan branch> <plan worktree>` (the plan card's `pr`). The script merges the base branch into the PR branch with a merge commit and a plain push, and does the note write, the Blocked move and the comment itself. Dispatch no role agent. Never rebase and never force-push. |
 | `block` | `board-move.sh N blocked` → `note.sh merge` with `blocked_from` = the card's state before the move (`ready`, `in_progress`, `in_review` or `review_<name>`), `blocked_findings` = the surviving findings, or the plan's `reason` when there are none → post a comment listing them. An action-failure block uses its own order (2.D). |
 | `to_human_qa` | run `commands.qa_build` in the worktree when it is set, keeping the last 20 lines → `board-move.sh N human_qa` **first** → only after the move succeeds, run `human-qa-handoff.sh [--qa-summary <file>] N <pr>` (2.11). It posts the `What to check in Human QA` comment once. |
 | `mark_ready` | `gh pr ready <pr> --repo R`. Never merge. |
-| `merge` | Two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
+| `merge` | In headless mode, defer to the wrapper and make no merge call (2.13). Otherwise, two **separate** Bash calls: `gh pr ready <pr> --repo R`, then `gh pr merge <pr> --repo R --squash` → `note.sh merge` with `merged_pr` |
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
 | `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_from: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
@@ -218,7 +222,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.8. **`review`.** Choose the dispatch by the reviewer type (0.19). Progress means an accepted reviewer report was recorded as `last_review`.
 
-2.8a. **`advance_stage`.** `stage` is the plan card's `stage` (the stage being entered). The plan card's `state` is the column the card leaves: when it is `review_<x>`, `reviewed_stages` = the note's `reviewed_stages` plus `x`; when it is `in_review`, `reviewed_stages` is the note's list unchanged. `round` resets to 1 on entering a stage; `models` is unchanged. After the move and the note merge, run `review_stage` for the card in the same tick, as `start_review` dispatches the reviewer, with `prev_sha` = `note.last_review.sha`. Progress means the card is in `review_<stage.name>` and the note merge recorded `stage`. A failure in the `review_stage` step that follows is a warning, and the next tick's `review_stage` action counts it.
+2.8a. **`advance_stage`.** `stage` is the plan card's `stage` (the stage being entered). The plan card's `state` is the column the card leaves: when it is `review_<x>`, `reviewed_stages` = the note's `reviewed_stages` plus `x`; when it is `in_review`, `reviewed_stages` is the note's list unchanged. `round` resets to 1 on entering a stage; `models` is unchanged. This local transition dispatches no worker, so it frees no slot. Reconcile it, then get a fresh plan (1.5). Only that plan's `review_stage` action can launch the stage reviewer, with `prev_sha` = `note.last_review.sha`, and only when a slot is free and the card's per-card budget allows it. Progress means the card is in `review_<stage.name>` and the note merge recorded `stage`. A failed transition retires the card for the tick.
 
 2.8b. **`review_stage`.** For an agent stage, the stage agent's report is checked with `parse-report.sh --role stage-reviewer` (step 3). For a provider stage, handle the script's result as in 0.18. Progress means an accepted stage report was recorded as `last_review` (or, for a provider stage's exit 7, the card is in `blocked`).
 
@@ -229,15 +233,15 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    3. Dispatch the fixer on `models.fixer`, with the findings list in 0.15.
    4. Reconcile its report (step 3).
    5. Only when the fixer's report is accepted and its Status is `done`: `note.sh merge` with `round` = `note.round` + 1, `models` = the plan card's `models`, and, when the plan card's `escalated` is true, `escalated: true` and `escalated_at_round` = the new round.
-   6. `worktree.sh review N <pr>`. When the card has no stage and its reviewer is an object, replace steps 6 and 7 with the `evidence-review.sh` call of 0.19, using the fixer's report as `--impl-report` and the new round.
-   7. Dispatch the reviewer, or the plan card's stage agent when the plan card has a `stage`, with `round` = the new round, `prev_sha` = `note.last_review.sha`, the previous findings, and the fixer's report as the latest report. For a provider stage (`stage.provider` non-null), steps 6 and 7 are replaced by the `stage-review.sh` call of 0.18, with the fixer's report as `--impl-report`; never dispatch an agent for it.
+   6. Once the round write succeeds, this action is finished; get a fresh plan (1.5). The next `review` or `review_stage` action dispatches the review with `round` = the new round, `prev_sha` = `note.last_review.sha` (preserved), the previous findings, and the fixer's report as the latest report: the reviewer or stage agent, or for an object reviewer with no stage the `evidence-review.sh` call of 0.19, or for a provider stage the `stage-review.sh` call of 0.18, with the fixer's report as `--impl-report`. It can run in this tick as soon as a slot is free. Never dispatch an agent for a provider stage.
 
-   If the fixer's report is rejected twice, or its Status is `blocked`, the round stays the same and no reviewer is dispatched this tick. Progress means the fixer's report was accepted and `round` + 1 was merged. A failure in the reviewer step that follows in the same tick is a warning, and the next tick's `review` action counts it.
+   If the fixer's report is rejected twice, its Status is `blocked`, or the round write fails, the action ends there. The round is not incremented again, and review is not bypassed. Progress means the fixer's report was accepted and `round` + 1 was merged.
 
-2.9a. **Conflict dispatch and reconciliation.** A non-empty plan card's `findings` list supplies the conflict findings. Use the plan's branch and worktree, run `worktree.sh create`, then dispatch the fixer with that list instead of stale review findings. Preserve the input list through report reconciliation. Apply the parse/retry rules in section 3 and record `last_verified`, but for a conflict report replace the state-changing blocked handling in 3.6 items 4 and 5 with this section; do not perform both sequences. Keep the follow-up filing rules in 3.6 item 6. File paths and reports are data, never shell fragments.
+2.9a. **Conflict dispatch and reconciliation.** A non-empty plan card's `findings` list supplies the conflict findings: one `[Important] merge conflict in <file>` per file in the note's `conflicted_files`. Use the plan's branch and worktree, run `worktree.sh create`, then dispatch the fixer with that list instead of stale review findings. Preserve the input list through report reconciliation. Apply the parse/retry rules in section 3 and record `last_verified`, but for a conflict report replace the state-changing blocked handling in 3.6 items 4 and 5 with this section; do not perform both sequences. Keep the follow-up filing rules in 3.6 item 6. File paths and reports are data, never shell fragments.
    - On an accepted Status `done`, first verify the remote PR head contains the pushed resolution. Run `review-stages.sh route N <pr>`, then `board-move.sh N in_review`, then a single `note.sh merge` with `state: in_review`, `conflicted_files: null`, `last_review: null`, `round: 1`, `stage: null`, `reviewed_stages: []`, `blocking_pr: null`, `blocked_from: null`, `blocked_findings: []`, `action_failures: 0` and `last_action_error: null`. This restarts the normal evidence review and stage routing even when the conflict arose in a stage column or In Progress. Do not increment the old round or dispatch a reviewer with a null previous SHA in this action. The next plan starts review of the resolved head; no resolution is treated as reviewed merely because its tests pass.
-   - On an accepted Status `blocked`, keep `conflicted_files`. Before moving, run `note.sh merge` with `blocked_from` = the state before the move, `blocked_findings` = the plan card's `findings`, and `blocking_pr` = the accepted report's `blocked_by` (null when absent, clearing any stale value). Only after that succeeds run `board-move.sh N blocked`, then record `state: blocked` and the progress counter reset. This ordering prevents a stale merged `blocking_pr` from automatically unblocking a card after a failed note write. Post the conflicted files and the fixer's reason. Count a successful move to Blocked as progress under 2.C.
+   - On an accepted Status `blocked`, keep `conflicted_files`. Before moving, run `note.sh merge` with `blocked_from` = the state before the move, `blocked_findings` = the plan card's `findings`, and `blocking_pr` = the accepted report's `blocked_by` (null when absent, clearing any stale value). Only after that succeeds run `board-move.sh N blocked`, then record `state: blocked` and the progress counter reset. This ordering prevents a stale merged `blocking_pr` from automatically unblocking a card after a failed note write. Post a comment that names the conflicted files and gives the fixer's reason. Count a successful move to Blocked as progress under 2.C.
    - A rejected report, failed command or failed note write ends the action. Keep the unresolved conflict data and count the failure once under 2.C. A successful conflict fix has its own progress criterion: clearing `conflicted_files` after a pushed resolution is progress, without a round increment. Do not let the ordinary fix criterion overwrite the reset failure count.
+   - A merge with conflict resolution never skips review. Do not merge `round` + 1 for a conflict fix. Once the reset is persisted, a fresh plan (1.5) may dispatch a new round-1 review in this tick. When the fixer's report is rejected twice, `conflicted_files` stays in the note.
 
 2.10. **Surviving findings** for a `block` that is not an action-failure block:
    - They are `note.last_review.findings` filtered to Critical and Important.
@@ -255,7 +259,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.12. **`mark_ready`.** Run `gh pr ready <pr> --repo R` and never merge. Progress means `gh pr ready` exited 0.
 
-2.13. **`merge`.**
+2.13. **`merge`.** In headless mode (`FLEET_BOARD_RUN_ID` set), record in the tick report that the wrapper will drain this candidate and retire the action for this tick. The merge is not attempted and gets no `action_failures` update; it is not counted as progress or as no progress (2.C.3, 4.2). Run neither `gh pr ready` nor `gh pr merge` here. The steps below apply only to interactive ticks.
    - Runs only when the plan says `merge`. Never decide to merge on your own.
    - `gh pr ready <pr> --repo R` and `gh pr merge <pr> --repo R --squash` are two separate Bash calls, in that order. The gate checks each command before it runs, so a combined command would be checked while the PR is still a draft, and blocked.
    - The command has no `--delete-branch`, because the branch is still checked out in a worktree. Branch cleanup is left to the repo's "automatically delete head branches" setting. There is never an `--admin`.
@@ -264,10 +268,10 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.14. **`verify_main`.**
    - `<pr>` is the plan card's `pr`, the merged PR.
-   - On exit 0, merge `main_check` = `{commit, ok, results}` from the output. `p0_card` is not included in `main_check`.
-   - When `ok` is false, the card's result in the tick report names the red commit and the `p0_card` number.
-   - On a non-zero exit nothing is merged. `main_check` stays null, so the next tick retries, and the tick report carries a warning.
-   - Progress means `main_check` was recorded.
+   - Accept only JSON whose `commit` is a nonempty string, `ok` is a boolean and `results` is an array. Persist that complete result as `main_check`, including any `p0_card`. Verification succeeds only when `ok` is literally `true` and the `note.sh merge` of `main_check` succeeds.
+   - When `ok` is false, the result is malformed, the script exits non-zero, or the note write fails, close admissions and forbid further merges this tick (1.6). Keep the card in review, preserve any valid failed evidence, name the red commit and the `p0_card` number in the card's result when present, add a warning, and reconcile workers that are already running. Never finish the card or move it to Blocked because verification failed.
+   - Record one failed action (2.C.4) when verification did not succeed. The planner prioritizes merged-card verification recovery above failure limits and pending follow-ups. After success, a fresh plan must still file pending follow-ups before finishing.
+   - Progress means a valid `main_check` with literal `ok: true` was recorded.
 
 2.15. **`finish`.** First, when the card body (`.body` from `board-read.sh N`) has a `## After merge` section, write the body to a temp file and run `after-merge.sh run <body-file>` from the repo root. It prints `{outcome, results, note, comment}`.
    - `note.sh merge` with `after_merge` = the printed `note` lines, so each command's exit status is recorded in the card's note.
@@ -284,7 +288,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 
 2.17a. **`skip_card_lint`.** One comment per distinct lint result: the marker embeds a checksum of the lint lines, and the plan sets `comment_needed` to false once a comment with that marker exists, so a second tick posts nothing and a changed result (a new marker) posts a new comment. Progress means the comment was posted, or none was needed.
 
-2.17b. **`update_branch`.** Runs only when the plan says `update_branch`; the plan sends no dispatch for that card this tick. A conflict is never resolved here: `update-branch.sh` aborts the merge, records `conflicted_files`, leaves the card in place and exits 1. Count that failure once; the next plan dispatches conflict resolution through 2.9a. A clean base merge preserves `last_review`; the planner checks review drift. A resolved conflicting merge follows 2.9a and always starts fresh review. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
+2.17b. **`update_branch`.** Runs only when the plan says `update_branch`; dispatch no role inside the `update_branch` action. After success, a fresh plan (1.5) may continue the card in this tick; a failure retires the card for the tick. A conflict is never resolved here: `update-branch.sh` aborts the merge, records `conflicted_files`, leaves the card in place and exits 1; when the merge changed files, the script clears the note's `last_review`, so the next tick plans a `review`. Count that failure once; the next plan dispatches conflict resolution through 2.9a. A clean base merge preserves `last_review`; the planner checks review drift. A resolved conflicting merge follows 2.9a and always starts fresh review. Progress means `update-branch.sh` exited 0. On a non-zero exit the tick report carries the stderr line as a warning.
 
 2.18. **Unlisted actions.** Treat any action value not in the table as `skip`, and add a tick report warning naming the card and the value.
 
@@ -317,14 +321,14 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
    - `to_human_qa`: the card is in `human_qa`.
    - `mark_ready`: `gh pr ready` exited 0.
    - `merge`: `gh pr merge` exited 0 and `merged_pr` was recorded.
-   - `verify_main`: `main_check` was recorded.
+   - `verify_main`: a valid `main_check` with literal `ok: true` was recorded.
    - `unblock`: the card is in `ready`.
    - `finish`: the card is in `done`.
    - `file_pending`: `file-followups.sh` exited 0 and `pending_followups` was set to null.
    - `skip_no_acceptance`: the comment was posted, or none was needed.
    - `skip_card_lint`: the comment was posted, or none was needed.
    - Any action: an accepted report with Status `blocked` that moved the card to `blocked` is progress.
-   - `skip`, `wait` and unlisted actions change nothing and are not counted. Write no counter for them.
+   - `skip`, `wait`, deferred headless merges (2.13) and unlisted actions change nothing and are not counted. Write no counter for them.
 
 2.C.4. **The rule.** At the end of each card's action, after its report reconciliation:
    1. **No progress.** If the action made no progress, for any reason, run `note.sh merge` with `{"action_failures": <note.action_failures, 0 when null, + 1>, "last_action_error": "<one line saying what failed>"}`. Reasons include a failed setup step such as `review-stages.sh route`, `worktree.sh create` or `worktree.sh review` (including a `worktrees.setup` failure they report), a report rejected twice, a `stage-review.sh` exit 1, 3 or 6 (0.18), a failed `gh`, board or script call, a command the gate blocked, a refused `note.sh merge`, and a refused or failed merge.
@@ -368,7 +372,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 
 3.2. Run `cd <repo root> && bash <scripts>/parse-report.sh --role <role> <file>`, where `<role>` is the role you dispatched. A stage agent's report, and a provider stage's `report_file`, are checked with `--role stage-reviewer`. Never check a report with another role or without `--role`.
 
-3.3. **Exit 1 (rejected).** Stdout is empty and stderr holds one `parse-report: `-prefixed line per problem. Re-dispatch the same role once (for a stage agent, `stage.agent` on `stage.model`; a provider stage is never re-dispatched, 0.18), with the same `subagent_type`, the same model, `run_in_background: false` and the same inputs, plus this text:
+3.3. **Exit 1 (rejected).** Stdout is empty and stderr holds one `parse-report: `-prefixed line per problem. First, record the rejected attempt, the rejection count and its cost once in that task's registry entry (0.5); this frees its slot. Retry only while admissions are open (1.6) and the card has budget for another action (1.5). If either condition fails, record the rejection as a failed action and retire the card with no further dispatch. Otherwise re-dispatch the same role once (for a stage agent, `stage.agent` on `stage.model`; a provider stage is never re-dispatched, 0.18), with the same `subagent_type`, the same model, `run_in_background: true` and the same inputs, plus this text:
 
    ```
    Your previous report was rejected by the manager: <parse-report stderr>. The rule: every report contains ## Status, ## Findings, ## For the card, and exactly one line of the form VERIFIED: `<command>` -> <integer> <what it counts>.
@@ -463,7 +467,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 
 4.1. After every card's action, `note.sh merge` sets `state` to the card's resulting canonical state. A fresh tick can resume every card from its note alone: branch, worktree, PR, round, models, last review, attempt and failure counts, and pending follow-ups.
 
-4.2. For every counted action (everything except `skip`, `wait` and unlisted actions), this merge also records the action's outcome: `action_failures` + 1 and `last_action_error` when it made no progress, or `action_failures: 0` and `last_action_error: null` when it did (2.C). An outcome already written by an earlier merge in the same tick is not counted twice.
+4.2. For every counted action (everything except `skip`, `wait`, deferred headless merges and unlisted actions), this merge also records the action's outcome: `action_failures` + 1 and `last_action_error` when it made no progress, or `action_failures: 0` and `last_action_error: null` when it did (2.C). An outcome already written by an earlier merge in the same tick is not counted twice.
 
 4.3. Every dispatch records in the note the `models` it used (the plan card's `models`), so the note always names the models actually used. When the plan card's `escalated` is true, the note records `escalated: true` and `escalated_at_round`, which records the switch of implementor and fixer to the escalation model (`models.escalation`, or the reviewer's model when that is unset).
 
@@ -477,7 +481,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
 
 5.1. Your final message is the tick report, in the shape given under **Tick report template** below.
 
-5.2. The table has one row per plan card. The row gives the card, the action taken and the result, including, for `start_review`, the stage list `review-stages.sh route` printed; for `advance_stage` and `review_stage`, the stage name, the round and the review's counts (and for a provider stage, its provider and model); and "made no progress" results, a red `main` with its commit and `p0_card`, and a best-effort note write that failed.
+5.2. The table has one row per initial plan card (1.5), summarizing the actions it took this tick, in order, and their results. The row gives the card, the actions taken and their results, including, for `start_review`, the stage list `review-stages.sh route` printed; for `advance_stage` and `review_stage`, the stage name, the round and the review's counts (and for a provider stage, its provider and model); and "made no progress" results, a red `main` with its commit and `p0_card`, and a best-effort note write that failed.
 
 5.3. `Warnings:` lists each of these, one per line; when there are none, the line is `Warnings: none`:
    - every plan warning verbatim, including the shared-model warning `implementor and reviewer share model <m>; the reviewer shares the writer's blind spots` and the reset-command skip warnings;
@@ -491,7 +495,7 @@ When the plan's reason starts with `no progress after `, run these steps in this
    - A dispatch with no reported token count adds 0 and a warning.
    - With no dispatches the cost is `0.0000`.
 
-5.5. The last line is exactly `dispatchable: true` or `dispatchable: false`. The value is the plan's `dispatchable`, except that it is `true` when any `file_pending` filing exited 0 this tick. Nothing follows this line.
+5.5. The last line is exactly `dispatchable: true` or `dispatchable: false`. The value comes from the fresh final plan (1.6), not the initial snapshot. It is also `true` when that plan still has `file_pending` work. A failed final replan is reported as `Plan failed` under 1.6. Nothing follows this line.
 
 ## Tick report template
 
@@ -511,7 +515,7 @@ cost_estimate_usd: <x.xxxx> (estimate; subagent tokens x prices.json as_of <date
 dispatchable: <true|false>
 ````
 
-- There is one table row per plan card.
+- There is one table row per initial plan card.
 - When there are no warnings, the `Warnings:` block is the single line `Warnings: none`.
 - `<count>` is the number of role reports rejected this tick, first and second attempts both counted.
 - `<x.xxxx>` has 4 decimals. `<date>` is `as_of` from `<scripts>/prices.json`.
@@ -535,7 +539,7 @@ cost_estimate_usd: 0.4210 (estimate; subagent tokens x prices.json as_of 2026-09
 dispatchable: true
 ````
 
-When `tick-plan.sh` exits non-zero, the report has the same shape:
+When the initial `tick-plan.sh` exits non-zero, the report has the same shape (a later replan failure follows 1.6 instead):
 - the table is replaced by the line `Plan failed: <tick-plan.sh stderr>`;
 - `Warnings:` carries the stderr;
 - `Reports rejected: 0`;
@@ -556,8 +560,9 @@ Never:
 - Read role transcripts. You see only the reports.
 - Rely on memory of an earlier tick instead of the plan, the note and the board.
 - Dispatch any agent without an explicit `model`, or with a model taken from anywhere other than the plan card's `models` (or, for a stage agent, the plan card's `stage.model`).
-- Leave out `run_in_background: false` on an Agent call, run a role agent in the background, or end the tick while a dispatch is still running.
-- Run more than `limits.concurrency` role agents at once.
+- Leave out `run_in_background: true` on an Agent call, bypass the completion registry, or end the tick while a dispatch is still running or unreconciled.
+- Run more than `limits.concurrency` roles at once (Agent roles, provider stages and evidence reviews together), or more than one active role per card.
+- Act twice on a duplicate completion notice, or take more than 16 actions per card per tick.
 - Invoke any skill other than `fleet-board:reporting`.
 - Dispatch any agent other than `fleet-board:implementor`, `fleet-board:reviewer`, `fleet-board:fixer` and the plan card's `stage.agent`. That rules out a general-purpose agent, any other built-in agent and another manager.
 - Ask a role to use, load or follow the reporting skill.

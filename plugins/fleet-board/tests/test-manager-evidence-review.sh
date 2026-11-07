@@ -37,10 +37,13 @@ check_manager() {
   done
   row="$(grep -F '**Exit 2' <<<"$contract")"
   has "$name exit 2 is the manager's own error" "$row" "own call"
-  for action in start_review review fix; do
+  for action in start_review review; do
     row="$(grep -F "| \`$action\` |" "$file")"
     has "$name $action routes the command reviewer" "$row" 'evidence-review.sh'
   done
+  has "$name fix re-review uses the evidence reviewer contract" "$contract" 're-review after `fix`'
+  row="$(grep -F '| `fix` |' "$file")"
+  has "$name fix replans before scheduling review" "$row" 'fresh plan'
 }
 
 check_manager agent "$HERE/../agents/manager.md"
