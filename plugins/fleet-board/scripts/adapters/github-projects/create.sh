@@ -28,9 +28,30 @@ URL="$(gh issue create --repo "$FLEET_REPO" --title "$TITLE" --body-file "$BODY_
 
 PN="$(fb_cfg board.project_number)"
 PO="$(fp_get_owner)"
-ITEM_ID="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json | jq -r '.id // empty')" || \
+# "Content already exists in this project" means the issue is on the board
+# already (an earlier add ran, or an automation added it): not a failure. Its
+# item id is looked up so the column is still set; when that lookup fails the
+# column stays as it is and the create still succeeds.
+ADD_ERR="$(mktemp)" || fb_die 1 "cannot create a temp file"
+ADD_OUT="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json 2>"$ADD_ERR")"
+ADD_RC=$?
+ADD_MSG="$ADD_OUT
+$(cat "$ADD_ERR")"
+rm -f "$ADD_ERR"
+if [ "$ADD_RC" -eq 0 ]; then
+  ITEM_ID="$(printf '%s' "$ADD_OUT" | jq -r '.id // empty')" || fb_die 1 "failed to add $URL to project $PN"
+  [ -n "$ITEM_ID" ] || fb_die 1 "failed to add $URL to project $PN (no item id)"
+elif printf '%s' "$ADD_MSG" | grep -qF 'Content already exists in this project'; then
+  ITEM_ID="$(gh project item-list "$PN" --owner "$PO" --format json --limit 1000 2>/dev/null \
+    | jq -r --arg u "$URL" '.items[]? | select(.content.url == $u) | .id' 2>/dev/null | head -n 1)" || ITEM_ID=""
+  if [ -z "$ITEM_ID" ]; then
+    printf 'fleet-board: warning: %s is already on project %s; its column was not set\n' "$URL" "$PN" >&2
+    jq -nc --arg u "$URL" '{number: ($u | split("/") | last | tonumber), url: $u}'
+    exit 0
+  fi
+else
   fb_die 1 "failed to add $URL to project $PN"
-[ -n "$ITEM_ID" ] || fb_die 1 "failed to add $URL to project $PN (no item id)"
+fi
 
 gh project item-edit --id "$ITEM_ID" --project-id "$(jq -r .project_id "$CACHE")" \
   --field-id "$(jq -r .field_id "$CACHE")" --single-select-option-id "$BACKLOG_OPT" >/dev/null || \

@@ -143,10 +143,14 @@
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle has no card or a non-numeric card.
 #
-# Pending follow-ups (note.pending_followups) hold a card in file_pending only
-# when a PR is known to file them against: pending_followups.pr, else note.pr,
-# else the PR this plan found. Without one, the card goes through the table as
-# usual and the plan warns "pending follow-ups on #<n> wait for a PR".
+# Pending follow-ups (note.pending_followups) hold a card in file_pending when
+# a PR is known to file them against (pending_followups.pr, else note.pr, else
+# the PR this plan found), and also when the card is blocked, PR or not: a
+# blocked card may close without ever getting one, and the items would be lost.
+# Any other card without a PR goes through the table as usual and the plan warns
+# "pending follow-ups on #<n> wait for a PR". A card seen closed (done or
+# wont_do, read in settle mode) that still holds pending items warns
+# "#<n>: closed with pending follow-ups that were never filed: <title>; <title>".
 # Action failures: note.action_failures is the number of the manager's
 # actions on the card, in a row, that failed to make progress, as the
 # manager records them: any action (start, continue_implementor,
@@ -696,7 +700,8 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
       | ($n.last_action_error // "no error recorded") as $err
       | if $c.lookup_failed != null then act("skip"; "lookup failed: \($c.lookup_failed)")
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
-        elif $n.pending_followups != null and ($n.pending_followups.pr // $n.pr // $c.pr) != null
+        elif $n.pending_followups != null
+             and (($n.pending_followups.pr // $n.pr // $c.pr) != null or $c.state == "blocked")
           then act("file_pending"; "pending follow-ups")
         elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c))
              and $fails >= 2 * $max
@@ -825,7 +830,13 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
                         else null end),
        lint: (if $d.action == "skip_card_lint" then $c.lint else null end),
        lint_marker: (if $d.action == "skip_card_lint" then $c.lint_marker else null end),
-       pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
+       pending_closed: (if ($c.state == "done" or $c.state == "wont_do") and $n.pending_followups != null
+                           and $d.action != "file_pending" and $c.lookup_failed == null
+                        then [($n.pending_followups.out_of_scope // [])[], ($n.pending_followups.bugs // [])[]
+                              | objects | .title | strings]
+                        else [] end),
+       pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null
+                      and $c.state != "done" and $c.state != "wont_do"),
        outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
   ] as $cards
   | {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
@@ -858,6 +869,8 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
        + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]
+       + [$cards[] | select((.pending_closed | length) > 0)
+          | "#\(.number): closed with pending follow-ups that were never filed: \(.pending_closed | join("; "))"]
        # Once per provider stage acted on whose key is unset: a held review_stage,
        # fix in it, or advance_stage into it (the following review_stage waits)
        + ([$cards[] | select((.key_held or .action == "fix" or .action == "advance_stage")
@@ -865,5 +878,5 @@ jq -s -c --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson 
                              and (.stage.name as $s | any($unset[]; . == $s)))
            | "stage \(.stage.name): \($cfg.providers[.stage.provider].api_key_env) is not set; provider reviews will fail"]
           | reduce .[] as $w ([]; if any(.[]; . == $w) then . else . + [$w] end))),
-     cards: [$cards[] | del(.key_held, .pending_wait, .outside_warning, .deps_warnings, .drift)]}
+     cards: [$cards[] | del(.key_held, .pending_wait, .pending_closed, .outside_warning, .deps_warnings, .drift)]}
 ' "$CARDS_FILE" || fb_die 1 "cannot build the tick plan"
