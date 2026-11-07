@@ -9,7 +9,11 @@ fl_require_store
 CARDS="$(fl_cards_dir)"
 shopt -s nullglob
 FILES=("$CARDS"/*.json)
-OUT="$(jq -c -s 'map(select(type == "object") | {number, title, state})' ${FILES[@]+"${FILES[@]}"} 2>/dev/null)" || {
+if [ "${#FILES[@]}" -eq 0 ]; then
+  printf '[]\n'
+  exit 0
+fi
+OUT="$(jq -c -s 'if all(.[]; type == "object") then map({number, title, state}) else error("not a card object") end' ${FILES[@]+"${FILES[@]}"} 2>/dev/null)" || {
   for f in ${FILES[@]+"${FILES[@]}"}; do
     jq -e 'type == "object"' "$f" >/dev/null 2>&1 || fb_die 1 "card file is not valid JSON: $f"
   done
