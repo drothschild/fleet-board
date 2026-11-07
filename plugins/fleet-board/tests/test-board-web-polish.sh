@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 #
-# Static checks for the drawer and import polish in the board web client
-# (board.js, index.html). The client has no DOM test harness, so each case
-# asserts the wiring the Acceptance names is present in the shipped files.
+# Behavioral drawer/import tests plus markup checks for accessibility.
 #
 # Usage: bash plugins/fleet-board/tests/test-board-web-polish.sh
 
@@ -31,6 +29,9 @@ check "imp-progress has no role=status" lacks 'id="imp-progress"[^>]*role="statu
 check "imp-last carries aria-live polite" has 'id="imp-last"[^>]*aria-live="polite"' "$HTML"
 check "import poll counts consecutive failures" has 'imp\.fails' "$JS"
 check "status line says board server not answering" has 'board server not answering' "$JS"
+
+check "drawer and import behavior" node "$SCRIPT_DIR/board-polish-interaction.js"
+check "last local manager note API selection" python3 "$SCRIPT_DIR/board-note-selection.py"
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
