@@ -189,7 +189,7 @@ echo ""
 echo "Test: docs"
 echo ""
 section="$(sed -n '/^### Writing a card/,/^## /p' "$README")"
-for rule in no-heading no-bullets manual-check; do
+for rule in no-heading no-bullets empty-acceptance manual-check; do
   assert_contains "README Writing a card links $rule" "$section" "(#card-lint-$rule)"
   assert_contains "README has an anchor heading for $rule" "$(cat "$README")" "card-lint-$rule"
 done

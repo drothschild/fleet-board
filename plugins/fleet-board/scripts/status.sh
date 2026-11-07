@@ -11,14 +11,14 @@
 # ("PR —" when there is no PR). An empty section prints "(none)". A card
 # whose note cannot be read prints "#<n> <title> · note unreadable".
 # A ready card with acceptance items and unmet blockers (deps.sh)
-# ends its line with " · waits for <ref> (<state or column>)[, ...]", the
+# ends its line with " · waits for <ref> (<state>)[, ...]", the
 # reason tick-plan.sh plans wait with; if they cannot be looked up, with
 # " · dependencies unreadable" (exit 1).
 # When any ready card waits, a dependency graph follows the sections, built
 # from the same lookups (no extra listing calls):
 #   dependency graph
 #   blocker <ref>          one section per blocker, then its waiting cards
-#     #<n>                 (refs in another repo keep their owner/repo prefix)
+#     #<n>                 (blockers are cards on this board, shown as #<n>)
 #   critical path: <ref> -> ... -> <ref>   the longest chain of unmet deps
 #   can start now: #<n>, ...               ready cards with no unmet dep
 # A board with no waiting card prints no graph.

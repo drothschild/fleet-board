@@ -62,7 +62,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Note-to-card mirror: the local `note` verb copies the note's `pr` into the card's `pr_url`
   (`https://github.com/<board.repo>/pull/<pr>`, `pr_url_source: note`); `pr: null` clears a
   note-sourced URL. A URL a person set (`pr_url_source: person`) is kept unless a note names
-  a different PR. An unparsable note changes nothing and warns.
+  a different PR. An unparsable note leaves `pr_url` unchanged and warns.
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
   mark_ready, merge, verify_main, finish, to_human_qa, file_pending, block, unblock,

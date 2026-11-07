@@ -87,7 +87,7 @@ Each entry in `review.stages` adds a column after In Review. Plus Won't Do. A ca
 - [`no-heading`](#card-lint-no-heading): a body has no `## Acceptance` heading.
 - [`no-bullets`](#card-lint-no-bullets): the heading has no `- ` bullet under it.
 - [`manual-check`](#card-lint-manual-check): an acceptance item needs a person to check it.
-- `empty-acceptance`: a card whose `acceptance` field has no items. It replaces `no-heading` and `no-bullets` for a stored card, since the field has no heading.
+- [`empty-acceptance`](#card-lint-empty-acceptance): a card whose `acceptance` field has no items. It replaces `no-heading` and `no-bullets` for a stored card, since the field has no heading.
 
 #### Card lint: no-heading
 
@@ -96,6 +96,10 @@ Applies to a body, such as the ones `import-plan` generates before they are spli
 #### Card lint: no-bullets
 
 Write one `- ` bullet per testable behavior under `## Acceptance` (in a stored card, one list item each). One prose sentence gives the implementor nothing to map a test to.
+
+#### Card lint: empty-acceptance
+
+A stored card's `acceptance` field is empty or missing. Add at least one testable item in the drawer's Acceptance list (or with `board-create.sh --acceptance-file`). A body with a `## Acceptance` section is split into the field when the card is created or edited, so pasting one in works too.
 
 #### Card lint: manual-check
 
@@ -197,20 +201,24 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 ### Upgrading from an earlier version
 
-1. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 until you do, and says which key.
-2. Update the plugin (`/plugin marketplace update fleet-board`, then reinstall or update it) and start a new session.
-3. Run `migrate-card-fields.sh` on the local store. If your cards are still GitHub issues (`backend: github-labels` or `github-projects`), skip this step and follow "Moving an existing GitHub board" below instead.
+Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaults to `github-labels`, so deleting the key before updating would quietly switch a local board to GitHub labels.
+
+1. Update the plugin (`/plugin marketplace update fleet-board`, then update or reinstall it) and start a new session.
+2. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 naming the key until you do.
+3. Run `migrate-card-fields.sh` on the local store. If your cards are GitHub issues (`backend: github-labels`, `github-projects`, or no `backend` key: the old default was labels), skip this step and follow "Moving an existing GitHub board" below instead.
 
 ### Moving an existing GitHub board
 
 A repo whose cards are still GitHub issues (`fleet:<state>` labels, or a Projects board) is copied once into the local store with `scripts/import-github.sh`, run from the repo root (the wrapper's directory is in the last line of `/fleet-board:status`). It is read-only: every `gh` call is a GET or a list, and nothing is written to GitHub.
+
+First, run `/fleet-board:init` (or write `.fleet-board.yml` by hand) so the local store exists, and make sure the config no longer has `backend`, `project_number` or `project_owner`: the importer loads the config and `config.sh` exits 5 on them. Note the project number from the old config before you delete it. `init.sh` adds `.fleet-board/` to `.gitignore`; if you wrote the config by hand, add that line yourself, or remove it later if you want to version the board.
 
 ```bash
 bash <scripts directory>/import-github.sh --repo OWNER/NAME --dry-run
 ```
 
 - `--repo OWNER/NAME` names the repo whose issues are imported (required).
-- `--project N` imports a Projects board instead of labels, reading each item's Status column; `--owner LOGIN` names the project's owner when it is not the repo owner.
+- `--project N` imports a Projects board instead of labels, reading each item's Status column; `N` is the `project_number` from the old config; `--owner LOGIN` names the project's owner when it is not the repo owner.
 - `--dry-run` prints one line per card and writes nothing; run it first.
 - `--force` imports into a store that already has cards, overwriting the imported numbers and leaving other cards. Without it the import refuses a non-empty store.
 

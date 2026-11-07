@@ -10,7 +10,7 @@
 # parse prints {"refs": [{"repo","number","ref"}], "warnings": [..]} for the
 # card body in <body-file>. The section is a "## Depends on" heading (any
 # case) and runs to the next heading. Each bullet ("-" or "*") holds one
-# dependency: "#22" (an issue in board.repo) or "owner/repo#22". Blank lines
+# dependency: "#22" (a card on this board) or "owner/repo#22". Blank lines
 # are ignored; any other line in the section is ignored too, with the warning
 # "unrecognized dependency line: <line>" (tick-plan.sh prefixes the card).
 # A ref repeated in the section counts once. "ref" is always "owner/repo#n".

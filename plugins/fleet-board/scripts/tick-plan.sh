@@ -37,7 +37,7 @@
 # files (review-stages.sh match; read-only, the plan adds no label). So a
 # stage whose paths a later push touches cannot be skipped, even one before
 # the current column; a label-only stage (empty paths) is skipped by removing
-# its label. A card whose state label names a stage that is
+# its label. A card whose state names a stage that is
 # not configured reads with no canonical state and gets skip ("state <state>
 # is not planned"). For a provider stage whose providers.<name>.api_key_env is
 # unset or empty, review_stage is planned as wait with the reason "stage <name>:
