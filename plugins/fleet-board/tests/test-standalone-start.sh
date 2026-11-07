@@ -12,7 +12,7 @@ git -C "$TMP/repo" init -q -b main
 git -C "$TMP/repo" config user.name Test
 git -C "$TMP/repo" config user.email test@example.com
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
-if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ]; then
+if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ]; then
   printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n' > "$TMP/repo/.fleet-board.yml"
   mkdir -p "$TMP/repo/.fleet-board/cards"
   printf '13\n' > "$TMP/repo/.fleet-board/next"
@@ -475,7 +475,7 @@ if [ "${1:-start}" = resume ] || [ "${1:-start}" = resume-note ]; then
   jq -e '[.[] | select(.body | contains("fleet-board:standalone-start:"))] | length == 1' "$TMP/state/comments" >/dev/null || { cat "$TMP/first-err" >&2; cat "$TMP/state/comments" >&2; echo 'FAIL: official report missing before interruption' >&2; exit 1; }
 fi
 if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/out"; then echo 'FAIL: start tick failed' >&2; exit 1; fi
-if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ]; then
+if [ "${1:-start}" = local-start ] || [ "${1:-start}" = local-fix ] || [ "${1:-start}" = local-publish ]; then
   jq -e '.state == "in_progress" and any(.comments[]; .author == "fleet-bot" and (.body | contains("fleet-board:standalone-start:")))' .fleet-board/cards/12.json >/dev/null || { echo 'FAIL: local card state or report missing' >&2; exit 1; }
   cat > "$TMP/worker.sh" <<'REVIEWER'
 #!/bin/sh
@@ -502,6 +502,19 @@ FIXER
     if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/fix-out" 2> "$TMP/fix-err"; then cat "$TMP/fix-err" >&2; echo 'FAIL: local fix failed' >&2; exit 1; fi
     jq -e 'any(.comments[]; .author == "fleet-bot" and (.body | contains("fleet-board:standalone-fix:")))' .fleet-board/cards/12.json >/dev/null || exit 1
     echo 'PASS: local-fix'; exit 0
+  fi
+  if [ "$1" = local-publish ]; then
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/ready-out" 2> "$TMP/ready-err"; then cat "$TMP/ready-err" >&2; echo 'FAIL: local mark-ready failed' >&2; exit 1; fi
+    [ -e "$TMP/state/ready" ] || { echo 'FAIL: local PR not ready' >&2; exit 1; }
+    cat > "$TMP/verify-main" <<'VERIFY'
+#!/bin/bash
+sha="$(git --git-dir="$GH_REMOTE" rev-parse refs/heads/main)"
+jq -n --arg sha "$sha" '{commit:$sha,ok:true,results:[]}'
+VERIFY
+    export FLEET_BOARD_VERIFY_MAIN="$TMP/verify-main"
+    if ! bash "$ROOT/bin/fleet-board" tick > "$TMP/merge-out" 2> "$TMP/merge-err"; then cat "$TMP/merge-err" >&2; echo 'FAIL: local merge failed' >&2; exit 1; fi
+    [ "$(jq -r .state .fleet-board/cards/12.json)" = done ] || { echo 'FAIL: local card not done' >&2; exit 1; }
+    echo 'PASS: local-publish'; exit 0
   fi
   echo 'PASS: local-start'; exit 0
 fi
