@@ -57,7 +57,10 @@ check_pr() {
 check_state() {
   local current states state
   current="$(bash "$SCRIPTS/board-read.sh" "$N")" || return 1
-  if [ "$(fb_cfg board.backend)" = github-projects ]; then
+  if [ "$(fb_cfg board.backend)" = local ]; then
+    jq -e --argjson n "$N" --arg state "$STATE" '.number == $n and .state == $state' <<<"$current" >/dev/null
+    return $?
+  elif [ "$(fb_cfg board.backend)" = github-projects ]; then
     jq -e --argjson n "$N" --arg state "$STATE" '.number == $n and .state == $state and (.item_id | type == "string" and length > 0)' <<<"$current" >/dev/null
     return $?
   fi
