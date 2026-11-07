@@ -280,7 +280,6 @@ button, select, input, textarea { font: inherit; color: inherit; }
   background: var(--accent);
   animation: pulse 1.6s ease-in-out infinite;
 }
-.card-now { font: 500 11px/1 var(--sans); color: var(--accent); }
 
 .card-title { margin: 3px 0 0; font-weight: 500; overflow-wrap: anywhere; }
 

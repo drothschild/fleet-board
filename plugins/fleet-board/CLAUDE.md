@@ -121,7 +121,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `base_url`, `api_key_env`, `max_tokens_param`) merged over `providers/presets.json`
   (`openai`, `gemini`, `openrouter`, `ollama`); config never holds a key value. A stage
   sets exactly one of `agent` and `provider`; a provider stage needs `model` and `price`.
-  `tick-plan.sh` warns when a provider stage's key variable is unset and holds
+  A provider entry with `command` (the `codex` preset) runs `chat.sh --command` instead of curl: prompt on stdin, repo root as cwd, stdout is the reply, tokens `null`, so `stage-review.sh` counts cost 0; `base_url` and `api_key_env` must be null with it. `tick-plan.sh` warns when a provider stage's key variable is unset and holds
   `review_stage` in that stage as `wait` (`stage <name>: <ENV> is not set`).
 - **Dependency gate** (`scripts/deps.sh parse|check`). `parse` reads a card body's
   `## Depends on` bullets (`#n` or `owner/repo#n`); `check` looks each up and prints
