@@ -1973,6 +1973,53 @@ The reviewer may classify a change as Conflict-resolved only after reconstructin
 
 **Merge with main (2026-11-07).** Card 70's revision was written as 21; main then recorded its own Revision 21 (PR 217, the command-provider evidence reviewer), so this one is renumbered 22. Plugin version 0.14.3 (this branch) and 0.15.0 (main) to 0.15.1. `agents/fixer.md` is unchanged by the merge. `agents/manager.md` and `agents/reviewer.md` are git merges: main's Revision 21 run output (manager) and Revision 20 run output (reviewer, card 175) with the owner-approved direct edits of the PR 215 integration repair. No single run produced either file, so both stay named exceptions in the manifest with their merged hashes. The owner confirmed the PR 215 exception and chose to keep the merge rather than re-author on 2026-11-07.
 
+### Revision 23 (2026-11-03, card 115; renumbered on merges with main 2026-11-06): remaining hand-added rules brought into the specs
+
+**Cause.** Revision 13 listed rules that PRs added to clean-room files by hand and left out of their specs. In-place edits keep such rules. A full regeneration from the spec would drop them. The audit below compared each spec with its authored file, not just the list in the card.
+
+**Audit, `specs/manager.md` against `agents/manager.md`.** Rules in the agent file and missing from the spec (the hand edits are in `8385f40`, `c32c5bb`, `aeefac1`, `30f7fb5` and `5a0e118`; the rest were never in the spec):
+- standing rules 0.16 (adversarial review before merge) and 0.17 (re-fetch before acting on PR state);
+- the full `## After merge` flow in 2.15 (`after-merge.sh run`, the `after_merge` note, the block, and the continue), where the spec still opened with "Only two steps";
+- the `to_human_qa` row and 2.11: `human-qa-handoff.sh [--qa-summary <file>] N <pr>`, the checklist of pre-merge steps and the `## Human QA` bullets;
+- the `skip_card_lint` row, 2.17a and its progress line in 2.C.3, with `lint_marker`;
+- the `wait` row with `deps_commented`, and the 4.4 exception for it;
+- a few rules the spec never carried: roles have no `Skill` tool (0.15 and Must never), an empty final reply is checked as empty text (3.1), never check a report with another role or without `--role` (3.2 and Must never), the exit 2 messages (3.5), the frontmatter `model` is only a fallback (Purpose);
+- one wrong cross-reference in the spec: 0.1 named 0.9 for the temp directory rule, which is 0.10.
+
+Not copied: the rejection-message table and the Status and PR background in the agent file's 3.9. They came from `reporting.md`, which was the other input of the Revision 12 manager runs, and 3.3 of the spec already says the rules are quoted from `reporting.md`. Commit `36f23c1` changed only that table, and `reporting.md` already carries its rows. The tick report template and What not to do are the same rules as the spec's Tick report and Must never.
+
+**Audit, `specs/status.md` against `skills/status/SKILL.md`.** One rule missing: `status.sh --forecast` (the `d2c3a75` hand edit, #76). The spec's script entry now covers `--forecast` and step 3 says when the skill runs it. The other lines of the skill and the spec agree.
+
+**Spec and brief changes** (hand edits to the text, as in Revision 11): `specs/manager.md`, `specs/status.md`, and a "Revision 23 requirements" section in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md`. They are in an earlier commit than the re-authored file. `tests/test-spec-catch-up.sh` checks all of it, and was written first. Brief sha256 (16): `briefs/spec-req-status.md` `d93115dcb839aacc` → `967546d167237316`; `briefs/spec-req-manager.md` `be1c19ba90c89cf9` → `aba34ff6bba2f419`. Spec: `specs/status.md` `59b706e5628b719d` → `68468a253aa2658a`; `specs/manager.md` `c8e2a05f6397ca02` → `24d759362d7bd17c` (the run's input; `26ee556a4c783b6c` after the merge with main brought in main's Revision 14 edits).
+
+**`agents/manager.md` is not re-authored.** The spec only caught up with the agent file, which already holds every rule, so it was not changed here: `e4e74e5d724175a9` when this revision was written, and main's `41799b377c411831` after the merges.
+
+**Starting point.** `skills/status/SKILL.md` on main (`bfd19b217ea02b84`) already held the `--forecast` paragraph. So the file was first restored byte for byte to the last clean-room output (`git show d2c3a75^:...`, sha256 `328ff52ca83b31c3`, its own commit), and the run authored `--forecast` from the spec.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, no MCP servers, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.317, `claude-opus-5-5`. Inputs: a staging dir (its only `--add-dir`) holding `edit-req.md` (sha256 `fc6e2cf0ad328121`, not committed) and a copy of the edited spec as `spec-status.md` (`68468a253aa2658a`). Prompt sha256 `dc8ebe2353a1be04`.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Output sha256 |
+|---|---|---|---|---|---|---|
+| `skills/status/SKILL.md` | `28ed8fa4b931b3bf` | PASS | PASS (3 reads, 1 edit) | 5 | 0.0696 | `ca185e305e578202` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills, no MCP servers. Path audit: the three reads were the two inputs and the target, the one edit was of the target, and no tool call failed. Evidence: `evidence/author-status.r14.init.json`, with no key and no local path.
+
+**Minimality check.** `git diff -U0` against the restored file was read line by line: one hunk, two added lines (a paragraph in step 3 and its blank line). The paragraph says when to run `status.sh --forecast`, that it is never combined with `--all`, what it prints, that its output is passed through verbatim and that steps 4 to 7 apply to its exit code. The frontmatter is unchanged and no other line moved. **Kept.**
+
+**Test changes.** Two test commits followed the first one. One matched three needles to the spec's third-person wording ("re-fetches", "passes", "continues"). One made the skill check look for `--forecast` instead of `status.sh --forecast`, because the authored paragraph writes the command with the flag after the quoted path. No assertion was removed or skipped.
+
+**Known limits, not re-run.** The skill's frontmatter description does not mention a forecast, and the spec's proposed description does not either. No behavioral run exercised `--forecast` through the skill.
+
+**Revision cost:** $0.0696. Already counted in the running total: main's Revision 19 total, ~$42.47, includes this run, so this revision adds nothing to it. **Running total, all API-key charges:** ~$42.47.
+
+**Output sha256 before → after (16):** `skills/status/SKILL.md` `bfd19b217ea02b84` (main) → `328ff52ca83b31c3` (restored) → `ca185e305e578202`.
+
+**Merges with main (2026-11-06).** Written as Revision 14, renumbered 17 on the first merges, and 21 when main recorded its own Revision 17 and Revision 19 (PR #174); card 175 holds 20. Its brief sections in `briefs/spec-req-manager.md` and `briefs/spec-req-status.md` became "Revision 23 requirements", and `tests/test-spec-catch-up.sh` checks Revision 23. In `specs/manager.md` the merge keeps both sides: main's review-stage and provider-stage text, and this revision's hand-added rules. Main's provider-stage rule is numbered 0.18 in the spec, as in `agents/manager.md`, where 0.16 and 0.17 are the adversarial-review and re-fetch rules. `agents/manager.md` is main's file, unchanged by this merge (manifest `41799b377c411831`). `skills/status/SKILL.md` and `specs/status.md` were not changed on main. Plugin version 0.14.0 (main) to 0.14.2; 0.14.1 is card 175's PR #176.
+
+**Card 115 merge update (2026-11-07).** The owner accepted the audit-reference renumbering. Main now owns Revisions 21 and 22, so this card uses Revision 23; the same audit assertions target that record. Both branches' specification rules are retained, with provider stages at 0.18 and the evidence reviewer at 0.19. Plugin version is 0.15.2. No authored primitive was edited or re-authored in this merge. Historical hashes above describe their recorded inputs, not the current merged files. Current merged hashes (16): `briefs/spec-req-status.md` `1225865cd018286b`, `briefs/spec-req-manager.md` `75ac9a83ff20ead2`, `manager.md` `9bb4d074eeecd61f`. No new authoring cost; the latest main ledger total remains approximately $43.06.
+
+**Card 115 merge update 2 (2026-11-07).** Main recorded its own Revision 23 (PR 222, completion-driven manager), kept directly below under the same heading. This card's record stays first because `tests/test-spec-catch-up.sh` reads the first `### Revision 23` section. In `specs/manager.md` the merge takes main's completion-driven text with this branch's numbering (provider stages 0.18, evidence reviewer 0.19) and keeps this branch's hand-added rules (the frontmatter `model` sentence in Purpose, and 2.17a). The brief keeps both Revision 23 requirements sections. Plugin version 0.16.0 (main) to 0.16.1. No authored primitive was edited or re-authored in this merge, and it adds no authoring cost.
+
 ### Revision 23 (2026-11-07, PR #222): completion-driven manager
 
 Two owner-approved isolated runs updated the manager from its revised spec. Both used a fresh empty configuration directory, `--bare`, Opus, only Read/Edit, strict MCP configuration, the existing authentication helper, and staged spec/request inputs. The initial CLI cap was $2; the correction cap was $1, with total actual spend below the approved $2 combined budget.
@@ -2013,3 +2060,5 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Merge with main (2026-11-07).** Main's PR 218 (card 210) then edited `agents/manager.md` 2.9a and 2.17b and `specs/manager.md` by hand, under the same named exception. Git merged it with this run's output with no conflict: PR 218's hunks are in 2.9a and 2.17b, this run's in 2.9 steps 4 and 5 and the 2.9 closing paragraph. No single run produced the merged file (`8d10d2fbd2e8ff9a`), and the manifest note says so.
 
 **Merge with main, second (2026-11-07).** Main's PR 222 re-authored `agents/manager.md` (Revision 23, completion-driven manager, run output sha256 `3dbd20185dc55706...`). The conflict was in 2.9 steps 4 to 6 and the closing paragraph of the agent file and `specs/manager.md`. It was resolved by hand with no API run: this card's step 4 and 5 text (`--commits-since-review`, `last_fix`) plus main's step 6 and closing paragraph, extended to name `not_reproducible` and `last_fix`. The agent file hash in the manifest was updated to the merged file, under the same named exception. Plugin version 0.16.0 (main) to 0.16.1.
+
+**Merge with main, third (2026-11-07).** Main's PR 226 (version history check) moved the plugin to 0.16.2; only the version lines conflicted. Plugin version 0.16.2 (main) to 0.16.3. No authored primitive changed, and it adds no authoring cost.
