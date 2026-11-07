@@ -102,7 +102,7 @@ models:
 The provider must define a `review_command`. Set both non-negative prices and
 an escalation model. The timeout is an integer from 1 to 1500 seconds and
 defaults to 1500. Both attempts share this timeout. The Codex preset restricts
-writes to the scratch clone, where the runner sets the provider's `TMPDIR`.
+writes to the scratch clone, where the runner sets the provider's `TMPDIR`. A reviewer-local `mktemp` wrapper routes bare `mktemp` and `mktemp -d` to explicit templates there, because macOS otherwise prefers Darwin's shared temp directory. Explicit arguments are passed through unchanged.
 The Codex preset enables the command network proxy, permits local listeners and localhost HTTP requests, and supplies no public-domain allow rules. Proxy ports are ephemeral so concurrent reviews do not collide. Scratch write restrictions and shared-temp exclusions remain enabled. This requires a Codex CLI supporting `features.network_proxy` (validated with 0.167.0). Custom review commands must provide equivalent isolation. With this form,
 each agent review stage must set its own model.
 

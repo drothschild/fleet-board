@@ -3,7 +3,7 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 python3 - "$ROOT" <<'PY'
-import json, os, pathlib, shlex, subprocess, sys, tempfile
+import json, os, pathlib, shlex, shutil, subprocess, sys, tempfile
 root = pathlib.Path(sys.argv[1])
 args = shlex.split(json.loads((root/'plugins/fleet-board/scripts/providers/presets.json').read_text())['codex']['review_command'])
 flags = []
@@ -26,7 +26,11 @@ if os.environ.get('FLEET_TEST_CODEX_SANDBOX') != '1':
     print('SKIP live sandbox probe (set FLEET_TEST_CODEX_SANDBOX=1)')
     sys.exit(0)
 probe = r'''
-import errno, http.server, pathlib, socket, threading, urllib.request
+import errno, http.server, os, pathlib, socket, subprocess, threading, urllib.request
+for command in (["mktemp"], ["mktemp", "-d"]):
+    result = pathlib.Path(subprocess.check_output(command, text=True).strip())
+    assert result.parent == pathlib.Path(os.environ["TMPDIR"])
+print("PASS shell temporary files stay inside scratch")
 pathlib.Path('scratch-write').write_text('ok')
 pathlib.Path('scratch-write').unlink()
 print('PASS scratch writes permitted')
@@ -51,5 +55,10 @@ else:
 '''
 with tempfile.TemporaryDirectory() as parent:
     scratch = pathlib.Path(parent)/'scratch'; scratch.mkdir()
-    subprocess.run(['codex', 'sandbox', '-c', 'sandbox_mode="workspace-write"', *flags, '--', sys.executable, '-c', probe], cwd=scratch, check=True)
+    bindir = scratch/'.fleet-board-bin'; bindir.mkdir()
+    tmpdir = scratch/'.fleet-board-tmp'; tmpdir.mkdir()
+    shutil.copy(root/'plugins/fleet-board/scripts/providers/reviewer-mktemp.sh', bindir/'mktemp')
+    (bindir/'mktemp').chmod(0o755)
+    env_args = ['env', 'TMPDIR='+str(tmpdir), 'FLEET_REVIEW_MKTEMP='+shutil.which('mktemp'), 'PATH='+str(bindir)+os.pathsep+os.environ['PATH']]
+    subprocess.run(['codex' , 'sandbox', '-c', 'sandbox_mode="workspace-write"', *flags, '--', *env_args, sys.executable, '-c', probe], cwd=scratch, check=True)
 PY
