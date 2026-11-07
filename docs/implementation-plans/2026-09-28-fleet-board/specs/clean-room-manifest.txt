@@ -10,4 +10,4 @@ ec5dae354178e1f9ba215c049a8666453b0c12b60fa0f2105981772a4e45dcac  agents/reviewe
 86c3ada66c1bbb1bae2bcd2a82fd4b6103d814cb0dfe652b7291221cf20b5692  skills/reporting/SKILL.md
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
 6f76fccffb5ab271beb4c71115ef5b783c4ce4bc441ebead9a74ef32c92d5ef6  skills/run/SKILL.md
-bfd19b217ea02b844676f9277fbbf689b1d5cbe41a5507893ea08f960e0ea4d7  skills/status/SKILL.md  # exception: hand-edited by #76, not a clean-room output; card #115 re-authors it and removes this exception
+ca185e305e5782020ee7c17fe8a4b3b4024efe482d6ed92bf55356f98f8c6f68  skills/status/SKILL.md
