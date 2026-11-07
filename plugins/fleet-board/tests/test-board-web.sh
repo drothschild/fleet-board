@@ -693,6 +693,14 @@ LEFT="$(ls -A "$STALE_REPO/.fleet-board/active" | wc -l | tr -d ' ')"
 if [ "$LEFT" = 0 ]; then pass "stale marker at startup: active/ is empty after the first board read"; else fail "stale marker at startup: active/ is empty after the first board read" "$LEFT entries left"; fi
 stop_server
 
+# Invalid config at startup: the stale-marker clear must not kill the server
+BAD_REPO="$(new_repo 'board:
+  repo: not a valid repo
+')"
+start_server "$BAD_REPO"
+if [ -n "$PORT" ] && kill -0 "$SERVER_PID" 2>/dev/null; then pass "invalid config at startup: server still listens"; else fail "invalid config at startup: server still listens" "stderr: $(cat "$TMP/server.err" 2>/dev/null)"; fi
+stop_server
+
 # Identity: with USER and FLEET_BOARD_USER unset, the note author is the login name
 ID_REPO="$(new_repo "$LOCAL_YML")"
 mkdir -p "$ID_REPO/.fleet-board/cards"

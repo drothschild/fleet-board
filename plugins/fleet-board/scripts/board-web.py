@@ -981,10 +981,14 @@ class LoopbackServer(ThreadingHTTPServer):
 
 def clear_stale_markers():
     """At startup: when run.pid names a dead run and no wrapper holds the lock, clear active/ once."""
-    cfg, dir = ctx()
-    pid, started = read_pid_file(state_dir(APP["root"], cfg))
-    if pid is not None and not pid_alive(pid, started) and not run_alive():
-        clear_markers(dir)
+    try:
+        cfg, dir = ctx()
+        pid, started = read_pid_file(state_dir(APP["root"], cfg))
+        if pid is not None and not pid_alive(pid, started) and not run_alive():
+            clear_markers(dir)
+    except ApiError:
+        # A config that fails to load is reported per request, not at startup.
+        pass
 
 
 def main(argv=None) -> int:
