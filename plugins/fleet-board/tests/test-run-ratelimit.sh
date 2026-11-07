@@ -45,6 +45,17 @@ new_case() {
   BIN="$T/bin"; mkdir -p "$BIN"
   printf '#!/bin/sh\nexit 1\n' > "$BIN/gh"; chmod +x "$BIN/gh"
   CLEAN="$T/cleanup.sh"; printf '#!/bin/sh\nexit 0\n' > "$CLEAN"; chmod +x "$CLEAN"
+  # Rate-limit fixtures describe the board after each fake tick. Supply the
+  # fresh planner read now required before the wrapper can declare it idle.
+  PLAN="$T/plan.sh"
+  cat > "$PLAN" <<'PLAN'
+#!/usr/bin/env bash
+n="$(cat "$FAKE_CLAUDE_DIR/count")"
+f="$FAKE_CLAUDE_DIR/$n.jsonl"
+[ -f "$f" ] || f="$FAKE_CLAUDE_DIR/default.jsonl"
+signal="$(jq -s '[.[] | select(.type=="result")][-1].result // "" | contains("dispatchable: true")' "$f")"
+printf '{"dispatchable":%s,"cards":[]}\n' "$signal"
+PLAN
   CLOCK="$T/clock"; printf '%s\n' "$NOW0" > "$CLOCK"
   SLEEPS="$T/sleeps"; : > "$SLEEPS"
   SLEEPSTUB="$T/sleep-stub.sh"
@@ -68,7 +79,7 @@ failed_fixture() {
 run_wrapper() {
   ( umask 022
     export HOME="$HOMEDIR" PATH="$BIN:$ORIG_PATH" FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" FAKE_CLAUDE_DIR="$FC" \
-      FLEET_BOARD_LOG_DIR="$LOGS" FLEET_BOARD_CLEANUP="$CLEAN" \
+      FLEET_BOARD_LOG_DIR="$LOGS" FLEET_BOARD_CLEANUP="$CLEAN" FLEET_BOARD_TICK_PLAN="$PLAN" \
       FLEET_BOARD_SLEEP="$SLEEPSTUB" FLEET_BOARD_NOW_FILE="$CLOCK" FLEET_BOARD_TOKEN_LOCK="$LOCK"
     cd "$REPO" || exit 90
     "$BASH_EXE" "$SCRIPT" --repo "$REPO" ) > "$T/out" 2> "$T/err"
