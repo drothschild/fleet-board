@@ -24,13 +24,18 @@
 #   acceptance from the bullets under "Test steps:" (copied verbatim, never
 #   invented). Same input, same output. Exit 1 when there is no task heading.
 #
-# Exit codes: 0 done (or declined), 1 failure (cycle, unknown dependency, gh),
+# Before the table, every card is checked with lint.sh (untestable bullets,
+# unresolved dependencies, ...); a card that fails stops the run with nothing
+# created.
+#
+# Exit codes: 0 done (or declined), 1 failure (cycle, unknown dependency, lint, gh),
 # 2 usage error.
 
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
+FLEET_SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ "${1:-}" = "parse" ]; then
   [ $# -eq 2 ] || fb_die 2 "usage: import-plan.sh parse <plan.md>"
   [ -f "$2" ] || fb_die 2 "file not found: $2"
@@ -88,6 +93,35 @@ PLAN="$(jq -c '
 ' "$CARDS" 2>&1)" || fb_die 1 "$(sed -n -e 's/^jq: error ([^)]*): //' -e 's/^jq: error: //' -e 's/ at <[^>]*>.*$//' -e '/^jq: /d' -e '1p' <<<"$PLAN")"
 N="$(jq '.cards | length' <<<"$PLAN")"
 
+# render_body <refs-json>: the issue body of the card on stdin; a dependency
+# key found in <refs-json> becomes its real reference, any other stays as written
+render_body() {
+  jq -r --argjson refs "$1" '
+    "## Why\n\(.why // "")\n\n## Scope\n" + ((.scope // []) | map("- " + .) | join("\n"))
+    + "\n\n## Acceptance\n" + ((.acceptance // []) | map("- " + .) | join("\n"))
+    + (if (.deps | length) > 0
+       then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)
+    + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)'
+}
+
+# The card linter: render every card with its dependencies as plan keys and
+# lint the set. A failing card stops the import before anything is created.
+LINTDIR="$(mktemp -d)"
+BODY="$(mktemp)"; trap 'rm -rf "$LINTDIR" "$BODY"' EXIT
+n=0
+while [ "$n" -lt "$N" ]; do
+  jq -c --argjson i "$n" '.cards[$i]' <<<"$PLAN" > "$LINTDIR/.card"
+  lkey="$(jq -r '.key | gsub("[^A-Za-z0-9_.-]"; "_")' "$LINTDIR/.card")"
+  render_body '{}' < "$LINTDIR/.card" > "$LINTDIR/$lkey.md"
+  jq -r '.repo // ""' "$LINTDIR/.card" > "$LINTDIR/$lkey.repo"
+  n=$((n + 1))
+done
+rm -f "$LINTDIR/.card"
+LINTOUT="$(bash "$FLEET_SCRIPTS_DIR/lint.sh" --bodies "$LINTDIR")" || {
+  printf '%s\n' "$LINTOUT" >&2
+  fb_die 1 "card lint failed; nothing was created"
+}
+
 echo "| Title | Repo | Depends on | Labels |"
 echo "|---|---|---|---|"
 jq -r 'def esc: gsub("\\|"; "\\|");
@@ -112,7 +146,8 @@ case "$BACKEND" in
     PN="$(fb_cfg board.project_number)"
     PO="$(fp_get_owner)" ;;
   github-labels) ;;
-  *) fb_die 1 "import-plan needs board.backend github-projects or github-labels" ;;
+  local) ;;
+  *) fb_die 1 "import-plan needs board.backend github-projects, github-labels or local" ;;
 esac
 
 # Docs referenced from a card's why or acceptance (scope lists files the card will
@@ -148,7 +183,6 @@ section_text() {
     on { print }' "$1"
 }
 
-BODY="$(mktemp)"; trap 'rm -f "$BODY"' EXIT
 REFS='{}'
 ENSURED=" "
 i=0
@@ -181,12 +215,7 @@ $text
         | .embedded = $e' <<<"$card")"
     fi
   fi
-  jq -r --argjson refs "$REFS" '
-    "## Why\n\(.why // "")\n\n## Scope\n" + ((.scope // []) | map("- " + .) | join("\n"))
-    + "\n\n## Acceptance\n" + ((.acceptance // []) | map("- " + .) | join("\n"))
-    + (if (.deps | length) > 0
-       then "\n\n## Depends on\n" + (.deps | map("- " + ($refs[.] // .)) | join("\n")) else "" end)
-    + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)' <<<"$card" > "$BODY"
+  render_body "$REFS" <<<"$card" > "$BODY"
   title="$(jq -r .title <<<"$card")"; repo="$(jq -r .repo <<<"$card")"
   if [ "$BACKEND" = "github-labels" ]; then
     case "$ENSURED" in
@@ -202,8 +231,16 @@ $text
   largs=()
   [ "$BACKEND" = "github-labels" ] && largs+=(--label "$(fb_state_name "$STATUS")")
   while IFS= read -r l; do [ -n "$l" ] && largs+=(--label "$l"); done < <(jq -r '(.labels // [])[]' <<<"$card")
-  URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
-  num="${URL##*/}"
+  if [ "$BACKEND" = "local" ]; then
+    OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" ${largs[@]+"${largs[@]}"} --state "$STATUS")" || fb_die 1 "failed to create: $title"
+    num="$(jq -r .number <<<"$OUT")"
+    CREATED="#$num"
+    repo="$FLEET_REPO" # a ref must name the board repo: deps.sh reads the local store only for it
+  else
+    URL="$(gh issue create --repo "$repo" --title "$title" --body-file "$BODY" ${largs[@]+"${largs[@]}"})" || fb_die 1 "failed to create: $title"
+    num="${URL##*/}"
+    CREATED="$repo#$num"
+  fi
   if [ "$BACKEND" = "github-projects" ]; then
   ITEM="$(gh project item-add "$PN" --owner "$PO" --url "$URL" --format json | jq -r '.id // empty')"
   [ -n "$ITEM" ] || fb_die 1 "failed to add $URL to project $PN"
@@ -211,5 +248,5 @@ $text
     --field-id "$(jq -r .field_id "$CACHE")" --single-select-option-id "$OPT" >/dev/null || fb_die 1 "failed to set status of $URL"
   fi
   REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "$repo#$num" '. + {($k): $r}' <<<"$REFS")"
-  echo "Created $repo#$num: $title"
+  echo "Created $CREATED: $title"
 done

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # parse-report.sh - validate a fleet-board role report and convert it to JSON.
 #
-# Usage: parse-report.sh [--role implementor|reviewer|fixer] <file>
+# Usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer]
+#                        [--commits-since-review <n>] <file>
 #
 # The report shape. This script is the enforced definition; the role
 # agents and the manager follow it (line rules: see Pass 1 below):
-#   ## Status          one word: done | blocked | clean | findings
+#   ## Status          one word: done | blocked | clean | findings | not_reproducible
 #   ## Findings        "- [Critical|Important|Minor] <text>" lines, or "- none"
 #   ## For the card    free text, with optional "Out of scope:" and "Bugs found:"
 #                      sub-lists and an optional "Blocked by: #N" line
@@ -15,10 +16,19 @@
 #                      (the integer is followed by whitespace or the line end)
 #
 # --role adds: the role's sections are required; Status is done|blocked for the
-# implementor and fixer, clean|findings for the reviewer; ## PR holds #<n>
-# unless Status is blocked (implementor, fixer); reviewer clean means zero
+# implementor, done|blocked|not_reproducible for the fixer, clean|findings for
+# the reviewer and the stage-reviewer; ## PR holds #<n> unless Status is
+# blocked (implementor, fixer); reviewer and stage-reviewer clean means zero
 # Critical and Important findings, findings means at least one; the reviewer's
-# Acceptance map and the fixer's Resolutions have at least one entry.
+# Acceptance map and the fixer's Resolutions have at least one entry. The
+# stage-reviewer (a review stage's lighter reviewer) has no required role
+# sections: no Acceptance map, Mutation or Claim check, just Status, Findings,
+# For the card and one VERIFIED line.
+# not_reproducible is a fourth, fixer-only status (the fixer re-ran the finding
+# and could not reproduce it; ## PR holds #<n> as for done). With
+# --commits-since-review <n> (the commits on the branch past the reviewed
+# head, measured by the caller), n > 0 rejects it: it is valid only when the
+# fixer committed nothing.
 # Section contents are checked whenever a section is present, with or without
 # --role.
 #
@@ -37,15 +47,24 @@
 set -uo pipefail
 unset CDPATH
 
-USAGE="usage: parse-report.sh [--role implementor|reviewer|fixer] <file>"
+USAGE="usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer] [--commits-since-review <n>] <file>"
 
 ROLE=""
 FILE=""
+COMMITS_SINCE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --role)
       if [ $# -lt 2 ]; then echo "parse-report: $USAGE" >&2; exit 2; fi
       ROLE="$2"
+      shift 2
+      ;;
+    --commits-since-review)
+      if [ $# -lt 2 ]; then echo "parse-report: $USAGE" >&2; exit 2; fi
+      case "$2" in
+        ''|*[!0-9]*) echo "parse-report: $USAGE" >&2; exit 2 ;;
+      esac
+      COMMITS_SINCE="$2"
       shift 2
       ;;
     -*)
@@ -67,7 +86,7 @@ if [ -z "$FILE" ]; then
 fi
 
 case "$ROLE" in
-  ""|implementor|reviewer|fixer) ;;
+  ""|implementor|reviewer|fixer|stage-reviewer) ;;
   *)
     echo "parse-report: unknown role: $ROLE" >&2
     echo "parse-report: $USAGE" >&2
@@ -130,7 +149,7 @@ fi
 #   any heading      at most once.
 # With a role, awk also checks (END): the PR number (implementor, fixer; not
 # needed when Status is blocked), clean/findings against the counts
-# (reviewer), and non-empty Acceptance map (reviewer) and Resolutions (fixer).
+# (reviewer, stage-reviewer), and non-empty Acceptance map (reviewer) and Resolutions (fixer).
 RECORDS="$(awk -v role="$ROLE" '
 function trim(s) { sub(/^[ ]+/, "", s); sub(/[ ]+$/, "", s); return s }
 function unquote(s) { s = trim(s); sub(/^`/, "", s); sub(/`$/, "", s); return s }
@@ -366,11 +385,11 @@ END {
   }
   if ((role == "implementor" || role == "fixer") && ("PR" in seen) && !pr_seen && status != "blocked")
     err("role " role " requires a PR number (#<n>) in ## PR unless status is blocked")
-  if (role == "reviewer") {
+  if (role == "reviewer" || role == "stage-reviewer") {
     ci = sevs["Critical"] + sevs["Important"]
     if (status == "clean" && ci > 0) err("status clean needs zero Critical and Important findings, found " ci)
     if (status == "findings" && ci == 0) err("status findings needs at least one Critical or Important finding")
-    if (("Acceptance map" in seen) && namap == 0) err("role reviewer requires at least one ## Acceptance map entry")
+    if (role == "reviewer" && ("Acceptance map" in seen) && namap == 0) err("role reviewer requires at least one ## Acceptance map entry")
   }
   if (role == "fixer" && ("Resolutions" in seen) && nres == 0)
     err("role fixer requires at least one ## Resolutions entry")
@@ -408,14 +427,22 @@ done
 
 if has_section "Status"; then
   case "$STATUS" in
-    done|blocked|clean|findings) ;;
+    done|blocked|clean|findings|not_reproducible) ;;
     *) ERRORS+=("unknown status: $STATUS") ;;
   esac
   # Status values by role; an unknown word is reported once, above.
   case "$ROLE:$STATUS" in
-    implementor:clean|implementor:findings|fixer:clean|fixer:findings|reviewer:done|reviewer:blocked)
+    implementor:not_reproducible|reviewer:not_reproducible|stage-reviewer:not_reproducible) ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
+    implementor:clean|implementor:findings|fixer:clean|fixer:findings|reviewer:done|reviewer:blocked|stage-reviewer:done|stage-reviewer:blocked)
       ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
   esac
+fi
+
+# not_reproducible (fixer only) is valid only when the fixer made no commit since
+# the reviewed head; the caller passes the count it measured, since a report
+# cannot know it.
+if [ "$STATUS" = "not_reproducible" ] && [ -n "$COMMITS_SINCE" ] && [ "$COMMITS_SINCE" -gt 0 ]; then
+  ERRORS+=("status not_reproducible needs no commits since the reviewed head, found $COMMITS_SINCE")
 fi
 
 VER_RE='^VERIFIED:[[:space:]]+`([^`]+)`[[:space:]]+(->|→)[[:space:]]+(-?[0-9]+)([[:space:]]|$)'

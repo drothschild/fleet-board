@@ -5,7 +5,8 @@
 # Exports: FLEET_CFG, FLEET_ROOT, FLEET_REPO, FLEET_SCRIPTS (set by fb_load_config)
 # FB_LOCK is set by fb_lock and used with trap EXIT to clean up
 
-FB_STATES="backlog ready in_progress in_review human_qa blocked done wont_do"
+FB_STATES_FIXED="backlog ready in_progress in_review human_qa blocked done wont_do"
+FB_STATES="$FB_STATES_FIXED"
 FB_MARKER='<!-- fleet-board:manager-note -->'
 # With CDPATH exported, a relative cd can land in a CDPATH directory and echo
 # its path, which $(cd ... && pwd) would capture as a second line. Each entry
@@ -25,6 +26,44 @@ fb_load_config() {
   FLEET_REPO="$(jq -r .board.repo <<<"$FLEET_CFG")"
   FLEET_SCRIPTS="$FB_SCRIPTS"
   export FLEET_CFG FLEET_ROOT FLEET_REPO FLEET_SCRIPTS
+  fb_set_states
+}
+
+# fb_set_states: sets FB_STATES to the fixed states with review_<name> for each
+# review stage of $FLEET_CFG inserted after in_review, in config order.
+fb_set_states() {
+  local extra; extra="$(fb_stage_states | tr '\n' ' ')"
+  extra="${extra% }"
+  if [ -z "$extra" ]; then FB_STATES="$FB_STATES_FIXED"; return 0; fi
+  FB_STATES="${FB_STATES_FIXED/in_review/in_review $extra}"
+}
+
+# fb_mark_active <n>: on the local backend only, touches <board.dir>/active/<n>
+# (the web board lights the card while a role works on it) and sets
+# FB_ACTIVE_FILE to it. A failure is a warning, never an error. Needs the
+# config loaded.
+fb_mark_active() {
+  [ "$(fb_cfg board.backend)" = local ] || return 0
+  . "$FB_SCRIPTS/adapters/local/local-lib.sh"
+  local d; d="$(fl_active_dir)"
+  if mkdir -p "$d" 2>/dev/null && : > "$d/$1" 2>/dev/null; then
+    FB_ACTIVE_FILE="$d/$1"
+  else
+    printf 'fleet-board: warning: cannot write the active marker for #%s\n' "$1" >&2
+  fi
+  return 0
+}
+
+# fb_stage_states: the stage states of $FLEET_CFG, one per line, in config order.
+fb_stage_states() {
+  [ -n "${FLEET_CFG:-}" ] || return 0
+  jq -r '(.review.stages // [])[] | "review_" + .name' <<<"$FLEET_CFG"
+}
+
+# fb_stage_of_state <review_x>: prints that stage's JSON object, or nothing.
+fb_stage_of_state() {
+  [ -n "${FLEET_CFG:-}" ] || return 0
+  jq -c --arg s "$1" '(.review.stages // [])[] | select("review_" + .name == $s)' <<<"$FLEET_CFG"
 }
 
 # fb_git_common_dir <dir>: prints the absolute path of the git common dir of
@@ -47,8 +86,17 @@ fb_git_common_dir() {
 # Prints scalars raw (booleans print as true/false), objects/arrays as JSON, and nothing for null.
 fb_cfg() { jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"; }
 
-# Prints the authenticated gh login; exits 1 if it cannot be determined
+# Prints the authenticated gh login (on the local backend, which never calls
+# gh: FLEET_BOARD_USER, else $USER, else `id -un`); exits 1 if it cannot be
+# determined
 fb_login() {
+  if [ "$(fb_cfg board.backend)" = "local" ]; then
+    local u="${FLEET_BOARD_USER:-${USER:-}}"
+    [ -n "$u" ] || u="$(id -un 2>/dev/null)"
+    [ -n "$u" ] || fb_die 1 "cannot determine the local user: set FLEET_BOARD_USER (USER is unset and id -un failed)"
+    printf '%s\n' "$u"
+    return 0
+  fi
   local l; l="$(gh api user 2>/dev/null | jq -r '.login // empty' 2>/dev/null)"
   [ -n "$l" ] && [ "$l" != "null" ] || fb_die 1 "cannot determine the authenticated gh login (gh api user failed)"
   printf '%s\n' "$l"
@@ -114,8 +162,17 @@ fb_valid_state() { case " $FB_STATES " in *" $1 "*) return 0 ;; esac; return 1; 
 
 fb_default_name() {
   # Backend-specific default board name for a canonical state
+  case "$1" in
+    review_*)
+      case "$(fb_cfg board.backend)" in
+        github-projects|local) echo "Review: ${1#review_}" ;;
+        *) echo "fleet:$1" ;;
+      esac
+      return 0
+      ;;
+  esac
   case "$(fb_cfg board.backend)" in
-    github-projects)
+    github-projects|local)
       case "$1" in
         backlog) echo "Backlog" ;;
         ready) echo "Ready" ;;
@@ -167,6 +224,24 @@ fb_list_truncated() {
   fb_die 1 "$3 returned $1 items, the list limit ($2); the list may be truncated. Set FLEET_BOARD_LIST_LIMIT above $2, or $4, and retry"
 }
 
+# fb_glob_match <path> <pattern>: exit 0 when the path matches. Matched with
+# bash `case` after turning ** into *; a pattern that starts with **/ also
+# matches with that prefix removed (src/components/** matches
+# src/components/a/b.tsx, **/*.test.* matches a.test.js).
+fb_glob_match() {
+  local path="$1" pat="${2//\*\*/*}"
+  # shellcheck disable=SC2254 # the pattern is a glob on purpose
+  case "$path" in $pat) return 0 ;; esac
+  case "$2" in
+    '**/'*)
+      pat="${2#\*\*/}"
+      pat="${pat//\*\*/*}"
+      case "$path" in $pat) return 0 ;; esac
+      ;;
+  esac
+  return 1
+}
+
 fb_valid_number() {
   case "$1" in
     ''|*[!0-9]*) return 1 ;;
@@ -192,3 +267,7 @@ fb_lock() {
   echo $$ > "$FB_LOCK/pid"
   trap 'rm -rf "$FB_LOCK"' EXIT
 }
+
+# Adapter scripts are exec'd with FLEET_CFG exported and never call fb_load_config;
+# derive the stage states for them at load.
+[ -z "${FLEET_CFG:-}" ] || fb_set_states

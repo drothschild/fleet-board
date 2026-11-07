@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>fleet-board</title>
+<link rel="stylesheet" href="/static/board.css">
+</head>
+<body>
+<header id="top">
+  <div class="top-left">
+    <h1 id="repo" class="repo">fleet-board</h1>
+    <span id="run-pill" class="pill" data-state="idle"><span class="pill-dot" aria-hidden="true"></span><span id="run-pill-text">idle</span></span>
+    <span id="run-cost" class="run-cost" hidden></span>
+  </div>
+  <div class="top-right">
+    <div class="btn-group" role="group" aria-label="Run">
+      <button type="button" id="start-btn" class="btn" disabled>
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg>
+        <span>Start</span>
+      </button>
+      <button type="button" id="stop-btn" class="btn" disabled>
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="currentColor"/></svg>
+        <span>Stop</span>
+      </button>
+      <button type="button" id="log-btn" class="btn" aria-expanded="false" aria-controls="log">
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M3 8h10M3 11.5h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+        <span>Log</span>
+      </button>
+    </div>
+    <div class="btn-group" role="group" aria-label="Cards">
+      <button type="button" id="import-btn" class="btn">
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5h4.5l2.5 2.5v8.5h-7z M9 2.5v2.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
+        <span>Import plan</span>
+      </button>
+      <button type="button" id="new-card-btn" class="btn">
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+        <span>New card</span>
+      </button>
+    </div>
+  </div>
+</header>
+<pre id="log" class="log" hidden></pre>
+<main id="board" aria-label="Board"></main>
+<section id="import" class="imp" aria-labelledby="imp-h" data-phase="edit" hidden>
+  <div class="imp-head">
+    <h2 id="imp-h" class="imp-title">Import plan</h2>
+    <span id="imp-status" class="imp-status"></span>
+    <label class="imp-target">
+      <span class="sr-only">Create the cards in</span>
+      <select id="imp-target" class="dr-state">
+        <option value="backlog">Backlog</option>
+        <option value="ready">Ready</option>
+      </select>
+    </label>
+  </div>
+  <div class="imp-main">
+    <div id="imp-drop" class="imp-drop">
+      <textarea id="imp-plan" class="imp-plan" spellcheck="false" aria-label="Plan" placeholder="Paste a plan here, or drop a .md or .txt file"></textarea>
+    </div>
+    <div id="imp-stage" class="imp-stage" hidden>
+      <div id="imp-sheet" class="imp-sheet" aria-hidden="true"><pre class="imp-sheet-text"></pre></div>
+      <svg class="imp-arrow" viewBox="0 0 32 16" aria-hidden="true"><path d="M2 8h26M22 3l6 5-6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+      <div class="imp-result">
+        <ol id="imp-grid" class="imp-grid" aria-label="Cards to create"></ol>
+        <p id="imp-error" class="imp-error" role="alert" hidden></p>
+      </div>
+    </div>
+    <details id="imp-dry" class="imp-dry" hidden>
+      <summary class="imp-dry-sum">
+        <svg class="chevron" viewBox="0 0 12 12" aria-hidden="true"><path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        Dry run
+      </summary>
+      <pre id="imp-table" class="imp-table"></pre>
+    </details>
+  </div>
+  <div class="imp-foot">
+    <label id="imp-embed-row" class="imp-embed" hidden><input type="checkbox" id="imp-embed" checked> embed referenced doc sections</label>
+    <div class="imp-actions">
+      <button type="button" id="imp-discard" class="btn">Discard</button>
+      <span id="imp-progress" class="imp-progress" role="status" hidden><span class="active-dot" aria-hidden="true"></span><span id="imp-elapsed" class="imp-elapsed"></span><span id="imp-last" class="imp-last"></span></span>
+      <button type="button" id="imp-group" class="btn" disabled>Group with Claude</button>
+      <button type="button" id="imp-create" class="btn primary" hidden>Create cards</button>
+    </div>
+  </div>
+</section>
+<div id="drawer-dim" class="drawer-dim" hidden></div>
+<aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Card" hidden>
+  <div class="dr-head">
+    <span id="dr-num" class="dr-num"></span>
+    <input id="dr-title" class="dr-title" type="text" aria-label="Title" placeholder="Card title" autocomplete="off">
+    <select id="dr-state" class="dr-state" aria-label="State"></select>
+    <button type="button" id="dr-close" class="dr-close" aria-label="Close">
+      <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+    </button>
+  </div>
+  <p id="dr-meta" class="dr-meta"></p>
+  <div class="dr-scroll">
+    <section class="dr-section" aria-labelledby="dr-body-h">
+      <h3 id="dr-body-h" class="dr-h"><label for="dr-body">Body</label></h3>
+      <div class="dr-editor">
+        <textarea id="dr-body" class="dr-body" spellcheck="false"></textarea>
+        <div id="dr-preview" class="dr-preview md" aria-label="Preview"></div>
+      </div>
+    </section>
+    <section class="dr-section" aria-labelledby="dr-labels-h">
+      <h3 id="dr-labels-h" class="dr-h">Labels</h3>
+      <div class="dr-labels-row">
+        <ul id="dr-labels" class="labels dr-labels"></ul>
+        <input id="dr-label-input" class="dr-label-input" type="text" placeholder="add label" aria-label="Add label" autocomplete="off">
+        <button type="button" id="dr-save" class="btn dr-save">Save</button>
+      </div>
+    </section>
+    <section id="dr-comments-sec" class="dr-section" aria-labelledby="dr-comments-h">
+      <h3 id="dr-comments-h" class="dr-h">Comments</h3>
+      <ol id="dr-comments" class="dr-comments"></ol>
+      <div class="dr-comment-box">
+        <textarea id="dr-comment" class="dr-comment" placeholder="Comment on this card" aria-label="Comment on this card"></textarea>
+        <button type="button" id="dr-comment-btn" class="btn">Comment</button>
+      </div>
+    </section>
+  </div>
+</aside>
+<div id="toast" role="status" aria-live="polite" hidden></div>
+<script src="/static/board.js"></script>
+</body>
+</html>

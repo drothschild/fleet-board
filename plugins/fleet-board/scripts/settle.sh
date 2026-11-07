@@ -9,14 +9,22 @@
 # whole tick. It starts no Claude session and costs no API key.
 #
 # What it does:
-#   1. Lists the in_progress and in_review columns with board-list.sh (no
-#      --allow-truncated). A listing that fails ends the run with exit 1 before
+#   1. Lists the in_progress and in_review columns, and every review stage
+#      column (review_<name>), with board-list.sh (no --allow-truncated). A listing that fails ends the run with exit 1 before
 #      anything is written. With no cards it stops without running the planner.
 #   2. Runs tick-plan.sh --settle <those cards> once.
 #   3. Carries out each planned action, as the manager's action table does
 #      (agents/manager.md 2.2, 2.10, 2.11):
-#        move_to_review  board-move.sh N in_review; note.sh merge with round 1,
+#        move_to_review  review-stages.sh route N <pr> first (a failure ends the
+#                        card's action with no move and no note, so the card
+#                        stays in in_progress and the next tick retries: nothing
+#                        re-routes a card once it is in in_review); then
+#                        board-move.sh N in_review; note.sh merge with round 1,
 #                        pr and state in_review
+#        advance_stage   board-move.sh N review_<stage>; note.sh merge with stage,
+#                        round 1, reviewed_stages (the old list plus the stage left,
+#                        only when the card was in a stage column) and state
+#                        review_<stage>
 #        to_human_qa     commands.qa_build (when set) in the plan card's worktree,
 #                        keeping its exit code and last 20 lines; board-move.sh
 #                        N human_qa; only after that succeeds, human-qa-handoff.sh
@@ -28,7 +36,8 @@
 #                        listing the findings. A block whose reason starts with
 #                        "no progress after" is left for the next tick (the
 #                        manager has its own order for those, 2.D).
-#        skip, other     nothing
+#        skip, other     nothing (a review_stage is planned as skip: it waits for
+#                        the next tick, so settle never runs a review stage)
 #   It never merges and never moves a card out of human_qa.
 #
 # Failures stay small: a failed step ends that card's action and the script
@@ -60,7 +69,7 @@ trap 'rm -rf "$TMPD"' EXIT
 
 # Both columns are listed before anything is written
 NUMS=""
-for st in in_progress in_review; do
+for st in in_progress in_review $(fb_stage_states); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st" </dev/null)" || fb_die 1 "cannot list the $st column; nothing settled"
   COL="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column; nothing settled"
@@ -89,8 +98,27 @@ merge_note() {
 do_move_to_review() { # <n> <pr>
   local n="$1" pr="$2"
   [ "$pr" != null ] || { fail "$n" "move_to_review has no PR"; return; }
+  # Route first: nothing re-routes a card once it is in in_review, so a failure
+  # here leaves it in in_progress for the next tick to retry
+  bash "$FLEET_SCRIPTS/review-stages.sh" route "$n" "$pr" </dev/null >/dev/null \
+    || { fail "$n" "routing the card to its review stages failed"; return; }
   bash "$FLEET_SCRIPTS/board-move.sh" "$n" in_review </dev/null >/dev/null || { fail "$n" "board-move to in_review failed"; return; }
   merge_note "$n" "$(jq -cn --argjson pr "$pr" '{round: 1, pr: $pr, state: "in_review"}')" \
+    || fail "$n" "the manager note write failed"
+}
+
+do_advance_stage() { # <n> <stage object json> <from-state>
+  local n="$1" stage="$2" from="$3" name note old
+  name="$(jq -r '.name // ""' <<<"$stage" 2>/dev/null)"
+  [ -n "$name" ] || { fail "$n" "advance_stage has no stage"; return; }
+  note="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null 2>/dev/null)" || { fail "$n" "cannot read the manager note"; return; }
+  old="$(jq -c '(if type == "object" then .reviewed_stages else null end) | if type == "array" then . else [] end' <<<"$note" 2>/dev/null)" \
+    || { fail "$n" "cannot read the reviewed stages"; return; }
+  bash "$FLEET_SCRIPTS/board-move.sh" "$n" "review_$name" </dev/null >/dev/null || { fail "$n" "board-move to review_$name failed"; return; }
+  merge_note "$n" "$(jq -cn --arg s "$name" --arg from "$from" --argjson old "$old" '
+    {stage: $s, round: 1,
+     reviewed_stages: (if ($from | startswith("review_")) then $old + [$from | ltrimstr("review_")] else $old end),
+     state: "review_\($s)"}')" \
     || fail "$n" "the manager note write failed"
 }
 
@@ -157,6 +185,7 @@ while IFS= read -r card; do
   pr="$(jq -r '.pr' <<<"$card")"
   case "$action" in
     move_to_review) do_move_to_review "$n" "$pr" ;;
+    advance_stage) do_advance_stage "$n" "$(jq -c '.stage // null' <<<"$card")" "$(jq -r '.state' <<<"$card")" ;;
     to_human_qa) do_to_human_qa "$n" "$pr" "$(jq -r '.worktree // ""' <<<"$card")" ;;
     mark_ready) do_mark_ready "$n" "$pr" ;;
     block) do_block "$n" "$(jq -r '.state' <<<"$card")" "$(jq -r '.reason' <<<"$card")" ;;

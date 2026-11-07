@@ -13,6 +13,7 @@
 #
 # Usage: run.sh [--runs N] [--mutation on|off] [--model NAME] [--defect ID]
 #                [--out DIR] [--dry-run]
+#        run.sh --provider NAME --model ID --price-in P --price-out P [same flags]
 #   --runs N         runs per defect (default 3)
 #   --mutation M     review.mutation given to the reviewer: on (default) or off
 #   --model NAME     reviewer model (default opus)
@@ -20,6 +21,12 @@
 #   --out DIR        where work repos, transcripts and results.tsv go
 #                    (default: a new directory under $TMPDIR)
 #   --dry-run        print the exact commands, run nothing, exit 0
+#   --provider NAME  measure a provider-backed stage reviewer instead: each run calls
+#                    scripts/stage-review.sh (no claude -p) with a temp .fleet-board.yml
+#                    holding one blocking stage on NAME and --model. Needs --model,
+#                    --price-in and --price-out (USD per million tokens), and the
+#                    provider's key variable in the environment. The ledger and the
+#                    report land under --out; results.tsv's model column is NAME:ID.
 #
 # REAL RUNS COST MONEY. Auth for the isolated session comes from FB_ISOLATE_SETTINGS
 # (default ~/.config/fleet-board/bare-settings.json, an apiKeyHelper settings file).
@@ -42,17 +49,24 @@ MODEL=opus
 ONLY=""
 OUT=""
 DRY=0
+PROVIDER=""
+PRICE_IN=""
+PRICE_OUT=""
+MODEL_SET=0
 
-usage() { sed -n '3,25p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//' >&2; }
+usage() { sed -n '3,33p' "${BASH_SOURCE[0]:-$0}" | sed 's/^# \{0,1\}//' >&2; }
 die_usage() { echo "run.sh: $*" >&2; exit 2; }
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --runs)     [ "$#" -ge 2 ] || die_usage "--runs needs a value"; RUNS="$2"; shift 2 ;;
     --mutation) [ "$#" -ge 2 ] || die_usage "--mutation needs on or off"; MUTATION="$2"; shift 2 ;;
-    --model)    [ "$#" -ge 2 ] || die_usage "--model needs a name"; MODEL="$2"; shift 2 ;;
+    --model)    [ "$#" -ge 2 ] || die_usage "--model needs a name"; MODEL="$2"; MODEL_SET=1; shift 2 ;;
     --defect)   [ "$#" -ge 2 ] || die_usage "--defect needs an id"; ONLY="$2"; shift 2 ;;
     --out)      [ "$#" -ge 2 ] || die_usage "--out needs a directory"; OUT="$2"; shift 2 ;;
+    --provider) [ "$#" -ge 2 ] || die_usage "--provider needs a name"; PROVIDER="$2"; shift 2 ;;
+    --price-in) [ "$#" -ge 2 ] || die_usage "--price-in needs a number"; PRICE_IN="$2"; shift 2 ;;
+    --price-out) [ "$#" -ge 2 ] || die_usage "--price-out needs a number"; PRICE_OUT="$2"; shift 2 ;;
     --dry-run)  DRY=1; shift ;;
     -h|--help)  usage; exit 0 ;;
     *)          usage; die_usage "unknown flag: $1" ;;
@@ -60,6 +74,21 @@ while [ "$#" -gt 0 ]; do
 done
 case "$RUNS" in ''|*[!0-9]*|0) die_usage "--runs must be a positive integer, got: $RUNS" ;; esac
 case "$MUTATION" in on|off) ;; *) die_usage "--mutation must be on or off, got: $MUTATION" ;; esac
+
+if [ -n "$PROVIDER" ]; then
+  case "$PROVIDER" in [a-z]*) ;; *) die_usage "--provider must match ^[a-z][a-z0-9_-]*\$, got: $PROVIDER" ;; esac
+  case "$PROVIDER" in *[!a-z0-9_-]*) die_usage "--provider must match ^[a-z][a-z0-9_-]*\$, got: $PROVIDER" ;; esac
+  [ "$MODEL_SET" = 1 ] || die_usage "--provider needs --model"
+  [ -n "$PRICE_IN" ] && [ -n "$PRICE_OUT" ] || die_usage "--provider needs both --price-in and --price-out"
+  for pv in "$PRICE_IN" "$PRICE_OUT"; do
+    case "$pv" in ''|*[!0-9.]*|.|*.*.*) die_usage "prices must be non-negative numbers, got: $pv" ;; esac
+  done
+  case "$MODEL" in *[!A-Za-z0-9._:/-]*) die_usage "--model has characters a stage config cannot hold: $MODEL" ;; esac
+  MODEL_LABEL="$PROVIDER:$MODEL"
+else
+  [ -z "$PRICE_IN$PRICE_OUT" ] || die_usage "--price-in and --price-out need --provider"
+  MODEL_LABEL="$MODEL"
+fi
 
 if [ "$DRY" = 1 ]; then
   WORK="\$OUT/work"
@@ -88,6 +117,23 @@ write_prompt() {
     echo "Latest implementor report: Status done. All Acceptance items have passing tests. VERIFIED: bash test.sh -> every test passed."
     echo "END"
   } > "$file"
+}
+
+# Write the one-stage config for a provider run to $1.
+write_stage_config() {
+  {
+    echo "board:"
+    echo "  backend: github-labels"
+    echo "  repo: eval/eval"
+    echo "review:"
+    echo "  stages:"
+    echo "    - name: eval"
+    echo "      provider: $PROVIDER"
+    echo "      model: \"$MODEL\""
+    echo "      advisory: false"
+    echo "      price: { input: $PRICE_IN, output: $PRICE_OUT }"
+    echo "      brief: \"Judge whether the tests prove the Acceptance bullets.\""
+  } > "$1"
 }
 
 # Build the throwaway repo: empty base on main, one PR commit on branch pr.
@@ -124,6 +170,40 @@ while IFS="$(printf '\t')" read -r id class pr patch pattern; do
     repo="$WORK/$id-$n"
     prompt="$WORK/$id-$n.prompt"
     cmd="cd $repo && CLAUDE_CONFIG_DIR=\"\$(mktemp -d)\" claude -p --settings $SETTINGS --plugin-dir $PLUGIN_DIR --model $MODEL --permission-mode bypassPermissions --max-turns 80 --output-format stream-json --verbose \"\$(cat $prompt)\" </dev/null"
+    if [ -n "$PROVIDER" ]; then
+      sr="FLEET_BOARD_CONFIG=$WORK/$id-$n.yml FLEET_BOARD_LOG_DIR=${OUT:-\$OUT}/provider-log bash $PLUGIN_DIR/scripts/stage-review.sh 1 1 --stage eval --round 1 --card-file $FIX/$pr/card.md --diff-file $WORK/$id-$n.diff --no-post"
+      if [ "$DRY" = 1 ]; then
+        echo "# defect=$id class=$class pr=$pr run=$n/$RUNS model=$MODEL_LABEL"
+        echo "$sr"
+      else
+        echo "[eval] $id run $n/$RUNS" >&2
+        if ! build_repo "$repo" "$pr" "$patch"; then
+          echo "[eval] could not build $id" >&2; failed=1; n=$((n + 1)); continue
+        fi
+        git -C "$repo" diff main..pr > "$WORK/$id-$n.diff"
+        write_stage_config "$WORK/$id-$n.yml"
+        cost=0
+        verdict=error
+        if FLEET_BOARD_CONFIG="$WORK/$id-$n.yml" FLEET_BOARD_LOG_DIR="$OUT/provider-log" \
+             bash "$PLUGIN_DIR/scripts/stage-review.sh" 1 1 --stage eval --round 1 \
+             --card-file "$FIX/$pr/card.md" --diff-file "$WORK/$id-$n.diff" --no-post \
+             > "$WORK/$id-$n.result.json" 2> "$WORK/$id-$n.stderr" </dev/null; then
+          rf="$(jq -r '.report_file // empty' "$WORK/$id-$n.result.json" 2>/dev/null)"
+          cost="$(jq -r '.cost_usd // 0' "$WORK/$id-$n.result.json" 2>/dev/null)"
+          if [ -n "$rf" ] && [ -f "$rf" ]; then
+            cp "$rf" "$WORK/$id-$n.report.md"
+            verdict="$(bash "$HERE/parse-result.sh" "$WORK/$id-$n.report.md" "$id")"
+          fi
+        fi
+        if [ "$verdict" = error ]; then
+          echo "[eval] $id run $n: stage-review.sh failed or returned no report; see $WORK/$id-$n.stderr" >&2
+          cat "$WORK/$id-$n.stderr" >&2
+          failed=1
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$class" "$n" "$MODEL_LABEL" "n/a" "$verdict" "$cost" >> "$RESULTS"
+      fi
+      n=$((n + 1)); continue
+    fi
     if [ "$DRY" = 1 ]; then
       echo "# defect=$id class=$class pr=$pr run=$n/$RUNS mutation=$MUTATION model=$MODEL"
       echo "$cmd"

@@ -133,8 +133,15 @@ assert_fast() {
   if [ "$LAST_SECS" -lt "$2" ]; then pass "$1"; else fail "$1" "took ${LAST_SECS}s, limit ${2}s (exit $LAST_EXIT)"; fi
 }
 
+# local_card N STATE BODY: seeds a card file in the local store of $REPO
+local_card() {
+  jq -n --argjson n "$1" --arg s "$2" --arg b "$3" \
+    '{number: $n, title: ("card " + ($n | tostring)), body: $b, state: $s, labels: [], next_comment_id: 1, comments: []}' \
+    > "$REPO/.fleet-board/cards/$1.json"
+}
+
 # setup_case CONFIG: a fresh repo (the payload's cwd) and a fresh fake gh.
-# CONFIG is one of: none, labels-human, labels-auto, hmb, bad-backend.
+# CONFIG is one of: none, labels-human, labels-auto, local-auto, hmb, bad-backend.
 setup_case() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -149,6 +156,25 @@ merge:
   policy: ${1#labels-}
 YML
       ;;
+    local-auto)
+      cat > "$REPO/.fleet-board.yml" << YML
+board:
+  backend: local
+  repo: acme/toy
+merge:
+  policy: auto
+worktrees:
+  dir: .fw
+YML
+      mkdir -p "$REPO/.fleet-board/cards"
+      echo 1 > "$REPO/.fleet-board/next"
+      local_card 12 backlog "## Acceptance
+- works"
+      local_card 13 backlog "just a body"
+      local_card 14 human_qa "## Acceptance
+- works"
+      ;;
+    stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
     bad-backend) cp "$CONFIG_FIXTURES/bad-backend.yml" "$REPO/.fleet-board.yml" ;;
     *) echo "setup_case: unknown config $1" >&2; exit 1 ;;
@@ -430,6 +456,29 @@ assert_blocked "ready-needs-acceptance: #13" "## Acceptance"
 assert_stderr_contains "ready-needs-acceptance: names #13" "#13"
 run_hook bash.json "board-move.sh 12 ready"
 assert_silent_allow "ready-needs-acceptance: #12"
+
+# ---------------------------------------------------------------------------
+# local backend: the gate accepts it and enforces the same rules
+setup_case local-auto
+pr_routes > "$ROUTES"
+run_hook bash.json "board-move.sh 14 done"
+assert_blocked "local: board-move.sh 14 done on a human_qa card" "card #14 is in Human QA"
+run_hook bash.json "board-move.sh 13 ready"
+assert_blocked "local: ready needs Acceptance (#13)" "## Acceptance"
+run_hook bash.json "board-move.sh 12 ready"
+assert_silent_allow "local: ready with Acceptance (#12)"
+run_hook bash.json "gh pr merge 5"
+assert_blocked "local: auto policy blocks a red PR" "not green"
+run_hook bash.json "gh pr merge 4"
+assert_silent_allow "local: auto policy allows a green PR"
+run_hook bash.json "gh pr merge 3"
+assert_blocked "local: auto policy blocks a draft PR" "draft"
+run_hook bash.json "gh issue edit 14 --add-label bug"
+if printf '%s' "$LAST_ERR" | grep -Fq "could not verify the board config"; then
+  fail "local: backend local is not 'could not verify the board config'" "$LAST_ERR"
+else
+  pass "local: backend local is not 'could not verify the board config'"
+fi
 
 # ---------------------------------------------------------------------------
 # AC4.6 subagent-payload-gated-identically: the same command from a subagent
@@ -1701,6 +1750,27 @@ assert_blocked "merge-only-reviewed: gh pr merge blocked under auto for a confli
 reviewed_head_case clean
 run_hook bash.json "gh pr merge 4 --squash"
 assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
+
+# ---------------------------------------------------------------------------
+# review stage columns under the existing rules. The gate's state list comes
+# from the config (STATE_NAMES), so a stage's label is a state label only with
+# the stages config: label edits on the human_qa card 14 prove it (G1), and a
+# routing label (needs-security-review) is no state.
+setup_case stages
+card_routes > "$ROUTES"
+# gate_move never checks the target name; card 12 is ready in the fixture
+run_hook bash.json "board-move.sh 12 review_security"
+assert_silent_allow "stage-move: board-move.sh 12 (ready) review_security"
+run_hook bash.json "board-move.sh 14 review_security"
+assert_blocked "stage-move: board-move.sh 14 review_security from human_qa" "Human QA"
+run_hook bash.json "gh issue edit 14 --add-label fleet:review_security"
+assert_blocked "stage-label: add fleet:review_security on the human_qa card" "Human QA"
+run_hook bash.json "gh issue edit 14 --add-label needs-security-review"
+assert_silent_allow "stage-label: routing label needs-security-review is no state move"
+run_hook bash.json "gh label delete fleet:review_security"
+assert_blocked "stage-label: deleting fleet:review_security" "state label"
+run_hook bash.json "gh label delete needs-security-review"
+assert_silent_allow "stage-label: deleting a routing label"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

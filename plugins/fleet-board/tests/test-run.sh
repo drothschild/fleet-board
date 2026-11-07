@@ -144,6 +144,7 @@ new_case() {
   C_CWD="$REPO"
   C_LOCALE=""
   C_TEST_BGJOB=""
+  C_LEDGER_FROM_ENV=""
   RUN_TMP="$T/tmp"; mkdir -p "$RUN_TMP"
 }
 
@@ -155,7 +156,8 @@ default_fixture() { cp "$FX/$1.jsonl" "$FC/default.jsonl"; }
 # wrapper (umask 022 so the log-mode checks do not depend on the caller's umask)
 case_env() {
   unset FLEET_BOARD_LOG_DIR FLEET_BOARD_PLUGIN_DIR FLEET_BOARD_TICK_PROMPT FLEET_BOARD_ISOLATE \
-    FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB || true
+    FLEET_BOARD_CLEANUP FAKE_CLEANUP_EXIT FLEET_BOARD_SETTLE FAKE_SETTLE_EXIT FLEET_BOARD_CONFIG FLEET_BOARD_TEST_BGJOB FLEET_BOARD_RUN_ID FAKE_CLAUDE_LEDGER || true
+  [ -z "${C_LEDGER_FROM_ENV:-}" ] && export FAKE_CLAUDE_LEDGER="$LOGS/provider-spend.jsonl"
   export HOME="$HOMEDIR" PATH="$BIN:$ORIG_PATH" FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" FAKE_CLAUDE_DIR="$FC"
   [ -n "$C_LOG_DIR" ] && export FLEET_BOARD_LOG_DIR="$C_LOG_DIR"
   [ -n "$C_PLUGIN_DIR" ] && export FLEET_BOARD_PLUGIN_DIR="$C_PLUGIN_DIR"
@@ -1028,6 +1030,191 @@ seq_fixture 2 tick-idle
 run_wrapper --repo "$REPO"
 assert_exit "children-without-fd3: exit 0" 0
 assert_eq "children-without-fd3: claude never had fd 3 open" "$(sort -u "$FC/fd3.log" 2>/dev/null)" "closed"
+
+# ---------------------------------------------------------------------------
+echo "provider spend: the ledger counts toward the tick cost"
+# ledger_fixture <n> <line>...: invocation n appends these ledger lines (@RUN@ = the run id)
+ledger_fixture() { local n="$1"; shift; printf '%s\n' "$@" > "$FC/$n.ledger"; }
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.10}' '{"run_id":"@RUN@","cost_usd":0.05}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "provider_spend_added_to_tick_cost: exit 0" 0
+assert_file_contains "provider_spend_added_to_tick_cost: tick 1 header carries the total and the provider part" "$LOG" "cost_estimate_usd=0.75 (estimate; provider 0.15) ==="
+assert_file_matches "provider_spend_added_to_tick_cost: tick 2 (no spend) header is plain" "$LOG" "^=== tick 2 $ISO rc=0 cost_estimate_usd=0\.1 \(estimate\) ===$"
+assert_stdout_contains "provider_spend_added_to_tick_cost: the stop line total" "cost_estimate_usd 0.85 (estimate)"
+RID="$(head -1 "$FC/runid.log" 2>/dev/null)"
+assert_true "run_id: exported to the tick as <epoch>-<pid>" sh -c 'printf "%s" "$1" | grep -qE "^[0-9]+-[0-9]+$"' _ "$RID"
+assert_eq "run_id: the same id on every tick" "$(sort -u "$FC/runid.log" | wc -l | tr -d ' ')" "1"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"1-2","cost_usd":5.00}' '{"run_id":null,"cost_usd":3.00}' '{"run_id":"@RUN@","cost_usd":0.20}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_file_contains "ledger_lines_from_other_runs_are_ignored: only this run's 0.20 counts" "$LOG" "cost_estimate_usd=0.8 (estimate; provider 0.2) ==="
+assert_stdout_contains "ledger_lines_from_other_runs_are_ignored: stop total" "cost_estimate_usd 0.9 (estimate)"
+
+new_case "max_cost_usd: 1"
+default_fixture tick-busy
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.50}'
+run_wrapper --repo "$REPO"
+assert_exit "provider_spend_trips_max_cost: exit 0" 0
+assert_stdout_contains "provider_spend_trips_max_cost: stops after 1 tick (0.6 alone would not)" "stopped: max-cost after 1 ticks"
+assert_stdout_contains "provider_spend_trips_max_cost: the combined total" "cost_estimate_usd 1.1 (estimate)"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+run_wrapper --repo "$REPO"
+assert_exit "missing_ledger_is_zero: exit 0" 0
+assert_stdout_contains "missing_ledger_is_zero: totals unchanged" "cost_estimate_usd 0.7 (estimate)"
+assert_false "missing_ledger_is_zero: no ledger created" test -e "$LOGS/provider-spend.jsonl"
+assert_stderr_not_contains "missing_ledger_is_zero: no warning" "provider-spend"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 'not json at all' '{"run_id":"@RUN@","cost_usd":"x"}' '{"run_id":"@RUN@","cost_usd":0.10}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "malformed_ledger_line_is_skipped_with_warning: exit 0" 0
+assert_stderr_contains "malformed_ledger_line_is_skipped_with_warning: warns on stderr" "provider-spend.jsonl"
+assert_file_contains "malformed_ledger_line_is_skipped_with_warning: warns in the log" "$LOG" "fleet-board-run: warning: skipped 2 malformed line(s)"
+assert_file_contains "malformed_ledger_line_is_skipped_with_warning: the good line still counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":-1}' '{"run_id":"@RUN@","cost_usd":0.10}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "negative_cost_line_is_malformed: exit 0" 0
+assert_file_contains "negative_cost_line_is_malformed: warns" "$LOG" "fleet-board-run: warning: skipped 1 malformed line(s)"
+assert_file_contains "negative_cost_line_is_malformed: only the good line counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":null,"cost_usd":3.00}' '{"cost_usd":1.00}' '{"run_id":"@RUN@","cost_usd":0.10}'
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "ledger_line_without_run_id_warns: exit 0" 0
+assert_eq "ledger_line_without_run_id_warns: once for tick 1" "$(grep -c 'warning: ledger line without a run id in tick 1; provider spend may be uncounted' "$LOG")" "1"
+assert_eq "ledger_line_without_run_id_warns: not for tick 2" "$(grep -c 'ledger line without a run id in tick 2' "$LOG")" "0"
+assert_file_contains "ledger_line_without_run_id_warns: this run's line still counts" "$LOG" "cost_estimate_usd=0.7 (estimate; provider 0.1) ==="
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+ledger_fixture 1 '{"run_id":"@RUN@","cost_usd":0.25}'
+mkdir -p "$T/other"
+C_CWD="$T/other"
+C_LOG_DIR="rel-logs"
+LOGS="$T/other/rel-logs"
+C_LEDGER_FROM_ENV=1
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "relative_log_dir_pins_one_ledger: exit 0" 0
+assert_file_contains "relative_log_dir_pins_one_ledger: the tick's ledger line is counted" "$LOG" "cost_estimate_usd=0.85 (estimate; provider 0.25) ==="
+assert_false "relative_log_dir_pins_one_ledger: nothing written under the repo" test -e "$REPO/rel-logs"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+mkdir -p "$LOGS/provider-spend.jsonl"
+run_wrapper --repo "$REPO"
+LOG="$(the_log "$LOGS")"
+assert_exit "unreadable_ledger_warns: exit 0 (the run goes on)" 0
+assert_stderr_contains "unreadable_ledger_warns: stderr names the ledger and unknown spend" "cannot read the provider ledger"
+assert_file_contains "unreadable_ledger_warns: the log has it" "$LOG" "provider spend for tick 1 is unknown and counted as 0"
+assert_stdout_contains "unreadable_ledger_warns: cost counts Claude only" "cost_estimate_usd 0.7 (estimate)"
+
+# ---------------------------------------------------------------------------
+echo "local board: the wrapper clears the active markers after each tick's session"
+new_case "max_consecutive_failures: 1"
+printf 'board: { backend: local, repo: acme/toy }\nlimits: { tick_interval: 0, max_consecutive_failures: 1 }\n' > "$REPO/.fleet-board.yml"
+mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
+echo 1 > "$REPO/.fleet-board/next"
+: > "$REPO/.fleet-board/active/3"
+seq_fixture 1 tick-error
+run_wrapper --repo "$REPO"
+assert_exit "active-cleared: a failed tick stops the run" 1
+assert_false "active-cleared: a role that crashed without a report is not left lit" test -e "$REPO/.fleet-board/active/3"
+assert_true "active-cleared: the directory stays" test -d "$REPO/.fleet-board/active"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$REPO/.fleet-board/active"
+: > "$REPO/.fleet-board/active/3"
+run_wrapper --repo "$REPO"
+assert_exit "active-github: exit 0" 0
+assert_true "active-github: a GitHub backend leaves the directory alone" test -e "$REPO/.fleet-board/active/3"
+
+# ---------------------------------------------------------------------------
+echo "run lock: one wrapper per repo"
+# lstart_of <pid>: the start time the lock records (ps lstart, C locale, UTC)
+lstart_of() { LC_ALL=C TZ=UTC ps -o lstart= -p "$1" | awk '{ $1 = $1; print }'; }
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+# Hold the claim guard while another wrapper attempts stale-owner recovery.
+# Run the wrapper directly as a subprocess so the guard is held throughout.
+(
+  case_env
+  python3 - "$LOGS/acme-toy.lock.guard" "$BASH_EXE" "$SCRIPT" --repo "$REPO" <<'PYTEST'
+import fcntl
+import subprocess
+import sys
+
+with open(sys.argv[1], "a") as guard:
+    fcntl.flock(guard, fcntl.LOCK_EX)
+    sys.exit(subprocess.run(sys.argv[2:], stdin=subprocess.DEVNULL, timeout=15).returncode)
+PYTEST
+) > "$T/guard.out" 2> "$T/guard.err"
+LAST_EXIT=$?
+assert_exit "run-lock: another claimant cannot recover a stale lock" 1
+assert_eq "run-lock: claim contention runs no tick" "$(count)" "absent"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock: a live holder refuses the start" 1
+assert_stderr_contains "run-lock: names the lock and the pid" "another run holds $LOGS/acme-toy.lock (pid $$)"
+assert_eq "run-lock: no tick ran" "$(count)" "absent"
+assert_eq "run-lock: the holder's lock is untouched" "$(sed -n 1p "$LOGS/acme-toy.lock")" "$$"
+assert_eq "run-lock: no run log" "$(find "$LOGS" -name '*.log' | wc -l | tr -d ' ')" "0"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock: a reused pid (other start time) is stale" 0
+assert_false "run-lock: the lock is removed on exit" test -e "$LOGS/acme-toy.lock"
+
+new_case
+seq_fixture 1 tick-idle
+FC_LOCKSEEN="$T/lockseen"
+printf '#!/bin/sh\ncat "%s/acme-toy.lock" > "%s"\nexec "%s" "$@"\n' "$LOGS" "$FC_LOCKSEEN" "$FAKE_CLAUDE" > "$T/claude-peek"
+chmod +x "$T/claude-peek"
+SAVED_FAKE_CLAUDE="$FAKE_CLAUDE"; FAKE_CLAUDE="$T/claude-peek"
+run_wrapper --repo "$REPO"
+FAKE_CLAUDE="$SAVED_FAKE_CLAUDE"
+assert_exit "run-lock: exit 0" 0
+assert_eq "run-lock: the tick saw two lines in the lock" "$(wc -l < "$FC_LOCKSEEN" 2>/dev/null | tr -d ' ')" "2"
+case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
+  *[0-9][0-9]:[0-9][0-9]:[0-9][0-9]*) pass "run-lock: line 2 is a ps start time" ;;
+  *) fail "run-lock: line 2 is a ps start time" "$(cat "$FC_LOCKSEEN" 2>/dev/null)" ;;
+esac
+assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
 
 echo ""
 echo "-----------------------------------"

@@ -286,7 +286,12 @@ elif grep -Eq '^(merge|worktrees|typecheck|qa_build):|^  (typecheck|qa_build|set
 else
   pass "labels-writes-valid-config: no keys for omitted flags"
 fi
-assert_stdout_exact "labels-writes-valid-config: stdout" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml"
+SCRIPTS_ABS="$(cd "$(dirname "$SCRIPT")" && pwd)"
+HINT_LINE="fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash $SCRIPTS_ABS/review-stages.sh setup"
+assert_stdout_exact "labels-writes-valid-config: stdout" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml
+$HINT_LINE"
+assert_stdout_contains "labels-writes-valid-config: stage hint names review-stages.sh setup" "then run: bash "
+assert_stdout_contains "labels-writes-valid-config: stage hint script path" "/review-stages.sh setup"
 assert_dir_listing "labels-writes-valid-config: no stray temp files" ".fleet-board.yml "
 
 # ---------------------------------------------------------------------------
@@ -910,7 +915,8 @@ else
   fail "cdpath-relative-dir: written in the relative --dir" "no $TARGET/parent/proj/.fleet-board.yml"
 fi
 assert_count "cdpath-relative-dir: CDPATH directory untouched" "$(ls -A "$TARGET/decoy/proj" | count_lines)" 0
-assert_stdout_exact "cdpath-relative-dir: stdout" "wrote $(cd "$TARGET/parent/proj" && pwd)/.fleet-board.yml"
+assert_stdout_exact "cdpath-relative-dir: stdout" "wrote $(cd "$TARGET/parent/proj" && pwd)/.fleet-board.yml
+$HINT_LINE"
 
 # cdpath-relative-script: init.sh run by a relative path still finds its own
 # directory when CDPATH holds a same-named "scripts" directory
@@ -1010,6 +1016,61 @@ if cmp -s "$TARGET/.fleet-board.yml" "$FAKE_GH_DIR/before.yml"; then
 else
   fail "env-not-inherited force: file byte-identical" "file changed"
 fi
+
+# ---------------------------------------------------------------------------
+# local backend: store setup, .gitignore, no labels
+setup_case
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes >> "$ROUTES"
+run_init --backend local --repo acme/toy --dir "$TARGET"
+assert_exit "local: exit 0" 0
+assert_cfg "local: config has backend local" board.backend "local"
+assert_cfg "local: config has the repo" board.repo "acme/toy"
+assert_count "local: cards dir exists" "$([ -d "$TARGET/.fleet-board/cards" ] && echo 1 || echo 0)" 1
+assert_count "local: next is 1" "$(cat "$TARGET/.fleet-board/next" 2>/dev/null)" 1
+assert_count "local: .gitignore has one .fleet-board/ line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore" 2>/dev/null)" 1
+assert_count "local: no label create" "$(calls_of label create | count_lines)" 0
+assert_count "local: no label call at all" "$(calls_of label list | count_lines)" 0
+
+# a second run keeps one ignore line and never resets an existing store
+echo 7 > "$TARGET/.fleet-board/next"
+echo '{"number":1}' > "$TARGET/.fleet-board/cards/1.json"
+run_init --backend local --repo acme/toy --dir "$TARGET" --force
+assert_exit "local: second run exit 0" 0
+assert_count "local: second run keeps one .fleet-board/ line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
+assert_count "local: second run does not reset next" "$(cat "$TARGET/.fleet-board/next")" 7
+assert_count "local: second run keeps the cards" "$([ -f "$TARGET/.fleet-board/cards/1.json" ] && echo 1 || echo 0)" 1
+
+# an existing .gitignore is appended to, not replaced
+setup_case
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes >> "$ROUTES"
+printf 'node_modules/\n.fleet-board/old\n' > "$TARGET/.gitignore"
+run_init --backend local --repo acme/toy --dir "$TARGET"
+assert_exit "local: existing .gitignore, exit 0" 0
+assert_count "local: existing .gitignore keeps its lines" "$(grep -cxF 'node_modules/' "$TARGET/.gitignore")" 1
+assert_count "local: a similar line does not count as present" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
+
+# only the repo scope is needed (no project scope)
+setup_case
+printf '%s\n' "  - Token scopes: 'repo'" > "$FAKE_GH_DIR/auth-repo-only.txt"
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FAKE_GH_DIR/auth-repo-only.txt
+ROUTESEOF
+default_routes >> "$ROUTES"
+run_init --backend local --repo acme/toy --dir "$TARGET"
+assert_exit "local: repo scope alone is enough" 0
+
+# the unknown-backend message names local
+setup_case
+run_init --backend bogus --repo acme/toy --dir "$TARGET"
+assert_exit "local: unknown backend exit 2" 2
+assert_stderr_contains "local: unknown backend message names local" "local"
+assert_stderr_contains "local: usage text names local" "github-labels|github-projects|local"
 
 # ---------------------------------------------------------------------------
 # usage-errors: exit 2, no gh calls, nothing written

@@ -539,6 +539,56 @@ run_parse "$REPORTS/findings-indented.md"
 assert_exit "findings-indented: exit 1" 1
 assert_stderr_contains "findings-indented: names the malformed line" "malformed finding line"
 
+# --- not_reproducible: a fixer status; the other roles reject it ---------------
+echo "not-reproducible"
+NR_DIR="$(mktemp -d)"
+trap 'rm -rf "$NR_DIR"' EXIT
+sed 's/^done$/not_reproducible/' "$REPORTS/fixer-ok.md" > "$NR_DIR/fixer-not-reproducible.md"
+sed 's/^clean$/not_reproducible/' "$REPORTS/reviewer-ok.md" > "$NR_DIR/reviewer-not-reproducible.md"
+sed 's/^done$/not_reproducible/' "$REPORTS/implementor-ok.md" > "$NR_DIR/implementor-not-reproducible.md"
+
+run_parse --role fixer "$NR_DIR/fixer-not-reproducible.md"
+assert_exit "fixer report with status not_reproducible is accepted: exit 0" 0
+assert_jq_exact "fixer not_reproducible: .status" '.status' '"not_reproducible"'
+
+run_parse --role reviewer "$NR_DIR/reviewer-not-reproducible.md"
+assert_exit "reviewer report with status not_reproducible is rejected: exit 1" 1
+assert_stderr_line "reviewer not_reproducible: names the status" "parse-report: role reviewer does not allow status: not_reproducible"
+
+run_parse --role implementor "$NR_DIR/implementor-not-reproducible.md"
+assert_exit "implementor report with status not_reproducible is rejected: exit 1" 1
+assert_stderr_line "implementor not_reproducible: names the status" "parse-report: role implementor does not allow status: not_reproducible"
+
+run_parse "$NR_DIR/fixer-not-reproducible.md"
+assert_exit "not_reproducible without --role: exit 0" 0
+
+# Valid only with no commits since the reviewed head
+run_parse --role fixer --commits-since-review 0 "$NR_DIR/fixer-not-reproducible.md"
+assert_exit "fixer not_reproducible with 0 commits since the reviewed head: exit 0" 0
+run_parse --role fixer --commits-since-review 2 "$NR_DIR/fixer-not-reproducible.md"
+assert_exit "fixer not_reproducible with 2 commits since the reviewed head: exit 1" 1
+assert_stderr_line "fixer not_reproducible with commits: names the rule" "parse-report: status not_reproducible needs no commits since the reviewed head, found 2"
+run_parse --role fixer --commits-since-review 2 "$REPORTS/fixer-ok.md"
+assert_exit "a done fixer report with commits since the reviewed head: exit 0" 0
+
+# --- stage-reviewer role -----------------------------------------------------
+echo "stage-reviewer"
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-ok.md"
+assert_exit "stage-reviewer-ok: exit 0" 0
+assert_jq "stage-reviewer-ok: acceptance_map null" '.acceptance_map == null'
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-findings.md"
+assert_exit "stage-reviewer-findings: exit 0" 0
+assert_jq "stage-reviewer-findings: counts" '.counts.important == 1'
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-clean-with-critical.md"
+assert_exit "stage-reviewer clean+critical: exit 1" 1
+assert_stderr_line "stage-reviewer clean+critical: message" "parse-report: status clean needs zero Critical and Important findings, found 1"
+run_parse --role stage-reviewer "$REPORTS/stage-reviewer-done.md"
+assert_stderr_line "stage-reviewer done: not allowed" "parse-report: role stage-reviewer does not allow status: done"
+run_parse --role stage-reviewer "$REPORTS/reviewer-missing-mutation.md"
+assert_exit "stage-reviewer: a full reviewer report without Mutation passes" 0
+run_parse --role nope "$REPORTS/stage-reviewer-ok.md"
+assert_stderr_line "usage names the role" "parse-report: usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer] [--commits-since-review <n>] <file>"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

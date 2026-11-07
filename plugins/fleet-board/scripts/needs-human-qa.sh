@@ -73,26 +73,11 @@ if [ "$TRUNCATED" = true ]; then
   exit 0
 fi
 
-# matches <path> <pattern>
-matches() {
-  local path="$1" pat="${2//\*\*/*}"
-  # shellcheck disable=SC2254 # the pattern is a glob on purpose
-  case "$path" in $pat) return 0 ;; esac
-  case "$2" in
-    '**/'*)
-      pat="${2#\*\*/}"
-      pat="${pat//\*\*/*}"
-      case "$path" in $pat) return 0 ;; esac
-      ;;
-  esac
-  return 1
-}
-
 while IFS= read -r path; do
   [ -n "$path" ] || continue
   while IFS= read -r pat; do
     [ -n "$pat" ] || continue
-    if matches "$path" "$pat"; then
+    if fb_glob_match "$path" "$pat"; then
       echo true
       exit 0
     fi

@@ -12,6 +12,8 @@ When `models.implementor` and `models.reviewer` are the same, every tick warns t
 
 Unset by default. A command that checks the environment works, for example that a generated client is current or a service answers. `tick-plan.sh` runs it once per tick, from the repo root, before planning. When it exits non-zero, the plan holds every card (no start, review, fix or other action), `dispatchable` is false so the loop stops, and the plan carries one warning, `preflight failed: <command> (exit <n>)`, followed by the last 20 lines of the output. No card's state or `action_failures` changes. When it exits 0 the plan is the same as with the key unset. Settle plans never run it.
 
+Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is unset, and `review-stages.sh setup` creates the stage labels.
+
 ## `merge.policy`
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the manager merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA. Headless runs merge too: `scripts/merge-reviewed.sh` runs after each tick, outside any Claude session, and merges the same PRs (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
@@ -45,6 +47,115 @@ board:
 
 Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with a `## Acceptance` section drafted from the finding, so the next tick can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). The Acceptance command is the first backticked span with a non-blank character; spans are paired single backticks, so a detail with an odd number of backticks or a double backtick has none. An out-of-scope item with no such span, or whose detail holds the words `no testable check` (even beside a backticked path, and even when quoted), gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. Roles are told to write the check command before any other backticked text; a backticked file path written first is taken as the command, and invisible characters inside a span are not checked. A follow-up whose detail says "depends on this card" carries `## Depends on` naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
 
+## `review.stages`
+
+Empty by default, so every existing config keeps its behavior. Each entry adds a board column after In Review, with its own reviewer, for checks the evidence reviewer does not make (security, UX, compliance). A stage names either an `agent` (a Claude subagent) or a `provider` (see [`providers`](#providers)); it sets exactly one.
+
+```yaml
+review:
+  max_rounds: 3
+  stages:
+    - name: security                  # required; ^[a-z][a-z0-9_]*$; unique
+      agent: acme:security-reviewer   # an agent, or provider (below), not both
+      model: opus                     # default: models.reviewer
+      paths: ["src/auth/**", "**/*.sql"]  # default []: routed by label only
+      label: needs-security-review    # default: needs-<name>-review
+      advisory: false                 # default false
+      max_rounds: 2                   # default: review.max_rounds
+      brief: "Focus on authz, secrets, injection."  # optional; passed verbatim
+    - name: compliance
+      provider: openai                # instead of agent
+      model: <model id, passed verbatim>
+      price: { input: 1.25, output: 10 }   # USD per million tokens; required
+      timeout: 600                    # seconds; default 600
+      max_output_tokens: 16000        # default 16000
+      max_diff_bytes: 400000          # default 400000
+```
+
+A stage is the state `review_<name>`, in config order between `in_review` and `human_qa`. On the labels backend its column is the label `fleet:review_<name>`; on Projects it is the Status option `Review: <name>`. `board.states.review_<name>` renames it; a `review_` key naming no stage is rejected.
+
+**Routing.** A stage applies to a card when the card carries the stage's label, or when a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next tick retries. A person can add a label before a stage begins to force a visit; a stage already reviewed is not visited again. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
+
+**Re-matching.** Routing adds labels once, but a fixer's commit or a later push can touch a stage's `paths` after it. So at every clean, current review (in In Review or a stage column) `tick-plan.sh` runs `review-stages.sh match <pr>`, which reads the PR's files now and adds no label, and counts each stage those files match as routed. The next stage is the first one in config order that is routed, is not the current column and is not in the note's `reviewed_stages`; it can be a stage before the current column that was never visited. The trade-off: removing a label skips a stage only when its `paths` do not match the PR's current files. A stage whose globs match cannot be skipped that way; a label-only stage (empty `paths`) still can. A failed `match` skips the card for the tick (`lookup failed: review-stages.sh match <pr>`).
+
+**Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). It creates each stage's routing label on both backends and its state label on the labels backend. On Projects it checks the Status field has a column for each stage and exits 1 naming the missing ones; add them by hand, or map the stage onto an existing column with `board.states`.
+
+**Flow.** A card whose evidence review is clean moves to the first routed stage (`advance_stage`) and is reviewed there in the same tick. Critical or Important findings go to the fixer and the same stage re-reviews, up to the stage's `max_rounds`; then the card is Blocked. A clean stage moves the card to the next routed stage, then to Human QA, a ready PR or a merge exactly as before.
+
+**Advisory.** An `advisory: true` stage posts its report and its findings are read as clean: its findings never send the card to a fixer or block it. A provider stage fails closed even when advisory: a diff over `max_diff_bytes` or with no text hunks (`stage-review.sh` exit 7) blocks the card, and repeated provider failures (exits 1, 3 and 6 count as report errors) block it under the `action_failures` rule like any other stage.
+
+**Trade-off.** A finding is fixed and re-reviewed in its own stage only. Earlier stages are not re-run, so a later stage's fix is not seen again by the evidence reviewer or by an earlier stage. The reviewed-heads rule still applies: a PR is merged only at a head some reviewer saw, so a fix that lands after the last review is reviewed again before it merges.
+
+**A provider stage** takes `model`, `price`, `timeout`, `max_output_tokens` and `max_diff_bytes` (below) in place of `agent`, and the manager runs it with `stage-review.sh` instead of dispatching an agent. It sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider, and nothing else from the repo: it has no tools and no worktree, so it runs no tests.
+
+## `models.reviewer`
+
+A model string selects the Claude evidence reviewer and defaults to `opus`. To run
+evidence review through a command provider, configure it as follows.
+
+```yaml
+models:
+  reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 }, timeout: 1500 }
+  escalation: opus
+```
+
+The provider must define a `review_command`. Set both non-negative prices and
+an escalation model. The timeout is an integer from 1 to 1500 seconds and
+defaults to 1500. Both attempts share this timeout. The Codex preset restricts
+writes to the scratch clone, where the runner sets the provider's `TMPDIR`.
+Custom review commands must provide equivalent isolation. With this form,
+each agent review stage must set its own model.
+
+## `providers`
+
+A review stage names either an `agent` (a Claude subagent) or a `provider` (a model reached over an OpenAI-compatible chat API). A stage sets exactly one; `config.sh` exits 5 with `review.stages[<i>] must set exactly one of agent and provider` otherwise.
+
+```yaml
+providers:                       # optional; a preset name needs no entry
+  corp:
+    base_url: <an https address>
+    api_key_env: CORP_LLM_KEY
+    max_tokens_param: max_tokens # or max_completion_tokens (the default)
+review:
+  stages:
+    - name: security
+      provider: openai
+      model: <model id, passed verbatim>
+      price: { input: 1.25, output: 10 }   # USD per million tokens
+```
+
+Built-in presets are `openai`, `gemini`, `openrouter`, `ollama` and `codex` (a command provider, below); their values are in `scripts/providers/presets.json`. A `providers.<name>` entry is merged over the preset key by key, so `providers.openai.api_key_env: WORK_OPENAI` keeps the preset's `base_url`. The merged output holds an entry for every provider named by a stage or the evidence reviewer, or defined in the file. A provider the file defines that no stage uses prints a warning on stderr and changes nothing else.
+
+| Key | Rule |
+|---|---|
+| provider name | matches `^[a-z][a-z0-9_-]*$` |
+| `base_url` | an https address, or an http address whose host is `localhost`, `127.0.0.1` or `[::1]` with an optional numeric port; no userinfo (`user@`) in either (`base_url must not contain userinfo`). `chat.sh` repeats both checks before any request |
+| `api_key_env` | the name of an environment variable, matching `^[A-Z_][A-Z0-9_]*$`; `null` only for a loopback `base_url` |
+| `max_tokens_param` | `max_tokens` or `max_completion_tokens`; ignored when `command` is set |
+| `command` | optional string run with `sh -c` instead of an HTTP call, with `{model}` replaced by the stage's `model`. Needs `base_url` and `api_key_env` to be null (`providers.<name> sets both command and base_url`, `providers.<name>.api_key_env must be null when command is set`, both exit 5) |
+| `review_command` | optional command for evidence review in a scratch clone. Requires `{dir}` and supports `{model}`. Exclusive with `base_url`. Sandbox bypass flags and `danger-full-access` are forbidden. |
+
+If a stage's `api_key_env` variable is unset or empty, `tick-plan.sh` warns once (`stage <name>: <ENV> is not set; provider reviews will fail`) and plans that stage's `review_stage` as `wait` with the reason `stage <name>: <ENV> is not set`, so the card is not failed every tick; a card entering the stage still moves, and its review waits until the variable is set. To make the whole plan hold instead, add a preflight check (see [`commands.preflight`](#commandspreflight)): `test -n "$OPENAI_API_KEY"`, and for stage labels `review-stages.sh setup`.
+
+Config never holds a key. `api_key`, `key`, `token` and `secret` under a provider are rejected, and the message does not repeat the value.
+
+A provider stage also takes `model` (required), `price` with non-negative `input` and `output` (required, so the cost ceiling never counts unpriced spend as zero), and three positive integers: `timeout` (seconds, default `600`), `max_output_tokens` (default `16000`) and `max_diff_bytes` (default `400000`). An agent stage has `provider: null` and `price: null`, and defaults `model` to `models.reviewer` when it is a string.
+
+**A command provider** (an entry with `command`, such as the `codex` preset) runs a local program instead of calling an HTTP API. `chat.sh` joins the prompt's system and user text, system first, and writes it to the command's stdin with the repo root as the working directory. Stdout is the reply; a non-zero exit or an empty stdout is a provider failure (exit 1, the command's stderr on stderr), and the stage's `timeout` applies to the command. The reply carries no token counts, so `stage-review.sh` records `input_tokens` and `output_tokens` as `null` in the ledger and counts `cost_usd` as 0; give such a stage `price: { input: 0, output: 0 }`. The model id must match `^[A-Za-z0-9][A-Za-z0-9._:/-]*$`, since it is placed into the command line. The `codex` preset is `codex exec --skip-git-repo-check -s read-only -m {model}`: it reviews under the Codex CLI's own login (a ChatGPT subscription, no API key) and needs `codex` on `PATH`.
+
+```yaml
+providers:
+  codex: {}                      # or omit; the preset is built in
+review:
+  stages:
+    - name: second-opinion
+      provider: codex
+      model: gpt-6-astra
+      price: { input: 0, output: 0 }
+```
+
+**Data egress.** A provider stage sends the card body, the stage's `brief`, the round, the previous round's Critical and Important findings, the latest implementor or fixer report and the PR diff (the prompt is `scripts/providers/stage-review-prompt.md`) to that provider. A command provider sends the same card, findings, report and diff to the program it runs, and whatever that program forwards (the `codex` preset sends them to OpenAI through the Codex CLI). A Codex evidence reviewer can read the whole repository and sends what it reads to OpenAI through the Codex CLI. Use a provider only for repos whose code and cards you may send to it.
+
 ## `limits` for the headless wrapper
 
 `fleet-board-run.sh` reads `limits.max_hours`, `max_cost_usd`, `tick_interval`, `max_consecutive_failures` and `max_turns` (see [overnight.md](overnight.md)). Three more keys deal with the GitHub quota. `config.sh` exits 5 when any of them is not a non-negative number.
@@ -54,6 +165,14 @@ Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card
 | `limits.rate_limit_max_wait` | `3600` | total seconds a run may spend waiting for rate limits to reset; a wait that would pass it stops the run (`rate-limit-wait-cap`, exit 1) |
 | `limits.rate_limit_margin` | `5` | seconds added after the reset time before the next tick |
 | `limits.min_tick_gap` | `0` | minimum seconds between tick starts across runs sharing one token (the whole-second part is used); `0` is off |
+
+## `board.dir` and `board.port`
+
+Both apply only when `board.backend` is `local`.
+
+`board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
+
+`board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
 
 ## Finding the file
 

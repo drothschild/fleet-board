@@ -250,3 +250,10 @@ inside it. A markdown double-backtick span, or an odd number of backticks, gives
 because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
 command were present. When the command cannot be written that way, the entry uses the words
 `no testable check`. The entry rule says so.
+
+## Revision 18 requirements (2026-11-03, weakening outside a test body)
+
+The ban on changing existing tests also covers weakening outside a test's body: a changed or
+no-op test helper, a changed fixture or expected-output file, a new top-level setup hook such as
+a `beforeEach` that stubs the code under test, `describe(` changed to `describe.skip(`, and a new
+`test.only(...)` block or other `.only` marker. The Must-never list names them too.

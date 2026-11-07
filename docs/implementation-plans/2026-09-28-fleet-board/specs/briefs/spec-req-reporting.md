@@ -228,3 +228,15 @@ inside it. A markdown double-backtick span, or an odd number of backticks, gives
 because `parse-report.sh` pairs single backticks only, and the rejection then reads as if no
 command were present. When the command cannot be written that way, the entry uses the words
 `no testable check`. The entry rule says so.
+
+## Revision 17 requirements (2026-11-06, PR #174: review stages and provider stages)
+
+A new report role, `stage-reviewer`, for a review stage's report: the report of the stage's own agent, or the `report_file` that `stage-review.sh` printed for a provider-backed stage. `parse-report.sh --role stage-reviewer` requires `## Status` (`clean` or `findings`), `## Findings`, `## For the card` and exactly one `VERIFIED:` line, with the same line rules, and no `## Acceptance map`, `## Mutation` or `## Claim check`. The spec text is in `specs/reporting.md`; write each item where the spec puts it. Nothing else in the file changes.
+
+1. The role list (Purpose, and the Inputs role name) names `stage-reviewer` and what it is for.
+2. A provider-backed stage is never re-dispatched: `stage-review.sh` already re-asked its model once.
+3. Rule table row `role <role> does not allow status: <word>`: `clean` and `findings` are for the reviewer and the stage-reviewer.
+4. Rule table row `role <role> requires ## <section>`: the stage-reviewer has no role sections, so this message never names it.
+5. Rows `status clean needs ...` and `status findings needs ...`: they hold for the stage-reviewer as for the reviewer.
+6. Report section: Status values by role, Role sections (stage-reviewer: none), and the With `--role` rule name the stage-reviewer; the rejection-messages usage line reads `[--role implementor|reviewer|fixer|stage-reviewer]`.
+7. Role-specific table: a `stage-reviewer` row (`clean`/`findings`, no role sections, no `## PR` rule).

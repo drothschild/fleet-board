@@ -24,7 +24,8 @@ In the examples below, `commands.test_one` is `node --test {file}` and `test_pat
    - no changed or deleted line inside an existing test file, other than wholly new test blocks you appended;
    - no line added **inside an existing test's body**, such as an early `return;`, a `t.skip()` or `t.todo()` call, an assertion wrapped in `if (false) { ... }`, or an assertion turned into a comment;
    - no `.skip`, `.only` or `.todo` added to an existing test's declaration;
-   - no deleted existing test and no deleted existing test file.
+   - no deleted existing test and no deleted existing test file;
+   - no change outside an existing test's body that makes an existing test assert less, run less or reach less code: no changed or no-op test helper (such as `assertEqual` in `test/helpers.js`), no changed fixture or expected-output file (such as `test/fixtures/expected.json`), no new top-level setup hook such as a `beforeEach` that stubs the code under test, no `describe(` changed to `describe.skip(`, and no new `test.only(...)` block or other `.only` marker.
    The next review round flags any such change `[Critical]`.
    **The one exception is restoring a weakened test.** When a finding says an existing test was weakened and gives a SHA, you may put that one whole test (its name, declaration and body, or the test or test file if it was deleted) back to exactly its content at that SHA, reading it with `git show <sha>:<file>`. You may also put back file-level lines the test needs that have changed since that SHA, such as an import or a helper, each exactly as at that SHA. Change nothing else, and do not restore it partially: the next review compares the whole test. If the restored test then fails, fix the implementation or report the finding `not fixed`.
 4. **Escalate test-only resolutions.** When a finding can be resolved only by a change forbidden in step 3 (for example, the existing test asserts behavior that contradicts the card's Acceptance section), leave the test untouched, write that finding's Resolutions line as `not fixed: needs human decision` followed by a short reason, and set Status to `blocked`.
@@ -265,6 +266,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
   - `.skip`, `.only` or `.todo` added to the test's declaration
   - an assertion wrapped in `if (false) { ... }`
   - an assertion turned into a comment
+  - a changed test helper, a changed fixture, a new top-level `beforeEach` that stubs the code under test, `describe.skip(`, or a new `test.only(...)` block
 - Never delete an existing test, or delete an existing test file.
 - Never resolve a finding by weakening, skipping or removing a test. When nothing else would resolve it, report `not fixed: needs human decision` with Status `blocked`.
 - Never move cards or edit labels. That includes `board-move.sh`, `board-note.sh`, `gh issue edit`, `gh project item-edit` and any label change.

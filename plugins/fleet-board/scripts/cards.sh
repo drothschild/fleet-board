@@ -59,11 +59,12 @@ case "$SUB" in
     fb_valid_number "${POS[0]}" || fb_die 2 "card number must be numeric, got: ${POS[0]}; $USAGE" ;;
   move)
     [ ${#POS[@]} -eq 2 ] || fb_die 2 "$USAGE"
-    fb_valid_number "${POS[0]}" || fb_die 2 "card number must be numeric, got: ${POS[0]}; $USAGE"
-    fb_valid_state "${POS[1]}" || fb_die 2 "invalid state: ${POS[1]}; $USAGE" ;;
+    fb_valid_number "${POS[0]}" || fb_die 2 "card number must be numeric, got: ${POS[0]}; $USAGE" ;;
 esac
 
 fb_load_config
+# after the config loads: the valid states include its review stages
+[ "$SUB" != move ] || fb_valid_state "${POS[1]}" || fb_die 2 "invalid state: ${POS[1]}; $USAGE"
 if [ -n "$REPO" ]; then
   lc_repo="$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')"
   lc_cfg="$(printf '%s' "$FLEET_REPO" | tr '[:upper:]' '[:lower:]')"
