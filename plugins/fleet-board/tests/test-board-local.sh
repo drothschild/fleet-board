@@ -315,6 +315,73 @@ assert_exit "report comment exit 0" 0
 if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "comment removes the active marker"; else fail "comment removes the active marker" "still present"; fi
 if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card's marker"; else fail "comment leaves another card's marker" "removed"; fi
 
+# --- atomic write: a reader never sees a partial card ---
+setup_case; seed_card 1 backlog 'Atomic' "$(head -c 20000 /dev/zero | tr '\0' x)"
+AW="$(mktemp)"; CLEANUP_DIRS+=("$AW"); cp "$REPO/.fleet-board/cards/1.json" "$AW"
+STOP="$REPO/stop-writer"
+( cd "$REPO" && bash -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"
+  while [ ! -e "$1" ]; do fl_write_card 1 "$2"; done' _ "$STOP" "$AW" ) >/dev/null 2>&1 &
+WRITER=$!
+BAD=0
+for i in $(seq 1 200); do
+  jq -e 'type == "object" and (keys | join(",")) == "body,comments,created_at,labels,next_comment_id,number,state,title"' \
+    "$REPO/.fleet-board/cards/1.json" >/dev/null 2>&1 || BAD=$((BAD + 1))
+done
+: > "$STOP"; wait "$WRITER" 2>/dev/null
+if [ "$BAD" -eq 0 ]; then pass "reader sees a complete card on all 200 parses during writes"; else fail "reader sees a complete card on all 200 parses during writes" "$BAD of 200 parses failed"; fi
+
+# --- next counter edge cases ---
+for v in 0 -3 007; do
+  setup_case; printf '%s\n' "$v" > "$REPO/.fleet-board/next"
+  run_check_in "$REPO" "$SCRIPTS/board-create.sh" T "$body"
+  assert_exit "next '$v' fails create" 1
+  assert_stderr_contains "next '$v' names the next file" "next"
+done
+setup_case; printf '7 \n' > "$REPO/.fleet-board/next"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" T "$body"
+assert_exit "next with trailing space succeeds" 0
+assert_stdout_contains "next with trailing space allocates 7" '"number":7'
+
+# --- a card file that is valid JSON but not an object ---
+setup_case; seed_card 1 backlog 'Real' 'x'; echo '[]' > "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_exit "read fails closed on a [] card" 1
+assert_stderr_contains "read names the [] card file" "2.json"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
+assert_exit "list fails closed on a [] card" 1
+assert_stderr_contains "list names the [] card file" "2.json"
+
+# --- eight concurrent creates allocate eight distinct numbers ---
+setup_case; CO="$(mktemp -d)"; CLEANUP_DIRS+=("$CO")
+for i in 1 2 3 4 5 6 7 8; do (cd "$REPO" && bash "$SCRIPTS/board-create.sh" "C$i" "$body" > "$CO/$i.out" 2>/dev/null) & done; wait
+got="$(cat "$CO"/*.out | jq -r .number | sort -n | tr '\n' ' ')"
+if [ "$got" = "1 2 3 4 5 6 7 8 " ]; then pass "eight concurrent creates give numbers 1 through 8"; else fail "eight concurrent creates give numbers 1 through 8" "got: $got"; fi
+
+# --- racing notes leave exactly one marker comment ---
+setup_case; seed_card 1 backlog 'Race' 'x'; rn="$(mktemp)"; CLEANUP_DIRS+=("$rn"); echo 'racing note' > "$rn"
+for i in 1 2; do (cd "$REPO" && bash "$SCRIPTS/board-note.sh" 1 "$rn" >/dev/null 2>&1) & done; wait
+assert_card_json 1 '[.comments[] | select(.body | startswith("<!-- fleet-board:manager-note -->"))] | length' 1
+
+# --- an empty note file still writes a marker comment ---
+setup_case; seed_card 1 backlog 'Empty note' 'x'; en="$(mktemp)"; CLEANUP_DIRS+=("$en"); : > "$en"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$en"
+assert_exit "empty note file exits 0" 0
+assert_card_json 1 '[.comments[] | select(.body | startswith("<!-- fleet-board:manager-note -->"))] | length' 1
+
+# --- edit on a card without a labels key ---
+setup_case; seed_card 1 backlog 'No labels' 'x'
+jq 'del(.labels)' "$REPO/.fleet-board/cards/1.json" > "$REPO/card.tmp" && mv "$REPO/card.tmp" "$REPO/.fleet-board/cards/1.json"
+et="$(mktemp)"; CLEANUP_DIRS+=("$et"); echo T2 > "$et"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$et" "" '["a","b"]'
+assert_exit "edit on a card with no labels key exits 0" 0
+assert_card_json 1 '.labels|join(",")' a,b
+
+# --- a comment without a trailing newline round-trips byte for byte ---
+setup_case; seed_card 1 backlog 'Bytes' 'x'; nc="$(mktemp)"; CLEANUP_DIRS+=("$nc"); printf 'no newline at end' > "$nc"
+run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$nc"
+jq -j '.comments[0].body' "$REPO/.fleet-board/cards/1.json" > "$REPO/out.bin"
+if cmp -s "$nc" "$REPO/out.bin"; then pass "comment without trailing newline round-trips byte for byte"; else fail "comment without trailing newline round-trips byte for byte" "bytes differ"; fi
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
