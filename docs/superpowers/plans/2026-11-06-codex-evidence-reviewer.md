@@ -1,6 +1,6 @@
 # Command-Provider Evidence Reviewer Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers (any agent):** Read `AGENTS.md` and the two `CLAUDE.md` files it names, then the spec below. Implement this plan task by task, in order. Steps use checkbox (`- [ ]`) syntax: tick each one in this file as you finish it, and commit after each task. Stop and ask a person before Task 6 Step 4 and Task 7 Steps 3 and 4, which spend money.
 
 **Goal:** Let `models.reviewer` name a command provider (Codex, `gpt-6-astra`) that runs the full evidence review, mutation included, in a sandboxed scratch clone, in place of the Claude reviewer subagent.
 
