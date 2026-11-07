@@ -13,31 +13,34 @@ if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || ! git -C "$ROOT" rev-
   echo "skip - no git checkout with origin/main (installed plugin)"
   exit 0
 fi
-# A merge makes HEAD and origin/main identical. Inspect the newest commit that
-# actually changed either version, and verify it raised both manifest versions.
+# On a feature branch, compare to the branch point. On merged main, inspect
+# each manifest's most recent version change; the two bumps may be separate.
+base=$(git -C "$ROOT" merge-base HEAD origin/main) || exit 1
 pj_ver() { sed -n 's/^  "version": "\([^"]*\)".*/\1/p' | head -1; }
 mk_ver() { awk '/"source": "\.\/plugins\/fleet-board"/{f=1} f && /"version"/{gsub(/.*"version": "|".*/,""); print; exit}'; }
-
-pv=$(pj_ver < "$ROOT/plugins/fleet-board/.claude-plugin/plugin.json")
-mv=$(mk_ver < "$ROOT/.claude-plugin/marketplace.json")
-found=0
-while IFS= read -r commit; do
-  parent=$(git -C "$ROOT" rev-parse -q --verify "$commit^" 2>/dev/null) || continue
-  old_pv=$(git -C "$ROOT" show "$parent:plugins/fleet-board/.claude-plugin/plugin.json" 2>/dev/null | pj_ver)
-  old_mv=$(git -C "$ROOT" show "$parent:.claude-plugin/marketplace.json" 2>/dev/null | mk_ver)
-  new_pv=$(git -C "$ROOT" show "$commit:plugins/fleet-board/.claude-plugin/plugin.json" | pj_ver)
-  new_mv=$(git -C "$ROOT" show "$commit:.claude-plugin/marketplace.json" | mk_ver)
-  [ "$old_pv" = "$new_pv" ] && [ "$old_mv" = "$new_mv" ] && continue
-  found=1
-  if [ "$new_pv" = "$pv" ] && [ "$new_mv" = "$mv" ] &&
-    jq -en --arg a "$new_pv" --arg b "$old_pv" --arg c "$new_mv" --arg d "$old_mv" \
-      'def v: split(".") | map(tonumber); ($a | v) > ($b | v) and ($c | v) > ($d | v)' >/dev/null 2>&1; then
-    ok "both manifests were bumped to $pv in $commit"
-  else
-    bad "latest version change in $commit does not bump both manifests to current versions"
+greater() {
+  jq -en --arg a "$1" --arg b "$2" \
+    'def v: split(".") | map(tonumber); ($a | v) > ($b | v)' >/dev/null 2>&1
+}
+check_file() {
+  local label="$1" path="$2" parser="$3" current old commit parent newer found=0
+  current=$("$parser" < "$ROOT/$path")
+  if [ "$base" != "$(git -C "$ROOT" rev-parse HEAD)" ]; then
+    old=$(git -C "$ROOT" show "$base:$path" | "$parser")
+    if [ -n "$current" ] && greater "$current" "$old"; then ok "$label bumped from $old to $current"; else bad "$label was not bumped from $old"; fi
+    return
   fi
-  break
-done < <(git -C "$ROOT" log --format=%H --no-merges HEAD -- \
-  plugins/fleet-board/.claude-plugin/plugin.json .claude-plugin/marketplace.json)
-[ "$found" = 1 ] || bad "no version-changing commit found"
+  while IFS= read -r commit; do
+    parent=$(git -C "$ROOT" rev-parse -q --verify "$commit^" 2>/dev/null) || continue
+    old=$(git -C "$ROOT" show "$parent:$path" 2>/dev/null | "$parser")
+    newer=$(git -C "$ROOT" show "$commit:$path" | "$parser")
+    [ "$old" = "$newer" ] && continue
+    found=1
+    if [ "$current" = "$newer" ] && greater "$newer" "$old"; then ok "$label bumped from $old to $current"; else bad "$label latest version change was not an increase to current version"; fi
+    break
+  done < <(git -C "$ROOT" log --format=%H --no-merges HEAD -- "$path")
+  [ "$found" = 1 ] || bad "$label has no version-changing commit"
+}
+check_file plugin.json plugins/fleet-board/.claude-plugin/plugin.json pj_ver
+check_file marketplace.json .claude-plugin/marketplace.json mk_ver
 exit $fail
