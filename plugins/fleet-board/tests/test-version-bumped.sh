@@ -14,6 +14,9 @@ if ! git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || ! git -C "$ROOT" rev-
   exit 0
 fi
 base=$(git -C "$ROOT" merge-base HEAD origin/main) || { echo "skip - no merge-base"; exit 0; }
+if [ "$base" = "$(git -C "$ROOT" rev-parse HEAD)" ]; then
+  bad "version reference resolves to current HEAD after merge"
+fi
 
 pj_ver() { sed -n 's/^  "version": "\([^"]*\)".*/\1/p' | head -1; }
 mk_ver() { awk '/"source": "\.\/plugins\/fleet-board"/{f=1} f && /"version"/{gsub(/.*"version": "|".*/,""); print; exit}'; }
