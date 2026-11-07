@@ -898,7 +898,7 @@ function renderDrawer(card) {
     ? { title: "", body: "", labels: [], state: "backlog", acceptance: [], blocked_by: [], pr_url: null }
     : {
         title: card.title || "",
-        body: typeof card.body_prose === "string" ? card.body_prose : card.body || "",
+        body: typeof card.body === "string" ? card.body : "",
         labels: (card.labels || []).slice(),
         state: card.state,
         acceptance: (Array.isArray(card.acceptance) ? card.acceptance : []).slice(),

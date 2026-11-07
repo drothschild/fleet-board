@@ -705,7 +705,7 @@ gate_move() {
     block "card #$n is in Human QA; only a human may move it out (on the board page)"
   fi
   if [ "$st" = ready ] && ! has_acceptance; then
-    block "card #$n has no '## Acceptance' section"
+    block "card #$n has no acceptance criteria (its acceptance field is empty)"
   fi
 }
 

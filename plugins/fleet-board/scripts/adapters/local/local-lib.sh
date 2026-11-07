@@ -136,22 +136,6 @@ fl_split_body() {
        outside: [$refs[] | select(.o != null) | .o]}'
 }
 
-# fl_render_card_json: reads one card JSON on stdin; prints (no extra newline)
-# its body with "## Acceptance" and "## Depends on" put back from the fields.
-# A card whose fields are both empty prints its stored body untouched.
-# Transitional: readers still parse the sections; removed with Task 7.
-fl_render_card_json() {
-  jq -j '
-    def sec($h; $items): if ($items | length) == 0 then null else $h + "\n" + ($items | map("- " + .) | join("\n")) end;
-    (.acceptance // []) as $a | ((.blocked_by // []) | map("#" + tostring)) as $d
-    | if ($a | length) == 0 and ($d | length) == 0 then (.body // "")
-      else [(.body // "" | sub("\n+$"; "") | select(. != "")), sec("## Acceptance"; $a), sec("## Depends on"; $d)]
-           | map(select(. != null)) | join("\n\n") + "\n" end'
-}
-
-# fl_render_body <card-file>: see fl_render_card_json.
-fl_render_body() { fl_render_card_json < "$1"; }
-
 # fl_acceptance_json <file>: the bullets (a leading "- " or "* " is optional)
 # of an acceptance file as a JSON array of trimmed, non-empty strings.
 fl_acceptance_json() {

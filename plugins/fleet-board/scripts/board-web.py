@@ -678,31 +678,12 @@ def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict) 
     }
 
 
-def render_body(card: dict) -> str:
-    """The body with the Acceptance and Depends on sections put back from the
-    fields (mirrors fl_render_card_json; transitional, as there)."""
-    body = card.get("body") if isinstance(card.get("body"), str) else ""
-    acc = [a for a in (card.get("acceptance") or []) if isinstance(a, str)]
-    blk = [b for b in (card.get("blocked_by") or []) if isinstance(b, int)]
-    if not acc and not blk:
-        return body
-    parts = [body.rstrip("\n")] if body.rstrip("\n") else []
-    if acc:
-        parts.append("## Acceptance\n" + "\n".join("- " + a for a in acc))
-    if blk:
-        parts.append("## Depends on\n" + "\n".join("- #%d" % b for b in blk))
-    return "\n\n".join(parts) + "\n"
-
-
 def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     alive = run_alive()
     card = read_card(dir, n)
     note = parse_note(card)
     out = dict(card)
-    # body: rendered with the sections (transitional, until read.sh stops
-    # rendering); body_prose: the stored prose, which the page edits.
-    out["body"] = render_body(card)
-    out["body_prose"] = card.get("body") if isinstance(card.get("body"), str) else ""
+    out["body"] = card.get("body") if isinstance(card.get("body"), str) else ""
     out["acceptance"] = card_acceptance(card)
     out["blocked_by"] = card_blocked_by(card)
     out["active"] = is_active(dir, n, alive)
