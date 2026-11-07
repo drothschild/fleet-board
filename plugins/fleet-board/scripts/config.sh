@@ -257,20 +257,27 @@ VALIDATION_SCRIPT='
             else
               (("api_key", "key", "token", "secret") as $k
                 | if $v | has($k) then "providers.\($n).\($k) is not allowed; name an environment variable in api_key_env" else empty end),
-              # The authority (after the scheme, up to the first / ? # or end)
-              # must hold no userinfo ("localhost:@evil.example" is a request to
-              # evil.example). A plain-http host must itself be loopback, with
-              # an optional numeric port.
-              ((($v.base_url | type) == "string" and ($v.base_url | test("^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@"))) as $userinfo
-                | (($v.base_url | type) == "string" and ($userinfo | not)
-                   and ($v.base_url | test("^(https://[^/?#]|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"))) as $url_ok
-                | (if $userinfo then "providers.\($n).base_url must not contain userinfo"
-                   elif $url_ok | not then "providers.\($n).base_url must start with https:// or a loopback http:// address" else empty end),
-                  (if $v.api_key_env == null then
-                    (if ($url_ok and ($v.base_url | startswith("http://"))) | not then "providers.\($n).api_key_env may be null only for a loopback base_url" else empty end)
-                   elif ($v.api_key_env | type) != "string" or ($v.api_key_env | test("^[A-Z_][A-Z0-9_]*$") | not) then "providers.\($n).api_key_env must match ^[A-Z_][A-Z0-9_]*$"
-                   else empty end)),
-              (if $v.max_tokens_param != "max_tokens" and $v.max_tokens_param != "max_completion_tokens" then "providers.\($n).max_tokens_param must be max_tokens or max_completion_tokens" else empty end)
+              (if $v | has("command") then
+                (if ($v.command | type) != "string" or $v.command == "" then "providers.\($n).command must be a non-empty string" else empty end),
+                (if $v.base_url != null then "providers.\($n) sets both command and base_url" else empty end),
+                (if $v.api_key_env != null then "providers.\($n).api_key_env must be null when command is set" else empty end)
+              else
+                # The authority (after the scheme, up to the first / ? # or end)
+                # must hold no userinfo ("localhost:@evil.example" is a request to
+                # evil.example). A plain-http host must itself be loopback, with
+                # an optional numeric port.
+                ((($v.base_url | type) == "string" and ($v.base_url | test("^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*@"))) as $userinfo
+                  | (($v.base_url | type) == "string" and ($userinfo | not)
+                     and ($v.base_url | test("^(https://[^/?#]|http://(localhost|127\\.0\\.0\\.1|\\[::1\\])(:[0-9]+)?(/|$))"))) as $url_ok
+                  | (if $userinfo then "providers.\($n).base_url must not contain userinfo"
+                     elif $url_ok | not then "providers.\($n).base_url must start with https:// or a loopback http:// address" else empty end),
+                    (if $v.api_key_env == null then
+                      (if ($url_ok and ($v.base_url | startswith("http://"))) | not then "providers.\($n).api_key_env may be null only for a loopback base_url" else empty end)
+                     elif ($v.api_key_env | type) != "string" or ($v.api_key_env | test("^[A-Z_][A-Z0-9_]*$") | not) then "providers.\($n).api_key_env must match ^[A-Z_][A-Z0-9_]*$"
+                     else empty end)),
+                (if $v.max_tokens_param != "max_tokens" and $v.max_tokens_param != "max_completion_tokens" then "providers.\($n).max_tokens_param must be max_tokens or max_completion_tokens" else empty end)
+
+              end)
             end)
        end),
       (if (.merge | type) == "object" then
