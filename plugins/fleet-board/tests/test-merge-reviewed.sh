@@ -61,7 +61,19 @@ setup_case() {
   FAKE_GH_DIR="$(mktemp -d)"
   FX="$FAKE_GH_DIR/fx"
   mkdir -p "$FX" "$FAKE_GH_DIR/bin"
-  ln -s "$SCRIPT_DIR/fake-gh.sh" "$FAKE_GH_DIR/bin/gh"
+  FAKE_GH_REAL="$SCRIPT_DIR/fake-gh.sh"; export FAKE_GH_REAL
+  unset FAKE_MERGE_QUEUED
+  cat > "$FAKE_GH_DIR/bin/gh" <<'GH'
+#!/usr/bin/env bash
+bash "$FAKE_GH_REAL" "$@"
+rc=$?
+if [ "$rc" = 0 ] && [ "$1 $2" = 'pr merge' ] && [ "${FAKE_MERGE_QUEUED:-}" != 1 ]; then
+  jq '.state="MERGED"' "$FAKE_GH_DIR/fx/pr-$3.json" > "$FAKE_GH_DIR/fx/merged.json"
+  mv "$FAKE_GH_DIR/fx/merged.json" "$FAKE_GH_DIR/fx/pr-$3.json"
+fi
+exit "$rc"
+GH
+  chmod +x "$FAKE_GH_DIR/bin/gh"
   PATH="$FAKE_GH_DIR/bin:$ORIG_PATH"
   FAKE_GH_ROUTES="$FAKE_GH_DIR/routes"
   export FAKE_GH_DIR FAKE_GH_ROUTES PATH
@@ -351,6 +363,21 @@ VERIFY
 FAKE_GH_REAL="$SCRIPT_DIR/fake-gh.sh" run_merge
 assert_exit "ambiguous merge: red main stops" 3
 assert_eq "ambiguous merge: no second merge" "$(cnt 'pr merge 35 ')" 0
+
+setup_pair
+FAKE_MERGE_QUEUED=1 run_merge
+assert_exit "queue acceptance is not a completed merge" 3
+assert_eq "queued PR never marked done" "$(cnt 'add-label fleet:done')" 0
+assert_eq "queued PR stops later merges" "$(cnt 'pr merge 35 ')" 0
+
+setup_case auto
+card 12 in_review "$(jq -c '.action_failures=10 | .main_check={commit:"abc1234",ok:false,results:[]} | .pending_followups={pr:34,bugs:[],out_of_scope:[]}' <<<"$CLEAN")"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
+assert_eq "verification precedes failure blocks and followups" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
 
 echo ""
 echo "-----------------------------------"
