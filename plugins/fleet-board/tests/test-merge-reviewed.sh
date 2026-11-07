@@ -379,6 +379,11 @@ finalize
 plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
 assert_eq "verification precedes failure blocks and followups" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
 
+run_merge
+assert_exit "recovered followups: verification succeeds" 0
+assert_eq "recovered followups: no duplicate merge" "$(cnt 'pr merge ')" 0
+assert_eq "recovered followups: stay in review for filing" "$(cnt 'add-label fleet:done')" 0
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
