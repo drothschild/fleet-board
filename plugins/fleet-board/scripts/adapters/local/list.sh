@@ -7,13 +7,23 @@ set -uo pipefail
 STATE="$1"
 fl_require_store
 CARDS="$(fl_cards_dir)"
-OUT="[]"
-for f in "$CARDS"/*.json; do
-  [ -e "$f" ] || continue
-  ITEM="$(jq -ce 'select(type == "object") | {number, title, state}' "$f" 2>/dev/null)" \
-    || fb_die 1 "card file is not valid JSON: $f"
-  OUT="$(jq -c --argjson i "$ITEM" '. + [$i]' <<<"$OUT")"
-done
+shopt -s nullglob
+FILES=("$CARDS"/*.json)
+if [ "${#FILES[@]}" -eq 0 ]; then
+  printf '[]\n'
+  exit 0
+fi
+OUT="$(jq -c -n --argjson count "${#FILES[@]}" '
+  [inputs | {file: input_filename, card: .}]
+  | if length == $count and (map(.file) | unique | length) == $count
+       and all(.[]; .card | type == "object")
+    then map(.card | {number, title, state})
+    else error("each card file must contain exactly one object") end' ${FILES[@]+"${FILES[@]}"} 2>/dev/null)" || {
+  for f in ${FILES[@]+"${FILES[@]}"}; do
+    jq -s -e 'length == 1 and (.[0] | type == "object")' "$f" >/dev/null 2>&1 || fb_die 1 "card file is not valid JSON: $f"
+  done
+  fb_die 1 "cannot read the card files in $CARDS"
+}
 PORT="$(fb_cfg board.port)"
 jq -c --arg s "$STATE" --arg p "$PORT" \
   '[.[] | select(.state == $s)] | sort_by(.number) | map({number, title, url: ("http://127.0.0.1:" + $p + "/cards/" + (.number | tostring))})' <<<"$OUT"

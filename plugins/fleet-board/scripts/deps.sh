@@ -57,6 +57,9 @@ esac
 
 fb_load_config
 . "$FLEET_SCRIPTS/adapters/github-projects/common.sh"
+BACKEND="$(fb_cfg board.backend)"
+FLEET_REPO_LC="$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')"
+[ "$BACKEND" = local ] && . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
 
 # parse_body <file>: one "R<TAB>token" line per bullet that is a dependency and
 # one "W<TAB>line" per other nonblank line of the section
@@ -84,11 +87,10 @@ lookup_failed() { printf 'deps-lookup-failed: %s\n' "$1" >&2; exit 1; }
 # check_ref <repo> <number>: prints {"met": bool, "status": s, "not_planned": bool}
 check_ref() {
   local repo="$1" num="$2" cmd out state reason item pstatus status="" met=false np=false card
-  if [ "$(fb_cfg board.backend)" = local ] \
-     && [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ]; then
-    . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
+  if [ "$BACKEND" = local ] \
+     && [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$FLEET_REPO_LC" ]; then
     card="$(fl_read_card "$num" 2>/dev/null)" || lookup_failed "local card #$num"
-    state="$(jq -r '.state // ""' <<<"$card" 2>/dev/null)" || lookup_failed "local card #$num"
+    state="$(jq -r 'if (.state | type) == "string" then .state else error("no state") end' <<<"$card" 2>/dev/null)" || lookup_failed "local card #$num"
     case "$state" in
       done) met=true ;;
       wont_do) np=true; status=wont_do ;;
@@ -110,7 +112,7 @@ check_ref() {
     if [ "$state" = OPEN ]; then status=open
     elif [ -n "$reason" ]; then status="closed as $(printf '%s' "$reason" | tr 'A-Z_' 'a-z ')"
     else status=closed; fi
-    if [ "$(fb_cfg board.backend)" = github-projects ]; then
+    if [ "$BACKEND" = github-projects ]; then
       item="$(fp_item_for "$num" "$repo" 2>/dev/null)" || lookup_failed "gh api graphql (project items of $repo#$num)"
       pstatus="${item#*$'\t'}"
       if [ -n "$item" ] && [ -n "$pstatus" ]; then

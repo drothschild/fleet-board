@@ -137,6 +137,40 @@ assert_card_json() {
 
 assert_card_state() { assert_card_json "$1" '.state' "$2"; }
 
+# Run only the list-hardening regressions with --list-hardening.
+list_hardening() {
+  for invalid in null '[]' true 17 '' '   ' '{} {}'; do
+    setup_case
+    seed_card 1 backlog Valid body
+    printf '%s\n' "$invalid" > "$REPO/.fleet-board/cards/2.json"
+    run_check_in "$REPO" "$BASH_EXE" "$SCRIPTS/board-list.sh" backlog
+    assert_exit "list rejects non-object $invalid" 1
+    assert_stderr_contains "list names corrupt file $invalid" '2.json'
+  done
+  setup_case
+  if python3 - "$REPO" "$SCRIPTS/board-list.sh" <<'PYTEST'
+import os, subprocess, sys
+script = os.path.abspath(sys.argv[2])
+p = subprocess.Popen(['bash', script, 'backlog'], cwd=sys.argv[1],
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+try:
+    p.wait(timeout=3)
+    out, err = p.communicate()
+    assert p.returncode == 0 and out.strip() == b'[]', (p.returncode, out, err)
+except subprocess.TimeoutExpired:
+    p.kill()
+    p.communicate()
+    raise AssertionError('empty board listing waited for stdin to close')
+PYTEST
+  then pass "empty list returns [] with stdin held open"
+  else fail "empty list returns [] with stdin held open" "listing failed or blocked"; fi
+}
+list_hardening
+if [ "${1:-}" = --list-hardening ]; then
+  printf 'passed: %s failed: %s\n' "$PASS" "$FAIL"
+  [ "$FAIL" -eq 0 ]; exit $?
+fi
+
 echo "Test: local board backend"
 echo ""
 
@@ -314,6 +348,54 @@ rm -f "$report"
 assert_exit "report comment exit 0" 0
 if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "comment removes the active marker"; else fail "comment removes the active marker" "still present"; fi
 if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card's marker"; else fail "comment leaves another card's marker" "removed"; fi
+
+# --- hardening (card 191) ---
+setup_case
+seed_card 1 ready "Nullbody" "b"
+jq '.comments = [{id: 1, author: "x", body: null, created_at: "2026-01-01T00:00:00Z"}, {id: 2, author: "y", body: "hello", created_at: "2026-01-01T00:00:00Z"}] | .next_comment_id = 3' \
+  "$REPO/.fleet-board/cards/1.json" > "$REPO/.fleet-board/cards/1.tmp" && mv "$REPO/.fleet-board/cards/1.tmp" "$REPO/.fleet-board/cards/1.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_exit "read: a comment with a null body exits 0" 0
+assert_json "read: a comment with a null body still returns the other comments" '[.comments[] | select(.body == "hello")] | length' 1
+nbody="$(mktemp)"; printf 'note text\n' > "$nbody"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$nbody"
+assert_exit "note: a card with a null-body comment succeeds" 0
+rm -f "$nbody"
+
+# list: 500 cards, fast, identical to the previous per-card implementation
+setup_case
+i=1
+while [ "$i" -le 500 ]; do
+  case $((i % 3)) in 0) st=done ;; 1) st=ready ;; *) st=backlog ;; esac
+  seed_card "$i" "$st" "Card $i" "b"
+  i=$((i + 1))
+done
+ref_list() {
+  local f item out="[]"
+  for f in "$REPO/.fleet-board/cards"/*.json; do
+    item="$(jq -ce 'select(type == "object") | {number, title, state}' "$f")"
+    out="$(jq -c --argjson i "$item" '. + [$i]' <<<"$out")"
+  done
+  jq -c --arg s "$1" --arg p 8765 \
+    '[.[] | select(.state == $s)] | sort_by(.number) | map({number, title, url: ("http://127.0.0.1:" + $p + "/cards/" + (.number | tostring))})' <<<"$out"
+}
+EXPECTED="$(ref_list done)"
+T0=$SECONDS
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" done
+ELAPSED=$((SECONDS - T0))
+assert_exit "list: 500 cards exit 0" 0
+assert_stdout_exact "list: 500 cards listing matches the previous implementation" "$EXPECTED"
+if [ "$ELAPSED" -lt 3 ]; then pass "list: 500 cards in under 3 seconds"; else fail "list: 500 cards in under 3 seconds" "took ${ELAPSED}s"; fi
+
+# shared next-comment-id helper
+LOCALDIR="$SCRIPTS/adapters/local"
+if grep -q 'fl_next_comment_id' "$SCRIPTS/adapters/local/local-lib.sh" \
+   && grep -q 'fl_next_comment_id' "$LOCALDIR/comment.sh" && grep -q 'fl_next_comment_id' "$LOCALDIR/note.sh"; then
+  pass "comment.sh and note.sh call the shared fl_next_comment_id helper"
+else fail "comment.sh and note.sh call the shared fl_next_comment_id helper" "helper missing"; fi
+if grep -q 'max // 0' "$LOCALDIR/comment.sh" "$LOCALDIR/note.sh"; then
+  fail "no inline next_comment_id fallback in comment.sh or note.sh" "inline fallback found"
+else pass "no inline next_comment_id fallback in comment.sh or note.sh"; fi
 
 echo ""
 echo "-----------------------------------"

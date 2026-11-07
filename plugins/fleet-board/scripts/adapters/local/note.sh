@@ -15,14 +15,14 @@ trap 'rm -f "$BODY" "$TMP"; rm -rf "$FB_LOCK"' EXIT
   printf '%s\n' "$FB_MARKER"
   cat "$2"
 } > "$BODY"
-jq --arg m "$FB_MARKER" --arg me "$ME" --rawfile b "$BODY" --arg now "$(fl_now)" '
+ID="$(fl_next_comment_id "$CARD")" || fb_die 1 "cannot read the comments of card #$N"
+jq --argjson id "$ID" --arg m "$FB_MARKER" --arg me "$ME" --rawfile b "$BODY" --arg now "$(fl_now)" '
   (.comments // []) as $cs
-  | ([range(0; $cs | length) | select($cs[.].body | startswith($m)) | select($cs[.].author == $me)] | last) as $i
+  | ([range(0; $cs | length) | select(($cs[.].body | type) == "string" and ($cs[.].body | startswith($m))) | select($cs[.].author == $me)] | last) as $i
   | if $i != null then
       .comments[$i].body = $b | .comments[$i].updated_at = $now
     else
-      (.next_comment_id // (($cs | map(.id) | max // 0) + 1)) as $id
-      | .comments = $cs + [{id: $id, author: $me, body: $b, created_at: $now}]
+      .comments = $cs + [{id: $id, author: $me, body: $b, created_at: $now}]
       | .next_comment_id = $id + 1
     end
   | .updated_at = $now' <<<"$CARD" > "$TMP" \
