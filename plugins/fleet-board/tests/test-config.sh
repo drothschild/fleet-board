@@ -755,7 +755,7 @@ REPO="$(printf 'board: { repo: a/b }\n%s\n' "$reviewer_cfg" | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "reviewer object is accepted" 0
 assert_stdout_exact_jq "reviewer timeout defaults" '.models.reviewer.timeout' '1500'
-assert_stdout_exact_jq "codex review command preset" '.providers.codex.review_command' '"codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=false -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c sandbox_workspace_write.exclude_slash_tmp=true -C {dir} -m {model}"'
+assert_stdout_exact_jq "codex review command preset" .providers.codex.review_command '"codex exec --ephemeral --skip-git-repo-check -s workspace-write -c sandbox_workspace_write.network_access=true -c sandbox_workspace_write.exclude_tmpdir_env_var=true -c sandbox_workspace_write.exclude_slash_tmp=true -c features.network_proxy.enabled=true -c features.network_proxy.allow_local_binding=true -c '"'"'features.network_proxy.proxy_url=\"http://127.0.0.1:0\"'"'"' -c '"'"'features.network_proxy.socks_url=\"http://127.0.0.1:0\"'"'"' -c '"'"'features.network_proxy.domains={\"localhost\"=\"allow\",\"127.0.0.1\"=\"allow\",\"::1\"=\"allow\"}'"'"' -C {dir} -m {model}"'
 REPO="$(printf 'board: { repo: a/b }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "default reviewer is accepted" 0
