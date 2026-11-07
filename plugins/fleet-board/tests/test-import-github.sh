@@ -89,7 +89,7 @@ setup_repo() {
 no_write_calls() {
   local bad
   bad="$(cut -f2- "$FAKE_GH_DIR/calls.log" 2>/dev/null \
-    | grep -E 'issue (edit|create|comment|close|delete|reopen|transfer)|label (create|edit|delete)|project item-(edit|add|archive|delete)|-X (POST|PATCH|PUT|DELETE)|--method' )"
+    | grep -E 'issue (edit|create|comment|close|delete|reopen|transfer)|label (create|edit|delete)|project item-(edit|add|archive|delete)|-X ?(POST|PATCH|PUT|DELETE)|--method|--request|(^| )(-f|-F|--field|--raw-field|--input)( |=|$)|(^| )-[fF][^ ]' )"
   assert_eq "$1" "$bad" ""
 }
 
@@ -128,6 +128,13 @@ assert_eq "labels: #14 outside dependency kept as prose" "$(jq -r .body <<<"$C14
 assert_eq "labels: #14 blocked_by empty" "$(jq -c .blocked_by <<<"$C14" 2>/dev/null)" "[]"
 assert_eq "labels: #14 has no pr_url" "$(jq -r .pr_url <<<"$C14" 2>/dev/null)" "null"
 no_write_calls "labels: the fake logged no write verb"
+# the check itself catches every write form (so it can fail)
+for w in "issue edit 12" "api -XPOST repos/acme/toy/issues/12/comments" "api -X PATCH x" "api repos/x -f body=y" \
+         "api repos/x -fbody=y" "api repos/x --raw-field a=b" "api repos/x --input -" "api graphql -F q=1"; do
+  printf 'x\t%s\n' "$w" > "$FAKE_GH_DIR/probe.log"
+  hit="$(cut -f2- "$FAKE_GH_DIR/probe.log" | grep -cE 'issue (edit|create|comment|close|delete|reopen|transfer)|label (create|edit|delete)|project item-(edit|add|archive|delete)|-X ?(POST|PATCH|PUT|DELETE)|--method|--request|(^| )(-f|-F|--field|--raw-field|--input)( |=|$)|(^| )-[fF][^ ]')"
+  assert_eq "write check catches: $w" "$hit" "1"
+done
 assert_eq "labels: issues were listed (open and closed)" "$(grep -c 'issue list --repo acme/toy --state all' "$FAKE_GH_DIR/calls.log")" "1"
 assert_eq "labels: no comments read for the skipped issue" "$(grep -c 'issues/15/comments' "$FAKE_GH_DIR/calls.log")" "0"
 
@@ -145,6 +152,15 @@ printf '40\n' > "$STORE/next"
 run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy --force
 assert_exit "refusal: --force run exits 0" 0
 assert_eq "refusal: --force keeps a higher next" "$(tr -d '[:space:]' < "$STORE/next")" "40"
+
+echo "import-github: next is written under the lock fl_next_number takes"
+setup_repo labels
+mkdir "$STORE/.next.lock"
+FLEET_BOARD_LOCK_WAIT=1 run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy
+assert_exit "next lock: a held .next.lock stops the next write (exit 1)" 1
+assert_stderr_contains "next lock: names the lock" ".fleet-board/.next.lock after 1s"
+assert_eq "next lock: next untouched while the lock is held" "$(tr -d '[:space:]' < "$STORE/next")" "1"
+rmdir "$STORE/.next.lock"
 
 echo "import-github: --dry-run writes nothing"
 setup_repo labels
@@ -191,6 +207,8 @@ assert_eq "projects: #21 state from Review: <stage>" "$(jq -r .state "$STORE/car
 assert_eq "projects: #20 state Done" "$(jq -r .state "$STORE/cards/20.json" 2>/dev/null)" "done"
 assert_eq "projects: #19 state from a configured column name" "$(jq -r .state "$STORE/cards/19.json" 2>/dev/null)" "in_progress"
 assert_eq "projects: an issue off the project is not imported" "$([ -e "$STORE/cards/22.json" ] && echo yes)" ""
+assert_eq "projects: an item with no Status is not imported" "$([ -e "$STORE/cards/18.json" ] && echo yes)" ""
+assert_stderr_contains "projects: an item with no Status is warned as not on the board" "#18 is not on the board; not imported"
 assert_eq "projects: #21 labels kept" "$(jq -c .labels "$STORE/cards/21.json" 2>/dev/null)" '["needs-security-review"]'
 assert_eq "projects: #21 acceptance" "$(jq -c .acceptance "$STORE/cards/21.json" 2>/dev/null)" '["bad passwords are refused"]'
 assert_eq "projects: #19 blocked_by from the board-repo ref" "$(jq -c .blocked_by "$STORE/cards/19.json" 2>/dev/null)" '[20]'

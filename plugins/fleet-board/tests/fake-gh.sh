@@ -19,6 +19,8 @@
 # Blank lines and lines starting with '#' are ignored.
 # The first matching glob wins.
 # Paths starting with '/' are absolute; others are relative to the routes file's directory.
+# A fixture whose name ends in .stderr is written to stderr instead of stdout
+# (an error reply, such as a rate-limit message).
 
 set -uo pipefail
 
@@ -120,11 +122,11 @@ while IFS=$'\t' read -r glob exit_code fixture; do
         exit "$exit_code"
       else
         # Resolve relative paths
-        if [[ "$fixture" == /* ]]; then
-          cat "$fixture" || die "cannot read fixture: $fixture" 1
-        else
-          cat "$routes_dir/$fixture" || die "cannot read fixture: $fixture" 1
-        fi
+        [[ "$fixture" == /* ]] || fixture="$routes_dir/$fixture"
+        case "$fixture" in
+          *.stderr) cat "$fixture" >&2 || die "cannot read fixture: $fixture" 1 ;;
+          *) cat "$fixture" || die "cannot read fixture: $fixture" 1 ;;
+        esac
         exit "$exit_code"
       fi
       ;;

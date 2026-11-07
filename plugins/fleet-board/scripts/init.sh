@@ -12,11 +12,11 @@
 #   1 - refused (gh not logged in or missing the repo scope, existing config
 #       without --force, a rendered config that fails config.sh --check, or
 #       the store could not be created)
+#   2 - usage error
 #
 # The board is always local: cards are files under <DIR>/<board.dir> (created,
 # never reset, and kept out of git). gh is still needed, logged in with the
 # repo scope, for the PRs.
-#   2 - usage error
 #
 # Nothing is written until the final step. On every non-zero exit the
 # target .fleet-board.yml is unchanged, and it does not exist if it did not

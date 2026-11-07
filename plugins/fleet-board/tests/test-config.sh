@@ -282,12 +282,12 @@ run_config "$REPO"
 assert_exit "anchor exit 4" "4"
 assert_stderr_contains "anchor names file and line" ".fleet-board.yml: line 2: anchors, aliases and tags are not supported"
 
-# Test 11: bad-backend.yml
-REPO="$(make_test_repo bad-backend.yml)"
+# Test 11: removed-backend-key.yml (a backend key the board no longer has)
+REPO="$(make_test_repo removed-backend-key.yml)"
 CLEANUP_DIRS+=("$REPO")
 run_config "$REPO"
-assert_exit "bad backend exit 5" "5"
-assert_stderr_contains "bad backend stderr mentions backend" "board.backend"
+assert_exit "removed-backend-key.yml fixture: exit 5" "5"
+assert_stderr_contains "removed-backend-key.yml fixture: names the removed key" "board.backend is no longer a setting"
 rm -rf "$REPO"
 
 
@@ -683,7 +683,7 @@ invalid_field_case "command empty" "providers: { mycmd: { command: \"\" } }"$'\n
 # a local board: accepted, defaults filled, board.dir and board.port validated
 REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_exit "local backend exit 0" "0"
+assert_exit "a local board config: exit 0" "0"
 assert_key "$REPO" "board.dir" ".fleet-board" "board.dir default"
 assert_key "$REPO" "board.port" "8765" "board.port default"
 REPO="$(printf 'board:\n  repo: acme/toy\n  dir: /tmp/x\n' | make_inline_repo)"

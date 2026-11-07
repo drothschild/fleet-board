@@ -224,8 +224,10 @@
 # by the last 20 lines of its output. No card's state or
 # action_failures changes. A zero exit leaves the plan as if the key were unset.
 #
-# Rate limit failures: when the script fails and its stderr names a GitHub rate
-# limit, it asks gh api rate_limit for the reset time and adds the line
+# Rate limit failures: a card lookup (gh pr ...) that failed while gh named a
+# GitHub rate limit fails the whole plan (exit 1, no plan printed), since every
+# card's lookups would fail alike. When the script fails and its stderr names a
+# GitHub rate limit, it asks gh api rate_limit for the reset time and adds the line
 # "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
 # fleet-board-run.sh waits out. If that query fails, nothing is added. A
 # failure that is not a rate limit never gets the line.
@@ -640,6 +642,12 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_
     card_input "$st" "$n" "$TITLE" >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$n"
   done
 done
+
+# A lookup that failed on a GitHub rate limit fails the plan, so the wrapper
+# waits out the reset (finish adds "resets at") instead of skipping the cards
+if grep -qi 'rate limit' "$ERR_FILE" && jq -se 'any(.[]; .lookup_failed != null)' "$CARDS_FILE" >/dev/null 2>&1; then
+  fb_die 1 "a GitHub lookup hit a rate limit; no plan printed"
+fi
 
 # Provider stages whose API key variable is unset or empty (checked here, so
 # jq never reads the environment); a provider with a null api_key_env is skipped

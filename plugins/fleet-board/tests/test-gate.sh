@@ -143,7 +143,7 @@ local_card() {
 }
 
 # setup_case CONFIG: a fresh repo (the payload's cwd) and a fresh fake gh.
-# CONFIG is one of: none, human, auto, local-auto, hmb, bad-backend.
+# CONFIG is one of: none, human, auto, local-auto, hmb, invalid (a config config.sh refuses).
 # human, auto, stages and hmb: a local store whose cards 12 (ready, with
 # acceptance), 13 (ready, none) and 14 (human_qa) come from the issue fixtures
 # card_routes names (tests/routes-store.sh); human and auto set merge.policy.
@@ -190,7 +190,7 @@ YML
       ;;
     stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
-    bad-backend) cp "$CONFIG_FIXTURES/bad-backend.yml" "$REPO/.fleet-board.yml" ;;
+    invalid) cp "$CONFIG_FIXTURES/removed-backend-key.yml" "$REPO/.fleet-board.yml" ;;
     *) echo "setup_case: unknown config $1" >&2; exit 1 ;;
   esac
   case "$1" in
@@ -310,7 +310,7 @@ assert_no_calls "non-bash-tool: no gh calls"
 # sentinel is live.
 setup_case human
 card_routes > "$ROUTES"
-export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/bad-backend.yml"
+export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/removed-backend-key.yml"
 run_hook bash.json "npm test -- --runTestsByPath a.test.ts"
 assert_silent_allow "ordinary-command-fast-path"
 assert_no_calls "ordinary-command-fast-path: no gh calls"
@@ -491,7 +491,7 @@ subagent_same "draft" "gh pr merge 3 --squash" "draft"
 
 # ---------------------------------------------------------------------------
 # invalid-config-fails-closed
-setup_case bad-backend
+setup_case invalid
 { card_routes; pr_routes; } > "$ROUTES"
 run_hook bash.json "gh pr merge 4"
 assert_blocked "invalid-config-fails-closed: gh pr merge 4" "invalid"
@@ -974,7 +974,7 @@ done
 # an ordinary command (the invalid-config sentinel is never read)
 setup_case human
 card_routes > "$ROUTES"
-export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/bad-backend.yml"
+export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/removed-backend-key.yml"
 for c in 'ls *.md && [ -f x ] && echo {a,b}.txt' 'ls scripts/*.sh tests/*.sh' 'wc -l *.sh *.md'; do
   run_hook bash.json "$c"
   assert_silent_allow "pattern-command-word: ordinary globs: $c"

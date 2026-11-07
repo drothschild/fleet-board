@@ -1,6 +1,51 @@
 [
-  {"number": 22, "title": "Not on the project", "state": "OPEN", "body": "Loose issue.", "labels": [], "createdAt": "2026-09-01T10:00:00Z", "updatedAt": "2026-09-01T10:00:00Z"},
-  {"number": 21, "title": "Harden login", "state": "OPEN", "body": "Check it.\n\n## Acceptance\n- bad passwords are refused\n", "labels": [{"name": "needs-security-review"}], "createdAt": "2026-10-05T10:00:00Z", "updatedAt": "2026-10-06T10:00:00Z"},
-  {"number": 20, "title": "Old work", "state": "CLOSED", "body": "Done long ago.", "labels": [], "createdAt": "2026-08-01T10:00:00Z", "updatedAt": "2026-08-02T10:00:00Z"},
-  {"number": 19, "title": "Next up", "state": "OPEN", "body": "Then this.\n\n## Acceptance\n- it works\n\n## Depends on\n- acme/toy#20\n- #22\n", "labels": [], "createdAt": "2026-10-07T10:00:00Z", "updatedAt": "2026-10-07T10:00:00Z"}
+ {
+  "number": 22,
+  "title": "Not on the project",
+  "state": "OPEN",
+  "body": "Loose issue.",
+  "labels": [],
+  "createdAt": "2026-09-01T10:00:00Z",
+  "updatedAt": "2026-09-01T10:00:00Z"
+ },
+ {
+  "number": 21,
+  "title": "Harden login",
+  "state": "OPEN",
+  "body": "Check it.\n\n## Acceptance\n- bad passwords are refused\n",
+  "labels": [
+   {
+    "name": "needs-security-review"
+   }
+  ],
+  "createdAt": "2026-10-05T10:00:00Z",
+  "updatedAt": "2026-10-06T10:00:00Z"
+ },
+ {
+  "number": 20,
+  "title": "Old work",
+  "state": "CLOSED",
+  "body": "Done long ago.",
+  "labels": [],
+  "createdAt": "2026-08-01T10:00:00Z",
+  "updatedAt": "2026-08-02T10:00:00Z"
+ },
+ {
+  "number": 19,
+  "title": "Next up",
+  "state": "OPEN",
+  "body": "Then this.\n\n## Acceptance\n- it works\n\n## Depends on\n- acme/toy#20\n- #22\n",
+  "labels": [],
+  "createdAt": "2026-10-07T10:00:00Z",
+  "updatedAt": "2026-10-07T10:00:00Z"
+ },
+ {
+  "number": 18,
+  "title": "No column yet",
+  "state": "OPEN",
+  "body": "Fresh.",
+  "labels": [],
+  "createdAt": "2026-10-08T10:00:00Z",
+  "updatedAt": "2026-10-08T10:00:00Z"
+ }
 ]

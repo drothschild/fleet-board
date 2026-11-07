@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Store helpers for the local board backend. Source after board-lib.sh, once the
+# Store helpers for the local card store. Source after board-lib.sh, once the
 # config is loaded (FLEET_ROOT and FLEET_CFG set).
 
 fl_dir() { printf '%s/%s\n' "$FLEET_ROOT" "$(fb_cfg board.dir)"; }
@@ -58,12 +58,13 @@ fl_write_card() {
   mv -f "$tmp" "$(fl_card_file "$1")" || { rm -f "$tmp"; fb_die 1 "cannot write card #$1"; }
 }
 
-# fl_next_number: allocates and prints the next card number, under <dir>/.next.lock.
-fl_next_number() {
-  local d lock wait stale_min=5 waited=0 f n
-  d="$(fl_dir)"; f="$d/next"; lock="$d/.next.lock"
+# fl_lock_next / fl_unlock_next: <dir>/.next.lock, the lock every writer of
+# <dir>/next takes (a lock older than 5 minutes is stale and removed).
+fl_lock_next() {
+  local d lock wait stale_min=5 waited=0
+  d="$(fl_dir)"; lock="$d/.next.lock"
   wait="${FLEET_BOARD_LOCK_WAIT:-30}"
-  [ -f "$f" ] || fb_die 1 "no local board at $d; run /fleet-board:init"
+  mkdir -p "$d" || fb_die 1 "cannot create $d"
   while ! mkdir "$lock" 2>/dev/null; do
     if [ -n "$(find "$lock" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
       rm -rf "$lock"; continue
@@ -71,6 +72,15 @@ fl_next_number() {
     [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
     sleep 0.1; waited=$((waited + 1))
   done
+}
+fl_unlock_next() { rm -rf "$(fl_dir)/.next.lock"; }
+
+# fl_next_number: allocates and prints the next card number, under <dir>/.next.lock.
+fl_next_number() {
+  local d lock f n
+  d="$(fl_dir)"; f="$d/next"; lock="$d/.next.lock"
+  [ -f "$f" ] || fb_die 1 "no local board at $d; run /fleet-board:init"
+  fl_lock_next
   n="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
   case "$n" in
     ''|*[!0-9]*|0|0[0-9]*) rm -rf "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;

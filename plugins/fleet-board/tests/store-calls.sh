@@ -23,6 +23,10 @@
 #                  a card the run created is recorded without it)
 #                  on a card, after its create when the card is new (a manager
 #                  note is not a comment here)
+#   any other edit issue edit <n> --repo <board.repo> --body-file -, when an
+#                  existing card's file changed and none of the records above
+#                  covers it (title, body, acceptance, blocked_by, pr_url, ...),
+#                  so a "no write" check still sees the write
 #   a note write   api -X PATCH repos/<board.repo>/issues/comments/<id> --input -,
 #                  and inputs/ gets {"body": <the note comment>}, as the fake
 #                  gh saved the --input - of the note's POST or PATCH
@@ -50,7 +54,7 @@ store_record() {
 }
 
 store_calls() {
-  local root="${1:-${REPO:-}}" f n old repo marker='<!-- fleet-board:manager-note -->' b args os ns new
+  local root="${1:-${REPO:-}}" f n old repo marker='<!-- fleet-board:manager-note -->' b args os ns new before
   [ -d "$root/.fleet-board/cards" ] || return 0
   [ -e "$root/.fleet-board/.from-routes" ] || return 0 # a store the suite seeded itself
   repo="$(sed -n 's/^  repo: *//p' "$root/.fleet-board.yml" | head -n 1 | tr -d '"')"
@@ -69,6 +73,7 @@ store_calls() {
       old="$FAKE_GH_DIR/store-snap/$n.json"
     fi
     cmp -s "$f" "$old" && continue # (a new card's snapshot never matches)
+    before="$(cat "$FAKE_GH_DIR/count" 2>/dev/null || echo 0)"
     os="$(jq -r '.state // ""' "$old")"; ns="$(jq -r '.state // ""' "$f")"
     if [ -n "$os" ] && [ "$os" != "$ns" ]; then
       store_record issue edit "$n" --repo "$repo" --add-label "fleet:$ns"
@@ -102,6 +107,9 @@ store_calls() {
       b="$(jq -c '{body}' <<<"$b")"
       mkdir -p "$FAKE_GH_DIR/inputs"
       printf '%s\n' "$b" > "$FAKE_GH_DIR/inputs/store-$n-$(date +%s)-$RANDOM"
+    fi
+    if [ "$new" = 0 ] && [ "$(cat "$FAKE_GH_DIR/count" 2>/dev/null || echo 0)" = "$before" ]; then
+      store_record issue edit "$n" --repo "$repo" --body-file -
     fi
   done
 }

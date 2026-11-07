@@ -96,9 +96,10 @@ if [ -n "$PROJECT" ]; then
   [ "$N" -lt "$LIMIT" ] || fb_die 1 "gh project item-list returned $N items, the list limit ($LIMIT); the list may be truncated. Set FLEET_BOARD_LIST_LIMIT above $LIMIT and retry"
   # {"<n>": "<Status>"} for this repo's issues on the project
   STATUS="$(jq -c --arg r "$SRC" '[.items[] | select(.content.type == "Issue" and ((.content.repository // "") | ascii_downcase) == ($r | ascii_downcase))
-            | {key: (.content.number | tostring), value: (.status // "")}] | from_entries' "$WORK/items.json")" \
+            | {key: (.content.number | tostring), value: (.status // "" | if . == "" then null else . end)}] | from_entries' "$WORK/items.json")" \
     || fb_die 1 "cannot parse the items of project $PROJECT"
-  # every issue gets a state (or null: not on the project); an unmapped column stops the run
+  # every issue gets a state (or null: not on the project, or an item with no
+  # Status, which the Projects board never listed); an unmapped column stops the run
   jq -c --argjson st "$STATUS" --argjson names "$NAMES" '
     map(. + {fb_status: ($st[.number | tostring])})
     | map(. + {fb_state: (if .fb_status == null then null else ($names[.fb_status] // ("?" + .fb_status)) end)})' \
@@ -203,9 +204,13 @@ FB_LOCK=""
 [ "$DRY" = 0 ] || exit 0
 MAX="$(for c in "$CARDS"/*.json; do [ -e "$c" ] && basename "$c" .json; done | grep -E '^[0-9]+$' | sort -n | tail -n 1)"
 [ -n "$MAX" ] || MAX=0
+# under the lock fl_next_number takes, re-reading next inside it
+fl_lock_next || exit 1
 OLD=""
 [ -f "$DIR/next" ] && OLD="$(tr -d '[:space:]' < "$DIR/next" 2>/dev/null)"
 NEXT=$((MAX + 1))
 case "$OLD" in ''|*[!0-9]*) ;; *) [ "$OLD" -gt "$NEXT" ] && NEXT="$OLD" ;; esac
-printf '%s\n' "$NEXT" > "$DIR/next.tmp.$$" && mv -f "$DIR/next.tmp.$$" "$DIR/next" \
-  || { rm -f "$DIR/next.tmp.$$"; fb_die 1 "cannot write $DIR/next"; }
+if ! printf '%s\n' "$NEXT" > "$DIR/next.tmp.$$" || ! mv -f "$DIR/next.tmp.$$" "$DIR/next"; then
+  rm -f "$DIR/next.tmp.$$"; fl_unlock_next; fb_die 1 "cannot write $DIR/next"
+fi
+fl_unlock_next
