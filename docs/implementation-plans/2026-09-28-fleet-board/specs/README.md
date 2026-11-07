@@ -1908,7 +1908,29 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 
 **Output sha256 before → after (16):** `agents/manager.md` `508f6ad8910ea25f` → `41799b377c411831`.
 
-### Revision 20 (2026-11-06, card 70): the fixer resolves merge conflicts, test files included
+### Revision 20 (2026-11-06, card #175): helpers and fixtures outside test_paths in the reviewer agent
+
+**Cause.** `specs/reviewer.md` has carried the "Helpers and fixtures outside test_paths" bullet in its weakened-test step since PR #131, but `agents/reviewer.md` never got it. PR #176 first added it to the agent file by hand, which broke `tests/test-clean-room.sh`. The hand edit was dropped and the bullet authored by an isolated run.
+
+**Spec and brief changes.** No spec change. A "Revision 20 requirements" section in `briefs/spec-req-reviewer.md`, committed before the agent file. Brief sha256 (20): `5b0086cd0ba94b9a` → `c3ebe5e9b0b2789b`. `tests/test-reviewer-outside-test-paths.sh` checks the agent file for the phrase `outside test_paths`; it is not clean-room and failed before the run.
+
+**Run.** One isolated in-place edit, `claude -p --bare --model opus --tools "Read,Edit" --permission-mode acceptEdits`, fresh empty `CLAUDE_CONFIG_DIR`, `apiKeySource: apiKeyHelper`, cwd `plugins/fleet-board/`, `< /dev/null`, Claude Code 2.1.319, `claude-opus-5-5`. Its only `--add-dir` was a staging dir holding `edit-req.md` (sha256 `571caee7e1a1870a`, not committed) and a copy of `specs/reviewer.md` as `spec-reviewer.md` (`c07babd497ae0d62`). The repo owner approved the spend in the session that ran it.
+
+| Output | Init sha256 | Isolation | Path audit | Turns | Cost (USD) | Before sha256 | After sha256 |
+|---|---|---|---|---|---|---|---|
+| `agents/reviewer.md` | `d5c9793267f31b52` | PASS | PASS (3 reads, 1 edit) | 5 | 0.1620 | `76c0e6bc7627a537` | `013f0268883bcba3` |
+
+Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and `Read`, no namespaced skills. Evidence: `evidence/author-reviewer.r20.init.json`, with no key and no local path.
+
+**Path audit.** The run read its two inputs and its target, and edited only its target.
+
+**Minimality check.** `git diff -U0` was read: one added line, the bullet in step 7 between the Restored, Adapted and Weakened classes and the new-test-blocks rule. Frontmatter unchanged. **Kept.** The input file was the Revision 16 and Revision 18 git merge (see Revision 18); this run's output is a single run's output, so its manifest line carries no merge note.
+
+**Revision cost:** $0.1620. **Running total, all API-key charges:** ~$42.63 (~$42.47 at Revision 19 plus this run).
+
+**Merge with main (2026-11-06).** Written as Revision 19; main then recorded its own Revision 19 (PR #174), so this revision was renumbered 20, with its brief section and init evidence file (`r19` to `r20`). Main did not change `agents/reviewer.md` or `specs/reviewer.md` after this branch's merge-base, so this run's output stands unchanged. Plugin version 0.14.0 (main) to 0.14.1.
+
+### Revision 21 (2026-11-06, card 70): the fixer resolves merge conflicts, test files included
 
 **Cause.** `update-branch.sh` blocked every conflicting merge and never dispatched the fixer, so a person resolved each one, including conflicts across several files and a shared test file (HMB Workout PRs 59, 60 and 62).
 
@@ -1920,4 +1942,4 @@ Isolation: the per-run assertion ran on the init event: only the four built-in `
 
 **Known limits, not re-run.** `agents/manager.md` (clean-room, outside this card's Scope) still describes `update_branch` as blocking the card on a conflict and does not yet tell the manager to pass the plan's `findings` to the fixer, clear `conflicted_files` and `last_review` after a resolved merge, or block with the conflicted files when the fixer reports blocked. No behavioral run exercised step 3a.
 
-**Output sha256 (20):** `agents/fixer.md` `2d122bed1ab906b0` → `7d93223e9200e45e`.
+**Output sha256 (21):** `agents/fixer.md` `2d122bed1ab906b0` → `7d93223e9200e45e`.
