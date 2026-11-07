@@ -40,6 +40,13 @@
 #                 seeded In Review PR with a scripted evidence reviewer. Checks
 #                 the background Bash call, reviewer dispatch and manager note.
 #
+#   conflict-dispatch
+#                 seeded In Review PR whose note records conflicted_files (as
+#                 update-branch.sh leaves it after an aborted conflicting merge):
+#                 the manager plans fix (2.9a), the fixer gets the conflict as a
+#                 finding, and the card ends with conflicted_files and
+#                 last_review cleared, or Blocked naming the files
+#
 # Every tick is also scanned with plugin-interaction-scan.sh; foreign_skill and
 # foreign_agent must be 0.
 #
@@ -55,7 +62,7 @@
 set -uo pipefail
 unset CDPATH
 
-SCENARIOS="default ready-path bad-report fix-block merge-auto merge-red out-of-scope bug-found waits-on-dependency provider-reviewer"
+SCENARIOS="default ready-path bad-report fix-block merge-auto merge-red out-of-scope bug-found waits-on-dependency provider-reviewer conflict-dispatch"
 usage() { printf 'usage: SANDBOX_REPO=owner/name %s [--scenario <%s>] [--max-ticks N]\n' "$0" "$(echo $SCENARIOS | tr ' ' '|')" >&2; exit 2; }
 
 SCENARIO=default
@@ -816,6 +823,27 @@ REPORT
     ".last_review.provider == \"fake\" and .last_review.model == \"test-model\" and .last_review.sha == \"$HEAD\""
 }
 
+# conflict-dispatch: 2.9a end to end. The PR is open and a fix is planned from
+# note.conflicted_files alone, so the note is seeded as update-branch.sh leaves it.
+scenario_conflict_dispatch() {
+  seed_pr "$BL_FIX/card-subtract.md" "$PATCHES/good.patch" 0; A="$CARD"
+  seed_note "$A" 1 0 '[]' '.conflicted_files = ["src/calc.js"]'
+  run_tick
+  local calls="$RUN/tick-1.agents.jsonl"
+  jq -s '[.[] | select(.input.subagent_type == "fleet-board:fixer")]' "$calls" >"$RUN/fixer-dispatches.json"
+  check_jq "conflict dispatch: the fixer prompt carries 'merge conflict in src/calc.js'" "$RUN/fixer-dispatches.json" \
+    'length >= 1 and all(.[]; .input.prompt | contains("merge conflict in src/calc.js"))'
+  note_get "$A" >"$RUN/note-final.json"
+  local st; st="$(card_state "$A")"
+  if [ "$st" = blocked ]; then
+    check_jq "conflict dispatch: blocked card names the conflicted files" "$RUN/note-final.json" \
+      '(.blocked_findings | tostring) | contains("src/calc.js")'
+  else
+    check_jq "conflict dispatch: resolved merge clears conflicted_files and last_review" "$RUN/note-final.json" \
+      '.conflicted_files == null and .last_review == null'
+  fi
+}
+
 case "$SCENARIO" in
   default) scenario_default ;;
   ready-path) scenario_ready_path ;;
@@ -827,6 +855,7 @@ case "$SCENARIO" in
   bug-found) scenario_bug_found ;;
   waits-on-dependency) scenario_waits_on_dependency ;;
   provider-reviewer) scenario_provider_reviewer ;;
+  conflict-dispatch) scenario_conflict_dispatch ;;
 esac
 
 DUR=$(( $(date +%s) - START_ALL ))
