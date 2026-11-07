@@ -35,6 +35,15 @@ else
   fail "no file but $EXEMPT names gh issue, gh label, gh project or GraphQL" "$(printf '%s\n' "$HITS" | head -40)"
 fi
 
+# The live scenarios drive the same local board: no gh issue/label/project call
+# and no fleet:<state> label in tests/behavioral-*.sh (gh pr calls are fine).
+BHITS="$( ( cd "$ROOT" && grep -nEi -- "$PATTERN|fleet:(backlog|ready|in_progress|in_review|human_qa|blocked|done|wont_do)" tests/behavioral-*.sh 2>/dev/null ) || true)"
+if [ -z "$BHITS" ]; then
+  pass "tests/behavioral-*.sh name no gh issue, gh label, gh project, GraphQL or fleet:<state> label"
+else
+  fail "tests/behavioral-*.sh name no gh issue, gh label, gh project, GraphQL or fleet:<state> label" "$(printf '%s\n' "$BHITS" | head -40)"
+fi
+
 # The exemption is not vacuous: the importer exists and the pattern finds its reads.
 if [ -f "$ROOT/$EXEMPT" ] && grep -qE -- "$PATTERN" "$ROOT/$EXEMPT"; then
   pass "the pattern finds the importer's reads (the check can fail)"
