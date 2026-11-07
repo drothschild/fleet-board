@@ -78,6 +78,55 @@ for pair in "README:$README" "overnight.md:$OVERNIGHT"; do
   check "$name says an interactive /fleet-board:tick does not run settle.sh" "$r"
 done
 
+# --- docs sync (card 196) ---
+ROOT="${SCRIPT_DIR}/../../.."
+PLUGIN_CLAUDE="${SCRIPT_DIR}/../CLAUDE.md"
+SPEC="${ROOT}/docs/superpowers/specs/2026-11-06-local-board-design.md"
+CONFIG_MD="${DOCS_DIR}/config.md"
+
+for pair in "plugin CLAUDE.md:$PLUGIN_CLAUDE" "overnight.md:$OVERNIGHT" "spec:$SPEC"; do
+  name="${pair%%:*}"; file="${pair#*:}"
+  r=bad; grep -q 'claim-run-lock' "$file" && r=ok
+  check "$name names claim-run-lock" "$r"
+done
+
+r=bad; grep -F '`.lock.guard`' "$PLUGIN_CLAUDE" "$SPEC" | wc -l | grep -qv '^ *[01]$' && r=ok
+check "plugin CLAUDE.md and spec both name .lock.guard" "$r"
+
+r=bad; grep -i 'python3' "$PLUGIN_CLAUDE" | grep -qi 'every backend' && r=ok
+check "plugin CLAUDE.md says the wrapper requires python3 on every backend" "$r"
+
+r=bad; grep -F '| 1 |' "$OVERNIGHT" | grep -q 'python3' && r=ok
+check "overnight.md exit-1 row names python3" "$r"
+
+r=bad; grep -F 'launchd starts a job' "$OVERNIGHT" | grep -q 'python3' && r=ok
+check "overnight.md launchd PATH paragraph names python3" "$r"
+
+r=bad; grep -F '| `comment <n> <body-file>` |' "$SPEC" | grep -qi 'only.*accepted role report' && r=ok
+check "spec comment row says the marker is removed only for an accepted role report" "$r"
+
+r=bad; grep -F '`edit <n>' "$SPEC" | grep -q . && sed -n '/^- `edit <n>/,/^- `label/p' "$SPEC" | grep -qi 'empty' && sed -n '/^- `edit <n>/,/^- `label/p' "$SPEC" | grep -qi 'null' && r=ok
+check "spec edit row states the empty-argument and null-labels contract" "$r"
+
+r=bad; sed -n '/^## `board.dir` and `board.port`/,/^## Finding/p' "$CONFIG_MD" | grep -qi 'every backend' && r=ok
+check "config.md says board.dir and board.port are checked on every backend" "$r"
+
+r=bad; sed -n '/^## `board.dir` and `board.port`/,/^## Finding/p' "$CONFIG_MD" | grep -q 'apply only when' && r=bad || r=ok
+check "config.md no longer says they apply only on local" "$r"
+
+r=bad
+grep -q 'local board' "${ROOT}/.claude-plugin/marketplace.json" && grep -q 'local board' "${SCRIPT_DIR}/../.claude-plugin/plugin.json" && r=ok
+check "both manifests mention the local board" "$r"
+
+r=bad; grep -qF 'Dependencies in the preview show as `owner/repo#n`' "$README" && r=ok
+check "README says dependencies show as owner/repo#n in the preview" "$r"
+
+r=bad; sed -n '/^## Local board/,/^## [^L]/p' "$README" | grep -q 'board.dir' && r=ok
+check "README Local board section names board.dir" "$r"
+
+r=bad; grep -A1 'Headless wrapper' "$PLUGIN_CLAUDE" | grep -qF 'overnight.md' && r=ok
+check "plugin CLAUDE.md points at overnight.md" "$r"
+
 # The overrides must work: a copy with the "never merges" sentence removed must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"

@@ -1018,6 +1018,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# local-needs-python3: the headless wrapper needs python3 on every backend, and
+# init checks it for the local backend. A PATH with gh, jq and git but no python3
+# makes init exit 1 naming python3 and write nothing.
+setup_case
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes >> "$ROUTES"
+NOPY="$(mktemp -d)"; CLEANUP_DIRS+=("$NOPY")
+for t in gh jq git; do ln -s "$(command -v $t)" "$NOPY/$t"; done
+# Every other system tool init needs, minus python3, so only python3 is missing.
+for f in /bin/* /usr/bin/*; do
+  b="${f##*/}"
+  case "$b" in python*|pip*) continue ;; esac
+  [ -e "$NOPY/$b" ] || ln -s "$f" "$NOPY/$b" 2>/dev/null
+done
+OLDPATH="$PATH"; PATH="$NOPY"
+run_init --backend local --repo acme/toy --dir "$TARGET"
+PATH="$OLDPATH"
+assert_exit "local-needs-python3: exit 1" 1
+assert_stderr_contains "local-needs-python3: names python3" "python3"
+assert_count "local-needs-python3: no config written" "$([ -f "$TARGET/.fleet-board.yml" ] && echo 1 || echo 0)" 0
+
+# ---------------------------------------------------------------------------
 # local backend: store setup, .gitignore, no labels
 setup_case
 cat > "$ROUTES" << ROUTESEOF
