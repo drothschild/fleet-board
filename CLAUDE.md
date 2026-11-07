@@ -52,6 +52,18 @@ docs/                              # repo-level documentation
 - `git add`, `git commit`, and `git push` are pre-approved.
 - Never `git push --force`.
 
+### Merge routine
+
+- For contributions to this repository, CI is asynchronous feedback. After merge
+  authorization, required review, and focused local checks pass, merge without waiting
+  for queued or running CI. Keep the CI workflows enabled.
+- Read available CI status once. Investigate any already-reported relevant failure and
+  verify its fix locally; do not watch or poll CI unless the user explicitly asks.
+- After merging, fast-forward local `main` while preserving local changes, then run the
+  focused checks on the merged code. Report the merged commit, local verification, and
+  the observed CI status accurately, including pending checks.
+- This contribution routine does not alter the plugin's merge gates for managed projects.
+
 ## Versioning
 
 Plugins version independently using semver. `marketplace.json` tracks each plugin's current
@@ -116,4 +128,4 @@ Plugin scripts must run under macOS `/bin/bash` 3.2 and with both BSD and GNU to
 A plugin with non-trivial contracts keeps its own `plugins/<name>/CLAUDE.md`
 (currently `fleet-board`). Read it before changing that plugin.
 
-Last verified: 2026-09-29
+Last verified: 2026-11-07
