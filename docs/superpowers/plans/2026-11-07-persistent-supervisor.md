@@ -40,10 +40,10 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Create:** `fixtures/config/supervisor-default.yml`, `supervisor-disabled-boot.yml`, `supervisor-invalid.yml`.
 
-- [ ] Write failing cases for omitted supervisor defaults, boolean boot/enabled flags, integer durations, heartbeat relation, grace/deadline relation, provider cap validation, and rejecting invalid nested types. Preserve ordinary reviewer/provider configuration cases.
-- [ ] Run `bash plugins/fleet-board/tests/test-config.sh`; confirm new validation/default failures and commit tests.
-- [ ] Add the design's configuration schema, including rollout `enabled: false` and `start_on_boot: true`. Preserve old limits. Normalize provider identity including built-in `claude`; reject unknown cap keys. No UI/launcher cutover yet.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Write failing cases for omitted supervisor defaults, boolean boot/enabled flags, integer durations, heartbeat relation, grace/deadline relation, provider cap validation, and rejecting invalid nested types. Preserve ordinary reviewer/provider configuration cases.
+- [x] Run `bash plugins/fleet-board/tests/test-config.sh`; confirm new validation/default failures and commit tests.
+- [x] Add the design's configuration schema, including rollout `enabled: false` and `start_on_boot: true`. Preserve old limits. Normalize provider identity including built-in `claude`; reject unknown cap keys. No UI/launcher cutover yet.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S10, S11 configuration subset. Expected normalized config contains the exact defaults; invalid settings fail before provider execution.
 

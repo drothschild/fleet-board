@@ -9,6 +9,7 @@
   "review": { "mutation": true, "verify_claim": true, "max_rounds": 3, "stages": [] },
   "providers": {},
   "models": { "manager": "sonnet", "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "escalate_after_rounds": 2, "escalation": null },
+  "supervisor": { "enabled": false, "start_on_boot": true, "reconcile_interval_seconds": 5, "heartbeat_interval_seconds": 10, "heartbeat_timeout_seconds": 60, "progress_timeout_seconds": 900, "attempt_timeout_seconds": 7200, "shutdown_grace_seconds": 30, "retry_backoff_seconds": 60, "aging_seconds": 900, "provider_concurrency": {} },
   "limits": { "concurrency": 6, "max_hours": 8, "max_cost_usd": 40, "tick_interval": 300, "max_consecutive_failures": 3, "max_turns": 200, "rate_limit_max_wait": 3600, "rate_limit_margin": 5, "min_tick_gap": 0 },
   "followups": { "status": "ready" },
   "headless": { "permission_mode": "auto" }
