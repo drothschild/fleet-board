@@ -9,5 +9,5 @@
 76c0e6bc7627a537abab8c32bde35fa5afcf7fdcca0b5e96cc5064ab5bfda243  agents/reviewer.md  # merge: git merge of the Revision 16 and Revision 18 run outputs, disjoint hunks; no single run produced this file
 86c3ada66c1bbb1bae2bcd2a82fd4b6103d814cb0dfe652b7291221cf20b5692  skills/reporting/SKILL.md
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
-6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md
+6f76fccffb5ab271beb4c71115ef5b783c4ce4bc441ebead9a74ef32c92d5ef6  skills/run/SKILL.md
 bfd19b217ea02b844676f9277fbbf689b1d5cbe41a5507893ea08f960e0ea4d7  skills/status/SKILL.md  # exception: hand-edited by #76, not a clean-room output; card #115 re-authors it and removes this exception

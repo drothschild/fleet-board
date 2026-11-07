@@ -1216,6 +1216,23 @@ case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
 esac
 assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
 
+# run skill (card 149): the in-session loop settles and cleans up after a tick
+RUN_SKILL="$SCRIPT_DIR/../skills/run/SKILL.md"
+RUN_SPEC="$SCRIPT_DIR/../../../docs/implementation-plans/2026-09-28-fleet-board/specs/run.md"
+RUN_BRIEF="$SCRIPT_DIR/../../../docs/implementation-plans/2026-09-28-fleet-board/specs/briefs/spec-req-run.md"
+assert_file_contains "run skill: names settle.sh" "$RUN_SKILL" "settle.sh"
+assert_file_contains "run skill: names cleanup-done.sh" "$RUN_SKILL" "cleanup-done.sh"
+assert_file_contains "run brief: names settle.sh" "$RUN_BRIEF" "settle.sh"
+assert_file_contains "run spec: names cleanup-done.sh" "$RUN_SPEC" "cleanup-done.sh"
+S_LINE="$(grep -nF 'scripts/settle.sh' "$RUN_SKILL" 2>/dev/null | head -1 | cut -d: -f1)"
+C_LINE="$(grep -nF 'scripts/cleanup-done.sh' "$RUN_SKILL" 2>/dev/null | head -1 | cut -d: -f1)"
+if [ -n "$S_LINE" ] && [ -n "$C_LINE" ] && [ "$S_LINE" -lt "$C_LINE" ]; then
+  pass "run skill: settle.sh is named before cleanup-done.sh"
+else
+  fail "run skill: settle.sh is named before cleanup-done.sh" "settle.sh line '${S_LINE}', cleanup-done.sh line '${C_LINE}'"
+fi
+assert_file_matches "run skill: a failure prints a warning and the loop goes on" "$RUN_SKILL" 'warning'
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
