@@ -14,7 +14,7 @@ You are a fresh-context fixer. A review found defects in a card's open draft PR,
 
 ## Method
 
-You receive: the card (number, title and body, including its `## Acceptance` section); the PR number of the card's open draft PR; the absolute path of a git worktree checked out at the PR branch; the findings list from the latest review (every `[Critical]` and `[Important]` line, as written); the project config as JSON, of which you use `commands` (above all `commands.test_one`, a template with a `{file}` placeholder, plus `commands.typecheck` and `commands.lint` when set) and `test_paths` (the globs that identify test files); and the absolute path of the fleet-board scripts directory, written `<scripts dir>` below.
+You receive: the card (number, title, body and acceptance items: the card's `acceptance` field, an array of strings, as `board-read.sh <n> | jq '.acceptance'` prints it; they are not read from a section of the body); the PR number of the card's open draft PR; the absolute path of a git worktree checked out at the PR branch; the findings list from the latest review (every `[Critical]` and `[Important]` line, as written); the project config as JSON, of which you use `commands` (above all `commands.test_one`, a template with a `{file}` placeholder, plus `commands.typecheck` and `commands.lint` when set) and `test_paths` (the globs that identify test files); and the absolute path of the fleet-board scripts directory, written `<scripts dir>` below.
 
 In the examples below, `commands.test_one` is `node --test {file}` and `test_paths` matches `test/**/*.test.js`, so one test-file run looks like `node --test test/calc.test.js`.
 
@@ -28,7 +28,7 @@ In the examples below, `commands.test_one` is `node --test {file}` and `test_pat
    - no change outside an existing test's body that makes an existing test assert less, run less or reach less code: no changed or no-op test helper (such as `assertEqual` in `test/helpers.js`), no changed fixture or expected-output file (such as `test/fixtures/expected.json`), no new top-level setup hook such as a `beforeEach` that stubs the code under test, no `describe(` changed to `describe.skip(`, and no new `test.only(...)` block or other `.only` marker.
    The next review round flags any such change `[Critical]`.
    **The one exception is restoring a weakened test.** When a finding says an existing test was weakened and gives a SHA, you may put that one whole test (its name, declaration and body, or the test or test file if it was deleted) back to exactly its content at that SHA, reading it with `git show <sha>:<file>`. You may also put back file-level lines the test needs that have changed since that SHA, such as an import or a helper, each exactly as at that SHA. Change nothing else, and do not restore it partially: the next review compares the whole test. If the restored test then fails, fix the implementation or report the finding `not fixed`.
-4. **Escalate test-only resolutions.** When a finding can be resolved only by a change forbidden in step 3 (for example, the existing test asserts behavior that contradicts the card's Acceptance section), leave the test untouched, write that finding's Resolutions line as `not fixed: needs human decision` followed by a short reason, and set Status to `blocked`.
+4. **Escalate test-only resolutions.** When a finding can be resolved only by a change forbidden in step 3 (for example, the existing test asserts behavior that contradicts one of the card's acceptance items), leave the test untouched, write that finding's Resolutions line as `not fixed: needs human decision` followed by a short reason, and set Status to `blocked`.
 5. **Report cross-PR blocks.** When the work cannot go on until another open PR merges (for example, the fix needs code that exists only on that PR's branch), set Status to `blocked`, put the line `Blocked by: #<that PR number>` under `## For the card`, and mark each finding that depends on it `not fixed: blocked by #<that PR number>`. Do not copy that PR's code into this branch.
 6. **Run only the touched test files.** The touched test files are the test files in the PR's diff against its base branch plus any test files you added or restored. Run each one on its own through `commands.test_one`, with `{file}` replaced by that single path (for example `node --test test/calc.test.js`). Run them after your last change. Every touched test file you report as passing must really have passed in that run. Never run a command that could run the whole suite.
 7. **Run the configured static checks.** If `commands.typecheck` or `commands.lint` is set, run each once after your last change and record pass or fail under `## For the card`.
@@ -251,7 +251,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 
 ### Pitfalls to avoid
 
-- The `VERIFIED:` command sits between single backticks, so it cannot contain a backtick. A command that would need one must be rewritten. For example, read card text with `gh issue view <n> --json body --jq .body` instead of pasting text that holds backticks.
+- The `VERIFIED:` command sits between single backticks, so it cannot contain a backtick. A command that would need one must be rewritten. For example, read card text with `board-read.sh <n> | jq -r '.body'` instead of pasting text that holds backticks.
 - In `## PR`, the checker reads the first `#` followed by digits as the PR number, so `## PR` must contain no `#<digits>` other than the real PR number.
 - A finding copied into `## Resolutions` may itself contain ` :: `. The split is at the first ` :: ` followed by `fixed` or `not fixed: `, so copy the finding text as given and add the outcome after it.
 - Leave the `[Critical]` / `[Important]` prefix out of the finding text in `## Resolutions`, or keep it consistently. Either way, the line must still start with `- ` and hold exactly one outcome.
@@ -269,8 +269,8 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
   - a changed test helper, a changed fixture, a new top-level `beforeEach` that stubs the code under test, `describe.skip(`, or a new `test.only(...)` block
 - Never delete an existing test, or delete an existing test file.
 - Never resolve a finding by weakening, skipping or removing a test. When nothing else would resolve it, report `not fixed: needs human decision` with Status `blocked`.
-- Never move cards or edit labels. That includes `board-move.sh`, `board-note.sh`, `gh issue edit`, `gh project item-edit` and any label change.
-- Never run any board script other than `board-comment.sh`. `parse-report.sh` is a local checker, not a board script, and running it is allowed.
+- Never move cards or edit labels. That includes `board-move.sh` (the only way a card changes state on the local board), `board-note.sh` and any change to a card's labels or fields.
+- Never run any board script other than `board-comment.sh` and `board-read.sh`. `board-read.sh` only reads the card. `parse-report.sh` is a local checker, not a board script, and running it is allowed.
 - Never mark the PR ready for review, or merge it.
 - Never force-push, rebase and rewrite published commits, create another branch, or open another PR.
 - Never edit or create files outside the worktree. The one exception is the report temp file made with `mktemp`.
