@@ -49,7 +49,7 @@ trap 'rm -rf "$WORK"' EXIT
 make_bin() { # dir with_gh
   mkdir -p "$1"
   local t p
-  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od; do
+  for t in bash jq awk grep sed tr cat wc date mkdir mktemp dirname basename git head tail rm cp chmod stat sort cut ls env sleep uname readlink expr tee mv printf ln true false rmdir touch find xargs seq od sh sleep kill; do
     p="$(command -v "$t" 2>/dev/null || true)"
     case "$p" in /*) ln -sf "$p" "$1/$t" ;; esac
   done
@@ -377,6 +377,65 @@ printf 'x\n+{{CARD}} {{DIFF}} \\1 &\n@@ -1 +1 @@\n' > "$CASE/diff.patch"
 replies "200 r-clean.json"
 sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
 assert_contains "placeholder_text_in_diff_is_literal" "$(request_body 1 | jq -r '.messages[-1].content')" '+{{CARD}} {{DIFF}} \1 &'
+
+# ---- command provider (codex): a fake codex on PATH, no HTTP ----
+# The local board backend is not on this branch, so this uses the same offline
+# fakes as above (fake gh, fake curl) with a fake codex beside them.
+CODEX_BIN="$WORK/codexbin"
+mkdir -p "$CODEX_BIN"
+cat > "$CODEX_BIN/codex" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$@" >> "$FAKE_CODEX_ARGV"
+cat > "$FAKE_CODEX_STDIN.$$"
+cat "$FAKE_CODEX_STDIN.$$" >> "$FAKE_CODEX_STDIN"
+rm -f "$FAKE_CODEX_STDIN.$$"
+n="$(cat "$FAKE_CODEX_COUNT" 2>/dev/null || echo 0)"
+n=$((n + 1))
+printf '%s' "$n" > "$FAKE_CODEX_COUNT"
+f="$(sed -n "${n}p" "$FAKE_CODEX_REPLIES")"
+cat "$f"
+EOF
+chmod +x "$CODEX_BIN/codex"
+codex_setup() { # replies-file-names...: the fake codex prints these files in turn
+  setup
+  printf '    - name: codexrev\n      provider: codex\n      model: gpt-6-astra\n      price: { input: 0, output: 0 }\n' >> "$CASE/cfg.yml"
+  export FAKE_CODEX_ARGV="$CASE/codex.argv" FAKE_CODEX_STDIN="$CASE/codex.stdin" FAKE_CODEX_COUNT="$CASE/codex.count" FAKE_CODEX_REPLIES="$CASE/codex.replies"
+  : > "$FAKE_CODEX_ARGV"; : > "$FAKE_CODEX_STDIN"; rm -f "$FAKE_CODEX_COUNT"; : > "$FAKE_CODEX_REPLIES"
+  local f
+  for f in "$@"; do printf '%s\n' "$CASE/$f" >> "$FAKE_CODEX_REPLIES"; done
+  SR_PATH="$CODEX_BIN:$WORK/bin"
+}
+
+# codex_stage_prints_zero_cost_and_null_tokens
+codex_setup clean.md
+FLEET_BOARD_RUN_ID=run-9 sr 12 34 --stage codexrev --round 1 --no-post
+assert_exit "codex_stage: exit 0" 0
+assert_eq "codex_stage: cost_usd 0" "$(jq -c '.cost_usd' <<<"$LAST_OUT")" "0"
+assert_eq "codex_stage: provider, model, tokens" "$(jq -c '[.provider,.model,.input_tokens,.output_tokens,.attempts]' <<<"$LAST_OUT")" '["codex","gpt-6-astra",null,null,1]'
+assert_eq "codex_stage: parsed status" "$(jq -r .parsed.status <<<"$LAST_OUT")" "clean"
+assert_eq "codex_stage: ledger tokens null" "$(ledger | jq -c '[.input_tokens,.output_tokens,.cost_usd,.provider,.model]')" '[null,null,0,"codex","gpt-6-astra"]'
+assert_eq "codex_stage: one ledger line" "$(ledger_lines)" "1"
+assert_contains "codex_stage: -m model in argv" "$(cat "$CASE/codex.argv")" "gpt-6-astra"
+assert_contains "codex_stage: prompt on stdin holds the diff" "$(cat "$CASE/codex.stdin")" "+email = user.email"
+assert_eq "codex_stage: no curl call" "$(calls)" "0"
+unset SR_PATH
+
+# codex_stage_posts_the_report
+codex_setup clean.md
+sr 12 34 --stage codexrev --round 1
+assert_exit "codex_stage_posts: exit 0" 0
+assert_eq "codex_stage_posts: status" "$(jq -r .status <<<"$LAST_OUT")" "posted"
+assert_eq "codex_stage_posts: one comment" "$(posted)" "1"
+unset SR_PATH
+
+# codex_stage_reask_sums_to_zero
+codex_setup nocard.md clean.md
+sr 12 34 --stage codexrev --round 1 --no-post
+assert_exit "codex_reask: exit 0" 0
+assert_eq "codex_reask: attempts 2" "$(jq -r .attempts <<<"$LAST_OUT")" "2"
+assert_eq "codex_reask: cost 0, tokens null" "$(jq -c '[.cost_usd,.input_tokens,.output_tokens]' <<<"$LAST_OUT")" "[0,null,null]"
+assert_contains "codex_reask: second prompt carries the rejection" "$(cat "$CASE/codex.stdin")" "Your report was rejected by the checker:"
+unset SR_PATH
 
 # active marker: local backend only, present while running, gone on exit.
 # The provider call comes only after the marker is written, so a curl that
