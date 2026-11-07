@@ -3,8 +3,10 @@
 # Gives every local card file that lacks them the first-class fields
 # acceptance, blocked_by, pr_url and pr_url_source: the "## Acceptance" and
 # "## Depends on" sections move out of body into the fields (fl_split_body),
-# and pr_url comes from the manager note's "pr" (source "note"). A dependency
-# that is not a card on this board stays in the body as a prose line and is
+# and pr_url comes from the "pr" of the manager note written by the local login
+# (fb_login; source "note"). A dependency
+# that is not a card on this board (outside, missing, or the card itself) stays
+# in the body as a prose line and is
 # warned about on stderr. updated_at is left alone. Idempotent: a card that
 # has all four fields is skipped. Prints one line per changed card.
 set -uo pipefail
@@ -23,6 +25,7 @@ fb_load_config
 fl_require_store
 
 REPO_SLUG="$(fb_cfg board.repo)"
+ME="$(fb_login)" || exit 1
 BODYF="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 OUTF="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 trap 'rm -f "$BODYF" "$OUTF"' EXIT
@@ -40,17 +43,19 @@ migrate_one() {
   else
     split="$(fl_split_body "$BODYF")" || exit 1
   fi
+  # a dependency on a card that is missing or the card itself would wait
+  # forever: it stays in the body as prose, like an outside one
+  for b in $(jq -r '.blocked_by[]' <<<"$split"); do
+    if [ "$b" = "$n" ] || [ ! -f "$(fl_card_file "$b")" ]; then
+      split="$(jq -c --argjson b "$b" '.blocked_by -= [$b] | .outside += ["#" + ($b | tostring)]' <<<"$split")"
+    fi
+  done
   jq -r '.outside[]' <<<"$split" | while IFS= read -r line; do
     printf 'fleet-board: warning: card #%s: dependency %s is outside this board; kept in the body as prose\n' "$n" "$line" >&2
   done
-  # a dependency on a card that is missing or the card itself would wait forever
-  for b in $(jq -r '.blocked_by[]' <<<"$split"); do
-    [ "$b" != "$n" ] || printf 'fleet-board: warning: card #%s: depends on itself\n' "$n" >&2
-    [ -f "$(fl_card_file "$b")" ] || printf 'fleet-board: warning: card #%s: depends on #%s, which does not exist\n' "$n" "$b" >&2
-  done
-  jq --argjson sp "$split" --arg repo "$REPO_SLUG" --arg m "$FB_MARKER" '
+  jq --argjson sp "$split" --arg repo "$REPO_SLUG" --arg m "$FB_MARKER" --arg me "$ME" '
     def note_pr:
-      [(.comments // [])[] | select((.body // "") | startswith($m))] | last
+      [(.comments // [])[] | select((.body // "") | startswith($m)) | select(.author == $me)] | last
       | if . == null then null
         else (.body | split("\n") | reduce .[] as $l ({on: false, buf: [], done: false};
                 if .done then .

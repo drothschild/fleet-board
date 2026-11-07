@@ -179,12 +179,31 @@ for f in "$STORE"/cards/*.json; do
   [ -e "$f" ] || continue
   jq -e 'type == "object" and ((.comments // []) | type) == "array"' "$f" >/dev/null 2>&1 || mv "$f" "$WORK/aside/"
 done
+# The migration keeps a dependency on a card that does not exist as body prose,
+# but these fixtures record issue bodies whose "## Depends on" #n refs are
+# looked up (a missing card is the "lookup failed" case), so each ref is put
+# back into blocked_by afterwards, in body order.
+mkdir -p "$WORK/deps-before"
+for f in "$STORE"/cards/*.json; do
+  [ -e "$f" ] || continue
+  jq -r '(.body // "") | split("\n") | reduce .[] as $l ({on: false, refs: []};
+      if ($l | test("^##[ \t]+[Dd]epends[ \t]+[Oo]n[ \t]*$")) then .on = true
+      elif ($l | test("^#")) then .on = false
+      elif .on and ($l | test("^[-*][ \t]+#[0-9]+[ \t]*$")) then .refs += [$l | capture("#(?<n>[0-9]+)").n | tonumber]
+      else . end) | .refs | map(tostring) | join(" ")' "$f" 2>/dev/null > "$WORK/deps-before/${f##*/}" || :
+done
 # the migration takes card locks under worktrees.dir; leave that as it was
 WTD="$ROOT/$(jq -r '.worktrees.dir' <<<"$CFG")"
 WTD_HAD=0; [ -e "$WTD" ] && WTD_HAD=1
 LOCKS_HAD=0; [ -e "$WTD/.locks" ] && LOCKS_HAD=1
 ( cd "$ROOT" && FLEET_BOARD_USER="${LOGIN:-fleet-bot}" bash "$HERE/../scripts/migrate-card-fields.sh" >/dev/null 2>&1 ) \
   || { echo "routes-store: migrate-card-fields.sh failed in $ROOT" >&2; exit 1; }
+for f in "$WORK"/deps-before/*.json; do
+  [ -s "$f" ] || continue
+  c="$STORE/cards/${f##*/}"
+  [ -e "$c" ] || continue
+  jq --argjson r "$(tr ' ' '\n' < "$f" | jq -Rsc '[split("\n")[] | select(length > 0) | tonumber]')" '.blocked_by = ((.blocked_by // []) + $r | reduce .[] as $x ([]; if index($x) then . else . + [$x] end))' "$c" > "$c.tmp" && mv "$c.tmp" "$c"
+done
 [ "$LOCKS_HAD" = 1 ] || rmdir "$WTD/.locks" 2>/dev/null
 [ "$WTD_HAD" = 1 ] || rmdir "$WTD" 2>/dev/null
 for f in "$WORK"/aside/*.json; do [ -e "$f" ] && mv "$f" "$STORE/cards/"; done
