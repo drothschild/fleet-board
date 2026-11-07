@@ -1,0 +1,201 @@
+[
+  {
+    "name": "resolved_from_stage",
+    "state": "review_security",
+    "plan": {
+      "action": "fix",
+      "findings": [
+        {
+          "severity": "Important",
+          "text": "merge conflict in src/calc.js"
+        },
+        {
+          "severity": "Important",
+          "text": "merge conflict in test/calc.test.js"
+        }
+      ]
+    },
+    "note": {
+      "round": 3,
+      "last_review": {
+        "findings": [
+          {
+            "severity": "Important",
+            "text": "old unrelated defect"
+          }
+        ]
+      },
+      "conflicted_files": [
+        "src/calc.js",
+        "test/calc.test.js"
+      ],
+      "reviewed_stages": [
+        "security"
+      ],
+      "action_failures": 1
+    },
+    "report_status": "done",
+    "remote_resolution_verified": true,
+    "route_succeeds": true
+  },
+  {
+    "name": "blocked_from_review",
+    "state": "in_review",
+    "plan": {
+      "action": "fix",
+      "findings": [
+        {
+          "severity": "Important",
+          "text": "merge conflict in src/calc.js"
+        },
+        {
+          "severity": "Important",
+          "text": "merge conflict in test/calc.test.js"
+        }
+      ]
+    },
+    "note": {
+      "round": 3,
+      "last_review": {
+        "findings": [
+          {
+            "severity": "Important",
+            "text": "old unrelated defect"
+          }
+        ]
+      },
+      "conflicted_files": [
+        "src/calc.js",
+        "test/calc.test.js"
+      ],
+      "reviewed_stages": [
+        "security"
+      ],
+      "action_failures": 1
+    },
+    "report_status": "blocked",
+    "remote_resolution_verified": false,
+    "route_succeeds": true
+  },
+  {
+    "name": "rejected_report",
+    "state": "in_review",
+    "plan": {
+      "action": "fix",
+      "findings": [
+        {
+          "severity": "Important",
+          "text": "merge conflict in src/calc.js"
+        },
+        {
+          "severity": "Important",
+          "text": "merge conflict in test/calc.test.js"
+        }
+      ]
+    },
+    "note": {
+      "round": 3,
+      "last_review": {
+        "findings": [
+          {
+            "severity": "Important",
+            "text": "old unrelated defect"
+          }
+        ]
+      },
+      "conflicted_files": [
+        "src/calc.js",
+        "test/calc.test.js"
+      ],
+      "reviewed_stages": [
+        "security"
+      ],
+      "action_failures": 1
+    },
+    "report_status": "rejected_twice",
+    "remote_resolution_verified": false,
+    "route_succeeds": true
+  },
+  {
+    "name": "route_failure",
+    "state": "in_progress",
+    "plan": {
+      "action": "fix",
+      "findings": [
+        {
+          "severity": "Important",
+          "text": "merge conflict in src/calc.js"
+        },
+        {
+          "severity": "Important",
+          "text": "merge conflict in test/calc.test.js"
+        }
+      ]
+    },
+    "note": {
+      "round": 3,
+      "last_review": {
+        "findings": [
+          {
+            "severity": "Important",
+            "text": "old unrelated defect"
+          }
+        ]
+      },
+      "conflicted_files": [
+        "src/calc.js",
+        "test/calc.test.js"
+      ],
+      "reviewed_stages": [
+        "security"
+      ],
+      "action_failures": 1
+    },
+    "report_status": "done",
+    "remote_resolution_verified": true,
+    "route_succeeds": false
+  },
+  {
+    "name": "blocked_metadata_failure",
+    "state": "in_review",
+    "plan": {
+      "action": "fix",
+      "findings": [
+        {
+          "severity": "Important",
+          "text": "merge conflict in src/calc.js"
+        },
+        {
+          "severity": "Important",
+          "text": "merge conflict in test/calc.test.js"
+        }
+      ]
+    },
+    "note": {
+      "round": 3,
+      "last_review": {
+        "findings": [
+          {
+            "severity": "Important",
+            "text": "old unrelated defect"
+          }
+        ]
+      },
+      "conflicted_files": [
+        "src/calc.js",
+        "test/calc.test.js"
+      ],
+      "reviewed_stages": [
+        "security"
+      ],
+      "action_failures": 1,
+      "blocking_pr": 99
+    },
+    "report_status": "blocked",
+    "remote_resolution_verified": false,
+    "route_succeeds": true,
+    "note_metadata_succeeds": false,
+    "blocking_pr_is_merged": true,
+    "blocked_by": null
+  }
+]
