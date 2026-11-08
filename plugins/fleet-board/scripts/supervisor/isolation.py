@@ -6,6 +6,9 @@ from pathlib import Path
 import selectors
 import signal
 import shutil
+import shlex
+import secrets
+import socket
 import subprocess
 import tempfile
 import time
@@ -160,40 +163,152 @@ def _wrapped_command(argv, policy):
     raise IsolationUnavailable('host isolation backend unsupported')
 
 
-def probe_capabilities(policy):
-    """Apply and test both an allowed write and a denied read on this host."""
+def probe_capabilities(policy, *, inference_socket=None):
+    """Require real positive and negative checks for every worker boundary."""
+    expected = ('workspace_read', 'workspace_write', 'controller_db', 'controller_socket',
+                'board_storage', 'shared_git_metadata', 'host_credentials', 'ssh_agent',
+                'keychain', 'symlink_escape', 'loopback_network', 'publication',
+                'forged_human_control', 'inference_channel')
+    checks = {name: False for name in expected}
     if not policy.get('command'):
-        return {'available': False, 'backend': policy['backend'], 'reason': 'isolation executable unavailable'}
-    allowed = Path(policy['workspace']) / '.isolation-probe'
+        return {'available': False, 'backend': policy['backend'], 'reason': 'isolation executable unavailable',
+                'checks': checks}
     probe_root = None
+    listener = tcp_listener = None
+    owns_inference_socket = False
+    control_listener = agent_listener = None
+    accepted = []
+    workspace_probe_paths = []
     try:
-        probe_root = Path(tempfile.mkdtemp(prefix='.isolation-probe-',
-                                           dir=str(Path(policy['workspace']).parent)))
-        denied_path = probe_root / 'denied'
-        denied_path.write_text('denied', encoding='utf-8')
-        denied_path.chmod(0o644)
-        command = ['/bin/sh', '-c', 'test ! -r "$1" && printf ok > "$2"',
-                   'probe', str(denied_path), str(allowed)]
-        wrapped = _wrapped_command(command, policy)
-        completed = subprocess.run(wrapped, cwd=policy['workspace'], stdin=subprocess.DEVNULL,
+        if not shutil.which('nc'):
+            raise IsolationUnavailable('netcat unavailable for local boundary probes')
+        scratch_parent = '/private/tmp' if Path('/private/tmp').is_dir() else '/tmp'
+        probe_root = Path(tempfile.mkdtemp(prefix='fb-probe-', dir=scratch_parent))
+        probe_root.chmod(0o700)
+        targets = {}
+        probe_name = secrets.token_hex(8)
+        for name in ('controller_db', 'board_storage', 'shared_git_metadata',
+                     'host_credentials', 'keychain'):
+            path = probe_root / (name + '.sentinel')
+            path.write_text(name, encoding='utf-8')
+            path.chmod(0o644)
+            targets[name] = path
+        control_path = probe_root / 'controller.sock'
+        agent_path = probe_root / 'agent.sock'
+        control_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        control_listener.bind(str(control_path))
+        control_listener.listen(1)
+        agent_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        agent_listener.bind(str(agent_path))
+        agent_listener.listen(1)
+        inference_path = Path(inference_socket or (Path(policy['channels']) / 'inference.sock'))
+        if not inference_path.exists():
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(str(inference_path))
+            listener.listen(1)
+            listener.settimeout(3)
+            owns_inference_socket = True
+        elif not stat.S_ISSOCK(inference_path.lstat().st_mode):
+            raise IsolationUnavailable('inference channel path is not a socket')
+        tcp_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        tcp_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        tcp_listener.bind(('127.0.0.1', 0))
+        tcp_listener.listen(1)
+        escape = Path(policy['workspace']) / ('.isolation-probe-escape-' + probe_name)
+        escape.symlink_to(targets['controller_db'])
+        own_read = Path(policy['workspace']) / ('.isolation-probe-readable-' + probe_name)
+        own_read.write_text('ok', encoding='utf-8')
+        workspace_probe_paths.extend((escape, own_read))
+        publication = probe_root / ('publication-' + probe_name + '.out')
+        nc = shutil.which('nc')
+        lines = [
+            'if test -r {0}; then workspace_read=pass; fi'.format(shlex.quote(str(own_read))),
+            'if printf ok > {0}; then workspace_write=pass; fi'.format(shlex.quote(str(Path(policy['workspace']) / ('.isolation-probe-write-' + probe_name)))),
+        ]
+        for name in ('controller_db', 'board_storage', 'shared_git_metadata', 'host_credentials', 'keychain'):
+            lines.append('if ! test -r {0}; then {1}=pass; fi'.format(shlex.quote(str(targets[name])), name))
+        lines.extend([
+            'if ! test -r {0}; then symlink_escape=pass; fi'.format(shlex.quote(str(escape))),
+            'if ! printf x > {0} 2>/dev/null; then publication=pass; fi'.format(shlex.quote(str(publication))),
+            'if {0} -z -w 1 127.0.0.1 {1} >/dev/null 2>&1; then loopback_network=fail; else loopback_network=pass; fi'.format(nc, tcp_listener.getsockname()[1]),
+            'if printf control | {0} -U -w 1 {1} >/dev/null 2>&1; then controller_socket=fail; forged_human_control=fail; else controller_socket=pass; forged_human_control=pass; fi'.format(nc, shlex.quote(str(control_path))),
+            'if printf agent | {0} -U -w 1 {1} >/dev/null 2>&1; then ssh_agent=fail; else ssh_agent=pass; fi'.format(nc, shlex.quote(str(agent_path))),
+            'if printf probe | {0} -U -w 1 {1} >/dev/null 2>&1; then inference_channel=pass; else inference_channel=fail; fi'.format(nc, shlex.quote(str(inference_path))),
+            'printf "workspace_read=%s\\nworkspace_write=%s\\ncontroller_db=%s\\ncontroller_socket=%s\\nboard_storage=%s\\nshared_git_metadata=%s\\nhost_credentials=%s\\nssh_agent=%s\\nkeychain=%s\\nsymlink_escape=%s\\nloopback_network=%s\\npublication=%s\\nforged_human_control=%s\\ninference_channel=%s\\n" "$workspace_read" "$workspace_write" "$controller_db" "$controller_socket" "$board_storage" "$shared_git_metadata" "$host_credentials" "$ssh_agent" "$keychain" "$symlink_escape" "$loopback_network" "$publication" "$forged_human_control" "$inference_channel"',
+        ])
+        script = '\n'.join(lines) + '\n'
+        script_path = Path(policy['workspace']) / ('.isolation-probe-' + probe_name + '.sh')
+        script_path.write_text(script, encoding='utf-8')
+        script_path.chmod(0o700)
+        workspace_probe_paths.extend((script_path, Path(policy['workspace']) /
+                                      ('.isolation-probe-write-' + probe_name)))
+        completed = subprocess.run(_wrapped_command(['/bin/sh', str(script_path)], policy),
+                                   cwd=policy['workspace'], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                   timeout=3, check=False, env={'PATH': '/usr/bin:/bin'})
-        if completed.returncode != 0 or not allowed.is_file() or allowed.read_text() != 'ok':
-            detail = completed.stderr.decode('utf-8', 'replace')[:160].strip()
-            return {'available': False, 'backend': policy['backend'],
-                    'reason': detail or 'policy probe failed (exit {}, allowed_write={})'.format(
-                        completed.returncode, allowed.is_file())}
-        allowed.unlink()
-        return {'available': True, 'backend': policy['backend'], 'reason': None}
-    except (OSError, subprocess.SubprocessError, IsolationUnavailable, ValueError) as exc:
-        return {'available': False, 'backend': policy['backend'], 'reason': str(exc)[:200]}
-    finally:
+                                   timeout=5, check=False, env={'PATH': '/usr/bin:/bin'})
+        output = completed.stdout.decode('utf-8', 'replace')
+        for line in output.splitlines():
+            if '=' in line:
+                name, value = line.split('=', 1)
+                if name in checks:
+                    checks[name] = value == 'pass'
+        if listener is not None:
+            try:
+                connection, _ = listener.accept()
+                accepted.append(connection)
+                checks['inference_channel'] = checks['inference_channel'] and connection.recv(16) == b'probe'
+            except (OSError, socket.timeout):
+                checks['inference_channel'] = False
         try:
-            allowed.unlink()
-        except OSError:
+            if control_listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
+                control_listener.settimeout(.05)
+                connection, _ = control_listener.accept()
+                accepted.append(connection)
+                checks['controller_socket'] = checks['forged_human_control'] = False
+        except (OSError, socket.timeout):
             pass
+        try:
+            agent_listener.settimeout(.05)
+            connection, _ = agent_listener.accept()
+            accepted.append(connection)
+            checks['ssh_agent'] = False
+        except (OSError, socket.timeout):
+            pass
+        if completed.returncode != 0:
+            return {'available': False, 'backend': policy['backend'],
+                    'reason': 'boundary probe failed (exit {})'.format(completed.returncode), 'checks': checks}
+        missing = [name for name, passed in checks.items() if not passed]
+        if missing:
+            return {'available': False, 'backend': policy['backend'],
+                    'reason': 'boundary probe failed: ' + ', '.join(missing), 'checks': checks}
+        return {'available': True, 'backend': policy['backend'], 'reason': None, 'checks': checks}
+    except (OSError, subprocess.SubprocessError, IsolationUnavailable, ValueError) as exc:
+        return {'available': False, 'backend': policy['backend'], 'reason': str(exc)[:200],
+                'checks': checks}
+    finally:
+        for connection in accepted:
+            try:
+                connection.close()
+            except OSError:
+                pass
+        for sock in (listener, tcp_listener, control_listener, agent_listener):
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+        if owns_inference_socket:
+            try:
+                Path(inference_path).unlink()
+            except (OSError, UnboundLocalError):
+                pass
         if probe_root is not None:
             shutil.rmtree(probe_root, ignore_errors=True)
+        for path in workspace_probe_paths:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_data=None,

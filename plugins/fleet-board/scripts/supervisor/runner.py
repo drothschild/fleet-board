@@ -135,7 +135,8 @@ class Runner:
     def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None,
                           source_repository=None):
         """Run only an explicit production request behind verified host isolation."""
-        capability = probe_capabilities(policy)
+        capability = probe_capabilities(
+            policy, inference_socket=getattr(channel, 'socket_path', None))
         if not capability.get('available'):
             raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
         if not self.production_enabled:
