@@ -105,13 +105,18 @@ class Recovery:
                 heartbeat = observation.get('heartbeat')
                 if isinstance(heartbeat, dict):
                     at = heartbeat.get('at')
-                    if type(at) in (int, float) and math.isfinite(at) and 0 <= at <= now and at > data.get('heartbeat', -1):
+                    previous_heartbeat = data.get('heartbeat')
+                    if type(previous_heartbeat) not in (int, float) or not math.isfinite(previous_heartbeat):
+                        previous_heartbeat = -1
+                    if type(at) in (int, float) and math.isfinite(at) and 0 <= at <= now and at > previous_heartbeat:
                         updates['heartbeat'] = at
                 progress = observation.get('progress')
                 if isinstance(progress, dict):
                     at, sequence, kind = progress.get('observed_at'), progress.get('sequence'), progress.get('kind')
                     previous = data.get('progress')
                     previous_sequence = previous.get('sequence', 0) if isinstance(previous, dict) else 0
+                    if type(previous_sequence) is not int or previous_sequence < 0:
+                        previous_sequence = 0
                     if (type(at) in (int, float) and math.isfinite(at) and 0 <= at <= now
                             and type(sequence) is int and sequence > previous_sequence
                             and kind in ('checkpoint', 'tool_completed', 'long_operation')):
