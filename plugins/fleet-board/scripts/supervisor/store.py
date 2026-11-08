@@ -281,11 +281,47 @@ class Store:
             row = c.execute('SELECT state,data FROM attempts WHERE id=?', (attempt_id,)).fetchone()
             if row is None:
                 raise ValueError('unknown attempt')
+            if row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
+                raise ValueError('attempt is no longer mutable')
             data = json.loads(row['data'])
             data.update(details)
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
             c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def request_cancellation(self, attempt_id, request_id, reason, expected_revision):
+        """Persist cancellation and revoke authority in one transaction before signaling."""
+        if any(not isinstance(x, str) or not x for x in (attempt_id, request_id, reason)):
+            raise ValueError('invalid cancellation')
+        request = canonical_json({'type': 'cancel_attempt', 'attempt_id': attempt_id,
+                                  'id': request_id, 'reason': reason, 'expected_revision': expected_revision})
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request_id,)).fetchone()
+            if prior:
+                if prior['request'] != request:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+            else:
+                revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+                if type(expected_revision) is not int or expected_revision != revision:
+                    raise ValueError('revision mismatch')
+                row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+                if row is None or row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
+                    raise ValueError('attempt cannot be cancelled')
+                data = json.loads(row['data'])
+                data.update({'state': 'cancel_requested', 'cancel_reason': reason, 'cancel_requested_at': time.time()})
+                c.execute("UPDATE attempts SET state='cancel_requested',data=? WHERE id=?", (canonical_json(data), attempt_id))
+                c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (row['job_id'],))
+                result = {'attempt_id': attempt_id, 'revision': revision + 1}
+                c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id, request, canonical_json(result)))
+                self._event('cancellation_requested', {'attempt_id': attempt_id, 'reason': reason})
+            c.execute('COMMIT')
+            return result
         except Exception:
             c.execute('ROLLBACK')
             raise
