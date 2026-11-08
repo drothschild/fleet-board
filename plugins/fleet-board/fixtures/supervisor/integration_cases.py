@@ -48,7 +48,9 @@ class Adapter:
             if intent.get('omit_ok') is True:
                 check.pop('ok')
             result = {'operation_key': key, 'merged': True, 'head_sha': intent['head_sha'],
-                      'main_check': check}
+                      'note_operation_key': key, 'pr': int(intent['pr']),
+                      'planned_head': intent['head_sha'], 'observed_head': intent['head_sha'],
+                      'state': 'MERGED', 'main_check': check}
         else:
             self.verifications.append(intent['card'])
             result = {'operation_key': key, 'commit': 'b' * 40,
@@ -101,7 +103,7 @@ class IntegrationContract(unittest.TestCase):
         return effect
 
     def eligible_merge(self, **overrides):
-        return {'head_sha': 'a' * 40, 'merge_policy': 'auto', 'card_state': 'in_review',
+        return {'pr': '91', 'head_sha': 'a' * 40, 'merge_policy': 'auto', 'card_state': 'in_review',
                 'needs_human_qa': False, 'head_current': True, 'review_clean': True,
                 'review_stages_complete': True, 'dependencies_ready': True, 'ci_green': True,
                 **overrides}
@@ -143,6 +145,16 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(recovered.recover(same, mode='stopped').result(timeout=2)['status'], 'observed')
         self.assertEqual(len(self.adapter.merges), 1)
         self.assertEqual(self.store.integration_lane(), None)
+
+    def test_recovery_requires_matching_note_pr_head_and_merged_state(self):
+        effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
+        effect.inject_failure('before_observation_commit')
+        self.assertEqual(self.lane.submit(effect, mode='running').result(timeout=2)['status'], 'pending')
+        self.adapter.external['merge-17']['observed_head'] = 'f' * 40
+        recovered = self.lane.recover(effect, mode='stopped').result(timeout=2)
+        self.assertEqual(recovered['status'], 'pending')
+        self.assertEqual(len(self.adapter.merges), 1)
+        self.assertIsNotNone(self.store.integration_lane())
 
     def test_main_verification_failure_closes_new_admissions(self):
         for result in (False, None, 'true', 'missing'):
