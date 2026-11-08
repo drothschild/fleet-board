@@ -150,12 +150,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Modify:** `scripts/merge-reviewed.sh`, `scripts/settle.sh`, `scripts/verify-main.sh` only where a bounded entrypoint needs it; `effects.py`, `scheduler.py`.
 **Tests:** existing `tests/test-merge-reviewed.sh` and `tests/test-settle.sh`, separate TDD slices; new `tests/test-supervisor-integration.sh` with `fixtures/supervisor/integration_cases.py`.
 
-- [ ] Write failing existing-suite cases for a bounded per-card operation retaining fresh eligibility/head binding and pending verification recovery; commit tests before adapting helpers. Preserve their existing default invocation contracts.
-- [ ] Add integration cases: B completes review/merge/verification while unrelated A is still running; at most one repository merge/verification lane; crash after merge before journal update issues no second merge; failed main verification closes admissions; Human QA and human merge policy forbid mutation.
-- [ ] Cover head drift, configured review stages, dependency readiness, green CI requirement, post-merge refresh and deferred cleanup. `ok: "true"`, missing `ok`, and `ok: false` are all failure.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-integration.sh` to failure; commit tests.
-- [ ] Implement lane scheduling and effect recovery outside the event loop. Already-merged verification can proceed while paused/stopping; no new merge can. Cleanup cannot remove active/quarantined/pending-QA worktrees.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Write failing existing-suite cases for a bounded per-card operation retaining fresh eligibility/head binding and pending verification recovery; commit tests before adapting helpers. Preserve their existing default invocation contracts.
+- [x] Add integration cases: B completes review/merge/verification while unrelated A is still running; at most one repository merge/verification lane; crash after merge before journal update issues no second merge; failed main verification closes admissions; Human QA and human merge policy forbid mutation.
+- [x] Cover head drift, configured review stages, dependency readiness, green CI requirement, post-merge refresh and deferred cleanup. `ok: "true"`, missing `ok`, and `ok: false` are all failure.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-integration.sh` to failure; commit tests.
+- [x] Implement lane scheduling and effect recovery outside the event loop. Already-merged verification can proceed while paused/stopping; no new merge can. Cleanup cannot remove active/quarantined/pending-QA worktrees.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S1, S3, S8, S11.
 

@@ -3,6 +3,9 @@
 # headless runs.
 #
 # Usage: merge-reviewed.sh      (no arguments; run from the repo root)
+#        merge-reviewed.sh --card <n>
+#        merge-reviewed.sh --card <n> --operation-key <key> --pr <pr> --head <sha>
+#        merge-reviewed.sh --inspect --card <n> --operation-key <key> --pr <pr> --head <sha>
 #
 # Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge`
 # inside a headless session, so the merge runs here instead: a plain shell
@@ -39,20 +42,52 @@
 # The candidate snapshot and FLEET_BOARD_MERGE_LIMIT (default 10) bound a drain.
 # Attempt each candidate once, and replan after each attempt. A failed merge
 # does not starve other cards. Verification must return literal ok:true.
+# Keyed single-card operations persist the controller key and exact PR/head
+# before mutation. --inspect returns fresh note/PR/head/verification evidence.
 
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
+INSPECT=0
 CARD_ONLY=""
-if [ "$#" -eq 2 ] && [ "$1" = --card ]; then
-  fb_valid_number "$2" || fb_die 2 "usage: merge-reviewed.sh [--card <number>]"
+OPERATION_KEY=""
+EXPECTED_PR=""
+EXPECTED_HEAD=""
+if [ "$#" -gt 0 ]; then
+  if [ "$1" = --inspect ]; then INSPECT=1; shift; fi
+  [ "$#" -eq 2 ] || [ "$#" -eq 8 ] || fb_die 2 "invalid merge-reviewed.sh arguments"
+  [ "$1" = --card ] || fb_die 2 "invalid merge-reviewed.sh arguments"
   CARD_ONLY="$2"
-elif [ "$#" -ne 0 ]; then
-  fb_die 2 "usage: merge-reviewed.sh [--card <number>]"
+  fb_valid_number "$CARD_ONLY" || fb_die 2 "invalid merge-reviewed.sh card"
+  if [ "$#" -eq 8 ]; then
+    [ "$3" = --operation-key ] && [ "$5" = --pr ] && [ "$7" = --head ] || fb_die 2 "invalid bounded operation arguments"
+    OPERATION_KEY="$4"; EXPECTED_PR="$6"; EXPECTED_HEAD="$8"
+    case "$OPERATION_KEY" in ''|*[!A-Za-z0-9._:-]*) fb_die 2 "invalid controller operation key" ;; esac
+    [ "${#OPERATION_KEY}" -le 128 ] || fb_die 2 "invalid controller operation key"
+    fb_valid_number "$EXPECTED_PR" || fb_die 2 "invalid expected PR"
+    case "$EXPECTED_HEAD" in ''|*[!0-9a-fA-F]*) fb_die 2 "invalid expected head" ;; esac
+  fi
+  [ "$INSPECT" = 0 ] || [ "$#" -eq 8 ] || fb_die 2 "inspection requires a keyed bounded operation"
+  [ -z "$OPERATION_KEY" ] || [ "$#" -eq 8 ] || fb_die 2 "operation key requires PR and head bindings"
 fi
 
 fb_load_config
+
+if [ "$INSPECT" = 1 ]; then
+  note="$(bash "$FLEET_SCRIPTS/note.sh" get "$CARD_ONLY" </dev/null)" || fb_die 3 "cannot read merge recovery note"
+  info="$(gh pr view "$EXPECTED_PR" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid)" || fb_die 3 "cannot inspect merge recovery PR"
+  jq -nc --arg key "$OPERATION_KEY" --argjson pr "$EXPECTED_PR" --arg head "$EXPECTED_HEAD" --argjson note "$note" --argjson info "$info" '
+    ($note.merge_operation // $note.pending_merge // {}) as $marker
+    | if ($marker.operation_key != $key or $marker.pr != $pr or $marker.head_sha != $head) then
+        {status:"unmatched"}
+      else
+        {status:"observed", operation_key:$marker.operation_key, note_operation_key:$marker.operation_key,
+         pr:$pr, planned_head:$head, observed_head:$info.headRefOid, state:$info.state,
+         main_check:$marker.main_check}
+      end' || fb_die 3 "cannot build merge recovery evidence"
+  exit 0
+fi
 
 [ "$(fb_cfg merge.policy)" = auto ] || exit 0
 
@@ -108,6 +143,26 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   n="$(jq -r '.number' <<<"$card")"
   pr="$(jq -r '.pr' <<<"$card")"
   fb_valid_number "$n" && fb_valid_number "$pr" || fb_die 3 "invalid card or PR in merge plan"
+  head="$(jq -r '.head_sha // empty' <<<"$card")"
+  if [ -n "$OPERATION_KEY" ]; then
+    [ "$n" = "$CARD_ONLY" ] && [ "$pr" = "$EXPECTED_PR" ] && [ "$head" = "$EXPECTED_HEAD" ] \
+      || fb_die 3 "fresh merge plan no longer matches the journaled PR/head for #$CARD_ONLY"
+    note_before="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null)" \
+      || fb_die 3 "#$n: cannot read the merge operation marker"
+    marker="$(jq -c '.merge_operation // .pending_merge // null' <<<"$note_before")"
+    if [ "$marker" != null ]; then
+      marker_key="$(jq -r '.operation_key // empty' <<<"$marker")"
+      marker_pr="$(jq -r '.pr // empty' <<<"$marker")"
+      marker_head="$(jq -r '.head_sha // empty' <<<"$marker")"
+      if [ "$marker_key" = "$OPERATION_KEY" ] || { [ "$marker_pr" = "$pr" ] && [ "$marker_head" = "$head" ]; }; then
+        [ "$marker_key" = "$OPERATION_KEY" ] && [ "$marker_pr" = "$pr" ] && [ "$marker_head" = "$head" ] \
+          || fb_die 3 "#$n: a different operation owns the pending merge recovery marker"
+      fi
+    fi
+    if [ "$marker" = null ] && [ "$(jq -r '.action' <<<"$card")" = verify_main ]; then
+      fb_die 3 "#$n: merged PR verification has no matching journaled operation marker"
+    fi
+  fi
   # Remove before attempting so even an unchanged fake/remote response cannot spin.
   REST=""
   for candidate in $NUMS; do [ "$candidate" = "$n" ] || REST="$REST $candidate"; done
@@ -115,8 +170,12 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   case "$(jq -r '.state' <<<"$card")" in in_review|review_*) ;; *) continue ;; esac
 
   if [ "$(jq -r '.action' <<<"$card")" = merge ]; then
-    head="$(jq -r '.head_sha // empty' <<<"$card")"
     case "$head" in ''|*[!0-9a-fA-F]*) fb_die 3 "missing or invalid planned head for #$n" ;; esac
+    if [ -n "$OPERATION_KEY" ]; then
+      merge_note "$n" "$(jq -cn --arg key "$OPERATION_KEY" --argjson pr "$pr" --arg head "$head" \
+        '{pending_merge:{operation_key:$key,pr:$pr,head_sha:$head}}')" \
+        || fb_die 3 "#$n: cannot persist merge recovery intent"
+    fi
     ATTEMPTS=$((ATTEMPTS + 1))
     merge_rc=0
     gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$head" </dev/null >/dev/null || merge_rc=$?
@@ -132,7 +191,16 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       *) fb_die 3 "#$n: unknown state after merge; recovery required" ;;
     esac
     printf 'merged #%s PR #%s\n' "$n" "$pr"
-    merge_note "$n" "$(jq -cn --argjson pr "$pr" '{merged_pr: $pr}')" || fb_die 3 "#$n: cannot record merged PR; recovery required"
+    if [ -n "$OPERATION_KEY" ]; then
+      merge_note "$n" "$(jq -cn --arg key "$OPERATION_KEY" --argjson pr "$pr" --arg head "$head" \
+        '{merged_pr:$pr,merge_operation:{operation_key:$key,pr:$pr,head_sha:$head}}')" \
+        || fb_die 3 "#$n: cannot record merged PR operation; recovery required"
+    else
+      merge_note "$n" "$(jq -cn --argjson pr "$pr" '{merged_pr: $pr}')" || fb_die 3 "#$n: cannot record merged PR; recovery required"
+    fi
+  elif [ -n "$OPERATION_KEY" ]; then
+    [ "$(jq -r '.action' <<<"$card")" = verify_main ] \
+      || fb_die 3 "#$n: keyed operation is not a merge or verification recovery"
   fi
 
   if ! main_check="$(bash "$VERIFY" "$n" "$pr" </dev/null 2>"$TMPD/verify.err")"; then
@@ -142,7 +210,13 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   jq -e 'type == "object" and (.commit | type == "string" and length > 0) and (.ok | type == "boolean") and (.results | type == "array")' <<<"$main_check" >/dev/null 2>&1 \
     || fb_die 3 "#$n: invalid main verification result; stopping merge drain"
   # Preserve red evidence too, but never finish the card or merge another PR.
-  merge_note "$n" "$(jq -c '{main_check: .}' <<<"$main_check")" || fb_die 3 "#$n: cannot record main verification"
+  if [ -n "$OPERATION_KEY" ]; then
+    merge_note "$n" "$(jq -cn --arg key "$OPERATION_KEY" --argjson pr "$pr" --arg head "$head" --argjson check "$main_check" \
+      '{main_check:$check,merge_operation:{operation_key:$key,pr:$pr,head_sha:$head,main_check:$check}}')" \
+      || fb_die 3 "#$n: cannot record operation-bound main verification"
+  else
+    merge_note "$n" "$(jq -c '{main_check: .}' <<<"$main_check")" || fb_die 3 "#$n: cannot record main verification"
+  fi
   [ "$(jq -r '.ok' <<<"$main_check")" = true ] || fb_die 3 "#$n: main verification failed; stopping merge drain"
 
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null)" || { fail "$n" "cannot read pending follow-ups"; continue; }

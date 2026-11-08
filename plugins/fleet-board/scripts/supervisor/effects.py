@@ -18,8 +18,10 @@ from .models import canonical_json
 _KINDS = {
     'worktree_prepare', 'branch_refresh', 'commit_publication', 'pr_create',
     'pr_update', 'report_post', 'note_update', 'card_move', 'followup_file', 'cleanup',
+    'integration_merge', 'main_verification',
 }
-_NON_IDEMPOTENT = {'branch_refresh', 'commit_publication', 'pr_create', 'report_post', 'followup_file'}
+_NON_IDEMPOTENT = {'branch_refresh', 'commit_publication', 'pr_create', 'report_post',
+                   'followup_file', 'integration_merge'}
 _OPERATION_KEY = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$')
 _CARD = re.compile(r'^[1-9][0-9]*$')
 _BRANCH = re.compile(r'^fleet/[1-9][0-9]*-[a-z0-9][a-z0-9-]*$')
@@ -109,6 +111,15 @@ class Effect:
             raise ValueError('effect target card is not bound to its journal record')
         return row, preconditions, intent
 
+    def rebind(self, store, *, record=None, preconditions=None, intent=None):
+        """Create an equivalent effect handle for a worker-owned Store connection."""
+        if record is None or preconditions is None or intent is None:
+            record, preconditions, intent = self._record()
+        rebound = Effect(store, self.adapter, self.authority)
+        rebound.prepare(record['operation_key'], preconditions, intent)
+        rebound._faults, self._faults = self._faults, set()
+        return rebound
+
     def _attention_reason(self):
         for event in self.store.snapshot()['events']:
             if event['type'] == 'effect_attention' and event['payload'].get('operation_key') == self._key:
@@ -140,6 +151,15 @@ class Effect:
             raise ValueError('non-idempotent observation operation key does not match controller key')
         if 'operation_key' in observation and observation['operation_key'] != self._key:
             raise ValueError('observation operation key does not match controller key')
+        if intent['kind'] == 'integration_merge' and observation.get('merged') is not True:
+            raise ValueError('integration merge observation does not prove a completed merge')
+        if intent['kind'] == 'integration_merge':
+            check = observation.get('main_check')
+            if (not isinstance(check, dict) or not isinstance(check.get('commit'), str)
+                    or not check['commit'] or not isinstance(check.get('results'), list)):
+                raise ValueError('integration merge observation lacks main verification evidence')
+            if not self.merge_recovery_matches(observation, intent, self._key):
+                raise ValueError('integration merge recovery evidence does not match its operation, PR, head, or merged state')
         if intent['kind'] == 'branch_refresh':
             revision = observation.get('input_revision')
             evidence = observation.get('input_evidence')
@@ -191,6 +211,17 @@ class Effect:
             result['invalidated_evidence'] = sorted(set(invalidated or []))
         return result
 
+    @staticmethod
+    def merge_recovery_matches(observation, intent, operation_key):
+        head = intent.get('head_sha')
+        return (isinstance(observation, dict)
+                and observation.get('operation_key') == operation_key
+                and observation.get('note_operation_key') == operation_key
+                and str(observation.get('pr')) == str(intent.get('pr'))
+                and observation.get('planned_head') == head
+                and observation.get('observed_head') == head
+                and observation.get('state') == 'MERGED')
+
     def observe(self):
         """Read external state without issuing a mutation."""
         _, _, intent = self._record()
@@ -216,6 +247,24 @@ class Effect:
         if existing is not None:
             if intent['kind'] in _NON_IDEMPOTENT and existing.get('operation_key') != self._key:
                 return self._attention('ambiguous non-idempotent existing result')
+            if intent['kind'] == 'integration_merge' and existing.get('state') == 'MERGED':
+                if not self.merge_recovery_matches(existing, intent, self._key):
+                    return {'status': 'pending', 'operation_key': self._key,
+                            'reason': 'merged PR evidence does not match the journaled operation'}
+                check = existing.get('main_check')
+                if not isinstance(check, dict):
+                    # The keyed helper's fresh plan sees an already merged PR and
+                    # resumes verification without issuing another merge.
+                    try:
+                        allowed, reason = self._validate_authority(row, preconditions, intent)
+                        if not allowed:
+                            return self._attention(reason or 'verification recovery authority denied')
+                        response = self.adapter.apply(dict(intent, operation_key=self._key,
+                                                           verify_only=True))
+                        return self._save_observation(response, intent)
+                    except Exception as exc:
+                        return {'status': 'pending', 'operation_key': self._key,
+                                'reason': 'verification recovery failed: ' + str(exc)[:240]}
             try:
                 return self._save_observation(existing, intent)
             except Exception as exc:
@@ -321,6 +370,35 @@ class BoundedScriptAdapter:
         self.output_limit = output_limit
 
     def inspect(self, intent):
+        if intent['kind'] == 'integration_merge':
+            card, pr, head, key = (intent.get('card'), intent.get('pr'),
+                                   intent.get('head_sha'), intent.get('operation_key'))
+            if (not isinstance(card, str) or not _CARD.fullmatch(card)
+                    or not isinstance(pr, str) or not _CARD.fullmatch(pr)
+                    or not isinstance(head, str) or not re.fullmatch(r'[0-9a-fA-F]{7,64}', head)
+                    or not isinstance(key, str) or not _OPERATION_KEY.fullmatch(key)):
+                raise ValueError('invalid merge recovery inspection')
+            command = [str(self.scripts / 'merge-reviewed.sh'), '--inspect', '--card', card,
+                       '--operation-key', key, '--pr', pr, '--head', head]
+            try:
+                result = self.runner(command, cwd=str(self.plugin_root), capture_output=True,
+                                     text=True, timeout=self.timeout, check=False, shell=False)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise RuntimeError('merge recovery inspection failed: ' + str(exc)) from exc
+            stdout, stderr = result.stdout or '', result.stderr or ''
+            if any(len(value.encode('utf-8', errors='replace')) > self.output_limit for value in (stdout, stderr)):
+                raise RuntimeError('merge recovery inspection output exceeded limit')
+            if result.returncode != 0:
+                raise RuntimeError('merge recovery inspection failed with exit ' + str(result.returncode))
+            try:
+                evidence = json.loads(stdout)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError('merge recovery inspection returned invalid JSON') from exc
+            if not isinstance(evidence, dict) or evidence.get('status') != 'observed':
+                return None
+            if evidence.get('state') != 'MERGED':
+                return None
+            return evidence
         value = self.observer(intent['kind'], dict(intent))
         return None if value is None else _observation(value)
 
@@ -434,6 +512,21 @@ class BoundedScriptAdapter:
             if not isinstance(path, str) or not Path(path).is_absolute():
                 raise ValueError('invalid cleanup worktree')
             return [str(self.scripts / 'worktree.sh'), 'remove', card, path], None
+        if kind == 'integration_merge':
+            pr, head = intent.get('pr'), intent.get('head_sha')
+            if (not isinstance(pr, str) or not _CARD.fullmatch(pr)
+                    or not isinstance(head, str)
+                    or not re.fullmatch(r'[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?', head)):
+                raise ValueError('invalid bounded merge request')
+            if not isinstance(intent.get('operation_key'), str) or not _OPERATION_KEY.fullmatch(intent['operation_key']):
+                raise ValueError('invalid bounded merge operation identity')
+            return [str(self.scripts / 'merge-reviewed.sh'), '--card', card,
+                    '--operation-key', intent['operation_key'], '--pr', pr, '--head', head], None
+        if kind == 'main_verification':
+            pr = intent.get('pr')
+            if not isinstance(pr, str) or not _CARD.fullmatch(pr):
+                raise ValueError('invalid main verification request')
+            return [str(self.scripts / 'verify-main.sh'), card, pr], None
         raise ValueError('unsupported effect kind')
 
     def apply(self, intent):
@@ -451,6 +544,10 @@ class BoundedScriptAdapter:
             if any(len(value.encode('utf-8', errors='replace')) > self.output_limit for value in (stdout, stderr)):
                 raise RuntimeError('effect subprocess output exceeded limit')
             if result.returncode != 0:
+                if intent['kind'] == 'integration_merge' and result.returncode == 3:
+                    observed = self.inspect(intent)
+                    if isinstance(observed, dict) and observed.get('merged') is True:
+                        return observed
                 raise RuntimeError('effect subprocess failed with exit ' + str(result.returncode))
             observed = self.inspect(intent)
             if observed is None:

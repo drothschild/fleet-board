@@ -221,8 +221,23 @@ class Store:
         self.__human_actor_verifier = human_actor_verifier
         self.directory = directory
         self.domain_id = domain_id
+        self.common_dir = Path(common_dir)
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
         self.__fault_injector = fault_injector
+
+    def fork_connection(self):
+        """Open a private Store handle for a bounded worker thread."""
+        db = self.directory / 'store.sqlite3'
+        if db.is_symlink() or not db.is_file() or db.stat().st_uid != os.getuid() or db.stat().st_mode & 0o077:
+            raise ValueError('unsafe database')
+        connection = sqlite3.connect(str(db), timeout=30, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA foreign_keys=ON')
+        connection.execute('PRAGMA synchronous=FULL')
+        return Store(connection, self.directory, self.domain_id, self.common_dir,
+                     self.__fault_injector, self.__stop_evidence_verifier,
+                     self.__retry_evidence_verifier, self.__launch_evidence_verifier,
+                     self.__human_actor_verifier)
 
     def close(self):
         self.__connection.close()
@@ -326,6 +341,104 @@ class Store:
             else:
                 states[payload['card']] = payload['workflow_state']
         return states
+
+    @staticmethod
+    def _integration_lane_state(connection):
+        active = None
+        for row in connection.execute("SELECT type,payload FROM events WHERE type LIKE 'integration_lane_%' ORDER BY sequence"):
+            payload = json.loads(row['payload'])
+            if row['type'] in ('integration_lane_acquired', 'integration_lane_recovered'):
+                active = payload
+            elif row['type'] == 'integration_lane_released':
+                if active is not None and active.get('operation_key') == payload.get('operation_key'):
+                    active = None
+        return active
+
+    def integration_lane(self):
+        """Return the durable repository integration lease, if one is held."""
+        return self._integration_lane_state(self.__connection)
+
+    def acquire_integration_lane(self, operation_key, card, kind, owner_id, *, recover=False):
+        """Atomically claim the repository lane for a journaled integration effect.
+
+        Recovery can transfer only the same pending effect's lease. The caller must
+        already own the supervisor domain lock before requesting that transfer.
+        """
+        if (not isinstance(operation_key, str) or not operation_key
+                or not isinstance(card, str) or not re.fullmatch(r'[1-9][0-9]*', card)
+                or kind not in ('integration_merge', 'main_verification')
+                or not isinstance(owner_id, str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', owner_id)
+                or type(recover) is not bool):
+            raise ValueError('invalid repository integration lease')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            effect = c.execute('SELECT card,intent,observation FROM effects WHERE operation_key=?',
+                               (operation_key,)).fetchone()
+            if effect is None:
+                raise ValueError('integration lease requires a journaled effect')
+            intent = json.loads(effect['intent'])
+            if (effect['card'] != card or intent.get('card') != card or intent.get('kind') != kind):
+                raise ValueError('integration lease does not match its effect')
+            active = self._integration_lane_state(c)
+            if active is not None:
+                same = (active.get('operation_key'), active.get('card'), active.get('kind')) == (operation_key, card, kind)
+                if not same:
+                    raise ValueError('repository integration lane is occupied')
+                if not recover:
+                    raise ValueError('repository integration lane is already leased')
+                lease = {'operation_key': operation_key, 'card': card, 'kind': kind, 'owner_id': owner_id}
+                self._event('integration_lane_recovered', lease)
+                c.execute('COMMIT')
+                return lease
+            domain = c.execute('SELECT desired_mode FROM domain').fetchone()
+            lifecycle = self._card_lifecycles().get(card)
+            if kind == 'integration_merge':
+                if recover:
+                    raise ValueError('no matching repository integration lease to recover')
+                if domain['desired_mode'] != 'running':
+                    raise ValueError('new merge admission is closed')
+                if lifecycle == 'human_qa':
+                    raise ValueError('Human QA holds this card')
+            lease = {'operation_key': operation_key, 'card': card, 'kind': kind, 'owner_id': owner_id}
+            self._event('integration_lane_acquired', lease)
+            c.execute('COMMIT')
+            return lease
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def release_integration_lane(self, operation_key, owner_id):
+        if not isinstance(operation_key, str) or not operation_key or not isinstance(owner_id, str) or not owner_id:
+            raise ValueError('invalid repository integration release')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            active = self._integration_lane_state(c)
+            if active is None or (active.get('operation_key'), active.get('owner_id')) != (operation_key, owner_id):
+                raise ValueError('repository integration lease is not owned by this controller')
+            effect = c.execute('SELECT observation FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            if effect is None or effect['observation'] is None:
+                raise ValueError('cannot release an unresolved integration effect')
+            self._event('integration_lane_released', {'operation_key': operation_key, 'owner_id': owner_id})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def close_admissions(self, reason):
+        """Durably stop new admissions after repository-wide verification fails."""
+        if not isinstance(reason, str) or not reason or len(reason) > 300:
+            raise ValueError('invalid admission stop reason')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            c.execute("UPDATE domain SET desired_mode='stopped'")
+            self._event('admissions_closed', {'reason': reason})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
 
     def set_card_lifecycle(self, card, state, expected_revision):
         allowed = {'ready', 'active', 'review', 'ci_wait', 'human_qa', 'retry_wait', 'paused', 'blocked', 'complete', 'needs_attention'}
@@ -1367,7 +1480,8 @@ class Store:
             connection.execute('COMMIT')
             return {'domain': domain, 'events': events, 'commands': commands, 'attention': attention,
                     'reservations': reservations, 'card_lifecycle': card_lifecycle,
-                    'attention_cards': attention_cards, **records}
+                    'attention_cards': attention_cards,
+                    'integration_lane': self._integration_lane_state(connection), **records}
         except Exception:
             connection.execute('ROLLBACK')
             raise
