@@ -88,6 +88,7 @@ class Scheduler:
         self._planning = _BoundedExecutor(max(1, int(max_workers)), plan_queue_limit, 'planning')
         self._control = _BoundedExecutor(max(1, int(max_control_workers)), control_queue_limit, 'control')
         self._priority_control = _BoundedExecutor(max(1, int(priority_workers)), priority_queue_limit, 'priority control')
+        self._snapshot_control = _BoundedExecutor(1, 1, 'snapshot delivery')
         self._cycle_future = None
         self._cycle_pending = False
         self._cycle_request = None
@@ -106,6 +107,7 @@ class Scheduler:
         self._planning.shutdown(wait=False, cancel_futures=True)
         self._control.shutdown(wait=False, cancel_futures=True)
         self._priority_control.shutdown(wait=False, cancel_futures=True)
+        self._snapshot_control.shutdown(wait=False, cancel_futures=True)
 
     def reload(self, limits):
         """Atomically install valid limits; invalid reload closes admissions."""
@@ -148,14 +150,28 @@ class Scheduler:
                 snapshot = done.result()
             except Exception:
                 snapshot = None
-            if callback is not None:
-                self._control.submit(callback, snapshot)
             with self._lock:
                 if self._cycle_pending:
                     self._cycle_pending = False
                     self._start_cycle_locked()
+            if callback is not None:
+                self._deliver_snapshot(callback, snapshot)
         future.add_done_callback(finished)
         return future
+
+    def _deliver_snapshot(self, callback, snapshot):
+        """Keep cycle progress independent from saturated normal controls."""
+        try:
+            self._control.submit(callback, snapshot)
+            return
+        except RuntimeError:
+            pass
+        try:
+            self._snapshot_control.submit(callback, snapshot)
+        except RuntimeError:
+            # Both bounded queues are full: deliver synchronously only as the
+            # final fallback, after the coalesced-cycle state was advanced.
+            callback(snapshot)
 
     def control_async(self, operation, *args, **kwargs):
         """Submit control work; status/cancel use reserved responsive capacity."""
