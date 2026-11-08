@@ -603,6 +603,47 @@ class RecoveryContract(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
 
+    def test_kill_reaches_resistant_group_descendant_after_parent_exits(self):
+        import os
+        import signal
+        import time
+        from supervisor.processes import identity_for
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        pidfile = scratch / 'grandchild.pid'
+        child = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+        parent = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); time.sleep(30)"
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', parent, child, str(pidfile)]).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        grandchild = None
+        try:
+            limit = time.monotonic() + 8
+            while not pidfile.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(pidfile.exists())
+            grandchild = identity_for(int(pidfile.read_text()), 'fixture-grandchild')
+            self.store.update_attempt('n', {'state': 'running', 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+            recovery = Recovery(self.store, settings={'shutdown_grace_seconds': 5})
+            recovery.reconcile(now=10)
+            time.sleep(.5)
+            self.assertIsNone(process.poll(), 'monitor must remain while inherited pipes are open')
+            recovery.reconcile(now=15)
+            try:
+                process.wait(timeout=3)
+            except __import__('subprocess').TimeoutExpired:
+                self.fail('KILL did not reach resistant in-group grandchild')
+        finally:
+            if grandchild is not None:
+                try:
+                    if identity_for(grandchild.pid, grandchild.nonce) == grandchild:
+                        os.kill(grandchild.pid, signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
     def test_real_managed_resistant_child_receives_kill_after_grace(self):
         import os
         import signal
