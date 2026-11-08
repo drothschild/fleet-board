@@ -46,6 +46,31 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
 
 
+    def test_real_runner_publication_is_recovered_without_relaunch(self):
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        command = [sys.executable, '-c',
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
+                   str(scratch / 'ready.json')]
+        process = Runner(self.store.directory, fixture_command=command).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        process.wait(timeout=10)
+        self.assertEqual(process.returncode, 0)
+        import inspect
+        self.assertIsNot(inspect.signature(Recovery).parameters['inspector'].default, inspect.Parameter.empty,
+                         'native recovery adapter is unavailable')
+        Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        self.assertEqual(len(snapshot['results']), 1)
+        self.assertEqual(snapshot['results'][0]['disposition'], 'current')
+        self.assertEqual(snapshot['attempts'][0]['state'], 'result_ready')
+        self.assertEqual(len(snapshot['claims']), 1)
+        self.assertEqual(len(snapshot['attempts']), 1)
+        Recovery(self.store).reconcile(now=11)
+        self.assertEqual(len(self.store.snapshot()['results']), 1)
+
     def test_matching_live_runner_is_adopted_and_unknown_running_runner_is_quarantined(self):
         class Inspector:
             def __init__(self, status):
