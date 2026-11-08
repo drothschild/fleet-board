@@ -94,11 +94,14 @@ class Runner:
             for attempt in root.iterdir():
                 if attempt.is_symlink() or not attempt.is_dir():
                     continue
-                fd = os.open(str(attempt / 'receipt.json'), os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(fd, 'rb') as stream:
-                    receipt = json.loads(stream.read(8193))
-                if receipt.get('identity') == identity.__dict__:
-                    return inspect_identity(identity)
+                try:
+                    fd = os.open(str(attempt / 'receipt.json'), os.O_RDONLY | os.O_NOFOLLOW)
+                    with os.fdopen(fd, 'rb') as stream:
+                        receipt = json.loads(stream.read(8193))
+                    if receipt.get('identity') == identity.__dict__:
+                        return inspect_identity(identity)
+                except (OSError, ValueError, TypeError):
+                    continue
         except (OSError, ValueError, TypeError):
             return 'unknown'
         return 'unknown'
@@ -126,7 +129,15 @@ def _run(config):
     try:
         attempt.mkdir(mode=0o700)
     except FileExistsError:
-        return
+        try:
+            fd = os.open(str(attempt / 'prepared.json'), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                existing = json.loads(stream.read(65537))
+            if existing == config['prepared']:
+                return
+        except (OSError, ValueError, TypeError):
+            pass
+        raise SystemExit(2)
     _sync_directory(root)
     identity = identity_for(os.getpid(), config['nonce'])
     _publish(attempt / 'prepared.json', config['prepared'])
