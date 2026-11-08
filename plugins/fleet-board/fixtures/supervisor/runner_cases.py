@@ -410,3 +410,40 @@ def test_incomplete_binding_rejected():
 
 
 test_incomplete_binding_rejected()
+
+
+def test_parent_directories_synced_before_execution_and_ingest():
+    from unittest.mock import patch
+    import supervisor.runner as runner_module
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        marker = scratch / 'ready.json'
+        command = [sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(marker)]
+        prepared = {'domain_id':'d','job_id':'j','attempt_id':'n','nonce':'n','generation':1,'input_sha':'abc','role':'reviewer','stage':None,'session_id':'s','scratch':str(scratch)}
+        config = {'directory':str(root), 'attempt_id':'n', 'nonce':'n', 'prepared':prepared,
+                  'fixture_command':command, 'fixture_finish_barrier':None, 'fixture_publication_barrier':None}
+        sync = runner_module._sync_directory
+        popen = runner_module.subprocess.Popen
+        ingest = runner_module.ingest_artifacts
+        synced = []
+        def record_sync(path):
+            synced.append((pathlib.Path(path), (root / 'nonces').exists(), (root / 'attempts').exists(), (root / 'artifacts').exists()))
+            sync(path)
+        def launch(*args, **kwargs):
+            assert (root, True, False, False) in synced, 'runner root not synced after nonce directory creation'
+            assert (root, True, True, False) in synced, 'runner root not synced after attempt directory creation'
+            return popen(*args, **kwargs)
+        def copy(*args, **kwargs):
+            assert (root, True, True, True) in synced, 'runner root not synced after artifact directory creation'
+            return ingest(*args, **kwargs)
+        with patch.object(runner_module, '_sync_directory', side_effect=record_sync), \
+             patch.object(runner_module.subprocess, 'Popen', side_effect=launch), \
+             patch.object(runner_module, 'ingest_artifacts', side_effect=copy):
+            runner_module._run(config)
+        assert runner_module.read_result(root / 'attempts' / 'n') is not None
+
+
+test_parent_directories_synced_before_execution_and_ingest()
