@@ -63,12 +63,19 @@ class IntegrationContract(unittest.TestCase):
         self.addCleanup(self.store.close)
         self.store.start_session({'id': 's', 'started_at': 1, 'deadline': 1000,
                                   'known_spend': 0, 'unknown_spend': False, 'budget_stop': None})
+        self.set_mode('start')
         self.authority = Authority()
         self.adapter = Adapter()
         self.closed = []
         self.lane = IntegrationLane(self.store, owner_id='controller-1',
                                      close_admissions=lambda reason: self.closed.append(reason))
         self.addCleanup(self.lane.close)
+
+    def set_mode(self, command):
+        state = self.store.snapshot()
+        self.store.record_command({'id': 'mode-' + str(len(state['commands'])) + '-' + command,
+                                   'expected_revision': state['domain']['revision'],
+                                   'actor': 'fixture', 'command': command, 'payload': {}})
 
     def make_effect(self, card='17', key='merge-17', kind='integration_merge', **fields):
         job_id = 'job-' + card
@@ -122,6 +129,7 @@ class IntegrationContract(unittest.TestCase):
         effect.inject_failure('before_observation_commit')
         self.assertEqual(self.lane.submit(effect, mode='running').result(timeout=2)['status'], 'pending')
         self.assertEqual(len(self.adapter.merges), 1)
+        self.set_mode('stop')
         recovered = IntegrationLane(self.store, owner_id='controller-2',
                                     close_admissions=lambda reason: self.closed.append(reason))
         self.addCleanup(recovered.close)
@@ -141,6 +149,7 @@ class IntegrationContract(unittest.TestCase):
 
     def test_paused_or_stopped_mode_allows_verification_but_forbids_new_merge(self):
         for mode in ('paused', 'stopped'):
+            self.set_mode('pause' if mode == 'paused' else 'stop')
             effect = self.make_effect('17', 'verify-' + mode, 'main_verification', pr='91')
             self.assertEqual(self.lane.submit(effect, mode=mode).result(timeout=2)['status'], 'observed')
             merge = self.make_effect('18', 'merge-' + mode, **self.eligible_merge())
