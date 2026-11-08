@@ -718,6 +718,11 @@ class Store:
                 if not isinstance(session, str) or c.execute('SELECT 1 FROM sessions WHERE id=?', (session,)).fetchone() is None:
                     raise ValueError('unknown session')
                 disposition = 'current' if attempt['current_generation'] == envelope['generation'] and attempt['state'] not in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled') else 'stale'
+                semantic_failure = disposition == 'current' and envelope['outcome'] != 'success'
+                if semantic_failure:
+                    disposition = 'stale'
+                    c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (attempt['job_id'],))
+                    c.execute("UPDATE attempts SET state='failed' WHERE id=?", (attempt_id,))
                 c.execute('INSERT INTO results VALUES(?,?,?)', (attempt_id, encoded, disposition))
                 if usage is None:
                     c.execute('UPDATE sessions SET unknown_spend=1 WHERE id=?', (session,))
