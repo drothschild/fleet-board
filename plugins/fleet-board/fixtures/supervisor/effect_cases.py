@@ -195,6 +195,34 @@ class EffectContract(unittest.TestCase):
                 self.assertEqual(result['status'], 'observed')
                 self.assertEqual(adapter.calls, [])
 
+    def test_non_idempotent_mutation_requires_matching_operation_key(self):
+        class ResponseAdapter(FakeAdapter):
+            def __init__(self, kind, operation_key):
+                super().__init__(kind)
+                self.response_key = operation_key
+            def apply(self, intent):
+                self.calls.append(intent['operation_key'])
+                response = {'kind': self.kind, 'external_id': 'created-' + intent['operation_key']}
+                if self.response_key is not None:
+                    response['operation_key'] = self.response_key
+                return response
+
+        for kind in ('pr_create', 'report_post'):
+            for suffix, response_key, expected in (
+                    ('missing', None, 'attention'),
+                    ('mismatch', 'another-operation', 'attention'),
+                    ('matching', 'sentinel', 'observed')):
+                with self.subTest(kind=kind, response=suffix):
+                    key = 'identity-' + kind + '-' + suffix
+                    adapter = ResponseAdapter(kind, key if suffix == 'matching' else response_key)
+                    effect, _, _ = self.prepare(key, kind, adapter)
+                    result = effect.apply()
+                    self.assertEqual(result['status'], expected, result)
+                    row = next(row for row in self.store.snapshot()['effects']
+                               if row['operation_key'] == key)
+                    self.assertEqual(row['observation'] is not None, expected == 'observed')
+                    self.assertEqual(adapter.calls, [key])
+
     def test_before_mutation_failure_revalidates_before_retry(self):
         adapter = FakeAdapter('note_update', fail='before')
         effect, _, _ = self.prepare('note-op', 'note_update', adapter)
