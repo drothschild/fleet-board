@@ -2064,3 +2064,5 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Merge with main, third (2026-11-07).** Main's PR 226 (version history check) moved the plugin to 0.16.2; only the version lines conflicted. Plugin version 0.16.2 (main) to 0.16.3. No authored primitive changed, and it adds no authoring cost.
 
 **Merge with main, fourth (2026-11-07).** Main's PR 228 (supervisor foundation) moved the plugin to 0.17.0; only the version lines conflicted. Plugin version 0.17.0 (main) to 0.17.1. No authored primitive changed, and it adds no authoring cost.
+
+**Merge with main, fifth (2026-11-07).** Main's PR 229 (supervisor runners) moved the plugin to 0.18.0; only the version lines conflicted. Plugin version 0.18.0 (main) to 0.18.1. No authored primitive changed, and it adds no authoring cost.

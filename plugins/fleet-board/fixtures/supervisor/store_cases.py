@@ -2,9 +2,11 @@
 import os
 import concurrent.futures
 import hashlib
+import json
 import threading
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(sys.argv.pop()).resolve()
@@ -577,6 +579,528 @@ class StoreContract(unittest.TestCase):
     def test_rejects_nonlocal_storage(self):
         with self.assertRaises(ValueError):
             Store.open(self.domain, filesystem_inspector=lambda path: "remote")
+
+
+    def test_new_runtime_directory_entries_are_synced_before_open_returns(self):
+        import supervisor.store as store_module
+        root = self.root / "nested" / "runtime"
+        domain = dict(self.domain, runtime_root=str(root), board_identity="durability")
+        opened = {}
+        synced = []
+        real_open, real_fsync = os.open, os.fsync
+        def tracked_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            opened[fd] = str(path)
+            return fd
+        def tracked_fsync(fd):
+            if fd in opened:
+                synced.append(opened[fd])
+            return real_fsync(fd)
+        with mock.patch.object(store_module.os, 'open', tracked_open), mock.patch.object(store_module.os, 'fsync', tracked_fsync):
+            other = Store.open(domain, filesystem_inspector=lambda _: 'local')
+            other.close()
+        # Each new directory entry is flushed through its parent, including
+        # the domain entry that contains the database.
+        self.assertIn(str(self.root), synced)
+        self.assertIn(str(self.root / "nested"), synced)
+        self.assertIn(str(root), synced)
+
+    def test_quarantined_result_is_never_current(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.quarantine_attempt("n1", "uncertain", self.store.snapshot()["domain"]["revision"])
+        root = self.store.directory / "artifacts" / "n1"
+        root.mkdir(parents=True, mode=0o700)
+        report = root / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": None, "exit_code": 0}
+        self.assertEqual(self.store.record_result(envelope)["disposition"], "stale")
+        self.assertEqual(self.store.snapshot()["attempts"][0]["state"], "quarantined")
+
+    def test_late_result_after_cancellation_is_evidence_without_resurrection(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.request_cancellation("n1", "cancel-1", "stop", self.store.snapshot()["domain"]["revision"])
+        root = self.store.directory / "artifacts" / "n1"
+        root.mkdir(parents=True, mode=0o700)
+        report = root / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": {"cost_usd": 1.5}, "exit_code": 0}
+        self.assertEqual(self.store.record_result(envelope)["disposition"], "stale")
+        self.assertEqual(self.store.snapshot()["attempts"][0]["state"], "cancel_requested")
+        self.store.record_result(envelope)
+        self.assertEqual(self.store.snapshot()["sessions"][0]["known_spend"], 1.5)
+
+    def test_cancelling_already_fenced_attempt_does_not_revoke_again(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        self.store.revoke_generation('j1', self.store.snapshot()['domain']['revision'])
+        self.store.request_cancellation('n1', 'cancel', 'stop', self.store.snapshot()['domain']['revision'])
+        self.assertEqual(self.store.snapshot()['jobs'][0]['generation'], 2)
+
+    def test_cancellation_persists_grace_deadline_across_restart(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.assertIn('now', __import__('inspect').signature(self.store.request_cancellation).parameters,
+                      'cancellation needs a clock-bound durable deadline')
+        revision = self.store.snapshot()["domain"]["revision"]
+        self.store.request_cancellation('n1', 'c', 'deadline', revision, now=10, grace_seconds=5)
+        reopened = Store.open(self.domain, filesystem_inspector=lambda _: 'local')
+        self.addCleanup(reopened.close)
+        data = json.loads(reopened.snapshot()['attempts'][0]['data'])
+        self.assertEqual(data['cancel_requested_at'], 10)
+        self.assertEqual(data['cancel_grace_deadline'], 15)
+        self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
+
+    def test_suspected_stuck_observation_is_durable(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        try:
+            self.store.update_attempt('n1', {'state': 'running', 'suspected_stuck': True}, self.store.snapshot()['domain']['revision'])
+        except ValueError:
+            self.fail('suspected-stuck observation is not supported')
+        other = Store.open(self.domain, filesystem_inspector=lambda _: 'local')
+        self.addCleanup(other.close)
+        self.assertTrue(json.loads(other.snapshot()['attempts'][0]['data'])['suspected_stuck'])
+
+    def test_registered_process_identity_cannot_be_replaced(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        self.store.update_attempt('n1', {'boot_id': 'boot1', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        before = self.store.snapshot()
+        for update in ({'boot_id': 'different'}, {'process_identity': dict(identity, pid=43)}):
+            with self.assertRaises(ValueError):
+                self.store.update_attempt('n1', update, before['domain']['revision'])
+            self.assertEqual(self.store.snapshot(), before)
+
+    def test_attempt_hard_deadline_is_set_once_and_survives_restart(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.update_attempt('n1', {'started_at': 10, 'deadline': 20}, self.store.snapshot()['domain']['revision'])
+        other = Store.open(self.domain, filesystem_inspector=lambda _: 'local')
+        self.addCleanup(other.close)
+        before = other.snapshot()
+        for update in ({'started_at': 11}, {'deadline': 21}, {'deadline': None}):
+            with self.assertRaises(ValueError):
+                other.update_attempt('n1', update, before['domain']['revision'])
+            self.assertEqual(other.snapshot(), before)
+
+    def test_one_retry_survives_restart_and_transfers_reservation(self):
+        from supervisor import models
+        self.assertTrue(hasattr(models, 'RetryEvidence'), 'trusted retry evidence is not implemented')
+        self.assertTrue(hasattr(self.store, 'schedule_retry'), 'atomic retry scheduling is not implemented')
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                             stop_evidence_verifier=lambda _: True, retry_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                'expected_revision': trusted.snapshot()['domain']['revision']})
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        trusted.request_cancellation('n1', 'cancel', 'infrastructure', trusted.snapshot()['domain']['revision'], now=10)
+        proof = models.StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                                    boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree', free_fixture=True)
+        trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        eligibility = models.RetryEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1)
+        trusted.schedule_retry('j1', 'n1', eligibility, retry_at=20, expected_revision=trusted.snapshot()['domain']['revision'])
+        scheduled = trusted.snapshot()
+        self.assertEqual(scheduled['jobs'][0]['retries_used'], 1)
+        self.assertEqual(scheduled['jobs'][0]['state'], 'retry_wait')
+        self.assertEqual(len(scheduled['claims']), 1)
+        restarted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', retry_evidence_verifier=lambda _: True)
+        self.addCleanup(restarted.close)
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=19, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=restarted.snapshot()['domain']['revision'])
+        retry = restarted.prepare_retry('j1', eligibility, now=20, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                        expected_revision=restarted.snapshot()['domain']['revision'])
+        snapshot = restarted.snapshot()
+        self.assertEqual(len(snapshot['attempts']), 2)
+        self.assertEqual(snapshot['claims'][0]['attempt_id'], retry['attempt_id'])
+        fresh = next(x for x in snapshot['attempts'] if x['id'] == retry['attempt_id'])
+        self.assertIsNot(json.loads(fresh['data']).get('execution_released'), True)
+        restarted.record_command({'id': 'pause', 'actor': 'fixture', 'command': 'pause', 'payload': {},
+                                  'expected_revision': snapshot['domain']['revision']})
+        paused = restarted.snapshot()
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=paused['domain']['revision'])
+        self.assertTrue(hasattr(restarted, 'begin_retry_launch'), 'atomic retry launch admission is unavailable')
+        with self.assertRaises(ValueError):
+            restarted.begin_retry_launch('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                        expected_revision=paused['domain']['revision'])
+        restarted.record_command({'id': 'resume', 'actor': 'fixture', 'command': 'resume', 'payload': {},
+                                  'expected_revision': paused['domain']['revision']})
+        self.assertIn('timeout_seconds', __import__('inspect').signature(restarted.begin_retry_launch).parameters)
+        restarted.begin_retry_launch('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=restarted.snapshot()['domain']['revision'], timeout_seconds=5)
+        launched = next(x for x in restarted.snapshot()['attempts'] if x['id'] == retry['attempt_id'])
+        self.assertEqual(launched['state'], 'launching')
+        self.assertEqual((json.loads(launched['data']).get('started_at'), json.loads(launched['data']).get('deadline')), (21, 26))
+        restarted.revoke_generation('j1', restarted.snapshot()['domain']['revision'])
+        drifted = restarted.snapshot()
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=drifted['domain']['revision'])
+        restarted.request_cancellation(retry['attempt_id'], 'cancel-retry', 'stop',
+                                       restarted.snapshot()['domain']['revision'], now=21)
+        snapshot = restarted.snapshot()
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=22, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=snapshot['domain']['revision'])
+        with self.assertRaises(ValueError):
+            restarted.schedule_retry('j1', retry['attempt_id'], eligibility, retry_at=30,
+                                     expected_revision=snapshot['domain']['revision'])
+        self.assertEqual(len(restarted.snapshot()['attempts']), 2)
+
+    def test_semantic_failure_requires_attention_and_cannot_authorize_effects(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        root = self.store.directory / 'artifacts' / 'n1'
+        root.mkdir(parents=True, mode=0o700)
+        report = root / 'report.json'
+        report.write_text('{}')
+        envelope = {'schema_version': 1, 'domain_id': self.store.domain_id, 'job_id': 'j1', 'attempt_id': 'n1',
+                    'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': 'code', 'outcome': 'failure',
+                    'report_path': str(report), 'artifact_hashes': {str(report): hashlib.sha256(b'{}').hexdigest()},
+                    'usage': None, 'exit_code': 1}
+        self.store.record_result(envelope)
+        after = self.store.snapshot()
+        self.assertEqual(after['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(after['jobs'][0]['generation'], 2)
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertTrue(after['sessions'][0]['unknown_spend'])
+        self.assertEqual(len(after['claims']), 1)
+        with self.assertRaises(ValueError):
+            self.store.record_effect({'operation_key': 'op', 'job_id': 'j1', 'generation': 1,
+                                      'preconditions': {}, 'intent': {}})
+
+    def test_result_ready_execution_can_release_slot_without_fencing_result(self):
+        from supervisor.models import StopEvidence
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        root = trusted.directory / 'artifacts' / 'n1'
+        root.mkdir(parents=True, mode=0o700)
+        report = root / 'report.json'
+        report.write_text('{}')
+        envelope = {'schema_version': 1, 'domain_id': trusted.domain_id, 'job_id': 'j1', 'attempt_id': 'n1',
+                    'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': 'code', 'outcome': 'success',
+                    'report_path': str(report), 'artifact_hashes': {str(report): hashlib.sha256(b'{}').hexdigest()},
+                    'usage': {'cost_usd': 0}, 'exit_code': 0}
+        trusted.record_result(envelope)
+        proof = StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                             boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree', free_fixture=True)
+        try:
+            trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        except ValueError:
+            self.fail('verified result-ready execution cannot release its slot')
+        after = trusted.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data'])['execution_released'])
+        self.assertEqual(after['attempts'][0]['state'], 'result_ready')
+        self.assertEqual(after['jobs'][0]['generation'], 1)
+        self.assertEqual(after['results'][0]['disposition'], 'current')
+        self.assertEqual(len(after['claims']), 1)
+
+    def test_old_boot_proof_requires_current_stable_boot_identity(self):
+        from supervisor import models
+        import inspect
+        self.assertIn('current_boot_id', inspect.signature(models.StopEvidence).parameters,
+                      'boot-change evidence is not implemented')
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'old', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        self.store.update_attempt('n1', {'state': 'running', 'boot_id': 'old', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        self.store.request_cancellation('n1', 'cancel', 'infrastructure', self.store.snapshot()['domain']['revision'], now=10)
+        proof = models.StopEvidence(domain_id=self.store.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                                    boot_id='old', pid=42, started_at='start', nonce='n1', kind='boot_changed', current_boot_id='new')
+        revision = self.store.snapshot()['domain']['revision']
+        with mock.patch('supervisor.store._boot_id', return_value='other'):
+            with self.assertRaises(ValueError):
+                self.store.record_execution_stopped('n1', proof, revision)
+        with mock.patch('supervisor.store._boot_id', return_value='new'):
+            self.store.record_execution_stopped('n1', proof, revision)
+        self.assertTrue(json.loads(self.store.snapshot()['attempts'][0]['data'])['execution_released'])
+        self.assertTrue(self.store.snapshot()['sessions'][0]['unknown_spend'])
+
+    def test_confirmed_intentional_stop_marks_job_cancelled(self):
+        from supervisor.models import StopEvidence
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        trusted.request_cancellation('n1', 'cancel', 'stop', trusted.snapshot()['domain']['revision'], now=10)
+        proof = StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                             boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        snapshot = trusted.snapshot()
+        self.assertEqual(snapshot['jobs'][0]['state'], 'cancelled')
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(snapshot['claims']), 1)
+
+    def test_stopped_attempt_without_usage_marks_original_session_unknown(self):
+        from supervisor.models import StopEvidence
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        trusted.request_cancellation('n1', 'cancel', 'infrastructure', trusted.snapshot()['domain']['revision'], now=10)
+        proof = StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                             boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        self.assertTrue(trusted.snapshot()['sessions'][0]['unknown_spend'])
+
+    def test_proven_never_executed_launch_is_fenced_once_under_admission_guards(self):
+        from supervisor import models
+        self.assertTrue(hasattr(models, 'NeverExecutedEvidence'), 'never-executed proof is unavailable')
+        self.assertTrue(hasattr(self.store, 'begin_recovered_launch'), 'recovered launch transition is unavailable')
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', launch_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                'expected_revision': trusted.snapshot()['domain']['revision']})
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        evidence = models.NeverExecutedEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1)
+        revision = trusted.snapshot()['domain']['revision']
+        limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
+        with self.assertRaises(ValueError):
+            self.store.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision)
+        self.assertIn('timeout_seconds', __import__('inspect').signature(trusted.begin_recovered_launch).parameters)
+        trusted.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision, timeout_seconds=10)
+        after = trusted.snapshot()
+        timing = json.loads(after['attempts'][0]['data'])
+        self.assertEqual((timing.get('started_at'), timing.get('deadline')), (10, 20))
+        self.assertEqual(after['attempts'][0]['state'], 'launching')
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(after['claims']), 1)
+        with self.assertRaises(ValueError):
+            trusted.begin_recovered_launch('n1', evidence, now=11, limits=limits,
+                                           expected_revision=after['domain']['revision'])
+        self.assertEqual(trusted.snapshot(), after)
+
+    def test_retry_rejects_unknown_usage_effects_stale_proof_and_lowered_caps(self):
+        from dataclasses import replace
+        from supervisor.models import StopEvidence, RetryEvidence
+        def setup(label, *, free=True, effect=False):
+            root = self.root / label
+            root.mkdir(mode=0o700)
+            domain = {'common_dir': str(root), 'board_backend': 'local', 'board_identity': label,
+                      'runtime_root': str(root / 'runtime')}
+            store = Store.open(domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True,
+                               retry_evidence_verifier=lambda _: True)
+            self.addCleanup(store.close)
+            store.start_session({'id': 's', 'started_at': 1, 'deadline': 100, 'known_spend': 0,
+                                 'unknown_spend': False, 'budget_stop': None})
+            store.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                  'expected_revision': store.snapshot()['domain']['revision']})
+            job = {'id': 'j', 'card': '1', 'action': 'review', 'role': 'reviewer', 'stage': 'code', 'round': 1,
+                   'input_sha': 'abc', 'input_version': 'v1', 'generation': 1, 'provider': 'p', 'model': 'm',
+                   'nonce': 'n', 'session_id': 's'}
+            store.prepare_attempt(job, store.snapshot()['domain']['revision'],
+                                  {'global_cap': 2, 'provider_cap': 2, 'paths': ['src']})
+            identity = {'boot_id': 'boot', 'pid': 42, 'started_at': 'start', 'nonce': 'n'}
+            store.update_attempt('n', {'state': 'running', 'boot_id': 'boot', 'process_identity': identity},
+                                 store.snapshot()['domain']['revision'])
+            if effect:
+                store.record_effect({'operation_key': 'op', 'job_id': 'j', 'generation': 1,
+                                     'preconditions': {}, 'intent': {}})
+                store.observe_effect('op', {'status': 'unknown'}, store.snapshot()['domain']['revision'])
+            store.request_cancellation('n', 'cancel', 'infrastructure', store.snapshot()['domain']['revision'], now=10)
+            proof = StopEvidence(domain_id=store.domain_id, job_id='j', attempt_id='n', generation=1,
+                                 boot_id='boot', pid=42, started_at='start', nonce='n',
+                                 kind='fixture_complete_tree', free_fixture=free)
+            with self.assertRaises(ValueError):
+                store.record_execution_stopped('n', replace(proof, nonce='wrong'), store.snapshot()['domain']['revision'])
+            store.record_execution_stopped('n', proof, store.snapshot()['domain']['revision'])
+            evidence = RetryEvidence(domain_id=store.domain_id, job_id='j', attempt_id='n', generation=1)
+            return store, job, evidence
+        limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
+        unknown, _, evidence = setup('unknown', free=False)
+        unknown.schedule_retry('j', 'n', evidence, retry_at=20, expected_revision=unknown.snapshot()['domain']['revision'])
+        with self.assertRaises(ValueError):
+            unknown.prepare_retry('j', evidence, now=20, limits=limits, expected_revision=unknown.snapshot()['domain']['revision'])
+        effects, _, evidence = setup('effects', effect=True)
+        with self.assertRaises(ValueError):
+            effects.schedule_retry('j', 'n', evidence, retry_at=20, expected_revision=effects.snapshot()['domain']['revision'])
+        capped, job, evidence = setup('caps')
+        capped.schedule_retry('j', 'n', evidence, retry_at=20, expected_revision=capped.snapshot()['domain']['revision'])
+        retry = capped.prepare_retry('j', evidence, now=20, limits=limits, expected_revision=capped.snapshot()['domain']['revision'])
+        prior = next(item for item in capped.snapshot()['attempts'] if item['id'] == 'n')
+        old_proof = StopEvidence(**json.loads(prior['data'])['stop_evidence'])
+        capped.record_execution_stopped('n', old_proof, capped.snapshot()['domain']['revision'])
+        fresh = next(item for item in capped.snapshot()['attempts'] if item['id'] == retry['attempt_id'])
+        self.assertIsNot(json.loads(fresh['data']).get('execution_released'), True)
+        denied = Store.open({'common_dir': str(self.root / 'caps'), 'board_backend': 'local', 'board_identity': 'caps',
+                             'runtime_root': str(self.root / 'caps' / 'runtime')},
+                            filesystem_inspector=lambda _: 'local', retry_evidence_verifier=lambda _: False)
+        self.addCleanup(denied.close)
+        with self.assertRaises(ValueError):
+            denied.prepare_retry('j', evidence, now=21, limits=limits, expected_revision=denied.snapshot()['domain']['revision'])
+        capped.prepare_attempt(dict(job, id='other', card='2', nonce='other', input_sha='def'),
+                               capped.snapshot()['domain']['revision'],
+                               {'global_cap': 2, 'provider_cap': 2, 'paths': ['other']})
+        with self.assertRaises(ValueError):
+            capped.prepare_retry('j', evidence, now=21, limits=limits, expected_revision=capped.snapshot()['domain']['revision'])
+        self.assertEqual(len(capped.snapshot()['attempts']), 3)
+        self.assertEqual(capped.snapshot()['jobs'][0]['retries_used'], 1)
+
+    def test_fresh_attempt_rejects_preloaded_lifecycle_authority(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        before = self.store.snapshot()
+        for field, value in [('execution_released', True), ('stop_evidence', {}), ('cancel_reason', 'stop'),
+                             ('cancel_requested_at', 1), ('cancel_grace_deadline', 2), ('process_identity', {}),
+                             ('boot_id', 'old'), ('state', 'running'), ('retry_prior', 'old')]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.store.prepare_attempt(dict(job, **{field: value}), before['domain']['revision'],
+                                           {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+            self.assertEqual(self.store.snapshot(), before)
+
+    def test_execution_release_requires_bound_complete_tree_proof(self):
+        from supervisor import models
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        self.store.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        self.assertTrue(hasattr(models, 'StopEvidence'), 'bound stop evidence is not implemented')
+        self.assertTrue(hasattr(self.store, 'record_execution_stopped'), 'durable execution release is not implemented')
+        self.store.request_cancellation('n1', 'c', 'infra', self.store.snapshot()['domain']['revision'])
+        revision = self.store.snapshot()['domain']['revision']
+        proof = models.StopEvidence(domain_id=self.store.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                                    boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        with self.assertRaises(ValueError):
+            self.store.record_execution_stopped('n1', dict(verified=True), revision)
+        with self.assertRaises(ValueError):
+            self.store.record_execution_stopped('n1', proof, revision)
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                             stop_evidence_verifier=lambda candidate: candidate == proof)
+        self.addCleanup(trusted.close)
+        trusted.record_execution_stopped('n1', proof, revision)
+        after = self.store.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data'])['execution_released'])
+        self.assertEqual(len(after['claims']), 1)
+        self.store.prepare_attempt(dict(job, id='j2', card='2', nonce='n2', input_sha='def'),
+                                   after['domain']['revision'], {'global_cap': 1, 'provider_cap': 1, 'paths': ['other']})
+        self.assertEqual(len(self.store.snapshot()['claims']), 2)
+        with self.assertRaises(ValueError):
+            self.store.prepare_attempt(dict(job, id='j3', card='3', nonce='n3', input_sha='ghi'),
+                                       self.store.snapshot()['domain']['revision'],
+                                       {'global_cap': 2, 'provider_cap': 2, 'paths': ['src/sub']})
+
+    def test_quarantine_fences_once_and_preserves_claim(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        before = self.store.snapshot()
+        self.assertTrue(hasattr(self.store, 'quarantine_attempt'), 'atomic quarantine is not implemented')
+        self.store.quarantine_attempt('n1', 'uncertain', before['domain']['revision'])
+        after = self.store.snapshot()
+        self.assertEqual(after['jobs'][0]['generation'], 2)
+        self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(after['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(len(after['claims']), 1)
+        self.store.quarantine_attempt('n1', 'uncertain', after['domain']['revision'])
+        self.assertEqual(self.store.snapshot(), after)
+
+    def test_generic_update_cannot_request_cancellation_without_fencing(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        before = self.store.snapshot()
+        with self.assertRaises(ValueError):
+            self.store.update_attempt("n1", {"state": "cancel_requested"}, before["domain"]["revision"])
+        self.assertEqual(self.store.snapshot(), before)
+
+    def test_cancellation_is_atomic_idempotent_and_cannot_be_resurrected(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer",
+               "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
+               "generation": 1, "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        before = self.store.snapshot()
+        self.assertTrue(hasattr(self.store, "request_cancellation"), "atomic cancellation is not implemented")
+        result = self.store.request_cancellation("n1", "cancel-1", "stop", before["domain"]["revision"])
+        after = self.store.snapshot()
+        self.assertEqual(after["jobs"][0]["generation"], 2)
+        self.assertEqual(after["attempts"][0]["state"], "cancel_requested")
+        self.assertEqual(len(after["claims"]), 1)
+        self.assertEqual(self.store.request_cancellation("n1", "cancel-1", "stop", before["domain"]["revision"]), result)
+        self.assertEqual(self.store.snapshot(), after)
+        with self.assertRaises(ValueError):
+            self.store.update_attempt("n1", {"state": "running", "heartbeat": 5}, after["domain"]["revision"])
+        self.assertEqual(self.store.snapshot(), after)
 
 
 if __name__ == "__main__":

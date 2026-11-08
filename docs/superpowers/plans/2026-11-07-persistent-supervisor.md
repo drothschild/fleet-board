@@ -6,7 +6,7 @@
 
 **Baseline:** `db52f9f313adf2d6d5cd6c70c793296a13abb679` (revalidated 2026-11-07; originally `28866b0`). All existing paths below were checked against the original baseline and the intervening PR #200/#207 changes. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
 
-**Status:** Phase 1 implemented and independently reviewed; merge pending. Configuration and the initial store are implemented behind the disabled supervisor flag; later phases, including the runner and boot service, remain unimplemented.
+**Status:** Phase 1 merged at e4ea2c7. Phase 2 implementation, specification review, and quality review are complete on PR #229 (runtime head 5a815d2). Later phases and boot service remain unimplemented. Supervisor execution remains disabled.
 
 ## Current-main impact assessment
 
@@ -71,10 +71,10 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Interfaces:** `ProcessIdentity(boot_id, pid, started_at, nonce)`, `Runner.launch(prepared_attempt)`, `Runner.inspect(identity)`, `Runner.cancel(identity, deadline)`. Runner artifacts use the envelope in the design; provider execution begins only after exclusive attempt registration.
 
-- [ ] Write real fake-process cases: parent exits while child continues; supervisor dies before registration acknowledgement; duplicate launch nonce permits one provider invocation; worker writes a result while notification is lost; provider scratch is deleted after durable artifact ingestion but before notification; partial result file is ignored; result appears before process exit and slot stays held.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-runner.sh` to intended failure; commit tests.
-- [ ] Implement detached runner/process containment, execution lock and receipt, identity registration, heartbeat/progress channels, bounded logs, immutable artifact ingestion with hashes and safe retention, result validation and atomic publication. Close inherited supervisor-lock/socket descriptors. Separate runner heartbeat from provider progress.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Write real fake-process cases: parent exits while child continues; supervisor dies before registration acknowledgement; duplicate launch nonce permits one provider invocation; worker writes a result while notification is lost; provider scratch is deleted after durable artifact ingestion but before notification; partial result file is ignored; result appears before process exit and slot stays held.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-runner.sh` to intended failure; commit tests.
+- [x] Implement detached runner/process containment, execution lock and receipt, identity registration, heartbeat/progress channels, bounded logs, immutable artifact ingestion with hashes and safe retention, result validation and atomic publication. Close inherited supervisor-lock/socket descriptors. Separate runner heartbeat from provider progress.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S4 process lifecycle subset. Production provider integration remains disabled.
 
@@ -83,13 +83,15 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Create:** `scripts/supervisor/recovery.py`; `tests/test-supervisor-recovery.sh`; `fixtures/supervisor/recovery_cases.py`.
 **Modify:** `models.py`, `store.py`, `processes.py`, `workers.py` as required by these contracts.
 
-- [ ] Add restart matrix for every launch/result boundary; matching live worker adoption; missing worker; boot change; PID reuse; unreachable process inspector; detached descendant; stale generation result; retry count preserved across repeated restart.
-- [ ] Add liveness cases: heartbeat without progress, legitimate quiet bounded tool, hard deadline, graceful cancellation, TERM-resistant child, uncertain termination, and intentional Stop not consuming/triggering infrastructure retry.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-recovery.sh` to failure; commit tests.
-- [ ] Implement suspected-stuck inspection, generation revocation, TERM/grace/KILL with descendant confirmation, quarantine on uncertainty, and one backoff retry only after safe infrastructure classification. Retain workspace/scope/occupancy until termination is proven. Ordinary semantic failure remains attention, not an infrastructure retry.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Add restart matrix for every launch/result boundary; matching live worker adoption; missing worker; boot change; PID reuse; unreachable process inspector; detached descendant; stale generation result; retry count preserved across repeated restart.
+- [x] Add liveness cases: heartbeat without progress, legitimate quiet bounded tool, hard deadline, graceful cancellation, TERM-resistant child, uncertain termination, and intentional Stop not consuming/triggering infrastructure retry.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-recovery.sh` to failure; commit tests.
+- [x] Implement suspected-stuck inspection, generation revocation, TERM/grace/KILL with descendant confirmation, quarantine on uncertainty, and one backoff retry only after safe infrastructure classification. Retain workspace/scope/occupancy until termination is proven. Ordinary semantic failure remains attention, not an infrastructure retry.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S5. Test records must show at most two attempts for one automatically retried job even after multiple restarts.
+
+**Evidence pending independent review:** Task 2.1 was independently approved at `6793a88`. Task 2.2's recovery tests began with the failing ambiguous-launch case (`9f923af`; `/private/tmp/supervisor-recovery-red.log`). Subsequent test-first slices cover receipt adoption, missing and unreachable workers, changed boot UUID, PID-start mismatch, stale and corrupt results, durable publication, bounded cycles, quiet tools, heartbeat/progress separation, managed TERM/KILL, escaped descendants, and intentional stop. A real fixture retry is launched once after trusted stop evidence and backoff, then the store is reopened and repeated recovery retains exactly two attempts (`01fbdf3`); retry tests also cover unknown usage, unsettled effects, stale proof, card eligibility and lowered caps. At implementation head `1163fcc`, the final focused store suite passed 52 cases, recovery suite passed 30 cases, touched runner suite passed, and clean-room passed 118 checks; logs are `/private/tmp/supervisor-store-final.log`, `/private/tmp/supervisor-recovery-final.log`, `/private/tmp/supervisor-runner-final.log`, and `/private/tmp/supervisor-clean-room-final.log`. Native same-boot descendant containment remains unproven and holds claims; fixture complete-tree and never-executed proofs require explicitly injected trusted verifiers. Effect-bearing retries remain blocked pending Phase 4.1. The complete restart-boundary matrix and implementation checkboxes remain open for independent audit; no production provider, live board, paid call, or service installation was used.
 
 ## Phase 3 — Scheduling, limits, and scope
 
@@ -268,4 +270,4 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Fencing, process termination, scope release and Human QA are independently enforced.
 - [ ] Concurrent upstream standalone work has been reconciled against actual main before implementation.
 
-Phase 1 is implemented and independently approved in PR #228. The next implementation phase is detached attempts and recovery (Tasks 2.1–2.2), after the foundation is reviewed and merged. Supervisor execution remains disabled; host installation and paid qualification remain separate gates.
+Phase 1 was independently approved in PR #228 and merged at e4ea2c7. Task 2.1 implementation is pending independent review; Task 2.2 remains pending. Supervisor execution remains disabled; host installation and paid qualification remain separate gates.
