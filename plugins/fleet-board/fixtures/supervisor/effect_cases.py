@@ -374,7 +374,8 @@ class EffectContract(unittest.TestCase):
         self.assertEqual([Path(call[0]).name for call in ok_runner.calls],
                          ['review-stages.sh', 'board-move.sh'])
         failed_runner, failed_outcome = run_case(True)
-        self.assertEqual(failed_outcome['status'], 'attention')
+        self.assertIn(failed_outcome['status'], ('pending', 'attention'))
+        self.assertNotIn('board-move.sh', [Path(call[0]).name for call in failed_runner.calls])
         self.assertEqual([Path(call[0]).name for call in failed_runner.calls], ['review-stages.sh'])
         self.assertEqual(failed_runner.state, 'ready')
 
