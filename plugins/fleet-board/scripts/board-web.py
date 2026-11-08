@@ -110,6 +110,23 @@ def states(cfg: dict) -> list:
     return result
 
 
+def resolve_persona(root: str, cfg: dict):
+    """(text, warning): the planner.persona file under root when it exists, else
+    the shipped default persona. warning names a configured path that is missing."""
+    default = Path(__file__).resolve().parent.parent / "skills" / "planner" / "references" / "persona.md"
+    configured = (cfg.get("planner") or {}).get("persona")
+    warning = None
+    if configured:
+        path = Path(configured)
+        if not path.is_absolute():
+            path = Path(root) / path
+        try:
+            return path.read_text(encoding="utf-8"), None
+        except OSError:
+            warning = "planner.persona file not found: %s; using the shipped default persona" % configured
+    return default.read_text(encoding="utf-8"), warning
+
+
 def store_dir(root: str, cfg: dict) -> Path:
     return Path(root) / ((cfg.get("board") or {}).get("dir") or ".fleet-board")
 
