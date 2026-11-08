@@ -51,6 +51,60 @@ class RecoveryContract(unittest.TestCase):
         recovery.reconcile(now=11)
         self.assertEqual(set(inspector.seen), {'n', 'n2'})
 
+    def test_missing_launching_runner_is_quarantined_without_retry(self):
+        self.store.update_attempt('n', {'state': 'launching'}, self.store.snapshot()['domain']['revision'])
+        Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(snapshot['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(snapshot['claims']), 1)
+
+    def test_stale_result_is_recorded_without_effect_authority(self):
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        command = [sys.executable, '-c',
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
+                   str(scratch / 'ready.json')]
+        process = Runner(self.store.directory, fixture_command=command).launch(prepared_from_store(self.store, 'n', scratch))
+        process.wait(timeout=5)
+        self.store.revoke_generation('j', self.store.snapshot()['domain']['revision'])
+        Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot['results'][0]['disposition'], 'stale')
+        self.assertEqual(snapshot['jobs'][0]['generation'], 2)
+        self.assertEqual(len(snapshot['claims']), 1)
+        with self.assertRaises(ValueError):
+            self.store.record_effect({'operation_key': 'op', 'job_id': 'j', 'generation': 1,
+                                      'preconditions': {}, 'intent': {}})
+
+    def test_process_start_mismatch_quarantines_without_signaling(self):
+        import json
+        import time
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)']).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        try:
+            path = self.store.directory / 'attempts' / 'n'
+            limit = time.monotonic() + 8
+            while not (path / 'receipt.json').exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            identity = json.loads((path / 'receipt.json').read_text())['identity']
+            identity['started_at'] = 'different-start'
+            self.store.update_attempt('n', {'state': 'running', 'boot_id': identity['boot_id'], 'process_identity': identity},
+                                      self.store.snapshot()['domain']['revision'])
+            Recovery(self.store).reconcile(now=10)
+            snapshot = self.store.snapshot()
+            self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+            self.assertFalse((path / 'control.json').exists())
+            self.assertEqual(len(snapshot['claims']), 1)
+        finally:
+            process.wait(timeout=5)
+
     def test_proven_never_executed_attempt_launches_same_identity_once(self):
         from supervisor.models import NeverExecutedEvidence
         from supervisor.runner import Runner, prepared_from_store
