@@ -80,7 +80,7 @@ class RecoveryContract(unittest.TestCase):
                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
                    str(scratch / 'ready.json')]
         prepared = prepared_from_store(self.store, 'n', scratch)
-        self.store.update_attempt('n', {'state': 'quarantined'}, self.store.snapshot()['domain']['revision'])
+        self.store.quarantine_attempt('n', 'uncertain', self.store.snapshot()['domain']['revision'])
         process = Runner(self.store.directory, fixture_command=command).launch(prepared)
         process.wait(timeout=10)
         Recovery(self.store).reconcile(now=10)

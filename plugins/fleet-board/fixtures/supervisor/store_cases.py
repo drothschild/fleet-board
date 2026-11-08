@@ -611,7 +611,7 @@ class StoreContract(unittest.TestCase):
                "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
         self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
                                    {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
-        self.store.update_attempt("n1", {"state": "quarantined"}, self.store.snapshot()["domain"]["revision"])
+        self.store.quarantine_attempt("n1", "uncertain", self.store.snapshot()["domain"]["revision"])
         root = self.store.directory / "artifacts" / "n1"
         root.mkdir(parents=True, mode=0o700)
         report = root / "report.json"

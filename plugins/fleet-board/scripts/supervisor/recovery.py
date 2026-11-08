@@ -93,7 +93,7 @@ class Recovery:
                     data = json.loads(attempt['data'])
                 elif observation.get('status') == 'unknown' and attempt['state'] in ('prepared', 'launching', 'running'):
                     revision = self.store.snapshot()['domain']['revision']
-                    self.store.update_attempt(attempt['id'], {'state': 'quarantined'}, revision)
+                    self.store.quarantine_attempt(attempt['id'], 'identity_uncertain', revision)
                     continue
             if attempt['state'] == 'cancel_requested' and observation.get('status') == 'alive':
                 deadline = data.get('cancel_grace_deadline')

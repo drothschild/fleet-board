@@ -291,7 +291,7 @@ class Store:
     def update_attempt(self, attempt_id, details, expected_revision):
         allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason'}
         states = {'prepared', 'launching', 'running', 'result_ready', 'reconciled', 'cancel_requested', 'interrupted', 'failed', 'quarantined'}
-        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states - {'cancel_requested'}):
+        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states - {'cancel_requested', 'quarantined'}):
             raise ValueError('invalid attempt details')
         canonical_json(details)
         c = self.__connection
@@ -308,6 +308,35 @@ class Store:
             data.update(details)
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def quarantine_attempt(self, attempt_id, reason, expected_revision):
+        """Fence uncertain work while retaining its execution and scope claim."""
+        if any(not isinstance(x, str) or not x for x in (attempt_id, reason)):
+            raise ValueError('invalid quarantine')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            row = c.execute('SELECT attempts.*, jobs.generation AS current_generation FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            if row['state'] == 'quarantined':
+                if data.get('quarantine_reason') != reason:
+                    raise ValueError('conflicting quarantine')
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                if row['state'] in ('reconciled', 'failed', 'interrupted'):
+                    raise ValueError('attempt cannot be quarantined')
+                if row['current_generation'] == data['generation']:
+                    c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (row['job_id'],))
+                data.update({'state': 'quarantined', 'quarantine_reason': reason})
+                c.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?", (canonical_json(data), attempt_id))
+                self._event('attempt_quarantined', {'attempt_id': attempt_id, 'reason': reason})
             c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
