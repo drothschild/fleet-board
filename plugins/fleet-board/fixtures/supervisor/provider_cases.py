@@ -1507,6 +1507,15 @@ class ProviderCases(unittest.TestCase):
             "schema_version": 1, "error": "request rejected",
         })
 
+    def test_probe_symlink_is_registered_for_cleanup_before_creation(self):
+        from supervisor.isolation import _create_probe_symlink
+        cleanup_paths = []
+        path = self.root / "failed-probe-escape"
+        with patch.object(Path, "symlink_to", side_effect=OSError("injected symlink failure")):
+            with self.assertRaises(OSError):
+                _create_probe_symlink(path, self.root / "protected", cleanup_paths)
+        self.assertEqual(cleanup_paths, [path])
+
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
         class Store:
             def expand_scope(self, card, paths, revision):
