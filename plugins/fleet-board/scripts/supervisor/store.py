@@ -65,6 +65,22 @@ def _filesystem(path):
     return 'unknown'
 
 
+def _capture_timing(data, now, timeout_seconds, session_deadline):
+    if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError('invalid attempt timeout')
+    if ('started_at' in data) != ('deadline' in data):
+        raise ValueError('incomplete captured timing')
+    if 'started_at' not in data:
+        deadline = min(now + timeout_seconds, session_deadline)
+        if not math.isfinite(deadline) or deadline <= now:
+            raise ValueError('attempt deadline expired')
+        data.update({'started_at': now, 'deadline': deadline})
+    elif (type(data['started_at']) not in (int, float) or type(data['deadline']) not in (int, float)
+          or not math.isfinite(data['started_at']) or not math.isfinite(data['deadline'])
+          or data['deadline'] <= now or data['deadline'] > session_deadline):
+        raise ValueError('invalid captured timing')
+
+
 def _scope_key(path):
     """Compare ASCII case-insensitively; uncertain Unicode reserves the repo.
 
@@ -339,7 +355,7 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
-    def begin_recovered_launch(self, attempt_id, evidence, *, now, limits, expected_revision):
+    def begin_recovered_launch(self, attempt_id, evidence, *, now, limits, expected_revision, timeout_seconds=7200):
         """Commit same-attempt launch intent after trusted proof and fresh admission checks."""
         if (type(evidence) is not NeverExecutedEvidence or self.__launch_evidence_verifier is None
                 or self.__launch_evidence_verifier(evidence) is not True
@@ -370,6 +386,7 @@ class Store:
                     or c.execute('SELECT 1 FROM effects WHERE job_id=?', (row['job_id'],)).fetchone()
                     or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()):
                 raise ValueError('recovered launch admission blocked')
+            _capture_timing(data, now, timeout_seconds, session['deadline'])
             data['state'] = 'launching'
             c.execute("UPDATE attempts SET state='launching',data=? WHERE id=?", (canonical_json(data), attempt_id))
             self._event('recovered_launch_started', {'attempt_id': attempt_id})
@@ -484,7 +501,7 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
-    def begin_retry_launch(self, job_id, eligibility, *, now, limits, expected_revision):
+    def begin_retry_launch(self, job_id, eligibility, *, now, limits, expected_revision, timeout_seconds=7200):
         """Recheck current retry admission and commit launch intent atomically."""
         if (type(now) not in (int, float) or not math.isfinite(now) or now < 0 or not isinstance(limits, dict)
                 or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
@@ -519,6 +536,7 @@ class Store:
                     or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
                     or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
                 raise ValueError('retry launch admission blocked')
+            _capture_timing(current_data, now, timeout_seconds, session['deadline'])
             current_data['state'] = 'launching'
             c.execute("UPDATE attempts SET state='launching',data=? WHERE id=?", (canonical_json(current_data), current['id']))
             self._event('retry_launch_started', {'attempt_id': current['id']})
