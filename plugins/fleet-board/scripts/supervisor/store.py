@@ -22,10 +22,18 @@ def _filesystem(path):
     """Classify filesystems conservatively: unknown types are not safe for WAL."""
     if sys.platform == 'darwin':
         try:
-            kind = subprocess.check_output(['/usr/bin/stat', '-f', '%T', str(path)], text=True).strip()
+            mounts = subprocess.check_output(['/sbin/mount'], text=True)
+            best = ('', False)
+            for line in mounts.splitlines():
+                if ' on ' not in line or ' (' not in line or not line.endswith(')'):
+                    continue
+                mount, options = line.rsplit(' on ', 1)[1].rsplit(' (', 1)
+                options = options[:-1].split(', ')
+                if (str(path) == mount or str(path).startswith(mount.rstrip('/') + '/')) and len(mount) > len(best[0]):
+                    best = (mount, options[0] in ('apfs', 'hfs', 'ufs') and 'local' in options)
+            return 'local' if best[1] else 'unknown'
         except (OSError, subprocess.CalledProcessError):
             return 'unknown'
-        return 'local' if kind in ('apfs', 'hfs', 'ufs') else 'unknown'
     if sys.platform.startswith('linux'):
         try:
             best = ('', '')
@@ -85,13 +93,14 @@ class Store:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute('PRAGMA foreign_keys=ON')
+            conn.execute('BEGIN IMMEDIATE')
             version = conn.execute('PRAGMA user_version').fetchone()[0]
             if version not in (0, SCHEMA_VERSION):
                 raise ValueError('unsupported supervisor schema')
             if version == 0:
                 if conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]:
                     raise ValueError('unversioned supervisor database is not empty')
-                conn.executescript('''BEGIN IMMEDIATE;
+                schema = '''
                     CREATE TABLE domain (id TEXT PRIMARY KEY, identity TEXT NOT NULL, desired_mode TEXT NOT NULL, phase TEXT NOT NULL, revision INTEGER NOT NULL, config_hash TEXT, service_version TEXT);
                     CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL, deadline REAL NOT NULL, known_spend REAL NOT NULL, unknown_spend INTEGER NOT NULL, budget_stop TEXT);
                     CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
@@ -99,8 +108,11 @@ class Store:
                     CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL);
                     CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
                     CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
-                    PRAGMA user_version=1;
-                    COMMIT;''')
+                    PRAGMA user_version=1;'''
+                for statement in schema.split(';'):
+                    if statement.strip():
+                        conn.execute(statement)
+            conn.execute('COMMIT')
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=FULL')
             conn.execute('BEGIN IMMEDIATE')
