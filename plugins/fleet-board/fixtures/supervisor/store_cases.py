@@ -274,6 +274,44 @@ class StoreContract(unittest.TestCase):
                 self.store.prepare_attempt(candidate, before["domain"]["revision"], claims)
             self.assertEqual(self.store.snapshot(), before)
 
+    def test_metadata_and_attempt_lifecycle_survive_reopen(self):
+        self.store.configure_domain({"config_hash": "abc", "service_version": "1.2"},
+                                    self.store.snapshot()["domain"]["revision"])
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default",
+               "eligible_since": 123, "priority": 4, "input_revision": 7}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        details = {"state": "running", "boot_id": "boot", "process_identity": {"pid": 42},
+                   "worktree": "/tmp/work", "started_at": 12, "deadline": 30,
+                   "heartbeat": 13, "progress": {"step": 1}, "cancel_reason": None}
+        self.store.update_attempt("n1", details, self.store.snapshot()["domain"]["revision"])
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(other.close)
+        snapshot = other.snapshot()
+        self.assertEqual(snapshot["domain"]["config_hash"], "abc")
+        self.assertEqual(snapshot["domain"]["service_version"], "1.2")
+        import json
+        self.assertEqual(json.loads(snapshot["jobs"][0]["data"])["eligible_since"], 123)
+        self.assertEqual(json.loads(snapshot["attempts"][0]["data"])["process_identity"], {"pid": 42})
+        self.assertGreater(snapshot["claims"][0]["reservation_revision"], 0)
+
+    def test_future_schema_fails_closed_without_modification(self):
+        import sqlite3
+        database = self.store.directory / "store.sqlite3"
+        self.store.close()
+        with sqlite3.connect(str(database)) as connection:
+            connection.execute("PRAGMA user_version=999")
+        with self.assertRaises(ValueError):
+            Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        connection = sqlite3.connect(str(database))
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 999)
+            self.assertEqual(connection.execute("SELECT count(*) FROM domain").fetchone()[0], 1)
+        finally:
+            connection.close()
+
     def test_retry_tombstone_and_effect_intent_reopen(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
