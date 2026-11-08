@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from supervisor.inference_broker import (
     ContractError, InferenceBroker, InferenceChannel, InferenceClient, ProviderRequest, run_provider,
@@ -166,6 +167,13 @@ class ProviderCases(unittest.TestCase):
             runner = Runner(self.root / "runner")
             with self.assertRaises(IsolationUnavailable):
                 runner.launch_production({"attempt_id": "attempt-1"}, ["/usr/bin/true"], policy)
+
+    def test_isolated_worker_output_capture_is_bounded(self):
+        with patch("supervisor.isolation._wrapped_command",
+                   return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):
+            with self.assertRaises(IsolationUnavailable):
+                run_isolated(["ignored"], {"workspace": str(self.workspace)},
+                             capability={"available": True}, timeout=3)
 
     def test_fixture_and_human_control_authority_are_not_worker_capabilities(self):
         policy = build_policy(self.workspace, self.root / "private-git",
