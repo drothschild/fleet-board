@@ -697,6 +697,50 @@ class RecoveryContract(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
 
+    def test_kill_reaches_resistant_descendant_with_redirected_output(self):
+        import os
+        import signal
+        import time
+        from supervisor.processes import identity_for
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+        pidfile = scratch / 'grandchild.pid'
+        pulse = scratch / 'pulse'
+        child = "import os,pathlib,signal,sys,time\nsignal.signal(signal.SIGTERM, signal.SIG_IGN)\npathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\np=pathlib.Path(sys.argv[2])\ni=0\nwhile True:\n i+=1\n p.write_text(str(i))\n time.sleep(.05)"
+        parent = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2], sys.argv[3]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(30)"
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', parent, child, str(pidfile), str(pulse)]).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        grandchild = None
+        try:
+            limit = time.monotonic() + 8
+            while not pidfile.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(pidfile.exists())
+            grandchild = identity_for(int(pidfile.read_text()), 'fixture-grandchild')
+            self.store.update_attempt('n', {'state': 'running'}, self.store.snapshot()['domain']['revision'])
+            recovery = Recovery(self.store, settings={'shutdown_grace_seconds': 5})
+            recovery.reconcile(now=10)
+            time.sleep(.6)
+            self.assertIsNone(process.poll(), 'monitor exited before descendant escalation')
+            recovery.reconcile(now=15)
+            process.wait(timeout=5)
+            previous = pulse.read_text()
+            time.sleep(.3)
+            self.assertEqual(pulse.read_text(), previous, 'resistant descendant survived KILL')
+            self.assertEqual(len(self.store.snapshot()['claims']), 1)
+        finally:
+            if grandchild is not None:
+                try:
+                    if identity_for(grandchild.pid, grandchild.nonce) == grandchild:
+                        os.kill(grandchild.pid, signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
     def test_kill_reaches_resistant_group_descendant_after_parent_exits(self):
         import os
         import signal
