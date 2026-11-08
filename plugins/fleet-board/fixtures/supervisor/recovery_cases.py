@@ -262,12 +262,27 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(trusted.snapshot(), scheduled)
         import inspect
         self.assertIn('retry_limits', inspect.signature(Recovery).parameters, 'retry admission is unavailable')
+        self.assertIn('retry_launcher', inspect.signature(Recovery).parameters, 'fixture retry launch is unavailable')
         trusted.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
                                 'expected_revision': trusted.snapshot()['domain']['revision']})
         limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
         Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=15)
         self.assertEqual(len(trusted.snapshot()['attempts']), 1)
-        Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=16)
+        class Launcher:
+            def __init__(self):
+                self.processes = []
+                self.counter = scratch / 'retry-count'
+            def prepare(self, store, attempt_id):
+                return prepared_from_store(store, attempt_id, scratch)
+            def launch(self, prepared):
+                command = [sys.executable, '-c', 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text() + "x" if p.exists() else "x")', str(self.counter)]
+                self.processes.append(Runner(trusted.directory, fixture_command=command).launch(prepared))
+        launcher = Launcher()
+        Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits,
+                 retry_launcher=launcher).reconcile(now=16)
+        self.assertEqual(len(launcher.processes), 1)
+        launcher.processes[0].wait(timeout=5)
+        self.assertEqual(launcher.counter.read_text(), 'x')
         retried = trusted.snapshot()
         self.assertEqual(len(retried['attempts']), 2)
         self.assertEqual(retried['jobs'][0]['retries_used'], 1)
