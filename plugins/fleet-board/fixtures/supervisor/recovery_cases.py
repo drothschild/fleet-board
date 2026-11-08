@@ -263,7 +263,7 @@ class RecoveryContract(unittest.TestCase):
             while not result.exists() and time.monotonic() < limit:
                 time.sleep(.02)
             self.assertTrue(result.exists())
-            self.store.update_attempt('n', {'state': 'running', 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+            self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
             Recovery(self.store).reconcile(now=10)
             snapshot = self.store.snapshot()
             self.assertEqual(len(snapshot['results']), 1)
@@ -381,6 +381,13 @@ class RecoveryContract(unittest.TestCase):
         finally:
             process.wait(timeout=5)
 
+    def test_store_bound_launch_without_durable_timing_is_rejected(self):
+        from supervisor.runner import prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        with self.assertRaises(ValueError):
+            prepared_from_store(self.store, 'n', scratch)
+
     def test_live_receipt_without_durable_timing_is_quarantined(self):
         import time
         from supervisor.runner import Runner, prepared_from_store
@@ -407,6 +414,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)']).launch(
             prepared_from_store(self.store, 'n', scratch))
         try:
@@ -636,7 +644,7 @@ class RecoveryContract(unittest.TestCase):
             while not ready.exists() and time.monotonic() < limit:
                 time.sleep(.02)
             self.assertTrue(ready.exists())
-            self.store.update_attempt('n', {'state': 'running', 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+            self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
             Recovery(self.store).reconcile(now=10)
             process.wait(timeout=5)
             self.assertEqual(stopped.read_text(), 'term')
@@ -670,7 +678,7 @@ class RecoveryContract(unittest.TestCase):
                 time.sleep(.02)
             self.assertTrue(pidfile.exists())
             grandchild = identity_for(int(pidfile.read_text()), 'fixture-grandchild')
-            self.store.update_attempt('n', {'state': 'running', 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+            self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
             recovery = Recovery(self.store, settings={'shutdown_grace_seconds': 5})
             recovery.reconcile(now=10)
             time.sleep(.5)
@@ -710,7 +718,7 @@ class RecoveryContract(unittest.TestCase):
                 time.sleep(.02)
             self.assertTrue(pidfile.exists())
             child = identity_for(int(pidfile.read_text()), 'fixture-child')
-            self.store.update_attempt('n', {'state': 'running', 'deadline': 10},
+            self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10},
                                       self.store.snapshot()['domain']['revision'])
             settings = {'shutdown_grace_seconds': 5}
             Recovery(self.store, settings=settings).reconcile(now=10)
@@ -752,7 +760,7 @@ class RecoveryContract(unittest.TestCase):
                 time.sleep(.02)
             self.assertTrue(pidfile.exists())
             child = identity_for(int(pidfile.read_text()), 'fixture-child')
-            self.store.update_attempt('n', {'state': 'running', 'deadline': 10},
+            self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10},
                                       self.store.snapshot()['domain']['revision'])
             Recovery(self.store).reconcile(now=10)
             process.wait(timeout=5)
