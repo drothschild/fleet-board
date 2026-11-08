@@ -123,6 +123,23 @@ class Runner:
 
 
 def _run(config):
+    nonce_root = Path(config['directory']) / 'nonces'
+    nonce_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    nonce_path = nonce_root / config['nonce']
+    try:
+        nonce_path.mkdir(mode=0o700)
+    except FileExistsError:
+        try:
+            fd = os.open(str(nonce_path / 'prepared.json'), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                existing = json.loads(stream.read(65537))
+            if existing == config['prepared']:
+                return
+        except (OSError, ValueError, TypeError):
+            pass
+        raise SystemExit(2)
+    _sync_directory(nonce_root)
+    _publish(nonce_path / 'prepared.json', config['prepared'])
     root = Path(config['directory']) / 'attempts'
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     attempt = root / config['attempt_id']
