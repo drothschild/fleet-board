@@ -26,13 +26,17 @@ class FakeAdapter:
         self.kind = kind
         self.fail = fail
         self.calls = []
+        self.inspected = []
+        self.applied = []
         self.external = {}
 
     def inspect(self, intent):
+        self.inspected.append(dict(intent))
         return self.external.get(intent['operation_key'])
 
     def apply(self, intent):
         self.calls.append(intent['operation_key'])
+        self.applied.append(dict(intent))
         if self.fail == 'before':
             raise OSError('injected before mutation')
         observation = {'operation_key': intent['operation_key'], 'kind': self.kind,
@@ -40,6 +44,7 @@ class FakeAdapter:
                        'input_revision': intent.get('input_revision')}
         if self.kind == 'branch_refresh':
             observation['input_evidence'] = intent.get('input_evidence')
+            observation['invalidated_evidence'] = intent.get('invalidated_evidence')
         self.external[intent['operation_key']] = observation
         if self.fail == 'after':
             raise TimeoutError('injected after mutation')
@@ -50,7 +55,8 @@ def refresh_fields(path='src/reviewed.py'):
     evidence = {'job_id': 'job-1', 'generation': 1, 'head_sha': 'a' * 40,
                 'input_sha': 'b' * 64, 'changed_paths': [path]}
     revision = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return {'input_revision': revision, 'input_evidence': evidence, 'changed_paths': [path]}
+    return {'input_revision': revision, 'input_evidence': evidence, 'changed_paths': [path],
+            'invalidated_evidence': ['review']}
 
 
 class Authority:
@@ -110,6 +116,24 @@ class EffectContract(unittest.TestCase):
                 row = next(row for row in self.store.snapshot()['effects'] if row['operation_key'] == key)
                 self.assertEqual((row['job_id'], row['generation'], row['status']), ('job-1', 1, 'intent'))
                 self.assertNotEqual(key, 'untrusted report marker')
+
+    def test_effect_target_is_bound_before_journaling_or_helper_calls(self):
+        before = self.store.snapshot()['effects']
+        adapter = FakeAdapter('card_move')
+        effect = Effect(self.store, adapter, self.authority.validate)
+        with self.assertRaisesRegex(ValueError, 'card'):
+            effect.prepare('wrong-card', {'card': '17', 'generation': 1},
+                           {'kind': 'card_move', 'card': '18', 'state': 'ready'})
+        self.assertEqual(self.store.snapshot()['effects'], before)
+        self.assertEqual(adapter.calls, [])
+
+        effect, adapter, _ = self.prepare('bound-card', 'card_move', state='ready')
+        row = next(item for item in self.store.snapshot()['effects']
+                   if item['operation_key'] == 'bound-card')
+        self.assertEqual(json.loads(row['intent'])['card'], '17')
+        self.assertEqual(effect.apply()['status'], 'observed')
+        self.assertEqual(adapter.inspected[-1]['card'], '17')
+        self.assertEqual(adapter.applied[-1]['card'], '17')
 
     def test_mutation_revalidates_card_generation_head_and_note(self):
         for state, generation, overrides, message in (
@@ -216,20 +240,32 @@ class EffectContract(unittest.TestCase):
                 self.assertEqual(observe_adapter.calls, [key + '-observe'])
 
     def test_branch_refresh_revisions_evidence_without_spending_retry(self):
+        self.store.increment_retry('job-1', self.store.snapshot()['domain']['revision'])
         effect, adapter, preconditions = self.prepare('refresh-op', 'branch_refresh',
                                                        **refresh_fields())
         result = effect.apply()
         self.assertEqual(result['status'], 'observed')
         self.assertEqual(result['input_revision'], refresh_fields()['input_revision'])
-        self.assertEqual(result['invalidated_evidence'], ['review', 'test'])
-        stored = json.loads(self.store.snapshot()['effects'][0]['observation'])
+        self.assertEqual(result['invalidated_evidence'], ['review'])
+        snapshot = self.store.snapshot()
+        stored = json.loads(next(row for row in snapshot['effects']
+                                 if row['operation_key'] == 'refresh-op')['observation'])
         self.assertEqual(stored['input_revision'], refresh_fields()['input_revision'])
-        self.assertEqual(stored['invalidated_evidence'], ['review', 'test'])
+        self.assertEqual(stored['invalidated_evidence'], ['review'])
+        job = snapshot['jobs'][0]
+        job_data = json.loads(job['data'])
+        self.assertEqual(job['generation'], 2)
+        self.assertEqual(job['input_sha'], refresh_fields()['input_evidence']['input_sha'])
+        self.assertEqual(job_data['input_version'], refresh_fields()['input_revision'])
+        self.assertEqual(job_data['evidence_invalidated'],
+                         {'input_revision': refresh_fields()['input_revision'], 'items': ['review']})
+        self.assertEqual(job['retries_used'], 1)
         resumed = Effect(self.store, adapter, self.authority.validate)
         resumed.prepare('refresh-op', preconditions,
                         {'kind': 'branch_refresh', **refresh_fields()})
         self.assertEqual(resumed.reconcile()['input_revision'], refresh_fields()['input_revision'])
-        self.assertEqual(self.store.snapshot()['jobs'][0]['retries_used'], 0)
+        self.assertEqual(self.store.snapshot()['jobs'][0]['generation'], 2)
+        self.assertEqual(self.store.snapshot()['jobs'][0]['retries_used'], 1)
 
     def test_branch_refresh_rejects_arbitrary_revision_string(self):
         fields = refresh_fields()
