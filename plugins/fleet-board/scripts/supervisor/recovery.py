@@ -28,7 +28,7 @@ class NativeInspector:
             result = read_result(path)
             if result is None:
                 try:
-                    self.runner.resume_publication(attempt['id'])
+                    self.runner.resume_publication(attempt['id'], nonblocking=True)
                 except (OSError, ValueError, TypeError):
                     pass
                 result = read_result(path)

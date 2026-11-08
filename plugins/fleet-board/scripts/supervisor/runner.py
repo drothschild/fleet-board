@@ -137,8 +137,8 @@ class Runner:
         process.stdin.close()
         return process
 
-    def resume_publication(self, attempt_id):
-        return _resume_publication(self.directory, attempt_id)
+    def resume_publication(self, attempt_id, *, nonblocking=False):
+        return _resume_publication(self.directory, attempt_id, nonblocking=nonblocking)
 
     def inspect(self, identity):
         root = self.directory / 'attempts'
@@ -172,13 +172,16 @@ class Runner:
         return 'unknown'
 
 
-def _resume_publication(directory, attempt_id, barrier=None):
+def _resume_publication(directory, attempt_id, barrier=None, *, nonblocking=False):
     if not isinstance(attempt_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', attempt_id):
         raise ValueError('invalid attempt')
     attempt = Path(directory) / 'attempts' / attempt_id
     fd = os.open(str(attempt / 'publication.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'r+b') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0))
+        except BlockingIOError:
+            return False
         existing = read_result(attempt)
         if existing is not None:
             return True
