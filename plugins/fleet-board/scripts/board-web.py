@@ -110,6 +110,23 @@ def states(cfg: dict) -> list:
     return result
 
 
+def resolve_persona(root: str, cfg: dict):
+    """(text, warning): the planner.persona file under root when it exists, else
+    the shipped default persona. warning names a configured path that is missing."""
+    default = Path(__file__).resolve().parent.parent / "skills" / "planner" / "references" / "persona.md"
+    configured = (cfg.get("planner") or {}).get("persona")
+    warning = None
+    if configured:
+        path = Path(configured)
+        if not path.is_absolute():
+            path = Path(root) / path
+        try:
+            return path.read_text(encoding="utf-8"), None
+        except OSError:
+            warning = "planner.persona file not found: %s; using the shipped default persona" % configured
+    return default.read_text(encoding="utf-8"), warning
+
+
 def store_dir(root: str, cfg: dict) -> Path:
     return Path(root) / ((cfg.get("board") or {}).get("dir") or ".fleet-board")
 
@@ -663,6 +680,51 @@ def create_import(id: str, embed: bool) -> dict:
     return {"created": created, "output": out}
 
 
+EDITABLE_FIELDS = {"title": "str", "why": "str", "labels": "list", "scope": "list",
+                   "acceptance": "list", "depends_on": "list"}
+
+
+def edit_import_card(id: str, key: str, body: dict) -> dict:
+    """Applies a partial edit to one previewed card, keeps it only when the dry run passes."""
+    idir = import_dir(id)
+    edits = {}
+    for field, kind in EDITABLE_FIELDS.items():
+        if field not in body:
+            continue
+        v = body[field]
+        if kind == "str" and not isinstance(v, str):
+            raise ApiError(400, "%s must be a string" % field)
+        if kind == "list" and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            raise ApiError(400, "%s must be a list of strings" % field)
+        edits[field] = v
+    if not edits:
+        raise ApiError(400, "no editable field given (%s)" % ", ".join(EDITABLE_FIELDS))
+    with import_lock(id):
+        meta = read_json_file(idir / "meta.json") or {}
+        if meta.get("created"):
+            raise ApiError(409, "import %s was already created" % id)
+        plan = read_json_file(idir / "cards.json")
+        if not isinstance(plan, dict) or not isinstance(plan.get("cards"), list):
+            raise ApiError(409, "import %s is not ready" % id)
+        card = next((c for c in plan["cards"] if isinstance(c, dict) and c.get("key") == key), None)
+        if card is None:
+            raise ApiError(404, "unknown card key %s in import %s" % (key, id))
+        card.update(edits)
+        trial = idir / "cards.edit.json"
+        write_private_atomic(trial, json.dumps(plan))
+        try:
+            drc, table, derr = run_script(APP["root"], ["bash", script("import-plan.sh"), str(trial), "--dry-run"])
+            if drc != 0:
+                raise ApiError(422, derr.rstrip("\n") or "import-plan.sh --dry-run exited %d" % drc)
+            os.replace(str(trial), str(idir / "cards.json"))
+        finally:
+            try:
+                trial.unlink()
+            except OSError:
+                pass
+    return {"state": "ready", "cards": plan, "table": table}
+
+
 # --- controllers: (params, body) -> (status, payload) -------------------------
 
 def ctx():
@@ -736,6 +798,105 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["manager_note"] = note_body(card)
     out["pr_url"] = card_pr_url(cfg, card, note)
     return out
+
+
+DEPENDS_HEADING_RE = re.compile(r"^#{1,6}\s*depends on\s*$", re.I)
+DEPENDS_BULLET_RE = re.compile(r"^\s*[-*]\s*#(\d+)\b")
+PR_STATES = ("open", "draft", "merged", "closed")
+
+
+def depends_on(body) -> list:
+    """Card numbers listed as "#n" bullets under a "## Depends on" heading."""
+    nums, on = [], False
+    for line in (body if isinstance(body, str) else "").split("\n"):
+        if re.match(r"^#{1,6}\s", line):
+            on = bool(DEPENDS_HEADING_RE.match(line))
+            continue
+        m = on and DEPENDS_BULLET_RE.match(line)
+        if m and int(m.group(1)) not in nums:
+            nums.append(int(m.group(1)))
+    return nums
+
+
+def live_pr_states(repo) -> dict:
+    """PR number -> open/draft/merged/closed from one `gh pr list`; {} when unavailable."""
+    if not repo:
+        return {}
+    try:
+        rc, out, _ = run_script(APP["root"], ["gh", "pr", "list", "--repo", repo, "--state", "all",
+                                              "--limit", "1000", "--json", "number,state,isDraft"])
+        items = json.loads(out) if rc == 0 else []
+    except (OSError, ValueError):
+        return {}
+    states_ = {}
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or not isinstance(it.get("number"), int):
+            continue
+        st = str(it.get("state", "")).upper()
+        if st == "MERGED":
+            states_[it["number"]] = "merged"
+        elif st == "CLOSED":
+            states_[it["number"]] = "closed"
+        elif st == "OPEN":
+            states_[it["number"]] = "draft" if it.get("isDraft") else "open"
+    return states_
+
+
+def board_context(cache: dict = None) -> list:
+    """The planner's snapshot: every card with state, labels, depends_on, PR and review round.
+
+    One board-list.sh process lists every state; a PR's state comes from its card's manager note
+    (pr_state) when recorded, otherwise from one gh pr list; card details come from the store.
+    Pass the same dict as `cache` to reuse one snapshot for a planner turn.
+    """
+    if cache is not None and "snapshot" in cache:
+        return cache["snapshot"]
+    cfg, dir = ctx()
+    rc, out, err = run_script(APP["root"], ["bash", script("board-list.sh"), "--all"])
+    if rc != 0:
+        raise ApiError(500, err.rstrip("\n") or "board-list exited %d" % rc)
+    listed = set()
+    for line in out.splitlines():
+        try:
+            items = json.loads(line)
+        except ValueError:
+            continue
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and isinstance(item.get("number"), int):
+                listed.add(item["number"])
+    rows = []
+    for card in read_cards(dir):
+        n = card.get("number")
+        if listed and n not in listed:
+            continue
+        note = parse_note(card) or {}
+        pr = note.get("pr")
+        has_pr = isinstance(pr, int) and not isinstance(pr, bool)
+        rows.append((card, note, pr, has_pr))
+    # Ask GitHub only when some PR's state is not already recorded in its card's manager note,
+    # so a board whose notes carry every pr_state builds its snapshot without the network.
+    need_live = any(has_pr and note.get("pr_state") not in PR_STATES for _, note, _, has_pr in rows)
+    live = live_pr_states((cfg.get("board") or {}).get("repo")) if need_live else {}
+    snapshot = []
+    for card, note, pr, has_pr in rows:
+        n = card.get("number")
+        pr_state = note.get("pr_state") if has_pr else None
+        if has_pr and pr_state not in PR_STATES:
+            pr_state = live.get(pr)
+        snapshot.append({
+            "number": n,
+            "title": card.get("title"),
+            "state": card.get("state"),
+            "labels": card.get("labels") or [],
+            # the card's blocked_by field, then any "## Depends on" bullets a
+            # card written before the field still carries in its body
+            "depends_on": list(dict.fromkeys(card_blocked_by(card) + depends_on(card.get("body")))),
+            "pr": {"number": pr, "state": pr_state if pr_state in PR_STATES else None} if has_pr else None,
+            "round": note.get("round"),
+        })
+    if cache is not None:
+        cache["snapshot"] = snapshot
+    return snapshot
 
 
 def get_board(params, body):
@@ -998,6 +1159,10 @@ def create_import_cards(params, body):
     return 200, create_import(params["id"], embed)
 
 
+def edit_import_card_route(params, body):
+    return 200, edit_import_card(params["id"], params["key"], body)
+
+
 # --- handler and route dispatch -----------------------------------------------
 
 # (method, path regex, controller); the n group becomes an int, id stays a string.
@@ -1014,6 +1179,7 @@ ROUTES = [
     ("POST", r"/api/import", post_import),
     ("GET", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_import),
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
+    ("PATCH", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cards/(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)", edit_import_card_route),
 ]
 NO_BODY = (start_run, stop_run)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
