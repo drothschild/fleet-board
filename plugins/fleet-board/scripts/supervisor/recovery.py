@@ -76,10 +76,11 @@ class NativeInspector:
 
 
 class Recovery:
-    def __init__(self, store, inspector=None, settings=None, retry_limits=None):
+    def __init__(self, store, inspector=None, settings=None, retry_limits=None, retry_launcher=None):
         self.store = store
         self.inspector = inspector if inspector is not None else NativeInspector(store.directory, store.domain_id)
         self.retry_limits = retry_limits
+        self.retry_launcher = retry_launcher
         self.settings = {'shutdown_grace_seconds': 30, 'heartbeat_timeout_seconds': 60,
                          'progress_timeout_seconds': 900, 'attempt_timeout_seconds': 7200,
                          'retry_backoff_seconds': 60}
@@ -201,8 +202,16 @@ class Recovery:
                 try:
                     evidence = self.inspector.inspect(prior).get('retry_evidence')
                     if evidence is not None:
-                        self.store.prepare_retry(job['id'], evidence, now=now, limits=self.retry_limits,
-                                                 expected_revision=self.store.snapshot()['domain']['revision'])
+                        prepared = self.store.prepare_retry(job['id'], evidence, now=now, limits=self.retry_limits,
+                                                            expected_revision=self.store.snapshot()['domain']['revision'])
+                        if self.retry_launcher is not None:
+                            attempt_id = prepared['attempt_id']
+                            launch_input = self.retry_launcher.prepare(self.store, attempt_id)
+                            self.store.update_attempt(attempt_id, {'state': 'launching'}, self.store.snapshot()['domain']['revision'])
+                            try:
+                                self.retry_launcher.launch(launch_input)
+                            except Exception:
+                                self.store.quarantine_attempt(attempt_id, 'retry_launch_uncertain', self.store.snapshot()['domain']['revision'])
                 except (ValueError, OSError):
                     # Admission remains held until fresh trusted evidence and limits permit it.
                     continue
