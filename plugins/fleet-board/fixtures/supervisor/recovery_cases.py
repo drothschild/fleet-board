@@ -71,6 +71,32 @@ class RecoveryContract(unittest.TestCase):
         Recovery(self.store).reconcile(now=11)
         self.assertEqual(len(self.store.snapshot()['results']), 1)
 
+    def test_native_inspector_rejects_receipt_bound_to_foreign_domain(self):
+        import json
+        import time
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)']).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        try:
+            path = self.store.directory / 'attempts' / 'n'
+            deadline = time.monotonic() + 8
+            while not (path / 'receipt.json').exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue((path / 'receipt.json').exists())
+            before = self.store.snapshot()
+            Recovery(self.store).reconcile(now=10)
+            self.assertEqual(self.store.snapshot(), before, 'matching live runner must be adopted')
+            prepared = json.loads((path / 'prepared.json').read_text())
+            prepared['domain_id'] = 'foreign'
+            (path / 'prepared.json').write_text(json.dumps(prepared))
+            Recovery(self.store).reconcile(now=10)
+            self.assertEqual(self.store.snapshot()['attempts'][0]['state'], 'quarantined')
+            self.assertEqual(len(self.store.snapshot()['claims']), 1)
+        finally:
+            process.wait(timeout=10)
+
     def test_matching_live_runner_is_adopted_and_unknown_running_runner_is_quarantined(self):
         class Inspector:
             def __init__(self, status):
