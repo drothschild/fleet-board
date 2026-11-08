@@ -106,6 +106,7 @@ class Store:
                     CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL);
+                    CREATE TABLE results (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), envelope TEXT NOT NULL, disposition TEXT NOT NULL);
                     CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
                     CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
                     PRAGMA user_version=1;'''
@@ -206,6 +207,105 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
+    def record_result(self, envelope):
+        """Persist a trusted runner's prevalidated report and charge its original session.
+
+        Semantic report parsing and ingestion are runner responsibilities. This layer
+        verifies artifact containment and hashes and binds the envelope to the attempt.
+        """
+        if not isinstance(envelope, dict):
+            raise ValueError('invalid result')
+        required = ('schema_version', 'domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage', 'outcome', 'report_path', 'artifact_hashes', 'usage', 'exit_code')
+        if set(envelope) != set(required) or type(envelope['schema_version']) is not int or envelope['schema_version'] != 1:
+            raise ValueError('invalid result schema')
+        if envelope['domain_id'] != self.domain_id or type(envelope['generation']) is not int or type(envelope['exit_code']) is not int:
+            raise ValueError('invalid result identity')
+        if envelope['outcome'] not in ('success', 'failure', 'cancelled'):
+            raise ValueError('invalid outcome')
+        usage = envelope['usage']
+        if usage is not None:
+            if not isinstance(usage, dict) or set(usage) != {'cost_usd'}:
+                raise ValueError('invalid usage')
+            cost = usage['cost_usd']
+            if type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0:
+                raise ValueError('invalid usage')
+        hashes = envelope['artifact_hashes']
+        if not isinstance(hashes, dict) or envelope['report_path'] not in hashes or not hashes:
+            raise ValueError('missing report hash')
+        attempt_id = envelope['attempt_id']
+        if not isinstance(attempt_id, str) or not attempt_id or '/' in attempt_id or attempt_id in ('.', '..'):
+            raise ValueError('invalid attempt id')
+        root = self.directory / 'artifacts' / attempt_id
+        for name, digest in hashes.items():
+            if not isinstance(name, str) or not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+                raise ValueError('invalid artifact hash')
+            path = Path(name)
+            if not path.is_absolute() or '..' in path.parts or path.is_symlink():
+                raise ValueError('invalid artifact path')
+            try:
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(root.resolve(strict=True))
+                if resolved != path or not resolved.is_file() or resolved.stat().st_size > 1048576:
+                    raise ValueError('invalid artifact path')
+                if hashlib.sha256(resolved.read_bytes()).hexdigest() != digest:
+                    raise ValueError('artifact hash mismatch')
+            except (OSError, RuntimeError) as exc:
+                raise ValueError('invalid artifact') from exc
+        encoded = canonical_json(envelope)
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            attempt = c.execute('SELECT attempts.*, jobs.generation AS current_generation, jobs.input_sha, jobs.role, jobs.stage FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (attempt_id,)).fetchone()
+            if attempt is None or attempt['job_id'] != envelope['job_id']:
+                raise ValueError('unknown attempt')
+            original = json.loads(attempt['data'])
+            for field in ('generation', 'input_sha', 'role', 'stage'):
+                if original[field] != envelope[field]:
+                    raise ValueError('result identity mismatch')
+            prior = c.execute('SELECT * FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()
+            if prior:
+                if prior['envelope'] != encoded:
+                    raise ValueError('conflicting result replay')
+                result = {'disposition': prior['disposition']}
+            else:
+                session = original.get('session_id')
+                if not isinstance(session, str) or c.execute('SELECT 1 FROM sessions WHERE id=?', (session,)).fetchone() is None:
+                    raise ValueError('unknown session')
+                disposition = 'current' if attempt['current_generation'] == envelope['generation'] else 'stale'
+                c.execute('INSERT INTO results VALUES(?,?,?)', (attempt_id, encoded, disposition))
+                if usage is None:
+                    c.execute('UPDATE sessions SET unknown_spend=1 WHERE id=?', (session,))
+                else:
+                    c.execute('UPDATE sessions SET known_spend=known_spend+? WHERE id=?', (usage['cost_usd'], session))
+                c.execute("UPDATE attempts SET state='result_ready' WHERE id=?", (attempt_id,))
+                self._event('result_recorded', {'attempt_id': attempt_id, 'disposition': disposition})
+                result = {'disposition': disposition}
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def backup(self, destination):
+        destination = Path(destination)
+        if not destination.is_absolute() or destination.is_symlink() or destination.exists():
+            raise ValueError('backup destination must be a new absolute file')
+        parent = _private_directory(destination.parent)
+        if self.directory == parent and destination.name.startswith('store.sqlite3'):
+            raise ValueError('backup aliases source')
+        fd = os.open(str(destination), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+        target = None
+        try:
+            target = sqlite3.connect(str(destination))
+            self.__connection.backup(target)
+            target.close()
+        except Exception:
+            if target is not None:
+                target.close()
+            destination.unlink()
+            raise
+
     def record_command(self, request):
         encoded = canonical_json(request)
         if not all(isinstance(request.get(k), str) and request[k] for k in ('id', 'actor', 'command')) or not isinstance(request.get('payload'), dict):
@@ -258,7 +358,7 @@ class Store:
             for event in events:
                 event['payload'] = json.loads(event['payload'])
             commands = [dict(row) for row in connection.execute('SELECT * FROM commands ORDER BY rowid')]
-            records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims')}
+            records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results')}
             connection.execute('COMMIT')
             return {'domain': domain, 'events': events, 'commands': commands, **records}
         except Exception:

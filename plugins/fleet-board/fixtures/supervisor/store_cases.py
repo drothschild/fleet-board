@@ -144,8 +144,11 @@ class StoreContract(unittest.TestCase):
         destination = self.root / "backup.sqlite3"
         self.store.backup(destination)
         import sqlite3
-        with sqlite3.connect(str(destination)) as backup:
+        backup = sqlite3.connect(str(destination))
+        try:
             self.assertEqual(backup.execute("SELECT type FROM events").fetchone()[0], "fixture")
+        finally:
+            backup.close()
         with self.assertRaises(ValueError):
             self.store.backup(self.store.directory / "store.sqlite3")
 
