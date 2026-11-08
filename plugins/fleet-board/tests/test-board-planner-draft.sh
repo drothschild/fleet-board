@@ -167,6 +167,7 @@ assert_code 200 "create accepted"
 assert_body "create reports both cards" '.created | length' '2'
 api GET /api/board
 assert_body "both cards are on the board" '.cards | length' '2'
+assert_body "drafted cards keep the default pasted-plan status" '[.cards[].state] | unique | join(",")' 'backlog'
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
