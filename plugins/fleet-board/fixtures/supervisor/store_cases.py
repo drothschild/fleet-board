@@ -312,6 +312,34 @@ class StoreContract(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_scope_aliases_conflict_even_for_nonexistent_descendants(self):
+        import json
+        (self.root / "src").mkdir()
+        (self.root / "src" / "file.py").write_text("fixture")
+        pairs = [("src", "SRC/file.py"),
+                 ("Missing/Tree", "missing/tree/new.py"),
+                 ("Caf\u00e9", "CAFE\u0301/new.py")]
+        for index, (first, alias) in enumerate(pairs):
+            with self.subTest(first=first, alias=alias):
+                domain = dict(self.domain, board_identity="alias-" + str(index))
+                store = Store.open(domain, filesystem_inspector=lambda path: "local")
+                try:
+                    store.start_session({"id": "s", "started_at": 1, "deadline": 100,
+                                         "known_spend": 0, "unknown_spend": False, "budget_stop": None})
+                    job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+                           "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+                           "provider": "p", "model": "m", "nonce": "n1", "session_id": "s"}
+                    store.prepare_attempt(job, store.snapshot()["domain"]["revision"],
+                                          {"global_cap": 2, "provider_cap": 2, "paths": [first]})
+                    before = store.snapshot()
+                    self.assertEqual(json.loads(before["claims"][0]["paths"]), [first])
+                    with self.assertRaises(ValueError):
+                        store.prepare_attempt(dict(job, id="j2", card="2", nonce="n2"), before["domain"]["revision"],
+                                              {"global_cap": 2, "provider_cap": 2, "paths": [alias]})
+                    self.assertEqual(store.snapshot(), before)
+                finally:
+                    store.close()
+
     def test_duplicate_nonce_does_not_leave_partial_job(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
