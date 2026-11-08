@@ -25,6 +25,18 @@ def _sync_directory(path):
         os.close(fd)
 
 
+def _read_regular(path, limit):
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > limit:
+            raise ValueError('unsafe or oversized file')
+        data = stream.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('oversized file')
+    return data
+
+
 def _publish(path, value):
     fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=str(path.parent))
     try:
@@ -60,12 +72,7 @@ def read_result(attempt):
     expected = set(fields) | {'schema_version', 'outcome', 'report_path', 'artifact_hashes', 'usage', 'exit_code'}
     try:
         def load(name):
-            fd = os.open(str(attempt / name), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                data = stream.read(1048577)
-            if len(data) > 1048576:
-                raise ValueError('oversized result')
-            return json.loads(data)
+            return json.loads(_read_regular(attempt / name, 1048576))
         result, prepared = load('result.json'), load('prepared.json')
         if not isinstance(result, dict) or set(result) != expected or any(result.get(k) != prepared.get(k) for k in fields):
             return None
@@ -75,12 +82,7 @@ def read_result(attempt):
         artifacts = attempt.parent.parent / 'artifacts' / result['attempt_id']
         if report.parent != artifacts or report.name != 'report' or report.is_symlink() or artifacts.is_symlink() or artifacts.resolve(strict=True) != artifacts:
             return None
-        fd = os.open(str(report), os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
-                return None
-            data = stream.read(1048577)
+        data = _read_regular(report, 1048576)
         if len(data) > 1048576 or json.loads(data) != {'status': 'clean'}:
             return None
         if result['artifact_hashes'] != {str(report): hashlib.sha256(data).hexdigest()}:
@@ -145,9 +147,7 @@ class Runner:
                 if attempt.is_symlink() or not attempt.is_dir():
                     continue
                 try:
-                    fd = os.open(str(attempt / 'receipt.json'), os.O_RDONLY | os.O_NOFOLLOW)
-                    with os.fdopen(fd, 'rb') as stream:
-                        receipt = json.loads(stream.read(8193))
+                    receipt = json.loads(_read_regular(attempt / 'receipt.json', 8192))
                     if receipt.get('identity') == identity.__dict__:
                         return inspect_identity(identity)
                 except (OSError, ValueError, TypeError):
@@ -185,12 +185,7 @@ def _resume_publication(directory, attempt_id, barrier=None):
         if (attempt / 'result.json').exists():
             raise ValueError('invalid published result')
         def load(name):
-            fd = os.open(str(attempt / name), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                data = stream.read(65537)
-            if len(data) > 65536:
-                raise ValueError('oversized metadata')
-            return json.loads(data)
+            return json.loads(_read_regular(attempt / name, 65536))
         prepared = load('prepared.json')
         exit_info = load('exit.json')
         fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
@@ -203,25 +198,18 @@ def _resume_publication(directory, attempt_id, barrier=None):
         manifest_path = artifacts / '.manifest.json'
         if not artifacts.exists():
             scratch = Path(prepared['scratch'])
-            fd = os.open(str(scratch / 'ready.json'), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                marker = json.loads(stream.read(4097))
+            marker = json.loads(_read_regular(scratch / 'ready.json', 4096))
             if marker != {'exit_code': 0}:
                 raise ValueError('invalid fixture result')
             ingest_artifacts(scratch, artifacts, ['report'])
         if not manifest_path.exists():
             raise ValueError('artifact manifest unavailable')
-        fd = os.open(str(manifest_path), os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, 'rb') as stream:
-            hashes = json.loads(stream.read(65537))
+        hashes = json.loads(_read_regular(manifest_path, 65536))
         report = artifacts / 'report'
         if artifacts.is_symlink() or report.is_symlink() or artifacts.resolve(strict=True) != artifacts:
             raise ValueError('unsafe artifacts')
-        fd = os.open(str(report), os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, 'rb') as stream:
-            info = os.fstat(stream.fileno())
-            data = stream.read(1048577)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or len(data) > 1048576 or json.loads(data) != {'status': 'clean'} or hashes != {'report': hashlib.sha256(data).hexdigest()}:
+        data = _read_regular(report, 1048576)
+        if json.loads(data) != {'status': 'clean'} or hashes != {'report': hashlib.sha256(data).hexdigest()}:
             raise ValueError('invalid fixture report')
         deadline = time.monotonic() + 10
         while barrier and not Path(barrier).exists() and time.monotonic() < deadline:
@@ -242,9 +230,7 @@ def _run(config):
         nonce_path.mkdir(mode=0o700)
     except FileExistsError:
         try:
-            fd = os.open(str(nonce_path / 'prepared.json'), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                existing = json.loads(stream.read(65537))
+            existing = json.loads(_read_regular(nonce_path / 'prepared.json', 65536))
             if existing == config['prepared']:
                 return
         except (OSError, ValueError, TypeError):
@@ -260,9 +246,7 @@ def _run(config):
         attempt.mkdir(mode=0o700)
     except FileExistsError:
         try:
-            fd = os.open(str(attempt / 'prepared.json'), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                existing = json.loads(stream.read(65537))
+            existing = json.loads(_read_regular(attempt / 'prepared.json', 65536))
             if existing == config['prepared']:
                 return
         except (OSError, ValueError, TypeError):
@@ -299,9 +283,7 @@ def _run(config):
         scratch = prepared.get('scratch')
         if scratch:
             try:
-                fd = os.open(str(Path(scratch) / 'progress.json'), os.O_RDONLY | os.O_NOFOLLOW)
-                with os.fdopen(fd, 'rb') as stream:
-                    raw = stream.read(4097)
+                raw = _read_regular(Path(scratch) / 'progress.json', 4096)
                 progress = json.loads(raw)
                 if (len(raw) <= 4096 and isinstance(progress, dict) and set(progress) == {'sequence', 'kind'}
                         and type(progress['sequence']) is int and progress['sequence'] > progress_sequence
