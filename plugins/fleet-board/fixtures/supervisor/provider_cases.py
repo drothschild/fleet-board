@@ -1,5 +1,6 @@
 """Offline contract and isolation cases for production provider adapters."""
 import hashlib
+import concurrent.futures
 import json
 import os
 from pathlib import Path
@@ -110,6 +111,60 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(len(record), 1)
         self.assertEqual(record[0]["request_id"], "call-1")
         self.assertIsNone(record[0]["usage"])
+
+    def test_slow_attempt_does_not_serialize_other_inference_requests(self):
+        slow_request = ProviderRequest.create(
+            attempt_id="attempt-slow", generation=1, role="reviewer", stage=None,
+            provider="fake", model="fake-v1", input_text="slow",
+        )
+        fast_request = ProviderRequest.create(
+            attempt_id="attempt-fast", generation=1, role="reviewer", stage=None,
+            provider="fake", model="fake-v1", input_text="fast",
+        )
+        command = self.script("concurrent-provider.py", "#!/usr/bin/env python3\nimport json,sys,time\nr=json.load(sys.stdin)\nif r['input_text']=='slow': time.sleep(.8)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'done','usage':None}))\n")
+        attempts = {}
+        for request in (slow_request, fast_request):
+            attempts[request.attempt_id] = {key: getattr(request, key) for key in
+                                            ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}}, attempts=attempts)
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-concurrent-", dir="/private/tmp"))
+        try:
+            with InferenceChannel(broker, channel_dir, tuple(attempts), request_timeout=3) as channel:
+                slow = InferenceClient(channel.socket_path, "attempt-slow",
+                                       channel.capability_for("attempt-slow"), timeout=3)
+                fast = InferenceClient(channel.socket_path, "attempt-fast",
+                                       channel.capability_for("attempt-fast"), timeout=3)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(slow.infer, slow_request.to_dict())
+                    time.sleep(.1)
+                    started = time.monotonic()
+                    result = fast.infer(fast_request.to_dict())
+                    elapsed = time.monotonic() - started
+                    self.assertEqual(result["text"], "done")
+                    self.assertLess(elapsed, .6)
+                    self.assertEqual(pending.result(timeout=3)["text"], "done")
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
+
+    def test_inference_request_quota_is_per_attempt(self):
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        other_binding = dict(binding)
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                 attempts={"attempt-1": binding, "attempt-2": other_binding})
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-quota-", dir="/private/tmp"))
+        try:
+            with InferenceChannel(broker, channel_dir, ("attempt-1", "attempt-2")) as channel:
+                channel.MAX_REQUESTS_PER_ATTEMPT = 1
+                self.assertTrue(channel._claim_attempt("attempt-1"))
+                self.assertFalse(channel._claim_attempt("attempt-1"))
+                self.assertTrue(channel._claim_attempt("attempt-2"))
+                channel._release_attempt("attempt-1")
+                self.assertFalse(channel._claim_attempt("attempt-1"))
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
 
     def test_local_channel_authenticates_attempt_and_exposes_inference_only(self):
         command = self.script("channel-provider.py", "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'channel result','usage':None}))\n")
