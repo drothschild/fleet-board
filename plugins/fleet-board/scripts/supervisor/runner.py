@@ -64,18 +64,30 @@ class Runner:
         return process
 
     def inspect(self, identity):
-        return inspect_identity(identity)
+        root = self.directory / 'attempts'
+        try:
+            for attempt in root.iterdir():
+                if attempt.is_symlink() or not attempt.is_dir():
+                    continue
+                fd = os.open(str(attempt / 'receipt.json'), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, 'rb') as stream:
+                    receipt = json.loads(stream.read(8193))
+                if receipt.get('identity') == identity.__dict__:
+                    return inspect_identity(identity)
+        except (OSError, ValueError, TypeError):
+            return 'unknown'
+        return 'unknown'
 
     def cancel(self, identity, deadline):
-        if inspect_identity(identity) != 'alive':
+        if self.inspect(identity) != 'alive':
             return 'unknown'
         try:
             if os.getpgid(identity.pid) != identity.pid:
                 return 'unknown'
             os.killpg(identity.pid, signal.SIGTERM)
-            while time.monotonic() < deadline and inspect_identity(identity) == 'alive':
+            while time.monotonic() < deadline and self.inspect(identity) == 'alive':
                 time.sleep(.05)
-            if inspect_identity(identity) == 'alive' and os.getpgid(identity.pid) == identity.pid:
+            if self.inspect(identity) == 'alive' and os.getpgid(identity.pid) == identity.pid:
                 os.killpg(identity.pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
             pass
