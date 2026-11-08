@@ -11,13 +11,13 @@ import time
 import unittest
 
 from supervisor.inference_broker import (
-    ContractError, InferenceBroker, InferenceChannel, ProviderRequest, run_provider,
+    ContractError, InferenceBroker, InferenceChannel, InferenceClient, ProviderRequest, run_provider,
     validate_result,
 )
 from supervisor.isolation import (
     IsolationUnavailable, build_policy, probe_capabilities, run_isolated,
 )
-from supervisor.runner import Runner
+from supervisor.runner import Runner, prepare_worker_bootstrap
 from supervisor.workers import request_scope_expansion
 
 
@@ -91,7 +91,7 @@ class ProviderCases(unittest.TestCase):
         try:
             with InferenceChannel(broker, channel_dir, ("attempt-1",)) as channel:
                 token = channel.capability_for("attempt-1")
-                result = channel.request("attempt-1", token, self.request.to_dict())
+                result = InferenceClient(channel.socket_path, "attempt-1", token).infer(self.request.to_dict())
                 self.assertEqual(result["text"], "channel result")
                 with self.assertRaises(ContractError):
                     channel.request("attempt-1", "forged", self.request.to_dict())
@@ -99,6 +99,15 @@ class ProviderCases(unittest.TestCase):
                     channel.request("attempt-2", token, self.request.to_dict())
                 with self.assertRaises(ContractError):
                     channel.request("attempt-1", token, self.request.to_dict(), operation="status")
+                prepared = {key: getattr(self.request, key) for key in
+                            ("attempt_id", "generation", "role", "provider", "model", "input_sha")}
+                bootstrap = prepare_worker_bootstrap(prepared, channel, self.request.to_dict())
+                self.assertEqual(set(bootstrap), {"schema_version", "attempt", "inference"})
+                self.assertEqual(bootstrap["inference"]["capability"], token)
+                self.assertNotIn("database", json.dumps(bootstrap).lower())
+                with self.assertRaises(ContractError):
+                    prepare_worker_bootstrap(dict(prepared, input_sha="0" * 64), channel,
+                                             self.request.to_dict())
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw:
                     raw.settimeout(3)
                     raw.connect(str(channel.socket_path))
