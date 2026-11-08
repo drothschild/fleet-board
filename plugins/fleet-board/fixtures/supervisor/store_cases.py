@@ -660,6 +660,22 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(data['cancel_grace_deadline'], 15)
         self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
 
+    def test_quarantine_fences_once_and_preserves_claim(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        before = self.store.snapshot()
+        self.assertTrue(hasattr(self.store, 'quarantine_attempt'), 'atomic quarantine is not implemented')
+        self.store.quarantine_attempt('n1', 'uncertain', before['domain']['revision'])
+        after = self.store.snapshot()
+        self.assertEqual(after['jobs'][0]['generation'], 2)
+        self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(len(after['claims']), 1)
+        self.store.quarantine_attempt('n1', 'uncertain', after['domain']['revision'])
+        self.assertEqual(self.store.snapshot(), after)
+
     def test_generic_update_cannot_request_cancellation_without_fencing(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
