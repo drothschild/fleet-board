@@ -698,6 +698,12 @@ class ProviderCases(unittest.TestCase):
                              ("domain_id", "job_id", "attempt_id", "generation", "input_sha", "role", "stage")}
         trusted_result = build_attempt_result_handler(HandlerStore(), operation_binding,
                                                        self.workspace)
+        from supervisor.workers import TrustedAttemptResultHandler
+        class ForgedResultHandler(TrustedAttemptResultHandler):
+            def __call__(self, payload):
+                return {"disposition": "current"}
+        forged_result_handler = ForgedResultHandler(HandlerStore(), operation_binding,
+                                                     self.workspace)
         other_scratch = self.root / "other-result-scratch"
         other_scratch.mkdir(mode=0o700)
         wrong_scratch_handler = build_attempt_result_handler(
@@ -753,6 +759,13 @@ class ProviderCases(unittest.TestCase):
                     source_repository=self.root, cancel_event=threading.Event(),
                     operation_handlers={"heartbeat": lambda value: value,
                                         "result": writable_store_handler,
+                                        "scope_request": lambda value: value})
+            with self.assertRaises(IsolationUnavailable):
+                runner.launch_production(
+                    prepared, ["/usr/bin/true"], policy, channel=fake_channel, request={},
+                    source_repository=self.root, cancel_event=threading.Event(),
+                    operation_handlers={"heartbeat": lambda value: value,
+                                        "result": forged_result_handler,
                                         "scope_request": lambda value: value})
             controls[:] = []
             operation_bindings[:] = []
