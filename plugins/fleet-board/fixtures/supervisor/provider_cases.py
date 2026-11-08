@@ -102,7 +102,7 @@ class ProviderCases(unittest.TestCase):
                 prepared = {key: getattr(self.request, key) for key in
                             ("attempt_id", "generation", "role", "provider", "model", "input_sha")}
                 bootstrap = prepare_worker_bootstrap(prepared, channel, self.request.to_dict())
-                self.assertEqual(set(bootstrap), {"schema_version", "attempt", "inference"})
+                self.assertEqual(set(bootstrap), {"schema_version", "attempt", "provider_request", "inference"})
                 self.assertEqual(bootstrap["inference"]["capability"], token)
                 self.assertNotIn("database", json.dumps(bootstrap).lower())
                 with self.assertRaises(ContractError):
