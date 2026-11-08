@@ -352,3 +352,36 @@ def test_corrupt_published_result_is_ignored():
 
 
 test_corrupt_published_result_is_ignored()
+
+
+def test_resume_publication_after_ingest_without_worker():
+    from supervisor.runner import read_result
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        marker = scratch / 'ready.json'
+        command = [sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(marker)]
+        barrier = root / 'publish'
+        attempt = {'domain_id':'d','job_id':'j','attempt_id':'n','nonce':'n','generation':1,'input_sha':'abc','role':'reviewer','stage':None,'scratch':str(scratch)}
+        runner = Runner(root, fixture_command=command, fixture_publication_barrier=barrier)
+        process = runner.launch(attempt)
+        durable = root / 'artifacts' / 'n' / 'report'
+        deadline = time.monotonic() + 8
+        while not durable.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert durable.exists() and process.poll() is None
+        process.kill()
+        process.wait(timeout=5)
+        (scratch / 'report').unlink()
+        (scratch / 'ready.json').unlink()
+        assert read_result(root / 'attempts' / 'n') is None
+        runner.resume_publication('n')
+        result = read_result(root / 'attempts' / 'n')
+        assert result and result['exit_code'] == 0
+        runner.resume_publication('n')
+        assert read_result(root / 'attempts' / 'n') == result
+
+
+test_resume_publication_after_ingest_without_worker()
