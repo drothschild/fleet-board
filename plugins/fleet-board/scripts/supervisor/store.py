@@ -106,7 +106,7 @@ class Store:
                     CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL, deadline REAL NOT NULL, known_spend REAL NOT NULL, unknown_spend INTEGER NOT NULL, budget_stop TEXT);
                     CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
-                    CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL);
+                    CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL, reservation_revision INTEGER NOT NULL);
                     CREATE TABLE effects (operation_key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), generation INTEGER NOT NULL, preconditions TEXT NOT NULL, intent TEXT NOT NULL, observation TEXT, status TEXT NOT NULL);
                     CREATE TABLE results (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), envelope TEXT NOT NULL, disposition TEXT NOT NULL);
                     CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
@@ -202,13 +202,51 @@ class Store:
             logical = canonical_json([job[k] for k in ('card', 'action', 'role', 'stage', 'round', 'input_sha', 'input_version')])
             c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?)', (job['id'], logical, job['card'], job['generation'], job['input_sha'], job['role'], job['stage'], 'active', 0, canonical_json(job)))
             c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (job['nonce'], job['id'], job['nonce'], job['provider'], 'prepared', canonical_json(job)))
-            c.execute('INSERT INTO claims VALUES(?,?,?,?,?)', (job['nonce'], job['card'], job['provider'], canonical_json(paths), lane))
+            c.execute('INSERT INTO claims VALUES(?,?,?,?,?,?)', (job['nonce'], job['card'], job['provider'], canonical_json(paths), lane, expected_revision + 1))
             self._event('attempt_prepared', {'job_id': job['id'], 'attempt_id': job['nonce']})
             c.execute('COMMIT')
             return {'job_id': job['id'], 'attempt_id': job['nonce']}
         except sqlite3.IntegrityError as exc:
             c.execute('ROLLBACK')
             raise ValueError('duplicate job or attempt') from exc
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def configure_domain(self, config, expected_revision):
+        if not isinstance(config, dict) or set(config) != {'config_hash', 'service_version'} or any(not isinstance(x, str) or not x for x in config.values()):
+            raise ValueError('invalid domain config')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                raise ValueError('revision mismatch')
+            c.execute('UPDATE domain SET config_hash=?,service_version=?', (config['config_hash'], config['service_version']))
+            self._event('config_updated', config)
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def update_attempt(self, attempt_id, details, expected_revision):
+        allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason'}
+        states = {'prepared', 'launching', 'running', 'result_ready', 'reconciled', 'cancel_requested', 'interrupted', 'failed', 'quarantined'}
+        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states):
+            raise ValueError('invalid attempt details')
+        canonical_json(details)
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                raise ValueError('revision mismatch')
+            row = c.execute('SELECT state,data FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            data.update(details)
+            c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
+            self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
+            c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
             raise
