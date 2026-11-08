@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 
-from .models import canonical_json
+from .models import StopEvidence, canonical_json
 
 SCHEMA_VERSION = 1
 
@@ -246,8 +246,9 @@ class Store:
                 raise ValueError('revision mismatch')
             if c.execute('SELECT 1 FROM sessions WHERE id=?', (job['session_id'],)).fetchone() is None:
                 raise ValueError('unknown session')
-            active = list(c.execute('SELECT * FROM claims'))
-            if len(active) >= claims['global_cap'] or sum(x['provider'] == job['provider'] for x in active) >= claims['provider_cap']:
+            active = list(c.execute('SELECT claims.*,attempts.data AS attempt_data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if json.loads(item['attempt_data']).get('execution_released') is not True]
+            if len(occupied) >= claims['global_cap'] or sum(x['provider'] == job['provider'] for x in occupied) >= claims['provider_cap']:
                 raise ValueError('capacity exhausted')
             for existing in active:
                 if existing['card'] == job['card'] or (lane and existing['merge_lane']):
@@ -308,6 +309,40 @@ class Store:
             data.update(details)
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def record_execution_stopped(self, attempt_id, evidence, expected_revision):
+        """Record only a trusted, exactly bound complete-tree observation."""
+        if type(evidence) is not StopEvidence or evidence.kind != 'fixture_complete_tree':
+            raise ValueError('untrusted stop evidence')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            identity = data.get('process_identity')
+            expected = {'boot_id': evidence.boot_id, 'pid': evidence.pid, 'started_at': evidence.started_at, 'nonce': evidence.nonce}
+            if (evidence.domain_id != self.domain_id or evidence.job_id != row['job_id'] or evidence.attempt_id != row['id']
+                    or type(evidence.generation) is not int or evidence.generation != data['generation']
+                    or type(evidence.pid) is not int or evidence.pid <= 0 or not evidence.boot_id or not evidence.started_at
+                    or evidence.nonce != row['nonce'] or data.get('boot_id') != evidence.boot_id or identity != expected
+                    or row['state'] not in ('cancel_requested', 'quarantined', 'interrupted')):
+                raise ValueError('stop evidence identity mismatch')
+            encoded = dict(evidence.__dict__)
+            if data.get('execution_released') is True:
+                if data.get('stop_evidence') != encoded:
+                    raise ValueError('conflicting stop evidence')
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                data.update({'execution_released': True, 'stop_evidence': encoded})
+                c.execute('UPDATE attempts SET data=? WHERE id=?', (canonical_json(data), attempt_id))
+                self._event('execution_stopped', {'attempt_id': attempt_id})
             c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
