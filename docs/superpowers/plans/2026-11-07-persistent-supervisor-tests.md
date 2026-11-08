@@ -4,7 +4,7 @@
 
 **Implementation plan:** [Persistent Supervisor](2026-11-07-persistent-supervisor.md)
 
-**Status:** Phase 1 and Phase 2 offline implementation evidence is recorded below. Final Phase 2 quality review and later runtime, host, and paid qualification remain pending.
+**Status:** Phase 1 and Phase 2 offline implementation evidence is recorded below. Phase 2 specification and quality review are approved; later runtime, host, and paid qualification remain pending.
 
 ## Execution and evidence rules
 
@@ -228,3 +228,6 @@ Task 2.1 specification and quality reviews approved `6793a88`. Task 2.2 specific
 Focused store verification passed 52 cases at `29b126a` (`/private/tmp/supervisor-review-store-final.log`); subsequent cancellation changes do not alter store code. At `35dcf35`, recovery passed 37 cases, the runner suite passed, and clean-room passed 118 checks. Independent specification re-review reran all 37 recovery cases successfully with host subprocess access. The earlier test-first review failures are indexed in the Task 2.2 evidence. Both manifests are now 0.18.0; the version check failed before the bump (`/private/tmp/supervisor-phase2-version-red.log`) and passed afterward (`/private/tmp/supervisor-phase2-version-green.log`).
 
 This is offline Phase 2 evidence, not production-provider, service, UI, reboot, or end-to-end rollout qualification. No paid execution or service installation was performed.
+
+
+Final Phase 2 review at `5a815d2`: independent specification and quality reviews approved with no remaining findings. Receipt-before-adoption reboot recovery now validates and binds durable identity in a revision-fenced transaction, including quarantined and cancellation-requested attempts, without restoring authority or changing reservations. Store verification passed 52 cases, recovery passed 41, and clean-room passed 118 checks; foreign nonce and fenced-state regressions are included. The runner suite passed at `35dcf35` and runner code is unchanged since that run. Release metadata validation passed, and clean-room passed again after the 0.18.0 bump. PR #229 contains review summaries, resolved findings, and final validation scope. Later-phase and host/paid gates remain pending.

@@ -6,7 +6,7 @@
 
 **Baseline:** `db52f9f313adf2d6d5cd6c70c793296a13abb679` (revalidated 2026-11-07; originally `28866b0`). All existing paths below were checked against the original baseline and the intervening PR #200/#207 changes. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
 
-**Status:** Phase 1 merged at e4ea2c7. Phase 2 implementation and specification review are complete on draft PR #229; final quality review is pending. Later phases and boot service remain unimplemented. Supervisor execution remains disabled.
+**Status:** Phase 1 merged at e4ea2c7. Phase 2 implementation, specification review, and quality review are complete on PR #229 (runtime head 5a815d2). Later phases and boot service remain unimplemented. Supervisor execution remains disabled.
 
 ## Current-main impact assessment
 
