@@ -1318,6 +1318,54 @@ assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | se
 plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
 assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
+# Candidate mode exposes the same workflow decision without tick-local admission.
+candidate_empty_human_qa_route() {
+  local route_dir
+  route_dir="$(mktemp -d)"
+  CLEANUP_DIRS+=("$route_dir")
+  local route_base
+  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
+  awk -F '\t' -v OFS='\t' -v base="$route_base" \
+    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
+    "$FAKE_GH_ROUTES" > "$route_dir/routes"
+  FAKE_GH_ROUTES="$route_dir/routes"
+  export FAKE_GH_ROUTES
+  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
+}
+setup_case ready-start
+candidate_empty_human_qa_route
+run_check "$SCRIPT" --candidates
+assert_exit "candidate mode: exit" 0
+assert_jq "candidate mode: schema version" '.schema_version' '1'
+assert_jq "candidate mode: action parity" '.candidates[0].action' '"start"'
+assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | [has("preconditions"), has("declared_paths"), has("actual_paths"), has("scope_complete"), has("dependencies"), has("stage"), has("head_sha"), has("round"), has("priority"), has("state_revision")])' '[true,true,true,true,true,true,true,true,true,true]'
+assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
+assert_jq "candidate mode: empty actual paths are complete" '(.candidates[0] | [.actual_paths, .scope_complete])' '[[],true]'
+
+# A malformed labels payload from the board-read contract must not silently clear priority metadata.
+setup_case ready-start
+candidate_empty_human_qa_route
+MALFORMED_STUB="$(mktemp -d)"
+CLEANUP_DIRS+=("$MALFORMED_STUB")
+cp -R "$SCRIPT_DIR/../scripts/." "$MALFORMED_STUB/"
+cat > "$MALFORMED_STUB/board-read.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"number":12,"title":"Add subtract","state":"ready","body":"Subtract two numbers.\n\n## Acceptance\n- subtract(2,5) returns -3\n","labels":"malformed","manager_note":null,"comments":[]}
+JSON
+EOF
+chmod +x "$MALFORMED_STUB/board-read.sh"
+run_check "$MALFORMED_STUB/tick-plan.sh" --candidates
+assert_exit "candidate mode: malformed labels keep planner read successful" 0
+assert_jq "candidate mode: malformed labels fail closed" '.candidates[0].action' '"skip"'
+assert_jq "candidate mode: malformed labels report attention" '.candidates[0].reason' '"lookup failed: board-read.sh 12 (malformed labels)"'
+assert_jq "candidate mode: malformed labels do not start work" '[.candidates[] | select(.action == "start")] | length' '0'
+
+run_check "$SCRIPT" --unknown-mode
+assert_exit "candidate mode: invalid mode rejected" 2
+run_check "$SCRIPT" --candidates --settle 12
+assert_exit "candidate mode: cannot combine with settle" 2
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
