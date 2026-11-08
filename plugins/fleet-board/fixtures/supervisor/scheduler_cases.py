@@ -115,6 +115,35 @@ def run():
     gate.set()
     assert first.result(timeout=2) == {'revision': 1} and rerun.wait(2) and count['plans'] == 2
     async_scheduler.close()
+    # A full normal-control pool must not lose snapshot delivery or a coalesced rerun.
+    overflow_scheduler = Scheduler(max_workers=1, max_control_workers=1, control_queue_limit=0)
+    planner_release, control_release = threading.Event(), threading.Event()
+    control_entered, second_plan, snapshots_done, snapshots = threading.Event(), threading.Event(), threading.Event(), {'count': 0}
+    cycle_count = {'count': 0}
+    def overflow_planner():
+        cycle_count['count'] += 1
+        if cycle_count['count'] == 1:
+            planner_release.wait(3)
+        else:
+            second_plan.set()
+        return {'revision': cycle_count['count']}
+    def occupy_normal_control():
+        control_entered.set()
+        return control_release.wait(3)
+    def receive_snapshot(snapshot):
+        snapshots['count'] += 1
+        if snapshots['count'] == 2:
+            snapshots_done.set()
+    normal_blocker = overflow_scheduler.control_async(occupy_normal_control)
+    assert control_entered.wait(2)
+    cycle = overflow_scheduler.request_cycle(overflow_planner, receive_snapshot)
+    overflow_scheduler.request_cycle(overflow_planner, receive_snapshot)
+    planner_release.set()
+    assert cycle.result(timeout=2) == {'revision': 1}
+    assert second_plan.wait(2) and snapshots_done.wait(2)
+    control_release.set()
+    normal_blocker.result(timeout=2)
+    overflow_scheduler.close()
     # Deadline and cancel-grace callbacks fire from the timer driver while planning is blocked.
     timers = ManualTimers()
     timer_scheduler = Scheduler(clock=lambda: timers.now, timer_scheduler=timers)
