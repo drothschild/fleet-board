@@ -384,6 +384,21 @@ assert_exit "recovered followups: verification succeeds" 0
 assert_eq "recovered followups: no duplicate merge" "$(cnt 'pr merge ')" 0
 assert_eq "recovered followups: stay in review for filing" "$(cnt 'add-label fleet:done')" 0
 
+echo "bounded per-card merge retains fresh eligibility and head binding"
+setup_pair
+run_merge --card 12
+assert_exit "bounded merge: exit 0" 0
+assert_eq "bounded merge: selected card merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "bounded merge: unrelated card untouched" "$(cnt "pr merge 35 ")" 0
+
+setup_pair
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+run_merge --card 12
+assert_exit "bounded pending verification: exit 0" 0
+assert_eq "bounded pending verification: no duplicate merge" "$(cnt 'pr merge 34 ')" 0
+assert_eq "bounded pending verification: verification completed" "$(cnt 'issue edit 12 --repo acme/toy --add-label fleet:done')" 1
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
