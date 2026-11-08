@@ -223,7 +223,7 @@ class Store:
         fields = ('id', 'card', 'action', 'role', 'stage', 'input_sha', 'input_version', 'provider', 'model', 'nonce', 'session_id')
         reserved = {'state', 'boot_id', 'process_identity', 'started_at', 'deadline', 'heartbeat', 'progress',
                     'cancel_reason', 'cancel_requested_at', 'cancel_grace_deadline', 'execution_released',
-                    'stop_evidence', 'quarantine_reason', 'retry_at', 'retry_nonce', 'retry_prior'}
+                    'stop_evidence', 'quarantine_reason', 'retry_at', 'retry_nonce', 'retry_prior', 'suspected_stuck'}
         if not isinstance(job, dict) or reserved.intersection(job):
             raise ValueError('reserved attempt lifecycle metadata')
         if any(not isinstance(job.get(k), str) or not job[k] for k in fields):
@@ -299,10 +299,12 @@ class Store:
             raise
 
     def update_attempt(self, attempt_id, details, expected_revision):
-        allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason'}
+        allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason', 'suspected_stuck'}
         states = {'prepared', 'launching', 'running', 'result_ready', 'reconciled', 'cancel_requested', 'interrupted', 'failed', 'quarantined'}
         if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states - {'cancel_requested', 'quarantined'}):
             raise ValueError('invalid attempt details')
+        if 'suspected_stuck' in details and type(details['suspected_stuck']) is not bool:
+            raise ValueError('invalid stuck observation')
         canonical_json(details)
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
