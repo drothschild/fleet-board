@@ -1469,6 +1469,22 @@ class ProviderCases(unittest.TestCase):
         self.assertIs(defaults["supervisor"]["enabled"], False)
         self.assertIs(Runner(self.root / "runner").production_enabled, False)
 
+    def test_linux_policy_mounts_attempt_channels_read_only(self):
+        policy = build_policy(self.workspace, self.root / "private-git",
+                              self.root / "channels")
+        policy.update(backend="linux", command="/usr/bin/bwrap")
+        with patch("supervisor.isolation.os.path.exists", return_value=False):
+            command = isolation_module._wrapped_command(["/usr/bin/true"], policy)
+        channel_index = command.index(policy["channels"])
+        self.assertEqual(command[channel_index - 1], "--ro-bind",
+                         "worker must connect to attempt IPC without mutating channel paths")
+
+    def test_macos_policy_denies_channel_path_mutation(self):
+        policy = build_policy(self.workspace, self.root / "private-git",
+                              self.root / "channels")
+        self.assertIn('(allow file-read* "' + policy["channels"] + '")', policy["text"])
+        self.assertNotIn('(allow file-write* "' + policy["channels"] + '")', policy["text"])
+
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
         class Store:
             def expand_scope(self, card, paths, revision):
