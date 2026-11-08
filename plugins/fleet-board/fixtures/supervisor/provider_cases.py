@@ -282,6 +282,16 @@ class ProviderCases(unittest.TestCase):
             self.assertNotIn(str(source), config)
             self.assertNotIn("credential", config.lower())
 
+    def test_host_probe_reports_each_required_boundary_check(self):
+        policy = build_policy(self.workspace, self.root / "private-git",
+                              self.root / "channels")
+        capability = probe_capabilities(policy)
+        expected = {"workspace_read", "workspace_write", "controller_db", "controller_socket",
+                    "board_storage", "shared_git_metadata", "host_credentials",
+                    "ssh_agent", "keychain", "symlink_escape", "loopback_network",
+                    "publication", "forged_human_control", "inference_channel"}
+        self.assertEqual(set(capability.get("checks", {})), expected)
+
     def test_fixture_and_human_control_authority_are_not_worker_capabilities(self):
         policy = build_policy(self.workspace, self.root / "private-git",
                               self.root / "channels")
