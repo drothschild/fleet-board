@@ -114,6 +114,20 @@ class EffectContract(unittest.TestCase):
                 self.assertIn(message, result['reason'])
         self.authority.state, self.authority.generation = 'ready', 1
 
+    def test_human_qa_arriving_during_preflight_blocks_mutation(self):
+        authority = Authority()
+        class ArrivingQAAdapter(FakeAdapter):
+            def inspect(self, intent):
+                authority.state = 'human_qa'
+                return super().inspect(intent)
+        adapter = ArrivingQAAdapter('card_move')
+        effect, _, _ = self.prepare('qa-race', 'card_move', adapter, authority)
+        result = effect.apply()
+        self.assertEqual(result['status'], 'attention')
+        self.assertEqual(result['reason'], 'human_qa')
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(len(authority.checks), 2)
+
     def test_uncertain_non_idempotent_effect_enters_attention_without_replay(self):
         for kind in sorted(NON_IDEMPOTENT):
             with self.subTest(kind=kind):
@@ -131,6 +145,18 @@ class EffectContract(unittest.TestCase):
         self.assertEqual(adapter.calls, ['note-op'])
         observation = json.loads(self.store.snapshot()['effects'][0]['observation'])
         self.assertEqual(observation['external_id'], 'ext-note-op')
+
+    def test_duplicate_report_and_create_responses_match_controller_marker(self):
+        for kind in ('report_post', 'pr_create'):
+            with self.subTest(kind=kind):
+                key = 'duplicate-' + kind
+                adapter = FakeAdapter(kind)
+                adapter.external[key] = {'operation_key': key, 'kind': kind,
+                                         'external_id': 'ext-' + key}
+                effect, _, _ = self.prepare(key, kind, adapter)
+                result = effect.apply()
+                self.assertEqual(result['status'], 'observed')
+                self.assertEqual(adapter.calls, [])
 
     def test_before_mutation_failure_revalidates_before_retry(self):
         adapter = FakeAdapter('note_update', fail='before')
