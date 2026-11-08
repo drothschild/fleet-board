@@ -375,6 +375,8 @@ class InferenceChannel:
         self._attempt_bindings = {}
         self._operation_handlers = {}
         self._retired_attempts = set()
+        self._retiring_attempts = set()
+        self._operation_admissions = {}
         self._executor = None
         self._inode = None
         for attempt_id, control in (attempt_controls or {}).items():
@@ -459,33 +461,43 @@ class InferenceChannel:
             binding = self._attempt_bindings.get(attempt_id)
             if binding is None or self.terminal_attempt_checker is None:
                 raise ContractError('attempt has no retirement authority')
+            if attempt_id in self._retiring_attempts:
+                raise ContractError('attempt retirement is already in progress')
+            if self._operation_admissions.get(attempt_id, 0):
+                raise ContractError('cannot retire while a worker operation is being admitted or handled')
             if any(key[0] == attempt_id and record['state'] == 'in_flight'
                    for key, record in self._operation_calls.items()):
                 raise ContractError('cannot retire an in-flight worker operation')
+            self._retiring_attempts.add(attempt_id)
         try:
-            terminal = self.controller_dispatcher.call(
-                self.terminal_attempt_checker, attempt_id,
-                binding['generation'], binding['input_sha'])
-        except Exception as exc:
-            raise ContractError('terminal attempt authority is unavailable') from exc
-        if terminal != 'terminal_released':
-            raise ContractError('attempt is not terminal and execution-released')
-        with self._request_lock:
-            old_calls = self._operation_calls
-            self._operation_calls = {key: record for key, record in old_calls.items()
-                                     if key[0] != attempt_id}
             try:
-                self._persist_operation_journal()
+                terminal = self.controller_dispatcher.call(
+                    self.terminal_attempt_checker, attempt_id,
+                    binding['generation'], binding['input_sha'])
             except Exception as exc:
-                self._operation_calls = old_calls
-                raise ContractError('attempt operation records could not be retired safely') from exc
-            self._attempt_bindings.pop(attempt_id, None)
-            self._operation_handlers.pop(attempt_id, None)
-            self._attempt_controls.pop(attempt_id, None)
-            self._capabilities.pop(attempt_id, None)
-            self._attempt_requests.pop(attempt_id, None)
-            self._retired_attempts.add(attempt_id)
-            return True
+                raise ContractError('terminal attempt authority is unavailable') from exc
+            if terminal != 'terminal_released':
+                raise ContractError('attempt is not terminal and execution-released')
+            with self._request_lock:
+                old_calls = self._operation_calls
+                self._operation_calls = {key: record for key, record in old_calls.items()
+                                         if key[0] != attempt_id}
+                try:
+                    self._persist_operation_journal()
+                except Exception as exc:
+                    self._operation_calls = old_calls
+                    raise ContractError('attempt operation records could not be retired safely') from exc
+                self._attempt_bindings.pop(attempt_id, None)
+                self._operation_handlers.pop(attempt_id, None)
+                self._attempt_controls.pop(attempt_id, None)
+                self._capabilities.pop(attempt_id, None)
+                self._attempt_requests.pop(attempt_id, None)
+                self._retired_attempts.add(attempt_id)
+                return True
+        finally:
+            with self._request_lock:
+                if attempt_id not in self._retired_attempts:
+                    self._retiring_attempts.discard(attempt_id)
 
     def operations_for(self, attempt_id):
         with self._request_lock:
@@ -552,6 +564,23 @@ class InferenceChannel:
         return payload
 
     def _dispatch_worker_operation(self, attempt_id, operation, payload):
+        with self._request_lock:
+            if (attempt_id in self._retired_attempts or attempt_id in self._retiring_attempts
+                    or attempt_id not in self._attempt_bindings
+                    or attempt_id not in self._operation_handlers):
+                raise ContractError('worker operation is not authorized')
+            self._operation_admissions[attempt_id] = self._operation_admissions.get(attempt_id, 0) + 1
+        try:
+            return self._dispatch_worker_operation_admitted(attempt_id, operation, payload)
+        finally:
+            with self._request_lock:
+                remaining = self._operation_admissions[attempt_id] - 1
+                if remaining:
+                    self._operation_admissions[attempt_id] = remaining
+                else:
+                    del self._operation_admissions[attempt_id]
+
+    def _dispatch_worker_operation_admitted(self, attempt_id, operation, payload):
         with self._request_lock:
             binding = self._attempt_bindings.get(attempt_id)
             handlers = self._operation_handlers.get(attempt_id)
