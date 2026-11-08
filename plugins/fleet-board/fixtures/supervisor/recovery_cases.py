@@ -152,9 +152,14 @@ class RecoveryContract(unittest.TestCase):
             while not (path / 'receipt.json').exists() and time.monotonic() < deadline:
                 time.sleep(.02)
             self.assertTrue((path / 'receipt.json').exists())
-            before = self.store.snapshot()
+            identity = json.loads((path / 'receipt.json').read_text())['identity']
             Recovery(self.store).reconcile(now=10)
-            self.assertEqual(self.store.snapshot(), before, 'matching live runner must be adopted')
+            adopted = self.store.snapshot()
+            data = json.loads(adopted['attempts'][0]['data'])
+            self.assertEqual(data.get('process_identity'), identity)
+            self.assertEqual(data.get('boot_id'), identity['boot_id'])
+            self.assertEqual(len(adopted['attempts']), 1)
+            self.assertEqual(len(adopted['claims']), 1)
             prepared = json.loads((path / 'prepared.json').read_text())
             prepared['domain_id'] = 'foreign'
             (path / 'prepared.json').write_text(json.dumps(prepared))
