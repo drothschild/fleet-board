@@ -302,9 +302,11 @@ class ProviderCases(unittest.TestCase):
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
                                  attempts={request.attempt_id: provider_binding})
         received = {"heartbeat": [], "result": [], "scope_request": []}
+        result_store_root = self.root / "operation-result-store"
+        result_store_root.mkdir(mode=0o700)
 
         class ResultStore:
-            directory = self.root
+            directory = result_store_root
             domain_id = "domain-1"
 
             def record_result(self, envelope):
@@ -393,7 +395,8 @@ class ProviderCases(unittest.TestCase):
                 return {"card": card, "paths": paths, "reservation_revision": 2}
 
         store = Store()
-        store.directory = self.root
+        store.directory = self.root / "scope-controller-store"
+        store.directory.mkdir(mode=0o700)
         callbacks = []
         binding = {"domain_id": "d" * 64, "job_id": "job-1", "attempt_id": "attempt-1",
                    "generation": 1, "input_sha": "a" * 64, "role": "stage-reviewer", "stage": "code"}
@@ -684,8 +687,10 @@ class ProviderCases(unittest.TestCase):
         controls = []
         operation_bindings = []
         from supervisor.workers import build_attempt_result_handler
+        handler_store_root = self.root / "runner-result-store"
+        handler_store_root.mkdir(mode=0o700)
         class HandlerStore:
-            directory = self.root
+            directory = handler_store_root
             domain_id = "domain-1"
             def record_result(self, envelope):
                 return {"disposition": "current"}
@@ -697,6 +702,10 @@ class ProviderCases(unittest.TestCase):
         other_scratch.mkdir(mode=0o700)
         wrong_scratch_handler = build_attempt_result_handler(
             HandlerStore(), operation_binding, other_scratch)
+        worker_writable_store = HandlerStore()
+        worker_writable_store.directory = Path(policy["channels"])
+        writable_store_handler = build_attempt_result_handler(
+            worker_writable_store, operation_binding, self.workspace)
         class FakeChannel:
             socket_path = self.root / "inference.sock"
             def bind_attempt_control(self, attempt_id, deadline, cancel_event):
@@ -737,6 +746,13 @@ class ProviderCases(unittest.TestCase):
                     source_repository=self.root, cancel_event=threading.Event(),
                     operation_handlers={"heartbeat": lambda value: value,
                                         "result": wrong_scratch_handler,
+                                        "scope_request": lambda value: value})
+            with self.assertRaises(IsolationUnavailable):
+                runner.launch_production(
+                    prepared, ["/usr/bin/true"], policy, channel=fake_channel, request={},
+                    source_repository=self.root, cancel_event=threading.Event(),
+                    operation_handlers={"heartbeat": lambda value: value,
+                                        "result": writable_store_handler,
                                         "scope_request": lambda value: value})
             controls[:] = []
             operation_bindings[:] = []
