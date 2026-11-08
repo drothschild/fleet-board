@@ -205,6 +205,48 @@ class StoreContract(unittest.TestCase):
             self.store.record_result(envelope)
         self.assertEqual(self.store.snapshot(), before)
 
+    def test_stale_result_is_evidence_and_charged_once(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.revoke_generation("j1", self.store.snapshot()["domain"]["revision"])
+        root = self.store.directory / "artifacts" / "n1"
+        root.mkdir(parents=True, mode=0o700)
+        report = root / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": {"cost_usd": 2}, "exit_code": 0}
+        self.assertEqual(self.store.record_result(envelope)["disposition"], "stale")
+        before = self.store.snapshot()
+        self.assertEqual(before["jobs"][0]["generation"], 2)
+        self.assertEqual(before["jobs"][0]["state"], "active")
+        self.assertEqual(before["sessions"][0]["known_spend"], 2)
+        self.store.record_result(envelope)
+        self.assertEqual(self.store.snapshot(), before)
+
+    def test_capacity_and_nonoverlap_across_connections(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 2, "provider_cap": 2, "paths": ["src/a"]})
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(other.close)
+        candidate = dict(job, id="j2", nonce="n2", card="2")
+        for caps in ({"global_cap": 1, "provider_cap": 2, "paths": ["src/ab"]},
+                     {"global_cap": 2, "provider_cap": 1, "paths": ["src/ab"]}):
+            before = other.snapshot()
+            with self.assertRaises(ValueError):
+                other.prepare_attempt(candidate, before["domain"]["revision"], caps)
+            self.assertEqual(other.snapshot(), before)
+        other.prepare_attempt(candidate, other.snapshot()["domain"]["revision"],
+                              {"global_cap": 2, "provider_cap": 2, "paths": ["src/ab"]})
+        self.assertEqual(len(self.store.snapshot()["claims"]), 2)
+
     def test_admission_rejects_missing_session_and_unsafe_nonce(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
