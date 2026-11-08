@@ -270,6 +270,8 @@ def _run(config):
     _publish(attempt / 'prepared.json', config['prepared'])
     _publish(attempt / 'receipt.json', {'state': 'registered', 'identity': identity.__dict__})
     _publish(attempt / 'execution.json', {'state': 'execution_started'})
+    if not all(hasattr(os, name) for name in ('waitid', 'P_PID', 'WEXITED', 'WNOHANG', 'WNOWAIT')):
+        raise OSError('non-reaping child observation unavailable')
     worker = subprocess.Popen(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
     def drain(pipe, name):
@@ -293,11 +295,16 @@ def _run(config):
     published = False
     progress_sequence = 0
     last_signal = None
-    while worker.poll() is None or any(reader.is_alive() for reader in readers):
+    while True:
+        # Keep the leader unreaped while descendants can hold inherited pipes.
+        # Its allocated PID prevents a reused process-group ID from being signaled.
+        exited = os.waitid(os.P_PID, worker.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+        if exited and not any(reader.is_alive() for reader in readers):
+            break
         try:
             control = json.loads(_read_regular(attempt / 'control.json', 4096))
             if (control in ({'nonce': config['nonce'], 'signal': 'TERM'}, {'nonce': config['nonce'], 'signal': 'KILL'})
-                    and control['signal'] != last_signal and worker.poll() is None):
+                    and control['signal'] != last_signal):
                 os.killpg(worker.pid, signal.SIGTERM if control['signal'] == 'TERM' else signal.SIGKILL)
                 last_signal = control['signal']
         except (OSError, ValueError, TypeError):
@@ -319,6 +326,7 @@ def _run(config):
         time.sleep(.2)
     for reader in readers:
         reader.join()
+    worker.wait()
     if 'scratch' in prepared:
         _publish(attempt / 'exit.json', {'exit_code': worker.returncode})
         try:
