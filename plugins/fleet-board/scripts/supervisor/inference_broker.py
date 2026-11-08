@@ -1,0 +1,427 @@
+"""Versioned, bounded, attempt-bound provider request and result transport."""
+import hashlib
+import hmac
+import json
+import math
+import os
+from pathlib import Path
+import selectors
+import secrets
+import signal
+import socket
+import stat
+import struct
+import subprocess
+import threading
+import time
+from dataclasses import dataclass
+
+
+class ContractError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class ProviderRequest:
+    attempt_id: str
+    generation: int
+    role: str
+    stage: str
+    provider: str
+    model: str
+    input_text: str
+    input_sha: str
+    schema_version: int = 1
+
+    @classmethod
+    def create(cls, *, attempt_id, generation, role, stage, provider, model, input_text):
+        if not isinstance(input_text, str):
+            raise ContractError('provider input must be text')
+        return cls(attempt_id, generation, role, stage, provider, model, input_text,
+                   hashlib.sha256(input_text.encode('utf-8')).hexdigest())
+
+    def to_dict(self):
+        return {'schema_version': self.schema_version, 'attempt_id': self.attempt_id,
+                'generation': self.generation, 'role': self.role, 'stage': self.stage,
+                'provider': self.provider, 'model': self.model,
+                'input_text': self.input_text, 'input_sha': self.input_sha}
+
+
+def _valid_request(request):
+    if not isinstance(request, ProviderRequest) or request.schema_version != 1:
+        raise ContractError('unsupported provider request schema')
+    if (not request.attempt_id or not isinstance(request.attempt_id, str)
+            or type(request.generation) is not int or request.generation < 0
+            or not request.role or not request.provider or not request.model
+            or request.role not in ('implementor', 'reviewer', 'fixer', 'stage-reviewer')
+            or not isinstance(request.input_text, str)
+            or len(request.input_text.encode('utf-8')) > 4 * 1048576):
+        raise ContractError('invalid provider request')
+    digest = hashlib.sha256(request.input_text.encode('utf-8')).hexdigest()
+    if request.input_sha != digest:
+        raise ContractError('provider input SHA mismatch')
+    return request
+
+
+def validate_result(request, result):
+    _valid_request(request)
+    required = {'schema_version', 'attempt_id', 'generation', 'input_sha', 'provider', 'model', 'text', 'usage'}
+    if not isinstance(result, dict) or set(result) != required:
+        raise ContractError('invalid provider result fields')
+    if any(result[key] != getattr(request, key) for key in ('attempt_id', 'generation', 'input_sha', 'provider', 'model')):
+        raise ContractError('provider result does not match attempt input')
+    if type(result['schema_version']) is not int or result['schema_version'] != 1:
+        raise ContractError('unsupported provider result schema')
+    if not isinstance(result['text'], str) or not result['text'] or len(result['text'].encode('utf-8')) > 1048576:
+        raise ContractError('provider returned no text')
+    usage = result['usage']
+    if usage is not None and (not isinstance(usage, dict) or set(usage) != {'input_tokens', 'output_tokens'}
+                              or any(type(usage[k]) is not int or usage[k] < 0 for k in usage)):
+        raise ContractError('invalid provider usage')
+    return result
+
+
+def run_provider(argv, request, *, timeout=300, stdout_limit=1048576, stderr_limit=65536,
+                 cancel_event=None, cancel_after=None, trusted_environment=None):
+    """Run one explicit CLI with bounded pipes, a hard deadline and process-group cancel."""
+    _valid_request(request)
+    if (not isinstance(argv, (list, tuple)) or not argv or
+            any(not isinstance(arg, str) or not arg for arg in argv)):
+        raise ContractError('provider command must be argv')
+    if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
+            or type(stdout_limit) is not int or type(stderr_limit) is not int
+            or stdout_limit < 1 or stderr_limit < 1):
+        raise ContractError('invalid provider bounds')
+    try:
+        env = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'}
+        for key, value in (trusted_environment or {}).items():
+            if not isinstance(key, str) or not key.isidentifier() or key in env or not isinstance(value, str):
+                raise ContractError('invalid trusted provider environment')
+            env[key] = value
+        process = subprocess.Popen(list(argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, start_new_session=True,
+                                   close_fds=True, env=env)
+    except OSError as exc:
+        raise ContractError('provider executable unavailable') from exc
+    selector = selectors.DefaultSelector()
+    output = {process.stdout: bytearray(), process.stderr: bytearray()}
+    limits = {process.stdout: stdout_limit, process.stderr: stderr_limit}
+    start = time.monotonic()
+    cancel_at = start + cancel_after if cancel_after is not None else None
+    try:
+        payload = json.dumps(request.to_dict(), separators=(',', ':'), ensure_ascii=False).encode('utf-8')
+        input_offset = 0
+        os.set_blocking(process.stdin.fileno(), False)
+        selector.register(process.stdin, selectors.EVENT_WRITE)
+        for stream in output:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        while selector.get_map() or process.poll() is None:
+            now = time.monotonic()
+            if now >= start + timeout or (cancel_at is not None and now >= cancel_at) or (cancel_event is not None and cancel_event.is_set()):
+                raise ContractError('provider cancelled or deadline exceeded')
+            if process.poll() is not None and input_offset < len(payload):
+                raise ContractError('provider closed request channel')
+            for key, _ in selector.select(min(.05, max(.001, start + timeout - now))):
+                if key.fileobj is process.stdin:
+                    try:
+                        input_offset += os.write(key.fd, payload[input_offset:input_offset + 65536])
+                    except OSError as exc:
+                        raise ContractError('provider closed request channel') from exc
+                    if input_offset >= len(payload):
+                        selector.unregister(key.fileobj)
+                        process.stdin.close()
+                    continue
+                chunk = os.read(key.fd, 65536)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                target = output[key.fileobj]
+                target.extend(chunk)
+                if len(target) > limits[key.fileobj]:
+                    raise ContractError('provider output exceeded limit')
+        if process.returncode != 0:
+            raise ContractError('provider command failed')
+        try:
+            response = json.loads(output[process.stdout].decode('utf-8'))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ContractError('provider returned invalid JSON') from exc
+        return validate_result(request, response)
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=0.3)
+        except (OSError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+        raise
+    finally:
+        selector.close()
+        for stream in output:
+            try:
+                stream.close()
+            except OSError:
+                pass
+
+
+class InferenceBroker:
+    """Attempt-scoped broker with explicit provider/model allowlists."""
+    def __init__(self, providers, *, attempts=None, trusted_environment=None):
+        self.providers = providers
+        self.attempts = attempts or {}
+        self.trusted_environment = trusted_environment or {}
+
+    def validate_request(self, raw):
+        required = {'schema_version', 'attempt_id', 'generation', 'role', 'stage', 'provider', 'model', 'input_text', 'input_sha'}
+        if not isinstance(raw, dict) or set(raw) != required:
+            raise ContractError('invalid broker request fields')
+        if any(key in raw for key in ('url', 'endpoint', 'headers', 'environment', 'credential')):
+            raise ContractError('broker does not forward transport or credentials')
+        config = self.providers.get(raw['provider']) if isinstance(raw.get('provider'), str) else None
+        if not isinstance(config, dict) or raw['model'] != config.get('model'):
+            raise ContractError('provider/model selection is not configured')
+        binding = self.attempts.get(raw['attempt_id']) if isinstance(raw.get('attempt_id'), str) else None
+        expected = ('generation', 'role', 'stage', 'provider', 'model', 'input_sha')
+        if not isinstance(binding, dict) or any(binding.get(key) != raw.get(key) for key in expected):
+            raise ContractError('request is not authorized for this attempt')
+        if not isinstance(config.get('command'), (list, tuple)):
+            raise ContractError('provider command is unavailable')
+        credential_name = config.get('credential_env')
+        if credential_name is not None:
+            if (not isinstance(credential_name, str) or not credential_name.isidentifier()
+                    or credential_name not in self.trusted_environment
+                    or not isinstance(self.trusted_environment[credential_name], str)
+                    or not self.trusted_environment[credential_name]
+                    or any(ord(char) < 32 or ord(char) == 127 for char in self.trusted_environment[credential_name])):
+                raise ContractError('provider credential unavailable')
+        request = ProviderRequest(**raw)
+        return _valid_request(request)
+
+    def infer(self, raw, **bounds):
+        request = self.validate_request(raw)
+        credential_name = self.providers[request.provider].get('credential_env')
+        provider_env = ({credential_name: self.trusted_environment[credential_name]}
+                        if credential_name is not None else {})
+        return run_provider(self.providers[request.provider]['command'], request,
+                            trusted_environment=provider_env, **bounds)
+
+
+class InferenceChannel:
+    """Private local socket exposing only bounded, attempt-authenticated inference."""
+    MAX_REQUEST_BYTES = 4 * 1048576
+    MAX_RESPONSE_BYTES = 1049600
+    MAX_REQUESTS = 32
+
+    def __init__(self, broker, directory, attempt_ids, *, request_timeout=310):
+        self.broker = broker
+        self.directory = Path(directory)
+        if (not self.directory.is_absolute() or self.directory.is_symlink()
+                or self.directory.resolve(strict=True) != self.directory
+                or not self.directory.is_dir() or self.directory.stat().st_uid != os.getuid()
+                or self.directory.stat().st_mode & 0o077):
+            raise ValueError('inference channel directory must be private')
+        self.socket_path = self.directory / 'inference.sock'
+        if len(os.fsencode(self.socket_path)) >= 104:
+            raise ValueError('inference channel socket path is too long')
+        if self.socket_path.exists() or self.socket_path.is_symlink():
+            raise ValueError('inference channel socket path already exists')
+        if not isinstance(attempt_ids, (list, tuple, set)) or not attempt_ids:
+            raise ValueError('inference channel requires attempt ids')
+        self._capabilities = {}
+        for attempt_id in attempt_ids:
+            if not isinstance(attempt_id, str) or not attempt_id or attempt_id in self._capabilities:
+                raise ValueError('invalid inference channel attempt')
+            if attempt_id not in broker.attempts:
+                raise ValueError('inference channel attempt is not broker-authorized')
+            self._capabilities[attempt_id] = secrets.token_urlsafe(32)
+        if type(request_timeout) not in (int, float) or request_timeout <= 0:
+            raise ValueError('invalid inference channel deadline')
+        self.request_timeout = request_timeout
+        self._listener = None
+        self._thread = None
+        self._stop = threading.Event()
+        self._requests = 0
+        self._inode = None
+
+    def capability_for(self, attempt_id):
+        """Return the one-attempt token for trusted launch code to pass over a private fd."""
+        if attempt_id not in self._capabilities:
+            raise ContractError('attempt has no inference channel')
+        return self._capabilities[attempt_id]
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.stop()
+
+    def start(self):
+        if self._listener is not None:
+            return self
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            listener.bind(str(self.socket_path))
+            os.chmod(self.socket_path, 0o600)
+            info = self.socket_path.lstat()
+            if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError('unsafe inference channel socket')
+            self._inode = (info.st_dev, info.st_ino)
+            listener.listen(8)
+            listener.settimeout(0.1)
+            self._listener = listener
+            self._thread = threading.Thread(target=self._serve, name='inference-broker', daemon=True)
+            self._thread.start()
+            return self
+        except BaseException:
+            listener.close()
+            self._unlink_socket()
+            raise
+
+    def stop(self):
+        self._stop.set()
+        if self._listener is not None:
+            self._listener.close()
+            self._listener = None
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+            self._thread = None
+        self._unlink_socket()
+        self._capabilities.clear()
+
+    def _unlink_socket(self):
+        try:
+            info = self.socket_path.lstat()
+            if (stat.S_ISSOCK(info.st_mode) and info.st_uid == os.getuid()
+                    and self._inode == (info.st_dev, info.st_ino)):
+                self.socket_path.unlink()
+        except OSError:
+            pass
+
+    @staticmethod
+    def _read_exact(connection, count, deadline):
+        chunks = bytearray()
+        while len(chunks) < count:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ContractError('inference channel deadline exceeded')
+            connection.settimeout(min(remaining, 1.0))
+            try:
+                chunk = connection.recv(min(65536, count - len(chunks)))
+            except socket.timeout:
+                continue
+            if not chunk:
+                raise ContractError('incomplete inference channel frame')
+            chunks.extend(chunk)
+        return bytes(chunks)
+
+    @staticmethod
+    def _write_frame(connection, value, limit):
+        data = json.dumps(value, separators=(',', ':'), ensure_ascii=False,
+                          allow_nan=False).encode('utf-8')
+        if not data or len(data) > limit:
+            raise ContractError('inference channel response exceeded limit')
+        connection.sendall(struct.pack('!I', len(data)) + data)
+
+    def _serve_request(self, connection):
+        deadline = time.monotonic() + self.request_timeout
+        header = self._read_exact(connection, 4, deadline)
+        size = struct.unpack('!I', header)[0]
+        if size < 1 or size > self.MAX_REQUEST_BYTES:
+            raise ContractError('inference channel request exceeded limit')
+        raw = json.loads(self._read_exact(connection, size, deadline).decode('utf-8'))
+        if (not isinstance(raw, dict)
+                or set(raw) != {'schema_version', 'operation', 'attempt_id', 'capability', 'request'}
+                or type(raw['schema_version']) is not int or raw['schema_version'] != 1
+                or raw['operation'] != 'infer'
+                or not isinstance(raw['attempt_id'], str)
+                or not isinstance(raw['capability'], str)
+                or not isinstance(raw['request'], dict)):
+            raise ContractError('inference channel operation rejected')
+        expected = self._capabilities.get(raw['attempt_id'])
+        if expected is None or not hmac.compare_digest(expected, raw['capability']):
+            raise ContractError('inference channel authentication failed')
+        if raw['request'].get('attempt_id') != raw['attempt_id']:
+            raise ContractError('inference channel attempt mismatch')
+        result = self.broker.infer(raw['request'], timeout=self.request_timeout - 1,
+                                   cancel_event=self._stop)
+        self._write_frame(connection, {'schema_version': 1, 'result': result}, self.MAX_RESPONSE_BYTES)
+
+    def _serve(self):
+        while not self._stop.is_set() and self._requests < self.MAX_REQUESTS:
+            try:
+                connection, _ = self._listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with connection:
+                while not self._stop.is_set() and self._requests < self.MAX_REQUESTS:
+                    self._requests += 1
+                    try:
+                        connection.settimeout(1.0)
+                        self._serve_request(connection)
+                    except (OSError, ValueError, TypeError, KeyError, ContractError, UnicodeDecodeError):
+                        try:
+                            self._write_frame(connection, {'schema_version': 1, 'error': 'request rejected'}, 1024)
+                        except OSError:
+                            pass
+                        break
+
+    def request(self, attempt_id, capability, request, *, operation='infer', timeout=None):
+        """Controller-side test/diagnostic client; workers use InferenceClient."""
+        return InferenceClient(self.socket_path, attempt_id, capability, timeout=timeout or self.request_timeout).request(
+            request, operation=operation)
+
+
+class InferenceClient:
+    """Worker-side client configured only with its attempt socket and capability."""
+    def __init__(self, socket_path, attempt_id, capability, *, timeout=310):
+        self.socket_path = Path(socket_path)
+        self.attempt_id = attempt_id
+        self.capability = capability
+        self.timeout = timeout
+
+    def infer(self, request):
+        return self.request(request, operation='infer')
+
+    def request(self, request, *, operation='infer'):
+        if (not isinstance(self.attempt_id, str) or not self.attempt_id
+                or not isinstance(self.capability, str) or not self.capability
+                or not isinstance(request, dict)):
+            raise ContractError('invalid inference channel request')
+        envelope = {'schema_version': 1, 'operation': operation, 'attempt_id': self.attempt_id,
+                    'capability': self.capability, 'request': request}
+        try:
+            data = json.dumps(envelope, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        except (TypeError, ValueError) as exc:
+            raise ContractError('invalid inference channel request') from exc
+        if not data or len(data) > InferenceChannel.MAX_REQUEST_BYTES:
+            raise ContractError('inference channel request exceeded limit')
+        deadline = time.monotonic() + self.timeout
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(max(0.1, deadline - time.monotonic()))
+                connection.connect(str(self.socket_path))
+                connection.sendall(struct.pack('!I', len(data)) + data)
+                size = struct.unpack('!I', InferenceChannel._read_exact(connection, 4, deadline))[0]
+                if size < 1 or size > InferenceChannel.MAX_RESPONSE_BYTES:
+                    raise ContractError('inference channel response exceeded limit')
+                response = json.loads(InferenceChannel._read_exact(connection, size, deadline).decode('utf-8'))
+        except (OSError, ValueError, TypeError, UnicodeDecodeError) as exc:
+            raise ContractError('inference channel transport failed') from exc
+        if (not isinstance(response, dict) or response.get('schema_version') != 1
+                or set(response) not in ({'schema_version', 'result'}, {'schema_version', 'error'})):
+            raise ContractError('invalid inference channel response')
+        if 'error' in response:
+            raise ContractError('inference channel request rejected')
+        try:
+            return validate_result(ProviderRequest(**request), response['result'])
+        except (TypeError, ValueError) as exc:
+            raise ContractError('invalid inference channel result') from exc

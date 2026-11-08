@@ -1,0 +1,136 @@
+"""Host-enforced worker isolation policies. Unsupported hosts fail closed."""
+import os
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+
+
+class IsolationUnavailable(RuntimeError):
+    pass
+
+
+def _private_directory(path, *, create=False):
+    path = Path(path)
+    if not path.is_absolute():
+        raise ValueError('isolation paths must be absolute')
+    if create:
+        if path.parent.is_symlink() or path.parent.resolve(strict=True) != path.parent:
+            raise ValueError('isolation parent is not canonical')
+        path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir() or path.resolve(strict=True) != path:
+        raise ValueError('isolation path is not a real directory')
+    info = path.stat()
+    if info.st_uid != os.getuid() or info.st_mode & 0o077:
+        raise ValueError('isolation path must be private to the current user')
+    return str(path)
+
+
+def build_policy(workspace, private_git, channels):
+    """Build a deny-by-default policy around three attempt-owned directories."""
+    workspace = _private_directory(workspace)
+    private_git = _private_directory(private_git, create=True)
+    channels = _private_directory(channels, create=True)
+    roots = (workspace, private_git, channels)
+    if any(os.path.commonpath((left, right)) in (left, right)
+           for index, left in enumerate(roots) for right in roots[index + 1:]):
+        raise ValueError('isolation roots must not contain one another')
+    common = {'workspace': workspace, 'private_git': private_git,
+              'channels': channels, 'channel_names': ('result', 'heartbeat', 'scope-request', 'inference')}
+    if os.uname().sysname == 'Darwin':
+        roots = (workspace, private_git, channels)
+        if any(any(ord(char) < 32 for char in path) for path in roots):
+            raise ValueError('control character in isolation path')
+        allow_reads = ' '.join('(subpath ' + json.dumps(p) + ')' for p in
+                               ('/System', '/usr', '/bin', '/sbin', '/Library/Apple/System/Library'))
+        allow_work = ' '.join('(subpath ' + json.dumps(p) + ')' for p in roots)
+        inference_socket = os.path.join(channels, 'inference.sock')
+        text = ('(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec)\n(allow sysctl-read)\n'
+                '(allow file-read* ' + allow_reads + ')\n'
+                '(allow file-write* ' + allow_work + ')\n'
+                '(allow file-read* ' + allow_work + ')\n'
+                '(allow network-outbound (remote unix-socket (path-literal ' +
+                json.dumps(inference_socket) + ')))\n')
+        return {**common, 'backend': 'macos', 'text': text, 'command': shutil.which('sandbox-exec')}
+    if os.uname().sysname == 'Linux':
+        return {**common, 'backend': 'linux', 'text': 'bubblewrap deny-by-default; network and host home unshared',
+                'command': shutil.which('bwrap')}
+    return {**common, 'backend': 'unsupported', 'text': 'unsupported host', 'command': None}
+
+
+def _wrapped_command(argv, policy):
+    if not isinstance(argv, (list, tuple)) or not argv or any(not isinstance(a, str) or not a for a in argv):
+        raise ValueError('worker command must be a non-empty argv array')
+    executable = shutil.which(argv[0]) if not os.path.isabs(argv[0]) else argv[0]
+    if not executable or not os.path.isfile(executable) or not os.access(executable, os.X_OK):
+        raise IsolationUnavailable('worker executable unavailable')
+    if policy['backend'] == 'macos':
+        if not policy['command']:
+            raise IsolationUnavailable('sandbox-exec unavailable')
+        return [policy['command'], '-p', policy['text'], '--', executable, *argv[1:]]
+    if policy['backend'] == 'linux':
+        bwrap = policy['command']
+        if not bwrap:
+            raise IsolationUnavailable('bubblewrap unavailable')
+        command = [bwrap, '--die-with-parent', '--new-session', '--unshare-all',
+                   '--clearenv', '--setenv', 'PATH', '/usr/bin:/bin', '--setenv', 'HOME', '/nonexistent',
+                   '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp']
+        for root in ('/usr', '/bin', '/sbin', '/lib', '/lib64'):
+            if os.path.exists(root):
+                command.extend(('--ro-bind', root, root))
+        for key in ('workspace', 'private_git', 'channels'):
+            root = policy[key]
+            command.extend(('--bind', root, root))
+        command.extend(('--chdir', policy['workspace'], '--', executable, *argv[1:]))
+        return command
+    raise IsolationUnavailable('host isolation backend unsupported')
+
+
+def probe_capabilities(policy):
+    """Apply and test both an allowed write and a denied read on this host."""
+    if not policy.get('command'):
+        return {'available': False, 'backend': policy['backend'], 'reason': 'isolation executable unavailable'}
+    allowed = Path(policy['workspace']) / '.isolation-probe'
+    probe_root = None
+    try:
+        probe_root = Path(tempfile.mkdtemp(prefix='.isolation-probe-',
+                                           dir=str(Path(policy['workspace']).parent)))
+        denied_path = probe_root / 'denied'
+        denied_path.write_text('denied', encoding='utf-8')
+        denied_path.chmod(0o644)
+        command = ['/bin/sh', '-c', 'test ! -r "$1" && printf ok > "$2"',
+                   'probe', str(denied_path), str(allowed)]
+        wrapped = _wrapped_command(command, policy)
+        completed = subprocess.run(wrapped, cwd=policy['workspace'], stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   timeout=3, check=False, env={'PATH': '/usr/bin:/bin'})
+        if completed.returncode != 0 or not allowed.is_file() or allowed.read_text() != 'ok':
+            detail = completed.stderr.decode('utf-8', 'replace')[:160].strip()
+            return {'available': False, 'backend': policy['backend'],
+                    'reason': detail or 'policy probe failed (exit {}, allowed_write={})'.format(
+                        completed.returncode, allowed.is_file())}
+        allowed.unlink()
+        return {'available': True, 'backend': policy['backend'], 'reason': None}
+    except (OSError, subprocess.SubprocessError, IsolationUnavailable, ValueError) as exc:
+        return {'available': False, 'backend': policy['backend'], 'reason': str(exc)[:200]}
+    finally:
+        try:
+            allowed.unlink()
+        except OSError:
+            pass
+        if probe_root is not None:
+            shutil.rmtree(probe_root, ignore_errors=True)
+
+
+def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_data=None):
+    capability = capability or probe_capabilities(policy)
+    if not capability.get('available'):
+        raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
+    try:
+        return subprocess.run(_wrapped_command(argv, policy), cwd=cwd or policy['workspace'],
+                              input=input_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=timeout, check=False, close_fds=True,
+                              env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'})
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise IsolationUnavailable(str(exc)[:200]) from exc

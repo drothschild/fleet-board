@@ -166,10 +166,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Prepare specs:** `docs/implementation-plans/2026-09-28-fleet-board/specs/{implementor,reviewer,fixer,reporting,manager}.md` (existing spec sources verified at the baseline).
 
 - [ ] Write fake CLI/provider cases for explicit role/model selection, bounded stdout/stderr, missing executable, cancellation, unknown usage, retry accounting, exact input SHA, no board/merge credentials, and expansion requests. Add host-enforced negative access probes for controller DB/socket, board files, shared Git metadata, host credential stores/helpers/keychain/SSH agent, arbitrary network/publication, symlink escapes and forged human-control requests. Test that missing isolation support refuses production launch.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` to failure; commit tests.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` to failure; commit tests.
 - [ ] Implement versioned provider adapter contracts, native macOS sandbox policy and Linux bubblewrap isolation with required capability probes, private Git metadata, and a minimal inference-only credential broker. Keep the trusted runner outside the worker boundary and pass only the attempt-scoped result/heartbeat/scope-request channel. Test real access denial on supported hosts separately from injected adapter tests. Unsupported sandbox hosts fail closed; no prompt-only or environment-only fallback. Pin/review external sandbox requirements at execution time using their official documentation linked in the design. Capture provider-level transport/report retries visibly under one attempt, with their existing bounds; never multiply them through an unclassified supervisor retry.
-- [ ] Keep production implementor/fixer activation blocked until re-authored role contracts pass Phase 7. A fake-provider success is not production qualification.
+- [x] Keep production implementor/fixer activation blocked until re-authored role contracts pass Phase 7. A fake-provider success is not production qualification.
 - [ ] Run the focused suite and clean-room check; commit/push.
+
+Execution note (2026-11-08): Provider contract, attempt-bound inference socket, bootstrap, and fail-closed macOS/Linux policy code are implemented. The host is macOS 27.2, but `sandbox-exec` aborts or returns `Operation not permitted` even under the approved host probe, so supported-host denial behavior remains unqualified. The production supervisor remains disabled, and the implementation checkbox stays open until real host isolation probes and execution-time sandbox requirement review are complete. The focused runner suite passes only with host process metadata access; see the implementation report for commands and results.
 
 **Verifies:** S2-S5, S8, S11 transport subset. No paid calls occur in this task.
 

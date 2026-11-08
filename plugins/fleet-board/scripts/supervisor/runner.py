@@ -17,6 +17,31 @@ import time
 
 from .processes import identity_for, inspect_identity
 from .workers import ingest_artifacts
+from .isolation import IsolationUnavailable, probe_capabilities, run_isolated
+from .inference_broker import ContractError
+
+
+def prepare_worker_bootstrap(prepared_attempt, channel, request):
+    """Pass one attempt binding and its inference capability to a worker over stdin."""
+    if not isinstance(prepared_attempt, dict) or not isinstance(request, dict):
+        raise ContractError('invalid worker bootstrap')
+    try:
+        authorized = channel.broker.validate_request(request)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ContractError('worker request is not broker-authorized') from exc
+    keys = ('attempt_id', 'generation', 'input_sha', 'role', 'provider', 'model')
+    if any(prepared_attempt.get(key) != getattr(authorized, key) for key in keys):
+        raise ContractError('worker bootstrap does not match prepared attempt')
+    if prepared_attempt.get('stage') != authorized.stage:
+        raise ContractError('worker bootstrap stage does not match prepared attempt')
+    capability = channel.capability_for(authorized.attempt_id)
+    return {
+        'schema_version': 1,
+        'attempt': {key: prepared_attempt.get(key) for key in keys + ('stage',)},
+        'provider_request': request,
+        'inference': {'schema_version': 1, 'socket_path': str(channel.socket_path),
+                      'attempt_id': authorized.attempt_id, 'capability': capability},
+    }
 
 
 def _sync_directory(path):
@@ -98,11 +123,34 @@ def read_result(attempt):
 
 
 class Runner:
-    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None, fixture_publication_barrier=None):
+    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None, fixture_publication_barrier=None,
+                 production_enabled=False):
         self.directory = Path(directory)
         self.fixture_command = fixture_command
         self.fixture_finish_barrier = fixture_finish_barrier
         self.fixture_publication_barrier = fixture_publication_barrier
+        self.production_enabled = production_enabled is True
+
+    def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None):
+        """Run only an explicit production request behind verified host isolation."""
+        capability = probe_capabilities(policy)
+        if not capability.get('available'):
+            raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
+        if not self.production_enabled:
+            raise IsolationUnavailable('production supervisor admission is disabled')
+        required = {'attempt_id', 'generation', 'input_sha', 'role', 'provider', 'model'}
+        if not isinstance(prepared_attempt, dict) or not required <= set(prepared_attempt):
+            raise ValueError('incomplete production attempt binding')
+        if (type(prepared_attempt['generation']) is not int
+                or not re.fullmatch(r'[0-9a-f]{64}', str(prepared_attempt['input_sha']))
+                or any(not isinstance(prepared_attempt[key], str) or not prepared_attempt[key]
+                       for key in ('attempt_id', 'role', 'provider', 'model'))):
+            raise ValueError('invalid production attempt binding')
+        if prepared_attempt['role'] in ('implementor', 'fixer'):
+            raise IsolationUnavailable('production role contract is gated on Phase 7')
+        bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
+        payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        return run_isolated(command, policy, capability=capability, input_data=payload)
 
     def launch(self, prepared_attempt):
         if self.fixture_command is None:
