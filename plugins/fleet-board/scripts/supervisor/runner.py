@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
+import time
 
 from .processes import identity_for, inspect_identity
 from .workers import ingest_artifacts
@@ -20,7 +22,8 @@ def _sync_directory(path):
 
 def _publish(path, value):
     temporary = path.with_name(path.name + '.tmp')
-    with open(temporary, 'x', encoding='utf-8') as stream:
+    fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
         json.dump(value, stream, sort_keys=True)
         stream.flush()
         os.fsync(stream.fileno())
@@ -76,8 +79,31 @@ def _run(config):
     _publish(attempt / 'prepared.json', config['prepared'])
     _publish(attempt / 'receipt.json', {'state': 'registered', 'identity': identity.__dict__})
     _publish(attempt / 'execution.json', {'state': 'execution_started'})
-    completed = subprocess.run(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, close_fds=True, check=False)
+    worker = subprocess.Popen(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, close_fds=True)
+    def drain(pipe, name):
+        fd = os.open(str(attempt / name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'wb') as output, pipe:
+            remaining = 65536
+            while True:
+                chunk = pipe.read(8192)
+                if not chunk:
+                    break
+                if remaining:
+                    output.write(chunk[:remaining])
+                    remaining -= min(remaining, len(chunk))
+            output.flush()
+            os.fsync(output.fileno())
+    readers = [threading.Thread(target=drain, args=(pipe, name), daemon=True)
+               for pipe, name in ((worker.stdout, 'stdout.log'), (worker.stderr, 'stderr.log'))]
+    for reader in readers:
+        reader.start()
+    while worker.poll() is None or any(reader.is_alive() for reader in readers):
+        _publish(attempt / 'heartbeat.json', {'at': time.time()})
+        time.sleep(.2)
+    for reader in readers:
+        reader.join()
+    completed = worker
     prepared = config['prepared']
     if 'scratch' not in prepared:
         return
