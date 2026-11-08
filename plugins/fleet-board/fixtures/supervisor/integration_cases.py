@@ -49,6 +49,8 @@ class Adapter:
             self.verifications.append(intent['card'])
             result = {'operation_key': key, 'commit': 'b' * 40,
                       'ok': intent.get('result_ok', True), 'results': []}
+            if intent.get('omit_ok') is True:
+                result.pop('ok')
         self.external[key] = result
         return result
 
@@ -85,7 +87,7 @@ class IntegrationContract(unittest.TestCase):
                    'input_version': 'v1', 'generation': 1, 'provider': 'fixture',
                    'model': 'fixture', 'nonce': 'attempt-' + card, 'session_id': 's'}
             self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
-                                       {'global_cap': 4, 'provider_cap': 4,
+                                       {'global_cap': 20, 'provider_cap': 20,
                                         'paths': ['src/' + card]})
         effect = Effect(self.store, self.adapter, self.authority.validate)
         intent = {'kind': kind, **fields}
@@ -134,18 +136,21 @@ class IntegrationContract(unittest.TestCase):
                                     close_admissions=lambda reason: self.closed.append(reason))
         self.addCleanup(recovered.close)
         same = self.make_effect('17', 'merge-17', **self.eligible_merge())
-        self.assertEqual(recovered.recover(same, mode='stopped')['status'], 'observed')
+        self.assertEqual(recovered.recover(same, mode='stopped').result(timeout=2)['status'], 'observed')
         self.assertEqual(len(self.adapter.merges), 1)
         self.assertEqual(self.store.integration_lane(), None)
 
     def test_main_verification_failure_closes_new_admissions(self):
-        for result in (False, None, 'true'):
+        for result in (False, None, 'true', 'missing'):
             with self.subTest(result=result):
+                if self.store.snapshot()['domain']['desired_mode'] != 'running':
+                    self.set_mode('start')
                 key = 'verify-' + str(result)
-                effect = self.make_effect('17', key, 'main_verification',
-                                          pr='91', result_ok=result)
-                self.lane.submit(effect, mode='paused').result(timeout=2)
-        self.assertEqual(len(self.closed), 3)
+                fields = {'pr': '91', 'omit_ok': True} if result == 'missing' else {'pr': '91', 'result_ok': result}
+                effect = self.make_effect('17', key, 'main_verification', **fields)
+                self.lane.submit(effect, mode='running').result(timeout=2)
+                self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
+        self.assertEqual(len(self.closed), 4)
 
     def test_paused_or_stopped_mode_allows_verification_but_forbids_new_merge(self):
         for mode in ('paused', 'stopped'):
@@ -173,9 +178,11 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(self.adapter.merges, [])
 
     def test_cleanup_waits_for_active_quarantined_or_human_qa_work(self):
-        active = {'attempts': [{'state': 'running', 'data': '{}'}], 'effects': [],
+        active = {'jobs': [{'id': 'active-job', 'card': '17'}],
+                  'attempts': [{'job_id': 'active-job', 'state': 'running', 'data': '{}'}], 'effects': [],
                   'card_lifecycle': {'17': 'active'}}
-        quarantined = {'attempts': [{'state': 'quarantined', 'data': '{}'}], 'effects': [],
+        quarantined = {'jobs': [{'id': 'quarantine-job', 'card': '17'}],
+                       'attempts': [{'job_id': 'quarantine-job', 'state': 'quarantined', 'data': '{}'}], 'effects': [],
                        'card_lifecycle': {'17': 'active'}}
         human_qa = {'attempts': [], 'effects': [], 'card_lifecycle': {'17': 'human_qa'}}
         self.assertFalse(IntegrationLane.cleanup_allowed(active, '17'))
