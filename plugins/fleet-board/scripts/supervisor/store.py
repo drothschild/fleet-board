@@ -291,7 +291,7 @@ class Store:
     def update_attempt(self, attempt_id, details, expected_revision):
         allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason'}
         states = {'prepared', 'launching', 'running', 'result_ready', 'reconciled', 'cancel_requested', 'interrupted', 'failed', 'quarantined'}
-        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states):
+        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states - {'cancel_requested'}):
             raise ValueError('invalid attempt details')
         canonical_json(details)
         c = self.__connection
