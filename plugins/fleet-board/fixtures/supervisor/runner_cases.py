@@ -165,6 +165,10 @@ def test_cancel_preserves_uncertainty():
         while not receipt.exists() and time.monotonic() < deadline:
             time.sleep(.05)
         identity = ProcessIdentity(**json.loads(receipt.read_text())['identity'])
+        foreign = ProcessIdentity(identity.boot_id, identity.pid, identity.started_at, 'foreign')
+        assert runner.inspect(foreign) == 'unknown'
+        assert runner.cancel(foreign, time.monotonic() + 0.1) == 'unknown'
+        assert process.poll() is None
         assert runner.cancel(identity, time.monotonic() + 2) == 'unknown'
         process.wait(timeout=10)
         assert runner.inspect(identity) == 'unknown'
