@@ -53,3 +53,34 @@ def test_detached_unique_invocation():
 
 
 test_detached_unique_invocation()
+
+
+def test_artifact_ingestion():
+    import hashlib
+    from supervisor.workers import ingest_artifacts
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('report content')
+        target = root / 'durable'
+        hashes = ingest_artifacts(scratch, target, ['report'])
+        assert hashes == {'report': hashlib.sha256(b'report content').hexdigest()}
+        (scratch / 'report').unlink()
+        assert (target / 'report').read_text() == 'report content'
+        (scratch / 'link').symlink_to(target / 'report')
+        try:
+            ingest_artifacts(scratch, root / 'other', ['link'])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('symlink accepted')
+        try:
+            ingest_artifacts(scratch, root / 'other2', ['../durable/report'])
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('traversal accepted')
+
+
+test_artifact_ingestion()
