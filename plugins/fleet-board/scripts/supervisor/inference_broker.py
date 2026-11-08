@@ -32,19 +32,23 @@ class ProviderRequest:
     input_text: str
     input_sha: str
     schema_version: int = 1
+    request_id: str = ''
 
     @classmethod
-    def create(cls, *, attempt_id, generation, role, stage, provider, model, input_text):
+    def create(cls, *, attempt_id, generation, role, stage, provider, model, input_text,
+               request_id=None):
         if not isinstance(input_text, str):
             raise ContractError('provider input must be text')
         return cls(attempt_id, generation, role, stage, provider, model, input_text,
-                   hashlib.sha256(input_text.encode('utf-8')).hexdigest())
+                   hashlib.sha256(input_text.encode('utf-8')).hexdigest(), 1,
+                   request_id or secrets.token_urlsafe(24))
 
     def to_dict(self):
         return {'schema_version': self.schema_version, 'attempt_id': self.attempt_id,
                 'generation': self.generation, 'role': self.role, 'stage': self.stage,
                 'provider': self.provider, 'model': self.model,
-                'input_text': self.input_text, 'input_sha': self.input_sha}
+                'input_text': self.input_text, 'input_sha': self.input_sha,
+                'request_id': self.request_id}
 
 
 def _valid_request(request):
@@ -53,6 +57,8 @@ def _valid_request(request):
     if (not request.attempt_id or not isinstance(request.attempt_id, str)
             or type(request.generation) is not int or request.generation < 0
             or not request.role or not request.provider or not request.model
+            or not isinstance(request.request_id, str) or not request.request_id
+            or len(request.request_id) > 128
             or request.role not in ('implementor', 'reviewer', 'fixer', 'stage-reviewer')
             or not isinstance(request.input_text, str)
             or len(request.input_text.encode('utf-8')) > 4 * 1048576):
@@ -174,13 +180,20 @@ def run_provider(argv, request, *, timeout=300, stdout_limit=1048576, stderr_lim
 
 class InferenceBroker:
     """Attempt-scoped broker with explicit provider/model allowlists."""
-    def __init__(self, providers, *, attempts=None, trusted_environment=None):
+    def __init__(self, providers, *, attempts=None, trusted_environment=None,
+                 max_invocations_per_attempt=8):
         self.providers = providers
         self.attempts = attempts or {}
         self.trusted_environment = trusted_environment or {}
+        if type(max_invocations_per_attempt) is not int or max_invocations_per_attempt < 1:
+            raise ValueError('invalid per-attempt provider invocation limit')
+        self.max_invocations_per_attempt = max_invocations_per_attempt
+        self._accounting = {}
+        self._calls = {}
+        self._call_lock = threading.Lock()
 
     def validate_request(self, raw):
-        required = {'schema_version', 'attempt_id', 'generation', 'role', 'stage', 'provider', 'model', 'input_text', 'input_sha'}
+        required = {'schema_version', 'attempt_id', 'generation', 'role', 'stage', 'provider', 'model', 'input_text', 'input_sha', 'request_id'}
         if not isinstance(raw, dict) or set(raw) != required:
             raise ContractError('invalid broker request fields')
         if any(key in raw for key in ('url', 'endpoint', 'headers', 'environment', 'credential')):
@@ -207,11 +220,47 @@ class InferenceBroker:
 
     def infer(self, raw, **bounds):
         request = self.validate_request(raw)
+        key = (request.attempt_id, request.request_id)
+        body_sha = hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+        with self._call_lock:
+            previous = self._calls.get(key)
+            if previous is not None:
+                if previous['body_sha'] != body_sha:
+                    raise ContractError('request id reused with a different body')
+                if previous['state'] == 'complete':
+                    return dict(previous['result'])
+                if previous['state'] == 'failed':
+                    raise ContractError(previous['error'])
+                raise ContractError('request id is already in flight')
+            history = self._accounting.setdefault(request.attempt_id, [])
+            if len(history) >= self.max_invocations_per_attempt:
+                raise ContractError('attempt provider invocation limit exceeded')
+            record = {'request_id': request.request_id, 'provider': request.provider,
+                      'model': request.model, 'body_sha': body_sha,
+                      'outcome': 'in_flight', 'usage': None}
+            history.append(record)
+            self._calls[key] = {'body_sha': body_sha, 'state': 'in_flight'}
         credential_name = self.providers[request.provider].get('credential_env')
         provider_env = ({credential_name: self.trusted_environment[credential_name]}
                         if credential_name is not None else {})
-        return run_provider(self.providers[request.provider]['command'], request,
-                            trusted_environment=provider_env, **bounds)
+        try:
+            result = run_provider(self.providers[request.provider]['command'], request,
+                                  trusted_environment=provider_env, **bounds)
+        except Exception as exc:
+            with self._call_lock:
+                record['outcome'] = 'error'
+                record['error'] = str(exc)[:200]
+                self._calls[key] = {'body_sha': body_sha, 'state': 'failed', 'error': record['error']}
+            raise
+        with self._call_lock:
+            record['outcome'] = 'success'
+            record['usage'] = result['usage']
+            self._calls[key] = {'body_sha': body_sha, 'state': 'complete', 'result': dict(result)}
+        return result
+
+    def accounting_for(self, attempt_id):
+        with self._call_lock:
+            return [dict(item) for item in self._accounting.get(attempt_id, [])]
 
 
 class InferenceChannel:
