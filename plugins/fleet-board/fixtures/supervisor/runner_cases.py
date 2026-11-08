@@ -337,3 +337,18 @@ def test_structured_progress_is_separate():
 
 
 test_structured_progress_is_separate()
+
+
+def test_corrupt_published_result_is_ignored():
+    from supervisor.runner import read_result
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        attempt = root / 'attempt'
+        attempt.mkdir()
+        (attempt / 'result.json').write_text('{"schema_version":1}')
+        assert read_result(attempt) is None
+        (attempt / 'result.json').write_text('{')
+        assert read_result(attempt) is None
+
+
+test_corrupt_published_result_is_ignored()
