@@ -70,6 +70,8 @@ def validate_result(request, result):
         raise ContractError('invalid provider result fields')
     if any(result[key] != getattr(request, key) for key in ('attempt_id', 'generation', 'input_sha', 'provider', 'model')):
         raise ContractError('provider result does not match attempt input')
+    if type(result['generation']) is not int:
+        raise ContractError('provider result generation must be an integer')
     if type(result['schema_version']) is not int or result['schema_version'] != 1:
         raise ContractError('unsupported provider result schema')
     if not isinstance(result['text'], str) or not result['text'] or len(result['text'].encode('utf-8')) > 1048576:
