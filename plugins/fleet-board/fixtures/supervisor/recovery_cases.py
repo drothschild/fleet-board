@@ -46,5 +46,24 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
 
 
+    def test_matching_live_runner_is_adopted_and_unknown_running_runner_is_quarantined(self):
+        class Inspector:
+            def __init__(self, status):
+                self.status = status
+            def inspect(self, attempt):
+                return {'status': self.status}
+        self.store.update_attempt('n', {'state': 'running', 'heartbeat': 9, 'progress': 9, 'deadline': 100},
+                                  self.store.snapshot()['domain']['revision'])
+        before = self.store.snapshot()
+        Recovery(self.store, Inspector('alive')).reconcile(now=10)
+        self.assertEqual(self.store.snapshot(), before)
+        Recovery(self.store, Inspector('unknown')).reconcile(now=10)
+        after = self.store.snapshot()
+        self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(len(after['claims']), 1)
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+
+
+
 if __name__ == '__main__':
     unittest.main()
