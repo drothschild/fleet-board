@@ -63,6 +63,16 @@ def _filesystem(path):
     return 'unknown'
 
 
+def _scope_key(path):
+    """Compare ASCII case-insensitively; uncertain Unicode reserves the repo.
+
+    Filesystems differ in Unicode equivalence. Treating non-ASCII paths as
+    repository-wide is conservative across hosts, including for paths that do
+    not exist yet. Persisted claims retain the original path for publication.
+    """
+    return path.lower() if path.isascii() else ''
+
+
 def _private_directory(path):
     path = Path(path).absolute()
     # Refuse symlinks at every existing component, including ancestors.
@@ -223,7 +233,8 @@ class Store:
                     raise ValueError('claim conflict')
                 for a in paths:
                     for b in json.loads(existing['paths']):
-                        if not a or not b or a == b or a.startswith(b + '/') or b.startswith(a + '/'):
+                        a_key, b_key = _scope_key(a), _scope_key(b)
+                        if not a_key or not b_key or a_key == b_key or a_key.startswith(b_key + '/') or b_key.startswith(a_key + '/'):
                             raise ValueError('scope conflict')
             logical = canonical_json([job[k] for k in ('card', 'action', 'role', 'stage', 'round', 'input_sha', 'input_version')])
             c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?)', (job['id'], logical, job['card'], job['generation'], job['input_sha'], job['role'], job['stage'], 'active', 0, canonical_json(job)))
