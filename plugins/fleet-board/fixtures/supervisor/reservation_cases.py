@@ -27,6 +27,14 @@ class Reservations(unittest.TestCase):
         revision = self.store.snapshot()["domain"]["revision"]
         return self.store.reserve_scope(card, paths, revision, enforceable=enforceable)
 
+    def test_attempt_admission_persists_its_scope_before_execution(self):
+        job = {"id": "job12", "card": "12", "action": "start", "role": "implementor", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "attempt12", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src/a"]})
+        self.assertEqual(next(x for x in self.store.snapshot()["reservations"] if x["card"] == "12")["paths"], ["src/a"])
+
     def test_scope_union_persists_across_review_qa_retry_pause_and_restart(self):
         self.reserve("12", ["src/core"])
         self.reserve("12", ["src/core/fix.py", "docs/qa.md"])
