@@ -1516,6 +1516,18 @@ class ProviderCases(unittest.TestCase):
                 _create_probe_symlink(path, self.root / "protected", cleanup_paths)
         self.assertEqual(cleanup_paths, [path])
 
+    def test_probe_listener_ownership_is_recorded_before_listen(self):
+        from supervisor.isolation import _bind_probe_listener
+        class Listener:
+            def bind(self, _path):
+                pass
+            def listen(self, _backlog):
+                raise OSError("injected listen failure")
+        owned = []
+        with self.assertRaises(OSError):
+            _bind_probe_listener(Listener(), self.root / "probe.sock", owned)
+        self.assertEqual(owned, [True])
+
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
         class Store:
             def expand_scope(self, card, paths, revision):
