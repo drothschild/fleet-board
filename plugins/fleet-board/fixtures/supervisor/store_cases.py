@@ -422,6 +422,38 @@ class StoreContract(unittest.TestCase):
         finally:
             connection.close()
 
+    def test_missing_schema_constraints_fail_closed_without_writes(self):
+        import sqlite3
+        definitions = [
+            "id TEXT, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL",
+            "id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL",
+            "id TEXT PRIMARY KEY, job_id TEXT NOT NULL, nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL",
+            "id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT, state TEXT NOT NULL, data TEXT NOT NULL",
+        ]
+        for index, definition in enumerate(definitions):
+            with self.subTest(constraint=index):
+                domain = dict(self.domain, board_identity="tampered-" + str(index))
+                store = Store.open(domain, filesystem_inspector=lambda path: "local")
+                database = store.directory / "store.sqlite3"
+                before = store.snapshot()
+                store.close()
+                connection = sqlite3.connect(str(database))
+                connection.execute("DROP TABLE attempts")
+                connection.execute("CREATE TABLE attempts (" + definition + ")")
+                connection.commit()
+                original = connection.execute("SELECT * FROM domain").fetchall()
+                connection.close()
+                with self.assertRaises(ValueError):
+                    opened = Store.open(domain, filesystem_inspector=lambda path: "local")
+                    opened.close()
+                connection = sqlite3.connect(str(database))
+                try:
+                    self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 1)
+                    self.assertEqual(connection.execute("SELECT * FROM domain").fetchall(), original)
+                    self.assertEqual(connection.execute("SELECT count(*) FROM events").fetchone()[0], len(before["events"]))
+                finally:
+                    connection.close()
+
     def test_corrupt_schema_fails_closed(self):
         import sqlite3
         database = self.store.directory / "store.sqlite3"
