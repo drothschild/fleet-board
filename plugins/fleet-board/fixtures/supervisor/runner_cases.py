@@ -124,7 +124,7 @@ def test_published_result_survives_scratch_deletion():
         scratch.mkdir()
         (scratch / 'report').write_text('{"status":"clean"}')
         attempt = {'domain_id': 'domain', 'job_id': 'job', 'attempt_id': 'attempt',
-                   'nonce': 'nonce', 'generation': 1, 'input_sha': 'abc',
+                   'nonce': 'attempt', 'session_id': 's', 'generation': 1, 'input_sha': 'abc',
                    'role': 'reviewer', 'stage': None, 'scratch': str(scratch)}
         runner = Runner(root, fixture_command=[sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(scratch / 'ready.json')])
         process = runner.launch(attempt)
@@ -197,7 +197,7 @@ def test_result_precedes_exit_without_freeing_slot():
         marker = scratch / 'ready.json'
         command = [sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(marker)]
         attempt = {'domain_id': 'd', 'job_id': 'j', 'attempt_id': 'n', 'nonce': 'n',
-                   'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': None, 'scratch': str(scratch)}
+                   'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': None, 'session_id': 's', 'scratch': str(scratch)}
         barrier = root / 'release'
         runner = Runner(root, fixture_command=command, fixture_finish_barrier=barrier)
         process = runner.launch(attempt)
@@ -364,7 +364,7 @@ def test_resume_publication_after_ingest_without_worker():
         marker = scratch / 'ready.json'
         command = [sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(marker)]
         barrier = root / 'publish'
-        attempt = {'domain_id':'d','job_id':'j','attempt_id':'n','nonce':'n','generation':1,'input_sha':'abc','role':'reviewer','stage':None,'scratch':str(scratch)}
+        attempt = {'domain_id':'d','job_id':'j','attempt_id':'n','nonce':'n','generation':1,'input_sha':'abc','role':'reviewer','stage':None,'session_id':'s','scratch':str(scratch)}
         runner = Runner(root, fixture_command=command, fixture_publication_barrier=barrier)
         process = runner.launch(attempt)
         durable = root / 'artifacts' / 'n' / 'report'
@@ -377,6 +377,17 @@ def test_resume_publication_after_ingest_without_worker():
         (scratch / 'report').unlink()
         (scratch / 'ready.json').unlink()
         assert read_result(root / 'attempts' / 'n') is None
+        (root / 'attempts' / 'n' / '.result.json-stale').write_text('{')
+        exit_path = root / 'attempts' / 'n' / 'exit.json'
+        saved_exit = exit_path.read_text()
+        exit_path.unlink()
+        try:
+            runner.resume_publication('n')
+        except (OSError, ValueError):
+            pass
+        else:
+            raise AssertionError('missing exit receipt accepted')
+        exit_path.write_text(saved_exit)
         runner.resume_publication('n')
         result = read_result(root / 'attempts' / 'n')
         assert result and result['exit_code'] == 0

@@ -111,6 +111,18 @@ class Runner:
         nonce = prepared_attempt.get('nonce')
         if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', v) for v in (attempt_id, nonce)):
             raise ValueError('invalid attempt identity')
+        binding_fields = {'domain_id', 'job_id', 'generation', 'input_sha', 'role', 'stage', 'session_id'}
+        if binding_fields & set(prepared_attempt):
+            required = binding_fields | {'attempt_id', 'nonce', 'scratch'}
+            if set(prepared_attempt) != required or attempt_id != nonce:
+                raise ValueError('incomplete attempt binding')
+            if any(not isinstance(prepared_attempt[k], str) or not prepared_attempt[k] for k in ('domain_id', 'job_id', 'input_sha', 'role', 'session_id', 'scratch')):
+                raise ValueError('invalid attempt binding')
+            if type(prepared_attempt['generation']) is not int or prepared_attempt['generation'] < 0 or (prepared_attempt['stage'] is not None and (not isinstance(prepared_attempt['stage'], str) or not prepared_attempt['stage'])):
+                raise ValueError('invalid attempt binding')
+            scratch = Path(prepared_attempt['scratch'])
+            if not scratch.is_absolute() or scratch.is_symlink() or scratch.resolve(strict=True) != scratch:
+                raise ValueError('unsafe scratch directory')
         config = json.dumps({'directory': str(self.directory), 'attempt_id': attempt_id,
                              'nonce': nonce, 'fixture_command': self.fixture_command, 'prepared': prepared_attempt,
                              'fixture_finish_barrier': str(self.fixture_finish_barrier) if self.fixture_finish_barrier else None,
