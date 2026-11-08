@@ -28,6 +28,12 @@ class NativeInspector:
                 expected = attempt['job_id'] if field == 'job_id' else attempt['id'] if field == 'attempt_id' else original[field]
                 if prepared.get(field) != expected:
                     return {'status': 'unknown'}
+            try:
+                _read_regular(path / 'failure.json', 4096)
+            except FileNotFoundError:
+                pass
+            else:
+                return {'status': 'unknown'}
             if any(field in prepared and prepared[field] != original.get(field) for field in ('started_at', 'deadline')):
                 return {'status': 'unknown'}
             result = read_result(path)

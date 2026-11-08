@@ -315,14 +315,26 @@ def _run(config):
         # Keep the leader unreaped while descendants can hold inherited pipes.
         # Its allocated PID prevents a reused process-group ID from being signaled.
         exited = os.waitid(os.P_PID, worker.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
-        if exited and not any(reader.is_alive() for reader in readers):
+        if exited and not any(reader.is_alive() for reader in readers) and last_signal != 'TERM':
             break
         try:
             control = json.loads(_read_regular(attempt / 'control.json', 4096))
             if (control in ({'nonce': config['nonce'], 'signal': 'TERM'}, {'nonce': config['nonce'], 'signal': 'KILL'})
                     and control['signal'] != last_signal):
-                os.killpg(worker.pid, signal.SIGTERM if control['signal'] == 'TERM' else signal.SIGKILL)
-                last_signal = control['signal']
+                try:
+                    os.killpg(worker.pid, signal.SIGTERM if control['signal'] == 'TERM' else signal.SIGKILL)
+                    last_signal = control['signal']
+                except ProcessLookupError:
+                    # The owned group is already empty; the unreaped leader
+                    # still prevents a new group from reusing this identity.
+                    last_signal = 'KILL'
+                except PermissionError:
+                    # macOS reports EPERM for a group containing only the
+                    # exited, unreaped leader. Preserve occupancy uncertainty
+                    # in failure.json before allowing the monitor to finish.
+                    if control['signal'] == 'KILL' and exited and not any(reader.is_alive() for reader in readers):
+                        _publish(attempt / 'failure.json', {'kind': 'process_group_signal_denied'})
+                        last_signal = 'KILL'
         except (OSError, ValueError, TypeError):
             pass
         scratch = prepared.get('scratch')
