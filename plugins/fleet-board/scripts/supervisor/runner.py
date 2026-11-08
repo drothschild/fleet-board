@@ -1,5 +1,6 @@
 """Detached, fixture-only attempt runner. Production execution is not enabled."""
 import json
+import errno
 import math
 import hashlib
 import fcntl
@@ -277,9 +278,16 @@ def _run(config):
     identity = identity_for(os.getpid(), config['nonce'])
     _publish(attempt / 'prepared.json', config['prepared'])
     _publish(attempt / 'receipt.json', {'state': 'registered', 'identity': identity.__dict__})
+    supported = False
+    if all(hasattr(os, name) for name in ('waitid', 'P_PID', 'WEXITED', 'WNOHANG', 'WNOWAIT')):
+        try:
+            os.waitid(os.P_PID, os.getpid(), os.WEXITED | os.WNOHANG | os.WNOWAIT)
+        except OSError as exc:
+            supported = exc.errno == errno.ECHILD
+    if not supported:
+        _publish(attempt / 'failure.json', {'kind': 'unsupported_child_observation'})
+        return
     _publish(attempt / 'execution.json', {'state': 'execution_started'})
-    if not all(hasattr(os, name) for name in ('waitid', 'P_PID', 'WEXITED', 'WNOHANG', 'WNOWAIT')):
-        raise OSError('non-reaping child observation unavailable')
     worker = subprocess.Popen(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
     def drain(pipe, name):
