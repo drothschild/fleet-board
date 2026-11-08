@@ -132,6 +132,22 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(len(self.adapter.merges), 2)
         self.assertEqual(self.store.integration_lane(), None)
 
+    def test_independent_store_handles_cannot_reenter_the_same_lane(self):
+        self.adapter.block = True
+        second_store = Store.open(self.domain, filesystem_inspector=lambda _: 'local')
+        self.addCleanup(second_store.close)
+        second_lane = IntegrationLane(second_store, owner_id='controller-1')
+        self.addCleanup(second_lane.close)
+        effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
+        first = self.lane.submit(effect, mode='running')
+        self.assertTrue(self.adapter.entered.wait(1))
+        duplicate = second_lane.submit(effect, mode='running')
+        self.adapter.release.set()
+        self.assertEqual(first.result(timeout=2)['status'], 'observed')
+        with self.assertRaisesRegex(ValueError, 'lane is already leased'):
+            duplicate.result(timeout=2)
+        self.assertEqual(len(self.adapter.merges), 1)
+
     def test_crash_after_merge_recovers_without_a_second_merge(self):
         effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
         effect.inject_failure('before_observation_commit')
