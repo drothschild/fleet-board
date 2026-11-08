@@ -494,6 +494,10 @@ class Store:
                         raise ValueError('unknown session')
                 data.update({'execution_released': True, 'stop_evidence': encoded})
                 c.execute('UPDATE attempts SET data=? WHERE id=?', (canonical_json(data), attempt_id))
+                if row['state'] == 'cancel_requested' and data.get('cancel_reason') != 'infrastructure':
+                    state = 'cancelled' if data.get('cancel_reason') == 'stop' else 'needs_attention'
+                    c.execute("UPDATE jobs SET state=? WHERE id=? AND generation=? AND state='active'",
+                              (state, row['job_id'], data['generation'] + 1))
                 self._event('execution_stopped', {'attempt_id': attempt_id})
             c.execute('COMMIT')
         except Exception:
@@ -523,6 +527,7 @@ class Store:
                     c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (row['job_id'],))
                 data.update({'state': 'quarantined', 'quarantine_reason': reason})
                 c.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?", (canonical_json(data), attempt_id))
+                c.execute("UPDATE jobs SET state='needs_attention' WHERE id=?", (row['job_id'],))
                 self._event('attempt_quarantined', {'attempt_id': attempt_id, 'reason': reason})
             c.execute('COMMIT')
         except Exception:
