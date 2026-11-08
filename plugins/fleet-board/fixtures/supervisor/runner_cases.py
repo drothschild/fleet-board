@@ -251,3 +251,38 @@ def test_controller_killed_before_acknowledgement():
 
 
 test_controller_killed_before_acknowledgement()
+
+
+def test_store_integration_retains_claim():
+    from supervisor.store import Store
+    from supervisor.runner import prepared_from_store, read_result
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        domain = {'common_dir': str(root), 'board_backend': 'local', 'board_identity': 'fixture', 'runtime_root': str(root / 'runtime')}
+        store = Store.open(domain, filesystem_inspector=lambda _: 'local')
+        try:
+            store.start_session({'id':'s','started_at':1,'deadline':100,'known_spend':0,'unknown_spend':False,'budget_stop':None})
+            job = {'id':'j','card':'1','action':'review','role':'reviewer','stage':'code','round':1,'input_sha':'abc','input_version':'v1','generation':1,'provider':'p','model':'m','nonce':'n','session_id':'s'}
+            store.prepare_attempt(job, store.snapshot()['domain']['revision'], {'global_cap':1,'provider_cap':1,'paths':['src']})
+            scratch = root / 'scratch'
+            scratch.mkdir()
+            (scratch / 'report').write_text('{"status":"clean"}')
+            command = [sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(scratch / 'ready.json')]
+            barrier = root / 'release'
+            runner = Runner(store.directory, fixture_command=command, fixture_finish_barrier=barrier)
+            process = runner.launch(prepared_from_store(store, 'n', scratch))
+            attempt = store.directory / 'attempts' / 'n'
+            deadline = time.monotonic() + 8
+            while read_result(attempt) is None and time.monotonic() < deadline:
+                time.sleep(.05)
+            envelope = read_result(attempt)
+            assert process.poll() is None
+            store.record_result(envelope)
+            assert len(store.snapshot()['claims']) == 1
+            barrier.touch()
+            process.wait(timeout=10)
+        finally:
+            store.close()
+
+
+test_store_integration_retains_claim()
