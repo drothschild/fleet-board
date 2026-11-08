@@ -458,6 +458,9 @@ class Store:
     def verify_scope_changes(self, card, changed_paths):
         reservation = self._reservations().get(str(card))
         if reservation is None:
+            paths = ([path for path in changed_paths if isinstance(path, str)][:128]
+                     if isinstance(changed_paths, list) else ['<unknown>'])
+            self._record_scope_violation(str(card), paths or ['<unknown>'], 'missing reservation')
             return {'authorized': False, 'publication_hold': True, 'reason': 'missing reservation'}
         try:
             changed = self._normalize_scope(changed_paths)
@@ -470,24 +473,28 @@ class Store:
             if not any(path == owned or path.startswith(owned + '/') for owned in reservation['paths']):
                 unauthorized.append(path)
         if unauthorized:
-            c = self.__connection
-            c.execute('BEGIN IMMEDIATE')
-            try:
-                jobs = list(c.execute("SELECT id,generation FROM jobs WHERE card=? AND state='active'", (str(card),)))
-                for job in jobs:
-                    c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (job['id'],))
-                    for row in list(c.execute('SELECT id,data FROM attempts WHERE job_id=?', (job['id'],))):
-                        data = json.loads(row['data'])
-                        data['quarantine_reason'] = 'unauthorized scope change'
-                        c.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?", (canonical_json(data), row['id']))
-                c.execute("UPDATE effects SET status='blocked' WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (str(card),))
-                self._event('scope_violation', {'card': str(card), 'paths': unauthorized})
-                c.execute('COMMIT')
-            except Exception:
-                c.execute('ROLLBACK')
-                raise
+            self._record_scope_violation(str(card), unauthorized, 'unauthorized scope change')
             return {'authorized': False, 'publication_hold': True, 'paths': unauthorized}
         return {'authorized': True, 'publication_hold': False}
+
+    def _record_scope_violation(self, card, paths, reason):
+        """Persist quarantine and publication hold atomically, including legacy jobs."""
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            jobs = list(c.execute("SELECT id FROM jobs WHERE card=? AND state='active'", (card,)))
+            for job in jobs:
+                c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (job['id'],))
+                for row in list(c.execute('SELECT id,data FROM attempts WHERE job_id=?', (job['id'],))):
+                    data = json.loads(row['data'])
+                    data['quarantine_reason'] = reason
+                    c.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?", (canonical_json(data), row['id']))
+            c.execute("UPDATE effects SET status='blocked' WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (card,))
+            self._event('scope_violation', {'card': card, 'paths': paths, 'reason': reason})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
 
     def _publication_held(self, card):
         for row in self.__connection.execute("SELECT payload FROM events WHERE type='scope_violation'"):
