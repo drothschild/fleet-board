@@ -144,6 +144,13 @@ class Recovery:
                     continue
                 attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
             data = json.loads(attempt['data'])
+            if attempt['state'] == 'quarantined' and observation.get('status') == 'stopped':
+                try:
+                    self.store.record_execution_stopped(attempt['id'], observation.get('stop_evidence'),
+                                                        self.store.snapshot()['domain']['revision'])
+                except ValueError:
+                    pass
+                continue
             if attempt['state'] == 'result_ready' and observation.get('status') == 'stopped':
                 try:
                     self.store.record_execution_stopped(attempt['id'], observation.get('stop_evidence'),
