@@ -101,6 +101,9 @@ class EffectContract(unittest.TestCase):
     def prepare(self, key, kind, adapter=None, authority=None, precondition_overrides=None, **fields):
         adapter = adapter or FakeAdapter(kind)
         authority = authority or self.authority
+        if kind == 'cleanup':
+            snapshot = self.store.snapshot()
+            self.store.set_card_lifecycle('17', 'complete', snapshot['domain']['revision'])
         effect = Effect(self.store, adapter, authority.validate)
         preconditions = {'card': '17', 'generation': 1, 'card_state': 'ready',
                          'head': 'head-1', 'note_valid': True, **(precondition_overrides or {})}
@@ -247,10 +250,14 @@ class EffectContract(unittest.TestCase):
         path.mkdir()
         active, active_adapter, _ = self.prepare(
             'cleanup-active', 'cleanup', worktree=str(path))
+        snapshot = self.store.snapshot()
+        self.store.set_card_lifecycle('17', 'active', snapshot['domain']['revision'])
         result = active.apply()
         self.assertEqual(result['status'], 'attention')
         self.assertEqual(active_adapter.calls, [])
 
+        snapshot = self.store.snapshot()
+        self.store.set_card_lifecycle('17', 'complete', snapshot['domain']['revision'])
         self.prepare('cleanup-hold', 'note_update', patch_file='unused')
         cleanup, cleanup_adapter, _ = self.prepare(
             'cleanup-pending', 'cleanup', worktree=str(path))
@@ -261,7 +268,7 @@ class EffectContract(unittest.TestCase):
                                if row['operation_key'] == 'cleanup-pending')['observation'])
 
     def test_fault_boundaries_cover_every_external_mutation(self):
-        ordered_kinds = [kind for kind in KINDS if kind != 'branch_refresh'] + ['branch_refresh']
+        ordered_kinds = [kind for kind in KINDS if kind not in ('branch_refresh', 'cleanup')] + ['branch_refresh']
         for index, kind in enumerate(ordered_kinds):
             with self.subTest(kind=kind):
                 key = 'boundary-' + str(index)

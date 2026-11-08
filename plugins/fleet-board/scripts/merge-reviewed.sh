@@ -227,6 +227,14 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   if printf '%s\n' "$body" | grep -q '^## After merge'; then
     continue # the manager finishes the allowlisted commands
   fi
+  final_card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null)" \
+    || { fail "$n" "cannot re-read card before completing merge"; continue; }
+  final_state="$(jq -er '.state // empty' <<<"$final_card" 2>/dev/null)" \
+    || { fail "$n" "cannot determine card state before completing merge"; continue; }
+  case "$final_state" in
+    in_review|review_*) ;;
+    *) warn "#$n: card moved to $final_state during verification; leaving its state unchanged"; continue ;;
+  esac
   bash "$FLEET_SCRIPTS/board-move.sh" "$n" done </dev/null >/dev/null || { fail "$n" "board-move to done failed"; continue; }
   merge_note "$n" '{"state":"done","action_failures":0,"last_action_error":null}' || fail "$n" "the manager note write failed"
 done

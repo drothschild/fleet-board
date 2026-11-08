@@ -208,10 +208,16 @@ class IntegrationContract(unittest.TestCase):
         self.assertIsNotNone(self.store.integration_lane())
 
     def test_main_verification_helper_failure_closes_admissions_and_retains_lane(self):
-        effect = self.make_effect('17', 'verify-failure', 'main_verification', pr='91')
-        self.store.acquire_integration_lane('verify-failure', '17', 'main_verification', 'controller-1')
+        self.make_effect('17', 'merge-parent', **self.eligible_merge())
+        self.adapter.external['merge-parent'] = {
+            'operation_key': 'merge-parent', 'note_operation_key': 'merge-parent',
+            'pr': 91, 'planned_head': 'a' * 40, 'observed_head': 'a' * 40,
+            'state': 'MERGED', 'merged': True, 'main_check': None}
+        effect = self.make_effect('17', 'verify-failure', 'main_verification', pr='91',
+                                  head_sha='a' * 40, merge_operation_key='merge-parent')
         self.adapter.fail_verification = True
-        self.lane.recover(effect, mode='running').result(timeout=2)
+        result = self.lane.recover(effect, mode='running').result(timeout=2)
+        self.assertEqual(result['status'], 'pending')
         self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
         self.assertIsNotNone(self.store.integration_lane())
         self.assertEqual(len(self.closed), 1)

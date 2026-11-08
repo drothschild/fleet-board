@@ -233,6 +233,17 @@ class Effect:
         if row['observation'] is not None:
             return {**json.loads(row['observation']), 'status': 'observed',
                     'operation_key': self._key}
+        if intent['kind'] == 'cleanup':
+            try:
+                snapshot = self.store.snapshot()
+                snapshot['effects'] = [effect for effect in snapshot['effects']
+                                       if effect['operation_key'] != self._key]
+                from .scheduler import IntegrationLane
+                allowed = IntegrationLane.cleanup_allowed(snapshot, row['card'])
+            except Exception as exc:
+                return self._attention('cleanup retention state is unavailable: ' + str(exc)[:200])
+            if not allowed:
+                return self._attention('cleanup held by live, quarantined, unresolved, or Human-QA work')
         attention = self._attention_reason()
         if attention is not None:
             return {'status': 'attention', 'operation_key': self._key, 'reason': attention}
