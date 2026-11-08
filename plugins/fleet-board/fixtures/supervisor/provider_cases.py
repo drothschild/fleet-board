@@ -388,6 +388,76 @@ class ProviderCases(unittest.TestCase):
         self.assertTrue(granted["granted"])
         self.assertEqual(granted["reservation"]["reservation_revision"], 2)
 
+    def make_result_case(self, report_text):
+        from supervisor.store import Store
+
+        domain = {
+            "common_dir": str(self.workspace), "board_backend": "local",
+            "board_identity": "provider-result-factory",
+            "runtime_root": str(self.root / "result-runtime"),
+        }
+        store = Store.open(domain, filesystem_inspector=lambda _path: "local")
+        self.addCleanup(store.close)
+        store.start_session({"id": "session-1", "started_at": 1, "deadline": 100,
+                             "known_spend": 0, "unknown_spend": False, "budget_stop": None})
+        job = {"id": "job-1", "card": "22", "action": "review", "role": "stage-reviewer",
+               "stage": "code", "round": 1, "input_sha": self.request.input_sha,
+               "input_version": "v1", "generation": self.request.generation,
+               "provider": "fake", "model": "fake-v1", "nonce": self.request.attempt_id,
+               "session_id": "session-1"}
+        store.prepare_attempt(job, store.snapshot()["domain"]["revision"],
+                              {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        binding = {"domain_id": store.domain_id, "job_id": job["id"],
+                   "attempt_id": self.request.attempt_id, "generation": self.request.generation,
+                   "input_sha": self.request.input_sha, "role": "stage-reviewer", "stage": "code"}
+        report = self.workspace / "report.md"
+        report.write_text(report_text, encoding="utf-8")
+        digest = hashlib.sha256(report.read_bytes()).hexdigest()
+        payload = dict(binding, schema_version=1, request_id="result-1", outcome="success",
+                       report_path="report.md", artifact_hashes={"report.md": digest},
+                       usage={"cost_usd": 0.1}, exit_code=0)
+        return store, binding, payload, report
+
+    def test_trusted_result_handler_ingests_report_and_records_durable_result(self):
+        from supervisor.workers import build_attempt_result_handler
+
+        report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
+                  "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
+        store, binding, payload, _source = self.make_result_case(report)
+        handler = build_attempt_result_handler(store, binding, self.workspace)
+        outcome = handler(payload)
+        self.assertEqual(outcome["disposition"], "current")
+        durable_report = store.directory / "artifacts" / binding["attempt_id"] / "report.md"
+        self.assertEqual(durable_report.read_text(encoding="utf-8"), report)
+        stored = store.snapshot()["results"]
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["envelope"]["report_path"], str(durable_report))
+
+    def test_trusted_result_handler_rejects_paths_outside_attempt_artifacts(self):
+        from supervisor.workers import build_attempt_result_handler
+
+        report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
+                  "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
+        store, binding, payload, _source = self.make_result_case(report)
+        handler = build_attempt_result_handler(store, binding, self.workspace)
+        forged = dict(payload, report_path="/private/tmp/outside-report",
+                      artifact_hashes={"/private/tmp/outside-report": "a" * 64})
+        with self.assertRaises(ValueError):
+            handler(forged)
+        self.assertEqual(store.snapshot()["results"], [])
+
+    def test_trusted_result_handler_rejects_bad_hash_and_role_report(self):
+        from supervisor.workers import build_attempt_result_handler
+
+        report = "malformed role report\n"
+        store, binding, payload, _source = self.make_result_case(report)
+        handler = build_attempt_result_handler(store, binding, self.workspace)
+        with self.assertRaises(ValueError):
+            handler(dict(payload, artifact_hashes={"report.md": "0" * 64}))
+        with self.assertRaises(ValueError):
+            handler(payload)
+        self.assertEqual(store.snapshot()["results"], [])
+
     def test_subprocess_stdout_stderr_are_bounded_and_missing_executable_fails(self):
         noisy = self.script("noisy.py", "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('x'*4096)\nsys.stderr.write('y'*4096)\n")
         with self.assertRaises(ContractError):
