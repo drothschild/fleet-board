@@ -160,6 +160,20 @@ class RecoveryContract(unittest.TestCase):
             barrier.write_text('release')
             process.wait(timeout=5)
 
+    def test_result_validation_failure_does_not_abort_reconcile(self):
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'alive', 'result': {'schema_version': 99}}
+        try:
+            Recovery(self.store, Inspector()).reconcile(now=10)
+        except ValueError:
+            self.fail('invalid result interrupted reconciliation')
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(snapshot['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(len(snapshot['results']), 0)
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_corrupt_published_result_is_quarantined_before_effects(self):
         import time
         from supervisor.runner import Runner, prepared_from_store
