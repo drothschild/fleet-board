@@ -541,6 +541,31 @@ button, select, input, textarea { font: inherit; color: inherit; }
   .drawer-dim { background: rgba(0, 0, 0, 0.5); }
 }
 
+/* --- planner popup -------------------------------------------------------- */
+
+.pl-modal { position: fixed; inset: 0; z-index: 9; }
+.pl-modal[hidden] { display: none; }
+.pl-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.45); }
+.pl-panel {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 90vw;
+  height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35);
+  overflow: hidden;
+}
+
+@media (max-width: 720px) {
+  .pl-panel { top: 0; left: 0; transform: none; width: 100vw; height: 100vh; border: 0; border-radius: 0; }
+}
+
 /* --- import view --------------------------------------------------------- */
 
 #plan-btn[aria-expanded="true"] { background: var(--panel); }

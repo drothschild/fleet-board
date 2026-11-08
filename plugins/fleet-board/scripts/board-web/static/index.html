@@ -43,6 +43,9 @@
 </header>
 <pre id="log" class="log" hidden></pre>
 <main id="board" aria-label="Board"></main>
+<div id="planner-modal" class="pl-modal" role="dialog" aria-modal="true" aria-label="Plan with Claude" hidden>
+<div id="planner-backdrop" class="pl-backdrop"></div>
+<div class="pl-panel">
 <section id="planner" class="pl" aria-labelledby="pl-h" hidden>
   <div class="pl-head">
     <h2 id="pl-h" class="pl-title">Plan with Claude</h2>
@@ -108,6 +111,8 @@
     </form>
   </div>
 </section>
+</div>
+</div>
 <div id="drawer-dim" class="drawer-dim" hidden></div>
 <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Card" hidden>
   <div class="dr-head">

@@ -1325,6 +1325,7 @@ function openDraft(id, text) {
   showImportProgress(0, "");
   $("planner").hidden = true;
   $("import").hidden = false;
+  syncPlannerModal();
   renderHeader();
   $("imp-discard").focus({ preventScroll: true });
   imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
@@ -1345,9 +1346,9 @@ function closeImport() {
     $("planner").hidden = false;
     if (inside) $("pl-input").focus({ preventScroll: true });
   } else {
-    $("board").hidden = false;
     if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
   }
+  syncPlannerModal();
   renderHeader();
 }
 
@@ -1755,6 +1756,11 @@ function setPlannerBusy(busy) {
   $("pl-running").hidden = !busy;
 }
 
+// syncPlannerModal(): the popup shows while the chat or the Draft cards view is open.
+function syncPlannerModal() {
+  $("planner-modal").hidden = !(S.pl || S.imp);
+}
+
 async function openPlanner() {
   if (S.pl) {
     if (!S.imp) $("pl-input").focus();
@@ -1765,8 +1771,8 @@ async function openPlanner() {
   S.pl = pl;
   $("pl-transcript").replaceChildren();
   $("pl-input").value = "";
-  $("board").hidden = true;
   $("planner").hidden = false;
+  syncPlannerModal();
   $("plan-btn").setAttribute("aria-expanded", "true");
   setPlannerBusy(true);
   $("pl-running").hidden = true;
@@ -1791,7 +1797,7 @@ function closePlanner() {
   S.pl = null;
   const inside = $("planner").contains(document.activeElement);
   $("planner").hidden = true;
-  if (!S.imp) $("board").hidden = false;
+  syncPlannerModal();
   $("plan-btn").setAttribute("aria-expanded", "false");
   renderHeader();
   if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
