@@ -779,13 +779,19 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(json.loads(stored["envelope"])["outcome"], "failure")
 
     def test_trusted_result_handler_honors_durable_cancellation_state(self):
-        from supervisor.workers import build_attempt_result_handler
+        from supervisor.workers import (OwnerThreadDispatcher, build_attempt_result_handler,
+                                        build_attempt_terminal_checker)
 
         report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
                   "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
         store, binding, payload, _source = self.make_result_case(report)
+        dispatcher = OwnerThreadDispatcher()
+        checker = build_attempt_terminal_checker(store, dispatcher)
+        identity = (binding["attempt_id"], binding["generation"], binding["input_sha"])
+        self.assertEqual(checker(*identity), "active")
         store.request_cancellation(binding["attempt_id"], "cancel-result", "stop",
                                    store.snapshot()["domain"]["revision"])
+        self.assertEqual(checker(*identity), "revoked")
         handler = build_attempt_result_handler(store, binding, self.workspace)
         result = handler(payload)
         self.assertEqual(result["disposition"], "stale")
