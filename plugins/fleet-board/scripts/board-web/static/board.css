@@ -697,6 +697,17 @@ button, select, input, textarea { font: inherit; color: inherit; }
   background: var(--card);
 }
 .imp-card.landing { visibility: hidden; }
+.imp-card-btn { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.imp-card-btn:disabled { cursor: default; }
+.imp-card-btn:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 3px; }
+.imp-detail { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.35); }
+.imp-detail[hidden] { display: none; }
+.imp-d-form { width: min(560px, 92vw); max-height: 88vh; overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--card); }
+.imp-d-h { margin: 0 0 10px; }
+.imp-d-key { color: var(--muted); font-weight: 400; font-size: 12px; }
+.imp-d-row { display: block; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+.imp-d-row input, .imp-d-row textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 2px; font: inherit; color: var(--text, inherit); }
+.imp-d-ro { margin: 2px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .imp-card-title { font-weight: 500; overflow-wrap: anywhere; }
 .imp-card-meta { margin-top: 3px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .imp-dep { color: var(--accent); }
