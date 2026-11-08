@@ -579,5 +579,25 @@ class StoreContract(unittest.TestCase):
             Store.open(self.domain, filesystem_inspector=lambda path: "remote")
 
 
+    def test_cancellation_is_atomic_idempotent_and_cannot_be_resurrected(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer",
+               "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
+               "generation": 1, "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        before = self.store.snapshot()
+        self.assertTrue(hasattr(self.store, "request_cancellation"), "atomic cancellation is not implemented")
+        result = self.store.request_cancellation("n1", "cancel-1", "stop", before["domain"]["revision"])
+        after = self.store.snapshot()
+        self.assertEqual(after["jobs"][0]["generation"], 2)
+        self.assertEqual(after["attempts"][0]["state"], "cancel_requested")
+        self.assertEqual(len(after["claims"]), 1)
+        self.assertEqual(self.store.request_cancellation("n1", "cancel-1", "stop", before["domain"]["revision"]), result)
+        self.assertEqual(self.store.snapshot(), after)
+        with self.assertRaises(ValueError):
+            self.store.update_attempt("n1", {"state": "running", "heartbeat": 5}, after["domain"]["revision"])
+        self.assertEqual(self.store.snapshot(), after)
+
+
 if __name__ == "__main__":
     unittest.main()
