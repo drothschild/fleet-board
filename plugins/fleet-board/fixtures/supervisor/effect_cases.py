@@ -242,6 +242,24 @@ class EffectContract(unittest.TestCase):
         self.assertEqual(effect.reconcile()['status'], 'observed')
         self.assertEqual(adapter.calls, ['note-op'])
 
+    def test_cleanup_effect_fails_closed_for_live_attempts_and_unresolved_effects(self):
+        path = self.root / 'cleanup-worktree'
+        path.mkdir()
+        active, active_adapter, _ = self.prepare(
+            'cleanup-active', 'cleanup', worktree=str(path))
+        result = active.apply()
+        self.assertEqual(result['status'], 'attention')
+        self.assertEqual(active_adapter.calls, [])
+
+        self.prepare('cleanup-hold', 'note_update', patch_file='unused')
+        cleanup, cleanup_adapter, _ = self.prepare(
+            'cleanup-pending', 'cleanup', worktree=str(path))
+        held = cleanup.apply()
+        self.assertEqual(held['status'], 'attention')
+        self.assertEqual(cleanup_adapter.calls, [])
+        self.assertIsNone(next(row for row in self.store.snapshot()['effects']
+                               if row['operation_key'] == 'cleanup-pending')['observation'])
+
     def test_fault_boundaries_cover_every_external_mutation(self):
         ordered_kinds = [kind for kind in KINDS if kind != 'branch_refresh'] + ['branch_refresh']
         for index, kind in enumerate(ordered_kinds):

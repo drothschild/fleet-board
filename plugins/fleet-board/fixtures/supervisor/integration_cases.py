@@ -33,12 +33,15 @@ class Adapter:
         self.entered = threading.Event()
         self.release = threading.Event()
         self.block = False
+        self.fail_verification = False
 
     def inspect(self, intent):
         return self.external.get(intent['operation_key'])
 
     def apply(self, intent):
         key = intent['operation_key']
+        if intent['kind'] == 'main_verification' and self.fail_verification:
+            raise RuntimeError('verify-main helper failed')
         if intent['kind'] == 'integration_merge':
             if intent.get('verify_only') is True:
                 self.verifications.append(intent['card'])
@@ -204,10 +207,11 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(len(self.adapter.merges), 1)
         self.assertIsNotNone(self.store.integration_lane())
 
-    def test_main_verification_failure_closes_new_admissions(self):
-        effect = self.make_effect('17', 'verify-false', 'main_verification',
-                                  pr='91', result_ok=False)
-        self.lane.submit(effect, mode='running').result(timeout=2)
+    def test_main_verification_helper_failure_closes_admissions_and_retains_lane(self):
+        effect = self.make_effect('17', 'verify-failure', 'main_verification', pr='91')
+        self.store.acquire_integration_lane('verify-failure', '17', 'main_verification', 'controller-1')
+        self.adapter.fail_verification = True
+        self.lane.recover(effect, mode='running').result(timeout=2)
         self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
         self.assertIsNotNone(self.store.integration_lane())
         self.assertEqual(len(self.closed), 1)
@@ -225,11 +229,12 @@ class IntegrationContract(unittest.TestCase):
         self.assertIsNotNone(self.store.integration_lane())
         self.assertEqual(len(self.closed), 1)
 
-    def test_paused_or_stopped_mode_allows_verification_but_forbids_new_merge(self):
+    def test_paused_or_stopped_mode_rejects_unpaired_verification_and_new_merge(self):
         for mode in ('paused', 'stopped'):
             self.set_mode('pause' if mode == 'paused' else 'stop')
             effect = self.make_effect('17', 'verify-' + mode, 'main_verification', pr='91')
-            self.assertEqual(self.lane.submit(effect, mode=mode).result(timeout=2)['status'], 'observed')
+            with self.assertRaisesRegex(ValueError, 'merged operation'):
+                self.lane.submit(effect, mode=mode)
             merge = self.make_effect('18', 'merge-' + mode, **self.eligible_merge())
             with self.assertRaisesRegex(ValueError, 'new merge'):
                 self.lane.submit(merge, mode=mode)
@@ -261,6 +266,8 @@ class IntegrationContract(unittest.TestCase):
         self.assertFalse(IntegrationLane.cleanup_allowed(active, '17'))
         self.assertFalse(IntegrationLane.cleanup_allowed(quarantined, '17'))
         self.assertFalse(IntegrationLane.cleanup_allowed(human_qa, '17'))
+        self.assertFalse(IntegrationLane.cleanup_allowed(
+            {'attempts': [], 'effects': [], 'card_lifecycle': {'17': 'active'}}, '17'))
         self.assertTrue(IntegrationLane.cleanup_allowed({'attempts': [], 'effects': [],
                                                          'card_lifecycle': {'17': 'complete'}}, '17'))
 

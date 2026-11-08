@@ -185,6 +185,29 @@ assert_eq "auto: never --admin" "$(cnt "--admin")" 0
 assert_eq "auto: never --auto" "$(cnt "--auto")" 0
 assert_eq "auto: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
 
+echo "merge-reviewed re-reads card state after verification before moving to done"
+for midflight_state in human_qa blocked; do
+  setup_case auto
+  card 12 in_review "$CLEAN"
+  pr 34 false "$GREEN"
+  cat > "$FX/verify-main.sh" <<'VERIFY'
+#!/usr/bin/env bash
+jq --arg state "$FLEET_BOARD_TEST_MIDFLIGHT_STATE" \
+  '.labels=[{name:("fleet:" + $state)}]' \
+  "$FAKE_GH_DIR/fx/issue-$1.json" > "$FAKE_GH_DIR/fx/issue-$1.new"
+mv "$FAKE_GH_DIR/fx/issue-$1.new" "$FAKE_GH_DIR/fx/issue-$1.json"
+printf '{"commit":"abc1234","ok":true,"results":[]}\n'
+VERIFY
+  chmod +x "$FX/verify-main.sh"
+  FLEET_BOARD_VERIFY_MAIN="$FX/verify-main.sh"
+  FLEET_BOARD_TEST_MIDFLIGHT_STATE="$midflight_state"
+  export FLEET_BOARD_VERIFY_MAIN FLEET_BOARD_TEST_MIDFLIGHT_STATE
+  finalize
+  run_merge
+  assert_eq "$midflight_state after verification: card is not moved to done" \
+    "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 0
+done
+
 echo "merge.policy auto: a card in a review stage with a clean stage review is merged"
 STAGE_CFG='review:
   stages:
