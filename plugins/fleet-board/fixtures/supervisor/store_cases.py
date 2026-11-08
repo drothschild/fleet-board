@@ -900,6 +900,34 @@ class StoreContract(unittest.TestCase):
         trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
         self.assertTrue(trusted.snapshot()['sessions'][0]['unknown_spend'])
 
+    def test_proven_never_executed_launch_is_fenced_once_under_admission_guards(self):
+        from supervisor import models
+        self.assertTrue(hasattr(models, 'NeverExecutedEvidence'), 'never-executed proof is unavailable')
+        self.assertTrue(hasattr(self.store, 'begin_recovered_launch'), 'recovered launch transition is unavailable')
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', launch_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                'expected_revision': trusted.snapshot()['domain']['revision']})
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        evidence = models.NeverExecutedEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1)
+        revision = trusted.snapshot()['domain']['revision']
+        limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
+        with self.assertRaises(ValueError):
+            self.store.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision)
+        trusted.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision)
+        after = trusted.snapshot()
+        self.assertEqual(after['attempts'][0]['state'], 'launching')
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(after['claims']), 1)
+        with self.assertRaises(ValueError):
+            trusted.begin_recovered_launch('n1', evidence, now=11, limits=limits,
+                                           expected_revision=after['domain']['revision'])
+        self.assertEqual(trusted.snapshot(), after)
+
     def test_retry_rejects_unknown_usage_effects_stale_proof_and_lowered_caps(self):
         from dataclasses import replace
         from supervisor.models import StopEvidence, RetryEvidence
