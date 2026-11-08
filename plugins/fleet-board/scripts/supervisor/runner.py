@@ -1,6 +1,8 @@
 """Detached, fixture-only attempt runner. Production execution is not enabled."""
 import json
 import hashlib
+import fcntl
+import tempfile
 import os
 from pathlib import Path
 import re
@@ -24,14 +26,17 @@ def _sync_directory(path):
 
 
 def _publish(path, value):
-    temporary = path.with_name(path.name + '.tmp')
-    fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-        json.dump(value, stream, sort_keys=True)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
-    _sync_directory(path.parent)
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '-', dir=str(path.parent))
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(value, stream, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def prepared_from_store(store, attempt_id, scratch):
@@ -86,10 +91,11 @@ def read_result(attempt):
 
 
 class Runner:
-    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None):
+    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None, fixture_publication_barrier=None):
         self.directory = Path(directory)
         self.fixture_command = fixture_command
         self.fixture_finish_barrier = fixture_finish_barrier
+        self.fixture_publication_barrier = fixture_publication_barrier
 
     def launch(self, prepared_attempt):
         if self.fixture_command is None:
@@ -107,7 +113,8 @@ class Runner:
             raise ValueError('invalid attempt identity')
         config = json.dumps({'directory': str(self.directory), 'attempt_id': attempt_id,
                              'nonce': nonce, 'fixture_command': self.fixture_command, 'prepared': prepared_attempt,
-                             'fixture_finish_barrier': str(self.fixture_finish_barrier) if self.fixture_finish_barrier else None})
+                             'fixture_finish_barrier': str(self.fixture_finish_barrier) if self.fixture_finish_barrier else None,
+                             'fixture_publication_barrier': str(self.fixture_publication_barrier) if self.fixture_publication_barrier else None})
         process = subprocess.Popen([sys.executable, '-m', 'supervisor.runner'],
                                 env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent)),
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -115,6 +122,9 @@ class Runner:
         process.stdin.write(config.encode('utf-8'))
         process.stdin.close()
         return process
+
+    def resume_publication(self, attempt_id):
+        return _resume_publication(self.directory, attempt_id)
 
     def inspect(self, identity):
         root = self.directory / 'attempts'
@@ -148,6 +158,66 @@ class Runner:
         except (OSError, ProcessLookupError):
             pass
         return 'unknown'
+
+
+def _resume_publication(directory, attempt_id, barrier=None):
+    if not isinstance(attempt_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', attempt_id):
+        raise ValueError('invalid attempt')
+    attempt = Path(directory) / 'attempts' / attempt_id
+    fd = os.open(str(attempt / 'publication.lock'), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'r+b') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        existing = read_result(attempt)
+        if existing is not None:
+            return True
+        if (attempt / 'result.json').exists():
+            raise ValueError('invalid published result')
+        def load(name):
+            fd = os.open(str(attempt / name), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                data = stream.read(65537)
+            if len(data) > 65536:
+                raise ValueError('oversized metadata')
+            return json.loads(data)
+        prepared = load('prepared.json')
+        exit_info = load('exit.json')
+        fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
+        if any(k not in prepared for k in fields) or prepared['attempt_id'] != attempt_id or exit_info != {'exit_code': 0}:
+            raise ValueError('untrusted exit or attempt')
+        artifacts_root = Path(directory) / 'artifacts'
+        artifacts_root.mkdir(mode=0o700, exist_ok=True)
+        artifacts = artifacts_root / attempt_id
+        manifest_path = artifacts / '.manifest.json'
+        if not artifacts.exists():
+            scratch = Path(prepared['scratch'])
+            fd = os.open(str(scratch / 'ready.json'), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                marker = json.loads(stream.read(4097))
+            if marker != {'exit_code': 0}:
+                raise ValueError('invalid fixture result')
+            ingest_artifacts(scratch, artifacts, ['report'])
+        if not manifest_path.exists():
+            raise ValueError('artifact manifest unavailable')
+        fd = os.open(str(manifest_path), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            hashes = json.loads(stream.read(65537))
+        report = artifacts / 'report'
+        if artifacts.is_symlink() or report.is_symlink() or artifacts.resolve(strict=True) != artifacts:
+            raise ValueError('unsafe artifacts')
+        fd = os.open(str(report), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            data = stream.read(1048577)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or len(data) > 1048576 or json.loads(data) != {'status': 'clean'} or hashes != {'report': hashlib.sha256(data).hexdigest()}:
+            raise ValueError('invalid fixture report')
+        deadline = time.monotonic() + 10
+        while barrier and not Path(barrier).exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        envelope = {field: prepared[field] for field in fields}
+        envelope.update(schema_version=1, outcome='success', report_path=str(report),
+                        artifact_hashes={str(report): hashes['report']}, usage=None, exit_code=0)
+        _publish(attempt / 'result.json', envelope)
+        return True
 
 
 def _run(config):
@@ -209,39 +279,6 @@ def _run(config):
         reader.start()
     prepared = config['prepared']
     published = False
-    def publish_ready():
-        fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
-        if any(field not in prepared for field in fields) or 'scratch' not in prepared:
-            return False
-        scratch = Path(prepared['scratch'])
-        try:
-            fd = os.open(str(scratch / 'ready.json'), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                data = stream.read(4097)
-            marker = json.loads(data)
-            if len(data) > 4096 or marker != {'exit_code': worker.returncode} or worker.returncode != 0:
-                return False
-            report_path = scratch / 'report'
-            fd = os.open(str(report_path), os.O_RDONLY | os.O_NOFOLLOW)
-            with os.fdopen(fd, 'rb') as stream:
-                report_data = stream.read(1048577)
-            report_obj = json.loads(report_data)
-            if len(report_data) > 1048576 or report_obj != {'status': 'clean'}:
-                return False
-        except (OSError, ValueError, TypeError):
-            return False
-        artifacts_root = Path(config['directory']) / 'artifacts'
-        artifacts_root.mkdir(mode=0o700, exist_ok=True)
-        hashes = ingest_artifacts(scratch, artifacts_root / config['attempt_id'], ['report'])
-        report = str(artifacts_root / config['attempt_id'] / 'report')
-        # Validate the immutable copy as well as the source.
-        if json.loads(Path(report).read_bytes()) != {'status': 'clean'}:
-            return False
-        envelope = {field: prepared[field] for field in fields}
-        envelope.update(schema_version=1, outcome='success', report_path=report,
-                        artifact_hashes={report: hashes['report']}, usage=None, exit_code=0)
-        _publish(attempt / 'result.json', envelope)
-        return True
     progress_sequence = 0
     while worker.poll() is None or any(reader.is_alive() for reader in readers):
         scratch = prepared.get('scratch')
@@ -262,8 +299,12 @@ def _run(config):
         time.sleep(.2)
     for reader in readers:
         reader.join()
-    if not published:
-        published = publish_ready()
+    if 'scratch' in prepared:
+        _publish(attempt / 'exit.json', {'exit_code': worker.returncode})
+        try:
+            published = _resume_publication(Path(config['directory']), config['attempt_id'], config.get('fixture_publication_barrier'))
+        except (OSError, ValueError, TypeError):
+            published = False
     barrier = config.get('fixture_finish_barrier')
     deadline = time.monotonic() + 10
     while published and barrier and not Path(barrier).exists() and time.monotonic() < deadline:

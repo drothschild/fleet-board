@@ -1,5 +1,6 @@
 """Copy untrusted worker artifacts into attempt-owned durable storage."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import stat
@@ -25,7 +26,7 @@ def ingest_artifacts(scratch, destination, names):
     total = 0
     try:
         for name in names:
-            if not isinstance(name, str) or not name or '/' in name or name in ('.', '..'):
+            if not isinstance(name, str) or not name or '/' in name or name in ('.', '..', '.manifest.json'):
                 raise ValueError('invalid artifact name')
             try:
                 fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=root_fd)
@@ -62,6 +63,11 @@ def ingest_artifacts(scratch, destination, names):
                 hashes[name] = digest.hexdigest()
             finally:
                 os.close(fd)
+        manifest_fd = os.open(str(destination / '.manifest.json'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(manifest_fd, 'w', encoding='utf-8') as manifest:
+            json.dump(hashes, manifest, sort_keys=True)
+            manifest.flush()
+            os.fsync(manifest.fileno())
         fd = os.open(str(destination), os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(fd)
