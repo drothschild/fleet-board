@@ -51,6 +51,34 @@ class RecoveryContract(unittest.TestCase):
         recovery.reconcile(now=11)
         self.assertEqual(set(inspector.seen), {'n', 'n2'})
 
+    def test_unreachable_inspector_is_quarantined_without_signaling(self):
+        class Inspector:
+            def inspect(self, attempt):
+                raise PermissionError('inspection unavailable')
+            def signal(self, *args):
+                raise AssertionError('unreachable process cannot be signaled')
+        self.store.update_attempt('n', {'state': 'running'}, self.store.snapshot()['domain']['revision'])
+        Recovery(self.store, Inspector()).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(len(snapshot['claims']), 1)
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+
+    def test_repeated_progress_sequence_does_not_reset_progress_clock(self):
+        import json
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'alive', 'heartbeat': {'at': 100},
+                        'progress': {'sequence': 1, 'kind': 'checkpoint', 'observed_at': 100}}
+        self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'heartbeat': 10,
+                                        'progress': {'sequence': 1, 'kind': 'checkpoint', 'at': 10}, 'deadline': 1000},
+                                  self.store.snapshot()['domain']['revision'])
+        Recovery(self.store, Inspector(), settings={'progress_timeout_seconds': 20}).reconcile(now=100)
+        data = json.loads(self.store.snapshot()['attempts'][0]['data'])
+        self.assertEqual(data['heartbeat'], 100)
+        self.assertEqual(data['progress']['at'], 10)
+        self.assertTrue(data['suspected_stuck'])
+
     def test_missing_launching_runner_is_quarantined_without_retry(self):
         self.store.update_attempt('n', {'state': 'launching'}, self.store.snapshot()['domain']['revision'])
         Recovery(self.store).reconcile(now=10)
