@@ -116,6 +116,31 @@ class RecoveryContract(unittest.TestCase):
         finally:
             process.wait(timeout=10)
 
+    def test_native_inspection_does_not_wait_for_publication_lock(self):
+        import fcntl
+        import json
+        import threading
+        from supervisor.recovery import NativeInspector
+        from supervisor.runner import prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        path = self.store.directory / 'attempts' / 'n'
+        path.mkdir(parents=True)
+        (path / 'prepared.json').write_text(json.dumps(prepared_from_store(self.store, 'n', scratch)))
+        results = []
+        with (path / 'publication.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            attempt = self.store.snapshot()['attempts'][0]
+            worker = threading.Thread(target=lambda: results.append(NativeInspector(
+                self.store.directory, self.store.domain_id).inspect(attempt)))
+            worker.start()
+            worker.join(timeout=.5)
+            finished = not worker.is_alive()
+            fcntl.flock(lock, fcntl.LOCK_UN)
+            worker.join(timeout=5)
+        self.assertTrue(finished, 'inspection blocked on publication lock')
+        self.assertEqual(results[0]['status'], 'unknown')
+
     def test_matching_live_runner_is_adopted_and_unknown_running_runner_is_quarantined(self):
         class Inspector:
             def __init__(self, status):
