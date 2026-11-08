@@ -1490,7 +1490,7 @@ class ProviderCases(unittest.TestCase):
         self.assertNotIn(policy["channels"], write_rule)
 
     def test_forged_human_control_probe_uses_authenticated_unknown_operation(self):
-        from supervisor.isolation import _forged_control_frame
+        from supervisor.isolation import _forged_control_frame, _forged_control_rejection_frame
         frame = _forged_control_frame("attempt-1", "attempt-capability")
         size = struct.unpack("!I", frame[:4])[0]
         request = json.loads(frame[4:])
@@ -1499,6 +1499,12 @@ class ProviderCases(unittest.TestCase):
             "schema_version": 1, "operation": "human_control",
             "attempt_id": "attempt-1", "capability": "attempt-capability",
             "request": {"attempt_id": "attempt-1"},
+        })
+        rejection = _forged_control_rejection_frame()
+        rejection_size = struct.unpack("!I", rejection[:4])[0]
+        self.assertEqual(rejection_size, len(rejection[4:]))
+        self.assertEqual(json.loads(rejection[4:]), {
+            "schema_version": 1, "error": "request rejected",
         })
 
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
