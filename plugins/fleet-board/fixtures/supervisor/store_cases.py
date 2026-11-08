@@ -604,6 +604,24 @@ class StoreContract(unittest.TestCase):
         self.assertIn(str(self.root / "nested"), synced)
         self.assertIn(str(root), synced)
 
+    def test_quarantined_result_is_never_current(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.update_attempt("n1", {"state": "quarantined"}, self.store.snapshot()["domain"]["revision"])
+        root = self.store.directory / "artifacts" / "n1"
+        root.mkdir(parents=True, mode=0o700)
+        report = root / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": None, "exit_code": 0}
+        self.assertEqual(self.store.record_result(envelope)["disposition"], "stale")
+        self.assertEqual(self.store.snapshot()["attempts"][0]["state"], "quarantined")
+
     def test_late_result_after_cancellation_is_evidence_without_resurrection(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
