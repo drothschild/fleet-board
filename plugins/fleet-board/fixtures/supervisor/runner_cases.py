@@ -49,6 +49,9 @@ def test_detached_unique_invocation():
         third = runner.launch(attempt)
         third.wait(timeout=10)
         assert counter.read_text().splitlines() == ['invoked']
+        conflicting = runner.launch({'attempt_id':'a','nonce':'different'})
+        conflicting.wait(timeout=10)
+        assert conflicting.returncode != 0
         assert (directory / 'attempts' / 'a' / 'receipt.json').exists()
 
 
@@ -165,6 +168,9 @@ def test_cancel_preserves_uncertainty():
         while not receipt.exists() and time.monotonic() < deadline:
             time.sleep(.05)
         identity = ProcessIdentity(**json.loads(receipt.read_text())['identity'])
+        sibling = root / 'attempts' / 'incomplete'
+        sibling.mkdir()
+        assert runner.inspect(identity) == 'alive'
         foreign = ProcessIdentity(identity.boot_id, identity.pid, identity.started_at, 'foreign')
         assert runner.inspect(foreign) == 'unknown'
         assert runner.cancel(foreign, time.monotonic() + 0.1) == 'unknown'
