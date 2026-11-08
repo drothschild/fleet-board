@@ -354,6 +354,53 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
         self.assertEqual(len(snapshot['claims']), 1)
 
+    def test_receipt_adoption_uses_original_durable_deadline_after_restart(self):
+        import json
+        import time
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 10, 'deadline': 11}, self.store.snapshot()['domain']['revision'])
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(2)']).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        try:
+            receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
+            limit = time.monotonic() + 8
+            while not receipt.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(receipt.exists())
+            Recovery(self.store, settings={'attempt_timeout_seconds': 1}).reconcile(now=10)
+            adopted = self.store.snapshot()
+            data = json.loads(adopted['attempts'][0]['data'])
+            self.assertEqual(adopted['attempts'][0]['state'], 'running')
+            self.assertEqual((data['started_at'], data['deadline']), (10, 11))
+            Recovery(self.store, settings={'attempt_timeout_seconds': 100}).reconcile(now=11)
+            fenced = self.store.snapshot()
+            self.assertEqual(fenced['attempts'][0]['state'], 'cancel_requested')
+            self.assertEqual(json.loads(fenced['attempts'][0]['data'])['deadline'], 11)
+        finally:
+            process.wait(timeout=5)
+
+    def test_live_receipt_without_durable_timing_is_quarantined(self):
+        import time
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)']).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        try:
+            receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
+            limit = time.monotonic() + 8
+            while not receipt.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(receipt.exists())
+            Recovery(self.store, settings={'attempt_timeout_seconds': 1}).reconcile(now=100000)
+            after = self.store.snapshot()
+            self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+            self.assertEqual(len(after['claims']), 1)
+        finally:
+            process.wait(timeout=5)
+
     def test_native_inspector_rejects_receipt_bound_to_foreign_domain(self):
         import json
         import time
