@@ -555,6 +555,82 @@ class ProviderCases(unittest.TestCase):
         import shutil
         shutil.rmtree(test_root)
 
+    def test_operation_journal_retirement_requires_terminal_release_and_blocks_replay(self):
+        from supervisor.workers import build_attempt_operation_handlers
+
+        request = ProviderRequest.create(
+            attempt_id="attempt-retire", generation=4, role="stage-reviewer", stage="code",
+            provider="fake", model="fake-v1", input_text="retire journal")
+        broker_binding = {key: getattr(request, key) for key in
+                          ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                 attempts={request.attempt_id: broker_binding})
+        test_root = Path(tempfile.mkdtemp(prefix="fb-retire-", dir="/private/tmp"))
+        state_dir = test_root / "state"
+        state_dir.mkdir(mode=0o700)
+        channel_dir = test_root / "channel"
+        channel_dir.mkdir(mode=0o700)
+        store_dir = state_dir / "store"
+        store_dir.mkdir(mode=0o700)
+        binding = {"domain_id": "domain-1", "job_id": "job-1",
+                   "attempt_id": request.attempt_id, "generation": request.generation,
+                   "input_sha": request.input_sha, "role": request.role, "stage": request.stage}
+
+        class Store:
+            directory = store_dir
+            domain_id = "domain-1"
+
+            def record_result(self, _envelope, **_trusted):
+                return {"disposition": "current"}
+
+            def expand_scope(self, card, paths, revision):
+                return {"card": card, "paths": paths, "reservation_revision": revision + 1}
+
+        handlers = build_attempt_operation_handlers(
+            Store(), "22", binding=binding, scratch=self.workspace,
+            heartbeat=lambda _payload: {"accepted": True},
+            checkpoint=lambda: None, release_slot=lambda: None)
+        authority = {"retirable": False}
+
+        def terminal_checker(attempt_id, generation, input_sha):
+            self.assertEqual((attempt_id, generation, input_sha),
+                             (request.attempt_id, request.generation, request.input_sha))
+            return authority["retirable"]
+
+        journal = state_dir / "operations.json"
+        channel = InferenceChannel(broker, channel_dir, (request.attempt_id,),
+                                   operation_journal=journal,
+                                   terminal_attempt_checker=terminal_checker)
+        channel.bind_attempt_operations(request.attempt_id, binding, handlers)
+        in_flight = (request.attempt_id, "scope_request", "uncertain")
+        channel._operation_calls[in_flight] = {"body_sha": "a" * 64, "state": "in_flight"}
+        channel._persist_operation_journal()
+        with self.assertRaisesRegex(ContractError, "in-flight"):
+            channel.retire_attempt_operations(request.attempt_id)
+        self.assertIn(in_flight, channel._operation_calls)
+
+        authority["retirable"] = True
+        with self.assertRaisesRegex(ContractError, "in-flight"):
+            channel.retire_attempt_operations(request.attempt_id)
+        self.assertIn(in_flight, channel._operation_calls)
+
+        channel._operation_calls[in_flight] = {"body_sha": "a" * 64, "state": "complete",
+                                               "result": {"accepted": True}}
+        channel._persist_operation_journal()
+        self.assertTrue(channel.retire_attempt_operations(request.attempt_id))
+        self.assertEqual(channel._operation_calls, {})
+        channel.stop()
+
+        restarted_dir = test_root / "restarted-channel"
+        restarted_dir.mkdir(mode=0o700)
+        restarted = InferenceChannel(broker, restarted_dir, (request.attempt_id,),
+                                     operation_journal=journal,
+                                     terminal_attempt_checker=terminal_checker)
+        with self.assertRaisesRegex(ContractError, "terminal"):
+            restarted.bind_attempt_operations(request.attempt_id, binding, handlers)
+        import shutil
+        shutil.rmtree(test_root)
+
     def make_result_case(self, report_text, role="stage-reviewer"):
         from supervisor.store import Store
 
