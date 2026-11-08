@@ -7,6 +7,7 @@ import subprocess
 import sys
 
 from .processes import identity_for, inspect_identity
+from .workers import ingest_artifacts
 
 
 def _sync_directory(path):
@@ -49,11 +50,14 @@ class Runner:
         if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', v) for v in (attempt_id, nonce)):
             raise ValueError('invalid attempt identity')
         config = json.dumps({'directory': str(self.directory.resolve()), 'attempt_id': attempt_id,
-                             'nonce': nonce, 'fixture_command': self.fixture_command})
-        return subprocess.Popen([sys.executable, '-m', 'supervisor.runner', config],
+                             'nonce': nonce, 'fixture_command': self.fixture_command, 'prepared': prepared_attempt})
+        process = subprocess.Popen([sys.executable, '-m', 'supervisor.runner'],
                                 env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent)),
-                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        process.stdin.write(config.encode('utf-8'))
+        process.stdin.close()
+        return process
 
     def inspect(self, identity):
         return inspect_identity(identity)
@@ -69,11 +73,28 @@ def _run(config):
         return
     _sync_directory(root)
     identity = identity_for(os.getpid(), config['nonce'])
+    _publish(attempt / 'prepared.json', config['prepared'])
     _publish(attempt / 'receipt.json', {'state': 'registered', 'identity': identity.__dict__})
     _publish(attempt / 'execution.json', {'state': 'execution_started'})
-    subprocess.run(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, close_fds=True, check=False)
+    completed = subprocess.run(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, close_fds=True, check=False)
+    prepared = config['prepared']
+    if 'scratch' not in prepared:
+        return
+    fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
+    if any(field not in prepared for field in fields):
+        raise ValueError('incomplete result identity')
+    artifacts_root = Path(config['directory']) / 'artifacts'
+    artifacts_root.mkdir(mode=0o700, exist_ok=True)
+    hashes = ingest_artifacts(Path(prepared['scratch']), artifacts_root / config['attempt_id'], ['report'])
+    report = str(artifacts_root / config['attempt_id'] / 'report')
+    envelope = {field: prepared[field] for field in fields}
+    envelope.update(schema_version=1, outcome='success' if completed.returncode == 0 else 'failure',
+                    report_path=report, artifact_hashes={report: hashes['report']}, usage=None,
+                    exit_code=completed.returncode)
+    _publish(attempt / 'result.json', envelope)
+    _publish(attempt / 'completion.json', {'state': 'published'})
 
 
 if __name__ == '__main__':
-    _run(json.loads(sys.argv[1]))
+    _run(json.load(sys.stdin))
