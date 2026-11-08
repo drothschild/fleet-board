@@ -338,6 +338,23 @@ class RecoveryContract(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
 
+    def test_malformed_prior_telemetry_cannot_break_reconcile(self):
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'alive', 'heartbeat': {'at': 90},
+                        'progress': {'sequence': 1, 'kind': 'checkpoint', 'observed_at': 90}}
+        self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'heartbeat': None,
+                                        'progress': {'sequence': 'bad'}, 'deadline': 1000},
+                                  self.store.snapshot()['domain']['revision'])
+        try:
+            Recovery(self.store, Inspector()).reconcile(now=100)
+        except (TypeError, ValueError):
+            self.fail('malformed prior telemetry interrupted reconciliation')
+        import json
+        data = json.loads(self.store.snapshot()['attempts'][0]['data'])
+        self.assertEqual(data['heartbeat'], 90)
+        self.assertEqual(data['progress']['sequence'], 1)
+
     def test_heartbeat_without_progress_marks_suspected_stuck(self):
         class Inspector:
             def inspect(self, attempt):
