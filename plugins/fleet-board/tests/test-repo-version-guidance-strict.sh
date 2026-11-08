@@ -41,8 +41,6 @@ rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak "$R"/.claude-plugin/*.bak
 g add -A; g commit -qm bump
 if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out2" 2>&1; then ok "configured lint passes a bumped branch"; else bad "configured lint rejected a bumped branch"; fi
 
-# (Card 238's "the shipped plugin is untouched by this card" check is not kept here:
-# it compared the current branch with origin/main, so it held only on that card's own
-# branch and failed every later PR that changes the plugin.)
-
+# Acceptance 3 (a diff of the current branch against origin/main) was removed: it was a one-time
+# check for card 227 and fails every later PR that changes agents, skills or scripts.
 exit $fail

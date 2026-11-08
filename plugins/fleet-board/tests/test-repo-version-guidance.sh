@@ -29,9 +29,8 @@ else
   bad ".fleet-board.yml commands.lint does not run test-version-bumped.sh"
 fi
 
-# (Card 238's "the shipped plugin is untouched by this card" check is not kept here:
-# it compared the current branch with origin/main, so it held only on that card's own
-# branch and failed every later PR that changes the plugin.)
+# Acceptance 3 (a diff of the current branch against origin/main) was removed: it was a one-time
+# check for card 227 and fails every later PR that changes agents, skills or scripts.
 
 # Acceptance 4: the check can fail. Fixture repo: branch without a bump is flagged.
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
