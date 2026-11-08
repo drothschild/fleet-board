@@ -94,8 +94,8 @@ def verify_worker_scope(store, card, changed_paths):
     return {'publication_hold': False, 'quarantined': False, **result}
 
 
-def request_scope_expansion(store, card, paths, expected_revision, checkpoint):
-    """Checkpoint denied work before it leaves capacity without consuming retry budget."""
+def request_scope_expansion(store, card, paths, expected_revision, checkpoint, release_slot):
+    """Checkpoint a denied writer, then release capacity without retry penalty."""
     try:
         reservation = store.expand_scope(str(card), paths, expected_revision)
         return {'granted': True, 'reservation': reservation}
@@ -104,6 +104,10 @@ def request_scope_expansion(store, card, paths, expected_revision, checkpoint):
             raise
         if not callable(checkpoint):
             raise ValueError('scope expansion requires a checkpoint callback')
+        if not callable(release_slot):
+            raise ValueError('scope expansion requires a slot-release callback')
         checkpoint()
+        release_slot()
         return {'granted': False, 'waiting_on': str(exc).split('#', 1)[1],
-                'checkpointed': True, 'retry_penalty': False, 'attempt_should_exit': True}
+                'checkpointed': True, 'worker_slot_released': True,
+                'retry_penalty': False, 'attempt_should_exit': True}

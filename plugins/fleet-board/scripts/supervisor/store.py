@@ -138,7 +138,7 @@ def _private_directory(path):
 
 class Store:
     @classmethod
-    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None):
+    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None, human_actor_verifier=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
         if not all(isinstance(v, str) and v for v in identity.values()):
             raise ValueError('invalid domain identity')
@@ -209,13 +209,16 @@ class Store:
                 conn.execute('ROLLBACK')
             conn.close()
             raise
-        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier)
+        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier, human_actor_verifier)
 
-    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier):
+    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier, human_actor_verifier=None):
         self.__connection = connection
         self.__stop_evidence_verifier = stop_evidence_verifier
         self.__retry_evidence_verifier = retry_evidence_verifier
         self.__launch_evidence_verifier = launch_evidence_verifier
+        # This callback is an injected trust boundary. It does not itself
+        # provide or claim a real service authentication boundary.
+        self.__human_actor_verifier = human_actor_verifier
         self.directory = directory
         self.domain_id = domain_id
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
@@ -312,6 +315,34 @@ class Store:
                 positions[node] = len(path); path.append(node); node = waits[node]
         return cycles
 
+    def _card_lifecycles(self):
+        states = {}
+        for row in self.__connection.execute("SELECT type,payload FROM events WHERE type IN ('card_lifecycle','scope_refresh_intent','scope_refresh_succeeded') ORDER BY sequence"):
+            payload = json.loads(row['payload'])
+            if row['type'] == 'card_lifecycle':
+                states[payload['card']] = payload['state']
+            elif row['type'] == 'scope_refresh_intent':
+                states[payload['card']] = 'refresh_pending'
+            else:
+                states[payload['card']] = payload['workflow_state']
+        return states
+
+    def set_card_lifecycle(self, card, state, expected_revision):
+        allowed = {'ready', 'active', 'review', 'ci_wait', 'human_qa', 'retry_wait', 'paused', 'blocked', 'complete', 'needs_attention'}
+        if not isinstance(card, str) or not card or not isinstance(state, str) or state not in allowed:
+            raise ValueError('invalid card lifecycle')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or revision != expected_revision:
+                raise ValueError('revision mismatch')
+            self._event('card_lifecycle', {'card': card, 'state': state})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
     def reserve_scope(self, card, paths, expected_revision, *, enforceable=True):
         if not isinstance(card, str) or not card or type(enforceable) is not bool:
             raise ValueError('invalid reservation')
@@ -353,7 +384,7 @@ class Store:
     def expand_scope(self, card, paths, expected_revision):
         return self.reserve_scope(card, paths, expected_revision)
 
-    def release_scope(self, card, command_id, actor, reason, expected_revision, *, reservation_revision=None):
+    def release_scope(self, card, command_id, actor, reason, expected_revision, *, reservation_revision=None, actor_capability=None):
         if any(not isinstance(x, str) or not x for x in (card, command_id, actor, reason)):
             raise ValueError('invalid release request')
         c = self.__connection
@@ -362,12 +393,16 @@ class Store:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
                 raise ValueError('revision mismatch')
-            if c.execute('SELECT desired_mode FROM domain').fetchone()[0] != 'paused':
+            if type(reservation_revision) is not int:
+                raise ValueError('reservation revision required')
+            if self.__human_actor_verifier is None or self.__human_actor_verifier(actor, actor_capability) is not True:
+                raise ValueError('authenticated human actor required')
+            if self._card_lifecycles().get(card) != 'paused':
                 raise ValueError('card must be paused before release')
             reservation = self._reservations().get(card)
             if reservation is None:
                 raise ValueError('no reservation')
-            if reservation_revision is not None and reservation['revision'] != reservation_revision:
+            if reservation['revision'] != reservation_revision:
                 raise ValueError('reservation revision mismatch')
             if any(json.loads(row['data']).get('execution_released') is not True for row in c.execute("SELECT data FROM attempts WHERE job_id IN (SELECT id FROM jobs WHERE card=?)", (card,))):
                 raise ValueError('live or uncertain writer')
@@ -384,21 +419,50 @@ class Store:
             raise
 
     def resume_scope(self, card, paths, workflow_state, refresh_branch, *, expected_revision):
+        paths = self._normalize_scope(paths)
+        if not isinstance(workflow_state, str) or not workflow_state:
+            raise ValueError('invalid workflow state')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
         try:
-            self.reserve_scope(card, paths, expected_revision)
-        except ValueError as exc:
-            if not str(exc).startswith('scope conflict with #'):
-                raise
-            return {'state': 'scope_wait', 'waiting_on': str(exc).split('#', 1)[1], 'workflow_state': workflow_state}
-        refresh_branch()
-        self.append_event({'type': 'scope_resumed', 'payload': {'card': card, 'workflow_state': workflow_state, 'evidence_invalidated': True}})
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or expected_revision != revision:
+                raise ValueError('revision mismatch')
+            owner = self.scope_conflict(card, paths)
+            if owner is not None:
+                self._event('scope_wait', {'card': card, 'waiting_on': owner})
+                cycles = self._scope_wait_cycles()
+                if cycles:
+                    self._event('scope_cycle_attention', {'cycles': cycles})
+                c.execute('COMMIT')
+                return {'state': 'scope_wait', 'waiting_on': owner, 'workflow_state': workflow_state}
+            prior = self._reservations().get(card)
+            union = sorted(set((prior or {}).get('paths', [])) | set(paths))
+            self._event('scope_reserved', {'card': card, 'paths': union, 'enforceable': True,
+                                           'reservation_revision': (prior or {}).get('revision', 0) + 1})
+            self._event('scope_wait_cleared', {'card': card})
+            self._event('scope_refresh_intent', {'card': card, 'workflow_state': workflow_state})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+        try:
+            refresh_branch()
+        except Exception as exc:
+            self.append_event({'type': 'scope_refresh_failed', 'payload': {'card': card, 'reason': str(exc)[:300]}})
+            return {'state': 'refresh_pending', 'attention': True, 'workflow_state': workflow_state}
+        self.append_event({'type': 'scope_refresh_succeeded', 'payload': {'card': card, 'workflow_state': workflow_state,
+                                                                          'evidence_invalidated': True}})
         return {'state': 'ready', 'workflow_state': workflow_state, 'evidence_invalidated': True}
 
     def verify_scope_changes(self, card, changed_paths):
         reservation = self._reservations().get(str(card))
         if reservation is None:
             return {'authorized': False, 'publication_hold': True, 'reason': 'missing reservation'}
-        changed = self._normalize_scope(changed_paths)
+        try:
+            changed = self._normalize_scope(changed_paths)
+        except ValueError:
+            changed = ['<invalid-scope>']
         if '' in reservation['paths']:
             return {'authorized': True, 'publication_hold': False}
         unauthorized = []
@@ -406,9 +470,30 @@ class Store:
             if not any(path == owned or path.startswith(owned + '/') for owned in reservation['paths']):
                 unauthorized.append(path)
         if unauthorized:
-            self.append_event({'type': 'scope_violation', 'payload': {'card': str(card), 'paths': unauthorized}})
+            c = self.__connection
+            c.execute('BEGIN IMMEDIATE')
+            try:
+                jobs = list(c.execute("SELECT id,generation FROM jobs WHERE card=? AND state='active'", (str(card),)))
+                for job in jobs:
+                    c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (job['id'],))
+                    for row in list(c.execute('SELECT id,data FROM attempts WHERE job_id=?', (job['id'],))):
+                        data = json.loads(row['data'])
+                        data['quarantine_reason'] = 'unauthorized scope change'
+                        c.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?", (canonical_json(data), row['id']))
+                c.execute("UPDATE effects SET status='blocked' WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (str(card),))
+                self._event('scope_violation', {'card': str(card), 'paths': unauthorized})
+                c.execute('COMMIT')
+            except Exception:
+                c.execute('ROLLBACK')
+                raise
             return {'authorized': False, 'publication_hold': True, 'paths': unauthorized}
         return {'authorized': True, 'publication_hold': False}
+
+    def _publication_held(self, card):
+        for row in self.__connection.execute("SELECT payload FROM events WHERE type='scope_violation'"):
+            if json.loads(row['payload']).get('card') == str(card):
+                return True
+        return False
 
     def start_session(self, session):
         required = ('id', 'started_at', 'deadline', 'known_spend', 'unknown_spend', 'budget_stop')
@@ -469,6 +554,11 @@ class Store:
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
                 raise ValueError('revision mismatch')
+            lifecycle = self._card_lifecycles().get(job['card'])
+            if lifecycle == 'refresh_pending':
+                raise ValueError('refresh pending; worker admission blocked')
+            if lifecycle in ('paused', 'human_qa', 'complete', 'needs_attention'):
+                raise ValueError('card lifecycle blocks worker admission')
             if c.execute('SELECT 1 FROM sessions WHERE id=?', (job['session_id'],)).fetchone() is None:
                 raise ValueError('unknown session')
             active = list(c.execute('SELECT claims.*,attempts.data AS attempt_data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
@@ -988,6 +1078,9 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             job = c.execute('SELECT generation,card FROM jobs WHERE id=?', (effect['job_id'],)).fetchone()
+            publication = effect['intent'].get('kind') in ('publish', 'publication', 'commit_publication', 'pr_update', 'merge')
+            if job is not None and publication and self._publication_held(job['card']):
+                raise ValueError('publication held after unauthorized scope change')
             if job is None or job['generation'] != effect['generation']:
                 raise ValueError('unknown or stale effect job')
             row = c.execute('SELECT * FROM effects WHERE operation_key=?', (effect['operation_key'],)).fetchone()
@@ -1009,9 +1102,11 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
-            row = c.execute('SELECT observation FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            row = c.execute('SELECT observation,card,intent FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
             if row is None:
                 raise ValueError('unknown effect')
+            if json.loads(row['intent']).get('kind') in ('publish', 'publication', 'commit_publication', 'pr_update', 'merge') and self._publication_held(row['card']):
+                raise ValueError('publication held after unauthorized scope change')
             if row['observation'] is not None:
                 if row['observation'] != encoded:
                     raise ValueError('conflicting effect observation')
@@ -1194,9 +1289,12 @@ class Store:
             records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results', 'effects')}
             attention = [{'type': 'scope_cycle', 'cards': cycle} for cycle in self._scope_wait_cycles()]
             reservations = sorted(self._reservations().values(), key=lambda item: item['card'])
+            card_lifecycle = self._card_lifecycles()
+            attention_cards = sorted(card for card, state in card_lifecycle.items() if state in ('refresh_pending', 'needs_attention'))
             connection.execute('COMMIT')
             return {'domain': domain, 'events': events, 'commands': commands, 'attention': attention,
-                    'reservations': reservations, **records}
+                    'reservations': reservations, 'card_lifecycle': card_lifecycle,
+                    'attention_cards': attention_cards, **records}
         except Exception:
             connection.execute('ROLLBACK')
             raise

@@ -156,7 +156,7 @@ class Reservations(unittest.TestCase):
         self.pause_card("12")
         with self.assertRaises(ValueError):
             self.store.release_scope("12", "release-live", "human", "blocked", self.store.snapshot()["domain"]["revision"],
-                                     reservation_revision=1, actor_capability=self.capability())
+                                     reservation_revision=2, actor_capability=self.capability())
 
     def test_release_rejects_unpaused_card(self):
         self.reserve("12", ["src/a"])
@@ -187,7 +187,7 @@ class Reservations(unittest.TestCase):
         self.pause_card("12")
         with self.assertRaisesRegex(ValueError, "pending effect"):
             self.store.release_scope("12", "release-effect", "human", "blocked", self.store.snapshot()["domain"]["revision"],
-                                     reservation_revision=1, actor_capability=self.capability())
+                                     reservation_revision=2, actor_capability=self.capability())
 
     def test_release_requires_reservation_revision_and_human_capability(self):
         self.reserve("12", ["src/a"])
@@ -232,15 +232,27 @@ class Reservations(unittest.TestCase):
         self.reserve("12", ["src/a"])
         self.reserve("13", ["docs/new"])
         calls = []
+        def refresh_with_observation():
+            calls.append("refresh")
+            snap = self.store.snapshot()
+            self.assertEqual(snap["card_lifecycle"]["12"], "refresh_pending")
+            self.assertEqual(snap["events"][-1]["type"], "scope_refresh_intent")
         result = self.store.resume_scope("12", ["src/a", "docs/new"], "human_qa",
-                                         lambda: calls.append("refresh"), expected_revision=self.store.snapshot()["domain"]["revision"])
+                                         refresh_with_observation, expected_revision=self.store.snapshot()["domain"]["revision"])
         self.assertEqual(result["state"], "scope_wait")
-        result = self.store.resume_scope("12", ["src/a"], "human_qa", lambda: calls.append("refresh"),
+        result = self.store.resume_scope("12", ["src/a"], "human_qa", refresh_with_observation,
                                          expected_revision=self.store.snapshot()["domain"]["revision"])
         self.assertEqual(calls, ["refresh"])
         self.assertEqual(result["state"], "ready")
         self.assertTrue(result["evidence_invalidated"])
         self.assertEqual(result["workflow_state"], "human_qa")
+        self.assertEqual(self.store.snapshot()["events"][-1]["type"], "scope_refresh_succeeded")
+        job = {"id": "job12", "card": "12", "action": "start", "role": "implementor", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "attempt12", "session_id": "default"}
+        with self.assertRaisesRegex(ValueError, "card lifecycle blocks worker admission"):
+            self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                       {"global_cap": 1, "provider_cap": 1, "paths": ["src/a"]})
 
     def test_resume_failure_and_restart_remain_pending_and_block_admission(self):
         self.reserve("12", ["src/a"])
@@ -249,6 +261,7 @@ class Reservations(unittest.TestCase):
         result = self.store.resume_scope("12", ["src/a"], "human_qa", fail_refresh,
                                          expected_revision=self.store.snapshot()["domain"]["revision"])
         self.assertEqual(result["state"], "refresh_pending")
+        self.assertEqual(self.store.snapshot()["events"][-1]["type"], "scope_refresh_failed")
         other = Store.open(self.domain, filesystem_inspector=lambda _path: "local")
         self.addCleanup(other.close)
         self.assertIn("12", other.snapshot()["attention_cards"])
