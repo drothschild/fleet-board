@@ -484,6 +484,49 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
+    def begin_retry_launch(self, job_id, eligibility, *, now, limits, expected_revision):
+        """Recheck current retry admission and commit launch intent atomically."""
+        if (type(now) not in (int, float) or not math.isfinite(now) or now < 0 or not isinstance(limits, dict)
+                or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
+                or any(type(limits[k]) is not int or limits[k] < 1 for k in ('global_cap', 'provider_cap'))
+                or type(limits['max_cost_usd']) not in (int, float) or not math.isfinite(limits['max_cost_usd']) or limits['max_cost_usd'] <= 0):
+            raise ValueError('invalid retry limits')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            domain = c.execute('SELECT * FROM domain').fetchone()
+            job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if job is None:
+                raise ValueError('unknown retry job')
+            data = json.loads(job['data'])
+            prior = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (data.get('retry_prior'), job_id)).fetchone()
+            current = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (data.get('retry_nonce'), job_id)).fetchone()
+            if prior is None or current is None:
+                raise ValueError('missing retry attempt')
+            self._verify_retry_evidence(eligibility, job_id, prior)
+            prior_data, current_data = json.loads(prior['data']), json.loads(current['data'])
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+            claim = c.execute('SELECT 1 FROM claims WHERE attempt_id=?', (current['id'],)).fetchone()
+            active = list(c.execute('SELECT claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if json.loads(item['data']).get('execution_released') is not True]
+            if (type(expected_revision) is not int or domain['revision'] != expected_revision or domain['desired_mode'] != 'running'
+                    or now < data['retry_at'] or job['state'] != 'active' or current['state'] != 'prepared'
+                    or job['generation'] != prior_data['generation'] + 1 or current_data['generation'] != job['generation']
+                    or prior_data.get('execution_released') is not True or claim is None
+                    or session is None or now >= session['deadline'] or session['unknown_spend'] or session['budget_stop']
+                    or session['known_spend'] >= limits['max_cost_usd'] or len(occupied) > limits['global_cap']
+                    or sum(item['provider'] == current['provider'] for item in occupied) > limits['provider_cap']
+                    or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                    or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
+                raise ValueError('retry launch admission blocked')
+            current_data['state'] = 'launching'
+            c.execute("UPDATE attempts SET state='launching',data=? WHERE id=?", (canonical_json(current_data), current['id']))
+            self._event('retry_launch_started', {'attempt_id': current['id']})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
     def record_execution_stopped(self, attempt_id, evidence, expected_revision):
         """Record only a trusted, exactly bound complete-tree observation."""
         if type(evidence) is not StopEvidence:

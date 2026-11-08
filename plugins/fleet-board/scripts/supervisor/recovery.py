@@ -255,7 +255,8 @@ class Recovery:
                         if self.retry_launcher is not None:
                             attempt_id = prepared['attempt_id']
                             launch_input = self.retry_launcher.prepare(self.store, attempt_id)
-                            self.store.update_attempt(attempt_id, {'state': 'launching'}, self.store.snapshot()['domain']['revision'])
+                            self.store.begin_retry_launch(job['id'], evidence, now=now, limits=self.retry_limits,
+                                                          expected_revision=self.store.snapshot()['domain']['revision'])
                             try:
                                 self.retry_launcher.launch(launch_input)
                             except Exception:
