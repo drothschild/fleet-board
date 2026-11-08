@@ -1336,6 +1336,21 @@ assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | se
 plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
 assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
+# Candidate mode exposes the same workflow decision without tick-local admission.
+setup_case ready-start
+run_check "$SCRIPT" --candidates
+assert_exit "candidate mode: exit" 0
+assert_jq "candidate mode: schema version" '.schema_version' '1'
+assert_jq "candidate mode: action parity" '.candidates[0].action' '"start"'
+assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | [has("preconditions"), has("declared_paths"), has("actual_paths"), has("scope_complete"), has("dependencies"), has("stage"), has("head_sha"), has("round"), has("priority"), has("state_revision")])' '[true,true,true,true,true,true,true,true,true,true]'
+assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
+assert_jq "candidate mode: empty actual paths are complete" '(.candidates[0] | [.actual_paths, .scope_complete])' '[[],true]'
+
+run_check "$SCRIPT" --unknown-mode
+assert_exit "candidate mode: invalid mode rejected" 2
+run_check "$SCRIPT" --candidates --settle 12
+assert_exit "candidate mode: cannot combine with settle" 2
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
