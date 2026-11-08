@@ -502,6 +502,32 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
         self.assertEqual(len(snapshot['claims']), 1)
 
+    def test_quarantined_attempt_releases_after_observed_boot_change(self):
+        import json
+        from unittest import mock
+        identity = {'boot_id': 'old-boot', 'pid': 42, 'started_at': 'start', 'nonce': 'n'}
+        self.store.update_attempt('n', {'state': 'running', 'boot_id': 'old-boot', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        class Unknown:
+            def inspect(self, attempt):
+                return {'status': 'unknown'}
+        Recovery(self.store, Unknown()).reconcile(now=10)
+        path = self.store.directory / 'attempts' / 'n'
+        path.mkdir(parents=True)
+        prepared = {'domain_id': self.store.domain_id, 'job_id': 'j', 'attempt_id': 'n', 'nonce': 'n',
+                    'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': 'code', 'session_id': 's'}
+        (path / 'prepared.json').write_text(json.dumps(prepared))
+        (path / 'receipt.json').write_text(json.dumps({'state': 'registered', 'identity': identity}))
+        with mock.patch('supervisor.processes._boot_id', return_value='new-boot'), \
+             mock.patch('supervisor.store._boot_id', return_value='new-boot'):
+            Recovery(self.store).reconcile(now=11)
+        after = self.store.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data']).get('execution_released'))
+        self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(after['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(after['claims']), 1)
+
     def test_quarantined_attempt_releases_occupancy_after_later_trusted_stop(self):
         import json
         from supervisor.models import StopEvidence
