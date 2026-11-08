@@ -660,6 +660,19 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(data['cancel_grace_deadline'], 15)
         self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
 
+    def test_fresh_attempt_rejects_preloaded_lifecycle_authority(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        before = self.store.snapshot()
+        for field, value in [('execution_released', True), ('stop_evidence', {}), ('cancel_reason', 'stop'),
+                             ('cancel_requested_at', 1), ('cancel_grace_deadline', 2), ('process_identity', {}),
+                             ('boot_id', 'old'), ('state', 'running')]:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.store.prepare_attempt(dict(job, **{field: value}), before['domain']['revision'],
+                                           {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+            self.assertEqual(self.store.snapshot(), before)
+
     def test_execution_release_requires_bound_complete_tree_proof(self):
         from supervisor import models
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
