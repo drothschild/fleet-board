@@ -6,7 +6,7 @@
 
 **Baseline:** `db52f9f313adf2d6d5cd6c70c793296a13abb679` (revalidated 2026-11-07; originally `28866b0`). All existing paths below were checked against the original baseline and the intervening PR #200/#207 changes. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
 
-**Status:** Phase 1 in progress. Configuration and the initial store are implemented behind the disabled supervisor flag; later phases, including the runner and boot service, remain unimplemented.
+**Status:** Phase 1 implemented and independently reviewed; merge pending. Configuration and the initial store are implemented behind the disabled supervisor flag; later phases, including the runner and boot service, remain unimplemented.
 
 ## Current-main impact assessment
 
@@ -268,4 +268,4 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Fencing, process termination, scope release and Human QA are independently enforced.
 - [ ] Concurrent upstream standalone work has been reconciled against actual main before implementation.
 
-Phase 1 is implemented in PR #228 and undergoing independent review. The next implementation phase is detached attempts and recovery (Tasks 2.1–2.2), after the foundation is reviewed and merged. Supervisor execution remains disabled; host installation and paid qualification remain separate gates.
+Phase 1 is implemented and independently approved in PR #228. The next implementation phase is detached attempts and recovery (Tasks 2.1–2.2), after the foundation is reviewed and merged. Supervisor execution remains disabled; host installation and paid qualification remain separate gates.
