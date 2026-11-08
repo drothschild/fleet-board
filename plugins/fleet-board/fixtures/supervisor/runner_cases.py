@@ -5,7 +5,7 @@ import sys
 import tempfile
 import time
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from supervisor.processes import ProcessIdentity, identity_for, inspect_identity
 from supervisor.runner import Runner
@@ -59,7 +59,7 @@ def test_artifact_ingestion():
     import hashlib
     from supervisor.workers import ingest_artifacts
     with tempfile.TemporaryDirectory() as tmp:
-        root = pathlib.Path(tmp)
+        root = pathlib.Path(tmp).resolve()
         scratch = root / 'scratch'
         scratch.mkdir()
         (scratch / 'report').write_text('report content')
