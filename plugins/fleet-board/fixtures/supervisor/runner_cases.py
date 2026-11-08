@@ -152,3 +152,22 @@ def test_heartbeat_and_bounded_logs():
 
 
 test_heartbeat_and_bounded_logs()
+
+
+def test_cancel_preserves_uncertainty():
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        runner = Runner(root, fixture_command=[sys.executable, '-c', 'import time; time.sleep(30)'])
+        process = runner.launch({'attempt_id': 'cancel', 'nonce': 'n'})
+        receipt = root / 'attempts' / 'cancel' / 'receipt.json'
+        deadline = time.monotonic() + 8
+        while not receipt.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        identity = ProcessIdentity(**json.loads(receipt.read_text())['identity'])
+        assert runner.cancel(identity, time.monotonic() + 2) == 'unknown'
+        process.wait(timeout=10)
+        assert runner.inspect(identity) == 'unknown'
+
+
+test_cancel_preserves_uncertainty()
