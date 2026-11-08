@@ -579,6 +579,26 @@ class StoreContract(unittest.TestCase):
             Store.open(self.domain, filesystem_inspector=lambda path: "remote")
 
 
+    def test_late_result_after_cancellation_is_evidence_without_resurrection(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.request_cancellation("n1", "cancel-1", "stop", self.store.snapshot()["domain"]["revision"])
+        root = self.store.directory / "artifacts" / "n1"
+        root.mkdir(parents=True, mode=0o700)
+        report = root / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": {"cost_usd": 1.5}, "exit_code": 0}
+        self.assertEqual(self.store.record_result(envelope)["disposition"], "stale")
+        self.assertEqual(self.store.snapshot()["attempts"][0]["state"], "cancel_requested")
+        self.store.record_result(envelope)
+        self.assertEqual(self.store.snapshot()["sessions"][0]["known_spend"], 1.5)
+
     def test_cancellation_is_atomic_idempotent_and_cannot_be_resurrected(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer",
                "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
