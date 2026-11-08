@@ -274,6 +274,36 @@ class StoreContract(unittest.TestCase):
                 self.store.prepare_attempt(candidate, before["domain"]["revision"], claims)
             self.assertEqual(self.store.snapshot(), before)
 
+    def test_desired_modes_reopen_with_same_budget(self):
+        for sequence, command, expected in ((1, "start", "running"), (2, "pause", "paused"), (3, "stop", "stopped")):
+            self.store.record_command({"id": str(sequence), "expected_revision": self.store.snapshot()["domain"]["revision"],
+                                       "actor": "fixture", "command": command, "payload": {}})
+            other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+            try:
+                snapshot = other.snapshot()
+                self.assertEqual(snapshot["domain"]["desired_mode"], expected)
+                self.assertEqual(snapshot["sessions"][0]["deadline"], 100)
+            finally:
+                other.close()
+
+    def test_effect_observation_is_durable_and_unique(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.record_effect({"operation_key": "op", "job_id": "j1", "generation": 1,
+                                  "preconditions": {}, "intent": {"kind": "merge"}})
+        self.store.observe_effect("op", {"result": "merged", "recovery_evidence": "commit"},
+                                  self.store.snapshot()["domain"]["revision"])
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(other.close)
+        import json
+        effect = other.snapshot()["effects"][0]
+        self.assertEqual(effect["status"], "observed")
+        self.assertEqual(json.loads(effect["observation"])["recovery_evidence"], "commit")
+        self.assertEqual(effect["card"], "1")
+
     def test_metadata_and_attempt_lifecycle_survive_reopen(self):
         self.store.configure_domain({"config_hash": "abc", "service_version": "1.2"},
                                     self.store.snapshot()["domain"]["revision"])
