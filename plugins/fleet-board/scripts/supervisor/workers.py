@@ -18,7 +18,10 @@ class OwnerThreadDispatcher:
     """Marshal controller work onto the thread that owns its Store connection.
 
     The controller must call ``run_pending`` from its owner loop while worker
-    processes are running. There is deliberately no background pump.
+    processes are running. There is deliberately no background pump. The call
+    timeout bounds time waiting in the queue; once the owner claims a callback,
+    callers wait for its actual completion so they cannot report a failed
+    journal operation while the trusted mutation is still running.
     """
     def __init__(self, *, queue_limit=256, call_timeout=300):
         if type(queue_limit) is not int or queue_limit < 1:
@@ -37,10 +40,18 @@ class OwnerThreadDispatcher:
             return callback(*args, **kwargs)
         done = threading.Event()
         result = {}
-        task = (callback, args, kwargs, done, result)
+        task = {'callback': callback, 'args': args, 'kwargs': kwargs,
+                'done': done, 'result': result, 'lock': threading.Lock(),
+                'state': 'queued'}
         self._queue.put(task, timeout=self.call_timeout)
         if not done.wait(self.call_timeout):
-            raise TimeoutError('controller owner thread did not dispatch operation')
+            with task['lock']:
+                if task['state'] == 'queued':
+                    task['state'] = 'cancelled'
+                    raise TimeoutError('controller owner thread did not dispatch operation')
+            # A callback claimed before the timeout is allowed to finish. Do
+            # not let the caller journal a timeout while that mutation runs.
+            done.wait()
         if 'error' in result:
             raise result['error']
         return result.get('value')
@@ -51,15 +62,22 @@ class OwnerThreadDispatcher:
         if type(timeout) not in (int, float) or timeout < 0:
             raise ValueError('invalid controller dispatcher wait')
         try:
-            callback, args, kwargs, done, result = self._queue.get(timeout=timeout)
+            task = self._queue.get(timeout=timeout)
         except queue.Empty:
             return False
+        with task['lock']:
+            if task['state'] == 'cancelled':
+                self._queue.task_done()
+                return True
+            task['state'] = 'running'
         try:
-            result['value'] = callback(*args, **kwargs)
+            task['result']['value'] = task['callback'](*task['args'], **task['kwargs'])
         except BaseException as exc:
-            result['error'] = exc
+            task['result']['error'] = exc
         finally:
-            done.set()
+            with task['lock']:
+                task['state'] = 'completed'
+            task['done'].set()
             self._queue.task_done()
         return True
 
