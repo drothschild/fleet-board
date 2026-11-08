@@ -57,7 +57,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [x] Add failure cases for schema mismatch, invalid paths/results, foreign identity/generation, and transaction rollback leaving no partial claims. Verify unknown usage remains null/unknown and stale results cannot double-charge usage.
 - [x] Run `bash plugins/fleet-board/tests/test-supervisor-store.sh` to intended failure; commit tests.
 - [x] Implement versioned schema, explicit transactions, private runtime directories, WAL/full synchronous settings, local-storage requirement, atomic revision/event writes and SQLite backup API. Make schema migration backup-first and fail closed for future versions.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Initial schema:** Version 1 is the first supported schema; populated unversioned and future stores fail closed. There are no supported migrations yet; future migrations must use a backup before writing. Report semantics and durable artifact ingestion are runner responsibilities. Scope expansion is Task 3.2.
 
