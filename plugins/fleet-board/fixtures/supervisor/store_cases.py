@@ -660,6 +660,50 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(data['cancel_grace_deadline'], 15)
         self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
 
+    def test_one_retry_survives_restart_and_transfers_reservation(self):
+        from supervisor import models
+        self.assertTrue(hasattr(models, 'RetryEvidence'), 'trusted retry evidence is not implemented')
+        self.assertTrue(hasattr(self.store, 'schedule_retry'), 'atomic retry scheduling is not implemented')
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                             stop_evidence_verifier=lambda _: True, retry_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                'expected_revision': trusted.snapshot()['domain']['revision']})
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        trusted.request_cancellation('n1', 'cancel', 'infrastructure', trusted.snapshot()['domain']['revision'], now=10)
+        proof = models.StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                                    boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        eligibility = models.RetryEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1)
+        trusted.schedule_retry('j1', 'n1', eligibility, retry_at=20, expected_revision=trusted.snapshot()['domain']['revision'])
+        scheduled = trusted.snapshot()
+        self.assertEqual(scheduled['jobs'][0]['retries_used'], 1)
+        self.assertEqual(scheduled['jobs'][0]['state'], 'retry_wait')
+        self.assertEqual(len(scheduled['claims']), 1)
+        restarted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', retry_evidence_verifier=lambda _: True)
+        self.addCleanup(restarted.close)
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=19, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=restarted.snapshot()['domain']['revision'])
+        retry = restarted.prepare_retry('j1', eligibility, now=20, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                        expected_revision=restarted.snapshot()['domain']['revision'])
+        snapshot = restarted.snapshot()
+        self.assertEqual(len(snapshot['attempts']), 2)
+        self.assertEqual(snapshot['claims'][0]['attempt_id'], retry['attempt_id'])
+        fresh = next(x for x in snapshot['attempts'] if x['id'] == retry['attempt_id'])
+        self.assertIsNot(json.loads(fresh['data']).get('execution_released'), True)
+        with self.assertRaises(ValueError):
+            restarted.schedule_retry('j1', retry['attempt_id'], eligibility, retry_at=30,
+                                     expected_revision=snapshot['domain']['revision'])
+        self.assertEqual(len(restarted.snapshot()['attempts']), 2)
+
     def test_fresh_attempt_rejects_preloaded_lifecycle_authority(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
