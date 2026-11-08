@@ -1,10 +1,14 @@
 """Host-enforced worker isolation policies. Unsupported hosts fail closed."""
 import os
 import json
+import os
 from pathlib import Path
+import selectors
+import signal
 import shutil
 import subprocess
 import tempfile
+import time
 
 
 class IsolationUnavailable(RuntimeError):
@@ -123,14 +127,82 @@ def probe_capabilities(policy):
             shutil.rmtree(probe_root, ignore_errors=True)
 
 
-def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_data=None):
+def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_data=None,
+                 stdout_limit=1048576, stderr_limit=65536):
     capability = capability or probe_capabilities(policy)
     if not capability.get('available'):
         raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
+    if (type(timeout) not in (int, float) or timeout <= 0
+            or type(stdout_limit) is not int or stdout_limit < 1
+            or type(stderr_limit) is not int or stderr_limit < 1
+            or (input_data is not None and not isinstance(input_data, bytes))):
+        raise ValueError('invalid isolated process bounds')
+    process = None
+    selector = selectors.DefaultSelector()
+    captured = {}
     try:
-        return subprocess.run(_wrapped_command(argv, policy), cwd=cwd or policy['workspace'],
-                              input=input_data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              timeout=timeout, check=False, close_fds=True,
-                              env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'})
+        process = subprocess.Popen(
+            _wrapped_command(argv, policy), cwd=cwd or policy['workspace'],
+            stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, close_fds=True,
+            start_new_session=True,
+            env={'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent'},
+        )
+        captured = {process.stdout: bytearray(), process.stderr: bytearray()}
+        limits = {process.stdout: stdout_limit, process.stderr: stderr_limit}
+        for stream in captured:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        offset = 0
+        if process.stdin is not None:
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE)
+        deadline = time.monotonic() + timeout
+        while selector.get_map() or process.poll() is None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise IsolationUnavailable('isolated worker deadline exceeded')
+            for key, _ in selector.select(min(.05, remaining)):
+                if process.stdin is not None and key.fileobj is process.stdin:
+                    data = input_data or b''
+                    if offset < len(data):
+                        offset += os.write(key.fd, data[offset:offset + 65536])
+                    if offset >= len(data):
+                        selector.unregister(key.fileobj)
+                        process.stdin.close()
+                    continue
+                chunk = os.read(key.fd, min(65536, limits[key.fileobj] + 1 - len(captured[key.fileobj])))
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                captured[key.fileobj].extend(chunk)
+                if len(captured[key.fileobj]) > limits[key.fileobj]:
+                    raise IsolationUnavailable('isolated worker output exceeded limit')
+        return subprocess.CompletedProcess(
+            process.args, process.returncode,
+            bytes(captured[process.stdout]), bytes(captured[process.stderr]),
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise IsolationUnavailable(str(exc)[:200]) from exc
+    except BaseException:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=.3)
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+        raise
+    finally:
+        selector.close()
+        for stream in captured:
+            try:
+                stream.close()
+            except OSError:
+                pass
