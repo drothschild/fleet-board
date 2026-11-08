@@ -141,6 +141,46 @@ class RecoveryContract(unittest.TestCase):
         self.assertTrue(finished, 'inspection blocked on publication lock')
         self.assertEqual(results[0]['status'], 'unknown')
 
+    def test_real_term_resistant_child_keeps_uncertain_occupancy(self):
+        import os
+        import signal
+        import time
+        from supervisor.processes import identity_for
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        pidfile = scratch / 'child.pid'
+        script = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', script, str(pidfile)]).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        child = None
+        try:
+            limit = time.monotonic() + 8
+            while not pidfile.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(pidfile.exists())
+            child = identity_for(int(pidfile.read_text()), 'fixture-child')
+            self.store.update_attempt('n', {'state': 'running', 'deadline': 10},
+                                      self.store.snapshot()['domain']['revision'])
+            Recovery(self.store).reconcile(now=10)
+            process.wait(timeout=5)
+            Recovery(self.store).reconcile(now=11)
+            snapshot = self.store.snapshot()
+            self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+            self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+            self.assertEqual(len(snapshot['claims']), 1)
+            self.assertEqual(identity_for(child.pid, child.nonce), child)
+        finally:
+            if child is not None:
+                try:
+                    if identity_for(child.pid, child.nonce) == child:
+                        os.kill(child.pid, signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
     def test_hard_deadline_fences_before_term_then_kills_after_persisted_grace(self):
         class Inspector:
             def __init__(self, store):
