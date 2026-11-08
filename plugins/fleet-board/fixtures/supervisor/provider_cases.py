@@ -21,7 +21,7 @@ from supervisor.workers import request_scope_expansion
 
 class ProviderCases(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="provider-case-"))
+        self.root = Path(tempfile.mkdtemp(prefix="provider-case-")).resolve()
         self.workspace = self.root / "workspace"
         self.workspace.mkdir(mode=0o700)
         self.request = ProviderRequest.create(
@@ -115,4 +115,6 @@ class ProviderCases(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        sys.argv.pop(1)  # shell harness supplies a private scratch directory
     unittest.main()
