@@ -185,10 +185,11 @@ def test_result_precedes_exit_without_freeing_slot():
         scratch.mkdir()
         (scratch / 'report').write_text('{"status":"clean"}')
         marker = scratch / 'ready.json'
-        command = [sys.executable, '-c', "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}'); time.sleep(2)", str(marker)]
+        command = [sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(marker)]
         attempt = {'domain_id': 'd', 'job_id': 'j', 'attempt_id': 'n', 'nonce': 'n',
                    'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': None, 'scratch': str(scratch)}
-        runner = Runner(root, fixture_command=command)
+        barrier = root / 'release'
+        runner = Runner(root, fixture_command=command, fixture_finish_barrier=barrier)
         process = runner.launch(attempt)
         result = root / 'attempts' / 'n' / 'result.json'
         deadline = time.monotonic() + 5
@@ -196,6 +197,7 @@ def test_result_precedes_exit_without_freeing_slot():
             time.sleep(.05)
         assert result.exists() and process.poll() is None
         assert not (result.parent / 'completion.json').exists()
+        barrier.touch()
         process.wait(timeout=10)
         assert (result.parent / 'completion.json').exists()
 
