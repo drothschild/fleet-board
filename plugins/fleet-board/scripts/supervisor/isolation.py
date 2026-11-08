@@ -53,11 +53,13 @@ def build_policy(workspace, private_git, channels):
             raise ValueError('control character in isolation path')
         allow_reads = ' '.join('(subpath ' + json.dumps(p) + ')' for p in
                                ('/System', '/usr', '/bin', '/sbin', '/Library/Apple/System/Library'))
+        writable_roots = (workspace, private_git)
+        allow_write = ' '.join('(subpath ' + json.dumps(p) + ')' for p in writable_roots)
         allow_work = ' '.join('(subpath ' + json.dumps(p) + ')' for p in roots)
         inference_socket = os.path.join(channels, 'inference.sock')
         text = ('(version 1)\n(deny default)\n(allow process-fork)\n(allow process-exec)\n(allow sysctl-read)\n'
                 '(allow file-read* ' + allow_reads + ')\n'
-                '(allow file-write* ' + allow_work + ')\n'
+                '(allow file-write* ' + allow_write + ')\n'
                 '(allow file-read* ' + allow_work + ')\n'
                 '(allow network-outbound (remote unix-socket (path-literal ' +
                 json.dumps(inference_socket) + ')))\n')
@@ -157,9 +159,10 @@ def _wrapped_command(argv, policy):
         for root in ('/usr', '/bin', '/sbin', '/lib', '/lib64'):
             if os.path.exists(root):
                 command.extend(('--ro-bind', root, root))
-        for key in ('workspace', 'private_git', 'channels'):
+        for key in ('workspace', 'private_git'):
             root = policy[key]
             command.extend(('--bind', root, root))
+        command.extend(('--ro-bind', policy['channels'], policy['channels']))
         command.extend(('--chdir', policy['workspace'], '--', executable, *argv[1:]))
         return command
     raise IsolationUnavailable('host isolation backend unsupported')
@@ -212,7 +215,7 @@ def probe_capabilities(policy, *, inference_socket=None, protected_resources=Non
     expected = ('workspace_read', 'workspace_write', 'controller_db', 'controller_socket',
                 'board_storage', 'shared_git_metadata', 'host_credentials', 'ssh_agent',
                 'keychain', 'symlink_escape', 'loopback_network', 'publication',
-                'forged_human_control', 'inference_channel')
+                'forged_human_control', 'inference_channel', 'channel_write')
     checks = {name: False for name in expected}
     try:
         protected = _protected_resource_paths(protected_resources)
@@ -263,7 +266,7 @@ def probe_capabilities(policy, *, inference_socket=None, protected_resources=Non
         for name in ('controller_db', 'board_storage', 'shared_git_metadata'):
             target = shlex.quote(protected[name][0])
             lines.append('if ! test -r {0} && ! test -w {0}; then {1}=pass; fi'.format(target, name))
-        lines.append('if ! {0} -z -U -w 1 {1} >/dev/null 2>&1; then controller_socket=pass; forged_human_control=pass; fi'.format(nc, shlex.quote(str(control_path))))
+        lines.append('if ! {0} -z -U -w 1 {1} >/dev/null 2>&1; then controller_socket=pass; fi'.format(nc, shlex.quote(str(control_path))))
         lines.append('if ! {0} -z -U -w 1 {1} >/dev/null 2>&1; then ssh_agent=pass; fi'.format(nc, shlex.quote(str(agent_path))))
         for name in ('host_credentials', 'keychain'):
             tests = []
@@ -278,13 +281,23 @@ def probe_capabilities(policy, *, inference_socket=None, protected_resources=Non
             'if ! printf x > {0} 2>/dev/null; then publication=pass; fi'.format(shlex.quote(str(publication))),
             'if {0} -z -w 1 127.0.0.1 {1} >/dev/null 2>&1; then loopback_network=fail; else loopback_network=pass; fi'.format(nc, tcp_listener.getsockname()[1]),
             'if printf probe | {0} -U -w 1 {1} >/dev/null 2>&1; then inference_channel=pass; else inference_channel=fail; fi'.format(nc, shlex.quote(str(inference_path))),
-            'printf "workspace_read=%s\\nworkspace_write=%s\\ncontroller_db=%s\\ncontroller_socket=%s\\nboard_storage=%s\\nshared_git_metadata=%s\\nhost_credentials=%s\\nssh_agent=%s\\nkeychain=%s\\nsymlink_escape=%s\\nloopback_network=%s\\npublication=%s\\nforged_human_control=%s\\ninference_channel=%s\\n" "$workspace_read" "$workspace_write" "$controller_db" "$controller_socket" "$board_storage" "$shared_git_metadata" "$host_credentials" "$ssh_agent" "$keychain" "$symlink_escape" "$loopback_network" "$publication" "$forged_human_control" "$inference_channel"',
+            'if ! printf x > {0} 2>/dev/null; then channel_write=pass; fi'.format(
+                shlex.quote(str(Path(policy['channels']) / ('.isolation-probe-write-' + probe_name)))),
+            'printf "workspace_read=%s\\nworkspace_write=%s\\ncontroller_db=%s\\ncontroller_socket=%s\\nboard_storage=%s\\nshared_git_metadata=%s\\nhost_credentials=%s\\nssh_agent=%s\\nkeychain=%s\\nsymlink_escape=%s\\nloopback_network=%s\\npublication=%s\\nforged_human_control=%s\\ninference_channel=%s\\nchannel_write=%s\\n" "$workspace_read" "$workspace_write" "$controller_db" "$controller_socket" "$board_storage" "$shared_git_metadata" "$host_credentials" "$ssh_agent" "$keychain" "$symlink_escape" "$loopback_network" "$publication" "$forged_human_control" "$inference_channel" "$channel_write"',
         ])
+        if inference_socket is not None:
+            forged = (r'{"schema_version":1,"operation":"human_control",'
+                      r'"attempt_id":"forged","capability":"invalid","request":{}}')
+            lines.insert(-1, 'forged_reply=$(printf \'\\000\\000\\000\\152{0}\' | {1} -U -w 1 {2} 2>/dev/null || true)'.format(
+                forged, nc, shlex.quote(str(inference_path))))
+            lines.insert(-1, 'case "$forged_reply" in *error*) forged_human_control=pass ;; esac')
         script = '\n'.join(lines) + '\n'
         script_path = Path(policy['workspace']) / ('.isolation-probe-' + probe_name + '.sh')
         script_path.write_text(script, encoding='utf-8')
         script_path.chmod(0o700)
         workspace_probe_paths.extend((script_path, Path(policy['workspace']) /
+                                      ('.isolation-probe-write-' + probe_name),
+                                      Path(policy['channels']) /
                                       ('.isolation-probe-write-' + probe_name)))
         completed = subprocess.run(_wrapped_command(['/bin/sh', str(script_path)], policy),
                                    cwd=policy['workspace'], stdin=subprocess.DEVNULL,

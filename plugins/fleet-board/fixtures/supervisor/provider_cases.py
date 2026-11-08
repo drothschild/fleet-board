@@ -1136,7 +1136,7 @@ class ProviderCases(unittest.TestCase):
         expected = {"workspace_read", "workspace_write", "controller_db", "controller_socket",
                     "board_storage", "shared_git_metadata", "host_credentials",
                     "ssh_agent", "keychain", "symlink_escape", "loopback_network",
-                    "publication", "forged_human_control", "inference_channel"}
+                    "publication", "forged_human_control", "inference_channel", "channel_write"}
         self.assertEqual(set(capability.get("checks", {})), expected)
 
     def test_host_probe_handles_an_existing_inference_socket(self):
@@ -1482,8 +1482,10 @@ class ProviderCases(unittest.TestCase):
     def test_macos_policy_denies_channel_path_mutation(self):
         policy = build_policy(self.workspace, self.root / "private-git",
                               self.root / "channels")
-        self.assertIn('(allow file-read* "' + policy["channels"] + '")', policy["text"])
-        self.assertNotIn('(allow file-write* "' + policy["channels"] + '")', policy["text"])
+        self.assertIn('(subpath "' + policy["channels"] + '")', policy["text"])
+        write_rule = next(line for line in policy["text"].splitlines()
+                          if line.startswith("(allow file-write*"))
+        self.assertNotIn(policy["channels"], write_rule)
 
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
         class Store:
