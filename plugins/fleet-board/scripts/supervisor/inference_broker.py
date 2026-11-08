@@ -14,6 +14,7 @@ import struct
 import subprocess
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 
@@ -268,8 +269,9 @@ class InferenceChannel:
     MAX_REQUEST_BYTES = 4 * 1048576
     MAX_RESPONSE_BYTES = 1049600
     MAX_REQUESTS = 32
+    MAX_REQUESTS_PER_ATTEMPT = 8
 
-    def __init__(self, broker, directory, attempt_ids, *, request_timeout=310):
+    def __init__(self, broker, directory, attempt_ids, *, request_timeout=310, frame_timeout=5):
         self.broker = broker
         self.directory = Path(directory)
         if (not self.directory.is_absolute() or self.directory.is_symlink()
@@ -291,13 +293,19 @@ class InferenceChannel:
             if attempt_id not in broker.attempts:
                 raise ValueError('inference channel attempt is not broker-authorized')
             self._capabilities[attempt_id] = secrets.token_urlsafe(32)
-        if type(request_timeout) not in (int, float) or request_timeout <= 0:
+        if (type(request_timeout) not in (int, float) or request_timeout <= 0
+                or type(frame_timeout) not in (int, float) or frame_timeout <= 0):
             raise ValueError('invalid inference channel deadline')
         self.request_timeout = request_timeout
+        self.frame_timeout = min(frame_timeout, request_timeout)
         self._listener = None
         self._thread = None
         self._stop = threading.Event()
         self._requests = 0
+        self._attempt_requests = {attempt_id: 0 for attempt_id in self._capabilities}
+        self._attempt_inflight = set()
+        self._request_lock = threading.Lock()
+        self._executor = None
         self._inode = None
 
     def capability_for(self, attempt_id):
@@ -327,6 +335,8 @@ class InferenceChannel:
             listener.listen(8)
             listener.settimeout(0.1)
             self._listener = listener
+            self._executor = ThreadPoolExecutor(max_workers=min(16, max(4, len(self._capabilities) * 4)),
+                                                thread_name_prefix='inference-request')
             self._thread = threading.Thread(target=self._serve, name='inference-broker', daemon=True)
             self._thread.start()
             return self
@@ -343,6 +353,9 @@ class InferenceChannel:
         if self._thread is not None:
             self._thread.join(timeout=1)
             self._thread = None
+        if self._executor is not None:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor = None
         self._unlink_socket()
         self._capabilities.clear()
 
@@ -381,7 +394,7 @@ class InferenceChannel:
         connection.sendall(struct.pack('!I', len(data)) + data)
 
     def _serve_request(self, connection):
-        deadline = time.monotonic() + self.request_timeout
+        deadline = time.monotonic() + self.frame_timeout
         header = self._read_exact(connection, 4, deadline)
         size = struct.unpack('!I', header)[0]
         if size < 1 or size > self.MAX_REQUEST_BYTES:
@@ -400,30 +413,54 @@ class InferenceChannel:
             raise ContractError('inference channel authentication failed')
         if raw['request'].get('attempt_id') != raw['attempt_id']:
             raise ContractError('inference channel attempt mismatch')
-        result = self.broker.infer(raw['request'], timeout=self.request_timeout - 1,
-                                   cancel_event=self._stop)
-        self._write_frame(connection, {'schema_version': 1, 'result': result}, self.MAX_RESPONSE_BYTES)
+        if not self._claim_attempt(raw['attempt_id']):
+            raise ContractError('attempt inference quota or concurrency limit exceeded')
+        try:
+            result = self.broker.infer(raw['request'], timeout=self.request_timeout - 1,
+                                       cancel_event=self._stop)
+            self._write_frame(connection, {'schema_version': 1, 'result': result}, self.MAX_RESPONSE_BYTES)
+        finally:
+            self._release_attempt(raw['attempt_id'])
+
+    def _claim_attempt(self, attempt_id):
+        with self._request_lock:
+            if (attempt_id not in self._attempt_requests
+                    or attempt_id in self._attempt_inflight
+                    or self._attempt_requests[attempt_id] >= self.MAX_REQUESTS_PER_ATTEMPT):
+                return False
+            self._attempt_requests[attempt_id] += 1
+            self._attempt_inflight.add(attempt_id)
+            return True
+
+    def _release_attempt(self, attempt_id):
+        with self._request_lock:
+            self._attempt_inflight.discard(attempt_id)
+
+    def _serve_connection(self, connection):
+        with connection:
+            try:
+                connection.settimeout(1.0)
+                self._serve_request(connection)
+            except (OSError, ValueError, TypeError, KeyError, ContractError, UnicodeDecodeError):
+                try:
+                    self._write_frame(connection, {'schema_version': 1, 'error': 'request rejected'}, 1024)
+                except OSError:
+                    pass
 
     def _serve(self):
-        while not self._stop.is_set() and self._requests < self.MAX_REQUESTS:
+        while not self._stop.is_set():
             try:
                 connection, _ = self._listener.accept()
             except socket.timeout:
                 continue
             except OSError:
                 break
-            with connection:
-                while not self._stop.is_set() and self._requests < self.MAX_REQUESTS:
-                    self._requests += 1
-                    try:
-                        connection.settimeout(1.0)
-                        self._serve_request(connection)
-                    except (OSError, ValueError, TypeError, KeyError, ContractError, UnicodeDecodeError):
-                        try:
-                            self._write_frame(connection, {'schema_version': 1, 'error': 'request rejected'}, 1024)
-                        except OSError:
-                            pass
-                        break
+            with self._request_lock:
+                if self._requests >= self.MAX_REQUESTS:
+                    connection.close()
+                    break
+                self._requests += 1
+            self._executor.submit(self._serve_connection, connection)
 
     def request(self, attempt_id, capability, request, *, operation='infer', timeout=None):
         """Controller-side test/diagnostic client; workers use InferenceClient."""
