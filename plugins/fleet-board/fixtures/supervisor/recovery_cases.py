@@ -326,6 +326,34 @@ class RecoveryContract(unittest.TestCase):
         Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=17)
         self.assertEqual(len(trusted.snapshot()['attempts']), 2)
 
+    def test_real_managed_child_handles_term_gracefully(self):
+        import time
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        ready, stopped = scratch / 'ready', scratch / 'stopped'
+        script = "import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, lambda *_: (pathlib.Path(sys.argv[2]).write_text('term'), sys.exit(0))); pathlib.Path(sys.argv[1]).write_text('ready'); time.sleep(30)"
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', script, str(ready), str(stopped)]).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        try:
+            limit = time.monotonic() + 8
+            while not ready.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(ready.exists())
+            self.store.update_attempt('n', {'state': 'running', 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+            Recovery(self.store).reconcile(now=10)
+            process.wait(timeout=5)
+            self.assertEqual(stopped.read_text(), 'term')
+            Recovery(self.store).reconcile(now=11)
+            after = self.store.snapshot()
+            self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+            self.assertEqual(after['jobs'][0]['retries_used'], 0)
+            self.assertEqual(len(after['claims']), 1)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
     def test_real_managed_resistant_child_receives_kill_after_grace(self):
         import os
         import signal
