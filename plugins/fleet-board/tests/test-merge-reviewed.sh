@@ -450,7 +450,14 @@ run_merge --card 12 --operation-key op-12 --pr 34 --head abc1234
 assert_exit "crash recovery: exit 0" 0
 assert_eq "crash recovery: no second merge" "$(cnt "pr merge 34 ")" 0
 assert_eq "crash recovery: main verification reran once" "$(cat "$FX/verify.log")" "12 34"
-if grep -R -q '"ok": true' "$FAKE_GH_DIR/inputs" 2>/dev/null; then pass "crash recovery: operation-bound main result persisted"; else fail "crash recovery: operation-bound main result persisted" "missing note write"; fi
+RECORDED=0
+for input in "$FAKE_GH_DIR"/inputs/*; do
+  jq -r '.body' "$input" > "$FAKE_GH_DIR/evidence.md" 2>/dev/null || continue
+  if grep -q '"operation_key": "op-12"' "$FAKE_GH_DIR/evidence.md" \
+      && grep -q '"main_check": {' "$FAKE_GH_DIR/evidence.md" \
+      && grep -q '"ok": true' "$FAKE_GH_DIR/evidence.md"; then RECORDED=1; break; fi
+done
+if [ "$RECORDED" = 1 ]; then pass "crash recovery: operation-bound main result persisted"; else fail "crash recovery: operation-bound main result persisted" "missing note write"; fi
 
 echo ""
 echo "-----------------------------------"
