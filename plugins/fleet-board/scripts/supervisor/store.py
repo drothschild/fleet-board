@@ -558,7 +558,7 @@ class Store:
                 data.update({'state': 'cancel_requested', 'cancel_reason': reason,
                              'cancel_requested_at': requested_at, 'cancel_grace_deadline': requested_at + grace_seconds})
                 c.execute("UPDATE attempts SET state='cancel_requested',data=? WHERE id=?", (canonical_json(data), attempt_id))
-                c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (row['job_id'],))
+                c.execute('UPDATE jobs SET generation=generation+1 WHERE id=? AND generation=?', (row['job_id'], data['generation']))
                 result = {'attempt_id': attempt_id, 'revision': revision + 1}
                 c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id, request, canonical_json(result)))
                 self._event('cancellation_requested', {'attempt_id': attempt_id, 'reason': reason})
