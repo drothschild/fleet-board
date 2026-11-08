@@ -94,6 +94,10 @@ def states(cfg: dict) -> list:
     hit = _STATES_CACHE.get(cache_key)
     if hit is not None:
         return hit
+    prog = (
+        '. "$1/board-lib.sh" && fb_load_config || exit $?; '
+        'for s in $FB_STATES; do printf "%s\\t%s\\n" "$s" "$(fb_state_name "$s")"; done'
+    )
     rc, out, err = run_script(APP["root"], ["bash", "-c", prog, "states", APP["scripts"]])
     if rc != 0:
         raise ApiError(500, err.rstrip("\n") or "cannot list the board states")
@@ -739,16 +743,13 @@ def live_pr_states(repo) -> dict:
 def board_context(cache: dict = None) -> list:
     """The planner's snapshot: every card with state, labels, depends_on, PR and review round.
 
-    One board-list.sh process lists every state; PR state comes from one gh pr list; card details come from
-    the store. Pass the same dict as `cache` to reuse one snapshot for a planner turn.
+    One board-list.sh process lists every state; a PR's state comes from its card's manager note
+    (pr_state) when recorded, otherwise from one gh pr list; card details come from the store.
+    Pass the same dict as `cache` to reuse one snapshot for a planner turn.
     """
     if cache is not None and "snapshot" in cache:
         return cache["snapshot"]
     cfg, dir = ctx()
-    prog = (
-        '. "$1/board-lib.sh" && fb_load_config || exit $?; '
-        'for s in $FB_STATES; do bash "$1/board-list.sh" "$s" || exit $?; done'
-    )
     rc, out, err = run_script(APP["root"], ["bash", script("board-list.sh"), "--all"])
     if rc != 0:
         raise ApiError(500, err.rstrip("\n") or "board-list exited %d" % rc)
@@ -761,8 +762,7 @@ def board_context(cache: dict = None) -> list:
         for item in items if isinstance(items, list) else []:
             if isinstance(item, dict) and isinstance(item.get("number"), int):
                 listed.add(item["number"])
-    live = live_pr_states((cfg.get("board") or {}).get("repo"))
-    snapshot = []
+    rows = []
     for card in read_cards(dir):
         n = card.get("number")
         if listed and n not in listed:
@@ -770,9 +770,17 @@ def board_context(cache: dict = None) -> list:
         note = parse_note(card) or {}
         pr = note.get("pr")
         has_pr = isinstance(pr, int) and not isinstance(pr, bool)
-        pr_state = live.get(pr) if has_pr else None
-        if pr_state is None:
-            pr_state = note.get("pr_state")  # fallback when the PR lookup is unavailable
+        rows.append((card, note, pr, has_pr))
+    # Ask GitHub only when some PR's state is not already recorded in its card's manager note,
+    # so a board whose notes carry every pr_state builds its snapshot without the network.
+    need_live = any(has_pr and note.get("pr_state") not in PR_STATES for _, note, _, has_pr in rows)
+    live = live_pr_states((cfg.get("board") or {}).get("repo")) if need_live else {}
+    snapshot = []
+    for card, note, pr, has_pr in rows:
+        n = card.get("number")
+        pr_state = note.get("pr_state") if has_pr else None
+        if has_pr and pr_state not in PR_STATES:
+            pr_state = live.get(pr)
         snapshot.append({
             "number": n,
             "title": card.get("title"),
