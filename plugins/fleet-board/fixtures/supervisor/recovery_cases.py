@@ -71,6 +71,25 @@ class RecoveryContract(unittest.TestCase):
         Recovery(self.store).reconcile(now=11)
         self.assertEqual(len(self.store.snapshot()['results']), 1)
 
+    def test_quarantined_attempt_still_records_late_durable_result_as_evidence(self):
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        command = [sys.executable, '-c',
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
+                   str(scratch / 'ready.json')]
+        prepared = prepared_from_store(self.store, 'n', scratch)
+        self.store.update_attempt('n', {'state': 'quarantined'}, self.store.snapshot()['domain']['revision'])
+        process = Runner(self.store.directory, fixture_command=command).launch(prepared)
+        process.wait(timeout=10)
+        Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        self.assertEqual(len(snapshot['results']), 1)
+        self.assertEqual(snapshot['results'][0]['disposition'], 'stale')
+        self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_native_inspector_rejects_receipt_bound_to_foreign_domain(self):
         import json
         import time
