@@ -107,7 +107,7 @@ class Store:
                     CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL, reservation_revision INTEGER NOT NULL);
-                    CREATE TABLE effects (operation_key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), generation INTEGER NOT NULL, preconditions TEXT NOT NULL, intent TEXT NOT NULL, observation TEXT, status TEXT NOT NULL);
+                    CREATE TABLE effects (operation_key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), card TEXT NOT NULL, generation INTEGER NOT NULL, preconditions TEXT NOT NULL, intent TEXT NOT NULL, observation TEXT, status TEXT NOT NULL);
                     CREATE TABLE results (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), envelope TEXT NOT NULL, disposition TEXT NOT NULL);
                     CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
                     CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
@@ -292,7 +292,7 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
-            job = c.execute('SELECT generation FROM jobs WHERE id=?', (effect['job_id'],)).fetchone()
+            job = c.execute('SELECT generation,card FROM jobs WHERE id=?', (effect['job_id'],)).fetchone()
             if job is None or job['generation'] != effect['generation']:
                 raise ValueError('unknown or stale effect job')
             row = c.execute('SELECT * FROM effects WHERE operation_key=?', (effect['operation_key'],)).fetchone()
@@ -300,8 +300,31 @@ class Store:
                 if (row['job_id'], row['generation'], row['preconditions'], row['intent']) != (effect['job_id'], effect['generation'], preconditions, intent):
                     raise ValueError('conflicting effect')
             else:
-                c.execute('INSERT INTO effects VALUES(?,?,?,?,?,NULL,?)', (effect['operation_key'], effect['job_id'], effect['generation'], preconditions, intent, 'intent'))
+                c.execute('INSERT INTO effects VALUES(?,?,?,?,?,?,NULL,?)', (effect['operation_key'], effect['job_id'], job['card'], effect['generation'], preconditions, intent, 'intent'))
                 self._event('effect_intent', {'operation_key': effect['operation_key']})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def observe_effect(self, operation_key, observation, expected_revision):
+        if not isinstance(observation, dict):
+            raise ValueError('invalid effect observation')
+        encoded = canonical_json(observation)
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            row = c.execute('SELECT observation FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            if row is None:
+                raise ValueError('unknown effect')
+            if row['observation'] is not None:
+                if row['observation'] != encoded:
+                    raise ValueError('conflicting effect observation')
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                c.execute("UPDATE effects SET observation=?,status='observed' WHERE operation_key=?", (encoded, operation_key))
+                self._event('effect_observed', {'operation_key': operation_key})
             c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
