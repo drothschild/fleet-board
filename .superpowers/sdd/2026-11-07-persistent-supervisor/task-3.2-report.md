@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented and locally committed on `feat/supervisor-scheduling`, based on `8f05187`. No push was made, as directed. PR #230 remains untouched.
+Implemented on `feat/supervisor-scheduling`, originally based on `8f05187`; after PR #234 merged, the branch was refreshed from `main` at `24c929a` and the plugin manifests were advanced to 0.18.2. PR #230 is the existing draft and remains unmerged.
 
 ## Changes
 
@@ -36,7 +36,7 @@ Implemented and locally committed on `feat/supervisor-scheduling`, based on `8f0
 ## Concerns
 
 - No end-to-end supervisor controller currently wires store snapshots into scheduler `reservations` or worker callbacks into real runner exit/publication. The task adds and tests those explicit interfaces; production effect orchestration and real branch refresh remain Task 4.1 as specified.
-- Push and independent review are deferred by the task guard. `supervisor.enabled` was not changed; card #224 and PR #230 status were not touched.
+- The scoped fix-round re-review approved the missing-reservation quarantine at `ae52af2`; see `task-3.2-rereview-2.md`. The end-to-end controller/service wiring and real branch refresh remain Task 4.1. Supervisor execution remains disabled; #224 remains Backlog; PR #230 stays separate and unmerged.
 
 ## Fix round 1 (review `task-3.2-review.md`)
 
@@ -64,4 +64,11 @@ Fix-round commits: `187a81d test: close reservation release and resume gaps`; `7
 - GREEN: `bash plugins/fleet-board/tests/test-supervisor-reservations.sh` — `Ran 19 tests`; `OK` (0).
 - `bash plugins/fleet-board/tests/test-clean-room.sh` — `passed: 118   failed: 0` (0).
 - `git diff --check` — passed (0).
-- Implementation commit: `fix: persist missing reservation quarantine` (hash reported with this task result).
+- Implementation commit: `ae52af2 fix: persist missing reservation quarantine`.
+
+
+## Fix round 2 independent review and integrated verification
+
+- Luna re-review approved the fix at `ae52af2`; report: `task-3.2-rereview-2.md`.
+- After merging `origin/main` at `24c929a`, the 0.18.2 manifest bump was required: `test-version-bumped.sh` was RED on 0.18.1 and GREEN on 0.18.2.
+- Integrated-head focused verification: reservations 19/0; scope planner 21/0; supervisor store 52/0; version bump passed; clean-room 118/0. `git diff --check` passed.
