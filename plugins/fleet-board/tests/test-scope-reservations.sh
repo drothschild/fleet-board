@@ -251,6 +251,29 @@ for mode in failed truncated; do
   assert_jq "$mode PR file lookup holds new starts" "$(card 14 action)" '"wait"'
 done
 
+# Candidate snapshots must retain Human-QA scope evidence without changing the
+# legacy plan's Human-QA actions, and must mark incomplete PR file lists unsafe.
+new_scope
+scope_issue "$dir" 12 in_review '- Modify `src/a.sh`'
+scope_review_note "$dir" 12
+scope_issue "$dir" 14 ready '- Modify `src/unrelated.sh`'
+scope_routes "$dir" '14' '12'
+printf '{"files":[],"changedFiles":2}\n' > "$dir/partial.json"
+printf 'pr view 34 --repo acme/toy --json files*\t0\t%s\n' "$dir/partial.json" | cat - "$FAKE_GH_ROUTES" > "$dir/next-routes"
+mv "$dir/next-routes" "$FAKE_GH_ROUTES"
+run_check "$SCRIPT" --candidates
+assert_jq "candidate marks incomplete PR scope evidence" '.candidates[] | select(.number == 12) | .scope_complete' false
+
+new_scope
+scope_issue "$dir" 12 human_qa '- Modify `src/a.sh`'
+scope_routes "$dir" '' ''
+printf '[{"number":12,"title":"Card 12","url":"u","labels":[{"name":"fleet:human_qa"}]}]\n' > "$dir/list-human_qa.json"
+printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/list-human_qa.json\n' "$dir" >> "$FAKE_GH_ROUTES"
+run_check "$SCRIPT"
+assert_jq "legacy plan still omits Human-QA cards" '.cards | length' '0'
+run_check "$SCRIPT" --candidates
+assert_jq "candidate retains Human-QA declared scope" '.candidates[] | select(.number == 12) | .declared_paths' '["src/a.sh"]'
+
 
 for root_first in yes no; do
   new_scope
