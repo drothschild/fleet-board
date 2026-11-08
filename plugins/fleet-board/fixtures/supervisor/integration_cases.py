@@ -142,10 +142,12 @@ class IntegrationContract(unittest.TestCase):
         first = self.lane.submit(effect, mode='running')
         self.assertTrue(self.adapter.entered.wait(1))
         duplicate = second_lane.submit(effect, mode='running')
+        completed_before_release, _ = concurrent.futures.wait([duplicate], timeout=1)
         self.adapter.release.set()
         self.assertEqual(first.result(timeout=2)['status'], 'observed')
         with self.assertRaisesRegex(ValueError, 'lane is already leased'):
             duplicate.result(timeout=2)
+        self.assertTrue(completed_before_release, 'duplicate handle entered the already-occupied lane')
         self.assertEqual(len(self.adapter.merges), 1)
 
     def test_crash_after_merge_recovers_without_a_second_merge(self):
