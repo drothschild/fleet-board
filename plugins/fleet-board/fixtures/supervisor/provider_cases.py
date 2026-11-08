@@ -496,6 +496,18 @@ class ProviderCases(unittest.TestCase):
         with self.assertRaises(ContractError):
             run_provider([str(self.root / "missing")], self.request, timeout=1)
 
+    def test_provider_cancellation_kills_term_resistant_descendant_after_leader_exits(self):
+        child_marker = self.root / "provider-descendant-alive"
+        ready = self.root / "provider-descendant-ready"
+        command = self.script(
+            "provider-parent.py",
+            "#!/usr/bin/env python3\nimport json,pathlib,subprocess,sys,time\njson.load(sys.stdin)\nchild=\"import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[2]).write_text('ready'); time.sleep(.8); pathlib.Path(sys.argv[1]).write_text('alive')\"\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1], sys.argv[2]])\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.01)\n",
+        ) + [str(child_marker), str(ready)]
+        with self.assertRaises(ContractError):
+            run_provider(command, self.request, timeout=.3)
+        time.sleep(.9)
+        self.assertFalse(child_marker.exists(), "provider descendant survived cancellation")
+
     def test_deadline_and_cancellation_stop_the_provider_process_group(self):
         slow = self.script("slow.py", "#!/usr/bin/env python3\nimport time\ntime.sleep(10)\n")
         start = time.monotonic()
