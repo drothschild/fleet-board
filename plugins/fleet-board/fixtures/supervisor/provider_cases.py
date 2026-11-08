@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import socket
+import struct
 import sys
 import tempfile
 import time
@@ -87,15 +89,26 @@ class ProviderCases(unittest.TestCase):
         short_tmp = Path("/private/tmp" if Path("/private/tmp").is_dir() else "/tmp")
         channel_dir = Path(tempfile.mkdtemp(prefix="fb-channel-", dir=str(short_tmp)))
         try:
-            with InferenceChannel(broker, channel_dir, {"attempt-1": "capability-one"}) as channel:
-                result = channel.request("attempt-1", "capability-one", self.request.to_dict())
+            with InferenceChannel(broker, channel_dir, ("attempt-1",)) as channel:
+                token = channel.capability_for("attempt-1")
+                result = channel.request("attempt-1", token, self.request.to_dict())
                 self.assertEqual(result["text"], "channel result")
                 with self.assertRaises(ContractError):
                     channel.request("attempt-1", "forged", self.request.to_dict())
                 with self.assertRaises(ContractError):
-                    channel.request("attempt-2", "capability-one", self.request.to_dict())
+                    channel.request("attempt-2", token, self.request.to_dict())
                 with self.assertRaises(ContractError):
-                    channel.request("attempt-1", "capability-one", self.request.to_dict(), operation="status")
+                    channel.request("attempt-1", token, self.request.to_dict(), operation="status")
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw:
+                    raw.settimeout(3)
+                    raw.connect(str(channel.socket_path))
+                    raw.sendall(struct.pack("!I", channel.MAX_REQUEST_BYTES + 1))
+                    header = raw.recv(4)
+                    self.assertEqual(len(header), 4)
+                    size = struct.unpack("!I", header)[0]
+                    self.assertLessEqual(size, 1024)
+                    response = json.loads(raw.recv(size).decode("utf-8"))
+                    self.assertIn("error", response)
         finally:
             import shutil
             shutil.rmtree(channel_dir)
