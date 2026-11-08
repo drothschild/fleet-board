@@ -157,17 +157,27 @@ class Runner:
         return 'unknown'
 
     def cancel(self, identity, deadline):
+        """Ask the trusted monitor to stop its owned group; caller must fence first."""
         if self.inspect(identity) != 'alive':
             return 'unknown'
         try:
-            if os.getpgid(identity.pid) != identity.pid:
-                return 'unknown'
-            os.killpg(identity.pid, signal.SIGTERM)
-            while time.monotonic() < deadline and self.inspect(identity) == 'alive':
-                time.sleep(.05)
-            if self.inspect(identity) == 'alive' and os.getpgid(identity.pid) == identity.pid:
-                os.killpg(identity.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
+            root = self.directory / 'attempts'
+            for attempt in root.iterdir():
+                if attempt.is_symlink() or not attempt.is_dir():
+                    continue
+                try:
+                    receipt = json.loads(_read_regular(attempt / 'receipt.json', 8192))
+                    if receipt.get('identity') != identity.__dict__:
+                        continue
+                    _publish(attempt / 'control.json', {'nonce': identity.nonce, 'signal': 'TERM'})
+                    while time.monotonic() < deadline and self.inspect(identity) == 'alive':
+                        time.sleep(.05)
+                    if self.inspect(identity) == 'alive':
+                        _publish(attempt / 'control.json', {'nonce': identity.nonce, 'signal': 'KILL'})
+                    break
+                except (OSError, ValueError, TypeError):
+                    continue
+        except OSError:
             pass
         return 'unknown'
 
@@ -261,7 +271,7 @@ def _run(config):
     _publish(attempt / 'receipt.json', {'state': 'registered', 'identity': identity.__dict__})
     _publish(attempt / 'execution.json', {'state': 'execution_started'})
     worker = subprocess.Popen(config['fixture_command'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                              stderr=subprocess.PIPE, close_fds=True)
+                              stderr=subprocess.PIPE, close_fds=True, start_new_session=True)
     def drain(pipe, name):
         fd = os.open(str(attempt / name), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, 'wb') as output, pipe:
@@ -282,7 +292,16 @@ def _run(config):
     prepared = config['prepared']
     published = False
     progress_sequence = 0
+    last_signal = None
     while worker.poll() is None or any(reader.is_alive() for reader in readers):
+        try:
+            control = json.loads(_read_regular(attempt / 'control.json', 4096))
+            if (control in ({'nonce': config['nonce'], 'signal': 'TERM'}, {'nonce': config['nonce'], 'signal': 'KILL'})
+                    and control['signal'] != last_signal and worker.poll() is None):
+                os.killpg(worker.pid, signal.SIGTERM if control['signal'] == 'TERM' else signal.SIGKILL)
+                last_signal = control['signal']
+        except (OSError, ValueError, TypeError):
+            pass
         scratch = prepared.get('scratch')
         if scratch:
             try:

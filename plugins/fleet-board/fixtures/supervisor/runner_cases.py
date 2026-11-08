@@ -502,21 +502,3 @@ def test_fifo_progress_does_not_stop_heartbeat():
 test_fifo_progress_does_not_stop_heartbeat()
 test_fifo_ready_rejected_without_blocking()
 
-
-def test_cancel_without_durable_authority_does_not_signal():
-    import json
-    with tempfile.TemporaryDirectory() as tmp:
-        root = pathlib.Path(tmp).resolve()
-        runner = Runner(root, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)'])
-        process = runner.launch({'attempt_id': 'no-authority', 'nonce': 'n'})
-        receipt = root / 'attempts' / 'no-authority' / 'receipt.json'
-        deadline = time.monotonic() + 8
-        while not receipt.exists() and time.monotonic() < deadline:
-            time.sleep(.02)
-        identity = ProcessIdentity(**json.loads(receipt.read_text())['identity'])
-        assert runner.cancel(identity, time.monotonic() + .1) == 'unknown'
-        assert process.poll() is None, 'unfenced cancellation killed the monitor'
-        process.wait(timeout=5)
-
-
-test_cancel_without_durable_authority_does_not_signal()

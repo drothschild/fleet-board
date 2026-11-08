@@ -207,8 +207,9 @@ class RecoveryContract(unittest.TestCase):
         scratch = self.root / 'scratch'
         scratch.mkdir()
         pidfile = scratch / 'child.pid'
-        script = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
-        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', script, str(pidfile)]).launch(
+        child_script = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
+        script = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(30)"
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', script, child_script, str(pidfile)]).launch(
             prepared_from_store(self.store, 'n', scratch))
         child = None
         try:

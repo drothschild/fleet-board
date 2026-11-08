@@ -1,11 +1,9 @@
 """Bounded recovery of durable attempts using independently supplied evidence."""
 import json
 import math
-import os
-import signal
 
 from .processes import ProcessIdentity
-from .runner import Runner, _read_regular, read_result
+from .runner import Runner, _publish, _read_regular, read_result
 
 
 class NativeInspector:
@@ -52,10 +50,9 @@ class NativeInspector:
         if observation.get('status') != 'alive' or identity is None or kind not in ('TERM', 'KILL'):
             return 'unknown'
         try:
-            if os.getpgid(identity.pid) != identity.pid or self.runner.inspect(identity) != 'alive':
-                return 'unknown'
-            os.killpg(identity.pid, signal.SIGTERM if kind == 'TERM' else signal.SIGKILL)
-        except OSError:
+            path = self.directory / 'attempts' / attempt['id'] / 'control.json'
+            _publish(path, {'nonce': identity.nonce, 'signal': kind})
+        except (OSError, ValueError):
             return 'unknown'
         return 'sent'
 
