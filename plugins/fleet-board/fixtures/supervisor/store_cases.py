@@ -660,6 +660,36 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(data['cancel_grace_deadline'], 15)
         self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
 
+    def test_execution_release_requires_bound_complete_tree_proof(self):
+        from supervisor import models
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        self.store.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        self.assertTrue(hasattr(models, 'StopEvidence'), 'bound stop evidence is not implemented')
+        self.assertTrue(hasattr(self.store, 'record_execution_stopped'), 'durable execution release is not implemented')
+        self.store.request_cancellation('n1', 'c', 'infra', self.store.snapshot()['domain']['revision'])
+        revision = self.store.snapshot()['domain']['revision']
+        proof = models.StopEvidence(domain_id=self.store.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                                    boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        with self.assertRaises(ValueError):
+            self.store.record_execution_stopped('n1', dict(verified=True), revision)
+        self.store.record_execution_stopped('n1', proof, revision)
+        after = self.store.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data'])['execution_released'])
+        self.assertEqual(len(after['claims']), 1)
+        self.store.prepare_attempt(dict(job, id='j2', card='2', nonce='n2', input_sha='def'),
+                                   after['domain']['revision'], {'global_cap': 1, 'provider_cap': 1, 'paths': ['other']})
+        self.assertEqual(len(self.store.snapshot()['claims']), 2)
+        with self.assertRaises(ValueError):
+            self.store.prepare_attempt(dict(job, id='j3', card='3', nonce='n3', input_sha='ghi'),
+                                       self.store.snapshot()['domain']['revision'],
+                                       {'global_cap': 2, 'provider_cap': 2, 'paths': ['src/sub']})
+
     def test_quarantine_fences_once_and_preserves_claim(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
