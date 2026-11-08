@@ -385,3 +385,17 @@ def test_resume_publication_after_ingest_without_worker():
 
 
 test_resume_publication_after_ingest_without_worker()
+
+
+def test_incomplete_binding_rejected():
+    with tempfile.TemporaryDirectory() as tmp:
+        runner = Runner(pathlib.Path(tmp).resolve(), fixture_command=[sys.executable, '-c', 'pass'])
+        try:
+            runner.launch({'attempt_id':'a','nonce':'a','domain_id':'domain'})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('incomplete prepared binding accepted')
+
+
+test_incomplete_binding_rejected()
