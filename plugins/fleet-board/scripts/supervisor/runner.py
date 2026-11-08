@@ -1,5 +1,6 @@
 """Detached, fixture-only attempt runner. Production execution is not enabled."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -49,11 +50,38 @@ def prepared_from_store(store, attempt_id, scratch):
 
 
 def read_result(attempt):
-    path = Path(attempt) / 'result.json'
+    attempt = Path(attempt)
+    fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
+    expected = set(fields) | {'schema_version', 'outcome', 'report_path', 'artifact_hashes', 'usage', 'exit_code'}
     try:
-        with path.open(encoding='utf-8') as stream:
-            return json.load(stream)
-    except FileNotFoundError:
+        def load(name):
+            fd = os.open(str(attempt / name), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                data = stream.read(1048577)
+            if len(data) > 1048576:
+                raise ValueError('oversized result')
+            return json.loads(data)
+        result, prepared = load('result.json'), load('prepared.json')
+        if not isinstance(result, dict) or set(result) != expected or any(result.get(k) != prepared.get(k) for k in fields):
+            return None
+        if type(result['schema_version']) is not int or result['schema_version'] != 1 or type(result['generation']) is not int or result['outcome'] != 'success' or type(result['exit_code']) is not int or result['exit_code'] != 0 or result['usage'] is not None:
+            return None
+        report = Path(result['report_path'])
+        artifacts = attempt.parent.parent / 'artifacts' / result['attempt_id']
+        if report.parent != artifacts or report.name != 'report' or report.is_symlink() or artifacts.is_symlink() or artifacts.resolve(strict=True) != artifacts:
+            return None
+        fd = os.open(str(report), os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                return None
+            data = stream.read(1048577)
+        if len(data) > 1048576 or json.loads(data) != {'status': 'clean'}:
+            return None
+        if result['artifact_hashes'] != {str(report): hashlib.sha256(data).hexdigest()}:
+            return None
+        return result
+    except (OSError, ValueError, TypeError, KeyError):
         return None
 
 
