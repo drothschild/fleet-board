@@ -320,8 +320,8 @@ class ProviderCases(unittest.TestCase):
                 received["scope_request"].append((card, paths, revision))
                 raise ValueError("scope conflict with #23")
 
-            def operation_attempt_is_retirable(self, _attempt_id, _generation, _input_sha):
-                return False
+            def operation_attempt_authority(self, _attempt_id, _generation, _input_sha):
+                return "active"
 
         (self.workspace / "report.md").write_text(
             "## Status\nclean\n\n## Findings\n- none\n\n## For the card\nReviewed.\n\n"
@@ -489,8 +489,8 @@ class ProviderCases(unittest.TestCase):
                     raise ValueError("scope conflict with #23")
                 return {"card": card, "paths": paths, "reservation_revision": 4}
 
-            def operation_attempt_is_retirable(self, _attempt_id, _generation, _input_sha):
-                return False
+            def operation_attempt_authority(self, _attempt_id, _generation, _input_sha):
+                return "active"
 
         controller_store = Store("controller")
         terminal_checker = build_attempt_terminal_checker(controller_store, dispatcher)
@@ -595,8 +595,8 @@ class ProviderCases(unittest.TestCase):
             def record_result(self, _envelope):
                 return {"disposition": "current"}
 
-            def operation_attempt_is_retirable(self, _attempt_id, _generation, _input_sha):
-                return False
+            def operation_attempt_authority(self, _attempt_id, _generation, _input_sha):
+                return "active"
 
         (state_dir / "store").mkdir(mode=0o700)
         dispatcher = OwnerThreadDispatcher()
@@ -649,8 +649,8 @@ class ProviderCases(unittest.TestCase):
             def expand_scope(self, card, paths, revision):
                 return {"card": card, "paths": paths, "reservation_revision": revision + 1}
 
-            def operation_attempt_is_retirable(self, _attempt_id, _generation, _input_sha):
-                return authority["retirable"]
+            def operation_attempt_authority(self, _attempt_id, _generation, _input_sha):
+                return "terminal_released" if authority["retirable"] else "active"
 
         dispatcher = OwnerThreadDispatcher()
         store = Store()
@@ -846,7 +846,8 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(client_result, [{"disposition": "current"}])
         self.assertEqual(len(store.snapshot()["results"]), 1)
         checker = build_attempt_terminal_checker(store, dispatcher)
-        self.assertFalse(checker(binding["attempt_id"], binding["generation"], binding["input_sha"]))
+        self.assertEqual(checker(binding["attempt_id"], binding["generation"], binding["input_sha"]),
+                         "revoked")
         identity = {"boot_id": "fixture-boot", "pid": 43210,
                     "started_at": "fixture-start", "nonce": binding["attempt_id"]}
         store.update_attempt(binding["attempt_id"], {
@@ -862,7 +863,8 @@ class ProviderCases(unittest.TestCase):
             kind="fixture_complete_tree", free_fixture=True)
         store.record_execution_stopped(binding["attempt_id"], evidence,
                                        store.snapshot()["domain"]["revision"])
-        self.assertTrue(checker(binding["attempt_id"], binding["generation"], binding["input_sha"]))
+        self.assertEqual(checker(binding["attempt_id"], binding["generation"], binding["input_sha"]),
+                         "terminal_released")
         import shutil
         shutil.rmtree(state_root)
 
@@ -1113,8 +1115,8 @@ class ProviderCases(unittest.TestCase):
                 return {"disposition": "current"}
             def expand_scope(self, card, paths, revision):
                 return {"card": card, "paths": paths, "reservation_revision": revision + 1}
-            def operation_attempt_is_retirable(self, _attempt_id, _generation, _input_sha):
-                return False
+            def operation_attempt_authority(self, _attempt_id, _generation, _input_sha):
+                return "active"
         production_store = HandlerStore()
         operation_binding = {key: prepared[key] for key in
                              ("domain_id", "job_id", "attempt_id", "generation", "input_sha", "role", "stage")}

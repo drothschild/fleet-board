@@ -299,7 +299,8 @@ class InferenceChannel:
     MAX_OPERATION_ENTRIES = 4096
 
     def __init__(self, broker, directory, attempt_ids, *, request_timeout=310, frame_timeout=5,
-                 attempt_controls=None, operation_journal=None):
+                 attempt_controls=None, operation_journal=None, terminal_attempt_checker=None,
+                 controller_dispatcher=None):
         self.broker = broker
         self.directory = Path(directory)
         if (not self.directory.is_absolute() or self.directory.is_symlink()
@@ -310,6 +311,15 @@ class InferenceChannel:
         self.operation_journal = None
         self._operation_calls = {}
         self._journal_snapshot = None
+        from .workers import OwnerThreadDispatcher, TrustedAttemptTerminalChecker
+        if controller_dispatcher is not None and type(controller_dispatcher) is not OwnerThreadDispatcher:
+            raise ValueError('controller dispatcher must be an owner-thread dispatcher')
+        if (terminal_attempt_checker is not None
+                and (type(terminal_attempt_checker) is not TrustedAttemptTerminalChecker
+                     or terminal_attempt_checker.dispatcher is not controller_dispatcher)):
+            raise ValueError('terminal attempt authority must use a trusted terminal checker')
+        self.terminal_attempt_checker = terminal_attempt_checker
+        self.controller_dispatcher = controller_dispatcher
         if operation_journal is not None:
             journal = Path(operation_journal)
             if not journal.is_absolute() or journal.is_symlink():
@@ -364,6 +374,7 @@ class InferenceChannel:
         self._attempt_controls = {}
         self._attempt_bindings = {}
         self._operation_handlers = {}
+        self._retired_attempts = set()
         self._executor = None
         self._inode = None
         for attempt_id, control in (attempt_controls or {}).items():
@@ -406,14 +417,75 @@ class InferenceChannel:
         if (not isinstance(handlers, dict) or set(handlers) != allowed
                 or any(not callable(handlers[name]) for name in allowed)):
             raise ContractError('worker operations require trusted heartbeat, result, and scope handlers')
-        from .workers import TrustedAttemptResultHandler
+        from .workers import (OwnerThreadDispatcher, TrustedAttemptOperationHandlers,
+                              TrustedAttemptResultHandler, TrustedAttemptTerminalChecker)
+        if (type(self.controller_dispatcher) is not OwnerThreadDispatcher
+                or type(handlers) is not TrustedAttemptOperationHandlers
+                or handlers.dispatcher is not self.controller_dispatcher
+                or handlers.binding != binding):
+            raise ContractError('worker operations require factory handlers and an owner-thread dispatcher')
         if type(handlers['result']) is not TrustedAttemptResultHandler:
             raise ContractError('worker result handler must own artifact validation and durable publication')
+        if (type(self.terminal_attempt_checker) is not TrustedAttemptTerminalChecker
+                or self.terminal_attempt_checker.dispatcher is not self.controller_dispatcher
+                or self.terminal_attempt_checker._store is not handlers._store
+                or handlers['result'].store is not handlers._store):
+            raise ContractError('worker operations require durable terminal-attempt authority')
+        if handlers['result'].dispatcher is not self.controller_dispatcher:
+            raise ContractError('worker result handler uses a different controller dispatcher')
+        if attempt_id in self._retired_attempts:
+            raise ContractError('attempt is terminal and cannot reconnect')
+        try:
+            terminal = self.controller_dispatcher.call(
+                self.terminal_attempt_checker, attempt_id,
+                binding['generation'], binding['input_sha'])
+        except Exception as exc:
+            raise ContractError('terminal attempt authority is unavailable') from exc
+        if type(terminal) is not str or terminal not in ('active', 'revoked', 'terminal_released'):
+            raise ContractError('terminal attempt authority returned an invalid result')
+        if terminal == 'terminal_released':
+            raise ContractError('attempt is terminal and cannot reconnect')
+        if terminal != 'active':
+            raise ContractError('attempt authority is revoked')
         with self._request_lock:
             if attempt_id in self._operation_handlers:
                 raise ContractError('worker operations already bound for attempt')
             self._attempt_bindings[attempt_id] = dict(binding)
             self._operation_handlers[attempt_id] = dict(handlers)
+
+    def retire_attempt_operations(self, attempt_id):
+        """Compact a completed attempt only after durable terminal/released proof."""
+        with self._request_lock:
+            binding = self._attempt_bindings.get(attempt_id)
+            if binding is None or self.terminal_attempt_checker is None:
+                raise ContractError('attempt has no retirement authority')
+            if any(key[0] == attempt_id and record['state'] == 'in_flight'
+                   for key, record in self._operation_calls.items()):
+                raise ContractError('cannot retire an in-flight worker operation')
+        try:
+            terminal = self.controller_dispatcher.call(
+                self.terminal_attempt_checker, attempt_id,
+                binding['generation'], binding['input_sha'])
+        except Exception as exc:
+            raise ContractError('terminal attempt authority is unavailable') from exc
+        if terminal != 'terminal_released':
+            raise ContractError('attempt is not terminal and execution-released')
+        with self._request_lock:
+            old_calls = self._operation_calls
+            self._operation_calls = {key: record for key, record in old_calls.items()
+                                     if key[0] != attempt_id}
+            try:
+                self._persist_operation_journal()
+            except Exception as exc:
+                self._operation_calls = old_calls
+                raise ContractError('attempt operation records could not be retired safely') from exc
+            self._attempt_bindings.pop(attempt_id, None)
+            self._operation_handlers.pop(attempt_id, None)
+            self._attempt_controls.pop(attempt_id, None)
+            self._capabilities.pop(attempt_id, None)
+            self._attempt_requests.pop(attempt_id, None)
+            self._retired_attempts.add(attempt_id)
+            return True
 
     def operations_for(self, attempt_id):
         with self._request_lock:

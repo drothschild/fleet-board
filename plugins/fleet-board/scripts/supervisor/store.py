@@ -1301,11 +1301,36 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
-    def record_result(self, envelope):
-        """Persist a trusted runner's prevalidated report and charge its original session.
+    def operation_attempt_authority(self, attempt_id, generation, input_sha):
+        """Classify whether an exact attempt may bind, is revoked, or may be retired."""
+        if (not isinstance(attempt_id, str) or not attempt_id
+                or type(generation) is not int or generation < 0
+                or not isinstance(input_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', input_sha)):
+            raise ValueError('invalid operation retirement identity')
+        row = self.__connection.execute(
+            'SELECT attempts.state,attempts.data,jobs.generation AS current_generation '
+            'FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?',
+            (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError('unknown operation retirement attempt')
+        data = json.loads(row['data'])
+        if data.get('generation') != generation or data.get('input_sha') != input_sha:
+            raise ValueError('operation retirement identity mismatch')
+        released = data.get('execution_released') is True
+        if released and row['state'] in ('cancel_requested', 'interrupted', 'failed',
+                                         'quarantined', 'reconciled', 'result_ready'):
+            return 'terminal_released'
+        if (not released and row['current_generation'] == generation
+                and row['state'] in ('prepared', 'launching', 'running')):
+            return 'active'
+        return 'revoked'
 
-        Semantic report parsing and ingestion are runner responsibilities. This layer
-        verifies artifact containment and hashes and binds the envelope to the attempt.
+    def record_result(self, envelope, *, trusted_report_status=None):
+        """Persist a trusted runner's parsed report and charge its original session.
+
+        The trusted adapter supplies parser-derived status; this transaction verifies
+        outcome and applies durable cancellation before persistence. Artifact containment,
+        hashes, and report syntax are verified by the adapter.
         """
         if not isinstance(envelope, dict):
             raise ValueError('invalid result')
@@ -1351,7 +1376,18 @@ class Store:
                     raise ValueError('artifact hash mismatch')
             except (OSError, RuntimeError) as exc:
                 raise ValueError('invalid artifact') from exc
-        encoded = canonical_json(envelope)
+        if trusted_report_status is not None:
+            statuses = {'implementor': {'done', 'blocked'},
+                        'fixer': {'done', 'blocked', 'not_reproducible'},
+                        'reviewer': {'clean', 'findings'},
+                        'stage-reviewer': {'clean', 'findings'}}
+            if trusted_report_status not in statuses.get(envelope['role'], set()):
+                raise ValueError('trusted report status does not match result role')
+            reported_outcome = ('success' if envelope['exit_code'] == 0
+                                and trusted_report_status not in ('blocked', 'not_reproducible')
+                                else 'failure')
+            if envelope['outcome'] != reported_outcome:
+                raise ValueError('result outcome does not match trusted report status and exit code')
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
@@ -1362,6 +1398,14 @@ class Store:
             for field in ('generation', 'input_sha', 'role', 'stage'):
                 if original[field] != envelope[field]:
                     raise ValueError('result identity mismatch')
+            stored_envelope = envelope
+            if trusted_report_status is not None:
+                cancelled = (attempt['state'] == 'cancel_requested'
+                             or (attempt['state'] in ('interrupted', 'failed', 'quarantined')
+                                 and bool(original.get('cancel_reason'))))
+                stored_envelope = dict(envelope, outcome=('cancelled' if cancelled
+                                                           else reported_outcome))
+            encoded = canonical_json(stored_envelope)
             prior = c.execute('SELECT * FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()
             if prior:
                 if prior['envelope'] != encoded:
@@ -1372,7 +1416,7 @@ class Store:
                 if not isinstance(session, str) or c.execute('SELECT 1 FROM sessions WHERE id=?', (session,)).fetchone() is None:
                     raise ValueError('unknown session')
                 disposition = 'current' if attempt['current_generation'] == envelope['generation'] and attempt['state'] not in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled') else 'stale'
-                semantic_failure = disposition == 'current' and envelope['outcome'] != 'success'
+                semantic_failure = disposition == 'current' and stored_envelope['outcome'] != 'success'
                 if semantic_failure:
                     disposition = 'stale'
                     c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (attempt['job_id'],))

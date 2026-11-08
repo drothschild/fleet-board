@@ -9,6 +9,81 @@ import subprocess
 import stat
 import tempfile
 import shutil
+import queue
+import threading
+import math
+
+
+class OwnerThreadDispatcher:
+    """Marshal controller work onto the thread that owns its Store connection.
+
+    The controller must call ``run_pending`` from its owner loop while worker
+    processes are running. There is deliberately no background pump.
+    """
+    def __init__(self, *, queue_limit=256, call_timeout=300):
+        if type(queue_limit) is not int or queue_limit < 1:
+            raise ValueError('invalid controller dispatcher queue limit')
+        if (type(call_timeout) not in (int, float) or not math.isfinite(call_timeout)
+                or call_timeout <= 0):
+            raise ValueError('invalid controller dispatcher timeout')
+        self.owner_thread = threading.get_ident()
+        self.call_timeout = call_timeout
+        self._queue = queue.Queue(maxsize=queue_limit)
+
+    def call(self, callback, *args, **kwargs):
+        if not callable(callback):
+            raise ValueError('controller dispatcher requires a callback')
+        if threading.get_ident() == self.owner_thread:
+            return callback(*args, **kwargs)
+        done = threading.Event()
+        result = {}
+        task = (callback, args, kwargs, done, result)
+        self._queue.put(task, timeout=self.call_timeout)
+        if not done.wait(self.call_timeout):
+            raise TimeoutError('controller owner thread did not dispatch operation')
+        if 'error' in result:
+            raise result['error']
+        return result.get('value')
+
+    def run_pending(self, timeout=0):
+        if threading.get_ident() != self.owner_thread:
+            raise RuntimeError('controller dispatcher must be pumped by its owner thread')
+        if type(timeout) not in (int, float) or timeout < 0:
+            raise ValueError('invalid controller dispatcher wait')
+        try:
+            callback, args, kwargs, done, result = self._queue.get(timeout=timeout)
+        except queue.Empty:
+            return False
+        try:
+            result['value'] = callback(*args, **kwargs)
+        except BaseException as exc:
+            result['error'] = exc
+        finally:
+            done.set()
+            self._queue.task_done()
+        return True
+
+
+class TrustedAttemptOperationHandlers(dict):
+    """Factory-built operation set bound to one attempt and controller loop."""
+    def __init__(self, values, binding, dispatcher, store):
+        super().__init__(values)
+        self.binding = dict(binding)
+        self.dispatcher = dispatcher
+        self._store = store
+
+
+class TrustedAttemptTerminalChecker:
+    """Controller-only authority backed by the durable Store attempt row."""
+    def __init__(self, store, dispatcher):
+        if (not callable(getattr(store, 'operation_attempt_authority', None))
+                or type(dispatcher) is not OwnerThreadDispatcher):
+            raise ValueError('terminal checker requires a trusted Store and owner dispatcher')
+        self._store = store
+        self.dispatcher = dispatcher
+
+    def __call__(self, attempt_id, generation, input_sha):
+        return self._store.operation_attempt_authority(attempt_id, generation, input_sha)
 
 
 def ingest_artifacts(scratch, destination, names):
@@ -118,7 +193,7 @@ def request_scope_expansion(store, card, paths, expected_revision, checkpoint, r
 
 class TrustedAttemptResultHandler:
     """Controller-only result adapter that owns artifacts and calls Store.record_result."""
-    def __init__(self, store, binding, scratch):
+    def __init__(self, store, binding, scratch, dispatcher=None):
         fields = {'domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage'}
         if (not isinstance(binding, dict) or set(binding) != fields
                 or not isinstance(binding.get('domain_id'), str) or not binding['domain_id']
@@ -143,6 +218,9 @@ class TrustedAttemptResultHandler:
                 or scratch.stat().st_mode & 0o077):
             raise ValueError('trusted result scratch must be a private canonical directory')
         self.store = store
+        if dispatcher is not None and type(dispatcher) is not OwnerThreadDispatcher:
+            raise ValueError('trusted result dispatcher must be an owner-thread dispatcher')
+        self.dispatcher = dispatcher
         self.binding = dict(binding)
         self.scratch = scratch
         self.store_directory = Path(store.directory)
@@ -258,19 +336,33 @@ class TrustedAttemptResultHandler:
             raise ValueError('attempt role report parser returned invalid output')
         envelope = {key: self.binding[key] for key in
                     ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')}
-        envelope.update(schema_version=1, outcome=payload['outcome'], report_path=str(report_path),
+        report_status = report['status']
+        allowed_statuses = {
+            'implementor': {'done', 'blocked'},
+            'fixer': {'done', 'blocked', 'not_reproducible'},
+            'reviewer': {'clean', 'findings'},
+            'stage-reviewer': {'clean', 'findings'},
+        }
+        if report_status not in allowed_statuses.get(self.binding['role'], set()):
+            raise ValueError('attempt report status does not match its role')
+        derived_outcome = ('success' if payload['exit_code'] == 0
+                           and report_status not in ('blocked', 'not_reproducible') else 'failure')
+        envelope.update(schema_version=1, outcome=derived_outcome, report_path=str(report_path),
                         artifact_hashes={str(destination / name): digest for name, digest in actual.items()},
                         usage=usage, exit_code=payload['exit_code'])
-        return self.store.record_result(envelope)
+        if self.dispatcher is None:
+            return self.store.record_result(envelope, trusted_report_status=report_status)
+        return self.dispatcher.call(self.store.record_result, envelope,
+                                    trusted_report_status=report_status)
 
 
-def build_attempt_result_handler(store, binding, scratch):
+def build_attempt_result_handler(store, binding, scratch, *, dispatcher=None):
     """Build the only supported production result callback for an attempt."""
-    return TrustedAttemptResultHandler(store, binding, scratch)
+    return TrustedAttemptResultHandler(store, binding, scratch, dispatcher)
 
 
 def build_attempt_operation_handlers(store, card, *, binding, scratch, heartbeat,
-                                     checkpoint, release_slot):
+                                     checkpoint, release_slot, dispatcher=None):
     """Create trusted controller callbacks for one worker's restricted IPC surface.
 
     The returned functions stay in the controller. The worker receives only the
@@ -281,11 +373,39 @@ def build_attempt_operation_handlers(store, card, *, binding, scratch, heartbeat
         raise ValueError('attempt operation handlers require a card and reservation store')
     if any(not callable(callback) for callback in (heartbeat, checkpoint, release_slot)):
         raise ValueError('attempt operation handlers require trusted callbacks')
-    result_handler = build_attempt_result_handler(store, binding, scratch)
+    if dispatcher is not None and type(dispatcher) is not OwnerThreadDispatcher:
+        raise ValueError('attempt operation handlers require an owner-thread dispatcher')
+    result_handler = build_attempt_result_handler(store, binding, scratch, dispatcher=dispatcher)
+
+    def invoke(callback, *args, **kwargs):
+        if dispatcher is None:
+            return callback(*args, **kwargs)
+        return dispatcher.call(callback, *args, **kwargs)
+
+    class DispatchedStore:
+        def expand_scope(_self, scope_card, paths, revision):
+            return invoke(store.expand_scope, scope_card, paths, revision)
+
+    def dispatch_heartbeat(payload):
+        return invoke(heartbeat, payload)
+
+    def dispatch_checkpoint():
+        return invoke(checkpoint)
+
+    def dispatch_release():
+        return invoke(release_slot)
 
     def expand_scope(payload):
         return request_scope_expansion(
-            store, card, payload['paths'], payload['expected_revision'], checkpoint, release_slot,
+            DispatchedStore(), card, payload['paths'], payload['expected_revision'],
+            dispatch_checkpoint, dispatch_release,
         )
 
-    return {'heartbeat': heartbeat, 'result': result_handler, 'scope_request': expand_scope}
+    return TrustedAttemptOperationHandlers(
+        {'heartbeat': dispatch_heartbeat, 'result': result_handler, 'scope_request': expand_scope},
+        binding, dispatcher, store)
+
+
+def build_attempt_terminal_checker(store, dispatcher):
+    """Return a controller-only query proving an attempt is terminal and released."""
+    return TrustedAttemptTerminalChecker(store, dispatcher)

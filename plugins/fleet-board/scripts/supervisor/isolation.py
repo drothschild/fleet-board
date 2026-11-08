@@ -1,5 +1,6 @@
 """Host-enforced worker isolation policies. Unsupported hosts fail closed."""
 import os
+import errno
 import json
 import stat
 from pathlib import Path
@@ -432,8 +433,11 @@ def _terminate_process_group(process):
         pass
     try:
         os.killpg(process.pid, 0)
-    except OSError:
-        return
+    except OSError as exc:
+        if exc.errno == errno.ESRCH:
+            return
+        # Permission and other probe failures do not prove the group is gone.
+        pass
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except OSError:

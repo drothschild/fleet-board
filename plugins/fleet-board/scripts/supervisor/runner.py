@@ -16,7 +16,9 @@ import threading
 import time
 
 from .processes import identity_for, inspect_identity
-from .workers import TrustedAttemptResultHandler, ingest_artifacts
+from .workers import (OwnerThreadDispatcher, TrustedAttemptOperationHandlers,
+                      TrustedAttemptResultHandler, TrustedAttemptTerminalChecker,
+                      ingest_artifacts)
 from .isolation import (IsolationUnavailable, prepare_private_git,
                         probe_capabilities, run_isolated)
 from .inference_broker import ContractError
@@ -173,8 +175,22 @@ class Runner:
             raise IsolationUnavailable('production launch requires private worker Git metadata')
         if (not isinstance(operation_handlers, dict)
                 or set(operation_handlers) != {'heartbeat', 'result', 'scope_request'}
+                or type(operation_handlers) is not TrustedAttemptOperationHandlers
                 or type(operation_handlers.get('result')) is not TrustedAttemptResultHandler):
             raise IsolationUnavailable('production launch requires trusted attempt operation handlers')
+        dispatcher = getattr(channel, 'controller_dispatcher', None)
+        terminal_checker = getattr(channel, 'terminal_attempt_checker', None)
+        if (type(dispatcher) is not OwnerThreadDispatcher
+                or operation_handlers.dispatcher is not dispatcher
+                or type(terminal_checker) is not TrustedAttemptTerminalChecker
+                or terminal_checker.dispatcher is not dispatcher
+                or terminal_checker._store is not operation_handlers._store
+                or operation_handlers['result'].store is not operation_handlers._store):
+            raise IsolationUnavailable(
+                'production launch requires an owner-thread controller dispatcher and terminal authority')
+        if dispatcher.owner_thread == threading.get_ident():
+            raise IsolationUnavailable(
+                'production launch must run off the Store-owning thread while the controller pumps it')
         bind_operations = getattr(channel, 'bind_attempt_operations', None)
         if not callable(bind_operations):
             raise IsolationUnavailable('production inference channel lacks attempt operation dispatch')
@@ -207,6 +223,8 @@ class Runner:
                               'input_sha', 'role', 'stage')}
         if operation_handlers['result'].binding != operation_binding:
             raise IsolationUnavailable('production result handler does not match the prepared attempt')
+        if operation_handlers.binding != operation_binding:
+            raise IsolationUnavailable('production operation handlers do not match the prepared attempt')
         workspace = Path(policy['workspace'])
         if (workspace.is_symlink() or workspace.resolve(strict=True) != workspace
                 or operation_handlers['result'].scratch != workspace):
