@@ -51,6 +51,40 @@ class RecoveryContract(unittest.TestCase):
         recovery.reconcile(now=11)
         self.assertEqual(set(inspector.seen), {'n', 'n2'})
 
+    def test_proven_never_executed_attempt_launches_same_identity_once(self):
+        from supervisor.models import NeverExecutedEvidence
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.store.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                   'expected_revision': self.store.snapshot()['domain']['revision']})
+        evidence = NeverExecutedEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1)
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                             launch_evidence_verifier=lambda candidate: candidate == evidence)
+        self.addCleanup(trusted.close)
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'never_started', 'launch_evidence': evidence}
+        class Launcher:
+            def __init__(self):
+                self.processes = []
+                self.counter = scratch / 'count'
+            def prepare(self, store, attempt_id):
+                return prepared_from_store(store, attempt_id, scratch)
+            def launch(self, prepared):
+                script = 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.write_text(p.read_text() + "x" if p.exists() else "x")'
+                self.processes.append(Runner(trusted.directory, fixture_command=[sys.executable, '-c', script, str(self.counter)]).launch(prepared))
+        launcher = Launcher()
+        limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
+        Recovery(trusted, Inspector(), retry_limits=limits, retry_launcher=launcher).reconcile(now=10)
+        self.assertEqual(len(launcher.processes), 1)
+        launcher.processes[0].wait(timeout=5)
+        self.assertEqual(launcher.counter.read_text(), 'x')
+        Recovery(trusted, Inspector(), retry_limits=limits, retry_launcher=launcher).reconcile(now=11)
+        self.assertEqual(len(launcher.processes), 1)
+        self.assertEqual(len(trusted.snapshot()['attempts']), 1)
+        self.assertEqual(trusted.snapshot()['jobs'][0]['retries_used'], 0)
+
     def test_unacknowledged_prepared_launch_is_quarantined_without_relaunch(self):
         self.assertIsNotNone(Recovery, 'recovery engine is not implemented')
         class Inspector:
