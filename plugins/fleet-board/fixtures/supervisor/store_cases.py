@@ -776,7 +776,7 @@ class StoreContract(unittest.TestCase):
         before = self.store.snapshot()
         for field, value in [('execution_released', True), ('stop_evidence', {}), ('cancel_reason', 'stop'),
                              ('cancel_requested_at', 1), ('cancel_grace_deadline', 2), ('process_identity', {}),
-                             ('boot_id', 'old'), ('state', 'running')]:
+                             ('boot_id', 'old'), ('state', 'running'), ('retry_prior', 'old')]:
             with self.subTest(field=field), self.assertRaises(ValueError):
                 self.store.prepare_attempt(dict(job, **{field: value}), before['domain']['revision'],
                                            {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
