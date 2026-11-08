@@ -79,7 +79,7 @@ working on this repo, for any change under `plugins/`:
 1. Run `git fetch origin`. If the branch is behind `origin/main`, merge `origin/main` into it
    (never rebase or force-push) before bumping.
 2. Bump `plugins/fleet-board/.claude-plugin/plugin.json` and the fleet-board entry in
-   `.claude-plugin/marketplace.json` (patch by default) above the `origin/main` version, in the
+   `.claude-plugin/marketplace.json` (patch by default) strictly above the `origin/main` version (an equal version fails), in the
    implementation commit (not the test-first commit).
 3. Collisions: bump at card start against the current `origin/main`. If `origin/main` moves
    to the same or a higher version before merge, merge it again and re-bump above it.
