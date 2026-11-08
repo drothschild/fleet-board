@@ -44,7 +44,11 @@ class Adapter:
             self.entered.set()
             if self.block:
                 self.release.wait(3)
-            result = {'operation_key': key, 'merged': True, 'head_sha': intent['head_sha']}
+            check = {'commit': 'b' * 40, 'ok': intent.get('result_ok', True), 'results': []}
+            if intent.get('omit_ok') is True:
+                check.pop('ok')
+            result = {'operation_key': key, 'merged': True, 'head_sha': intent['head_sha'],
+                      'main_check': check}
         else:
             self.verifications.append(intent['card'])
             result = {'operation_key': key, 'commit': 'b' * 40,
@@ -148,6 +152,18 @@ class IntegrationContract(unittest.TestCase):
                 key = 'verify-' + str(result)
                 fields = {'pr': '91', 'omit_ok': True} if result == 'missing' else {'pr': '91', 'result_ok': result}
                 effect = self.make_effect('17', key, 'main_verification', **fields)
+                self.lane.submit(effect, mode='running').result(timeout=2)
+                self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
+        self.assertEqual(len(self.closed), 4)
+
+    def test_merge_result_requires_literal_main_ok_true(self):
+        for result in (False, None, 'true', 'missing'):
+            with self.subTest(result=result):
+                if self.store.snapshot()['domain']['desired_mode'] != 'running':
+                    self.set_mode('start')
+                key = 'merge-check-' + str(result)
+                fields = self.eligible_merge(omit_ok=True) if result == 'missing' else self.eligible_merge(result_ok=result)
+                effect = self.make_effect(str(30 + len(self.adapter.merges)), key, **fields)
                 self.lane.submit(effect, mode='running').result(timeout=2)
                 self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
         self.assertEqual(len(self.closed), 4)
