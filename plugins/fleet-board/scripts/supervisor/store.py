@@ -223,7 +223,7 @@ class Store:
         fields = ('id', 'card', 'action', 'role', 'stage', 'input_sha', 'input_version', 'provider', 'model', 'nonce', 'session_id')
         reserved = {'state', 'boot_id', 'process_identity', 'started_at', 'deadline', 'heartbeat', 'progress',
                     'cancel_reason', 'cancel_requested_at', 'cancel_grace_deadline', 'execution_released',
-                    'stop_evidence', 'quarantine_reason', 'retry_at', 'retry_nonce'}
+                    'stop_evidence', 'quarantine_reason', 'retry_at', 'retry_nonce', 'retry_prior'}
         if not isinstance(job, dict) or reserved.intersection(job):
             raise ValueError('reserved attempt lifecycle metadata')
         if any(not isinstance(job.get(k), str) or not job[k] for k in fields):
