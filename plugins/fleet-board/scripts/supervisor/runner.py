@@ -42,9 +42,10 @@ def read_result(attempt):
 
 
 class Runner:
-    def __init__(self, directory, *, fixture_command=None):
+    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None):
         self.directory = Path(directory)
         self.fixture_command = fixture_command
+        self.fixture_finish_barrier = fixture_finish_barrier
 
     def launch(self, prepared_attempt):
         if self.fixture_command is None:
@@ -54,7 +55,8 @@ class Runner:
         if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', v) for v in (attempt_id, nonce)):
             raise ValueError('invalid attempt identity')
         config = json.dumps({'directory': str(self.directory.resolve()), 'attempt_id': attempt_id,
-                             'nonce': nonce, 'fixture_command': self.fixture_command, 'prepared': prepared_attempt})
+                             'nonce': nonce, 'fixture_command': self.fixture_command, 'prepared': prepared_attempt,
+                             'fixture_finish_barrier': str(self.fixture_finish_barrier) if self.fixture_finish_barrier else None})
         process = subprocess.Popen([sys.executable, '-m', 'supervisor.runner'],
                                 env=dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parent.parent)),
                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
@@ -138,7 +140,7 @@ def _run(config):
             with os.fdopen(fd, 'rb') as stream:
                 data = stream.read(4097)
             marker = json.loads(data)
-            if len(data) > 4096 or marker != {'exit_code': 0}:
+            if len(data) > 4096 or marker != {'exit_code': worker.returncode} or worker.returncode != 0:
                 return False
             report_path = scratch / 'report'
             fd = os.open(str(report_path), os.O_RDONLY | os.O_NOFOLLOW)
@@ -162,14 +164,17 @@ def _run(config):
         _publish(attempt / 'result.json', envelope)
         return True
     while worker.poll() is None or any(reader.is_alive() for reader in readers):
-        if not published:
-            published = publish_ready()
         _publish(attempt / 'heartbeat.json', {'at': time.time()})
         time.sleep(.2)
     for reader in readers:
         reader.join()
     if not published:
         published = publish_ready()
+    barrier = config.get('fixture_finish_barrier')
+    deadline = time.monotonic() + 10
+    while published and barrier and not Path(barrier).exists() and time.monotonic() < deadline:
+        _publish(attempt / 'heartbeat.json', {'at': time.time()})
+        time.sleep(.2)
     if published:
         _publish(attempt / 'completion.json', {'state': 'worker_exited', 'exit_code': worker.returncode})
 
