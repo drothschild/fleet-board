@@ -35,6 +35,11 @@ class NativeInspector:
                 except (OSError, ValueError, TypeError):
                     pass
                 result = read_result(path)
+            published = path / 'result.json'
+            if result is None and (published.exists() or published.is_symlink()):
+                result = read_result(path)
+                if result is None:
+                    return {'status': 'invalid_result'}
             try:
                 receipt = json.loads(_read_regular(path / 'receipt.json', 8192))
                 identity = ProcessIdentity(**receipt['identity'])
@@ -112,6 +117,10 @@ class Recovery:
                 observation = self.inspector.inspect(attempt)
             except (OSError, ValueError):
                 observation = {'status': 'unknown'}
+            if observation.get('status') == 'invalid_result':
+                if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready', 'cancel_requested'):
+                    self.store.quarantine_attempt(attempt['id'], 'invalid_result', self.store.snapshot()['domain']['revision'])
+                continue
             result = observation.get('result')
             if result is not None:
                 self.store.record_result(result)
