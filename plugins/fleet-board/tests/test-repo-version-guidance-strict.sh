@@ -42,7 +42,16 @@ g add -A; g commit -qm bump
 if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out2" 2>&1; then ok "configured lint passes a bumped branch"; else bad "configured lint rejected a bumped branch"; fi
 
 # Acceptance 3: no shipped-dir change in commits, working tree, index or untracked files.
-if git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null; then
+# It holds on card 227's own branch only: other branches, such as a card that edits an agent,
+# legitimately change shipped files. GITHUB_HEAD_REF names the branch in pull-request CI.
+branch=${GITHUB_HEAD_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)}
+case "$branch" in
+  fleet/227-*) ;;
+  *) branch="" ;;
+esac
+if [ -z "$branch" ]; then
+  ok "shipped-dir check skipped: not card 227's branch"
+elif git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null; then
   base=$(git -C "$ROOT" merge-base origin/main HEAD)
   n=$( { git -C "$ROOT" diff --name-only "$base" -- plugins/fleet-board/agents plugins/fleet-board/skills plugins/fleet-board/scripts
          git -C "$ROOT" ls-files --others --exclude-standard -- plugins/fleet-board/agents plugins/fleet-board/skills plugins/fleet-board/scripts; } | wc -l | tr -d ' ')
