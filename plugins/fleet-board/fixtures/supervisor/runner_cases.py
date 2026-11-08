@@ -37,7 +37,7 @@ print('runner identity tests passed')
 def test_detached_unique_invocation():
     fixture = pathlib.Path(__file__).with_name('fake_worker.py')
     with tempfile.TemporaryDirectory() as tmp:
-        directory = pathlib.Path(tmp)
+        directory = pathlib.Path(tmp).resolve()
         counter = directory / 'counter'
         runner = Runner(directory, fixture_command=[sys.executable, str(fixture), str(counter), '0.4'])
         attempt = {'attempt_id': 'a', 'nonce': 'n'}

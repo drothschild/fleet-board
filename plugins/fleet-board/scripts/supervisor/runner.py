@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -65,11 +66,18 @@ class Runner:
     def launch(self, prepared_attempt):
         if self.fixture_command is None:
             raise NotImplementedError('production worker isolation is unavailable')
+        root = self.directory
+        try:
+            metadata = root.stat()
+            if not root.is_absolute() or root.is_symlink() or root.resolve(strict=True) != root or not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
+                raise ValueError('unsafe runner root')
+        except OSError as exc:
+            raise ValueError('unsafe runner root') from exc
         attempt_id = prepared_attempt.get('attempt_id')
         nonce = prepared_attempt.get('nonce')
         if any(not isinstance(v, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', v) for v in (attempt_id, nonce)):
             raise ValueError('invalid attempt identity')
-        config = json.dumps({'directory': str(self.directory.resolve()), 'attempt_id': attempt_id,
+        config = json.dumps({'directory': str(self.directory), 'attempt_id': attempt_id,
                              'nonce': nonce, 'fixture_command': self.fixture_command, 'prepared': prepared_attempt,
                              'fixture_finish_barrier': str(self.fixture_finish_barrier) if self.fixture_finish_barrier else None})
         process = subprocess.Popen([sys.executable, '-m', 'supervisor.runner'],
