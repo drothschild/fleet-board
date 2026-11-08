@@ -1365,6 +1365,10 @@ function setImportPhase(phase) {
   $("imp-create").disabled = busy;
   $("imp-embed").disabled = busy;
   $("imp-discard").disabled = busy;
+  const grid = $("imp-grid");
+  for (const n of grid.all ? grid.all() : grid.querySelectorAll("button")) {
+    if (n.tagName === "BUTTON") n.disabled = phase !== "ready";
+  }
 }
 
 // setImportStatus(text): the muted header line, after the dropped file's name.
@@ -1477,7 +1481,12 @@ function renderPreview(cards) {
   const frag = document.createDocumentFragment();
   for (const c of cards) {
     const li = el("li", "imp-card");
-    li.appendChild(el("div", "imp-card-title", c.title || c.key || "(untitled)"));
+    const btn = el("button", "imp-card-btn");
+    btn.type = "button";
+    btn.disabled = !(S.imp && S.imp.phase === "ready");
+    btn.addEventListener("click", function () { openImportDetail(c); });
+    li.appendChild(btn);
+    btn.appendChild(el("div", "imp-card-title", c.title || c.key || "(untitled)"));
     const meta = el("div", "imp-card-meta");
     const n = Array.isArray(c.acceptance) ? c.acceptance.length : 0;
     meta.appendChild(document.createTextNode(n + " acceptance"));
@@ -1489,12 +1498,12 @@ function renderPreview(cards) {
     } else if (produces.length) {
       meta.appendChild(document.createTextNode(" · produces " + produces.join(", ")));
     }
-    li.appendChild(meta);
+    btn.appendChild(meta);
     const labels = (Array.isArray(c.labels) ? c.labels : []).filter(function (l) { return typeof l === "string"; });
     if (labels.length) {
       const ul = el("ul", "labels");
       for (const l of labels) ul.appendChild(el("li", "label", l));
-      li.appendChild(ul);
+      btn.appendChild(ul);
     }
     frag.appendChild(li);
   }
@@ -1610,7 +1619,100 @@ async function createImport(id) {
   setImportPhase("ready");
 }
 
+// --- import card detail -------------------------------------------------------
+
+const DETAIL_LISTS = { labels: "imp-d-labels", scope: "imp-d-scope", acceptance: "imp-d-acceptance", depends_on: "imp-d-depends" };
+
+function strList(v) {
+  return (Array.isArray(v) ? v : []).filter(function (x) { return typeof x === "string"; });
+}
+
+function lines(text) {
+  return String(text).split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+// openImportDetail(card): the editable detail dialog for one previewed card.
+function openImportDetail(card) {
+  const imp = S.imp;
+  if (!imp || imp.phase !== "ready") return;
+  imp.detail = card;
+  imp.detailOpener = document.activeElement;
+  $("imp-d-key").textContent = card.key || "";
+  $("imp-d-title").value = card.title || "";
+  $("imp-d-why").value = typeof card.why === "string" ? card.why : "";
+  for (const f in DETAIL_LISTS) $(DETAIL_LISTS[f]).value = strList(card[f]).join("\n");
+  $("imp-d-repo").textContent = card.repo || "";
+  $("imp-d-consumes").textContent = strList(card.consumes).join(", ");
+  $("imp-d-produces").textContent = strList(card.produces).join(", ");
+  $("imp-d-error").hidden = true;
+  $("imp-d-error").textContent = "";
+  $("imp-detail").hidden = false;
+  $("imp-d-title").focus({ preventScroll: true });
+}
+
+function closeImportDetail() {
+  $("imp-detail").hidden = true;
+  const imp = S.imp;
+  if (imp) {
+    const back = imp.detailOpener;
+    imp.detail = null;
+    imp.detailOpener = null;
+    if (back && back.focus) back.focus({ preventScroll: true });
+  }
+}
+
+// saveImportDetail(): one PATCH with the changed fields; the grid is re-rendered
+// from the response without replaying the split. A refusal stays in the dialog.
+async function saveImportDetail() {
+  const imp = S.imp;
+  const card = imp && imp.detail;
+  if (!card || imp.detailBusy) return;
+  const edits = {};
+  const title = $("imp-d-title").value;
+  if (title !== (card.title || "")) edits.title = title;
+  const why = $("imp-d-why").value;
+  if (why !== (typeof card.why === "string" ? card.why : "")) edits.why = why;
+  for (const f in DETAIL_LISTS) {
+    const now = lines($(DETAIL_LISTS[f]).value);
+    if (JSON.stringify(now) !== JSON.stringify(strList(card[f]))) edits[f] = now;
+  }
+  if (!Object.keys(edits).length) {
+    closeImportDetail();
+    return;
+  }
+  imp.detailBusy = true;
+  $("imp-d-save").disabled = true;
+  const r = await writeApi("PATCH", "/api/import/" + encodeURIComponent(imp.id) + "/cards/" + encodeURIComponent(card.key), edits);
+  imp.detailBusy = false;
+  $("imp-d-save").disabled = false;
+  if (S.imp !== imp) return;
+  const d = r.data;
+  const cards = r.ok && d.cards && Array.isArray(d.cards.cards) ? d.cards.cards.filter(function (c) {
+    return c && typeof c === "object";
+  }) : null;
+  if (!cards || !cards.length) {
+    const box = $("imp-d-error");
+    box.textContent = r.ok ? "The server's reply held no cards." : errorText(r);
+    box.hidden = false;
+    return;
+  }
+  imp.cards = cards;
+  if (typeof d.table === "string") $("imp-table").textContent = d.table.replace(/\s+$/, "");
+  renderPreview(cards);
+  closeImportDetail();
+}
+
 function bindImport() {
+  $("imp-detail").hidden = true;
+  $("imp-d-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    saveImportDetail();
+  });
+  $("imp-d-save").addEventListener("click", function () { saveImportDetail(); });
+  $("imp-d-cancel").addEventListener("click", closeImportDetail);
+  $("imp-detail").addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeImportDetail();
+  });
   $("imp-discard").addEventListener("click", closeImport);
   $("imp-create").addEventListener("click", function () {
     if (S.imp) createImport(S.imp.id);

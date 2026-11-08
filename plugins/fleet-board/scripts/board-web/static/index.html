@@ -88,6 +88,25 @@
       <button type="button" id="imp-create" class="btn primary" hidden>Create cards</button>
     </div>
   </div>
+  <div id="imp-detail" class="imp-detail" role="dialog" aria-modal="true" aria-labelledby="imp-d-h" hidden>
+    <form id="imp-d-form" class="imp-d-form">
+      <h3 id="imp-d-h" class="imp-d-h">Card detail <span id="imp-d-key" class="imp-d-key"></span></h3>
+      <label class="imp-d-row">Title <input id="imp-d-title" type="text" autocomplete="off"></label>
+      <label class="imp-d-row">Labels (one per line) <textarea id="imp-d-labels" rows="2"></textarea></label>
+      <label class="imp-d-row">Why <textarea id="imp-d-why" rows="3"></textarea></label>
+      <label class="imp-d-row">Scope (one per line) <textarea id="imp-d-scope" rows="3"></textarea></label>
+      <label class="imp-d-row">Acceptance (one per line) <textarea id="imp-d-acceptance" rows="4"></textarea></label>
+      <label class="imp-d-row">Depends on (one per line) <textarea id="imp-d-depends" rows="2"></textarea></label>
+      <p class="imp-d-ro">Repo: <span id="imp-d-repo"></span></p>
+      <p class="imp-d-ro">Consumes: <span id="imp-d-consumes"></span></p>
+      <p class="imp-d-ro">Produces: <span id="imp-d-produces"></span></p>
+      <p id="imp-d-error" class="imp-error" role="alert" hidden></p>
+      <div class="imp-actions">
+        <button type="button" id="imp-d-cancel" class="btn">Cancel</button>
+        <button type="submit" id="imp-d-save" class="btn primary">Save</button>
+      </div>
+    </form>
+  </div>
 </section>
 <div id="drawer-dim" class="drawer-dim" hidden></div>
 <aside id="drawer" class="drawer" role="dialog" aria-modal="true" aria-label="Card" hidden>

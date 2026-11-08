@@ -41,13 +41,6 @@ rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak "$R"/.claude-plugin/*.bak
 g add -A; g commit -qm bump
 if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out2" 2>&1; then ok "configured lint passes a bumped branch"; else bad "configured lint rejected a bumped branch"; fi
 
-# Acceptance 3: no shipped-dir change in commits, working tree, index or untracked files.
-if git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null; then
-  base=$(git -C "$ROOT" merge-base origin/main HEAD)
-  n=$( { git -C "$ROOT" diff --name-only "$base" -- plugins/fleet-board/agents plugins/fleet-board/skills plugins/fleet-board/scripts
-         git -C "$ROOT" ls-files --others --exclude-standard -- plugins/fleet-board/agents plugins/fleet-board/skills plugins/fleet-board/scripts; } | wc -l | tr -d ' ')
-  if [ "$n" = 0 ]; then ok "no committed or working-tree change under agents, skills, scripts"; else bad "$n shipped files changed"; fi
-else
-  bad "origin/main is not available"
-fi
+# Acceptance 3 (a diff of the current branch against origin/main) was removed: it was a one-time
+# check for card 227 and fails every later PR that changes agents, skills or scripts.
 exit $fail
