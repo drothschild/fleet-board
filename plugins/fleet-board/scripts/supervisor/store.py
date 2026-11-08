@@ -484,7 +484,8 @@ class Store:
                     if not math.isfinite(current_spend + usage['cost_usd']):
                         raise ValueError('usage total overflow')
                     c.execute('UPDATE sessions SET known_spend=known_spend+? WHERE id=?', (usage['cost_usd'], session))
-                c.execute("UPDATE attempts SET state='result_ready' WHERE id=?", (attempt_id,))
+                if disposition == 'current' and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
+                    c.execute("UPDATE attempts SET state='result_ready' WHERE id=?", (attempt_id,))
                 self._event('result_recorded', {'attempt_id': attempt_id, 'disposition': disposition})
                 result = {'disposition': disposition}
             c.execute('COMMIT')
