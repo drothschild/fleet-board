@@ -221,8 +221,8 @@ def test_launcher_exit_and_descriptor_closure():
         root = pathlib.Path(tmp).resolve()
         lock = root / 'controller.lock'
         marker = root / 'worker-acquired'
-        worker = "import fcntl,sys,time; time.sleep(.5); f=open(sys.argv[1],'a'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB); open(sys.argv[2],'w').write('ok')"
-        launcher = "import fcntl,os,sys; from supervisor.runner import Runner; f=open(sys.argv[2],'a'); fcntl.flock(f,fcntl.LOCK_EX); os.set_inheritable(f.fileno(),True); Runner(sys.argv[1],fixture_command=[sys.executable,'-c',sys.argv[4],sys.argv[2],sys.argv[3]]).launch({'attempt_id':'child','nonce':'n'})"
+        worker = "import fcntl,os,sys,time; time.sleep(.5); f=open(sys.argv[1],'a'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB); fd=int(sys.argv[3]); expected=int(sys.argv[4]);\ntry: actual=os.fstat(fd).st_ino\nexcept OSError: actual=-1\nassert actual != expected; open(sys.argv[2],'w').write('ok')"
+        launcher = "import fcntl,os,socket,sys; from supervisor.runner import Runner; f=open(sys.argv[2],'a'); fcntl.flock(f,fcntl.LOCK_EX); os.set_inheritable(f.fileno(),True); sock,peer=socket.socketpair(); os.set_inheritable(sock.fileno(),True); Runner(sys.argv[1],fixture_command=[sys.executable,'-c',sys.argv[4],sys.argv[2],sys.argv[3],str(sock.fileno()),str(os.fstat(sock.fileno()).st_ino)]).launch({'attempt_id':'child','nonce':'n'})"
         env = dict(os.environ, PYTHONPATH=str(ROOT / 'scripts'), PYTHONDONTWRITEBYTECODE='1')
         parent = subprocess.Popen([sys.executable, '-c', launcher, str(root), str(lock), str(marker), worker], env=env)
         parent.wait(timeout=10)
