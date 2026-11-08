@@ -50,18 +50,32 @@ class NativeInspector:
                     return {'status': 'invalid_result'}
             try:
                 receipt = json.loads(_read_regular(path / 'receipt.json', 8192))
+                if set(receipt) != {'state', 'identity'} or receipt['state'] != 'registered':
+                    raise ValueError('invalid launch receipt')
                 identity = ProcessIdentity(**receipt['identity'])
-                if (identity.nonce != attempt['nonce'] or ('boot_id' in original and original['boot_id'] != identity.boot_id)
-                        or ('process_identity' in original and original['process_identity'] != identity.__dict__)):
+                has_boot = 'boot_id' in original
+                has_identity = 'process_identity' in original
+                if (identity.nonce != attempt['nonce'] or has_boot != has_identity
+                        or (has_boot and (original['boot_id'] != identity.boot_id
+                                          or original['process_identity'] != identity.__dict__))):
                     raise ValueError('receipt identity mismatch')
                 boot = processes._boot_id()
-                if (boot != identity.boot_id and original.get('boot_id') == identity.boot_id
-                        and original.get('process_identity') == identity.__dict__):
+                durable_timing = (type(original.get('started_at')) in (int, float)
+                                  and math.isfinite(original['started_at'])
+                                  and type(original.get('deadline')) in (int, float)
+                                  and math.isfinite(original['deadline'])
+                                  and original['deadline'] >= original['started_at'])
+                prepared_timing = (prepared.get('started_at') == original.get('started_at')
+                                   and prepared.get('deadline') == original.get('deadline'))
+                if (boot != identity.boot_id and (has_boot or (durable_timing and prepared_timing))
+                        and (not has_boot or (original['boot_id'] == identity.boot_id
+                                              and original['process_identity'] == identity.__dict__))):
                     proof = StopEvidence(domain_id=self.domain_id, job_id=attempt['job_id'], attempt_id=attempt['id'],
                                          generation=original['generation'], boot_id=identity.boot_id, pid=identity.pid,
                                          started_at=identity.started_at, nonce=identity.nonce,
                                          kind='boot_changed', current_boot_id=boot)
-                    return {'status': 'stopped', 'result': result, 'stop_evidence': proof}
+                    return {'status': 'stopped', 'result': result, 'stop_evidence': proof,
+                            'identity': identity, 'receipt_adoption': not has_boot}
                 observation = {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
                 if observation['status'] == 'alive':
                     for name in ('heartbeat', 'progress'):
@@ -153,6 +167,19 @@ class Recovery:
                     continue
                 attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
             data = json.loads(attempt['data'])
+            proof = observation.get('stop_evidence')
+            identity = observation.get('identity')
+            if (observation.get('status') == 'stopped' and isinstance(proof, StopEvidence)
+                    and proof.kind == 'boot_changed' and observation.get('receipt_adoption') is True
+                    and isinstance(identity, ProcessIdentity)
+                    and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready')
+                    and 'boot_id' not in data and 'process_identity' not in data
+                    and identity.boot_id == proof.boot_id and identity.pid == proof.pid
+                    and identity.started_at == proof.started_at and identity.nonce == proof.nonce):
+                updates = {'boot_id': identity.boot_id, 'process_identity': identity.__dict__}
+                self.store.update_attempt(attempt['id'], updates, self.store.snapshot()['domain']['revision'])
+                attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
+                data = json.loads(attempt['data'])
             if attempt['state'] == 'quarantined' and observation.get('status') == 'stopped':
                 try:
                     self.store.record_execution_stopped(attempt['id'], observation.get('stop_evidence'),
