@@ -437,7 +437,12 @@ class ProviderCases(unittest.TestCase):
         }
         runner = Runner(self.root / "runner", production_enabled=True)
         policy = build_policy(self.workspace, self.root / "private-git", self.root / "channels")
-        fake_channel = object()
+        controls = []
+        class FakeChannel:
+            socket_path = self.root / "inference.sock"
+            def bind_attempt_control(self, attempt_id, deadline, cancel_event):
+                controls.append((attempt_id, deadline, cancel_event))
+        fake_channel = FakeChannel()
         with patch("supervisor.runner.probe_capabilities", return_value={"available": True}), \
              patch("supervisor.runner.prepare_private_git"), \
              patch("supervisor.runner.prepare_worker_bootstrap", return_value={"schema_version": 1}), \
@@ -464,6 +469,7 @@ class ProviderCases(unittest.TestCase):
         self.assertAlmostEqual(isolated.call_args.kwargs["timeout"],
                                prepared["deadline"] - time.time(), delta=1)
         self.assertIs(isolated.call_args.kwargs["cancel_event"], cancel)
+        self.assertEqual(controls, [("attempt-1", prepared["deadline"], cancel)])
 
     def test_isolated_worker_deadline_and_cancellation_kill_process_group(self):
         child_marker = self.root / "cancelled-descendant"
@@ -489,6 +495,29 @@ class ProviderCases(unittest.TestCase):
                 timer.cancel()
         time.sleep(.9)
         self.assertFalse(child_marker.exists(), "cancelled worker descendant survived")
+
+    def test_isolated_worker_broken_pipe_kills_surviving_process_group(self):
+        child_marker = self.root / "io-error-descendant"
+        ready = self.root / "io-error-descendant-ready"
+        command = [sys.executable] + self.script(
+            "io-error-parent.py",
+            "#!/usr/bin/env python3\nimport pathlib,subprocess,sys,time\nchild=\"import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[2]).write_text('ready'); time.sleep(.8); pathlib.Path(sys.argv[1]).write_text('alive')\"\nsubprocess.Popen([sys.executable, '-c', child, sys.argv[1], sys.argv[2]])\n",
+        ) + [str(child_marker), str(ready)]
+
+        def broken_pipe(_fd, _data):
+            deadline = time.monotonic() + 2
+            while not ready.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            raise BrokenPipeError("worker closed bootstrap pipe")
+
+        with patch("supervisor.isolation._wrapped_command", return_value=command), \
+             patch("supervisor.isolation.os.write", side_effect=broken_pipe):
+            with self.assertRaises(IsolationUnavailable):
+                run_isolated(["ignored"], {"workspace": str(self.workspace)},
+                             capability={"available": True}, timeout=3,
+                             input_data=b"bootstrap", cancel_event=threading.Event())
+        time.sleep(.9)
+        self.assertFalse(child_marker.exists(), "worker descendant survived bootstrap I/O failure")
 
     def test_fixture_and_human_control_authority_are_not_worker_capabilities(self):
         policy = build_policy(self.workspace, self.root / "private-git",
