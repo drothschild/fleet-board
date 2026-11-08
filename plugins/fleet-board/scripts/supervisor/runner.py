@@ -214,7 +214,22 @@ def _run(config):
                         artifact_hashes={report: hashes['report']}, usage=None, exit_code=0)
         _publish(attempt / 'result.json', envelope)
         return True
+    progress_sequence = 0
     while worker.poll() is None or any(reader.is_alive() for reader in readers):
+        scratch = prepared.get('scratch')
+        if scratch:
+            try:
+                fd = os.open(str(Path(scratch) / 'progress.json'), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, 'rb') as stream:
+                    raw = stream.read(4097)
+                progress = json.loads(raw)
+                if (len(raw) <= 4096 and isinstance(progress, dict) and set(progress) == {'sequence', 'kind'}
+                        and type(progress['sequence']) is int and progress['sequence'] > progress_sequence
+                        and progress['kind'] in ('checkpoint', 'tool_completed', 'long_operation')):
+                    _publish(attempt / 'progress.json', progress)
+                    progress_sequence = progress['sequence']
+            except (OSError, ValueError, TypeError):
+                pass
         _publish(attempt / 'heartbeat.json', {'at': time.time()})
         time.sleep(.2)
     for reader in readers:
