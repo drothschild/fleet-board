@@ -1,0 +1,3 @@
+board: { repo: a/b }
+providers: { codex: {} }
+supervisor: { enabled: true, start_on_boot: false, provider_concurrency: { claude: 2, codex: 1 } }
