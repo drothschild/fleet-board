@@ -44,7 +44,13 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-[ $# -eq 0 ] || fb_die 2 "usage: merge-reviewed.sh"
+CARD_ONLY=""
+if [ "$#" -eq 2 ] && [ "$1" = --card ]; then
+  fb_valid_number "$2" || fb_die 2 "usage: merge-reviewed.sh [--card <number>]"
+  CARD_ONLY="$2"
+elif [ "$#" -ne 0 ]; then
+  fb_die 2 "usage: merge-reviewed.sh [--card <number>]"
+fi
 
 fb_load_config
 
@@ -77,6 +83,7 @@ for st in in_review $(fb_stage_states); do
     case " $NUMS " in *" $n "*) ;; *) NUMS="$NUMS $n" ;; esac
   done
 done
+[ -z "$CARD_ONLY" ] || case " $NUMS " in *" $CARD_ONLY "*) NUMS=" $CARD_ONLY" ;; *) NUMS="" ;; esac
 [ -n "$NUMS" ] || exit 0
 
 RC=0
