@@ -663,6 +663,51 @@ def create_import(id: str, embed: bool) -> dict:
     return {"created": created, "output": out}
 
 
+EDITABLE_FIELDS = {"title": "str", "why": "str", "labels": "list", "scope": "list",
+                   "acceptance": "list", "depends_on": "list"}
+
+
+def edit_import_card(id: str, key: str, body: dict) -> dict:
+    """Applies a partial edit to one previewed card, keeps it only when the dry run passes."""
+    idir = import_dir(id)
+    edits = {}
+    for field, kind in EDITABLE_FIELDS.items():
+        if field not in body:
+            continue
+        v = body[field]
+        if kind == "str" and not isinstance(v, str):
+            raise ApiError(400, "%s must be a string" % field)
+        if kind == "list" and not (isinstance(v, list) and all(isinstance(x, str) for x in v)):
+            raise ApiError(400, "%s must be a list of strings" % field)
+        edits[field] = v
+    if not edits:
+        raise ApiError(400, "no editable field given (%s)" % ", ".join(EDITABLE_FIELDS))
+    with import_lock(id):
+        meta = read_json_file(idir / "meta.json") or {}
+        if meta.get("created"):
+            raise ApiError(409, "import %s was already created" % id)
+        plan = read_json_file(idir / "cards.json")
+        if not isinstance(plan, dict) or not isinstance(plan.get("cards"), list):
+            raise ApiError(409, "import %s is not ready" % id)
+        card = next((c for c in plan["cards"] if isinstance(c, dict) and c.get("key") == key), None)
+        if card is None:
+            raise ApiError(404, "unknown card key %s in import %s" % (key, id))
+        card.update(edits)
+        trial = idir / "cards.edit.json"
+        write_private_atomic(trial, json.dumps(plan))
+        try:
+            drc, table, derr = run_script(APP["root"], ["bash", script("import-plan.sh"), str(trial), "--dry-run"])
+            if drc != 0:
+                raise ApiError(422, derr.rstrip("\n") or "import-plan.sh --dry-run exited %d" % drc)
+            os.replace(str(trial), str(idir / "cards.json"))
+        finally:
+            try:
+                trial.unlink()
+            except OSError:
+                pass
+    return {"state": "ready", "cards": plan, "table": table}
+
+
 # --- controllers: (params, body) -> (status, payload) -------------------------
 
 def ctx():
@@ -867,6 +912,10 @@ def create_import_cards(params, body):
     return 200, create_import(params["id"], embed)
 
 
+def edit_import_card_route(params, body):
+    return 200, edit_import_card(params["id"], params["key"], body)
+
+
 # --- handler and route dispatch -----------------------------------------------
 
 # (method, path regex, controller); the n group becomes an int, id stays a string.
@@ -883,6 +932,7 @@ ROUTES = [
     ("POST", r"/api/import", post_import),
     ("GET", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_import),
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
+    ("PATCH", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cards/(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)", edit_import_card_route),
 ]
 NO_BODY = (start_run, stop_run)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
