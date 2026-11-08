@@ -103,6 +103,13 @@ class Recovery:
                 self.store.record_result(result)
                 attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
             data = json.loads(attempt['data'])
+            if attempt['state'] == 'result_ready' and observation.get('status') == 'stopped':
+                try:
+                    self.store.record_execution_stopped(attempt['id'], observation.get('stop_evidence'),
+                                                        self.store.snapshot()['domain']['revision'])
+                except ValueError:
+                    self.store.quarantine_attempt(attempt['id'], 'termination_uncertain', self.store.snapshot()['domain']['revision'])
+                continue
             if observation.get('status') == 'alive' and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
                 updates = {}
                 identity = observation.get('identity')
