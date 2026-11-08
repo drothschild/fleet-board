@@ -82,6 +82,11 @@ expect_invalid "planner.provider number" 'planner: { provider: 5 }' "planner.pro
 expect_invalid "planner.model number" 'planner: { model: 5 }' "planner.model"
 expect_invalid "planner.model list" 'planner: { model: [a] }' "planner.model"
 
+make_repo ''
+run_config
+model_present="$(printf '%s' "$LAST_OUT" | jq -r '.planner | has("model")' 2>&1)"
+if [ "$model_present" = "true" ]; then pass "no planner block: planner.model key is present"; else fail "no planner block: planner.model key is present" "has(model) printed '$model_present'"; fi
+
 echo ""
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
