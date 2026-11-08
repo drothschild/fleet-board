@@ -108,7 +108,7 @@ def _private_directory(path):
 
 class Store:
     @classmethod
-    def open(cls, domain, filesystem_inspector=None, fault_injector=None):
+    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
         if not all(isinstance(v, str) and v for v in identity.values()):
             raise ValueError('invalid domain identity')
@@ -179,10 +179,11 @@ class Store:
                 conn.execute('ROLLBACK')
             conn.close()
             raise
-        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector)
+        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier)
 
-    def __init__(self, connection, directory, domain_id, common_dir, fault_injector):
+    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier):
         self.__connection = connection
+        self.__stop_evidence_verifier = stop_evidence_verifier
         self.directory = directory
         self.domain_id = domain_id
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
@@ -316,7 +317,8 @@ class Store:
 
     def record_execution_stopped(self, attempt_id, evidence, expected_revision):
         """Record only a trusted, exactly bound complete-tree observation."""
-        if type(evidence) is not StopEvidence or evidence.kind != 'fixture_complete_tree':
+        if (type(evidence) is not StopEvidence or evidence.kind != 'fixture_complete_tree'
+                or self.__stop_evidence_verifier is None or self.__stop_evidence_verifier(evidence) is not True):
             raise ValueError('untrusted stop evidence')
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
