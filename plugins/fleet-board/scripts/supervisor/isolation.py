@@ -1,7 +1,7 @@
 """Host-enforced worker isolation policies. Unsupported hosts fail closed."""
 import os
 import json
-import os
+import stat
 from pathlib import Path
 import selectors
 import signal
@@ -11,6 +11,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 
 
@@ -163,20 +164,66 @@ def _wrapped_command(argv, policy):
     raise IsolationUnavailable('host isolation backend unsupported')
 
 
-def probe_capabilities(policy, *, inference_socket=None):
+_PROTECTED_RESOURCE_KEYS = {
+    'controller_db', 'controller_socket', 'board_storage', 'shared_git_metadata',
+    'host_credentials', 'ssh_agent', 'keychain',
+}
+
+
+def _protected_resource_paths(resources):
+    """Validate the trusted map without opening or reading any protected target."""
+    if not isinstance(resources, dict) or set(resources) != _PROTECTED_RESOURCE_KEYS:
+        raise IsolationUnavailable('complete protected-resource map is required')
+    paths = {}
+    for key, value in resources.items():
+        values = value if key in ('host_credentials', 'keychain') else [value]
+        if not isinstance(values, (list, tuple)) or not values:
+            raise IsolationUnavailable('protected-resource map is incomplete: ' + key)
+        validated = []
+        for raw in values:
+            if not isinstance(raw, str) or not raw or not os.path.isabs(raw):
+                raise IsolationUnavailable('protected-resource path is invalid: ' + key)
+            path = Path(raw)
+            try:
+                info = path.lstat()
+                if path.is_symlink() or path.resolve(strict=True) != path:
+                    raise ValueError('path is not canonical')
+            except (OSError, ValueError) as exc:
+                raise IsolationUnavailable('protected-resource path is unavailable: ' + key) from exc
+            if key in ('controller_socket', 'ssh_agent') and not stat.S_ISSOCK(info.st_mode):
+                raise IsolationUnavailable('protected-resource socket is unavailable: ' + key)
+            if key in ('board_storage', 'shared_git_metadata') and not stat.S_ISDIR(info.st_mode):
+                raise IsolationUnavailable('protected-resource directory is unavailable: ' + key)
+            if key in ('controller_db',) and not stat.S_ISREG(info.st_mode):
+                raise IsolationUnavailable('protected-resource file is unavailable: ' + key)
+            if key == 'host_credentials' and not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise IsolationUnavailable('protected credential path is unavailable')
+            if key == 'keychain' and not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+                                           or stat.S_ISSOCK(info.st_mode)):
+                raise IsolationUnavailable('protected keychain path is unavailable')
+            validated.append(str(path))
+        paths[key] = validated
+    return paths
+
+
+def probe_capabilities(policy, *, inference_socket=None, protected_resources=None):
     """Require real positive and negative checks for every worker boundary."""
     expected = ('workspace_read', 'workspace_write', 'controller_db', 'controller_socket',
                 'board_storage', 'shared_git_metadata', 'host_credentials', 'ssh_agent',
                 'keychain', 'symlink_escape', 'loopback_network', 'publication',
                 'forged_human_control', 'inference_channel')
     checks = {name: False for name in expected}
+    try:
+        protected = _protected_resource_paths(protected_resources)
+    except IsolationUnavailable as exc:
+        return {'available': False, 'backend': policy.get('backend', 'unsupported'),
+                'reason': str(exc), 'checks': checks}
     if not policy.get('command'):
         return {'available': False, 'backend': policy['backend'], 'reason': 'isolation executable unavailable',
                 'checks': checks}
     probe_root = None
     listener = tcp_listener = None
     owns_inference_socket = False
-    control_listener = agent_listener = None
     accepted = []
     workspace_probe_paths = []
     try:
@@ -185,22 +232,9 @@ def probe_capabilities(policy, *, inference_socket=None):
         scratch_parent = '/private/tmp' if Path('/private/tmp').is_dir() else '/tmp'
         probe_root = Path(tempfile.mkdtemp(prefix='fb-probe-', dir=scratch_parent))
         probe_root.chmod(0o700)
-        targets = {}
         probe_name = secrets.token_hex(8)
-        for name in ('controller_db', 'board_storage', 'shared_git_metadata',
-                     'host_credentials', 'keychain'):
-            path = probe_root / (name + '.sentinel')
-            path.write_text(name, encoding='utf-8')
-            path.chmod(0o644)
-            targets[name] = path
-        control_path = probe_root / 'controller.sock'
-        agent_path = probe_root / 'agent.sock'
-        control_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        control_listener.bind(str(control_path))
-        control_listener.listen(1)
-        agent_listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        agent_listener.bind(str(agent_path))
-        agent_listener.listen(1)
+        control_path = Path(protected['controller_socket'][0])
+        agent_path = Path(protected['ssh_agent'][0])
         inference_path = Path(inference_socket or (Path(policy['channels']) / 'inference.sock'))
         if not inference_path.exists():
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -215,7 +249,7 @@ def probe_capabilities(policy, *, inference_socket=None):
         tcp_listener.bind(('127.0.0.1', 0))
         tcp_listener.listen(1)
         escape = Path(policy['workspace']) / ('.isolation-probe-escape-' + probe_name)
-        escape.symlink_to(targets['controller_db'])
+        escape.symlink_to(protected['controller_db'][0])
         own_read = Path(policy['workspace']) / ('.isolation-probe-readable-' + probe_name)
         own_read.write_text('ok', encoding='utf-8')
         workspace_probe_paths.extend((escape, own_read))
@@ -225,14 +259,23 @@ def probe_capabilities(policy, *, inference_socket=None):
             'if test -r {0}; then workspace_read=pass; fi'.format(shlex.quote(str(own_read))),
             'if printf ok > {0}; then workspace_write=pass; fi'.format(shlex.quote(str(Path(policy['workspace']) / ('.isolation-probe-write-' + probe_name)))),
         ]
-        for name in ('controller_db', 'board_storage', 'shared_git_metadata', 'host_credentials', 'keychain'):
-            lines.append('if ! test -r {0}; then {1}=pass; fi'.format(shlex.quote(str(targets[name])), name))
+        for name in ('controller_db', 'board_storage', 'shared_git_metadata'):
+            target = shlex.quote(protected[name][0])
+            lines.append('if ! test -r {0} && ! test -w {0}; then {1}=pass; fi'.format(target, name))
+        lines.append('if ! {0} -z -U -w 1 {1} >/dev/null 2>&1; then controller_socket=pass; forged_human_control=pass; fi'.format(nc, shlex.quote(str(control_path))))
+        lines.append('if ! {0} -z -U -w 1 {1} >/dev/null 2>&1; then ssh_agent=pass; fi'.format(nc, shlex.quote(str(agent_path))))
+        for name in ('host_credentials', 'keychain'):
+            tests = []
+            for path in protected[name]:
+                if Path(path).is_socket():
+                    tests.append('! {0} -z -U -w 1 {1} >/dev/null 2>&1'.format(nc, shlex.quote(path)))
+                else:
+                    tests.append('! test -r {0} && ! test -w {0}'.format(shlex.quote(path)))
+            lines.append('if {0}; then {1}=pass; fi'.format(' && '.join(tests), name))
         lines.extend([
             'if ! test -r {0}; then symlink_escape=pass; fi'.format(shlex.quote(str(escape))),
             'if ! printf x > {0} 2>/dev/null; then publication=pass; fi'.format(shlex.quote(str(publication))),
             'if {0} -z -w 1 127.0.0.1 {1} >/dev/null 2>&1; then loopback_network=fail; else loopback_network=pass; fi'.format(nc, tcp_listener.getsockname()[1]),
-            'if printf control | {0} -U -w 1 {1} >/dev/null 2>&1; then controller_socket=fail; forged_human_control=fail; else controller_socket=pass; forged_human_control=pass; fi'.format(nc, shlex.quote(str(control_path))),
-            'if printf agent | {0} -U -w 1 {1} >/dev/null 2>&1; then ssh_agent=fail; else ssh_agent=pass; fi'.format(nc, shlex.quote(str(agent_path))),
             'if printf probe | {0} -U -w 1 {1} >/dev/null 2>&1; then inference_channel=pass; else inference_channel=fail; fi'.format(nc, shlex.quote(str(inference_path))),
             'printf "workspace_read=%s\\nworkspace_write=%s\\ncontroller_db=%s\\ncontroller_socket=%s\\nboard_storage=%s\\nshared_git_metadata=%s\\nhost_credentials=%s\\nssh_agent=%s\\nkeychain=%s\\nsymlink_escape=%s\\nloopback_network=%s\\npublication=%s\\nforged_human_control=%s\\ninference_channel=%s\\n" "$workspace_read" "$workspace_write" "$controller_db" "$controller_socket" "$board_storage" "$shared_git_metadata" "$host_credentials" "$ssh_agent" "$keychain" "$symlink_escape" "$loopback_network" "$publication" "$forged_human_control" "$inference_channel"',
         ])
@@ -259,21 +302,6 @@ def probe_capabilities(policy, *, inference_socket=None):
                 checks['inference_channel'] = checks['inference_channel'] and connection.recv(16) == b'probe'
             except (OSError, socket.timeout):
                 checks['inference_channel'] = False
-        try:
-            if control_listener.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN):
-                control_listener.settimeout(.05)
-                connection, _ = control_listener.accept()
-                accepted.append(connection)
-                checks['controller_socket'] = checks['forged_human_control'] = False
-        except (OSError, socket.timeout):
-            pass
-        try:
-            agent_listener.settimeout(.05)
-            connection, _ = agent_listener.accept()
-            accepted.append(connection)
-            checks['ssh_agent'] = False
-        except (OSError, socket.timeout):
-            pass
         if completed.returncode != 0:
             return {'available': False, 'backend': policy['backend'],
                     'reason': 'boundary probe failed (exit {})'.format(completed.returncode), 'checks': checks}
@@ -291,7 +319,7 @@ def probe_capabilities(policy, *, inference_socket=None):
                 connection.close()
             except OSError:
                 pass
-        for sock in (listener, tcp_listener, control_listener, agent_listener):
+        for sock in (listener, tcp_listener):
             if sock is not None:
                 try:
                     sock.close()
@@ -312,6 +340,7 @@ def probe_capabilities(policy, *, inference_socket=None):
 
 
 def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_data=None,
+                 cancel_event=None,
                  stdout_limit=1048576, stderr_limit=65536):
     capability = capability or probe_capabilities(policy)
     if not capability.get('available'):
@@ -319,7 +348,8 @@ def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_
     if (type(timeout) not in (int, float) or timeout <= 0
             or type(stdout_limit) is not int or stdout_limit < 1
             or type(stderr_limit) is not int or stderr_limit < 1
-            or (input_data is not None and not isinstance(input_data, bytes))):
+            or (input_data is not None and not isinstance(input_data, bytes))
+            or not isinstance(cancel_event, threading.Event)):
         raise ValueError('invalid isolated process bounds')
     process = None
     selector = selectors.DefaultSelector()
@@ -343,6 +373,8 @@ def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_
             selector.register(process.stdin, selectors.EVENT_WRITE)
         deadline = time.monotonic() + timeout
         while selector.get_map() or process.poll() is None:
+            if cancel_event.is_set():
+                raise IsolationUnavailable('isolated worker cancelled')
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise IsolationUnavailable('isolated worker deadline exceeded')

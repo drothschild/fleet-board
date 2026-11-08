@@ -133,12 +133,9 @@ class Runner:
         self.production_enabled = production_enabled is True
 
     def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None,
-                          source_repository=None):
+                          source_repository=None, protected_resources=None,
+                          cancel_event=None):
         """Run only an explicit production request behind verified host isolation."""
-        capability = probe_capabilities(
-            policy, inference_socket=getattr(channel, 'socket_path', None))
-        if not capability.get('available'):
-            raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
         if not self.production_enabled:
             raise IsolationUnavailable('production supervisor admission is disabled')
         required = {'attempt_id', 'generation', 'input_sha', 'role', 'provider', 'model'}
@@ -149,6 +146,18 @@ class Runner:
                 or any(not isinstance(prepared_attempt[key], str) or not prepared_attempt[key]
                        for key in ('attempt_id', 'role', 'provider', 'model'))):
             raise ValueError('invalid production attempt binding')
+        started_at, deadline = prepared_attempt.get('started_at'), prepared_attempt.get('deadline')
+        if (type(started_at) not in (int, float) or type(deadline) not in (int, float)
+                or not math.isfinite(started_at) or not math.isfinite(deadline)
+                or started_at < 0 or deadline <= started_at or deadline <= time.time()):
+            raise ValueError('production attempt requires a valid, unexpired durable deadline')
+        if not isinstance(cancel_event, threading.Event):
+            raise ValueError('production launch requires a threading.Event cancellation handle')
+        capability = probe_capabilities(
+            policy, inference_socket=getattr(channel, 'socket_path', None),
+            protected_resources=protected_resources)
+        if not capability.get('available'):
+            raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
         if prepared_attempt['role'] in ('implementor', 'fixer'):
             raise IsolationUnavailable('production role contract is gated on Phase 7')
         if source_repository is None:
@@ -156,7 +165,8 @@ class Runner:
         prepare_private_git(source_repository, policy['workspace'], policy['private_git'])
         bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
         payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
-        return run_isolated(command, policy, capability=capability, input_data=payload)
+        return run_isolated(command, policy, capability=capability, input_data=payload,
+                            timeout=deadline - time.time(), cancel_event=cancel_event)
 
     def launch(self, prepared_attempt):
         if self.fixture_command is None:

@@ -239,7 +239,8 @@ class ProviderCases(unittest.TestCase):
         capability = probe_capabilities(policy)
         if not capability["available"]:
             with self.assertRaises(IsolationUnavailable):
-                run_isolated(["/usr/bin/true"], policy, capability=capability)
+                run_isolated(["/usr/bin/true"], policy, capability=capability,
+                             cancel_event=threading.Event())
             runner = Runner(self.root / "runner")
             with self.assertRaises(IsolationUnavailable):
                 runner.launch_production({"attempt_id": "attempt-1"}, ["/usr/bin/true"], policy)
@@ -249,7 +250,8 @@ class ProviderCases(unittest.TestCase):
                    return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):
             with self.assertRaises(IsolationUnavailable):
                 run_isolated(["ignored"], {"workspace": str(self.workspace)},
-                             capability={"available": True}, timeout=3)
+                             capability={"available": True}, timeout=3,
+                             cancel_event=threading.Event())
 
     def test_isolated_worker_output_failure_kills_term_ignoring_child(self):
         marker = self.root / "surviving-child"
@@ -261,7 +263,8 @@ class ProviderCases(unittest.TestCase):
         with patch("supervisor.isolation._wrapped_command", return_value=command):
             with self.assertRaises(IsolationUnavailable):
                 run_isolated(["ignored"], {"workspace": str(self.workspace)},
-                             capability={"available": True}, timeout=3)
+                             capability={"available": True}, timeout=3,
+                             cancel_event=threading.Event())
         time.sleep(.9)
         self.assertFalse(marker.exists(), "worker descendant survived output cancellation")
 
@@ -377,6 +380,16 @@ class ProviderCases(unittest.TestCase):
                     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw:
                         raw.settimeout(2)
                         raw.connect(str(channel.socket_path))
+                        envelope = json.dumps({
+                            "schema_version": 1, "operation": "infer",
+                            "attempt_id": "attempt-1", "capability": "invalid",
+                            "request": self.request.to_dict(),
+                        }, separators=(",", ":")).encode("utf-8")
+                        raw.sendall(struct.pack("!I", len(envelope)) + envelope)
+                        header = raw.recv(4)
+                        self.assertEqual(len(header), 4)
+                        size = struct.unpack("!I", header)[0]
+                        self.assertIn("error", json.loads(raw.recv(size).decode("utf-8")))
                 client = InferenceClient(channel.socket_path, "attempt-1",
                                          channel.capability_for("attempt-1"), timeout=3)
                 self.assertEqual(client.infer(self.request.to_dict())["text"], "accepted")
@@ -397,10 +410,20 @@ class ProviderCases(unittest.TestCase):
              patch("supervisor.runner.prepare_private_git"), \
              patch("supervisor.runner.prepare_worker_bootstrap", return_value={"schema_version": 1}), \
              patch("supervisor.runner.run_isolated") as isolated:
+            with self.assertRaises(ValueError):
+                runner.launch_production({key: value for key, value in prepared.items()
+                                          if key != "deadline"},
+                                         ["/usr/bin/true"], policy, channel=fake_channel,
+                                         request={}, source_repository=self.root,
+                                         cancel_event=threading.Event())
             with self.assertRaises((TypeError, ValueError)):
                 runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                          channel=fake_channel, request={},
                                          source_repository=self.root)
+            with self.assertRaises(ValueError):
+                runner.launch_production(prepared, ["/usr/bin/true"], policy,
+                                         channel=fake_channel, request={},
+                                         source_repository=self.root, cancel_event=object())
             cancel = threading.Event()
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                               channel=fake_channel, request={},

@@ -302,6 +302,7 @@ class InferenceChannel:
         self._thread = None
         self._stop = threading.Event()
         self._requests = 0
+        self._request_slots = None
         self._attempt_requests = {attempt_id: 0 for attempt_id in self._capabilities}
         self._attempt_inflight = set()
         self._request_lock = threading.Lock()
@@ -337,6 +338,8 @@ class InferenceChannel:
             self._listener = listener
             self._executor = ThreadPoolExecutor(max_workers=min(16, max(4, len(self._capabilities) * 4)),
                                                 thread_name_prefix='inference-request')
+            self._request_slots = threading.BoundedSemaphore(
+                min(16, max(4, len(self._capabilities) * 4)))
             self._thread = threading.Thread(target=self._serve, name='inference-broker', daemon=True)
             self._thread.start()
             return self
@@ -413,6 +416,8 @@ class InferenceChannel:
             raise ContractError('inference channel authentication failed')
         if raw['request'].get('attempt_id') != raw['attempt_id']:
             raise ContractError('inference channel attempt mismatch')
+        if not self._claim_global_request():
+            raise ContractError('inference channel quota exhausted')
         if not self._claim_attempt(raw['attempt_id']):
             raise ContractError('attempt inference quota or concurrency limit exceeded')
         try:
@@ -430,6 +435,13 @@ class InferenceChannel:
                 return False
             self._attempt_requests[attempt_id] += 1
             self._attempt_inflight.add(attempt_id)
+            return True
+
+    def _claim_global_request(self):
+        with self._request_lock:
+            if self._requests >= self.MAX_REQUESTS:
+                return False
+            self._requests += 1
             return True
 
     def _release_attempt(self, attempt_id):
@@ -455,12 +467,18 @@ class InferenceChannel:
                 continue
             except OSError:
                 break
-            with self._request_lock:
-                if self._requests >= self.MAX_REQUESTS:
-                    connection.close()
+            if not self._request_slots.acquire(blocking=False):
+                connection.close()
+                continue
+            try:
+                future = self._executor.submit(self._serve_connection, connection)
+                future.add_done_callback(lambda _future: self._request_slots.release())
+            except BaseException:
+                self._request_slots.release()
+                connection.close()
+                if self._stop.is_set():
                     break
-                self._requests += 1
-            self._executor.submit(self._serve_connection, connection)
+                continue
 
     def request(self, attempt_id, capability, request, *, operation='infer', timeout=None):
         """Controller-side test/diagnostic client; workers use InferenceClient."""
