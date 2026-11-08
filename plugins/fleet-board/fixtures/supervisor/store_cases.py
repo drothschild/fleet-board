@@ -674,6 +674,21 @@ class StoreContract(unittest.TestCase):
         self.addCleanup(other.close)
         self.assertTrue(json.loads(other.snapshot()['attempts'][0]['data'])['suspected_stuck'])
 
+    def test_registered_process_identity_cannot_be_replaced(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        self.store.update_attempt('n1', {'boot_id': 'boot1', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        before = self.store.snapshot()
+        for update in ({'boot_id': 'different'}, {'process_identity': dict(identity, pid=43)}):
+            with self.assertRaises(ValueError):
+                self.store.update_attempt('n1', update, before['domain']['revision'])
+            self.assertEqual(self.store.snapshot(), before)
+
     def test_attempt_hard_deadline_is_set_once_and_survives_restart(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
