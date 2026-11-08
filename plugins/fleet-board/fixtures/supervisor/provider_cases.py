@@ -42,6 +42,33 @@ class ProviderCases(unittest.TestCase):
         import shutil
         shutil.rmtree(self.root)
 
+    def test_dispatcher_timeout_cancels_callback_before_later_pump(self):
+        from supervisor.workers import OwnerThreadDispatcher
+
+        dispatcher = OwnerThreadDispatcher(call_timeout=0.05)
+        invoked = []
+        errors = []
+
+        def submit():
+            try:
+                dispatcher.call(lambda: invoked.append("mutated"))
+            except Exception as exc:
+                errors.append(exc)
+
+        caller = threading.Thread(target=submit)
+        caller.start()
+        deadline = time.monotonic() + 1
+        while dispatcher._queue.qsize() == 0 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        self.assertEqual(dispatcher._queue.qsize(), 1)
+        caller.join(timeout=1)
+        self.assertFalse(caller.is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], TimeoutError)
+
+        dispatcher.run_pending()
+        self.assertEqual(invoked, [])
+
     def script(self, name, content):
         path = self.root / name
         path.write_text(content, encoding="utf-8")
