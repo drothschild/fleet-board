@@ -18,14 +18,15 @@ def _boot_id():
         with open('/proc/sys/kernel/random/boot_id', encoding='ascii') as stream:
             return stream.read().strip()
     if sys.platform == 'darwin':
-        class Timeval(ctypes.Structure):
-            _fields_ = [('sec', ctypes.c_long), ('usec', ctypes.c_int)]
         libc = ctypes.CDLL(None, use_errno=True)
-        value = Timeval()
-        size = ctypes.c_size_t(ctypes.sizeof(value))
-        if libc.sysctlbyname(b'kern.boottime', ctypes.byref(value), ctypes.byref(size), None, 0) != 0 or size.value != ctypes.sizeof(value):
+        value = ctypes.create_string_buffer(128)
+        size = ctypes.c_size_t(len(value))
+        if libc.sysctlbyname(b'kern.bootsessionuuid', value, ctypes.byref(size), None, 0) != 0:
             raise OSError('boot identity unavailable')
-        return '{}.{}'.format(value.sec, value.usec)
+        boot_id = value.value.decode('ascii')
+        if not boot_id or size.value > len(value):
+            raise OSError('invalid boot identity')
+        return boot_id
     raise OSError('unsupported host')
 
 
