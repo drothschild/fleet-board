@@ -660,6 +660,20 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(data['cancel_grace_deadline'], 15)
         self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
 
+    def test_suspected_stuck_observation_is_durable(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        try:
+            self.store.update_attempt('n1', {'state': 'running', 'suspected_stuck': True}, self.store.snapshot()['domain']['revision'])
+        except ValueError:
+            self.fail('suspected-stuck observation is not supported')
+        other = Store.open(self.domain, filesystem_inspector=lambda _: 'local')
+        self.addCleanup(other.close)
+        self.assertTrue(json.loads(other.snapshot()['attempts'][0]['data'])['suspected_stuck'])
+
     def test_attempt_hard_deadline_is_set_once_and_survives_restart(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
