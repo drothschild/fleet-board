@@ -157,6 +157,33 @@ class RecoveryContract(unittest.TestCase):
         self.assertTrue(finished, 'inspection blocked on publication lock')
         self.assertEqual(results[0]['status'], 'unknown')
 
+    def test_native_boot_change_releases_old_execution_but_preserves_scope(self):
+        import json
+        import time
+        from unittest import mock
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(.3)']).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
+        limit = time.monotonic() + 8
+        while not receipt.exists() and time.monotonic() < limit:
+            time.sleep(.02)
+        self.assertTrue(receipt.exists())
+        identity = json.loads(receipt.read_text())['identity']
+        process.wait(timeout=5)
+        self.store.update_attempt('n', {'state': 'running', 'boot_id': identity['boot_id'], 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        with mock.patch('supervisor.processes._boot_id', return_value='new-boot'), \
+             mock.patch('supervisor.store._boot_id', return_value='new-boot'):
+            Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        self.assertTrue(json.loads(snapshot['attempts'][0]['data']).get('execution_released'))
+        self.assertTrue(snapshot['sessions'][0]['unknown_spend'])
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_confirmed_fixture_stop_schedules_one_retry_across_restart(self):
         import json
         import time
