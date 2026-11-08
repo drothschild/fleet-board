@@ -466,6 +466,8 @@ class ProviderCases(unittest.TestCase):
                   "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
         store, binding, payload, _source = self.make_result_case(report)
         handler = build_attempt_result_handler(store, binding, self.workspace)
+        with self.assertRaises(ValueError):
+            build_attempt_result_handler(store, binding, store.directory)
         forged = dict(payload, report_path="/private/tmp/outside-report",
                       artifact_hashes={"/private/tmp/outside-report": "a" * 64})
         with self.assertRaises(ValueError):
@@ -736,6 +738,8 @@ class ProviderCases(unittest.TestCase):
                     operation_handlers={"heartbeat": lambda value: value,
                                         "result": wrong_scratch_handler,
                                         "scope_request": lambda value: value})
+            controls[:] = []
+            operation_bindings[:] = []
             cancel = threading.Event()
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                               channel=fake_channel, request={},
