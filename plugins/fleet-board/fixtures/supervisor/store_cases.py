@@ -286,6 +286,34 @@ class StoreContract(unittest.TestCase):
             finally:
                 other.close()
 
+    def test_injected_failure_rolls_back_partial_admission(self):
+        def fail(point):
+            if point == "after_attempt":
+                raise RuntimeError("injected failure")
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local", fault_injector=fail)
+        self.addCleanup(other.close)
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        before = other.snapshot()
+        with self.assertRaises(RuntimeError):
+            other.prepare_attempt(job, before["domain"]["revision"],
+                                  {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.assertEqual(other.snapshot(), before)
+
+    def test_scope_rejects_symlink_escape(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        (self.root / "escape").symlink_to(outside, target_is_directory=True)
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        before = self.store.snapshot()
+        with self.assertRaises(ValueError):
+            self.store.prepare_attempt(job, before["domain"]["revision"],
+                                       {"global_cap": 1, "provider_cap": 1, "paths": ["escape/file"]})
+        self.assertEqual(self.store.snapshot(), before)
+
     def test_effect_observation_is_durable_and_unique(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
