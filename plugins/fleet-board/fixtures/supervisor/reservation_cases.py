@@ -285,6 +285,40 @@ class Reservations(unittest.TestCase):
             self.store.record_effect({"operation_key": "publish-blocked", "job_id": "job12", "generation": 1,
                                       "preconditions": {}, "intent": {"kind": "publish"}})
 
+    def test_missing_legacy_reservation_durably_holds_publication(self):
+        import json
+        job = {"id": "job12", "card": "12", "action": "start", "role": "implementor", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "attempt12", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src/a"]})
+        connection = self.store._Store__connection
+        row = connection.execute("SELECT sequence,payload FROM events WHERE type='attempt_prepared'").fetchone()
+        payload = json.loads(row['payload'])
+        del payload['scope_reservation']  # model a legacy attempt event before reservation folding
+        connection.execute('UPDATE events SET payload=? WHERE sequence=?',
+                           (json.dumps(payload, sort_keys=True, separators=(',', ':')), row['sequence']))
+        self.assertEqual(self.store.snapshot()["reservations"], [])
+
+        result = verify_worker_scope(self.store, "12", ["src/a/unauthorized.py"])
+        self.assertFalse(result["authorized"])
+        self.assertTrue(result["publication_hold"])
+        snapshot = self.store.snapshot()
+        self.assertEqual(snapshot["jobs"][0]["state"], "needs_attention")
+        self.assertEqual(snapshot["attempts"][0]["state"], "quarantined")
+        self.assertIn("scope_violation", [event["type"] for event in snapshot["events"]])
+        effect = {"operation_key": "legacy-publication", "job_id": "job12", "generation": 1,
+                  "preconditions": {}, "intent": {"kind": "publish"}}
+        with self.assertRaisesRegex(ValueError, "publication held"):
+            self.store.record_effect(effect)
+        self.assertEqual(self.store.snapshot()["effects"], [])
+
+        reopened = Store.open(self.domain, filesystem_inspector=lambda _path: "local")
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.snapshot()["reservations"], [])
+        with self.assertRaisesRegex(ValueError, "publication held"):
+            reopened.record_effect(effect)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
