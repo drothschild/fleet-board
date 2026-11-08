@@ -20,3 +20,12 @@ class StopEvidence:
     started_at: str
     nonce: str
     kind: str
+
+
+@dataclass(frozen=True)
+class RetryEvidence:
+    """Trusted in-process workspace, effect and card eligibility observation."""
+    domain_id: str
+    job_id: str
+    attempt_id: str
+    generation: int

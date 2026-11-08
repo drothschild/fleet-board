@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import stat
 import subprocess
@@ -14,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from .models import StopEvidence, canonical_json
+from .models import RetryEvidence, StopEvidence, canonical_json
 
 SCHEMA_VERSION = 1
 
@@ -108,7 +109,7 @@ def _private_directory(path):
 
 class Store:
     @classmethod
-    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None):
+    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
         if not all(isinstance(v, str) and v for v in identity.values()):
             raise ValueError('invalid domain identity')
@@ -179,11 +180,12 @@ class Store:
                 conn.execute('ROLLBACK')
             conn.close()
             raise
-        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier)
+        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier, retry_evidence_verifier)
 
-    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier):
+    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier, retry_evidence_verifier):
         self.__connection = connection
         self.__stop_evidence_verifier = stop_evidence_verifier
+        self.__retry_evidence_verifier = retry_evidence_verifier
         self.directory = directory
         self.domain_id = domain_id
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
@@ -326,6 +328,104 @@ class Store:
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
             c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def _verify_retry_evidence(self, evidence, job_id, attempt):
+        if (type(evidence) is not RetryEvidence or self.__retry_evidence_verifier is None
+                or self.__retry_evidence_verifier(evidence) is not True or evidence.domain_id != self.domain_id
+                or evidence.job_id != job_id or evidence.attempt_id != attempt['id']
+                or type(evidence.generation) is not int or evidence.generation != json.loads(attempt['data'])['generation']):
+            raise ValueError('untrusted retry evidence')
+
+    def schedule_retry(self, job_id, prior_attempt_id, eligibility, retry_at, expected_revision):
+        if type(retry_at) not in (int, float) or not math.isfinite(retry_at) or retry_at < 0:
+            raise ValueError('invalid retry deadline')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            prior = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (prior_attempt_id, job_id)).fetchone()
+            if job is None or prior is None:
+                raise ValueError('unknown retry job')
+            self._verify_retry_evidence(eligibility, job_id, prior)
+            data = json.loads(job['data'])
+            prior_data = json.loads(prior['data'])
+            if job['state'] == 'retry_wait' and data.get('retry_prior') == prior_attempt_id and data.get('retry_at') == retry_at:
+                result = {'attempt_id': data['retry_nonce'], 'retry_at': retry_at}
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                if (job['state'] != 'active' or job['retries_used'] != 0 or prior_data.get('execution_released') is not True
+                        or prior_data.get('cancel_reason') != 'infrastructure' or job['generation'] != prior_data['generation'] + 1
+                        or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                        or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior_attempt_id,)).fetchone()
+                        or c.execute('SELECT 1 FROM claims WHERE attempt_id=?', (prior_attempt_id,)).fetchone() is None):
+                    raise ValueError('retry is not safely eligible')
+                nonce = secrets.token_hex(24)
+                data.update({'retry_prior': prior_attempt_id, 'retry_at': retry_at, 'retry_nonce': nonce})
+                c.execute("UPDATE jobs SET state='retry_wait',retries_used=1,data=? WHERE id=?", (canonical_json(data), job_id))
+                self._event('retry_scheduled', {'job_id': job_id, 'attempt_id': nonce, 'retry_at': retry_at})
+                result = {'attempt_id': nonce, 'retry_at': retry_at}
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def prepare_retry(self, job_id, eligibility, *, now, limits, expected_revision):
+        if (type(now) not in (int, float) or not math.isfinite(now) or now < 0 or not isinstance(limits, dict)
+                or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
+                or any(type(limits[k]) is not int or limits[k] < 1 for k in ('global_cap', 'provider_cap'))
+                or type(limits['max_cost_usd']) not in (int, float) or not math.isfinite(limits['max_cost_usd']) or limits['max_cost_usd'] <= 0):
+            raise ValueError('invalid retry limits')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if job is None:
+                raise ValueError('unknown retry job')
+            data = json.loads(job['data'])
+            prior = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (data.get('retry_prior'), job_id)).fetchone()
+            if prior is None:
+                raise ValueError('missing prior attempt')
+            self._verify_retry_evidence(eligibility, job_id, prior)
+            nonce = data['retry_nonce']
+            existing = c.execute('SELECT id FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
+            if existing:
+                result = {'attempt_id': nonce}
+            else:
+                revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+                if type(expected_revision) is not int or revision != expected_revision:
+                    raise ValueError('revision mismatch')
+                domain = c.execute('SELECT desired_mode FROM domain').fetchone()
+                session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+                prior_data = json.loads(prior['data'])
+                if (job['state'] != 'retry_wait' or now < data['retry_at'] or domain['desired_mode'] != 'running'
+                        or session is None or now >= session['deadline'] or session['unknown_spend'] or session['budget_stop']
+                        or session['known_spend'] >= limits['max_cost_usd'] or prior_data.get('execution_released') is not True
+                        or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                        or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
+                    raise ValueError('retry admission is blocked')
+                claim = c.execute('SELECT * FROM claims WHERE attempt_id=?', (prior['id'],)).fetchone()
+                if claim is None:
+                    raise ValueError('missing reservation')
+                active = list(c.execute('SELECT claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+                occupied = [item for item in active if json.loads(item['data']).get('execution_released') is not True]
+                if len(occupied) >= limits['global_cap'] or sum(item['provider'] == prior['provider'] for item in occupied) >= limits['provider_cap']:
+                    raise ValueError('capacity exhausted')
+                fresh = {key: value for key, value in data.items() if key not in ('retry_prior', 'retry_at', 'retry_nonce')}
+                fresh.update({'nonce': nonce, 'generation': job['generation']})
+                if 'worktree' in prior_data:
+                    fresh['worktree'] = prior_data['worktree']
+                c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (nonce, job_id, nonce, prior['provider'], 'prepared', canonical_json(fresh)))
+                c.execute('UPDATE claims SET attempt_id=?,reservation_revision=? WHERE attempt_id=?', (nonce, revision + 1, prior['id']))
+                c.execute("UPDATE jobs SET state='active' WHERE id=?", (job_id,))
+                self._event('retry_prepared', {'job_id': job_id, 'attempt_id': nonce})
+                result = {'attempt_id': nonce}
+            c.execute('COMMIT')
+            return result
         except Exception:
             c.execute('ROLLBACK')
             raise
