@@ -1,6 +1,7 @@
 """Offline contract and isolation cases for production provider adapters."""
 import hashlib
 import concurrent.futures
+import errno
 import json
 import os
 from pathlib import Path
@@ -280,7 +281,7 @@ class ProviderCases(unittest.TestCase):
             shutil.rmtree(channel_dir)
 
     def test_attempt_scoped_result_heartbeat_and_scope_operations(self):
-        from supervisor.workers import build_attempt_result_handler
+        from supervisor.workers import OwnerThreadDispatcher, build_attempt_operation_handlers
 
         request = ProviderRequest.create(
             attempt_id="attempt-1", generation=2, role="stage-reviewer", stage="code",
@@ -310,30 +311,32 @@ class ProviderCases(unittest.TestCase):
             directory = result_store_root
             domain_id = "domain-1"
 
-            def record_result(self, envelope):
+            def record_result(self, envelope, **_trusted):
                 received["result"].append(envelope)
                 return {"disposition": "current"}
+
+            def expand_scope(self, card, paths, revision):
+                received["scope_request"].append((card, paths, revision))
+                raise ValueError("scope conflict with #23")
 
         (self.workspace / "report.md").write_text(
             "## Status\nclean\n\n## Findings\n- none\n\n## For the card\nReviewed.\n\n"
             "VERIFIED: `true` -> 1 check\n", encoding="utf-8")
         report_hash = hashlib.sha256((self.workspace / "report.md").read_bytes()).hexdigest()
-        result_handler = build_attempt_result_handler(
-            ResultStore(), operation_binding, self.workspace)
-        handlers = {
-            "heartbeat": lambda payload: received["heartbeat"].append(payload) or {"accepted": True},
-            "result": result_handler,
-            "scope_request": lambda payload: received["scope_request"].append(payload) or {
-                "granted": False, "waiting_on": "23", "retry_penalty": False,
-                "attempt_should_exit": True, "checkpointed": True,
-                "worker_slot_released": True,
-            },
-        }
+        dispatcher = OwnerThreadDispatcher()
+        handlers = build_attempt_operation_handlers(
+            ResultStore(), "22", binding=operation_binding, scratch=self.workspace,
+            heartbeat=lambda payload: received["heartbeat"].append(payload) or {"accepted": True},
+            checkpoint=lambda: received.setdefault("scope_callbacks", []).append("checkpoint"),
+            release_slot=lambda: received.setdefault("scope_callbacks", []).append("release"),
+            dispatcher=dispatcher)
         channel_dir = Path(tempfile.mkdtemp(prefix="fb-worker-operations-", dir="/private/tmp"))
         operation_state_dir = Path(tempfile.mkdtemp(prefix="fb-controller-operations-", dir="/private/tmp"))
         try:
             with InferenceChannel(broker, channel_dir, (request.attempt_id,),
-                                  operation_journal=operation_state_dir / "operations.json") as channel:
+                                  operation_journal=operation_state_dir / "operations.json",
+                                  terminal_attempt_checker=lambda *_identity: False,
+                                  controller_dispatcher=dispatcher) as channel:
                 channel.bind_attempt_operations(
                     request.attempt_id,
                     operation_binding, handlers)
@@ -344,37 +347,55 @@ class ProviderCases(unittest.TestCase):
                                  ["heartbeat", "result", "scope_request"])
                 client = InferenceClient(channel.socket_path, request.attempt_id,
                                          channel.capability_for(request.attempt_id), timeout=3)
+                def owner_request(payload, operation):
+                    result, error = [], []
+
+                    def submit():
+                        try:
+                            result.append(client.request(payload, operation=operation))
+                        except Exception as exc:
+                            error.append(exc)
+
+                    request_thread = threading.Thread(target=submit)
+                    request_thread.start()
+                    while request_thread.is_alive():
+                        dispatcher.run_pending(timeout=0.05)
+                        request_thread.join(timeout=0.01)
+                    if error:
+                        raise error[0]
+                    return result[0]
+
                 heartbeat = dict(operation_binding, schema_version=1,
                                  request_id="heartbeat-1", at=time.time())
-                self.assertEqual(client.request(heartbeat, operation="heartbeat"), {"accepted": True})
-                self.assertEqual(client.request(heartbeat, operation="heartbeat"), {"accepted": True})
+                self.assertEqual(owner_request(heartbeat, "heartbeat"), {"accepted": True})
+                self.assertEqual(owner_request(heartbeat, "heartbeat"), {"accepted": True})
                 result = dict(operation_binding, schema_version=1, outcome="success",
                               request_id="result-1",
                               report_path="report.md", artifact_hashes={"report.md": report_hash},
                               usage=None, exit_code=0)
-                self.assertEqual(client.request(result, operation="result"), {"disposition": "current"})
+                self.assertEqual(owner_request(result, "result"), {"disposition": "current"})
                 forged_result = dict(result, request_id="result-forged",
                                      report_path="../outside/report",
                                      artifact_hashes={"../outside/report": "b" * 64})
                 with self.assertRaises(ContractError):
-                    client.request(forged_result, operation="result")
+                    owner_request(forged_result, "result")
                 scope = dict(operation_binding, schema_version=1, paths=["src/worker.py"],
                              request_id="scope-1", expected_revision=7)
-                denied = client.request(scope, operation="scope_request")
+                denied = owner_request(scope, "scope_request")
                 self.assertFalse(denied["granted"])
                 self.assertFalse(denied["retry_penalty"])
                 self.assertTrue(denied["attempt_should_exit"])
-                self.assertEqual(client.request(scope, operation="scope_request"), denied)
+                self.assertEqual(owner_request(scope, "scope_request"), denied)
                 with self.assertRaises(ContractError):
-                    client.request(dict(heartbeat, input_sha="0" * 64), operation="heartbeat")
+                    owner_request(dict(heartbeat, input_sha="0" * 64), "heartbeat")
                 with self.assertRaises(ContractError):
-                    client.request(dict(scope, generation=request.generation + 1),
-                                   operation="scope_request")
+                    owner_request(dict(scope, generation=request.generation + 1), "scope_request")
                 with self.assertRaises(ContractError):
-                    client.request({}, operation="board_merge")
+                    owner_request({}, "board_merge")
                 self.assertEqual(len(received["heartbeat"]), 1)
                 self.assertEqual(len(received["result"]), 1)
                 self.assertEqual(len(received["scope_request"]), 1)
+                self.assertEqual(received["scope_callbacks"], ["checkpoint", "release"])
         finally:
             import shutil
             shutil.rmtree(channel_dir)
@@ -421,7 +442,7 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(granted["reservation"]["reservation_revision"], 2)
 
     def test_scope_operation_replay_survives_channel_restart_for_grant_and_conflict(self):
-        from supervisor.workers import build_attempt_operation_handlers
+        from supervisor.workers import OwnerThreadDispatcher, build_attempt_operation_handlers
 
         requests = {
             "attempt-granted": ProviderRequest.create(
@@ -444,6 +465,7 @@ class ProviderCases(unittest.TestCase):
         journal_path = journal_dir / "operations.json"
         expansion_calls, conflict_callbacks = [], []
         bindings, handlers = {}, {}
+        dispatcher = OwnerThreadDispatcher()
 
         class Store:
             def __init__(self, attempt_id):
@@ -471,6 +493,7 @@ class ProviderCases(unittest.TestCase):
                 heartbeat=lambda payload: {"accepted": True},
                 checkpoint=lambda: conflict_callbacks.append("checkpoint"),
                 release_slot=lambda: conflict_callbacks.append("release"),
+                dispatcher=dispatcher,
             )
 
         payloads = {
@@ -485,13 +508,31 @@ class ProviderCases(unittest.TestCase):
         for suffix, result_store in (("one", {}), ("two", first_results)):
             directory = test_root / ("channel-" + suffix)
             directory.mkdir(mode=0o700)
-            with InferenceChannel(broker, directory, tuple(requests), operation_journal=journal_path) as channel:
+            with InferenceChannel(
+                    broker, directory, tuple(requests), operation_journal=journal_path,
+                    terminal_attempt_checker=lambda *_identity: False,
+                    controller_dispatcher=dispatcher) as channel:
                 for attempt_id in requests:
                     channel.bind_attempt_operations(attempt_id, bindings[attempt_id], handlers[attempt_id])
                 for attempt_id in requests:
-                    result = channel.request(attempt_id, channel.capability_for(attempt_id),
-                                             payloads[attempt_id], operation="scope_request")
-                    result_store[attempt_id] = result
+                    result, error = [], []
+
+                    def submit_request(active_attempt=attempt_id):
+                        try:
+                            result.append(channel.request(
+                                active_attempt, channel.capability_for(active_attempt),
+                                payloads[active_attempt], operation="scope_request"))
+                        except Exception as exc:
+                            error.append(exc)
+
+                    request_thread = threading.Thread(target=submit_request)
+                    request_thread.start()
+                    while request_thread.is_alive():
+                        dispatcher.run_pending(timeout=0.05)
+                        request_thread.join(timeout=0.01)
+                    if error:
+                        raise error[0]
+                    result_store[attempt_id] = result[0]
         self.assertTrue(first_results["attempt-granted"]["granted"])
         self.assertFalse(first_results["attempt-denied"]["granted"])
         self.assertEqual(expansion_calls, [("22", ["src/new.py"], 9),
@@ -501,7 +542,7 @@ class ProviderCases(unittest.TestCase):
         shutil.rmtree(test_root)
 
     def test_inflight_scope_operation_recovery_fails_closed(self):
-        from supervisor.workers import build_attempt_operation_handlers
+        from supervisor.workers import OwnerThreadDispatcher, build_attempt_operation_handlers
 
         request = ProviderRequest.create(
             attempt_id="attempt-recover", generation=3, role="stage-reviewer", stage="code",
@@ -542,12 +583,15 @@ class ProviderCases(unittest.TestCase):
                 return {"disposition": "current"}
 
         (state_dir / "store").mkdir(mode=0o700)
+        dispatcher = OwnerThreadDispatcher()
         handlers = build_attempt_operation_handlers(
             Store(), "22", binding=binding, scratch=self.workspace,
             heartbeat=lambda value: {"accepted": True}, checkpoint=lambda: effects.append("checkpoint"),
-            release_slot=lambda: effects.append("release"))
+            release_slot=lambda: effects.append("release"), dispatcher=dispatcher)
         channel = InferenceChannel(broker, channel_dir, (request.attempt_id,),
-                                   operation_journal=journal)
+                                   operation_journal=journal,
+                                   terminal_attempt_checker=lambda *_identity: False,
+                                   controller_dispatcher=dispatcher)
         channel.bind_attempt_operations(request.attempt_id, binding, handlers)
         with self.assertRaisesRegex(ContractError, "already consumed"):
             channel._dispatch_worker_operation(request.attempt_id, "scope_request", payload)
@@ -556,7 +600,7 @@ class ProviderCases(unittest.TestCase):
         shutil.rmtree(test_root)
 
     def test_operation_journal_retirement_requires_terminal_release_and_blocks_replay(self):
-        from supervisor.workers import build_attempt_operation_handlers
+        from supervisor.workers import OwnerThreadDispatcher, build_attempt_operation_handlers
 
         request = ProviderRequest.create(
             attempt_id="attempt-retire", generation=4, role="stage-reviewer", stage="code",
@@ -586,8 +630,10 @@ class ProviderCases(unittest.TestCase):
             def expand_scope(self, card, paths, revision):
                 return {"card": card, "paths": paths, "reservation_revision": revision + 1}
 
+        dispatcher = OwnerThreadDispatcher()
         handlers = build_attempt_operation_handlers(
             Store(), "22", binding=binding, scratch=self.workspace,
+            dispatcher=dispatcher,
             heartbeat=lambda _payload: {"accepted": True},
             checkpoint=lambda: None, release_slot=lambda: None)
         authority = {"retirable": False}
@@ -598,9 +644,17 @@ class ProviderCases(unittest.TestCase):
             return authority["retirable"]
 
         journal = state_dir / "operations.json"
+        arbitrary_dir = test_root / "arbitrary-channel"
+        arbitrary_dir.mkdir(mode=0o700)
+        with self.assertRaisesRegex(ValueError, "trusted terminal checker"):
+            InferenceChannel(broker, arbitrary_dir, (request.attempt_id,),
+                             operation_journal=journal,
+                             terminal_attempt_checker=lambda *_identity: False,
+                             controller_dispatcher=dispatcher)
         channel = InferenceChannel(broker, channel_dir, (request.attempt_id,),
                                    operation_journal=journal,
-                                   terminal_attempt_checker=terminal_checker)
+                                   terminal_attempt_checker=terminal_checker,
+                                   controller_dispatcher=dispatcher)
         channel.bind_attempt_operations(request.attempt_id, binding, handlers)
         in_flight = (request.attempt_id, "scope_request", "uncertain")
         channel._operation_calls[in_flight] = {"body_sha": "a" * 64, "state": "in_flight"}
@@ -625,7 +679,8 @@ class ProviderCases(unittest.TestCase):
         restarted_dir.mkdir(mode=0o700)
         restarted = InferenceChannel(broker, restarted_dir, (request.attempt_id,),
                                      operation_journal=journal,
-                                     terminal_attempt_checker=terminal_checker)
+                                     terminal_attempt_checker=terminal_checker,
+                                     controller_dispatcher=dispatcher)
         with self.assertRaisesRegex(ContractError, "terminal"):
             restarted.bind_attempt_operations(request.attempt_id, binding, handlers)
         import shutil
@@ -639,7 +694,8 @@ class ProviderCases(unittest.TestCase):
             "board_identity": "provider-result-factory",
             "runtime_root": str(self.root / "result-runtime"),
         }
-        store = Store.open(domain, filesystem_inspector=lambda _path: "local")
+        store = Store.open(domain, filesystem_inspector=lambda _path: "local",
+                           stop_evidence_verifier=lambda _evidence: True)
         self.addCleanup(store.close)
         store.start_session({"id": "session-1", "started_at": 1, "deadline": 100,
                              "known_spend": 0, "unknown_spend": False, "budget_stop": None})
@@ -663,7 +719,8 @@ class ProviderCases(unittest.TestCase):
         return store, binding, payload, report
 
     def test_trusted_result_handler_ingests_report_and_records_durable_result(self):
-        from supervisor.workers import build_attempt_result_handler
+        from supervisor.workers import (OwnerThreadDispatcher, build_attempt_operation_handlers,
+                                        build_attempt_result_handler)
 
         report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
                   "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
@@ -717,7 +774,8 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(json.loads(stored["envelope"])["outcome"], "cancelled")
 
     def test_real_store_result_over_channel_uses_owner_thread_dispatcher(self):
-        from supervisor.workers import OwnerThreadDispatcher, build_attempt_operation_handlers
+        from supervisor.workers import (OwnerThreadDispatcher, build_attempt_operation_handlers,
+                                        build_attempt_terminal_checker)
 
         report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
                   "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
@@ -740,7 +798,7 @@ class ProviderCases(unittest.TestCase):
         channel_dir.mkdir(mode=0o700)
         channel = InferenceChannel(
             broker, channel_dir, (request.attempt_id,), operation_journal=state_root / "operations.json",
-            terminal_attempt_checker=lambda _attempt, _generation, _sha: False,
+            terminal_attempt_checker=build_attempt_terminal_checker(store),
             controller_dispatcher=dispatcher)
         client_result, client_error = [], []
         with channel:
@@ -762,6 +820,24 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(client_error, [])
         self.assertEqual(client_result, [{"disposition": "current"}])
         self.assertEqual(len(store.snapshot()["results"]), 1)
+        checker = build_attempt_terminal_checker(store)
+        self.assertFalse(checker(binding["attempt_id"], binding["generation"], binding["input_sha"]))
+        identity = {"boot_id": "fixture-boot", "pid": 43210,
+                    "started_at": "fixture-start", "nonce": binding["attempt_id"]}
+        store.update_attempt(binding["attempt_id"], {
+            "state": "result_ready", "boot_id": identity["boot_id"],
+            "process_identity": identity, "started_at": 10, "deadline": 100,
+        }, store.snapshot()["domain"]["revision"])
+        from supervisor.models import StopEvidence
+        evidence = StopEvidence(
+            domain_id=store.domain_id, job_id=binding["job_id"],
+            attempt_id=binding["attempt_id"], generation=binding["generation"],
+            boot_id=identity["boot_id"], pid=identity["pid"],
+            started_at=identity["started_at"], nonce=identity["nonce"],
+            kind="fixture_complete_tree", free_fixture=True)
+        store.record_execution_stopped(binding["attempt_id"], evidence,
+                                       store.snapshot()["domain"]["revision"])
+        self.assertTrue(checker(binding["attempt_id"], binding["generation"], binding["input_sha"]))
         import shutil
         shutil.rmtree(state_root)
 
@@ -991,6 +1067,8 @@ class ProviderCases(unittest.TestCase):
             shutil.rmtree(channel_dir)
 
     def test_production_launch_requires_durable_deadline_and_cancellation(self):
+        from supervisor.workers import (OwnerThreadDispatcher, build_attempt_operation_handlers,
+                                        build_attempt_result_handler)
         prepared = {
             "domain_id": "domain-1", "job_id": "job-1",
             "attempt_id": "attempt-1", "generation": 1, "input_sha": self.request.input_sha,
@@ -1001,7 +1079,6 @@ class ProviderCases(unittest.TestCase):
         policy = build_policy(self.workspace, self.root / "private-git", self.root / "channels")
         controls = []
         operation_bindings = []
-        from supervisor.workers import build_attempt_result_handler
         handler_store_root = self.root / "runner-result-store"
         handler_store_root.mkdir(mode=0o700)
         class HandlerStore:
@@ -1009,6 +1086,8 @@ class ProviderCases(unittest.TestCase):
             domain_id = "domain-1"
             def record_result(self, envelope):
                 return {"disposition": "current"}
+            def expand_scope(self, card, paths, revision):
+                return {"card": card, "paths": paths, "reservation_revision": revision + 1}
         operation_binding = {key: prepared[key] for key in
                              ("domain_id", "job_id", "attempt_id", "generation", "input_sha", "role", "stage")}
         trusted_result = build_attempt_result_handler(HandlerStore(), operation_binding,
@@ -1036,6 +1115,9 @@ class ProviderCases(unittest.TestCase):
             def operations_for(self, attempt_id):
                 return ("heartbeat", "result", "scope_request")
         fake_channel = FakeChannel()
+        controller_dispatcher = OwnerThreadDispatcher()
+        fake_channel.controller_dispatcher = controller_dispatcher
+        fake_channel.terminal_attempt_checker = lambda *_identity: False
         controller_state = self.root / "controller-state"
         controller_state.mkdir(mode=0o700)
         fake_channel.operation_journal = controller_state / "operations.json"
@@ -1097,16 +1179,26 @@ class ProviderCases(unittest.TestCase):
                                                              "result": trusted_result,
                                                              "scope_request": lambda value: value})
             fake_channel.operation_journal = controller_state / "operations.json"
+            safe_handlers = build_attempt_operation_handlers(
+                HandlerStore(), "22", binding=operation_binding, scratch=self.workspace,
+                dispatcher=controller_dispatcher, heartbeat=lambda _value: {"accepted": True},
+                checkpoint=lambda: None, release_slot=lambda: None)
+            dispatch_calls = []
+
+            def isolated_side_effect(*_args, **_kwargs):
+                controller_dispatcher.call(lambda: dispatch_calls.append("owner"))
+                return isolated.return_value
+
+            isolated.side_effect = isolated_side_effect
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                               channel=fake_channel, request={},
                                               source_repository=self.root, cancel_event=cancel,
-                                              operation_handlers={"heartbeat": lambda value: value,
-                                                                  "result": trusted_result,
-                                                                  "scope_request": lambda value: value})
+                                              operation_handlers=safe_handlers)
         self.assertIs(result, isolated.return_value)
         self.assertAlmostEqual(isolated.call_args.kwargs["timeout"],
                                prepared["deadline"] - time.time(), delta=1)
         self.assertIs(isolated.call_args.kwargs["cancel_event"], cancel)
+        self.assertEqual(dispatch_calls, ["owner"])
         self.assertEqual(controls, [("attempt-1", prepared["deadline"], cancel)])
         self.assertEqual(operation_bindings[0][0], "attempt-1")
         self.assertEqual(operation_bindings[0][1]["input_sha"], prepared["input_sha"])
@@ -1161,7 +1253,7 @@ class ProviderCases(unittest.TestCase):
                 return 0
 
         with patch.object(isolation_module.os, "killpg",
-                          side_effect=[None, ProcessLookupError()]) as killpg:
+                          side_effect=[None, ProcessLookupError(errno.ESRCH, "no such process group")]) as killpg:
             _terminate_process_group(Process())
         self.assertNotIn(((4322, signal.SIGKILL),), killpg.call_args_list)
 
