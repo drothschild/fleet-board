@@ -29,4 +29,4 @@ The local channel and runner bootstrap are implemented, but the host sandbox cou
 
 ## Commits and external state
 
-Test commits: `cfa96bf`, `f75f257`, `3efd634`, `dcec340`, `75262f6`, `e6dfb07`, `4a6f107`. The implementation commit is pending. Fetching `origin/main` previously failed because the common Git metadata is outside the writable sandbox; the version check used the provided recorded base 0.18.6. PR #237 state was not refreshed during this offline implementation.
+Test commits: `cfa96bf`, `f75f257`, `3efd634`, `dcec340`, `75262f6`, `e6dfb07`, `4a6f107`. Task implementation/plan commit: `27bc8ef`. The task remains incomplete pending supported-host isolation qualification and explicit push authorization. Fetching `origin/main` previously failed because the common Git metadata is outside the writable sandbox; the version check used the provided recorded base 0.18.6. PR #237 state was not refreshed during this offline implementation.
