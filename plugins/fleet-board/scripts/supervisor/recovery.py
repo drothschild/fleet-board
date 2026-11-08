@@ -95,7 +95,11 @@ class Recovery:
                     revision = self.store.snapshot()['domain']['revision']
                     self.store.quarantine_attempt(attempt['id'], 'identity_uncertain', revision)
                     continue
-            if attempt['state'] == 'cancel_requested' and observation.get('status') == 'alive':
-                deadline = data.get('cancel_grace_deadline')
-                if type(deadline) in (int, float) and math.isfinite(deadline):
-                    self.inspector.signal(attempt, 'KILL' if now >= deadline else 'TERM')
+            if attempt['state'] == 'cancel_requested':
+                if observation.get('status') == 'unknown':
+                    revision = self.store.snapshot()['domain']['revision']
+                    self.store.quarantine_attempt(attempt['id'], 'termination_uncertain', revision)
+                elif observation.get('status') == 'alive':
+                    deadline = data.get('cancel_grace_deadline')
+                    if type(deadline) in (int, float) and math.isfinite(deadline):
+                        self.inspector.signal(attempt, 'KILL' if now >= deadline else 'TERM')
