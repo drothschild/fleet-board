@@ -106,3 +106,29 @@ def test_result_publication():
 
 
 test_result_publication()
+
+
+def test_published_result_survives_scratch_deletion():
+    import json
+    from supervisor.runner import read_result
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('validated fixture report')
+        attempt = {'domain_id': 'domain', 'job_id': 'job', 'attempt_id': 'attempt',
+                   'nonce': 'nonce', 'generation': 1, 'input_sha': 'abc',
+                   'role': 'reviewer', 'stage': None, 'scratch': str(scratch)}
+        runner = Runner(root, fixture_command=[sys.executable, '-c', 'pass'])
+        process = runner.launch(attempt)
+        process.wait(timeout=10)
+        envelope = read_result(root / 'attempts' / 'attempt')
+        assert envelope['attempt_id'] == 'attempt'
+        assert envelope['usage'] is None
+        report = pathlib.Path(envelope['report_path'])
+        (scratch / 'report').unlink()
+        assert report.read_text() == 'validated fixture report'
+        assert (root / 'attempts' / 'attempt' / 'completion.json').exists()
+
+
+test_published_result_survives_scratch_deletion()
