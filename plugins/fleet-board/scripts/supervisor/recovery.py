@@ -9,7 +9,7 @@ class Recovery:
     def reconcile(self, now):
         snapshot = self.store.snapshot()
         for attempt in snapshot['attempts']:
-            if attempt['state'] != 'prepared':
+            if attempt['state'] not in ('prepared', 'launching', 'running'):
                 continue
             try:
                 observation = self.inspector.inspect(attempt)
