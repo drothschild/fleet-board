@@ -257,6 +257,42 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
         self.assertEqual(len(snapshot['claims']), 1)
 
+    def test_intentional_stop_never_schedules_retry_even_with_proven_exit(self):
+        import json
+        import time
+        from supervisor.models import StopEvidence, RetryEvidence
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(.3)']).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
+        limit = time.monotonic() + 8
+        while not receipt.exists() and time.monotonic() < limit:
+            time.sleep(.02)
+        identity = json.loads(receipt.read_text())['identity']
+        process.wait(timeout=5)
+        self.store.update_attempt('n', {'state': 'running', 'boot_id': identity['boot_id'], 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        self.store.request_cancellation('n', 'stop-now', 'stop', self.store.snapshot()['domain']['revision'], now=10)
+        proof = StopEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1,
+                             boot_id=identity['boot_id'], pid=identity['pid'], started_at=identity['started_at'],
+                             nonce=identity['nonce'], kind='fixture_complete_tree', free_fixture=True)
+        eligible = RetryEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1)
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                             stop_evidence_verifier=lambda candidate: candidate == proof,
+                             retry_evidence_verifier=lambda candidate: candidate == eligible)
+        self.addCleanup(trusted.close)
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'stopped', 'stop_evidence': proof, 'retry_evidence': eligible}
+        Recovery(trusted, Inspector(), retry_limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}).reconcile(now=100)
+        snapshot = trusted.snapshot()
+        self.assertTrue(json.loads(snapshot['attempts'][0]['data'])['execution_released'])
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(snapshot['attempts']), 1)
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_confirmed_fixture_stop_schedules_one_retry_across_restart(self):
         import json
         import time
