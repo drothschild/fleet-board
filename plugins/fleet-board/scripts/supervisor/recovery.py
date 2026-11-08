@@ -48,7 +48,14 @@ class NativeInspector:
                                          started_at=identity.started_at, nonce=identity.nonce,
                                          kind='boot_changed', current_boot_id=boot)
                     return {'status': 'stopped', 'result': result, 'stop_evidence': proof}
-                return {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
+                observation = {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
+                if observation['status'] == 'alive':
+                    for name in ('heartbeat', 'progress'):
+                        try:
+                            observation[name] = json.loads(_read_regular(path / (name + '.json'), 4096))
+                        except (OSError, ValueError, TypeError):
+                            pass
+                return observation
             except (OSError, ValueError, TypeError, KeyError):
                 return {'status': 'unknown', 'result': result}
         except (OSError, ValueError, TypeError, KeyError):
@@ -93,6 +100,25 @@ class Recovery:
                 self.store.record_result(result)
                 attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
             data = json.loads(attempt['data'])
+            if observation.get('status') == 'alive' and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
+                updates = {}
+                heartbeat = observation.get('heartbeat')
+                if isinstance(heartbeat, dict):
+                    at = heartbeat.get('at')
+                    if type(at) in (int, float) and math.isfinite(at) and 0 <= at <= now and at > data.get('heartbeat', -1):
+                        updates['heartbeat'] = at
+                progress = observation.get('progress')
+                if isinstance(progress, dict):
+                    at, sequence, kind = progress.get('observed_at'), progress.get('sequence'), progress.get('kind')
+                    previous = data.get('progress')
+                    previous_sequence = previous.get('sequence', 0) if isinstance(previous, dict) else 0
+                    if (type(at) in (int, float) and math.isfinite(at) and 0 <= at <= now
+                            and type(sequence) is int and sequence > previous_sequence
+                            and kind in ('checkpoint', 'tool_completed', 'long_operation')):
+                        updates['progress'] = {'at': at, 'sequence': sequence, 'kind': kind}
+                if updates:
+                    self.store.update_attempt(attempt['id'], updates, self.store.snapshot()['domain']['revision'])
+                    data.update(updates)
             if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
                 deadline = data.get('deadline')
                 boot_interruption = observation.get('status') == 'stopped' and result is None and observation.get('stop_evidence') is not None
@@ -104,6 +130,21 @@ class Recovery:
                                                     now=now, grace_seconds=self.settings['shutdown_grace_seconds'])
                     attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
                     data = json.loads(attempt['data'])
+                elif observation.get('status') == 'alive' and attempt['state'] in ('running', 'result_ready'):
+                    progress = data.get('progress')
+                    progress_at = progress.get('at') if isinstance(progress, dict) else progress
+                    if type(progress_at) not in (int, float) or not math.isfinite(progress_at):
+                        progress_at = data.get('started_at')
+                    heartbeat = data.get('heartbeat')
+                    stale_progress = type(progress_at) in (int, float) and math.isfinite(progress_at) and now - progress_at >= self.settings['progress_timeout_seconds']
+                    stale_heartbeat = type(heartbeat) in (int, float) and math.isfinite(heartbeat) and now - heartbeat >= self.settings['heartbeat_timeout_seconds']
+                    tool_until = observation.get('bounded_tool_until')
+                    bounded_tool = (observation.get('activity') == 'bounded_tool' and type(tool_until) in (int, float)
+                                    and math.isfinite(tool_until) and type(deadline) in (int, float)
+                                    and now < tool_until <= deadline)
+                    suspected = (stale_progress or stale_heartbeat) and not bounded_tool
+                    if suspected != bool(data.get('suspected_stuck', False)):
+                        self.store.update_attempt(attempt['id'], {'suspected_stuck': suspected}, self.store.snapshot()['domain']['revision'])
                 elif observation.get('status') == 'unknown' and attempt['state'] in ('prepared', 'launching', 'running'):
                     revision = self.store.snapshot()['domain']['revision']
                     self.store.quarantine_attempt(attempt['id'], 'identity_uncertain', revision)

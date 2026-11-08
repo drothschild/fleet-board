@@ -310,6 +310,7 @@ def _run(config):
                 if (len(raw) <= 4096 and isinstance(progress, dict) and set(progress) == {'sequence', 'kind'}
                         and type(progress['sequence']) is int and progress['sequence'] > progress_sequence
                         and progress['kind'] in ('checkpoint', 'tool_completed', 'long_operation')):
+                    progress['observed_at'] = time.time()
                     _publish(attempt / 'progress.json', progress)
                     progress_sequence = progress['sequence']
             except (OSError, ValueError, TypeError):
