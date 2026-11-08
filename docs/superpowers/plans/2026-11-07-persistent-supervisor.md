@@ -268,4 +268,4 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Fencing, process termination, scope release and Human QA are independently enforced.
 - [ ] Concurrent upstream standalone work has been reconciled against actual main before implementation.
 
-The next implementation action is Task 1.1 on a new implementation branch. This document and its design can be reviewed without starting workers, installing services or spending provider usage.
+Phase 1 is implemented in PR #228 and undergoing independent review. The next implementation phase is detached attempts and recovery (Tasks 2.1–2.2), after the foundation is reviewed and merged. Supervisor execution remains disabled; host installation and paid qualification remain separate gates.
