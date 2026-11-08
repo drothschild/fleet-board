@@ -66,7 +66,7 @@ def _private_directory(path):
 
 class Store:
     @classmethod
-    def open(cls, domain, filesystem_inspector=None):
+    def open(cls, domain, filesystem_inspector=None, fault_injector=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
         if not all(isinstance(v, str) and v for v in identity.values()):
             raise ValueError('invalid domain identity')
@@ -130,12 +130,14 @@ class Store:
                 conn.execute('ROLLBACK')
             conn.close()
             raise
-        return cls(conn, directory, domain_id)
+        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector)
 
-    def __init__(self, connection, directory, domain_id):
+    def __init__(self, connection, directory, domain_id, common_dir, fault_injector):
         self.__connection = connection
         self.directory = directory
         self.domain_id = domain_id
+        self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
+        self.__fault_injector = fault_injector
 
     def close(self):
         self.__connection.close()
@@ -178,6 +180,12 @@ class Store:
         paths = claims.get('paths')
         if not isinstance(paths, list) or any(not isinstance(p, str) or not p or p.startswith('/') or any(x in ('', '.', '..') for x in p.split('/')) for p in paths):
             raise ValueError('invalid scope')
+        for path in paths:
+            candidate = self.__scope_root
+            for component in path.split('/'):
+                candidate = candidate / component
+                if candidate.is_symlink():
+                    raise ValueError('symlink in scope')
         paths = sorted(set(paths)) or ['']
         lane = claims.get('merge_lane', False)
         if type(lane) is not bool:
@@ -202,6 +210,8 @@ class Store:
             logical = canonical_json([job[k] for k in ('card', 'action', 'role', 'stage', 'round', 'input_sha', 'input_version')])
             c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?)', (job['id'], logical, job['card'], job['generation'], job['input_sha'], job['role'], job['stage'], 'active', 0, canonical_json(job)))
             c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (job['nonce'], job['id'], job['nonce'], job['provider'], 'prepared', canonical_json(job)))
+            if self.__fault_injector is not None:
+                self.__fault_injector('after_attempt')
             c.execute('INSERT INTO claims VALUES(?,?,?,?,?,?)', (job['nonce'], job['card'], job['provider'], canonical_json(paths), lane, expected_revision + 1))
             self._event('attempt_prepared', {'job_id': job['id'], 'attempt_id': job['nonce']})
             c.execute('COMMIT')
