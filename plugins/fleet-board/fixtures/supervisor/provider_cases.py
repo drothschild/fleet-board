@@ -150,6 +150,38 @@ class ProviderCases(unittest.TestCase):
             import shutil
             shutil.rmtree(channel_dir)
 
+    def test_attempt_cancellation_stops_its_inflight_provider(self):
+        started = self.root / "provider-started"
+        command = self.script(
+            "cancel-aware-provider.py",
+            "#!/usr/bin/env python3\nimport json,pathlib,sys,time\njson.load(sys.stdin)\npathlib.Path(sys.argv[1]).write_text('started')\ntime.sleep(10)\n",
+        ) + [str(started)]
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts={"attempt-1": binding})
+        cancel = threading.Event()
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-attempt-cancel-", dir="/private/tmp"))
+        try:
+            with InferenceChannel(
+                    broker, channel_dir, ("attempt-1",), request_timeout=20,
+                    attempt_controls={"attempt-1": {
+                        "deadline": time.time() + 20, "cancel_event": cancel}}) as channel:
+                client = InferenceClient(channel.socket_path, "attempt-1",
+                                         channel.capability_for("attempt-1"), timeout=3)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    pending = pool.submit(client.infer, self.request.to_dict())
+                    deadline = time.monotonic() + 3
+                    while not started.exists() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertTrue(started.exists(), "fake provider did not start")
+                    cancel.set()
+                    with self.assertRaises(ContractError):
+                        pending.result(timeout=2)
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
+
     def test_inference_request_quota_is_per_attempt(self):
         binding = {key: getattr(self.request, key) for key in
                    ("generation", "role", "stage", "provider", "model", "input_sha")}
