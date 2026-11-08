@@ -13,6 +13,24 @@ def candidate(number, action='start', provider='claude', paths=None, priority='n
             'eligible_since': eligible_since, 'preconditions': {'state': 'ready', 'head_sha': None}}
 
 
+class ManualTimers:
+    def __init__(self):
+        self.now = 0
+        self.events = []
+
+    def call_at(self, when, callback):
+        event = {'when': when, 'callback': callback, 'cancelled': False}
+        self.events.append(event)
+        return event
+
+    def advance(self, when):
+        self.now = when
+        due, self.events = ([e for e in self.events if not e['cancelled'] and e['when'] <= when],
+                            [e for e in self.events if e['cancelled'] or e['when'] > when])
+        for event in due:
+            event['callback']()
+
+
 def run():
     scheduler = Scheduler(clock=lambda: 0)
     # A stays live while B can complete and independent C is admitted.
@@ -97,6 +115,63 @@ def run():
     gate.set()
     assert first.result(timeout=2) == {'revision': 1} and rerun.wait(2) and count['plans'] == 2
     async_scheduler.close()
+    # Deadline and cancel-grace callbacks fire from the timer driver while planning is blocked.
+    timers = ManualTimers()
+    timer_scheduler = Scheduler(clock=lambda: timers.now, timer_scheduler=timers)
+    planner_gate = threading.Event()
+    blocked_plan = timer_scheduler.plan_async(lambda: planner_gate.wait(3))
+    deadline_seen, cancel_seen = threading.Event(), threading.Event()
+    timer_scheduler.watch_attempt({'attempt_id': 'timed', 'deadline': 10, 'cancel_grace_deadline': 15},
+        on_deadline=lambda attempt: deadline_seen.set(), on_cancel_grace=lambda attempt: cancel_seen.set())
+    timers.advance(10)
+    assert deadline_seen.wait(2)
+    timers.advance(15)
+    assert cancel_seen.wait(2) and not blocked_plan.done()
+    planner_gate.set()
+    blocked_plan.result(timeout=2)
+    timer_scheduler.close()
+    # Planning and ordinary controls reject excess queued work; urgent controls stay responsive.
+    saturated = Scheduler(max_workers=1, plan_queue_limit=1, max_control_workers=1,
+                          control_queue_limit=1, priority_workers=2)
+    plan_gate, normal_entered, control_gate = threading.Event(), threading.Event(), threading.Event()
+    running_plan = saturated.plan_async(lambda: plan_gate.wait(3))
+    queued_plan = saturated.plan_async(lambda: 'queued')
+    try:
+        saturated.plan_async(lambda: 'overflow')
+        raise AssertionError('planning queue accepted excess work')
+    except RuntimeError:
+        pass
+    running_control = saturated.control_async(lambda: (normal_entered.set(), control_gate.wait(3)), kind='normal')
+    assert normal_entered.wait(2)
+    queued_control = saturated.control_async(lambda: 'queued', kind='normal')
+    try:
+        saturated.control_async(lambda: 'overflow', kind='normal')
+        raise AssertionError('control queue accepted excess work')
+    except RuntimeError:
+        pass
+    status = saturated.control_async(lambda: 'status', kind='status')
+    cancel = saturated.control_async(lambda: 'cancel', kind='cancel')
+    assert status.result(timeout=2) == 'status' and cancel.result(timeout=2) == 'cancel'
+    plan_gate.set(); control_gate.set()
+    assert running_plan.result(timeout=2) is True and queued_plan.result(timeout=2) == 'queued'
+    running_control.result(timeout=2); assert queued_control.result(timeout=2) == 'queued'
+    saturated.close()
+    # Session accounting survives a scheduler restart and keeps unknown spend unknown.
+    persisted = {}
+    account = Scheduler(state_writer=lambda state: persisted.update(state))
+    account.begin_session('session-3', started_at=1, deadline=50, max_cost=2)
+    account.record_spend(0.75)
+    restarted_account = Scheduler(clock=lambda: 10, state=persisted,
+                                  state_writer=lambda state: persisted.update(state))
+    assert restarted_account.session_snapshot() == {'id': 'session-3', 'started_at': 1, 'deadline': 50,
+        'max_cost': 2, 'known_spend': 0.75, 'unknown_spend': False}
+    restarted_account.record_spend(None)
+    restored_unknown = Scheduler(clock=lambda: 10, state=persisted)
+    held = restored_unknown.admit([candidate(27)], limits={'global': 1, 'providers': {'claude': 1}, 'per_card': 1})
+    assert held['stop_reason'] == 'provider spend is unknown'
+    expiring = Scheduler(clock=lambda: 50, state={'session': {'id': 'session-4', 'started_at': 1,
+        'deadline': 50, 'max_cost': 2, 'known_spend': 1, 'unknown_spend': False}})
+    assert expiring.admit([candidate(28)], limits={'global': 1, 'providers': {'claude': 1}, 'per_card': 1})['stop_reason'] == 'session deadline reached'
     # Unknown workflow state never normalizes or admits and reports attention; active claims remain.
     unknown = scheduler.admit([candidate(12, action='unknown_state')], active=[{'number':12,'provider':'claude','paths':[]}],
         limits={'global':2,'providers':{'claude':2},'per_card':1})

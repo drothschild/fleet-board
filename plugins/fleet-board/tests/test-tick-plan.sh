@@ -1346,6 +1346,24 @@ assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | 
 assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
 assert_jq "candidate mode: empty actual paths are complete" '(.candidates[0] | [.actual_paths, .scope_complete])' '[[],true]'
 
+# A malformed labels payload from the board-read contract must not silently clear priority metadata.
+setup_case ready-start
+MALFORMED_STUB="$(mktemp -d)"
+CLEANUP_DIRS+=("$MALFORMED_STUB")
+cp -R "$SCRIPT_DIR/../scripts/." "$MALFORMED_STUB/"
+cat > "$MALFORMED_STUB/board-read.sh" <<'EOF'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"number":12,"title":"Add subtract","state":"ready","body":"Subtract two numbers.\n\n## Acceptance\n- subtract(2,5) returns -3\n","labels":"malformed","manager_note":null,"comments":[]}
+JSON
+EOF
+chmod +x "$MALFORMED_STUB/board-read.sh"
+run_check "$MALFORMED_STUB/tick-plan.sh" --candidates
+assert_exit "candidate mode: malformed labels keep planner read successful" 0
+assert_jq "candidate mode: malformed labels fail closed" '.candidates[0].action' '"skip"'
+assert_jq "candidate mode: malformed labels report attention" '.candidates[0].reason' '"lookup failed: board-read.sh 12 (malformed labels)"'
+assert_jq "candidate mode: malformed labels do not start work" '[.candidates[] | select(.action == "start")] | length' '0'
+
 run_check "$SCRIPT" --unknown-mode
 assert_exit "candidate mode: invalid mode rejected" 2
 run_check "$SCRIPT" --candidates --settle 12
