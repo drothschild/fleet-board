@@ -153,4 +153,54 @@ No pending gate blocks writing these documents or implementing offline cases. It
 
 ## Completion record
 
-At implementation time, append a per-case evidence index or link a durable run report here. Keep pending/failed cases visible. Do not replace requirements with a blanket “tests pass” statement. Current completion state: **all runtime cases and qualification gates pending**.
+At implementation time, append a per-case evidence index or link a durable run report here. Keep pending/failed cases visible. Do not replace requirements with a blanket “tests pass” statement. Current completion state: **Phase 1 configuration and durable-store subsets pass; end-to-end runtime cases and host/paid qualification gates remain pending**.
+
+
+### Phase 1 evidence — PR #228
+
+Configuration at `61d4a69`: `bash plugins/fleet-board/tests/test-config.sh` passed 448 assertions (exit 0). The preceding test-only commit `c5b8442` produced 140 failures, including absent supervisor defaults and validation. This covers the configuration portions of S10.1 and S11.3, not service startup or reload behavior.
+
+Store at `08d2bff`: `bash plugins/fleet-board/tests/test-supervisor-store.sh` passed all 30 cases below (exit 0). The Bash entrypoint invokes the standard-library fixture driver; each case asserts persisted state or rejection behavior. Initial tests at `7710d53` failed for the absent store; subsequent regression commits preceded their fixes. Most recently, `934dd93` reproduced missing schema-constraint rejection (three failures and one error); `08d2bff` passed after the fix. Independent spec review reran the same 30 cases and approved this head.
+
+These cases cover only the durable-state portions of S3, S5, S6, S10 and S11. Detached lifetime, safe termination, retry classification, scheduling, scope lifecycle, effect execution, service/UI controls, and production isolation remain unimplemented. No passing store case establishes an end-to-end acceptance criterion.
+
+The case IDs are methods in `plugins/fleet-board/fixtures/supervisor/store_cases.py`; all expected outcomes were observed at `08d2bff`:
+
+| Store case | Outcome |
+| --- | --- |
+| `test_reopen_retains_domain_state_and_events` | Pass |
+| `test_command_replay_does_not_advance_revision` | Pass |
+| `test_default_inspector_accepts_real_local_scratch` | Pass |
+| `test_concurrent_first_open_creates_one_store` | Pass |
+| `test_session_budget_survives_reopen` | Pass |
+| `test_concurrent_same_card_admission_is_atomic` | Pass |
+| `test_admission_conflict_rolls_back_job_and_event` | Pass |
+| `test_result_replay_and_unknown_usage` | Pass |
+| `test_rejects_invalid_result_and_preserves_accounting` | Pass |
+| `test_result_rejects_symlinked_artifact_root_and_spend_overflow` | Pass |
+| `test_stale_result_is_evidence_and_charged_once` | Pass |
+| `test_capacity_and_nonoverlap_across_connections` | Pass |
+| `test_admission_rejects_missing_session_and_unsafe_nonce` | Pass |
+| `test_conflicts_are_checked_after_revision_refresh` | Pass |
+| `test_desired_modes_reopen_with_same_budget` | Pass |
+| `test_database_rejects_duplicate_job_keys_and_attempt_nonces` | Pass |
+| `test_duplicate_nonce_does_not_leave_partial_job` | Pass |
+| `test_injected_failure_rolls_back_partial_admission` | Pass |
+| `test_scope_rejects_symlink_escape` | Pass |
+| `test_effect_observation_is_durable_and_unique` | Pass |
+| `test_metadata_and_attempt_lifecycle_survive_reopen` | Pass |
+| `test_unsafe_runtime_directories_are_rejected` | Pass |
+| `test_populated_unversioned_store_fails_closed` | Pass |
+| `test_missing_schema_constraints_fail_closed_without_writes` | Pass |
+| `test_corrupt_schema_fails_closed` | Pass |
+| `test_racing_capacity_rechecks_after_revision_change` | Pass |
+| `test_future_schema_fails_closed_without_modification` | Pass |
+| `test_retry_tombstone_and_effect_intent_reopen` | Pass |
+| `test_backup_includes_uncheckpointed_commits` | Pass |
+| `test_rejects_nonlocal_storage` | Pass |
+
+Integrity: `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks (exit 0) after the schema fix and again after release metadata changes. No generated primitive was edited. Both release manifests now specify `0.17.0`; `bash plugins/fleet-board/tests/test-version-bumped.sh` failed for both unbumped manifests before the change and passed afterward (exit 0). Supervisor execution remains disabled.
+
+Schema 1 is the initial released format. Empty databases initialize transactionally; populated unversioned, corrupt, and unsupported-version databases are rejected. There is no historical supported schema migration to execute. Future registered migrations must use the backup API before changing an existing supported schema.
+
+Scope alias regression at `7ee4e32`: `test_scope_aliases_conflict_even_for_nonexistent_descendants` rejects case aliases of an existing path, case aliases of nonexistent descendants, and composed/decomposed Unicode aliases. Test-only commit `466fb68` produced three failures before the fix; the focused store suite then passed 31 cases and the clean-room check passed 118 checks. Logs are `/private/tmp/supervisor-store-scope-red.log`, `/private/tmp/supervisor-store-scope-green.log`, and `/private/tmp/supervisor-cleanroom-scope-green.log`. Original claim path strings remain persisted; ASCII paths are compared without case sensitivity, while any non-ASCII scope conservatively conflicts repository-wide because filesystem Unicode equivalence varies. This can reduce concurrency. Independent specification re-review and final Phase 1 quality review approved `9c77d54`; no actionable findings remain within the foundation scope. End-to-end qualification remains pending.

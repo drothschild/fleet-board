@@ -188,7 +188,7 @@ VALIDATION_SCRIPT='
     else [] end;
   def errors:
     [
-      (("board", "commands", "worktrees", "merge", "review", "models", "limits", "headless") as $s
+      (("board", "commands", "worktrees", "merge", "review", "models", "limits", "headless", "supervisor") as $s
         | if (.[$s] | type) != "object" then "\($s) must be an object" else empty end),
       (("test_paths", "human_qa_paths") as $s
         | if (.[$s] | type) != "array" then "\($s) must be a list" else empty end),
@@ -291,6 +291,20 @@ VALIDATION_SCRIPT='
               else empty end)
             end)
        end),
+      (if (.supervisor | type) == "object" then
+        . as $root | .supervisor as $sup |
+        (("enabled", "start_on_boot") as $k
+          | if ($sup[$k] | type) != "boolean" then "supervisor.\($k) must be boolean" else empty end),
+        (("reconcile_interval_seconds", "heartbeat_interval_seconds", "heartbeat_timeout_seconds", "progress_timeout_seconds", "attempt_timeout_seconds", "shutdown_grace_seconds", "retry_backoff_seconds", "aging_seconds") as $k
+          | $sup[$k] as $v | if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.\($k) must be a positive integer" else empty end),
+        (if ($sup.heartbeat_timeout_seconds | type) == "number" and ($sup.heartbeat_interval_seconds | type) == "number" and $sup.heartbeat_timeout_seconds <= $sup.heartbeat_interval_seconds then "supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds" else empty end),
+        (if ($sup.attempt_timeout_seconds | type) == "number" and ($sup.shutdown_grace_seconds | type) == "number" and $sup.attempt_timeout_seconds <= $sup.shutdown_grace_seconds then "supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds" else empty end),
+        (if ($sup.provider_concurrency | type) != "object" then "supervisor.provider_concurrency must be an object"
+         else $sup.provider_concurrency | to_entries[] | .key as $k | .value as $v |
+           (if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.provider_concurrency.\($k) must be a positive integer" else empty end),
+           (if $k != "claude" and (($root.providers | type) != "object" or ($root.providers | has($k) | not)) then "supervisor.provider_concurrency.\($k) names no provider" else empty end)
+         end)
+      else empty end),
       (if (.merge | type) == "object" then
         (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end)
       else empty end),

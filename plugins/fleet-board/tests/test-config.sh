@@ -761,6 +761,40 @@ CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "default reviewer is accepted" 0
 assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"'
 
+# Supervisor configuration is validated before the launcher can use it.
+REPO="$(make_test_repo supervisor-default.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor defaults accepted" 0
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"enabled":false,"start_on_boot":true,"reconcile_interval_seconds":5,"heartbeat_interval_seconds":10,"heartbeat_timeout_seconds":60,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
+REPO="$(make_test_repo supervisor-disabled-boot.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor enabled with boot disabled and configured caps" 0
+assert_stdout_exact_jq "supervisor booleans preserved" '.supervisor | [.enabled,.start_on_boot]' '[true,false]'
+assert_stdout_exact_jq "supervisor provider caps preserved" '.supervisor.provider_concurrency' '{"claude":2,"codex":1}'
+REPO="$(make_test_repo supervisor-invalid.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor invalid fixture rejected" 5
+for k in enabled start_on_boot; do
+  for v in null 1 '"true"' '[]'; do
+    invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be boolean"
+  done
+done
+for k in reconcile_interval_seconds heartbeat_interval_seconds heartbeat_timeout_seconds progress_timeout_seconds attempt_timeout_seconds shutdown_grace_seconds retry_backoff_seconds aging_seconds; do
+  for v in 0 -1 1.5 null '"5"' '[]'; do
+    invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be a positive integer"
+  done
+done
+invalid_field_case "supervisor section type" 'supervisor: []' 'supervisor must be an object'
+invalid_field_case "supervisor caps type" 'supervisor: { provider_concurrency: [] }' 'supervisor.provider_concurrency must be an object'
+invalid_field_case "supervisor unknown cap" 'supervisor: { provider_concurrency: { unknown: 1 } }' 'supervisor.provider_concurrency.unknown names no provider'
+for v in 0 -1 1.5 null '"1"' '[]'; do
+  invalid_field_case "supervisor cap rejects $v" "supervisor: { provider_concurrency: { claude: $v } }" 'supervisor.provider_concurrency.claude must be a positive integer'
+done
+invalid_field_case "supervisor heartbeat equality" 'supervisor: { heartbeat_interval_seconds: 60, heartbeat_timeout_seconds: 60 }' 'supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds'
+invalid_field_case "supervisor heartbeat less" 'supervisor: { heartbeat_interval_seconds: 61, heartbeat_timeout_seconds: 60 }' 'supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds'
+invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
+invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
