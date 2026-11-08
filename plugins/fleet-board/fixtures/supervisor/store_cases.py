@@ -643,6 +643,16 @@ class StoreContract(unittest.TestCase):
         self.store.record_result(envelope)
         self.assertEqual(self.store.snapshot()["sessions"][0]["known_spend"], 1.5)
 
+    def test_cancelling_already_fenced_attempt_does_not_revoke_again(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        self.store.revoke_generation('j1', self.store.snapshot()['domain']['revision'])
+        self.store.request_cancellation('n1', 'cancel', 'stop', self.store.snapshot()['domain']['revision'])
+        self.assertEqual(self.store.snapshot()['jobs'][0]['generation'], 2)
+
     def test_cancellation_persists_grace_deadline_across_restart(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
