@@ -7,10 +7,11 @@ from pathlib import Path
 from supervisor.store import Store
 
 try:
-    from supervisor.effects import Effect
+    from supervisor.effects import BoundedScriptAdapter, Effect
 except ModuleNotFoundError as exc:
     if exc.name != 'supervisor.effects':
         raise
+    BoundedScriptAdapter = None
     Effect = None
 
 ROOT = Path(sys.argv.pop()).resolve()
@@ -205,13 +206,68 @@ class EffectContract(unittest.TestCase):
                 self.assertEqual(observe_adapter.calls, [key + '-observe'])
 
     def test_branch_refresh_revisions_evidence_without_spending_retry(self):
-        effect, _, _ = self.prepare('refresh-op', 'branch_refresh', input_revision='validated-v2',
-                                    changed_paths=['src/reviewed.py'])
+        effect, adapter, preconditions = self.prepare('refresh-op', 'branch_refresh',
+                                                       input_revision='validated-v2',
+                                                       changed_paths=['src/reviewed.py'])
         result = effect.apply()
         self.assertEqual(result['status'], 'observed')
         self.assertEqual(result['input_revision'], 'validated-v2')
         self.assertEqual(result['invalidated_evidence'], ['review', 'test'])
+        stored = json.loads(self.store.snapshot()['effects'][0]['observation'])
+        self.assertEqual(stored['input_revision'], 'validated-v2')
+        self.assertEqual(stored['invalidated_evidence'], ['review', 'test'])
+        resumed = Effect(self.store, adapter, self.authority.validate)
+        resumed.prepare('refresh-op', preconditions,
+                        {'kind': 'branch_refresh', 'input_revision': 'validated-v2',
+                         'changed_paths': ['src/reviewed.py']})
+        self.assertEqual(resumed.reconcile()['input_revision'], 'validated-v2')
         self.assertEqual(self.store.snapshot()['jobs'][0]['retries_used'], 0)
+
+    def test_bounded_script_adapter_marks_posts_and_cleans_temporary_reports(self):
+        self.assertIsNotNone(BoundedScriptAdapter, 'bounded script adapter is not implemented')
+        class Result:
+            def __init__(self, returncode=0, stdout='', stderr=''):
+                self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+        class Runner:
+            def __init__(self):
+                self.calls = []
+                self.temporary = []
+            def __call__(self, command, **kwargs):
+                self.calls.append(command)
+                if command[0].endswith('parse-report.sh'):
+                    return Result(stdout='{"status":"clean","bugs":[],"out_of_scope":[]}')
+                if command[0].endswith('board-comment.sh'):
+                    path = Path(command[-1])
+                    self.temporary.append(path)
+                    self.assert_marker = b'fleet-board-effect-operation:report-op' in path.read_bytes()
+                if command[0].endswith('file-followups.sh'):
+                    path = Path(command[-1])
+                    self.temporary.append(path)
+                    self.assert_parsed = path.read_text() == '{"status":"clean","bugs":[],"out_of_scope":[]}'
+                return Result(stdout='ok')
+        runner = Runner()
+        seen = []
+        def observer(kind, intent):
+            seen.append((kind, intent['operation_key']))
+            return {'operation_key': intent['operation_key'], 'kind': kind, 'external_id': 'fresh'}
+        adapter = BoundedScriptAdapter(Path(__file__).resolve().parents[2], observer, runner=runner)
+        report = self.root / 'report.txt'
+        report.write_text('## Status\\nclean\\n')
+        posted = adapter.apply({'kind': 'report_post', 'operation_key': 'report-op',
+                                'card': '17', 'report_file': str(report)})
+        self.assertEqual(posted['operation_key'], 'report-op')
+        self.assertTrue(runner.assert_marker)
+        self.assertFalse(runner.temporary[-1].exists())
+        filed = adapter.apply({'kind': 'followup_file', 'operation_key': 'followup-op',
+                               'card': '17', 'pr': '23', 'role': 'reviewer',
+                               'report_file': str(report)})
+        self.assertEqual(filed['operation_key'], 'followup-op')
+        self.assertTrue(runner.assert_parsed)
+        self.assertFalse(runner.temporary[-1].exists())
+        self.assertEqual(runner.calls[0][1:], ['17', str(runner.temporary[0])])
+        self.assertIn('parse-report.sh', runner.calls[1][0])
+        self.assertEqual(runner.calls[2][1:3], ['17', '23'])
+        self.assertEqual(seen, [('report_post', 'report-op'), ('followup_file', 'followup-op')])
 
 
 if __name__ == '__main__':
