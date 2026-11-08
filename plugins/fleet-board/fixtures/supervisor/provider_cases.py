@@ -716,6 +716,55 @@ class ProviderCases(unittest.TestCase):
         stored = store.snapshot()["results"][0]
         self.assertEqual(json.loads(stored["envelope"])["outcome"], "cancelled")
 
+    def test_real_store_result_over_channel_uses_owner_thread_dispatcher(self):
+        from supervisor.workers import OwnerThreadDispatcher, build_attempt_operation_handlers
+
+        report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
+                  "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
+        store, binding, payload, _source = self.make_result_case(report)
+        request = ProviderRequest.create(
+            attempt_id=binding["attempt_id"], generation=binding["generation"],
+            role=binding["role"], stage=binding["stage"], provider="fake", model="fake-v1",
+            input_text=self.request.input_text)
+        provider_binding = {key: getattr(request, key) for key in
+                            ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                 attempts={request.attempt_id: provider_binding})
+        dispatcher = OwnerThreadDispatcher()
+        handlers = build_attempt_operation_handlers(
+            store, "22", binding=binding, scratch=self.workspace, dispatcher=dispatcher,
+            heartbeat=lambda _value: {"accepted": True}, checkpoint=lambda: None,
+            release_slot=lambda: None)
+        state_root = Path(tempfile.mkdtemp(prefix="fb-store-dispatch-", dir="/private/tmp"))
+        channel_dir = state_root / "channel"
+        channel_dir.mkdir(mode=0o700)
+        channel = InferenceChannel(
+            broker, channel_dir, (request.attempt_id,), operation_journal=state_root / "operations.json",
+            terminal_attempt_checker=lambda _attempt, _generation, _sha: False,
+            controller_dispatcher=dispatcher)
+        client_result, client_error = [], []
+        with channel:
+            channel.bind_attempt_operations(request.attempt_id, binding, handlers)
+            client = InferenceClient(channel.socket_path, request.attempt_id,
+                                     channel.capability_for(request.attempt_id), timeout=3)
+
+            def submit():
+                try:
+                    client_result.append(client.request(payload, operation="result"))
+                except Exception as exc:
+                    client_error.append(exc)
+
+            request_thread = threading.Thread(target=submit)
+            request_thread.start()
+            while request_thread.is_alive():
+                dispatcher.run_pending(timeout=0.05)
+                request_thread.join(timeout=0.01)
+        self.assertEqual(client_error, [])
+        self.assertEqual(client_result, [{"disposition": "current"}])
+        self.assertEqual(len(store.snapshot()["results"]), 1)
+        import shutil
+        shutil.rmtree(state_root)
+
     def test_trusted_result_handler_rejects_paths_outside_attempt_artifacts(self):
         from supervisor.workers import build_attempt_result_handler
 
