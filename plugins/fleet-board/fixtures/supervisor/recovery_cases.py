@@ -557,6 +557,17 @@ class RecoveryContract(unittest.TestCase):
         recovery.reconcile(now=101)
         self.assertEqual(self.store.snapshot(), after)
 
+    def test_stale_heartbeat_is_suspected_even_for_bounded_tool(self):
+        import json
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'alive', 'activity': 'bounded_tool', 'bounded_tool_until': 150}
+        self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'heartbeat': 10,
+                                        'progress': {'at': 100}, 'deadline': 200},
+                                  self.store.snapshot()['domain']['revision'])
+        Recovery(self.store, Inspector(), settings={'heartbeat_timeout_seconds': 20}).reconcile(now=100)
+        self.assertTrue(json.loads(self.store.snapshot()['attempts'][0]['data']).get('suspected_stuck'))
+
     def test_quiet_bounded_tool_can_continue_until_original_deadline(self):
         class Inspector:
             def inspect(self, attempt):
