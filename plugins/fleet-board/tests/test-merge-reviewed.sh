@@ -399,6 +399,27 @@ assert_exit "bounded pending verification: exit 0" 0
 assert_eq "bounded pending verification: no duplicate merge" "$(cnt 'pr merge 34 ')" 0
 assert_eq "bounded pending verification: verification completed" "$(cnt 'issue edit 12 --repo acme/toy --add-label fleet:done')" 1
 
+echo "controller-key merge records and inspects exact external recovery evidence"
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --operation-key op-12 --pr 34 --head abc1234
+assert_exit "keyed merge: exit 0" 0
+assert_eq "keyed merge: only the exact PR/head merged" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+if grep -R -q 'op-12' "$FAKE_GH_DIR/inputs" 2>/dev/null; then pass "keyed merge: operation identity persisted in the manager note"; else fail "keyed merge: operation identity persisted in the manager note" "no note write carried the operation key"; fi
+
+setup_case auto
+KEYED_NOTE="$(jq -c --arg key op-12 '.merge_operation={operation_key:$key,pr:34,head_sha:"abc1234"} | .main_check={commit:"def5678",ok:true,results:[]}' <<<"$CLEAN")"
+card 12 in_review "$KEYED_NOTE"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 2>/dev/null)"
+assert_eq "inspection: operation key, PR, planned/observed head and merged state agree" "$(jq -c '[.operation_key,.pr,.planned_head,.observed_head,.state] | .[:2] + .[2:]' <<<"$INSPECT")" '["op-12",34,"abc1234","abc1234","MERGED"]'
+assert_eq "inspection: literal main verification evidence is retained" "$(jq -c '.main_check.ok' <<<"$INSPECT")" true
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
