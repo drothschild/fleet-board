@@ -331,7 +331,9 @@ def test_structured_progress_is_separate():
         deadline = time.monotonic() + 8
         while not progress.exists() and time.monotonic() < deadline:
             time.sleep(.05)
-        assert json.loads(progress.read_text()) == {'sequence':1,'kind':'checkpoint'}
+        observed = json.loads(progress.read_text())
+        assert observed['sequence'] == 1 and observed['kind'] == 'checkpoint'
+        assert isinstance(observed.get('observed_at'), (int, float)), 'progress needs a durable timestamp'
         assert (progress.parent / 'heartbeat.json').exists()
         process.wait(timeout=10)
 
