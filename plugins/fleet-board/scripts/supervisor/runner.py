@@ -17,7 +17,8 @@ import time
 
 from .processes import identity_for, inspect_identity
 from .workers import ingest_artifacts
-from .isolation import IsolationUnavailable, probe_capabilities, run_isolated
+from .isolation import (IsolationUnavailable, prepare_private_git,
+                        probe_capabilities, run_isolated)
 from .inference_broker import ContractError
 
 
@@ -131,7 +132,8 @@ class Runner:
         self.fixture_publication_barrier = fixture_publication_barrier
         self.production_enabled = production_enabled is True
 
-    def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None):
+    def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None,
+                          source_repository=None):
         """Run only an explicit production request behind verified host isolation."""
         capability = probe_capabilities(policy)
         if not capability.get('available'):
@@ -148,6 +150,9 @@ class Runner:
             raise ValueError('invalid production attempt binding')
         if prepared_attempt['role'] in ('implementor', 'fixer'):
             raise IsolationUnavailable('production role contract is gated on Phase 7')
+        if source_repository is None:
+            raise IsolationUnavailable('production launch requires private worker Git metadata')
+        prepare_private_git(source_repository, policy['workspace'], policy['private_git'])
         bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
         payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
         return run_isolated(command, policy, capability=capability, input_data=payload)

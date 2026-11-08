@@ -63,6 +63,75 @@ def build_policy(workspace, private_git, channels):
     return {**common, 'backend': 'unsupported', 'text': 'unsupported host', 'command': None}
 
 
+def prepare_private_git(source_repository, workspace, private_git):
+    """Create isolated local copies for the controller and worker without shared metadata."""
+    source = Path(source_repository)
+    workspace = Path(_private_directory(workspace))
+    private_git = Path(_private_directory(private_git))
+    if (not source.is_absolute() or source.is_symlink() or not source.is_dir()
+            or source.resolve(strict=True) != source):
+        raise IsolationUnavailable('source repository must be a canonical local directory')
+    if any(workspace.iterdir()) or any(private_git.iterdir()):
+        raise IsolationUnavailable('private Git destinations must be empty')
+    environment = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent',
+                   'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
+                   'GIT_TERMINAL_PROMPT': '0'}
+
+    def git(repository, *arguments):
+        result = subprocess.run(['git', '-C', str(repository), *arguments],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=30, check=False,
+                                close_fds=True, env=environment)
+        if result.returncode != 0:
+            raise IsolationUnavailable('private Git setup failed: ' +
+                                       result.stderr.decode('utf-8', 'replace')[:160].strip())
+        return result.stdout.decode('utf-8', 'replace').strip()
+
+    def clone(source_path, destination):
+        result = subprocess.run(['git', 'clone', '--no-local', '--no-hardlinks',
+                                 '--no-checkout', str(source_path), str(destination)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=30, check=False,
+                                close_fds=True, env=environment)
+        if result.returncode != 0:
+            raise IsolationUnavailable('private Git clone failed: ' +
+                                       result.stderr.decode('utf-8', 'replace')[:160].strip())
+
+    try:
+        clone(source, private_git)
+        git(private_git, 'remote', 'remove', 'origin')
+        clone(private_git, workspace)
+        git(workspace, 'remote', 'remove', 'origin')
+        git(workspace, 'checkout', '--detach', 'HEAD')
+        roots = (workspace.resolve(strict=True), private_git.resolve(strict=True))
+        for repository, root in ((workspace, roots[0]), (private_git, roots[1])):
+            metadata = repository / '.git'
+            if metadata.is_symlink() or not metadata.is_dir() or metadata.resolve(strict=True) != metadata:
+                raise IsolationUnavailable('private Git metadata is not a real directory')
+            common = Path(git(repository, 'rev-parse', '--git-common-dir'))
+            if not common.is_absolute():
+                common = repository / common
+            common = common.resolve(strict=True)
+            if os.path.commonpath((str(root), str(common))) != str(root):
+                raise IsolationUnavailable('Git common directory escaped private root')
+            if (metadata / 'objects' / 'info' / 'alternates').exists():
+                raise IsolationUnavailable('Git alternates are forbidden')
+            config = git(repository, 'config', '--local', '--list').lower()
+            forbidden = ('credential.', 'include.path=', 'includeif.', 'remote.',
+                         'url.', 'core.sshcommand=', 'extensions.partialclone=',
+                         'worktreeconfig=')
+            if any(entry in config for entry in forbidden):
+                raise IsolationUnavailable('private Git config contains an external reference')
+            if any(path.is_symlink() for path in metadata.rglob('*')):
+                raise IsolationUnavailable('private Git metadata contains a symlink')
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        if isinstance(exc, IsolationUnavailable):
+            raise
+        raise IsolationUnavailable(str(exc)[:200]) from exc
+    return {'workspace': str(workspace), 'private_git': str(private_git),
+            'git_common_dir': str((workspace / '.git').resolve(strict=True))}
+
+
 def _wrapped_command(argv, policy):
     if not isinstance(argv, (list, tuple)) or not argv or any(not isinstance(a, str) or not a for a in argv):
         raise ValueError('worker command must be a non-empty argv array')

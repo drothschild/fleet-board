@@ -274,7 +274,10 @@ class ProviderCases(unittest.TestCase):
             common = subprocess.check_output(
                 ["git", "-C", str(repository), "rev-parse", "--git-common-dir"],
                 text=True, env=subprocess_env).strip()
-            self.assertEqual(Path(common).resolve(), metadata.resolve())
+            common_path = Path(common)
+            if not common_path.is_absolute():
+                common_path = repository / common_path
+            self.assertEqual(common_path.resolve(), metadata.resolve())
             config = (metadata / "config").read_text(encoding="utf-8")
             self.assertNotIn(str(source), config)
             self.assertNotIn("credential", config.lower())
