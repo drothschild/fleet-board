@@ -96,7 +96,20 @@ class Recovery:
                     self.store.quarantine_attempt(attempt['id'], 'identity_uncertain', revision)
                     continue
             if attempt['state'] == 'cancel_requested':
-                if observation.get('status') == 'unknown':
+                if observation.get('status') == 'stopped':
+                    try:
+                        revision = self.store.snapshot()['domain']['revision']
+                        self.store.record_execution_stopped(attempt['id'], observation.get('stop_evidence'), revision)
+                        current = self.store.snapshot()
+                        job = next(x for x in current['jobs'] if x['id'] == attempt['job_id'])
+                        if data.get('cancel_reason') == 'infrastructure' and job['state'] == 'active':
+                            self.store.schedule_retry(job['id'], attempt['id'], observation.get('retry_evidence'),
+                                                      retry_at=now + self.settings['retry_backoff_seconds'],
+                                                      expected_revision=current['domain']['revision'])
+                    except ValueError:
+                        current = self.store.snapshot()
+                        self.store.quarantine_attempt(attempt['id'], 'stop_or_retry_uncertain', current['domain']['revision'])
+                elif observation.get('status') == 'unknown':
                     revision = self.store.snapshot()['domain']['revision']
                     self.store.quarantine_attempt(attempt['id'], 'termination_uncertain', revision)
                 elif observation.get('status') == 'alive':
