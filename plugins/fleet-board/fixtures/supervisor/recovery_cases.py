@@ -387,6 +387,7 @@ class RecoveryContract(unittest.TestCase):
             self.assertEqual(fenced['attempts'][0]['state'], 'cancel_requested')
             self.assertEqual(json.loads(fenced['attempts'][0]['data'])['deadline'], 11)
         finally:
+            Recovery(self.store).reconcile(now=41)
             process.wait(timeout=5)
 
     def test_store_bound_launch_without_durable_timing_is_rejected(self):
@@ -669,6 +670,7 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(launcher.counter.read_text(), 'x')
 
     def test_real_managed_child_handles_term_gracefully(self):
+        import json
         import time
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
@@ -684,10 +686,18 @@ class RecoveryContract(unittest.TestCase):
                 time.sleep(.02)
             self.assertTrue(ready.exists())
             self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
-            Recovery(self.store).reconcile(now=10)
-            process.wait(timeout=5)
+            recovery = Recovery(self.store)
+            recovery.reconcile(now=10)
+            limit = time.monotonic() + 5
+            while not stopped.exists() and time.monotonic() < limit:
+                time.sleep(.02)
             self.assertEqual(stopped.read_text(), 'term')
-            Recovery(self.store).reconcile(now=11)
+            recovery.reconcile(now=40)
+            process.wait(timeout=5)
+            attempt_id = self.store.snapshot()['attempts'][0]['id']
+            failure = json.loads((self.store.directory / 'attempts' / attempt_id / 'failure.json').read_text())
+            self.assertEqual(failure, {'kind': 'process_group_signal_denied'})
+            recovery.reconcile(now=41)
             after = self.store.snapshot()
             self.assertEqual(after['attempts'][0]['state'], 'quarantined')
             self.assertEqual(after['jobs'][0]['retries_used'], 0)
@@ -848,9 +858,12 @@ class RecoveryContract(unittest.TestCase):
             child = identity_for(int(pidfile.read_text()), 'fixture-child')
             self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'deadline': 10},
                                       self.store.snapshot()['domain']['revision'])
-            Recovery(self.store).reconcile(now=10)
+            recovery = Recovery(self.store)
+            recovery.reconcile(now=10)
+            time.sleep(.4)
+            recovery.reconcile(now=40)
             process.wait(timeout=5)
-            Recovery(self.store).reconcile(now=11)
+            recovery.reconcile(now=41)
             snapshot = self.store.snapshot()
             self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
             self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
