@@ -76,9 +76,10 @@ class NativeInspector:
 
 
 class Recovery:
-    def __init__(self, store, inspector=None, settings=None):
+    def __init__(self, store, inspector=None, settings=None, retry_limits=None):
         self.store = store
         self.inspector = inspector if inspector is not None else NativeInspector(store.directory, store.domain_id)
+        self.retry_limits = retry_limits
         self.settings = {'shutdown_grace_seconds': 30, 'heartbeat_timeout_seconds': 60,
                          'progress_timeout_seconds': 900, 'attempt_timeout_seconds': 7200,
                          'retry_backoff_seconds': 60}
@@ -185,3 +186,23 @@ class Recovery:
                     deadline = data.get('cancel_grace_deadline')
                     if type(deadline) in (int, float) and math.isfinite(deadline):
                         self.inspector.signal(attempt, 'KILL' if now >= deadline else 'TERM')
+
+        if self.retry_limits is not None:
+            current = self.store.snapshot()
+            for job in current['jobs']:
+                if job['state'] != 'retry_wait':
+                    continue
+                job_data = json.loads(job['data'])
+                if now < job_data['retry_at']:
+                    continue
+                prior = next((item for item in current['attempts'] if item['id'] == job_data['retry_prior']), None)
+                if prior is None:
+                    continue
+                try:
+                    evidence = self.inspector.inspect(prior).get('retry_evidence')
+                    if evidence is not None:
+                        self.store.prepare_retry(job['id'], evidence, now=now, limits=self.retry_limits,
+                                                 expected_revision=self.store.snapshot()['domain']['revision'])
+                except (ValueError, OSError):
+                    # Admission remains held until fresh trusted evidence and limits permit it.
+                    continue
