@@ -46,7 +46,7 @@ FAKE_CLAUDE="$TMP/fake-claude.sh"
 cat > "$FAKE_CLAUDE" <<'EOF'
 #!/bin/bash
 n=$(( $(wc -l < "$ARGV_LOG") + 1 ))
-printf '%s\n' "$(printf '%s\037' "$@")" >> "$ARGV_LOG"
+printf '%s\037' "$@" | tr '\n' '\036' >> "$ARGV_LOG"; echo >> "$ARGV_LOG"
 while [ -e "$HOLD" ]; do sleep 0.1; done
 printf '{"type":"system","session_id":"sess-%d"}\n' "$n"
 printf '{"type":"assistant","session_id":"sess-%d","message":{"content":[{"type":"text","text":"reply %d"}]}}\n' "$n" "$n"
