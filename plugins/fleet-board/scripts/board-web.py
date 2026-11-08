@@ -529,6 +529,22 @@ def new_import_id() -> str:
         "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(2)))
 
 
+def draft_planner(id: str) -> str:
+    """Writes the conversation as a plan and starts the import preview; returns the import id."""
+    pdir = planner_dir(id)
+    with _PLANNER_LOCK:
+        turns = read_turns(pdir)
+        if id in _PLANNER_BUSY:
+            raise ApiError(409, "conversation %s is still replying" % id)
+    if not any(t.get("role") == "user" and str(t.get("text", "")).strip() for t in turns if isinstance(t, dict)):
+        raise ApiError(409, "conversation %s has no user turns to draft from" % id)
+    parts = ["# Plan drafted from the planner conversation\n"]
+    for t in turns:
+        if isinstance(t, dict) and t.get("role") in ("user", "assistant"):
+            parts.append("## %s\n\n%s\n" % ("User" if t["role"] == "user" else "Planner", t.get("text", "")))
+    return start_import("\n".join(parts), "backlog")
+
+
 def start_import(plan_text: str, status: str) -> str:
     """Starts the headless preview session for a plan; returns the import id."""
     cfg, _ = ctx()
@@ -726,6 +742,116 @@ def edit_import_card(id: str, key: str, body: dict) -> dict:
 
 
 # --- controllers: (params, body) -> (status, payload) -------------------------
+
+# --- planner chat ---------------------------------------------------------------
+
+_PLANNER_LOCK = threading.RLock()  # guards _PLANNER_BUSY and conversation creation
+_PLANNER_BUSY: set = set()  # ids with a reply in progress
+PLANNER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
+def planner_dir(id: str) -> Path:
+    cfg, _ = ctx()
+    path = state_dir(APP["root"], cfg) / "planner" / id
+    if not PLANNER_ID_RE.match(id) or not path.is_dir():
+        raise ApiError(404, "conversation %s not found" % id)
+    return path
+
+
+def read_turns(pdir: Path) -> list:
+    turns = read_json_file(pdir / "transcript.json")
+    return turns if isinstance(turns, list) else []
+
+
+def start_planner() -> str:
+    cfg, _ = ctx()
+    id = os.environ.get("FLEET_BOARD_TEST_PLANNER_ID") or (
+        "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(2)))
+    pdir = state_dir(APP["root"], cfg) / "planner" / id
+    with _PLANNER_LOCK:
+        if pdir.exists():
+            raise ApiError(409, "conversation %s already exists" % id)
+        pdir.mkdir(parents=True, mode=0o700)
+        os.chmod(str(pdir), 0o700)
+        write_private_atomic(pdir / "transcript.json", "[]")
+    return id
+
+
+def session_id_of(path: Path) -> str:
+    found = ""
+    for line in read_text(path).splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict) and isinstance(ev.get("session_id"), str) and ev["session_id"]:
+            found = ev["session_id"]
+    return found
+
+
+def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path):
+    rc = proc.wait()
+    reply = last_session_text(out_path)
+    if rc != 0 and not reply:
+        lines = [l for l in read_text(err_path).splitlines() if l.strip()]
+        reply = "[error] " + (lines[-1] if lines else "claude exited %s" % rc)
+    with _PLANNER_LOCK:
+        turns = read_turns(pdir)
+        turns.append({"role": "assistant", "text": reply})
+        write_private_atomic(pdir / "transcript.json", json.dumps(turns))
+        sid = session_id_of(out_path)
+        if sid:
+            meta = read_json_file(pdir / "meta.json") or {}
+            meta["session_id"] = sid
+            write_private_atomic(pdir / "meta.json", json.dumps(meta))
+        _PLANNER_BUSY.discard(id)
+
+
+def send_planner_message(id: str, text: str):
+    cfg, _ = ctx()
+    pdir = planner_dir(id)
+    with _PLANNER_LOCK:
+        if id in _PLANNER_BUSY:
+            raise ApiError(409, "conversation %s is still replying" % id)
+        persona, _warn = resolve_persona(APP["root"], cfg)
+        prompt = "Board context (JSON):\n%s\n\nUser:\n%s" % (json.dumps(board_context()), text)
+        meta = read_json_file(pdir / "meta.json") or {}
+        argv = [
+            os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
+            "--output-format", "stream-json", "--verbose",
+            "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
+            "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
+            "--append-system-prompt", persona,
+        ]
+        if meta.get("session_id"):
+            argv += ["--resume", meta["session_id"]]
+        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
+        if plugin_dir:
+            argv += ["--plugin-dir", plugin_dir]
+        argv.append(prompt)
+        n = len(read_turns(pdir))
+        out_path, err_path = pdir / ("reply-%d.jsonl" % n), pdir / ("reply-%d.err" % n)
+        try:
+            ofd = os.open(str(out_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            efd = os.open(str(err_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(ofd, "wb") as out, os.fdopen(efd, "wb") as err:
+                proc = subprocess.Popen(argv, cwd=APP["root"], stdin=subprocess.DEVNULL,
+                                        stdout=out, stderr=err, start_new_session=True)
+        except OSError as exc:
+            raise ApiError(500, "cannot start %s: %s" % (argv[0], exc))
+        turns = read_turns(pdir)
+        turns.append({"role": "user", "text": text})
+        write_private_atomic(pdir / "transcript.json", json.dumps(turns))
+        _PLANNER_BUSY.add(id)
+        threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path),
+                         daemon=True).start()
+
+
+def planner_status(id: str) -> dict:
+    pdir = planner_dir(id)
+    with _PLANNER_LOCK:
+        return {"id": id, "turns": read_turns(pdir), "running": id in _PLANNER_BUSY}
+
 
 def ctx():
     cfg = load_config(APP["root"], APP["scripts"])
@@ -1007,6 +1133,23 @@ def stop_run(params, body):
     return 200, {"state": "stopping"}
 
 
+def post_planner(params, body):
+    return 200, {"id": start_planner()}
+
+
+def post_planner_message(params, body):
+    send_planner_message(params["id"], require_str(body, "text"))
+    return 200, {"running": True}
+
+
+def get_planner(params, body):
+    return 200, planner_status(params["id"])
+
+
+def post_planner_draft(params, body):
+    return 200, {"import_id": draft_planner(params["id"])}
+
+
 def post_import(params, body):
     plan = require_str(body, "plan")
     status = body.get("status", "backlog")
@@ -1043,6 +1186,10 @@ ROUTES = [
     ("GET", r"/api/run", get_run),
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
+    ("POST", r"/api/planner", post_planner),
+    ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
+    ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
+    ("GET", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_planner),
     ("POST", r"/api/import", post_import),
     ("GET", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_import),
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
