@@ -312,6 +312,16 @@ class Store:
             if row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
                 raise ValueError('attempt is no longer mutable')
             data = json.loads(row['data'])
+            for field in ('started_at', 'deadline'):
+                if field in details:
+                    value = details[field]
+                    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                        raise ValueError('invalid attempt time')
+                    if field in data and data[field] != value:
+                        raise ValueError('attempt time is immutable')
+            combined = dict(data, **details)
+            if 'started_at' in combined and 'deadline' in combined and combined['deadline'] < combined['started_at']:
+                raise ValueError('deadline precedes start')
             data.update(details)
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
