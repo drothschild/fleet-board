@@ -359,6 +359,9 @@ class InferenceChannel:
         if (not isinstance(handlers, dict) or set(handlers) != allowed
                 or any(not callable(handlers[name]) for name in allowed)):
             raise ContractError('worker operations require trusted heartbeat, result, and scope handlers')
+        from .workers import TrustedAttemptResultHandler
+        if type(handlers['result']) is not TrustedAttemptResultHandler:
+            raise ContractError('worker result handler must own artifact validation and durable publication')
         with self._request_lock:
             if attempt_id in self._operation_handlers:
                 raise ContractError('worker operations already bound for attempt')
@@ -393,13 +396,15 @@ class InferenceChannel:
             required = identity | {'request_id', 'outcome', 'report_path', 'artifact_hashes', 'usage', 'exit_code'}
             if set(payload) != required or payload['outcome'] not in ('success', 'failure', 'cancelled'):
                 raise ContractError('invalid attempt result envelope')
-            if not isinstance(payload['report_path'], str) or not payload['report_path']:
-                raise ContractError('attempt result has no report path')
+            if (not isinstance(payload['report_path'], str) or not payload['report_path']
+                    or '/' in payload['report_path'] or '\\' in payload['report_path']
+                    or payload['report_path'] in ('.', '..')):
+                raise ContractError('attempt result has no safe report name')
             hashes = payload['artifact_hashes']
             if (not isinstance(hashes, dict) or len(hashes) < 1 or len(hashes) > 128
                     or payload['report_path'] not in hashes
-                    or any(not isinstance(path, str) or not path or not Path(path).is_absolute()
-                           or '..' in Path(path).parts or not isinstance(digest, str)
+                    or any(not isinstance(path, str) or not path or '/' in path or '\\' in path
+                           or path in ('.', '..') or not isinstance(digest, str)
                            or len(digest) != 64 or any(char not in '0123456789abcdef' for char in digest)
                            for path, digest in hashes.items())):
                 raise ContractError('invalid attempt result artifacts')

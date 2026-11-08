@@ -16,7 +16,7 @@ import threading
 import time
 
 from .processes import identity_for, inspect_identity
-from .workers import ingest_artifacts
+from .workers import TrustedAttemptResultHandler, ingest_artifacts
 from .isolation import (IsolationUnavailable, prepare_private_git,
                         probe_capabilities, run_isolated)
 from .inference_broker import ContractError
@@ -171,7 +171,9 @@ class Runner:
             raise IsolationUnavailable('production role contract is gated on Phase 7')
         if source_repository is None:
             raise IsolationUnavailable('production launch requires private worker Git metadata')
-        if not isinstance(operation_handlers, dict):
+        if (not isinstance(operation_handlers, dict)
+                or set(operation_handlers) != {'heartbeat', 'result', 'scope_request'}
+                or type(operation_handlers.get('result')) is not TrustedAttemptResultHandler):
             raise IsolationUnavailable('production launch requires trusted attempt operation handlers')
         bind_control = getattr(channel, 'bind_attempt_control', None)
         if not callable(bind_control):
@@ -184,6 +186,21 @@ class Runner:
         operation_binding = {key: prepared_attempt[key] for key in
                              ('domain_id', 'job_id', 'attempt_id', 'generation',
                               'input_sha', 'role', 'stage')}
+        if operation_handlers['result'].binding != operation_binding:
+            raise IsolationUnavailable('production result handler does not match the prepared attempt')
+        workspace = Path(policy['workspace'])
+        if (workspace.is_symlink() or workspace.resolve(strict=True) != workspace
+                or operation_handlers['result'].scratch != workspace):
+            raise IsolationUnavailable('production result handler is not bound to the worker workspace')
+        store_directory = operation_handlers['result'].store_directory
+        for writable_root in (workspace, Path(policy['private_git']), Path(policy['channels'])):
+            canonical = writable_root.resolve(strict=True)
+            try:
+                shared_root = os.path.commonpath((str(store_directory), str(canonical)))
+            except ValueError as exc:
+                raise IsolationUnavailable('result Store and worker roots are incompatible') from exc
+            if shared_root in (str(store_directory), str(canonical)):
+                raise IsolationUnavailable('result Store overlaps worker-writable isolation roots')
         bind_operations(prepared_attempt['attempt_id'], operation_binding, operation_handlers)
         bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
         payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
