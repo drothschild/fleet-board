@@ -660,6 +660,21 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(data['cancel_grace_deadline'], 15)
         self.assertEqual(reopened.snapshot()['jobs'][0]['generation'], 2)
 
+    def test_attempt_hard_deadline_is_set_once_and_survives_restart(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.update_attempt('n1', {'started_at': 10, 'deadline': 20}, self.store.snapshot()['domain']['revision'])
+        other = Store.open(self.domain, filesystem_inspector=lambda _: 'local')
+        self.addCleanup(other.close)
+        before = other.snapshot()
+        for update in ({'started_at': 11}, {'deadline': 21}, {'deadline': None}):
+            with self.assertRaises(ValueError):
+                other.update_attempt('n1', update, before['domain']['revision'])
+            self.assertEqual(other.snapshot(), before)
+
     def test_one_retry_survives_restart_and_transfers_reservation(self):
         from supervisor import models
         self.assertTrue(hasattr(models, 'RetryEvidence'), 'trusted retry evidence is not implemented')
