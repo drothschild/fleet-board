@@ -137,11 +137,11 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Interface:** `Effect.prepare(key, preconditions, intent)`, `Effect.observe()`, `Effect.apply()`, `Effect.reconcile()`. Supported adapters: worktree preparation, branch refresh, commit publication, PR create/update, report post, note update, card move, follow-up filing and cleanup. Each documents observation evidence and ambiguous-outcome behavior.
 
-- [ ] Add failure injection before/after every external mutation and before local observation commit. Cover changed/deleted cards, moved PR head, invalid note, human-QA arrival mid-flight, duplicate report/create response, and ambiguous publication.
-- [ ] Assert controller-generated operation IDs are separate from untrusted report text and all effect mutations revalidate current authority/generation and card state.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-effects.sh` to failure; commit tests.
-- [ ] Implement bounded subprocess effect adapters and safe observation/replay. No direct filesystem edits to board storage. Uncertain non-idempotent results enter attention. Resume refresh produces a new validated input revision and resets only invalidated review evidence, not infrastructure retry history for unchanged work.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Add failure injection before/after every external mutation and before local observation commit. Cover changed/deleted cards, moved PR head, invalid note, human-QA arrival mid-flight, duplicate report/create response, and ambiguous publication.
+- [x] Assert controller-generated operation IDs are separate from untrusted report text and all effect mutations revalidate current authority/generation and card state.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-effects.sh` to failure; commit tests.
+- [x] Implement bounded subprocess effect adapters and safe observation/replay. No direct filesystem edits to board storage. Uncertain non-idempotent results enter attention. Resume refresh produces a new validated input revision and resets only invalidated review evidence, not infrastructure retry history for unchanged work.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S3, S4, S7, S8. This phase does not claim exactly-once external delivery.
 
