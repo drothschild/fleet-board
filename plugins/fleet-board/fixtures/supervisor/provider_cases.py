@@ -329,8 +329,10 @@ class ProviderCases(unittest.TestCase):
             },
         }
         channel_dir = Path(tempfile.mkdtemp(prefix="fb-worker-operations-", dir="/private/tmp"))
+        operation_state_dir = Path(tempfile.mkdtemp(prefix="fb-controller-operations-", dir="/private/tmp"))
         try:
-            with InferenceChannel(broker, channel_dir, (request.attempt_id,)) as channel:
+            with InferenceChannel(broker, channel_dir, (request.attempt_id,),
+                                  operation_journal=operation_state_dir / "operations.json") as channel:
                 channel.bind_attempt_operations(
                     request.attempt_id,
                     operation_binding, handlers)
@@ -435,7 +437,8 @@ class ProviderCases(unittest.TestCase):
         }
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
                                  attempts=broker_bindings)
-        journal_dir = self.root / "controller-operation-state"
+        test_root = Path(tempfile.mkdtemp(prefix="fb-op-", dir="/private/tmp"))
+        journal_dir = test_root / "controller-state"
         journal_dir.mkdir(mode=0o700)
         journal_path = journal_dir / "operations.json"
         expansion_calls, conflict_callbacks = [], []
@@ -452,7 +455,7 @@ class ProviderCases(unittest.TestCase):
 
             def expand_scope(self, card, paths, revision):
                 expansion_calls.append((card, list(paths), revision))
-                if card == "22":
+                if card == "24":
                     raise ValueError("scope conflict with #23")
                 return {"card": card, "paths": paths, "reservation_revision": 4}
 
@@ -479,7 +482,7 @@ class ProviderCases(unittest.TestCase):
         }
         first_results = {}
         for suffix, result_store in (("one", {}), ("two", first_results)):
-            directory = self.root / ("channel-" + suffix)
+            directory = test_root / ("channel-" + suffix)
             directory.mkdir(mode=0o700)
             with InferenceChannel(broker, directory, tuple(requests), operation_journal=journal_path) as channel:
                 for attempt_id in requests:
@@ -493,6 +496,63 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(expansion_calls, [("22", ["src/new.py"], 9),
                                            ("24", ["src/new.py"], 9)])
         self.assertEqual(conflict_callbacks, ["checkpoint", "release"])
+        import shutil
+        shutil.rmtree(test_root)
+
+    def test_inflight_scope_operation_recovery_fails_closed(self):
+        from supervisor.workers import build_attempt_operation_handlers
+
+        request = ProviderRequest.create(
+            attempt_id="attempt-recover", generation=3, role="stage-reviewer", stage="code",
+            provider="fake", model="fake-v1", input_text="recover scope")
+        broker_binding = {key: getattr(request, key) for key in
+                          ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                 attempts={request.attempt_id: broker_binding})
+        test_root = Path(tempfile.mkdtemp(prefix="fb-recover-", dir="/private/tmp"))
+        state_dir = test_root / "state"
+        state_dir.mkdir(mode=0o700)
+        channel_dir = test_root / "channel"
+        channel_dir.mkdir(mode=0o700)
+        binding = {"domain_id": "domain-1", "job_id": "job-1",
+                   "attempt_id": request.attempt_id, "generation": request.generation,
+                   "input_sha": request.input_sha, "role": request.role, "stage": request.stage}
+        payload = dict(binding, schema_version=1, request_id="pending-scope",
+                       paths=["src/new.py"], expected_revision=5)
+        body_sha = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                                               allow_nan=False).encode("utf-8")).hexdigest()
+        journal = state_dir / "operations.json"
+        journal.write_text(json.dumps({"schema_version": 1, "operations": [{
+            "attempt_id": request.attempt_id, "operation": "scope_request",
+            "request_id": "pending-scope", "body_sha": body_sha, "state": "in_flight"}]}),
+            encoding="utf-8")
+        journal.chmod(0o600)
+        effects = []
+
+        class Store:
+            directory = state_dir / "store"
+            domain_id = "domain-1"
+
+            def expand_scope(self, card, paths, revision):
+                effects.append("expand")
+                return {"card": card, "paths": paths, "reservation_revision": revision + 1}
+
+            def record_result(self, _envelope):
+                return {"disposition": "current"}
+
+        (state_dir / "store").mkdir(mode=0o700)
+        handlers = build_attempt_operation_handlers(
+            Store(), "22", binding=binding, scratch=self.workspace,
+            heartbeat=lambda value: {"accepted": True}, checkpoint=lambda: effects.append("checkpoint"),
+            release_slot=lambda: effects.append("release"))
+        channel = InferenceChannel(broker, channel_dir, (request.attempt_id,),
+                                   operation_journal=journal)
+        channel.bind_attempt_operations(request.attempt_id, binding, handlers)
+        with self.assertRaisesRegex(ContractError, "already consumed"):
+            channel._dispatch_worker_operation(request.attempt_id, "scope_request", payload)
+        self.assertEqual(effects, [])
+        import shutil
+        shutil.rmtree(test_root)
 
     def make_result_case(self, report_text):
         from supervisor.store import Store
@@ -810,6 +870,9 @@ class ProviderCases(unittest.TestCase):
             def operations_for(self, attempt_id):
                 return ("heartbeat", "result", "scope_request")
         fake_channel = FakeChannel()
+        controller_state = self.root / "controller-state"
+        controller_state.mkdir(mode=0o700)
+        fake_channel.operation_journal = controller_state / "operations.json"
         with patch("supervisor.runner.probe_capabilities", return_value={"available": True}), \
              patch("supervisor.runner.prepare_private_git"), \
              patch("supervisor.runner.prepare_worker_bootstrap", return_value={"schema_version": 1}), \
@@ -859,6 +922,15 @@ class ProviderCases(unittest.TestCase):
             controls[:] = []
             operation_bindings[:] = []
             cancel = threading.Event()
+            fake_channel.operation_journal = None
+            with self.assertRaises(IsolationUnavailable):
+                runner.launch_production(prepared, ["/usr/bin/true"], policy,
+                                         channel=fake_channel, request={},
+                                         source_repository=self.root, cancel_event=cancel,
+                                         operation_handlers={"heartbeat": lambda value: value,
+                                                             "result": trusted_result,
+                                                             "scope_request": lambda value: value})
+            fake_channel.operation_journal = controller_state / "operations.json"
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                               channel=fake_channel, request={},
                                               source_repository=self.root, cancel_event=cancel,
