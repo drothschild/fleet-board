@@ -1487,6 +1487,18 @@ class ProviderCases(unittest.TestCase):
                           if line.startswith("(allow file-write*"))
         self.assertNotIn(policy["channels"], write_rule)
 
+    def test_forged_human_control_probe_uses_authenticated_unknown_operation(self):
+        from supervisor.isolation import _forged_control_frame
+        frame = _forged_control_frame("attempt-1", "attempt-capability")
+        size = struct.unpack("!I", frame[:4])[0]
+        request = json.loads(frame[4:])
+        self.assertEqual(size, len(frame[4:]))
+        self.assertEqual(request, {
+            "schema_version": 1, "operation": "human_control",
+            "attempt_id": "attempt-1", "capability": "attempt-capability",
+            "request": {"attempt_id": "attempt-1"},
+        })
+
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
         class Store:
             def expand_scope(self, card, paths, revision):
