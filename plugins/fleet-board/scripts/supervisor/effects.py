@@ -91,7 +91,8 @@ class Effect:
 
     def inject_failure(self, point):
         """Inject deterministic boundary faults for offline contract cases."""
-        allowed = {'before_mutation', 'after_mutation', 'before_observation_commit'}
+        allowed = {'before_mutation', 'after_review_route', 'after_mutation',
+                   'before_observation_commit'}
         if point not in allowed:
             raise ValueError('unknown effect failure point')
         self._faults.add(point)
@@ -238,6 +239,10 @@ class Effect:
             except Exception as exc:
                 return {'status': 'pending', 'operation_key': self._key,
                         'reason': 'review-stage routing failed; card move was not attempted: ' + str(exc)[:240]}
+            if 'after_review_route' in self._faults:
+                self._faults.remove('after_review_route')
+                return {'status': 'pending', 'operation_key': self._key,
+                        'reason': 'injected after review-stage routing; card move was not attempted'}
             allowed, reason = self._validate_authority(row, preconditions, intent)
             if not allowed:
                 return self._attention(reason or 'review move authority denied after routing')
