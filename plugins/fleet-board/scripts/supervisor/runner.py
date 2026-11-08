@@ -114,28 +114,52 @@ def _run(config):
                for pipe, name in ((worker.stdout, 'stdout.log'), (worker.stderr, 'stderr.log'))]
     for reader in readers:
         reader.start()
+    prepared = config['prepared']
+    published = False
+    def publish_ready():
+        fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
+        if any(field not in prepared for field in fields) or 'scratch' not in prepared:
+            return False
+        scratch = Path(prepared['scratch'])
+        try:
+            fd = os.open(str(scratch / 'ready.json'), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                data = stream.read(4097)
+            marker = json.loads(data)
+            if len(data) > 4096 or marker != {'exit_code': 0}:
+                return False
+            report_path = scratch / 'report'
+            fd = os.open(str(report_path), os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, 'rb') as stream:
+                report_data = stream.read(1048577)
+            report_obj = json.loads(report_data)
+            if len(report_data) > 1048576 or report_obj != {'status': 'clean'}:
+                return False
+        except (OSError, ValueError, TypeError):
+            return False
+        artifacts_root = Path(config['directory']) / 'artifacts'
+        artifacts_root.mkdir(mode=0o700, exist_ok=True)
+        hashes = ingest_artifacts(scratch, artifacts_root / config['attempt_id'], ['report'])
+        report = str(artifacts_root / config['attempt_id'] / 'report')
+        # Validate the immutable copy as well as the source.
+        if json.loads(Path(report).read_bytes()) != {'status': 'clean'}:
+            return False
+        envelope = {field: prepared[field] for field in fields}
+        envelope.update(schema_version=1, outcome='success', report_path=report,
+                        artifact_hashes={report: hashes['report']}, usage=None, exit_code=0)
+        _publish(attempt / 'result.json', envelope)
+        return True
     while worker.poll() is None or any(reader.is_alive() for reader in readers):
+        if not published:
+            published = publish_ready()
         _publish(attempt / 'heartbeat.json', {'at': time.time()})
         time.sleep(.2)
     for reader in readers:
         reader.join()
-    completed = worker
-    prepared = config['prepared']
-    if 'scratch' not in prepared:
-        return
-    fields = ('domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage')
-    if any(field not in prepared for field in fields):
-        raise ValueError('incomplete result identity')
-    artifacts_root = Path(config['directory']) / 'artifacts'
-    artifacts_root.mkdir(mode=0o700, exist_ok=True)
-    hashes = ingest_artifacts(Path(prepared['scratch']), artifacts_root / config['attempt_id'], ['report'])
-    report = str(artifacts_root / config['attempt_id'] / 'report')
-    envelope = {field: prepared[field] for field in fields}
-    envelope.update(schema_version=1, outcome='success' if completed.returncode == 0 else 'failure',
-                    report_path=report, artifact_hashes={report: hashes['report']}, usage=None,
-                    exit_code=completed.returncode)
-    _publish(attempt / 'result.json', envelope)
-    _publish(attempt / 'completion.json', {'state': 'published'})
+    if not published:
+        published = publish_ready()
+    if published:
+        _publish(attempt / 'completion.json', {'state': 'worker_exited', 'exit_code': worker.returncode})
 
 
 if __name__ == '__main__':

@@ -115,11 +115,11 @@ def test_published_result_survives_scratch_deletion():
         root = pathlib.Path(tmp).resolve()
         scratch = root / 'scratch'
         scratch.mkdir()
-        (scratch / 'report').write_text('validated fixture report')
+        (scratch / 'report').write_text('{"status":"clean"}')
         attempt = {'domain_id': 'domain', 'job_id': 'job', 'attempt_id': 'attempt',
                    'nonce': 'nonce', 'generation': 1, 'input_sha': 'abc',
                    'role': 'reviewer', 'stage': None, 'scratch': str(scratch)}
-        runner = Runner(root, fixture_command=[sys.executable, '-c', 'pass'])
+        runner = Runner(root, fixture_command=[sys.executable, '-c', "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')", str(scratch / 'ready.json')])
         process = runner.launch(attempt)
         process.wait(timeout=10)
         envelope = read_result(root / 'attempts' / 'attempt')
@@ -127,7 +127,7 @@ def test_published_result_survives_scratch_deletion():
         assert envelope['usage'] is None
         report = pathlib.Path(envelope['report_path'])
         (scratch / 'report').unlink()
-        assert report.read_text() == 'validated fixture report'
+        assert report.read_text() == '{"status":"clean"}'
         assert (root / 'attempts' / 'attempt' / 'completion.json').exists()
 
 
@@ -179,7 +179,7 @@ def test_result_precedes_exit_without_freeing_slot():
         root = pathlib.Path(tmp).resolve()
         scratch = root / 'scratch'
         scratch.mkdir()
-        (scratch / 'report').write_text('fixture report')
+        (scratch / 'report').write_text('{"status":"clean"}')
         marker = scratch / 'ready.json'
         command = [sys.executable, '-c', "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}'); time.sleep(2)", str(marker)]
         attempt = {'domain_id': 'd', 'job_id': 'j', 'attempt_id': 'n', 'nonce': 'n',
