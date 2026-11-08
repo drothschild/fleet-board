@@ -2,6 +2,8 @@
 import json
 import math
 
+from . import processes
+from .models import StopEvidence
 from .processes import ProcessIdentity
 from .runner import Runner, _publish, _read_regular, read_result
 
@@ -38,6 +40,14 @@ class NativeInspector:
                 identity = ProcessIdentity(**receipt['identity'])
                 if identity.nonce != attempt['nonce']:
                     raise ValueError('receipt nonce mismatch')
+                boot = processes._boot_id()
+                if (boot != identity.boot_id and original.get('boot_id') == identity.boot_id
+                        and original.get('process_identity') == identity.__dict__):
+                    proof = StopEvidence(domain_id=self.domain_id, job_id=attempt['job_id'], attempt_id=attempt['id'],
+                                         generation=original['generation'], boot_id=identity.boot_id, pid=identity.pid,
+                                         started_at=identity.started_at, nonce=identity.nonce,
+                                         kind='boot_changed', current_boot_id=boot)
+                    return {'status': 'stopped', 'result': result, 'stop_evidence': proof}
                 return {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
             except (OSError, ValueError, TypeError, KeyError):
                 return {'status': 'unknown', 'result': result}
@@ -85,9 +95,12 @@ class Recovery:
             data = json.loads(attempt['data'])
             if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
                 deadline = data.get('deadline')
-                if observation.get('status') == 'alive' and type(deadline) in (int, float) and math.isfinite(deadline) and now >= deadline:
+                boot_interruption = observation.get('status') == 'stopped' and result is None and observation.get('stop_evidence') is not None
+                deadline_elapsed = observation.get('status') == 'alive' and type(deadline) in (int, float) and math.isfinite(deadline) and now >= deadline
+                if boot_interruption or deadline_elapsed:
                     revision = self.store.snapshot()['domain']['revision']
-                    self.store.request_cancellation(attempt['id'], 'deadline-' + attempt['id'], 'deadline', revision,
+                    reason = 'infrastructure' if boot_interruption else 'deadline'
+                    self.store.request_cancellation(attempt['id'], reason + '-' + attempt['id'], reason, revision,
                                                     now=now, grace_seconds=self.settings['shutdown_grace_seconds'])
                     attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
                     data = json.loads(attempt['data'])
