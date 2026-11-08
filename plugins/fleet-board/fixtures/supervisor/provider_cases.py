@@ -691,6 +691,10 @@ class ProviderCases(unittest.TestCase):
                              ("domain_id", "job_id", "attempt_id", "generation", "input_sha", "role", "stage")}
         trusted_result = build_attempt_result_handler(HandlerStore(), operation_binding,
                                                        self.workspace)
+        other_scratch = self.root / "other-result-scratch"
+        other_scratch.mkdir(mode=0o700)
+        wrong_scratch_handler = build_attempt_result_handler(
+            HandlerStore(), operation_binding, other_scratch)
         class FakeChannel:
             socket_path = self.root / "inference.sock"
             def bind_attempt_control(self, attempt_id, deadline, cancel_event):
@@ -724,6 +728,13 @@ class ProviderCases(unittest.TestCase):
                     source_repository=self.root, cancel_event=threading.Event(),
                     operation_handlers={"heartbeat": lambda value: value,
                                         "result": lambda value: value,
+                                        "scope_request": lambda value: value})
+            with self.assertRaises(IsolationUnavailable):
+                runner.launch_production(
+                    prepared, ["/usr/bin/true"], policy, channel=fake_channel, request={},
+                    source_repository=self.root, cancel_event=threading.Event(),
+                    operation_handlers={"heartbeat": lambda value: value,
+                                        "result": wrong_scratch_handler,
                                         "scope_request": lambda value: value})
             cancel = threading.Event()
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
