@@ -68,6 +68,15 @@ def test_artifact_ingestion():
         assert hashes == {'report': hashlib.sha256(b'report content').hexdigest()}
         (scratch / 'report').unlink()
         assert (target / 'report').read_text() == 'report content'
+        (scratch / 'bad').symlink_to(target / 'report')
+        try:
+            ingest_artifacts(scratch, root / 'retry', ['bad'])
+        except ValueError:
+            pass
+        (scratch / 'bad').unlink()
+        (scratch / 'bad').write_text('fixed')
+        ingest_artifacts(scratch, root / 'retry', ['bad'])
+        assert (root / 'retry' / 'bad').read_text() == 'fixed'
         (scratch / 'link').symlink_to(target / 'report')
         try:
             ingest_artifacts(scratch, root / 'other', ['link'])
@@ -84,3 +93,16 @@ def test_artifact_ingestion():
 
 
 test_artifact_ingestion()
+
+
+def test_result_publication():
+    from supervisor.runner import read_result
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        attempt = root / 'attempt'
+        attempt.mkdir()
+        (attempt / 'result.json.tmp').write_text('{"schema_version":')
+        assert read_result(attempt) is None
+
+
+test_result_publication()
