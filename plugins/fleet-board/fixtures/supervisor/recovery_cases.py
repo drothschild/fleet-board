@@ -550,6 +550,46 @@ class RecoveryContract(unittest.TestCase):
         self.assertFalse(data.get('execution_released'))
         self.assertEqual(len(snapshot['claims']), 1)
 
+    def _assert_receipt_adoption_preserves_fenced_state(self, target_state):
+        import json
+        from unittest import mock
+        from supervisor.runner import prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
+        prepared = prepared_from_store(self.store, 'n', scratch)
+        self.store.update_attempt('n', {'state': 'running'}, self.store.snapshot()['domain']['revision'])
+        if target_state == 'cancel_requested':
+            self.store.request_cancellation('n', 'stop-n', 'stop', self.store.snapshot()['domain']['revision'], now=10)
+        else:
+            self.store.quarantine_attempt('n', 'uncertain', self.store.snapshot()['domain']['revision'])
+        before = self.store.snapshot()
+        attempt_path = self.store.directory / 'attempts' / 'n'
+        attempt_path.mkdir(parents=True)
+        (attempt_path / 'prepared.json').write_text(json.dumps(prepared))
+        identity = {'boot_id': 'old-boot', 'pid': 42, 'started_at': 'start', 'nonce': 'n'}
+        (attempt_path / 'receipt.json').write_text(json.dumps({'state': 'registered', 'identity': identity}))
+        with mock.patch('supervisor.processes._boot_id', return_value='new-boot'), \
+             mock.patch('supervisor.store._boot_id', return_value='new-boot'):
+            Recovery(self.store).reconcile(now=11)
+        after = self.store.snapshot()
+        data = json.loads(after['attempts'][0]['data'])
+        self.assertEqual(after['attempts'][0]['state'], target_state)
+        self.assertEqual(data.get('process_identity'), identity)
+        self.assertTrue(data.get('execution_released'))
+        expected_job_state = 'cancelled' if target_state == 'cancel_requested' else before['jobs'][0]['state']
+        self.assertEqual(after['jobs'][0]['state'], expected_job_state)
+        self.assertEqual(after['jobs'][0]['generation'], before['jobs'][0]['generation'])
+        self.assertEqual(after['jobs'][0]['retries_used'], before['jobs'][0]['retries_used'])
+        self.assertTrue(after['sessions'][0]['unknown_spend'])
+        self.assertEqual(after['claims'], before['claims'])
+
+    def test_receipt_boot_adoption_preserves_quarantine_authority(self):
+        self._assert_receipt_adoption_preserves_fenced_state('quarantined')
+
+    def test_receipt_boot_adoption_preserves_cancellation_authority(self):
+        self._assert_receipt_adoption_preserves_fenced_state('cancel_requested')
+
     def test_quarantined_attempt_releases_after_observed_boot_change(self):
         import json
         from unittest import mock
