@@ -198,6 +198,7 @@ def _resume_publication(directory, attempt_id, barrier=None):
             raise ValueError('untrusted exit or attempt')
         artifacts_root = Path(directory) / 'artifacts'
         artifacts_root.mkdir(mode=0o700, exist_ok=True)
+        _sync_directory(artifacts_root.parent)
         artifacts = artifacts_root / attempt_id
         manifest_path = artifacts / '.manifest.json'
         if not artifacts.exists():
@@ -235,6 +236,7 @@ def _resume_publication(directory, attempt_id, barrier=None):
 def _run(config):
     nonce_root = Path(config['directory']) / 'nonces'
     nonce_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _sync_directory(nonce_root.parent)
     nonce_path = nonce_root / config['nonce']
     try:
         nonce_path.mkdir(mode=0o700)
@@ -252,6 +254,7 @@ def _run(config):
     _publish(nonce_path / 'prepared.json', config['prepared'])
     root = Path(config['directory']) / 'attempts'
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _sync_directory(root.parent)
     attempt = root / config['attempt_id']
     try:
         attempt.mkdir(mode=0o700)
