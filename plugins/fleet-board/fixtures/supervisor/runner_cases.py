@@ -505,3 +505,29 @@ def test_fifo_progress_does_not_stop_heartbeat():
 test_fifo_progress_does_not_stop_heartbeat()
 test_fifo_ready_rejected_without_blocking()
 
+
+
+def test_missing_nonreaping_wait_fails_closed_before_worker():
+    import errno
+    import json
+    from unittest import mock
+    from supervisor.runner import _run
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        marker = root / 'worker-started'
+        config = {'directory': str(root), 'attempt_id': 'a', 'nonce': 'n',
+                  'prepared': {'attempt_id': 'a', 'nonce': 'n'},
+                  'fixture_command': [sys.executable, '-c', 'import pathlib,sys; pathlib.Path(sys.argv[1]).touch()', str(marker)],
+                  'fixture_finish_barrier': None, 'fixture_publication_barrier': None}
+        with mock.patch('supervisor.runner.os.waitid', side_effect=OSError(errno.ENOSYS, 'unsupported')):
+            try:
+                _run(config)
+            except OSError:
+                pass
+        failure = root / 'attempts' / 'a' / 'failure.json'
+        assert failure.exists(), 'unsupported wait capability must be reported'
+        assert json.loads(failure.read_text())['kind'] == 'unsupported_child_observation'
+        assert not marker.exists(), 'worker started despite unsupported observation'
+
+
+test_missing_nonreaping_wait_fails_closed_before_worker()
