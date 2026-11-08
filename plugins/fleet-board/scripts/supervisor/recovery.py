@@ -76,7 +76,12 @@ class NativeInspector:
 
 
 class Recovery:
-    def __init__(self, store, inspector=None, settings=None, retry_limits=None, retry_launcher=None):
+    def __init__(self, store, inspector=None, settings=None, retry_limits=None, retry_launcher=None, max_attempts=64):
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise ValueError('invalid recovery batch size')
+        self.max_attempts = max_attempts
+        self._attempt_cursor = 0
+        self._retry_cursor = 0
         self.store = store
         self.inspector = inspector if inspector is not None else NativeInspector(store.directory, store.domain_id)
         self.retry_limits = retry_limits
@@ -89,9 +94,18 @@ class Recovery:
                 raise ValueError('invalid recovery settings')
             self.settings.update(settings)
 
+    def _batch(self, items, cursor_name):
+        if not items:
+            return []
+        start = getattr(self, cursor_name) % len(items)
+        count = min(len(items), self.max_attempts)
+        batch = [items[(start + offset) % len(items)] for offset in range(count)]
+        setattr(self, cursor_name, (start + count) % len(items))
+        return batch
+
     def reconcile(self, now):
         snapshot = self.store.snapshot()
-        for attempt in snapshot['attempts']:
+        for attempt in self._batch(snapshot['attempts'], '_attempt_cursor'):
             if attempt['state'] not in ('prepared', 'launching', 'running', 'result_ready', 'cancel_requested', 'interrupted', 'failed', 'quarantined'):
                 continue
             try:
@@ -197,7 +211,7 @@ class Recovery:
 
         if self.retry_limits is not None:
             current = self.store.snapshot()
-            for job in current['jobs']:
+            for job in self._batch([item for item in current['jobs'] if item['state'] == 'retry_wait'], '_retry_cursor'):
                 if job['state'] != 'retry_wait':
                     continue
                 job_data = json.loads(job['data'])
