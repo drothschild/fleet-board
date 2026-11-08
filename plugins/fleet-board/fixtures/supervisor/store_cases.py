@@ -714,6 +714,13 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(snapshot['claims'][0]['attempt_id'], retry['attempt_id'])
         fresh = next(x for x in snapshot['attempts'] if x['id'] == retry['attempt_id'])
         self.assertIsNot(json.loads(fresh['data']).get('execution_released'), True)
+        restarted.record_command({'id': 'pause', 'actor': 'fixture', 'command': 'pause', 'payload': {},
+                                  'expected_revision': snapshot['domain']['revision']})
+        paused = restarted.snapshot()
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=paused['domain']['revision'])
+        snapshot = paused
         with self.assertRaises(ValueError):
             restarted.schedule_retry('j1', retry['attempt_id'], eligibility, retry_at=30,
                                      expected_revision=snapshot['domain']['revision'])
