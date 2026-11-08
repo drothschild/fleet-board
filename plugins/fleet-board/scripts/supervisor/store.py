@@ -392,6 +392,11 @@ class Store:
                 raise ValueError('missing prior attempt')
             self._verify_retry_evidence(eligibility, job_id, prior)
             nonce = data['retry_nonce']
+            domain = c.execute('SELECT desired_mode FROM domain').fetchone()
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+            if (domain['desired_mode'] != 'running' or session is None or now >= session['deadline']
+                    or session['unknown_spend'] or session['budget_stop'] or session['known_spend'] >= limits['max_cost_usd']):
+                raise ValueError('retry admission is blocked')
             existing = c.execute('SELECT id FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
             if existing:
                 result = {'attempt_id': nonce}
