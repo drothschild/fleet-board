@@ -417,6 +417,83 @@ class ProviderCases(unittest.TestCase):
         self.assertTrue(granted["granted"])
         self.assertEqual(granted["reservation"]["reservation_revision"], 2)
 
+    def test_scope_operation_replay_survives_channel_restart_for_grant_and_conflict(self):
+        from supervisor.workers import build_attempt_operation_handlers
+
+        requests = {
+            "attempt-granted": ProviderRequest.create(
+                attempt_id="attempt-granted", generation=1, role="stage-reviewer", stage="code",
+                provider="fake", model="fake-v1", input_text="grant scope"),
+            "attempt-denied": ProviderRequest.create(
+                attempt_id="attempt-denied", generation=1, role="stage-reviewer", stage="code",
+                provider="fake", model="fake-v1", input_text="deny scope"),
+        }
+        broker_bindings = {
+            attempt_id: {key: getattr(request, key) for key in
+                         ("generation", "role", "stage", "provider", "model", "input_sha")}
+            for attempt_id, request in requests.items()
+        }
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                 attempts=broker_bindings)
+        journal_dir = self.root / "controller-operation-state"
+        journal_dir.mkdir(mode=0o700)
+        journal_path = journal_dir / "operations.json"
+        expansion_calls, conflict_callbacks = [], []
+        bindings, handlers = {}, {}
+
+        class Store:
+            def __init__(self, attempt_id):
+                self.directory = journal_dir / (attempt_id + "-store")
+                self.directory.mkdir(mode=0o700)
+                self.domain_id = "domain-1"
+
+            def record_result(self, _envelope):
+                return {"disposition": "current"}
+
+            def expand_scope(self, card, paths, revision):
+                expansion_calls.append((card, list(paths), revision))
+                if card == "22":
+                    raise ValueError("scope conflict with #23")
+                return {"card": card, "paths": paths, "reservation_revision": 4}
+
+        for index, (attempt_id, request) in enumerate(requests.items()):
+            binding = {"domain_id": "domain-1", "job_id": "job-" + str(index),
+                       "attempt_id": attempt_id, "generation": 1,
+                       "input_sha": request.input_sha, "role": request.role, "stage": request.stage}
+            bindings[attempt_id] = binding
+            handlers[attempt_id] = build_attempt_operation_handlers(
+                Store(attempt_id), "22" if attempt_id == "attempt-granted" else "24",
+                binding=binding, scratch=self.workspace,
+                heartbeat=lambda payload: {"accepted": True},
+                checkpoint=lambda: conflict_callbacks.append("checkpoint"),
+                release_slot=lambda: conflict_callbacks.append("release"),
+            )
+
+        payloads = {
+            "attempt-granted": dict(bindings["attempt-granted"], schema_version=1,
+                                     request_id="scope-grant", paths=["src/new.py"],
+                                     expected_revision=9),
+            "attempt-denied": dict(bindings["attempt-denied"], schema_version=1,
+                                    request_id="scope-deny", paths=["src/new.py"],
+                                    expected_revision=9),
+        }
+        first_results = {}
+        for suffix, result_store in (("one", {}), ("two", first_results)):
+            directory = self.root / ("channel-" + suffix)
+            directory.mkdir(mode=0o700)
+            with InferenceChannel(broker, directory, tuple(requests), operation_journal=journal_path) as channel:
+                for attempt_id in requests:
+                    channel.bind_attempt_operations(attempt_id, bindings[attempt_id], handlers[attempt_id])
+                for attempt_id in requests:
+                    result = channel.request(attempt_id, channel.capability_for(attempt_id),
+                                             payloads[attempt_id], operation="scope_request")
+                    result_store[attempt_id] = result
+        self.assertTrue(first_results["attempt-granted"]["granted"])
+        self.assertFalse(first_results["attempt-denied"]["granted"])
+        self.assertEqual(expansion_calls, [("22", ["src/new.py"], 9),
+                                           ("24", ["src/new.py"], 9)])
+        self.assertEqual(conflict_callbacks, ["checkpoint", "release"])
+
     def make_result_case(self, report_text):
         from supervisor.store import Store
 
