@@ -45,6 +45,13 @@ def _create_probe_symlink(path, target, cleanup_paths):
     path.symlink_to(target)
 
 
+def _bind_probe_listener(listener, path, ownership):
+    """Record pathname ownership immediately after bind, before later setup fails."""
+    listener.bind(str(path))
+    ownership.append(True)
+    listener.listen(1)
+
+
 def _private_directory(path, *, create=False):
     path = Path(path)
     if not path.is_absolute():
@@ -253,7 +260,7 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
                 'checks': checks}
     probe_root = None
     listener = tcp_listener = None
-    owns_inference_socket = False
+    owns_inference_socket = []
     accepted = []
     workspace_probe_paths = []
     try:
@@ -280,10 +287,8 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
             forged_response_path.chmod(0o600)
         if not inference_path.exists():
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            listener.bind(str(inference_path))
-            listener.listen(1)
+            _bind_probe_listener(listener, inference_path, owns_inference_socket)
             listener.settimeout(3)
-            owns_inference_socket = True
         elif not stat.S_ISSOCK(inference_path.lstat().st_mode):
             raise IsolationUnavailable('inference channel path is not a socket')
         tcp_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
