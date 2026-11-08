@@ -44,6 +44,7 @@ class FakeAdapter:
 class Authority:
     def __init__(self, state='ready', generation=1):
         self.state, self.generation, self.checks = state, generation, []
+        self.head = 'head-1'
 
     def validate(self, job, preconditions, intent):
         self.checks.append((job['id'], preconditions['generation'], intent['kind']))
@@ -53,7 +54,7 @@ class Authority:
             return False, self.state
         if preconditions.get('card_state') not in (None, self.state):
             return False, 'card changed'
-        if preconditions.get('head') != intent.get('head', preconditions.get('head')):
+        if preconditions.get('head') != self.head:
             return False, 'PR head changed'
         if preconditions.get('note_valid') is False:
             return False, 'invalid note'
@@ -79,12 +80,12 @@ class EffectContract(unittest.TestCase):
                                    {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
         self.authority = Authority()
 
-    def prepare(self, key, kind, adapter=None, authority=None, **fields):
+    def prepare(self, key, kind, adapter=None, authority=None, precondition_overrides=None, **fields):
         adapter = adapter or FakeAdapter(kind)
         authority = authority or self.authority
         effect = Effect(self.store, adapter, authority.validate)
         preconditions = {'card': '17', 'generation': 1, 'card_state': 'ready',
-                         'head': 'head-1', 'note_valid': True}
+                         'head': 'head-1', 'note_valid': True, **(precondition_overrides or {})}
         effect.prepare(key, preconditions, {'kind': kind, **fields})
         return effect, adapter, preconditions
 
@@ -105,9 +106,9 @@ class EffectContract(unittest.TestCase):
             ('ready', 1, {'head': 'head-2'}, 'PR head changed')):
             with self.subTest(state=state, generation=generation, overrides=overrides):
                 self.authority.state, self.authority.generation = state, generation
-                effect, adapter, preconditions = self.prepare(
-                    'op-' + message.replace(' ', '-'), 'card_move')
-                preconditions.update(overrides)
+                effect, adapter, _ = self.prepare(
+                    'op-' + message.replace(' ', '-'), 'card_move',
+                    precondition_overrides=overrides)
                 result = effect.apply()
                 self.assertEqual(result['status'], 'attention')
                 self.assertEqual(adapter.calls, [])
