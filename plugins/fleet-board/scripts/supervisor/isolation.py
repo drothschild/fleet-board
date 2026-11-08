@@ -33,6 +33,12 @@ def _forged_control_frame(attempt_id, capability):
     return struct.pack('!I', len(payload)) + payload
 
 
+def _forged_control_rejection_frame():
+    payload = json.dumps({'schema_version': 1, 'error': 'request rejected'},
+                         separators=(',', ':'), allow_nan=False).encode('utf-8')
+    return struct.pack('!I', len(payload)) + payload
+
+
 def _private_directory(path, *, create=False):
     path = Path(path)
     if not path.is_absolute():
@@ -255,11 +261,17 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
         agent_path = Path(protected['ssh_agent'][0])
         inference_path = Path(inference_socket or (Path(policy['channels']) / 'inference.sock'))
         forged_control_path = None
+        forged_response_path = None
         if inference_attempt_id is not None and inference_capability is not None:
             forged_control_path = Path(policy['workspace']) / ('.isolation-probe-forged-' + probe_name)
+            workspace_probe_paths.append(forged_control_path)
             forged_control_path.write_bytes(_forged_control_frame(
                 inference_attempt_id, inference_capability))
             forged_control_path.chmod(0o600)
+            forged_response_path = Path(policy['workspace']) / ('.isolation-probe-forged-response-' + probe_name)
+            workspace_probe_paths.append(forged_response_path)
+            forged_response_path.write_bytes(_forged_control_rejection_frame())
+            forged_response_path.chmod(0o600)
         if not inference_path.exists():
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(str(inference_path))
@@ -306,8 +318,11 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
             'printf "workspace_read=%s\\nworkspace_write=%s\\ncontroller_db=%s\\ncontroller_socket=%s\\nboard_storage=%s\\nshared_git_metadata=%s\\nhost_credentials=%s\\nssh_agent=%s\\nkeychain=%s\\nsymlink_escape=%s\\nloopback_network=%s\\npublication=%s\\nforged_human_control=%s\\ninference_channel=%s\\nchannel_write=%s\\n" "$workspace_read" "$workspace_write" "$controller_db" "$controller_socket" "$board_storage" "$shared_git_metadata" "$host_credentials" "$ssh_agent" "$keychain" "$symlink_escape" "$loopback_network" "$publication" "$forged_human_control" "$inference_channel" "$channel_write"',
         ])
         if forged_control_path is not None:
-            lines.insert(-1, 'if {0} -U -w 1 {1} < {2} 2>/dev/null | tail -c +5 | grep -Fx \'{{"schema_version":1,"error":"request rejected"}}\' >/dev/null; then forged_human_control=pass; fi'.format(
-                nc, shlex.quote(str(inference_path)), shlex.quote(str(forged_control_path))))
+            lines.insert(-1, 'if {0} -U -w 1 {1} < {2} > {3} 2>/dev/null; then if cmp -s {3} {4}; then forged_human_control=pass; fi; fi'.format(
+                nc, shlex.quote(str(inference_path)), shlex.quote(str(forged_control_path)),
+                shlex.quote(str(Path(policy['workspace']) /
+                                  ('.isolation-probe-forged-received-' + probe_name))),
+                shlex.quote(str(forged_response_path))))
         script = '\n'.join(lines) + '\n'
         script_path = Path(policy['workspace']) / ('.isolation-probe-' + probe_name + '.sh')
         script_path.write_text(script, encoding='utf-8')
@@ -317,7 +332,8 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
                                       Path(policy['channels']) /
                                       ('.isolation-probe-write-' + probe_name)))
         if forged_control_path is not None:
-            workspace_probe_paths.append(forged_control_path)
+            workspace_probe_paths.append(Path(policy['workspace']) /
+                                         ('.isolation-probe-forged-received-' + probe_name))
         completed = subprocess.run(_wrapped_command(['/bin/sh', str(script_path)], policy),
                                    cwd=policy['workspace'], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
