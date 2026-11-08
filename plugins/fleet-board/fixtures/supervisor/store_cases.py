@@ -5,6 +5,7 @@ import hashlib
 import threading
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 ROOT = Path(sys.argv.pop()).resolve()
@@ -578,6 +579,30 @@ class StoreContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             Store.open(self.domain, filesystem_inspector=lambda path: "remote")
 
+
+    def test_new_runtime_directory_entries_are_synced_before_open_returns(self):
+        import supervisor.store as store_module
+        root = self.root / "nested" / "runtime"
+        domain = dict(self.domain, runtime_root=str(root), board_identity="durability")
+        opened = {}
+        synced = []
+        real_open, real_fsync = os.open, os.fsync
+        def tracked_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            opened[fd] = str(path)
+            return fd
+        def tracked_fsync(fd):
+            if fd in opened:
+                synced.append(opened[fd])
+            return real_fsync(fd)
+        with mock.patch.object(store_module.os, 'open', tracked_open), mock.patch.object(store_module.os, 'fsync', tracked_fsync):
+            other = Store.open(domain, filesystem_inspector=lambda _: 'local')
+            other.close()
+        # Each new directory entry is flushed through its parent, including
+        # the domain entry that contains the database.
+        self.assertIn(str(self.root), synced)
+        self.assertIn(str(self.root / "nested"), synced)
+        self.assertIn(str(root), synced)
 
     def test_late_result_after_cancellation_is_evidence_without_resurrection(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
