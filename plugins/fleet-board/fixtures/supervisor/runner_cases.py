@@ -203,3 +203,51 @@ def test_result_precedes_exit_without_freeing_slot():
 
 
 test_result_precedes_exit_without_freeing_slot()
+
+
+def test_launcher_exit_and_descriptor_closure():
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        lock = root / 'controller.lock'
+        marker = root / 'worker-acquired'
+        worker = "import fcntl,sys,time; time.sleep(.5); f=open(sys.argv[1],'a'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB); open(sys.argv[2],'w').write('ok')"
+        launcher = "import fcntl,os,sys; from supervisor.runner import Runner; f=open(sys.argv[2],'a'); fcntl.flock(f,fcntl.LOCK_EX); os.set_inheritable(f.fileno(),True); Runner(sys.argv[1],fixture_command=[sys.executable,'-c',sys.argv[4],sys.argv[2],sys.argv[3]]).launch({'attempt_id':'child','nonce':'n'})"
+        env = dict(os.environ, PYTHONPATH=str(ROOT / 'scripts'), PYTHONDONTWRITEBYTECODE='1')
+        parent = subprocess.Popen([sys.executable, '-c', launcher, str(root), str(lock), str(marker), worker], env=env)
+        parent.wait(timeout=10)
+        assert parent.returncode == 0
+        deadline = time.monotonic() + 8
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert marker.read_text() == 'ok'
+
+
+test_launcher_exit_and_descriptor_closure()
+
+
+def test_controller_killed_before_acknowledgement():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        marker = root / 'invocations'
+        fixture = pathlib.Path(__file__).with_name('fake_worker.py')
+        code = "import sys,time; from supervisor.runner import Runner; Runner(sys.argv[1],fixture_command=[sys.executable,sys.argv[2],sys.argv[3],'0.5']).launch({'attempt_id':'a','nonce':'n'}); print('launched',flush=True); time.sleep(30)"
+        env = dict(os.environ, PYTHONPATH=str(ROOT / 'scripts'), PYTHONDONTWRITEBYTECODE='1')
+        parent = subprocess.Popen([sys.executable, '-c', code, str(root), str(fixture), str(marker)], env=env, stdout=subprocess.PIPE, text=True)
+        assert parent.stdout.readline().strip() == 'launched'
+        parent.kill()
+        parent.wait(timeout=5)
+        deadline = time.monotonic() + 8
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert marker.read_text().splitlines() == ['invoked']
+        duplicate = Runner(root, fixture_command=[sys.executable, str(fixture), str(marker), '0']).launch({'attempt_id':'a','nonce':'n'})
+        duplicate.wait(timeout=10)
+        assert marker.read_text().splitlines() == ['invoked']
+        deadline = time.monotonic() + 8
+        while not (root / 'attempts' / 'a' / 'stdout.log').exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        time.sleep(.8)
+
+
+test_controller_killed_before_acknowledgement()
