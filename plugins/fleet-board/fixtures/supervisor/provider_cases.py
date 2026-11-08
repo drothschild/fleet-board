@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import signal
 import struct
 import subprocess
 import sys
@@ -1010,6 +1011,34 @@ class ProviderCases(unittest.TestCase):
                 timer.cancel()
         time.sleep(.9)
         self.assertFalse(child_marker.exists(), "cancelled worker descendant survived")
+
+    def test_worker_group_cleanup_kills_after_non_esrch_probe_error(self):
+        from supervisor.isolation import _terminate_process_group
+
+        class Process:
+            pid = 4321
+
+            def wait(self, timeout):
+                return 0
+
+        with patch.object(isolation_module.os, "killpg",
+                          side_effect=[None, PermissionError("probe denied"), None]) as killpg:
+            _terminate_process_group(Process())
+        self.assertIn(((4321, signal.SIGKILL),), killpg.call_args_list)
+
+    def test_worker_group_cleanup_does_not_kill_after_esrch_probe(self):
+        from supervisor.isolation import _terminate_process_group
+
+        class Process:
+            pid = 4322
+
+            def wait(self, timeout):
+                return 0
+
+        with patch.object(isolation_module.os, "killpg",
+                          side_effect=[None, ProcessLookupError()]) as killpg:
+            _terminate_process_group(Process())
+        self.assertNotIn(((4322, signal.SIGKILL),), killpg.call_args_list)
 
     def test_isolated_worker_broken_pipe_kills_surviving_process_group(self):
         child_marker = self.root / "io-error-descendant"
