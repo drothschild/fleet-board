@@ -624,6 +624,17 @@ class StoreContract(unittest.TestCase):
         self.store.record_result(envelope)
         self.assertEqual(self.store.snapshot()["sessions"][0]["known_spend"], 1.5)
 
+    def test_generic_update_cannot_request_cancellation_without_fencing(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        before = self.store.snapshot()
+        with self.assertRaises(ValueError):
+            self.store.update_attempt("n1", {"state": "cancel_requested"}, before["domain"]["revision"])
+        self.assertEqual(self.store.snapshot(), before)
+
     def test_cancellation_is_atomic_idempotent_and_cannot_be_resurrected(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer",
                "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
