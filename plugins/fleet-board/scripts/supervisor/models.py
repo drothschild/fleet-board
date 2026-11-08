@@ -21,6 +21,7 @@ class StopEvidence:
     nonce: str
     kind: str
     free_fixture: bool = False
+    current_boot_id: str = None
 
 
 @dataclass(frozen=True)

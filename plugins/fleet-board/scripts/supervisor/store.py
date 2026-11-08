@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from .models import RetryEvidence, StopEvidence, canonical_json
+from .processes import _boot_id
 
 SCHEMA_VERSION = 1
 
@@ -437,8 +438,19 @@ class Store:
 
     def record_execution_stopped(self, attempt_id, evidence, expected_revision):
         """Record only a trusted, exactly bound complete-tree observation."""
-        if (type(evidence) is not StopEvidence or evidence.kind != 'fixture_complete_tree'
-                or self.__stop_evidence_verifier is None or self.__stop_evidence_verifier(evidence) is not True):
+        if type(evidence) is not StopEvidence:
+            raise ValueError('untrusted stop evidence')
+        if evidence.kind == 'fixture_complete_tree':
+            if self.__stop_evidence_verifier is None or self.__stop_evidence_verifier(evidence) is not True:
+                raise ValueError('untrusted stop evidence')
+        elif evidence.kind == 'boot_changed':
+            try:
+                if (evidence.free_fixture or not evidence.current_boot_id or evidence.current_boot_id == evidence.boot_id
+                        or _boot_id() != evidence.current_boot_id):
+                    raise ValueError('untrusted boot evidence')
+            except OSError as exc:
+                raise ValueError('boot identity unavailable') from exc
+        else:
             raise ValueError('untrusted stop evidence')
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
