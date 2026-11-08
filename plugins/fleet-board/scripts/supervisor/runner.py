@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import threading
@@ -64,6 +65,21 @@ class Runner:
 
     def inspect(self, identity):
         return inspect_identity(identity)
+
+    def cancel(self, identity, deadline):
+        if inspect_identity(identity) != 'alive':
+            return 'unknown'
+        try:
+            if os.getpgid(identity.pid) != identity.pid:
+                return 'unknown'
+            os.killpg(identity.pid, signal.SIGTERM)
+            while time.monotonic() < deadline and inspect_identity(identity) == 'alive':
+                time.sleep(.05)
+            if inspect_identity(identity) == 'alive' and os.getpgid(identity.pid) == identity.pid:
+                os.killpg(identity.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            pass
+        return 'unknown'
 
 
 def _run(config):
