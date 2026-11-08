@@ -250,6 +250,20 @@ class ProviderCases(unittest.TestCase):
                 run_isolated(["ignored"], {"workspace": str(self.workspace)},
                              capability={"available": True}, timeout=3)
 
+    def test_isolated_worker_output_failure_kills_term_ignoring_child(self):
+        marker = self.root / "surviving-child"
+        ready = self.root / "child-ready"
+        command = [sys.executable] + self.script(
+            "noisy-parent.py",
+            "#!/usr/bin/env python3\nimport pathlib,subprocess,sys,time\nchild=\"import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[2]).write_text('ready'); time.sleep(.7); pathlib.Path(sys.argv[1]).write_text('alive')\"\np=subprocess.Popen([sys.executable, '-c', child, sys.argv[1], sys.argv[2]])\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.01)\nsys.stdout.write('x'*1048577)\nsys.stdout.flush()\n",
+        ) + [str(marker), str(ready)]
+        with patch("supervisor.isolation._wrapped_command", return_value=command):
+            with self.assertRaises(IsolationUnavailable):
+                run_isolated(["ignored"], {"workspace": str(self.workspace)},
+                             capability={"available": True}, timeout=3)
+        time.sleep(.9)
+        self.assertFalse(marker.exists(), "worker descendant survived output cancellation")
+
     def test_private_git_setup_creates_contained_independent_repositories(self):
         helper = getattr(isolation_module, "prepare_private_git", None)
         self.assertTrue(callable(helper), "trusted private Git setup helper is required")
@@ -283,9 +297,13 @@ class ProviderCases(unittest.TestCase):
             self.assertNotIn("credential", config.lower())
 
     def test_host_probe_reports_each_required_boundary_check(self):
-        policy = build_policy(self.workspace, self.root / "private-git",
-                              self.root / "channels")
-        capability = probe_capabilities(policy)
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-probe-channel-", dir="/private/tmp"))
+        try:
+            policy = build_policy(self.workspace, self.root / "private-git", channel_dir)
+            capability = probe_capabilities(policy)
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
         expected = {"workspace_read", "workspace_write", "controller_db", "controller_socket",
                     "board_storage", "shared_git_metadata", "host_credentials",
                     "ssh_agent", "keychain", "symlink_escape", "loopback_network",
