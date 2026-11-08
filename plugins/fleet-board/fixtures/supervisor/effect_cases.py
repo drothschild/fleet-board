@@ -183,20 +183,21 @@ class EffectContract(unittest.TestCase):
         for index, kind in enumerate(KINDS):
             with self.subTest(kind=kind):
                 key = 'boundary-' + str(index)
-                before, before_adapter, _ = self.prepare(key + '-before', kind)
+                fields = {'input_revision': 'validated-v2', 'changed_paths': ['src/change.py']} if kind == 'branch_refresh' else {}
+                before, before_adapter, _ = self.prepare(key + '-before', kind, **fields)
                 before.inject_failure('before_mutation')
                 self.assertEqual(before.apply()['status'], 'pending')
                 self.assertEqual(before_adapter.calls, [])
 
                 after_adapter = FakeAdapter(kind)
-                after, _, _ = self.prepare(key + '-after', kind, after_adapter)
+                after, _, _ = self.prepare(key + '-after', kind, after_adapter, **fields)
                 after.inject_failure('after_mutation')
                 result = after.apply()
                 self.assertEqual(result['status'], 'attention' if kind in NON_IDEMPOTENT else 'pending')
                 self.assertEqual(after_adapter.calls, [key + '-after'])
 
                 observe_adapter = FakeAdapter(kind)
-                observe, _, _ = self.prepare(key + '-observe', kind, observe_adapter)
+                observe, _, _ = self.prepare(key + '-observe', kind, observe_adapter, **fields)
                 observe.inject_failure('before_observation_commit')
                 self.assertEqual(observe.apply()['status'], 'pending')
                 self.assertEqual(observe_adapter.calls, [key + '-observe'])
