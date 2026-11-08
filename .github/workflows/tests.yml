@@ -17,6 +17,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Show bash version
         run: /bin/bash --version | head -1
       # Uses the runner's system /bin/bash, never a newer one.
