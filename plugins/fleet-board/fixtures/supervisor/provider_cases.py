@@ -52,13 +52,31 @@ class ProviderCases(unittest.TestCase):
             validate_result(self.request, forged)
 
     def test_provider_selection_is_explicit_and_attempt_bound(self):
-        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["fake"]}})
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["fake"]}},
+                                 attempts={"attempt-1": binding})
         with self.assertRaises(ContractError):
             broker.validate_request(dict(self.request.to_dict(), provider=None))
         with self.assertRaises(ContractError):
             broker.validate_request(dict(self.request.to_dict(), model="other"))
         with self.assertRaises(ContractError):
             broker.validate_request(dict(self.request.to_dict(), url="https://example.invalid"))
+        with self.assertRaises(ContractError):
+            broker.validate_request(dict(self.request.to_dict(), human_control={"action": "resume"}))
+        with self.assertRaises(ContractError):
+            broker.validate_request(dict(self.request.to_dict(), attempt_id="attempt-2"))
+
+    def test_broker_delivers_only_the_registered_attempt_to_fake_provider(self):
+        command = self.script("broker.py", "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'review complete','usage':None}))\n")
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts={"attempt-1": binding},
+                                 trusted_environment={"FAKE_PROVIDER_KEY": "never-in-request"})
+        result = broker.infer(self.request.to_dict(), timeout=3)
+        self.assertEqual(result["attempt_id"], self.request.attempt_id)
+        self.assertIsNone(result["usage"])
 
     def test_subprocess_stdout_stderr_are_bounded_and_missing_executable_fails(self):
         noisy = self.script("noisy.py", "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('x'*4096)\nsys.stderr.write('y'*4096)\n")
