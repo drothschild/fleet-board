@@ -416,6 +416,48 @@ class EffectContract(unittest.TestCase):
         self.assertEqual([Path(call[0]).name for call in failed_runner.calls], ['review-stages.sh'])
         self.assertEqual(failed_runner.state, 'ready')
 
+    def test_crash_after_review_route_reconciles_and_retries_single_move(self):
+        class Result:
+            def __init__(self, returncode=0, stdout='', stderr=''):
+                self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+        class Runner:
+            def __init__(self):
+                self.calls, self.state = [], 'ready'
+            def __call__(self, command, **kwargs):
+                name = Path(command[0]).name
+                self.calls.append(name)
+                if name == 'review-stages.sh':
+                    self.state = 'routed'
+                elif name == 'board-move.sh':
+                    self.state = command[-1]
+                return Result(stdout='ok')
+        runner = Runner()
+        adapter = BoundedScriptAdapter(
+            Path(__file__).resolve().parents[2],
+            lambda kind, intent: ({'operation_key': intent['operation_key'], 'state': runner.state}
+                                  if runner.state == 'in_review' else None),
+            runner=runner)
+        effect = Effect(self.store, adapter, self.authority.validate)
+        key = 'stage-move-after-route-crash'
+        effect.prepare(key, {'card': '17', 'generation': 1, 'card_state': 'ready',
+                             'head': 'head-1', 'note_valid': True},
+                       {'kind': 'card_move', 'card': '17', 'state': 'in_review', 'pr': '23'})
+        effect.inject_failure('after_review_route')
+
+        interrupted = effect.apply()
+        row = next(row for row in self.store.snapshot()['effects'] if row['operation_key'] == key)
+        self.assertEqual(interrupted['status'], 'pending', interrupted)
+        self.assertEqual((row['status'], row['observation']), ('intent', None))
+        self.assertEqual(runner.state, 'routed')
+        self.assertEqual(runner.calls, ['review-stages.sh'])
+
+        self.assertEqual(effect.reconcile()['status'], 'ready')
+        self.assertEqual(runner.state, 'routed')
+        self.assertEqual(effect.apply()['status'], 'observed')
+        self.assertEqual(runner.calls, ['review-stages.sh', 'review-stages.sh', 'board-move.sh'])
+        self.assertEqual(runner.state, 'in_review')
+        self.assertEqual(runner.calls.count('board-move.sh'), 1)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
