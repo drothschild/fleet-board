@@ -30,9 +30,14 @@ else
 fi
 
 # Acceptance 3: the shipped plugin is untouched by this card.
+# A stale local origin/main ref makes the diff include other PRs' changes, so refresh it first
+# (best effort: offline runs keep the existing ref).
+git -C "$ROOT" fetch -q origin main >/dev/null 2>&1 || true
 if git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null; then
   n=$(git -C "$ROOT" diff --name-only origin/main...HEAD -- plugins/fleet-board/agents plugins/fleet-board/skills plugins/fleet-board/scripts | wc -l | tr -d ' ')
   if [ "$n" = 0 ]; then ok "no change under agents, skills, scripts"; else bad "$n shipped files changed"; fi
+else
+  bad "origin/main is not available, so the shipped-directory check cannot run"
 fi
 
 # Acceptance 4: the check can fail. Fixture repo: branch without a bump is flagged.
