@@ -719,6 +719,24 @@ class StoreContract(unittest.TestCase):
                                      expected_revision=snapshot['domain']['revision'])
         self.assertEqual(len(restarted.snapshot()['attempts']), 2)
 
+    def test_stopped_attempt_without_usage_marks_original_session_unknown(self):
+        from supervisor.models import StopEvidence
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        trusted.request_cancellation('n1', 'cancel', 'infrastructure', trusted.snapshot()['domain']['revision'], now=10)
+        proof = StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                             boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        self.assertTrue(trusted.snapshot()['sessions'][0]['unknown_spend'])
+
     def test_fresh_attempt_rejects_preloaded_lifecycle_authority(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
