@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -19,6 +20,7 @@ from supervisor.inference_broker import (
 from supervisor.isolation import (
     IsolationUnavailable, build_policy, probe_capabilities, run_isolated,
 )
+import supervisor.isolation as isolation_module
 from supervisor.runner import Runner, prepare_worker_bootstrap
 from supervisor.workers import request_scope_expansion
 
@@ -247,6 +249,35 @@ class ProviderCases(unittest.TestCase):
             with self.assertRaises(IsolationUnavailable):
                 run_isolated(["ignored"], {"workspace": str(self.workspace)},
                              capability={"available": True}, timeout=3)
+
+    def test_private_git_setup_creates_contained_independent_repositories(self):
+        helper = getattr(isolation_module, "prepare_private_git", None)
+        self.assertTrue(callable(helper), "trusted private Git setup helper is required")
+        source = self.root / "source"
+        source.mkdir()
+        subprocess_env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", HOME="/nonexistent",
+                              GIT_AUTHOR_NAME="Fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                              GIT_COMMITTER_NAME="Fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+        subprocess.run(["git", "init", "-q", str(source)], check=True, env=subprocess_env)
+        (source / "tracked.txt").write_text("private clone\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(source), "add", "tracked.txt"], check=True, env=subprocess_env)
+        subprocess.run(["git", "-C", str(source), "commit", "-qm", "fixture"], check=True, env=subprocess_env)
+        private_git = self.root / "private-git"
+        private_git.mkdir(mode=0o700)
+        result = helper(source, self.workspace, private_git)
+        self.assertEqual(result["workspace"], str(self.workspace))
+        self.assertTrue((self.workspace / "tracked.txt").is_file())
+        for repository in (self.workspace, private_git):
+            metadata = repository / ".git"
+            self.assertTrue(metadata.is_dir())
+            self.assertFalse((metadata / "objects" / "info" / "alternates").exists())
+            common = subprocess.check_output(
+                ["git", "-C", str(repository), "rev-parse", "--git-common-dir"],
+                text=True, env=subprocess_env).strip()
+            self.assertEqual(Path(common).resolve(), metadata.resolve())
+            config = (metadata / "config").read_text(encoding="utf-8")
+            self.assertNotIn(str(source), config)
+            self.assertNotIn("credential", config.lower())
 
     def test_fixture_and_human_control_authority_are_not_worker_capabilities(self):
         policy = build_policy(self.workspace, self.root / "private-git",
