@@ -758,6 +758,7 @@ class RecoveryContract(unittest.TestCase):
 
     def test_real_managed_child_handles_term_gracefully(self):
         import json
+        import sys
         import time
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
@@ -782,8 +783,12 @@ class RecoveryContract(unittest.TestCase):
             recovery.reconcile(now=40)
             process.wait(timeout=5)
             attempt_id = self.store.snapshot()['attempts'][0]['id']
-            failure = json.loads((self.store.directory / 'attempts' / attempt_id / 'failure.json').read_text())
-            self.assertEqual(failure, {'kind': 'process_group_signal_denied'})
+            failure_path = self.store.directory / 'attempts' / attempt_id / 'failure.json'
+            if sys.platform == 'darwin':
+                failure = json.loads(failure_path.read_text())
+                self.assertEqual(failure, {'kind': 'process_group_signal_denied'})
+            else:
+                self.assertFalse(failure_path.exists())
             recovery.reconcile(now=41)
             after = self.store.snapshot()
             self.assertEqual(after['attempts'][0]['state'], 'quarantined')

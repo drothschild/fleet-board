@@ -13,6 +13,15 @@ if [ "${1:-}" = "--allow-truncated" ]; then
   shift
 fi
 export FB_LIST_ALLOW_TRUNCATED
+# --all: list every configured state in this one process, one JSON array per line
+if [ "${1:-}" = "--all" ]; then
+  [ $# -eq 1 ] || fb_die 2 "usage: board-list.sh [--allow-truncated] <state> | --all"
+  fb_load_config
+  for s in $FB_STATES; do
+    bash "$FLEET_SCRIPTS/adapters/$(fb_cfg board.backend)/list.sh" "$s" || exit $?
+  done
+  exit 0
+fi
 [ $# -eq 1 ] || fb_die 2 "usage: board-list.sh [--allow-truncated] <state>"
 fb_load_config # before the state check: the valid states include the config's review stages
 fb_valid_state "$1" || fb_die 2 "invalid state: $1"

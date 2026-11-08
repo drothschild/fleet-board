@@ -2,6 +2,7 @@
 # tick-plan.sh - decides one step for every card on the board (the tick plan).
 #
 # Usage: tick-plan.sh                 (run inside the repo)
+#        tick-plan.sh --candidates    (read-only eligibility snapshot for supervisor admission)
 #        tick-plan.sh --settle <n>... (settle mode, below)
 #
 # Lists the ready, in_progress, in_review, review_<name> (one per configured
@@ -253,19 +254,25 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 SETTLE=false
 SETTLE_NUMS=""
 KEEP_MERGE=false
+CANDIDATES=false
 if [ $# -gt 0 ]; then
   case "$1" in
     --settle) ;;
     --settle-merge) KEEP_MERGE=true ;; # merge-reviewed.sh: settle mode that also keeps merge
-    *) fb_die 2 "usage: tick-plan.sh [--settle|--settle-merge <n>...]" ;;
+    --candidates) CANDIDATES=true ;;
+    *) fb_die 2 "usage: tick-plan.sh [--candidates|--settle|--settle-merge <n>...]" ;;
   esac
   shift
-  [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle <n>... (at least one card)"
-  for a in "$@"; do
-    fb_valid_number "$a" || fb_die 2 "card number must be numeric, got: $a"
-    case " $SETTLE_NUMS " in *" $a "*) ;; *) SETTLE_NUMS="$SETTLE_NUMS $a" ;; esac
-  done
-  SETTLE=true
+  if [ "$CANDIDATES" = true ]; then
+    [ $# -eq 0 ] || fb_die 2 "usage: tick-plan.sh --candidates (cannot combine with other modes)"
+  else
+    [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle <n>... (at least one card)"
+    for a in "$@"; do
+      fb_valid_number "$a" || fb_die 2 "card number must be numeric, got: $a"
+      case " $SETTLE_NUMS " in *" $a "*) ;; *) SETTLE_NUMS="$SETTLE_NUMS $a" ;; esac
+    done
+    SETTLE=true
+  fi
 fi
 
 # stderr goes to a file so a rate-limit failure can be recognised at exit
@@ -388,7 +395,7 @@ drift_lookup() {
 card_input() {
   local st="$1" n="$2" title="$3"
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
-  local blocking_merged=null nhq=null body branch bpr out cmd found labels
+  local blocking_merged=null nhq=null body branch bpr out cmd found labels card_labels='[]' state_revision=null
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
   local drift=null scope='[]'
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
@@ -415,6 +422,11 @@ card_input() {
   fi
   if [ -z "$failed" ]; then
     body="$(jq -r '.body // ""' <<<"$read" 2>/dev/null)" || failed="board-read.sh $n (unparsable)"
+    if ! card_labels="$(jq -ce '(.labels // []) | if type == "array" and all(.[]; type == "string") then . else error("invalid labels") end' <<<"$read" 2>/dev/null)"; then
+      card_labels='[]'
+      failed="board-read.sh $n (malformed labels)"
+    fi
+    state_revision="$(jq -c '.revision // .updatedAt // null' <<<"$read" 2>/dev/null)" || state_revision=null
   fi
   if [ -z "$failed" ]; then
     fb_has_acceptance "$body" && has_acc=true
@@ -432,7 +444,7 @@ card_input() {
   fi
 
   # The card's own PR: known from the note, or discovered from its branch
-  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$review_col" = true ]; }; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
     branch="$(jq -r '.branch // empty' <<<"$note")"
     if [ "$pr" = null ] && [ -n "$branch" ]; then
       cmd="gh pr list --repo $FLEET_REPO --head $branch --state open --json number"
@@ -613,12 +625,12 @@ card_input() {
     fi
   fi
 
-  jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --arg failed "$failed" --arg invalid "$invalid" \
+  jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" \
     --argjson stage "$stage" --argjson next_stage "$next_stage" \
-    '{number: $n, title: $title, state: $st,
+    '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
       outside_warning: (if $outside == "" then null else $outside end),
@@ -643,7 +655,7 @@ if [ "$SETTLE" = true ]; then
 fi
 
 SEEN=" "
-for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) blocked); do
+for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
   NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
@@ -660,7 +672,7 @@ done
 # Actual PR paths supplement declared scope only when admitting new work.
 # Reuse the normal card snapshot; settle-only calls never need these lookups.
 SCOPE_FILE="$(mktemp)" || fb_die 1 "cannot create scope input"
-if [ "$SETTLE" != true ] && jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >/dev/null; then
+if [ "$SETTLE" != true ] && { [ "$CANDIDATES" = true ] || jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >/dev/null; }; then
   while IFS= read -r active; do
     [ -n "$active" ] || continue
     n="$(jq -r '.number' <<<"$active")"
@@ -682,7 +694,7 @@ if [ "$SETTLE" != true ] && jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >
     fi
     jq -cn --argjson n "$n" --argjson paths "$paths" --argjson unknown "$unknown" \
       '{number:$n, paths:$paths, unknown:$unknown}' >> "$SCOPE_FILE" || fb_die 1 "cannot record scope input"
-  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .stage != null)' "$CARDS_FILE")"
+  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
 fi
 
 # Provider stages whose API key variable is unset or empty (checked here, so
@@ -696,7 +708,7 @@ while IFS="$(printf '\t')" read -r sname kenv; do
 done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
   | ($c.providers[.provider].api_key_env // empty) as $k | "\(.name)\t\($k)"' <<<"$FLEET_CFG")"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
   def green: (.statusCheckRollup | type) == "array"
     and all(.statusCheckRollup[]; (.conclusion // .state) as $s
       | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
@@ -898,7 +910,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   ] as $planned
   # Reserve only starts that actually survived every gate. A waiting card
   # contributes no reservation, so it cannot unnecessarily serialize others.
-  | reduce ($planned | sort_by(.number)[]) as $card ({cards:[], reserved:[]};
+  | (if $candidates then {cards:$planned} else reduce ($planned | sort_by(.number)[]) as $card ({cards:[], reserved:[]};
       (first($all[] | select(.number == $card.number)).scope_paths // []) as $paths
       | (if $card.action == "start" then
           first(.reserved[] | . as $r | overlap($paths; $r.paths) as $p
@@ -908,9 +920,22 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           .cards += [$card + {action:"wait", reason:"Scope overlaps #\($overlap.number) on \($overlap.path)", waiting_on:[]}]
         else .cards += [$card]
           | if $card.action == "start" then .reserved += [{number:$card.number,paths:$paths}] else . end
-        end)
-  | .cards as $cards
-  | {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
+        end) end) as $selected
+  | $selected.cards as $cards
+  | (if $candidates then
+       {schema_version:1,candidates:[$cards[] as $card
+         | (first($all[] | select(.number == $card.number)) // {}) as $source
+         | (first($actual_scope[] | select(.number == $card.number)) // {paths:[],unknown:false}) as $actual
+         | ([$source.labels[]? | (if type == "object" then .name else . end)
+             | select(. == "fleet:priority:high" or . == "fleet:priority:normal" or . == "fleet:priority:low")] | unique) as $priority_labels
+         | {number:$card.number,action:$card.action,reason:$card.reason,
+            preconditions:{state:$source.state,head_sha:$card.head_sha,round:$card.round,stage:$card.stage,dependencies:$source.deps_unmet,state_revision:$source.state_revision},
+            declared_paths:($source.scope_paths // []),actual_paths:($actual.paths // []),scope_complete:(($actual.unknown // false) | not),
+            dependencies:($source.deps_unmet // []),stage:$card.stage,head_sha:$card.head_sha,round:$card.round,
+            priority:(if ($priority_labels|length)>1 then "conflict" elif ($priority_labels|length)==1 then ($priority_labels[0]|sub("fleet:priority:";"")) else "normal" end),
+            priority_conflict:(($priority_labels|length)>1),state_revision:$source.state_revision} ]}
+     else
+  {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
@@ -951,4 +976,5 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
            | "stage \(.stage.name): \($cfg.providers[.stage.provider].api_key_env) is not set; provider reviews will fail"]
           | reduce .[] as $w ([]; if any(.[]; . == $w) then . else . + [$w] end))),
      cards: [$cards[] | del(.key_held, .pending_wait, .outside_warning, .deps_warnings, .drift)]}
+     end)
 ' "$CARDS_FILE" || fb_die 1 "cannot build the tick plan"
