@@ -106,6 +106,7 @@ class Store:
                     CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
                     CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL);
+                    CREATE TABLE effects (operation_key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), generation INTEGER NOT NULL, preconditions TEXT NOT NULL, intent TEXT NOT NULL, observation TEXT, status TEXT NOT NULL);
                     CREATE TABLE results (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), envelope TEXT NOT NULL, disposition TEXT NOT NULL);
                     CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
                     CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
@@ -203,6 +204,47 @@ class Store:
         except sqlite3.IntegrityError as exc:
             c.execute('ROLLBACK')
             raise ValueError('duplicate job or attempt') from exc
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def increment_retry(self, job_id, expected_revision):
+        """Consume the single automatic retry; classification belongs to the caller."""
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                raise ValueError('revision mismatch')
+            changed = c.execute('UPDATE jobs SET retries_used=retries_used+1 WHERE id=? AND retries_used=0', (job_id,)).rowcount
+            if changed != 1:
+                raise ValueError('unknown job or retry exhausted')
+            self._event('retry_consumed', {'job_id': job_id})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def record_effect(self, effect):
+        """Record intent only; external execution and reconciliation are separate."""
+        required = {'operation_key', 'job_id', 'generation', 'preconditions', 'intent'}
+        if not isinstance(effect, dict) or set(effect) != required or any(not isinstance(effect[k], str) or not effect[k] for k in ('operation_key', 'job_id')) or type(effect['generation']) is not int or not isinstance(effect['preconditions'], dict) or not isinstance(effect['intent'], dict):
+            raise ValueError('invalid effect')
+        preconditions = canonical_json(effect['preconditions'])
+        intent = canonical_json(effect['intent'])
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            job = c.execute('SELECT generation FROM jobs WHERE id=?', (effect['job_id'],)).fetchone()
+            if job is None or job['generation'] != effect['generation']:
+                raise ValueError('unknown or stale effect job')
+            row = c.execute('SELECT * FROM effects WHERE operation_key=?', (effect['operation_key'],)).fetchone()
+            if row:
+                if (row['job_id'], row['generation'], row['preconditions'], row['intent']) != (effect['job_id'], effect['generation'], preconditions, intent):
+                    raise ValueError('conflicting effect')
+            else:
+                c.execute('INSERT INTO effects VALUES(?,?,?,?,?,NULL,?)', (effect['operation_key'], effect['job_id'], effect['generation'], preconditions, intent, 'intent'))
+                self._event('effect_intent', {'operation_key': effect['operation_key']})
+            c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
             raise
@@ -358,7 +400,7 @@ class Store:
             for event in events:
                 event['payload'] = json.loads(event['payload'])
             commands = [dict(row) for row in connection.execute('SELECT * FROM commands ORDER BY rowid')]
-            records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results')}
+            records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results', 'effects')}
             connection.execute('COMMIT')
             return {'domain': domain, 'events': events, 'commands': commands, **records}
         except Exception:
