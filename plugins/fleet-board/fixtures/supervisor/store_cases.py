@@ -765,9 +765,12 @@ class StoreContract(unittest.TestCase):
                                         expected_revision=paused['domain']['revision'])
         restarted.record_command({'id': 'resume', 'actor': 'fixture', 'command': 'resume', 'payload': {},
                                   'expected_revision': paused['domain']['revision']})
+        self.assertIn('timeout_seconds', __import__('inspect').signature(restarted.begin_retry_launch).parameters)
         restarted.begin_retry_launch('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
-                                    expected_revision=restarted.snapshot()['domain']['revision'])
-        self.assertEqual(next(x for x in restarted.snapshot()['attempts'] if x['id'] == retry['attempt_id'])['state'], 'launching')
+                                    expected_revision=restarted.snapshot()['domain']['revision'], timeout_seconds=5)
+        launched = next(x for x in restarted.snapshot()['attempts'] if x['id'] == retry['attempt_id'])
+        self.assertEqual(launched['state'], 'launching')
+        self.assertEqual((json.loads(launched['data']).get('started_at'), json.loads(launched['data']).get('deadline')), (21, 26))
         restarted.revoke_generation('j1', restarted.snapshot()['domain']['revision'])
         drifted = restarted.snapshot()
         with self.assertRaises(ValueError):
@@ -925,8 +928,11 @@ class StoreContract(unittest.TestCase):
         limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
         with self.assertRaises(ValueError):
             self.store.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision)
-        trusted.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision)
+        self.assertIn('timeout_seconds', __import__('inspect').signature(trusted.begin_recovered_launch).parameters)
+        trusted.begin_recovered_launch('n1', evidence, now=10, limits=limits, expected_revision=revision, timeout_seconds=10)
         after = trusted.snapshot()
+        timing = json.loads(after['attempts'][0]['data'])
+        self.assertEqual((timing.get('started_at'), timing.get('deadline')), (10, 20))
         self.assertEqual(after['attempts'][0]['state'], 'launching')
         self.assertEqual(after['jobs'][0]['retries_used'], 0)
         self.assertEqual(len(after['claims']), 1)
