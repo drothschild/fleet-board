@@ -9,7 +9,7 @@ import time
 import unittest
 
 from supervisor.inference_broker import (
-    ContractError, InferenceBroker, ProviderRequest, run_provider,
+    ContractError, InferenceBroker, InferenceChannel, ProviderRequest, run_provider,
     validate_result,
 )
 from supervisor.isolation import (
@@ -78,6 +78,28 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(result["attempt_id"], self.request.attempt_id)
         self.assertIsNone(result["usage"])
 
+    def test_local_channel_authenticates_attempt_and_exposes_inference_only(self):
+        command = self.script("channel-provider.py", "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'channel result','usage':None}))\n")
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts={"attempt-1": binding})
+        short_tmp = Path("/private/tmp" if Path("/private/tmp").is_dir() else "/tmp")
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-channel-", dir=str(short_tmp)))
+        try:
+            with InferenceChannel(broker, channel_dir, {"attempt-1": "capability-one"}) as channel:
+                result = channel.request("attempt-1", "capability-one", self.request.to_dict())
+                self.assertEqual(result["text"], "channel result")
+                with self.assertRaises(ContractError):
+                    channel.request("attempt-1", "forged", self.request.to_dict())
+                with self.assertRaises(ContractError):
+                    channel.request("attempt-2", "capability-one", self.request.to_dict())
+                with self.assertRaises(ContractError):
+                    channel.request("attempt-1", "capability-one", self.request.to_dict(), operation="status")
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
+
     def test_subprocess_stdout_stderr_are_bounded_and_missing_executable_fails(self):
         noisy = self.script("noisy.py", "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('x'*4096)\nsys.stderr.write('y'*4096)\n")
         with self.assertRaises(ContractError):
@@ -116,6 +138,9 @@ class ProviderCases(unittest.TestCase):
                               self.root / "channels")
         for forbidden in ("controller.db", "board", "credentials", "ssh", "keychain", "publish", "human-control"):
             self.assertNotIn(forbidden, policy["channels"])
+        defaults = json.loads((Path(__file__).resolve().parents[2] / "scripts" / "config-defaults.json").read_text())
+        self.assertIs(defaults["supervisor"]["enabled"], False)
+        self.assertIs(Runner(self.root / "runner").production_enabled, False)
 
     def test_scope_expansion_conflict_checkpoints_and_releases_slot_without_retry(self):
         class Store:
