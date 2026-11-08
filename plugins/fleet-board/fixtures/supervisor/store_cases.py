@@ -861,6 +861,27 @@ class StoreContract(unittest.TestCase):
         self.assertTrue(json.loads(self.store.snapshot()['attempts'][0]['data'])['execution_released'])
         self.assertTrue(self.store.snapshot()['sessions'][0]['unknown_spend'])
 
+    def test_confirmed_intentional_stop_marks_job_cancelled(self):
+        from supervisor.models import StopEvidence
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        trusted.request_cancellation('n1', 'cancel', 'stop', trusted.snapshot()['domain']['revision'], now=10)
+        proof = StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                             boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+        trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        snapshot = trusted.snapshot()
+        self.assertEqual(snapshot['jobs'][0]['state'], 'cancelled')
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_stopped_attempt_without_usage_marks_original_session_unknown(self):
         from supervisor.models import StopEvidence
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
@@ -939,6 +960,7 @@ class StoreContract(unittest.TestCase):
         after = self.store.snapshot()
         self.assertEqual(after['jobs'][0]['generation'], 2)
         self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(after['jobs'][0]['state'], 'needs_attention')
         self.assertEqual(len(after['claims']), 1)
         self.store.quarantine_attempt('n1', 'uncertain', after['domain']['revision'])
         self.assertEqual(self.store.snapshot(), after)
