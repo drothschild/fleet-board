@@ -3,6 +3,8 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import tempfile
+import shutil
 
 
 def ingest_artifacts(scratch, destination, names):
@@ -11,7 +13,13 @@ def ingest_artifacts(scratch, destination, names):
         raise ValueError('invalid artifact set')
     if scratch.is_symlink() or scratch.resolve(strict=True) != scratch.absolute():
         raise ValueError('unsafe scratch directory')
-    destination.mkdir(mode=0o700)
+    parent = destination.parent
+    if parent.is_symlink() or parent.resolve(strict=True) != parent.absolute() or parent.stat().st_uid != os.getuid():
+        raise ValueError('unsafe destination directory')
+    if destination.exists() or destination.is_symlink():
+        raise ValueError('artifact destination already exists')
+    final_destination = destination
+    destination = Path(tempfile.mkdtemp(prefix='.ingest-', dir=str(parent)))
     root_fd = os.open(str(scratch), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     hashes = {}
     total = 0
@@ -59,7 +67,8 @@ def ingest_artifacts(scratch, destination, names):
             os.fsync(fd)
         finally:
             os.close(fd)
-        fd = os.open(str(destination.parent), os.O_RDONLY | os.O_DIRECTORY)
+        os.rename(destination, final_destination)
+        fd = os.open(str(final_destination.parent), os.O_RDONLY | os.O_DIRECTORY)
         try:
             os.fsync(fd)
         finally:
@@ -67,3 +76,5 @@ def ingest_artifacts(scratch, destination, names):
         return hashes
     finally:
         os.close(root_fd)
+        if destination.exists():
+            shutil.rmtree(destination)

@@ -27,6 +27,15 @@ def _publish(path, value):
     _sync_directory(path.parent)
 
 
+def read_result(attempt):
+    path = Path(attempt) / 'result.json'
+    try:
+        with path.open(encoding='utf-8') as stream:
+            return json.load(stream)
+    except FileNotFoundError:
+        return None
+
+
 class Runner:
     def __init__(self, directory, *, fixture_command=None):
         self.directory = Path(directory)
