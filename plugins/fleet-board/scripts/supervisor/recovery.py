@@ -38,8 +38,9 @@ class NativeInspector:
             try:
                 receipt = json.loads(_read_regular(path / 'receipt.json', 8192))
                 identity = ProcessIdentity(**receipt['identity'])
-                if identity.nonce != attempt['nonce']:
-                    raise ValueError('receipt nonce mismatch')
+                if (identity.nonce != attempt['nonce'] or ('boot_id' in original and original['boot_id'] != identity.boot_id)
+                        or ('process_identity' in original and original['process_identity'] != identity.__dict__)):
+                    raise ValueError('receipt identity mismatch')
                 boot = processes._boot_id()
                 if (boot != identity.boot_id and original.get('boot_id') == identity.boot_id
                         and original.get('process_identity') == identity.__dict__):
@@ -102,6 +103,9 @@ class Recovery:
             data = json.loads(attempt['data'])
             if observation.get('status') == 'alive' and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
                 updates = {}
+                identity = observation.get('identity')
+                if isinstance(identity, ProcessIdentity) and 'process_identity' not in data and 'boot_id' not in data:
+                    updates.update({'boot_id': identity.boot_id, 'process_identity': identity.__dict__})
                 heartbeat = observation.get('heartbeat')
                 if isinstance(heartbeat, dict):
                     at = heartbeat.get('at')

@@ -317,6 +317,9 @@ class Store:
             if row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
                 raise ValueError('attempt is no longer mutable')
             data = json.loads(row['data'])
+            for field in ('boot_id', 'process_identity'):
+                if field in details and field in data and data[field] != details[field]:
+                    raise ValueError('registered process identity is immutable')
             for field in ('started_at', 'deadline'):
                 if field in details:
                     value = details[field]
