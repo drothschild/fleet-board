@@ -103,14 +103,14 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Planner contract:** add `--candidates` read-only mode returning schema version, per-card action/preconditions, declared/actual paths and completeness, dependencies, stage/head/round, priority and observed state revision. Keep existing default/settle behavior until cutover. Candidate mode removes tick-local ordering/reservation decisions while preserving workflow eligibility and fail-closed reads.
 
-- [ ] First extend `test-tick-plan.sh` with candidate-mode workflow parity and invalid-mode cases; demonstrate failure, commit, implement, and run this suite plus clean-room.
-- [ ] Write scheduler cases for a blocked A while B finishes and C launches, racing admission requests, global/provider/card caps, independent candidates bypassing conflicts, lowering caps, priority/aging ties and age persistence across restart, including a sustained stream of new high-priority reviews while an old low-priority start eventually runs.
-- [ ] Add an unknown-workflow-state case matching PR #200: no admission or silent state normalization, existing claims retained for reconciliation, and a visible wait/attention reason for status consumers.
-- [ ] Add fake-clock cases for retry backoff, launch-rate spacing, rate-limit wait caps, session deadlines/cost stops, unknown spend and invalid reload; no sleeps proportional to configured production timeouts.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-scheduler.sh` to failure; commit tests.
-- [ ] Implement coalesced bounded cycles, async planning snapshots, fresh precondition checks and atomic claim/attempt preparation. Implement normal priority default plus explicit labels `fleet:priority:high|normal|low`; conflicting priority labels require attention. Age the full combined class-and-priority rank until any eligible card reaches the highest rank, preserving initial eligibility sequence as the tie breaker.
-- [ ] Make deadline and cancellation timers independent of planning completion. Bound concurrent control operations separately; keep status/cancel responsive under saturated worker capacity.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] First extend `test-tick-plan.sh` with candidate-mode workflow parity and invalid-mode cases; demonstrate failure, commit, implement, and run this suite plus clean-room.
+- [x] Write scheduler cases for a blocked A while B finishes and C launches, racing admission requests, global/provider/card caps, independent candidates bypassing conflicts, lowering caps, priority/aging ties and age persistence across restart, including a sustained stream of new high-priority reviews while an old low-priority start eventually runs.
+- [x] Add an unknown-workflow-state case matching PR #200: no admission or silent state normalization, existing claims retained for reconciliation, and a visible wait/attention reason for status consumers.
+- [x] Add fake-clock cases for retry backoff, launch-rate spacing, rate-limit wait caps, session deadlines/cost stops, unknown spend and invalid reload; no sleeps proportional to configured production timeouts.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-scheduler.sh` to failure; commit tests.
+- [x] Implement coalesced bounded cycles, async planning snapshots, fresh precondition checks and atomic claim/attempt preparation. Implement normal priority default plus explicit labels `fleet:priority:high|normal|low`; conflicting priority labels require attention. Age the full combined class-and-priority rank until any eligible card reaches the highest rank, preserving initial eligibility sequence as the tie breaker.
+- [x] Make deadline and cancellation timers independent of planning completion. Bound concurrent control operations separately; keep status/cancel responsive under saturated worker capacity.
+- [x] Run the focused suite and clean-room check; commit locally. Push deferred because network access is unavailable.
 
 **Verifies:** S1, S6, S11. Acceptance uses durable attempt counts and simulated time, not thread timing guesses.
 

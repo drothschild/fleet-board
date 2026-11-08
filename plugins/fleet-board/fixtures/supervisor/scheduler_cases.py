@@ -92,7 +92,8 @@ def run():
     first = async_scheduler.request_cycle(planner)
     assert async_scheduler.request_cycle(planner) is first
     assert async_scheduler.request_cycle(planner) is first
-    assert async_scheduler.due_timers([{'attempt_id':'x','deadline':1}], now=2) == [{'attempt_id':'x','kind':'deadline'}]
+    assert async_scheduler.due_timers([{'attempt_id':'x','deadline':1}, {'attempt_id':'y','cancel_grace_deadline':2}], now=2) == [
+        {'attempt_id':'x','kind':'deadline'}, {'attempt_id':'y','kind':'cancel_grace'}]
     gate.set()
     assert first.result(timeout=2) == {'revision': 1} and rerun.wait(2) and count['plans'] == 2
     async_scheduler.close()
@@ -118,7 +119,14 @@ def run():
     blocked = timed.admit([candidate(21)], limits={'global':2,'providers':{'claude':2},'per_card':1,
         'session_deadline':9,'max_cost':2,'known_spend':0,'unknown_spend':True})
     assert not blocked['admitted'] and blocked['stop_reason']
+    deadline = timed.admit([candidate(24)], limits={'global':2,'providers':{'claude':2},'per_card':1,
+        'session_deadline':10,'known_spend':0,'unknown_spend':False}, now=10)
+    assert deadline['stop_reason'] == 'session deadline reached'
+    cost = timed.admit([candidate(25)], limits={'global':2,'providers':{'claude':2},'per_card':1,
+        'session_deadline':20,'max_cost':1,'known_spend':1,'unknown_spend':False}, now=10)
+    assert cost['stop_reason'] == 'session cost limit reached'
     assert timed.reload({'global':0}) is False
+    assert timed.admit([candidate(26)])['stop_reason'] == 'invalid limits'
     print('scheduler cases passed')
 
 
