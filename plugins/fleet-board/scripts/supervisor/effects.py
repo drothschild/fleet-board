@@ -54,13 +54,31 @@ class Effect:
             raise ValueError('invalid controller operation key')
         if not isinstance(preconditions, dict) or not isinstance(intent, dict) or intent.get('kind') not in _KINDS:
             raise ValueError('invalid effect intent')
+        intent = dict(intent)
         canonical_json(preconditions)
-        canonical_json(intent)
         card, generation = preconditions.get('card'), preconditions.get('generation')
         if not isinstance(card, str) or not _CARD.fullmatch(card) or type(generation) is not int or generation < 1:
             raise ValueError('effect requires card and generation preconditions')
+        if 'card' in intent and intent['card'] != card:
+            raise ValueError('effect target card does not match preconditions')
+        intent['card'] = card
         if 'operation_key' in intent and intent['operation_key'] != key:
             raise ValueError('intent operation key conflicts with controller key')
+        canonical_json(intent)
+        encoded_preconditions, encoded_intent = canonical_json(preconditions), canonical_json(intent)
+        existing = [row for row in self.store.snapshot()['effects'] if row['operation_key'] == key]
+        if existing:
+            row = existing[0]
+            if (row['card'] != card or row['preconditions'] != encoded_preconditions
+                    or row['intent'] != encoded_intent):
+                raise ValueError('conflicting effect')
+            jobs = [job for job in self.store.snapshot()['jobs'] if job['id'] == row['job_id']]
+            if len(jobs) != 1 or jobs[0]['card'] != card:
+                raise ValueError('journaled effect job is unavailable')
+            if row['observation'] is None and jobs[0]['generation'] != row['generation']:
+                raise ValueError('cannot restore unresolved effect after generation change')
+            self._key = key
+            return key
         jobs = [job for job in self.store.snapshot()['jobs']
                 if job['card'] == card and job['generation'] == generation]
         if len(jobs) != 1:
@@ -85,7 +103,10 @@ class Effect:
         if len(rows) != 1:
             raise ValueError('effect journal record is missing')
         row = rows[0]
-        return row, json.loads(row['preconditions']), json.loads(row['intent'])
+        preconditions, intent = json.loads(row['preconditions']), json.loads(row['intent'])
+        if preconditions.get('card') != row['card'] or intent.get('card') != row['card']:
+            raise ValueError('effect target card is not bound to its journal record')
+        return row, preconditions, intent
 
     def _attention_reason(self):
         for event in self.store.snapshot()['events']:

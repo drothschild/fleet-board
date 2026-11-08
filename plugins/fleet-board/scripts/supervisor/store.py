@@ -1109,10 +1109,11 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
-            row = c.execute('SELECT observation,card,intent FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            row = c.execute('SELECT observation,card,intent,job_id,generation FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
             if row is None:
                 raise ValueError('unknown effect')
-            if json.loads(row['intent']).get('kind') in ('publish', 'publication', 'commit_publication', 'pr_update', 'merge') and self._publication_held(row['card']):
+            intent = json.loads(row['intent'])
+            if intent.get('kind') in ('publish', 'publication', 'commit_publication', 'pr_update', 'merge') and self._publication_held(row['card']):
                 raise ValueError('publication held after unauthorized scope change')
             if row['observation'] is not None:
                 if row['observation'] != encoded:
@@ -1120,8 +1121,68 @@ class Store:
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
                     raise ValueError('revision mismatch')
+                event = {'operation_key': operation_key}
+                if intent.get('kind') == 'branch_refresh':
+                    job = c.execute('SELECT * FROM jobs WHERE id=?', (row['job_id'],)).fetchone()
+                    evidence = observation.get('input_evidence')
+                    revision = observation.get('input_revision')
+                    invalidated = observation.get('invalidated_evidence')
+                    required_evidence = {'job_id', 'generation', 'head_sha', 'input_sha', 'changed_paths'}
+                    if (job is None or job['card'] != row['card'] or job['generation'] != row['generation']
+                            or not isinstance(evidence, dict) or set(evidence) != required_evidence):
+                        raise ValueError('stale or invalid branch refresh evidence')
+                    if (evidence['job_id'] != row['job_id'] or evidence['generation'] != row['generation']
+                            or not isinstance(evidence['head_sha'], str)
+                            or not re.fullmatch(r'[0-9a-f]{40}(?:[0-9a-f]{24})?', evidence['head_sha'])
+                            or not isinstance(evidence['input_sha'], str)
+                            or not re.fullmatch(r'[0-9a-f]{64}', evidence['input_sha'])):
+                        raise ValueError('invalid branch refresh evidence identity')
+                    paths = evidence['changed_paths']
+                    if (not isinstance(paths, list) or any(not isinstance(path, str) or not path
+                            or path.startswith('/') or any(part in ('', '.', '..') for part in path.split('/'))
+                            or any(ord(char) < 32 or ord(char) == 127 for char in path) for path in paths)
+                            or paths != sorted(set(paths))
+                            or paths != sorted(set(intent.get('changed_paths', [])))):
+                        raise ValueError('invalid branch refresh changed paths')
+                    expected_input_revision = hashlib.sha256(canonical_json(evidence).encode('utf-8')).hexdigest()
+                    if not isinstance(revision, str) or revision != expected_input_revision:
+                        raise ValueError('branch refresh input revision mismatch')
+                    if not isinstance(invalidated, list) or any(item not in ('review', 'test') for item in invalidated) or len(invalidated) != len(set(invalidated)):
+                        raise ValueError('invalid branch refresh evidence invalidation')
+                    data = json.loads(job['data'])
+                    if paths and revision == data.get('input_version'):
+                        raise ValueError('branch refresh did not create a new input revision')
+                    updated_data = dict(data)
+                    updated_data.update({'input_sha': evidence['input_sha'],
+                                         'input_version': revision,
+                                         'input_revision': revision,
+                                         'evidence_invalidated': {'input_revision': revision,
+                                                                  'items': sorted(invalidated)}})
+                    history = updated_data.get('evidence_invalidations', [])
+                    if not isinstance(history, list):
+                        raise ValueError('invalid stored evidence invalidations')
+                    history = history + [{'input_revision': revision, 'items': sorted(invalidated)}]
+                    updated_data['evidence_invalidations'] = history
+                    round_number = updated_data.get('round')
+                    if type(round_number) is not int or round_number < 0:
+                        raise ValueError('invalid job round for refreshed identity')
+                    logical_key = canonical_json([job['card'], updated_data['action'], job['role'],
+                                                  job['stage'], round_number, evidence['input_sha'], revision])
+                    collision = c.execute('SELECT 1 FROM jobs WHERE logical_key=? AND id<>?',
+                                          (logical_key, row['job_id'])).fetchone()
+                    if collision is not None:
+                        raise ValueError('refreshed job identity already exists')
+                    next_generation = row['generation'] + 1
+                    changed = c.execute('UPDATE jobs SET logical_key=?,generation=?,input_sha=?,data=? WHERE id=? AND generation=?',
+                                        (logical_key, next_generation, evidence['input_sha'],
+                                         canonical_json(updated_data), row['job_id'], row['generation'])).rowcount
+                    if changed != 1:
+                        raise ValueError('branch refresh job changed before observation')
+                    event.update({'job_id': row['job_id'], 'generation': next_generation,
+                                  'input_revision': revision,
+                                  'invalidated_evidence': sorted(invalidated)})
                 c.execute("UPDATE effects SET observation=?,status='observed' WHERE operation_key=?", (encoded, operation_key))
-                self._event('effect_observed', {'operation_key': operation_key})
+                self._event('effect_observed', event)
             c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
@@ -1294,6 +1355,11 @@ class Store:
                 event['payload'] = json.loads(event['payload'])
             commands = [dict(row) for row in connection.execute('SELECT * FROM commands ORDER BY rowid')]
             records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results', 'effects')}
+            for job in records['jobs']:
+                data = json.loads(job['data'])
+                for key in ('input_version', 'input_revision', 'evidence_invalidated', 'evidence_invalidations'):
+                    if key in data:
+                        job[key] = data[key]
             attention = [{'type': 'scope_cycle', 'cards': cycle} for cycle in self._scope_wait_cycles()]
             reservations = sorted(self._reservations().values(), key=lambda item: item['card'])
             card_lifecycle = self._card_lifecycles()
