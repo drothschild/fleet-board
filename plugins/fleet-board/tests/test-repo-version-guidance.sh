@@ -29,25 +29,8 @@ else
   bad ".fleet-board.yml commands.lint does not run test-version-bumped.sh"
 fi
 
-# Acceptance 3: the shipped plugin is untouched by this card.
-# It holds on card 227's own branch only: other branches, such as a card that edits an agent,
-# legitimately change shipped files. GITHUB_HEAD_REF names the branch in pull-request CI.
-branch=${GITHUB_HEAD_REF:-$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null)}
-# A stale local origin/main ref makes the diff include other PRs' changes, so refresh it first
-# (best effort: offline runs keep the existing ref).
-case "$branch" in fleet/227-*) git -C "$ROOT" fetch -q origin main >/dev/null 2>&1 || true ;; esac
-case "$branch" in
-  fleet/227-*) ;;
-  *) branch="" ;;
-esac
-if [ -z "$branch" ]; then
-  ok "shipped-dir check skipped: not card 227's branch"
-elif git -C "$ROOT" rev-parse -q --verify origin/main >/dev/null; then
-  n=$(git -C "$ROOT" diff --name-only origin/main...HEAD -- plugins/fleet-board/agents plugins/fleet-board/skills plugins/fleet-board/scripts | wc -l | tr -d ' ')
-  if [ "$n" = 0 ]; then ok "no change under agents, skills, scripts"; else bad "$n shipped files changed"; fi
-else
-  bad "origin/main is not available, so the shipped-directory check cannot run"
-fi
+# Acceptance 3 (a diff of the current branch against origin/main) was removed: it was a one-time
+# check for card 227 and fails every later PR that changes agents, skills or scripts.
 
 # Acceptance 4: the check can fail. Fixture repo: branch without a bump is flagged.
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

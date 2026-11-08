@@ -543,7 +543,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 
 /* --- import view --------------------------------------------------------- */
 
-#import-btn[aria-expanded="true"] { background: var(--panel); }
+#plan-btn[aria-expanded="true"] { background: var(--panel); }
 
 .imp {
   flex: 1;
@@ -568,26 +568,44 @@ button, select, input, textarea { font: inherit; color: inherit; }
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
-.imp-target { margin-left: auto; align-self: center; }
 
 .imp-main { flex: 1; min-height: 0; overflow-y: auto; padding: 0 20px 20px; }
 
-.imp-drop { height: 100%; min-height: 260px; display: flex; }
-.imp-plan {
+/* --- planner chat --------------------------------------------------------- */
+
+.pl { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.pl-head { display: flex; align-items: center; gap: 12px; padding: 16px 20px 12px; }
+.pl-title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; }
+.pl-running { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.pl-close { margin-left: auto; }
+.pl-transcript { flex: 1; min-height: 0; overflow-y: auto; padding: 0 20px 16px; display: flex; flex-direction: column; gap: 10px; }
+.pl-turn {
+  max-width: 78ch;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.55;
+}
+.pl-turn[data-role="user"] { align-self: flex-end; background: var(--accent-soft); }
+.pl-turn[data-role="assistant"] { align-self: flex-start; background: var(--panel); }
+.pl-foot { display: flex; align-items: flex-end; gap: 12px; padding: 12px 20px; border-top: 1px solid var(--line); }
+.pl-input {
   flex: 1;
-  width: 100%;
-  min-height: 260px;
-  padding: 14px 16px;
+  min-height: 64px;
+  max-height: 200px;
+  padding: 10px 12px;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-panel);
   background: var(--panel);
-  font: 12.5px/1.6 var(--mono);
-  resize: none;
-  tab-size: 2;
+  font: 13px/1.5 var(--sans);
+  resize: vertical;
 }
-.imp-plan:focus { outline: none; border-color: var(--accent); background: var(--page); }
-.imp-plan::placeholder { color: var(--faint); font-family: var(--sans); font-size: 14px; }
-.imp-drop.over .imp-plan { border: 1px dashed var(--accent); background: var(--accent-soft); }
+.pl-input:focus { outline: none; border-color: var(--accent); background: var(--page); }
+.pl-input:disabled { opacity: 0.6; }
+.pl-actions { display: flex; gap: 8px; }
 
 /* the stage: sheet, arrow, resulting cards */
 .imp-stage {
@@ -679,6 +697,17 @@ button, select, input, textarea { font: inherit; color: inherit; }
   background: var(--card);
 }
 .imp-card.landing { visibility: hidden; }
+.imp-card-btn { display: block; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.imp-card-btn:disabled { cursor: default; }
+.imp-card-btn:focus-visible { outline: 2px solid var(--accent, currentColor); outline-offset: 3px; }
+.imp-detail { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.35); }
+.imp-detail[hidden] { display: none; }
+.imp-d-form { width: min(560px, 92vw); max-height: 88vh; overflow: auto; padding: 16px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--card); }
+.imp-d-h { margin: 0 0 10px; }
+.imp-d-key { color: var(--muted); font-weight: 400; font-size: 12px; }
+.imp-d-row { display: block; margin-bottom: 8px; font-size: 12px; color: var(--muted); }
+.imp-d-row input, .imp-d-row textarea { display: block; width: 100%; box-sizing: border-box; margin-top: 2px; font: inherit; color: var(--text, inherit); }
+.imp-d-ro { margin: 2px 0; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .imp-card-title { font-weight: 500; overflow-wrap: anywhere; }
 .imp-card-meta { margin-top: 3px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .imp-dep { color: var(--accent); }
