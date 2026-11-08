@@ -99,6 +99,18 @@ def _sync_directory(path):
         os.close(fd)
 
 
+def _read_private_json(path, limit):
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > limit:
+            raise ValueError('unsafe or oversized evidence')
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError('oversized evidence')
+    return json.loads(raw)
+
+
 def _private_directory(path):
     path = Path(path).absolute()
     # Refuse symlinks at every existing component, including ancestors.
@@ -351,6 +363,68 @@ class Store:
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
             c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def adopt_receipt_identity(self, attempt_id, expected_revision):
+        """Bind a verified old-boot launch receipt without changing attempt authority."""
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            domain = c.execute('SELECT revision FROM domain').fetchone()
+            row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            if type(expected_revision) is not int or domain['revision'] != expected_revision:
+                raise ValueError('revision mismatch')
+            if row['state'] not in ('prepared', 'launching', 'running', 'result_ready',
+                                    'cancel_requested', 'quarantined'):
+                raise ValueError('attempt cannot adopt a launch receipt')
+            data = json.loads(row['data'])
+            has_boot = 'boot_id' in data
+            has_identity = 'process_identity' in data
+            if has_boot != has_identity:
+                raise ValueError('partial process identity')
+
+            attempts = self.directory / 'attempts'
+            path = attempts / attempt_id
+            if attempts.is_symlink() or path.is_symlink() or not path.is_dir():
+                raise ValueError('unsafe attempt evidence path')
+            prepared = _read_private_json(path / 'prepared.json', 65536)
+            receipt = _read_private_json(path / 'receipt.json', 8192)
+            bindings = {'domain_id': self.domain_id, 'job_id': row['job_id'], 'attempt_id': attempt_id,
+                        'nonce': row['nonce'], 'generation': data['generation'], 'input_sha': data['input_sha'],
+                        'role': data['role'], 'stage': data['stage'], 'session_id': data['session_id']}
+            if (not isinstance(prepared, dict) or any(prepared.get(key) != value for key, value in bindings.items())
+                    or type(data.get('started_at')) not in (int, float) or not math.isfinite(data['started_at'])
+                    or type(data.get('deadline')) not in (int, float) or not math.isfinite(data['deadline'])
+                    or data['deadline'] < data['started_at']
+                    or prepared.get('started_at') != data['started_at'] or prepared.get('deadline') != data['deadline']):
+                raise ValueError('prepared launch binding mismatch')
+            if not isinstance(receipt, dict) or set(receipt) != {'state', 'identity'} or receipt['state'] != 'registered':
+                raise ValueError('invalid launch receipt')
+            identity = receipt['identity']
+            if (not isinstance(identity, dict) or set(identity) != {'boot_id', 'pid', 'started_at', 'nonce'}
+                    or not isinstance(identity['boot_id'], str) or not identity['boot_id']
+                    or type(identity['pid']) is not int or identity['pid'] <= 0
+                    or not isinstance(identity['started_at'], str) or not identity['started_at']
+                    or identity['nonce'] != row['nonce']):
+                raise ValueError('invalid receipt identity')
+            try:
+                if identity['boot_id'] == _boot_id():
+                    raise ValueError('receipt is not from a prior boot')
+            except OSError as exc:
+                raise ValueError('boot identity unavailable') from exc
+            if has_boot:
+                if data['boot_id'] != identity['boot_id'] or data['process_identity'] != identity:
+                    raise ValueError('registered process identity is immutable')
+            else:
+                data.update({'boot_id': identity['boot_id'], 'process_identity': identity})
+                c.execute('UPDATE attempts SET data=? WHERE id=?', (canonical_json(data), attempt_id))
+                self._event('receipt_identity_adopted', {'attempt_id': attempt_id})
+            c.execute('COMMIT')
+            return identity
         except Exception:
             c.execute('ROLLBACK')
             raise

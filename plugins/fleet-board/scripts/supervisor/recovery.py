@@ -172,14 +172,19 @@ class Recovery:
             if (observation.get('status') == 'stopped' and isinstance(proof, StopEvidence)
                     and proof.kind == 'boot_changed' and observation.get('receipt_adoption') is True
                     and isinstance(identity, ProcessIdentity)
-                    and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready')
                     and 'boot_id' not in data and 'process_identity' not in data
                     and identity.boot_id == proof.boot_id and identity.pid == proof.pid
                     and identity.started_at == proof.started_at and identity.nonce == proof.nonce):
-                updates = {'boot_id': identity.boot_id, 'process_identity': identity.__dict__}
-                self.store.update_attempt(attempt['id'], updates, self.store.snapshot()['domain']['revision'])
-                attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
-                data = json.loads(attempt['data'])
+                try:
+                    adopted = self.store.adopt_receipt_identity(
+                        attempt['id'], self.store.snapshot()['domain']['revision'])
+                    if adopted != identity.__dict__:
+                        raise ValueError('adopted receipt identity mismatch')
+                except (OSError, TypeError, ValueError, KeyError):
+                    observation = {'status': 'unknown', 'result': result}
+                else:
+                    attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
+                    data = json.loads(attempt['data'])
             if attempt['state'] == 'quarantined' and observation.get('status') == 'stopped':
                 try:
                     self.store.record_execution_stopped(attempt['id'], observation.get('stop_evidence'),
