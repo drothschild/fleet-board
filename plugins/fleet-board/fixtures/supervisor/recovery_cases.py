@@ -503,6 +503,53 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
         self.assertEqual(len(snapshot['claims']), 1)
 
+    def test_native_boot_change_adopts_valid_receipt_written_before_restart(self):
+        import json
+        from unittest import mock
+        from supervisor.runner import prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
+        path = self.store.directory / 'attempts' / 'n'
+        path.mkdir(parents=True)
+        (path / 'prepared.json').write_text(json.dumps(prepared_from_store(self.store, 'n', scratch)))
+        identity = {'boot_id': 'old-boot', 'pid': 42, 'started_at': 'start', 'nonce': 'n'}
+        (path / 'receipt.json').write_text(json.dumps({'state': 'registered', 'identity': identity}))
+        with mock.patch('supervisor.processes._boot_id', return_value='new-boot'), \
+             mock.patch('supervisor.store._boot_id', return_value='new-boot'):
+            Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        data = json.loads(snapshot['attempts'][0]['data'])
+        self.assertEqual(data.get('process_identity'), identity)
+        self.assertEqual(data.get('boot_id'), 'old-boot')
+        self.assertTrue(data.get('execution_released'))
+        self.assertEqual(data['stop_evidence']['kind'], 'boot_changed')
+        self.assertTrue(snapshot['sessions'][0]['unknown_spend'])
+        self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(snapshot['claims']), 1)
+
+    def test_native_boot_change_rejects_receipt_with_foreign_nonce(self):
+        import json
+        from unittest import mock
+        from supervisor.runner import prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
+        path = self.store.directory / 'attempts' / 'n'
+        path.mkdir(parents=True)
+        (path / 'prepared.json').write_text(json.dumps(prepared_from_store(self.store, 'n', scratch)))
+        identity = {'boot_id': 'old-boot', 'pid': 42, 'started_at': 'start', 'nonce': 'foreign'}
+        (path / 'receipt.json').write_text(json.dumps({'state': 'registered', 'identity': identity}))
+        with mock.patch('supervisor.processes._boot_id', return_value='new-boot'), \
+             mock.patch('supervisor.store._boot_id', return_value='new-boot'):
+            Recovery(self.store).reconcile(now=10)
+        snapshot = self.store.snapshot()
+        data = json.loads(snapshot['attempts'][0]['data'])
+        self.assertEqual(snapshot['attempts'][0]['state'], 'quarantined')
+        self.assertNotIn('process_identity', data)
+        self.assertFalse(data.get('execution_released'))
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_quarantined_attempt_releases_after_observed_boot_change(self):
         import json
         from unittest import mock
