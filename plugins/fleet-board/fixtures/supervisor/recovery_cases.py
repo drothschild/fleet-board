@@ -355,6 +355,29 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(data['heartbeat'], 90)
         self.assertEqual(data['progress']['sequence'], 1)
 
+    def test_confirmed_unexplained_stall_is_fenced_without_retry(self):
+        import json
+        class Inspector:
+            def __init__(self):
+                self.signals = []
+            def inspect(self, attempt):
+                return {'status': 'alive', 'activity': 'confirmed_stall'}
+            def signal(self, attempt, kind):
+                snapshot = self_store.snapshot()
+                assert snapshot['jobs'][0]['generation'] == 2
+                self.signals.append(kind)
+        self_store = self.store
+        self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'heartbeat': 100,
+                                        'progress': {'at': 10}, 'deadline': 1000},
+                                  self.store.snapshot()['domain']['revision'])
+        inspector = Inspector()
+        Recovery(self.store, inspector, settings={'progress_timeout_seconds': 20}).reconcile(now=100)
+        after = self.store.snapshot()
+        self.assertEqual(after['attempts'][0]['state'], 'cancel_requested')
+        self.assertEqual(json.loads(after['attempts'][0]['data'])['cancel_reason'], 'unexplained_stall')
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertEqual(inspector.signals, ['TERM'])
+
     def test_heartbeat_without_progress_marks_suspected_stuck(self):
         class Inspector:
             def inspect(self, attempt):
