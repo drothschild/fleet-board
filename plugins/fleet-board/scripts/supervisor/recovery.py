@@ -123,7 +123,12 @@ class Recovery:
                 continue
             result = observation.get('result')
             if result is not None:
-                self.store.record_result(result)
+                try:
+                    self.store.record_result(result)
+                except ValueError:
+                    if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready', 'cancel_requested'):
+                        self.store.quarantine_attempt(attempt['id'], 'invalid_result', self.store.snapshot()['domain']['revision'])
+                    continue
                 attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
             data = json.loads(attempt['data'])
             if attempt['state'] == 'result_ready' and observation.get('status') == 'stopped':
