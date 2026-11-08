@@ -767,6 +767,40 @@ class StoreContract(unittest.TestCase):
                                      expected_revision=snapshot['domain']['revision'])
         self.assertEqual(len(restarted.snapshot()['attempts']), 2)
 
+    def test_result_ready_execution_can_release_slot_without_fencing_result(self):
+        from supervisor.models import StopEvidence
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True)
+        self.addCleanup(trusted.close)
+        trusted.prepare_attempt(job, trusted.snapshot()['domain']['revision'],
+                                {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'boot1', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        trusted.update_attempt('n1', {'state': 'running', 'boot_id': 'boot1', 'process_identity': identity},
+                               trusted.snapshot()['domain']['revision'])
+        root = trusted.directory / 'artifacts' / 'n1'
+        root.mkdir(parents=True, mode=0o700)
+        report = root / 'report.json'
+        report.write_text('{}')
+        envelope = {'schema_version': 1, 'domain_id': trusted.domain_id, 'job_id': 'j1', 'attempt_id': 'n1',
+                    'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': 'code', 'outcome': 'success',
+                    'report_path': str(report), 'artifact_hashes': {str(report): hashlib.sha256(b'{}').hexdigest()},
+                    'usage': {'cost_usd': 0}, 'exit_code': 0}
+        trusted.record_result(envelope)
+        proof = StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                             boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree', free_fixture=True)
+        try:
+            trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
+        except ValueError:
+            self.fail('verified result-ready execution cannot release its slot')
+        after = trusted.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data'])['execution_released'])
+        self.assertEqual(after['attempts'][0]['state'], 'result_ready')
+        self.assertEqual(after['jobs'][0]['generation'], 1)
+        self.assertEqual(after['results'][0]['disposition'], 'current')
+        self.assertEqual(len(after['claims']), 1)
+
     def test_old_boot_proof_requires_current_stable_boot_identity(self):
         from supervisor import models
         import inspect
