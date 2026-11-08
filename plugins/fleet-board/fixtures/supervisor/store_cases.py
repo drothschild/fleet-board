@@ -287,6 +287,18 @@ class StoreContract(unittest.TestCase):
             finally:
                 other.close()
 
+    def test_duplicate_nonce_does_not_leave_partial_job(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 2, "provider_cap": 2, "paths": ["src/a"]})
+        before = self.store.snapshot()
+        with self.assertRaises(ValueError):
+            self.store.prepare_attempt(dict(job, id="j2", card="2"), before["domain"]["revision"],
+                                       {"global_cap": 2, "provider_cap": 2, "paths": ["src/b"]})
+        self.assertEqual(self.store.snapshot(), before)
+
     def test_injected_failure_rolls_back_partial_admission(self):
         def fail(point):
             if point == "after_attempt":
@@ -355,6 +367,35 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(json.loads(snapshot["jobs"][0]["data"])["eligible_since"], 123)
         self.assertEqual(json.loads(snapshot["attempts"][0]["data"])["process_identity"], {"pid": 42})
         self.assertGreater(snapshot["claims"][0]["reservation_revision"], 0)
+
+    def test_unsafe_runtime_directories_are_rejected(self):
+        unsafe = self.root / "unsafe"
+        unsafe.mkdir(mode=0o755)
+        unsafe.chmod(0o755)
+        with self.assertRaises(ValueError):
+            Store.open(dict(self.domain, runtime_root=str(unsafe)), filesystem_inspector=lambda path: "local")
+        link = self.root / "link"
+        link.symlink_to(self.root / "runtime", target_is_directory=True)
+        with self.assertRaises(ValueError):
+            Store.open(dict(self.domain, runtime_root=str(link)), filesystem_inspector=lambda path: "local")
+        with self.assertRaises(ValueError):
+            Store.open(self.domain, filesystem_inspector=lambda path: "unknown")
+
+    def test_populated_unversioned_store_fails_closed(self):
+        import sqlite3
+        database = self.store.directory / "store.sqlite3"
+        self.store.close()
+        connection = sqlite3.connect(str(database))
+        connection.execute("PRAGMA user_version=0")
+        connection.close()
+        with self.assertRaises(ValueError):
+            Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        connection = sqlite3.connect(str(database))
+        try:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT count(*) FROM domain").fetchone()[0], 1)
+        finally:
+            connection.close()
 
     def test_corrupt_schema_fails_closed(self):
         import sqlite3
