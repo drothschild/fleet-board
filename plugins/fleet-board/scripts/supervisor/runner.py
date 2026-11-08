@@ -166,6 +166,8 @@ class Runner:
             raise ValueError('production launch requires a threading.Event cancellation handle')
         capability = probe_capabilities(
             policy, inference_socket=getattr(channel, 'socket_path', None),
+            inference_attempt_id=prepared_attempt['attempt_id'],
+            inference_capability=channel.capability_for(prepared_attempt['attempt_id']),
             protected_resources=protected_resources)
         if not capability.get('available'):
             raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')

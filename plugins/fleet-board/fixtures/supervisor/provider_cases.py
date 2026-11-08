@@ -1267,6 +1267,8 @@ class ProviderCases(unittest.TestCase):
             worker_writable_store, operation_binding, self.workspace)
         class FakeChannel:
             socket_path = self.root / "inference.sock"
+            def capability_for(self, attempt_id):
+                return "capability-for-" + attempt_id
             def bind_attempt_control(self, attempt_id, deadline, cancel_event):
                 controls.append((attempt_id, deadline, cancel_event))
             def bind_attempt_operations(self, attempt_id, binding, handlers):

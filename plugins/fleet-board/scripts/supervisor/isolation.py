@@ -10,6 +10,7 @@ import shutil
 import shlex
 import secrets
 import socket
+import struct
 import subprocess
 import tempfile
 import threading
@@ -18,6 +19,18 @@ import time
 
 class IsolationUnavailable(RuntimeError):
     pass
+
+
+def _forged_control_frame(attempt_id, capability):
+    """Build an authenticated request for an operation workers must not have."""
+    if (not isinstance(attempt_id, str) or not attempt_id
+            or not isinstance(capability, str) or not capability):
+        raise ValueError('forged-control probe requires an authorized attempt')
+    envelope = {'schema_version': 1, 'operation': 'human_control',
+                'attempt_id': attempt_id, 'capability': capability,
+                'request': {'attempt_id': attempt_id}}
+    payload = json.dumps(envelope, separators=(',', ':'), allow_nan=False).encode('utf-8')
+    return struct.pack('!I', len(payload)) + payload
 
 
 def _private_directory(path, *, create=False):
@@ -210,7 +223,8 @@ def _protected_resource_paths(resources):
     return paths
 
 
-def probe_capabilities(policy, *, inference_socket=None, protected_resources=None):
+def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=None,
+                       inference_capability=None, protected_resources=None):
     """Require real positive and negative checks for every worker boundary."""
     expected = ('workspace_read', 'workspace_write', 'controller_db', 'controller_socket',
                 'board_storage', 'shared_git_metadata', 'host_credentials', 'ssh_agent',
@@ -240,6 +254,12 @@ def probe_capabilities(policy, *, inference_socket=None, protected_resources=Non
         control_path = Path(protected['controller_socket'][0])
         agent_path = Path(protected['ssh_agent'][0])
         inference_path = Path(inference_socket or (Path(policy['channels']) / 'inference.sock'))
+        forged_control_path = None
+        if inference_attempt_id is not None and inference_capability is not None:
+            forged_control_path = Path(policy['workspace']) / ('.isolation-probe-forged-' + probe_name)
+            forged_control_path.write_bytes(_forged_control_frame(
+                inference_attempt_id, inference_capability))
+            forged_control_path.chmod(0o600)
         if not inference_path.exists():
             listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             listener.bind(str(inference_path))
@@ -285,12 +305,9 @@ def probe_capabilities(policy, *, inference_socket=None, protected_resources=Non
                 shlex.quote(str(Path(policy['channels']) / ('.isolation-probe-write-' + probe_name)))),
             'printf "workspace_read=%s\\nworkspace_write=%s\\ncontroller_db=%s\\ncontroller_socket=%s\\nboard_storage=%s\\nshared_git_metadata=%s\\nhost_credentials=%s\\nssh_agent=%s\\nkeychain=%s\\nsymlink_escape=%s\\nloopback_network=%s\\npublication=%s\\nforged_human_control=%s\\ninference_channel=%s\\nchannel_write=%s\\n" "$workspace_read" "$workspace_write" "$controller_db" "$controller_socket" "$board_storage" "$shared_git_metadata" "$host_credentials" "$ssh_agent" "$keychain" "$symlink_escape" "$loopback_network" "$publication" "$forged_human_control" "$inference_channel" "$channel_write"',
         ])
-        if inference_socket is not None:
-            forged = (r'{"schema_version":1,"operation":"human_control",'
-                      r'"attempt_id":"forged","capability":"invalid","request":{}}')
-            lines.insert(-1, 'forged_reply=$(printf \'\\000\\000\\000\\152{0}\' | {1} -U -w 1 {2} 2>/dev/null || true)'.format(
-                forged, nc, shlex.quote(str(inference_path))))
-            lines.insert(-1, 'case "$forged_reply" in *error*) forged_human_control=pass ;; esac')
+        if forged_control_path is not None:
+            lines.insert(-1, 'if {0} -U -w 1 {1} < {2} 2>/dev/null | tail -c +5 | grep -Fx \'{{"schema_version":1,"error":"request rejected"}}\' >/dev/null; then forged_human_control=pass; fi'.format(
+                nc, shlex.quote(str(inference_path)), shlex.quote(str(forged_control_path))))
         script = '\n'.join(lines) + '\n'
         script_path = Path(policy['workspace']) / ('.isolation-probe-' + probe_name + '.sh')
         script_path.write_text(script, encoding='utf-8')
@@ -299,6 +316,8 @@ def probe_capabilities(policy, *, inference_socket=None, protected_resources=Non
                                       ('.isolation-probe-write-' + probe_name),
                                       Path(policy['channels']) /
                                       ('.isolation-probe-write-' + probe_name)))
+        if forged_control_path is not None:
+            workspace_probe_paths.append(forged_control_path)
         completed = subprocess.run(_wrapped_command(['/bin/sh', str(script_path)], policy),
                                    cwd=policy['workspace'], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
