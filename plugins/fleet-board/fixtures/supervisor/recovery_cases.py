@@ -30,6 +30,27 @@ class RecoveryContract(unittest.TestCase):
         self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
                                    {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
 
+    def test_reconcile_is_bounded_and_rotates_between_attempts(self):
+        import inspect
+        self.assertIn('max_attempts', inspect.signature(Recovery).parameters, 'bounded recovery is unavailable')
+        job = {'id': 'j2', 'card': '2', 'action': 'review', 'role': 'reviewer', 'stage': 'code',
+               'round': 1, 'input_sha': 'def', 'input_version': 'v1', 'generation': 1,
+               'provider': 'p', 'model': 'm', 'nonce': 'n2', 'session_id': 's'}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 2, 'provider_cap': 2, 'paths': ['other']})
+        class Inspector:
+            def __init__(self):
+                self.seen = []
+            def inspect(self, attempt):
+                self.seen.append(attempt['id'])
+                return {'status': 'unknown'}
+        inspector = Inspector()
+        recovery = Recovery(self.store, inspector, max_attempts=1)
+        recovery.reconcile(now=10)
+        self.assertEqual(len(inspector.seen), 1)
+        recovery.reconcile(now=11)
+        self.assertEqual(set(inspector.seen), {'n', 'n2'})
+
     def test_unacknowledged_prepared_launch_is_quarantined_without_relaunch(self):
         self.assertIsNotNone(Recovery, 'recovery engine is not implemented')
         class Inspector:
