@@ -338,6 +338,34 @@ class RecoveryContract(unittest.TestCase):
                 process.kill()
                 process.wait(timeout=5)
 
+    def test_heartbeat_without_progress_marks_suspected_stuck(self):
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'alive', 'activity': 'unknown'}
+        self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'heartbeat': 100,
+                                        'progress': {'at': 10}, 'deadline': 1000},
+                                  self.store.snapshot()['domain']['revision'])
+        recovery = Recovery(self.store, Inspector(), settings={'progress_timeout_seconds': 20})
+        recovery.reconcile(now=100)
+        import json
+        after = self.store.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data']).get('suspected_stuck'))
+        self.assertEqual(after['attempts'][0]['state'], 'running')
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        recovery.reconcile(now=101)
+        self.assertEqual(self.store.snapshot(), after)
+
+    def test_quiet_bounded_tool_can_continue_until_original_deadline(self):
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'alive', 'activity': 'bounded_tool', 'bounded_tool_until': 110}
+        self.store.update_attempt('n', {'state': 'running', 'started_at': 1, 'heartbeat': 100,
+                                        'progress': {'at': 10}, 'deadline': 120},
+                                  self.store.snapshot()['domain']['revision'])
+        before = self.store.snapshot()
+        Recovery(self.store, Inspector(), settings={'progress_timeout_seconds': 20}).reconcile(now=100)
+        self.assertEqual(self.store.snapshot(), before)
+
     def test_hard_deadline_fences_before_term_then_kills_after_persisted_grace(self):
         class Inspector:
             def __init__(self, store):
