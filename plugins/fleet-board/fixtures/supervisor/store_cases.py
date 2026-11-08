@@ -767,6 +767,31 @@ class StoreContract(unittest.TestCase):
                                      expected_revision=snapshot['domain']['revision'])
         self.assertEqual(len(restarted.snapshot()['attempts']), 2)
 
+    def test_semantic_failure_requires_attention_and_cannot_authorize_effects(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        root = self.store.directory / 'artifacts' / 'n1'
+        root.mkdir(parents=True, mode=0o700)
+        report = root / 'report.json'
+        report.write_text('{}')
+        envelope = {'schema_version': 1, 'domain_id': self.store.domain_id, 'job_id': 'j1', 'attempt_id': 'n1',
+                    'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': 'code', 'outcome': 'failure',
+                    'report_path': str(report), 'artifact_hashes': {str(report): hashlib.sha256(b'{}').hexdigest()},
+                    'usage': None, 'exit_code': 1}
+        self.store.record_result(envelope)
+        after = self.store.snapshot()
+        self.assertEqual(after['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(after['jobs'][0]['generation'], 2)
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertTrue(after['sessions'][0]['unknown_spend'])
+        self.assertEqual(len(after['claims']), 1)
+        with self.assertRaises(ValueError):
+            self.store.record_effect({'operation_key': 'op', 'job_id': 'j1', 'generation': 1,
+                                      'preconditions': {}, 'intent': {}})
+
     def test_result_ready_execution_can_release_slot_without_fencing_result(self):
         from supervisor.models import StopEvidence
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
