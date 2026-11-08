@@ -437,7 +437,13 @@ card 12 in_review "$INCOMPLETE_NOTE"
 pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
 mv "$FX/merged.json" "$FX/pr-34.json"
-printf '#!/bin/sh\nprintf "%s %s\\n" "$1" "$2" >> "%s"\nprintf \'{"commit":"abc1234","ok":true,"results":[]}\\n\'\n' "$FX/verify.log" > "$FLEET_BOARD_VERIFY_MAIN"
+VERIFY_LOG="$FX/verify.log"
+export VERIFY_LOG
+cat > "$FLEET_BOARD_VERIFY_MAIN" <<'VERIFY'
+#!/bin/sh
+printf '%s %s\n' "$1" "$2" >> "$VERIFY_LOG"
+printf '%s\n' '{"commit":"abc1234","ok":true,"results":[]}'
+VERIFY
 chmod +x "$FLEET_BOARD_VERIFY_MAIN"
 finalize
 run_merge --card 12 --operation-key op-12 --pr 34 --head abc1234
