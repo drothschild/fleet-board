@@ -323,6 +323,10 @@ VALIDATION_SCRIPT='
       (if (.models | type) == "object" then
         (if (.models.escalation | type) != "null" and ((.models.escalation | type) != "string" or .models.escalation == "") then "models.escalation must be null or a non-empty string" else empty end)
       else empty end),
+      (if (.planner | type) == "object" then
+        (if (.planner.provider | type) != "string" or (.planner.provider as $p | ($p == "claude" or $p == "codex") | not) then "planner.provider must be claude or codex" else empty end),
+        (if (.planner.model | type) != "null" and (.planner.model | type) != "string" then "planner.model must be a string or null" else empty end)
+      else empty end),
       (if (.followups | type) != "object" then "followups must be an object"
        elif (.followups.status | type) != "string" or (.followups.status as $s | ($s == "ready" or $s == "backlog") | not) then "followups.status must be ready or backlog" else empty end),
       (if (.after_merge | type) != "object" then "after_merge must be an object"
