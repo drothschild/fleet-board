@@ -32,6 +32,21 @@ def _publish(path, value):
     _sync_directory(path.parent)
 
 
+def prepared_from_store(store, attempt_id, scratch):
+    snapshot = store.snapshot()
+    matches = [item for item in snapshot['attempts'] if item['id'] == attempt_id and item['state'] == 'prepared']
+    claims = [item for item in snapshot['claims'] if item['attempt_id'] == attempt_id]
+    if len(matches) != 1 or len(claims) != 1:
+        raise ValueError('attempt is not prepared with a claim')
+    job = json.loads(matches[0]['data'])
+    if job['nonce'] != attempt_id or matches[0]['job_id'] != job['id']:
+        raise ValueError('inconsistent attempt binding')
+    return {'domain_id': store.domain_id, 'job_id': job['id'], 'attempt_id': attempt_id,
+            'nonce': job['nonce'], 'generation': job['generation'], 'input_sha': job['input_sha'],
+            'role': job['role'], 'stage': job['stage'], 'session_id': job['session_id'],
+            'scratch': str(Path(scratch))}
+
+
 def read_result(attempt):
     path = Path(attempt) / 'result.json'
     try:
