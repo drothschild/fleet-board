@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -164,9 +165,11 @@ class Store:
             raise
 
     def prepare_attempt(self, job, expected_revision, claims):
-        fields = ('id', 'card', 'action', 'role', 'stage', 'input_sha', 'input_version', 'provider', 'model', 'nonce')
+        fields = ('id', 'card', 'action', 'role', 'stage', 'input_sha', 'input_version', 'provider', 'model', 'nonce', 'session_id')
         if any(not isinstance(job.get(k), str) or not job[k] for k in fields):
             raise ValueError('invalid job')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', job['nonce']):
+            raise ValueError('invalid nonce')
         if any(type(job.get(k)) is not int or job[k] < 0 for k in ('generation', 'round')):
             raise ValueError('invalid job version')
         for key in ('global_cap', 'provider_cap'):
@@ -184,6 +187,8 @@ class Store:
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
                 raise ValueError('revision mismatch')
+            if c.execute('SELECT 1 FROM sessions WHERE id=?', (job['session_id'],)).fetchone() is None:
+                raise ValueError('unknown session')
             active = list(c.execute('SELECT * FROM claims'))
             if len(active) >= claims['global_cap'] or sum(x['provider'] == job['provider'] for x in active) >= claims['provider_cap']:
                 raise ValueError('capacity exhausted')
@@ -278,6 +283,9 @@ class Store:
         if not isinstance(attempt_id, str) or not attempt_id or '/' in attempt_id or attempt_id in ('.', '..'):
             raise ValueError('invalid attempt id')
         root = self.directory / 'artifacts' / attempt_id
+        if len(hashes) > 128 or root.is_symlink() or not root.exists() or root.resolve(strict=True) != root:
+            raise ValueError('unsafe artifact root')
+        total_bytes = 0
         for name, digest in hashes.items():
             if not isinstance(name, str) or not isinstance(digest, str) or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
                 raise ValueError('invalid artifact hash')
@@ -289,6 +297,9 @@ class Store:
                 resolved.relative_to(root.resolve(strict=True))
                 if resolved != path or not resolved.is_file() or resolved.stat().st_size > 1048576:
                     raise ValueError('invalid artifact path')
+                total_bytes += resolved.stat().st_size
+                if total_bytes > 16 * 1048576:
+                    raise ValueError('artifact set too large')
                 if hashlib.sha256(resolved.read_bytes()).hexdigest() != digest:
                     raise ValueError('artifact hash mismatch')
             except (OSError, RuntimeError) as exc:
@@ -318,6 +329,9 @@ class Store:
                 if usage is None:
                     c.execute('UPDATE sessions SET unknown_spend=1 WHERE id=?', (session,))
                 else:
+                    current_spend = c.execute('SELECT known_spend FROM sessions WHERE id=?', (session,)).fetchone()[0]
+                    if not math.isfinite(current_spend + usage['cost_usd']):
+                        raise ValueError('usage total overflow')
                     c.execute('UPDATE sessions SET known_spend=known_spend+? WHERE id=?', (usage['cost_usd'], session))
                 c.execute("UPDATE attempts SET state='result_ready' WHERE id=?", (attempt_id,))
                 self._event('result_recorded', {'attempt_id': attempt_id, 'disposition': disposition})
