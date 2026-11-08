@@ -286,3 +286,22 @@ def test_store_integration_retains_claim():
 
 
 test_store_integration_retains_claim()
+
+
+def test_reject_unsafe_launch_root():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        alias = root / 'alias'
+        target = root / 'target'
+        target.mkdir(mode=0o700)
+        alias.symlink_to(target, target_is_directory=True)
+        runner = Runner(alias, fixture_command=[sys.executable, '-c', 'pass'])
+        try:
+            runner.launch({'attempt_id':'a','nonce':'n'})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('symlinked launch root accepted')
+
+
+test_reject_unsafe_launch_root()
