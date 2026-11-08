@@ -164,6 +164,15 @@ class IntegrationContract(unittest.TestCase):
         self.assertEqual(len(self.adapter.merges), 1)
         self.assertEqual(self.store.integration_lane(), None)
 
+    def test_stopped_recovery_never_starts_an_unmerged_pr(self):
+        effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
+        self.store.acquire_integration_lane('merge-17', '17', 'integration_merge', 'controller-1')
+        self.set_mode('stop')
+        result = self.lane.recover(effect, mode='stopped').result(timeout=2)
+        self.assertIn(result['status'], ('pending', 'attention'))
+        self.assertEqual(self.adapter.merges, [])
+        self.assertIsNotNone(self.store.integration_lane())
+
     def test_recovery_requires_matching_note_pr_head_and_merged_state(self):
         effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
         effect.inject_failure('before_observation_commit')
