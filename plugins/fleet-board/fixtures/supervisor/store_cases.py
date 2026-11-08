@@ -139,6 +139,27 @@ class StoreContract(unittest.TestCase):
             self.store.record_result(dict(envelope, outcome="failure"))
         self.assertEqual(self.store.snapshot(), after)
 
+    def test_retry_tombstone_and_effect_intent_reopen(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 2, "provider_cap": 2, "paths": ["src"]})
+        self.store.increment_retry("j1", self.store.snapshot()["domain"]["revision"])
+        self.store.record_effect({"operation_key": "op1", "job_id": "j1", "generation": 1,
+                                  "preconditions": {"head": "abc"}, "intent": {"kind": "merge"}})
+        other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
+        self.addCleanup(other.close)
+        snapshot = other.snapshot()
+        self.assertEqual(snapshot["jobs"][0]["retries_used"], 1)
+        self.assertEqual(snapshot["effects"][0]["operation_key"], "op1")
+        with self.assertRaises(ValueError):
+            other.increment_retry("j1", snapshot["domain"]["revision"])
+        with self.assertRaises(ValueError):
+            other.record_effect({"operation_key": "op1", "job_id": "j1", "generation": 1,
+                                 "preconditions": {}, "intent": {"kind": "other"}})
+        self.assertEqual(other.snapshot(), snapshot)
+
     def test_backup_includes_uncheckpointed_commits(self):
         self.store.append_event({"type": "fixture", "payload": {"value": 7}})
         destination = self.root / "backup.sqlite3"
