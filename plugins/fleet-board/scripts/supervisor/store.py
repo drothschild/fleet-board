@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import sqlite3
 import stat
 import subprocess
@@ -14,7 +15,8 @@ import sys
 import time
 from pathlib import Path
 
-from .models import canonical_json
+from .models import NeverExecutedEvidence, RetryEvidence, StopEvidence, canonical_json
+from .processes import _boot_id
 
 SCHEMA_VERSION = 1
 
@@ -63,6 +65,22 @@ def _filesystem(path):
     return 'unknown'
 
 
+def _capture_timing(data, now, timeout_seconds, session_deadline):
+    if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise ValueError('invalid attempt timeout')
+    if ('started_at' in data) != ('deadline' in data):
+        raise ValueError('incomplete captured timing')
+    if 'started_at' not in data:
+        deadline = min(now + timeout_seconds, session_deadline)
+        if not math.isfinite(deadline) or deadline <= now:
+            raise ValueError('attempt deadline expired')
+        data.update({'started_at': now, 'deadline': deadline})
+    elif (type(data['started_at']) not in (int, float) or type(data['deadline']) not in (int, float)
+          or not math.isfinite(data['started_at']) or not math.isfinite(data['deadline'])
+          or data['deadline'] <= now or data['deadline'] > session_deadline):
+        raise ValueError('invalid captured timing')
+
+
 def _scope_key(path):
     """Compare ASCII case-insensitively; uncertain Unicode reserves the repo.
 
@@ -73,13 +91,45 @@ def _scope_key(path):
     return path.lower() if path.isascii() else ''
 
 
+def _sync_directory(path):
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _read_private_json(path, limit):
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_size > limit:
+            raise ValueError('unsafe or oversized evidence')
+        raw = stream.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError('oversized evidence')
+    return json.loads(raw)
+
+
 def _private_directory(path):
     path = Path(path).absolute()
     # Refuse symlinks at every existing component, including ancestors.
     for part in (path, *path.parents):
         if part.is_symlink():
             raise ValueError('symlink in runtime path')
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError('unsafe runtime directory')
+        _sync_directory(directory)
+        _sync_directory(directory.parent)
     info = path.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('runtime directory must be private and owned by user')
@@ -88,7 +138,7 @@ def _private_directory(path):
 
 class Store:
     @classmethod
-    def open(cls, domain, filesystem_inspector=None, fault_injector=None):
+    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
         if not all(isinstance(v, str) and v for v in identity.values()):
             raise ValueError('invalid domain identity')
@@ -110,6 +160,7 @@ class Store:
             try:
                 fd = os.open(str(db), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.close(fd)
+                _sync_directory(directory)
             except FileExistsError:
                 pass
         conn = sqlite3.connect(str(db), timeout=30, isolation_level=None)
@@ -158,10 +209,13 @@ class Store:
                 conn.execute('ROLLBACK')
             conn.close()
             raise
-        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector)
+        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier)
 
-    def __init__(self, connection, directory, domain_id, common_dir, fault_injector):
+    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier):
         self.__connection = connection
+        self.__stop_evidence_verifier = stop_evidence_verifier
+        self.__retry_evidence_verifier = retry_evidence_verifier
+        self.__launch_evidence_verifier = launch_evidence_verifier
         self.directory = directory
         self.domain_id = domain_id
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
@@ -196,6 +250,11 @@ class Store:
 
     def prepare_attempt(self, job, expected_revision, claims):
         fields = ('id', 'card', 'action', 'role', 'stage', 'input_sha', 'input_version', 'provider', 'model', 'nonce', 'session_id')
+        reserved = {'state', 'boot_id', 'process_identity', 'started_at', 'deadline', 'heartbeat', 'progress',
+                    'cancel_reason', 'cancel_requested_at', 'cancel_grace_deadline', 'execution_released',
+                    'stop_evidence', 'quarantine_reason', 'retry_at', 'retry_nonce', 'retry_prior', 'suspected_stuck'}
+        if not isinstance(job, dict) or reserved.intersection(job):
+            raise ValueError('reserved attempt lifecycle metadata')
         if any(not isinstance(job.get(k), str) or not job[k] for k in fields):
             raise ValueError('invalid job')
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', job['nonce']):
@@ -225,8 +284,9 @@ class Store:
                 raise ValueError('revision mismatch')
             if c.execute('SELECT 1 FROM sessions WHERE id=?', (job['session_id'],)).fetchone() is None:
                 raise ValueError('unknown session')
-            active = list(c.execute('SELECT * FROM claims'))
-            if len(active) >= claims['global_cap'] or sum(x['provider'] == job['provider'] for x in active) >= claims['provider_cap']:
+            active = list(c.execute('SELECT claims.*,attempts.data AS attempt_data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if json.loads(item['attempt_data']).get('execution_released') is not True]
+            if len(occupied) >= claims['global_cap'] or sum(x['provider'] == job['provider'] for x in occupied) >= claims['provider_cap']:
                 raise ValueError('capacity exhausted')
             for existing in active:
                 if existing['card'] == job['card'] or (lane and existing['merge_lane']):
@@ -268,10 +328,12 @@ class Store:
             raise
 
     def update_attempt(self, attempt_id, details, expected_revision):
-        allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason'}
+        allowed = {'state', 'boot_id', 'process_identity', 'worktree', 'started_at', 'deadline', 'heartbeat', 'progress', 'cancel_reason', 'suspected_stuck'}
         states = {'prepared', 'launching', 'running', 'result_ready', 'reconciled', 'cancel_requested', 'interrupted', 'failed', 'quarantined'}
-        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states):
+        if not isinstance(details, dict) or not details or not set(details) <= allowed or ('state' in details and details['state'] not in states - {'cancel_requested', 'quarantined'}):
             raise ValueError('invalid attempt details')
+        if 'suspected_stuck' in details and type(details['suspected_stuck']) is not bool:
+            raise ValueError('invalid stuck observation')
         canonical_json(details)
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
@@ -281,11 +343,407 @@ class Store:
             row = c.execute('SELECT state,data FROM attempts WHERE id=?', (attempt_id,)).fetchone()
             if row is None:
                 raise ValueError('unknown attempt')
+            if row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
+                raise ValueError('attempt is no longer mutable')
             data = json.loads(row['data'])
+            for field in ('boot_id', 'process_identity'):
+                if field in details and field in data and data[field] != details[field]:
+                    raise ValueError('registered process identity is immutable')
+            for field in ('started_at', 'deadline'):
+                if field in details:
+                    value = details[field]
+                    if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                        raise ValueError('invalid attempt time')
+                    if field in data and data[field] != value:
+                        raise ValueError('attempt time is immutable')
+            combined = dict(data, **details)
+            if 'started_at' in combined and 'deadline' in combined and combined['deadline'] < combined['started_at']:
+                raise ValueError('deadline precedes start')
             data.update(details)
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
             c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def adopt_receipt_identity(self, attempt_id, expected_revision):
+        """Bind a verified old-boot launch receipt without changing attempt authority."""
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            domain = c.execute('SELECT revision FROM domain').fetchone()
+            row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            if type(expected_revision) is not int or domain['revision'] != expected_revision:
+                raise ValueError('revision mismatch')
+            if row['state'] not in ('prepared', 'launching', 'running', 'result_ready',
+                                    'cancel_requested', 'quarantined'):
+                raise ValueError('attempt cannot adopt a launch receipt')
+            data = json.loads(row['data'])
+            has_boot = 'boot_id' in data
+            has_identity = 'process_identity' in data
+            if has_boot != has_identity:
+                raise ValueError('partial process identity')
+
+            attempts = self.directory / 'attempts'
+            path = attempts / attempt_id
+            if attempts.is_symlink() or path.is_symlink() or not path.is_dir():
+                raise ValueError('unsafe attempt evidence path')
+            prepared = _read_private_json(path / 'prepared.json', 65536)
+            receipt = _read_private_json(path / 'receipt.json', 8192)
+            bindings = {'domain_id': self.domain_id, 'job_id': row['job_id'], 'attempt_id': attempt_id,
+                        'nonce': row['nonce'], 'generation': data['generation'], 'input_sha': data['input_sha'],
+                        'role': data['role'], 'stage': data['stage'], 'session_id': data['session_id']}
+            if (not isinstance(prepared, dict) or any(prepared.get(key) != value for key, value in bindings.items())
+                    or type(data.get('started_at')) not in (int, float) or not math.isfinite(data['started_at'])
+                    or type(data.get('deadline')) not in (int, float) or not math.isfinite(data['deadline'])
+                    or data['deadline'] < data['started_at']
+                    or prepared.get('started_at') != data['started_at'] or prepared.get('deadline') != data['deadline']):
+                raise ValueError('prepared launch binding mismatch')
+            if not isinstance(receipt, dict) or set(receipt) != {'state', 'identity'} or receipt['state'] != 'registered':
+                raise ValueError('invalid launch receipt')
+            identity = receipt['identity']
+            if (not isinstance(identity, dict) or set(identity) != {'boot_id', 'pid', 'started_at', 'nonce'}
+                    or not isinstance(identity['boot_id'], str) or not identity['boot_id']
+                    or type(identity['pid']) is not int or identity['pid'] <= 0
+                    or not isinstance(identity['started_at'], str) or not identity['started_at']
+                    or identity['nonce'] != row['nonce']):
+                raise ValueError('invalid receipt identity')
+            try:
+                if identity['boot_id'] == _boot_id():
+                    raise ValueError('receipt is not from a prior boot')
+            except OSError as exc:
+                raise ValueError('boot identity unavailable') from exc
+            if has_boot:
+                if data['boot_id'] != identity['boot_id'] or data['process_identity'] != identity:
+                    raise ValueError('registered process identity is immutable')
+            else:
+                data.update({'boot_id': identity['boot_id'], 'process_identity': identity})
+                c.execute('UPDATE attempts SET data=? WHERE id=?', (canonical_json(data), attempt_id))
+                self._event('receipt_identity_adopted', {'attempt_id': attempt_id})
+            c.execute('COMMIT')
+            return identity
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def begin_recovered_launch(self, attempt_id, evidence, *, now, limits, expected_revision, timeout_seconds=7200):
+        """Commit same-attempt launch intent after trusted proof and fresh admission checks."""
+        if (type(evidence) is not NeverExecutedEvidence or self.__launch_evidence_verifier is None
+                or self.__launch_evidence_verifier(evidence) is not True
+                or type(now) not in (int, float) or not math.isfinite(now) or now < 0
+                or not isinstance(limits, dict) or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
+                or any(type(limits[k]) is not int or limits[k] < 1 for k in ('global_cap', 'provider_cap'))
+                or type(limits['max_cost_usd']) not in (int, float) or not math.isfinite(limits['max_cost_usd']) or limits['max_cost_usd'] <= 0):
+            raise ValueError('untrusted launch evidence or limits')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            domain = c.execute('SELECT revision,desired_mode FROM domain').fetchone()
+            row = c.execute('SELECT attempts.*,jobs.generation AS current_generation,jobs.state AS job_state FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+            claim = c.execute('SELECT 1 FROM claims WHERE attempt_id=?', (attempt_id,)).fetchone()
+            active = list(c.execute('SELECT claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if json.loads(item['data']).get('execution_released') is not True]
+            if (type(expected_revision) is not int or domain['revision'] != expected_revision or domain['desired_mode'] != 'running'
+                    or evidence.domain_id != self.domain_id or evidence.attempt_id != attempt_id or evidence.job_id != row['job_id']
+                    or type(evidence.generation) is not int or evidence.generation != data['generation']
+                    or row['current_generation'] != data['generation'] or row['state'] != 'prepared' or row['job_state'] != 'active'
+                    or session is None or now >= session['deadline'] or session['unknown_spend'] or session['budget_stop']
+                    or session['known_spend'] >= limits['max_cost_usd'] or claim is None
+                    or len(occupied) > limits['global_cap'] or sum(item['provider'] == row['provider'] for item in occupied) > limits['provider_cap']
+                    or c.execute('SELECT 1 FROM effects WHERE job_id=?', (row['job_id'],)).fetchone()
+                    or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()):
+                raise ValueError('recovered launch admission blocked')
+            _capture_timing(data, now, timeout_seconds, session['deadline'])
+            data['state'] = 'launching'
+            c.execute("UPDATE attempts SET state='launching',data=? WHERE id=?", (canonical_json(data), attempt_id))
+            self._event('recovered_launch_started', {'attempt_id': attempt_id})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def _verify_retry_evidence(self, evidence, job_id, attempt):
+        if (type(evidence) is not RetryEvidence or self.__retry_evidence_verifier is None
+                or self.__retry_evidence_verifier(evidence) is not True or evidence.domain_id != self.domain_id
+                or evidence.job_id != job_id or evidence.attempt_id != attempt['id']
+                or type(evidence.generation) is not int or evidence.generation != json.loads(attempt['data'])['generation']):
+            raise ValueError('untrusted retry evidence')
+
+    def schedule_retry(self, job_id, prior_attempt_id, eligibility, retry_at, expected_revision):
+        if type(retry_at) not in (int, float) or not math.isfinite(retry_at) or retry_at < 0:
+            raise ValueError('invalid retry deadline')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            prior = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (prior_attempt_id, job_id)).fetchone()
+            if job is None or prior is None:
+                raise ValueError('unknown retry job')
+            self._verify_retry_evidence(eligibility, job_id, prior)
+            data = json.loads(job['data'])
+            prior_data = json.loads(prior['data'])
+            if job['state'] == 'retry_wait' and data.get('retry_prior') == prior_attempt_id and data.get('retry_at') == retry_at:
+                result = {'attempt_id': data['retry_nonce'], 'retry_at': retry_at}
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                if (job['state'] != 'active' or job['retries_used'] != 0 or prior_data.get('execution_released') is not True
+                        or prior_data.get('cancel_reason') != 'infrastructure' or job['generation'] != prior_data['generation'] + 1
+                        or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                        or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior_attempt_id,)).fetchone()
+                        or c.execute('SELECT 1 FROM claims WHERE attempt_id=?', (prior_attempt_id,)).fetchone() is None):
+                    raise ValueError('retry is not safely eligible')
+                nonce = secrets.token_hex(24)
+                data.update({'retry_prior': prior_attempt_id, 'retry_at': retry_at, 'retry_nonce': nonce})
+                c.execute("UPDATE jobs SET state='retry_wait',retries_used=1,data=? WHERE id=?", (canonical_json(data), job_id))
+                self._event('retry_scheduled', {'job_id': job_id, 'attempt_id': nonce, 'retry_at': retry_at})
+                result = {'attempt_id': nonce, 'retry_at': retry_at}
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def prepare_retry(self, job_id, eligibility, *, now, limits, expected_revision):
+        if (type(now) not in (int, float) or not math.isfinite(now) or now < 0 or not isinstance(limits, dict)
+                or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
+                or any(type(limits[k]) is not int or limits[k] < 1 for k in ('global_cap', 'provider_cap'))
+                or type(limits['max_cost_usd']) not in (int, float) or not math.isfinite(limits['max_cost_usd']) or limits['max_cost_usd'] <= 0):
+            raise ValueError('invalid retry limits')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if job is None:
+                raise ValueError('unknown retry job')
+            data = json.loads(job['data'])
+            prior = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (data.get('retry_prior'), job_id)).fetchone()
+            if prior is None:
+                raise ValueError('missing prior attempt')
+            self._verify_retry_evidence(eligibility, job_id, prior)
+            nonce = data['retry_nonce']
+            domain = c.execute('SELECT desired_mode FROM domain').fetchone()
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+            if (domain['desired_mode'] != 'running' or session is None or now >= session['deadline']
+                    or session['unknown_spend'] or session['budget_stop'] or session['known_spend'] >= limits['max_cost_usd']):
+                raise ValueError('retry admission is blocked')
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or revision != expected_revision:
+                raise ValueError('revision mismatch')
+            existing = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
+            prior_data = json.loads(prior['data'])
+            if (now < data['retry_at'] or job['generation'] != prior_data['generation'] + 1
+                    or prior_data.get('execution_released') is not True
+                    or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                    or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
+                raise ValueError('retry admission is blocked')
+            claim_id = nonce if existing else prior['id']
+            claim = c.execute('SELECT * FROM claims WHERE attempt_id=?', (claim_id,)).fetchone()
+            if claim is None:
+                raise ValueError('missing reservation')
+            active = list(c.execute('SELECT claims.attempt_id,claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if item['attempt_id'] != nonce and json.loads(item['data']).get('execution_released') is not True]
+            if len(occupied) >= limits['global_cap'] or sum(item['provider'] == prior['provider'] for item in occupied) >= limits['provider_cap']:
+                raise ValueError('capacity exhausted')
+            if existing:
+                if (job['state'] != 'active' or existing['state'] != 'prepared'
+                        or json.loads(existing['data']).get('generation') != job['generation']):
+                    raise ValueError('retry is no longer prepared')
+                result = {'attempt_id': nonce}
+            else:
+                if job['state'] != 'retry_wait':
+                    raise ValueError('retry is not waiting')
+                fresh = {key: value for key, value in data.items() if key not in ('retry_prior', 'retry_at', 'retry_nonce')}
+                fresh.update({'nonce': nonce, 'generation': job['generation']})
+                if 'worktree' in prior_data:
+                    fresh['worktree'] = prior_data['worktree']
+                c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (nonce, job_id, nonce, prior['provider'], 'prepared', canonical_json(fresh)))
+                c.execute('UPDATE claims SET attempt_id=?,reservation_revision=? WHERE attempt_id=?', (nonce, revision + 1, prior['id']))
+                c.execute("UPDATE jobs SET state='active' WHERE id=?", (job_id,))
+                self._event('retry_prepared', {'job_id': job_id, 'attempt_id': nonce})
+                result = {'attempt_id': nonce}
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def begin_retry_launch(self, job_id, eligibility, *, now, limits, expected_revision, timeout_seconds=7200):
+        """Recheck current retry admission and commit launch intent atomically."""
+        if (type(now) not in (int, float) or not math.isfinite(now) or now < 0 or not isinstance(limits, dict)
+                or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
+                or any(type(limits[k]) is not int or limits[k] < 1 for k in ('global_cap', 'provider_cap'))
+                or type(limits['max_cost_usd']) not in (int, float) or not math.isfinite(limits['max_cost_usd']) or limits['max_cost_usd'] <= 0):
+            raise ValueError('invalid retry limits')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            domain = c.execute('SELECT * FROM domain').fetchone()
+            job = c.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if job is None:
+                raise ValueError('unknown retry job')
+            data = json.loads(job['data'])
+            prior = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (data.get('retry_prior'), job_id)).fetchone()
+            current = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (data.get('retry_nonce'), job_id)).fetchone()
+            if prior is None or current is None:
+                raise ValueError('missing retry attempt')
+            self._verify_retry_evidence(eligibility, job_id, prior)
+            prior_data, current_data = json.loads(prior['data']), json.loads(current['data'])
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+            claim = c.execute('SELECT 1 FROM claims WHERE attempt_id=?', (current['id'],)).fetchone()
+            active = list(c.execute('SELECT claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if json.loads(item['data']).get('execution_released') is not True]
+            if (type(expected_revision) is not int or domain['revision'] != expected_revision or domain['desired_mode'] != 'running'
+                    or now < data['retry_at'] or job['state'] != 'active' or current['state'] != 'prepared'
+                    or job['generation'] != prior_data['generation'] + 1 or current_data['generation'] != job['generation']
+                    or prior_data.get('execution_released') is not True or claim is None
+                    or session is None or now >= session['deadline'] or session['unknown_spend'] or session['budget_stop']
+                    or session['known_spend'] >= limits['max_cost_usd'] or len(occupied) > limits['global_cap']
+                    or sum(item['provider'] == current['provider'] for item in occupied) > limits['provider_cap']
+                    or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                    or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
+                raise ValueError('retry launch admission blocked')
+            _capture_timing(current_data, now, timeout_seconds, session['deadline'])
+            current_data['state'] = 'launching'
+            c.execute("UPDATE attempts SET state='launching',data=? WHERE id=?", (canonical_json(current_data), current['id']))
+            self._event('retry_launch_started', {'attempt_id': current['id']})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def record_execution_stopped(self, attempt_id, evidence, expected_revision):
+        """Record only a trusted, exactly bound complete-tree observation."""
+        if type(evidence) is not StopEvidence:
+            raise ValueError('untrusted stop evidence')
+        if evidence.kind == 'fixture_complete_tree':
+            if self.__stop_evidence_verifier is None or self.__stop_evidence_verifier(evidence) is not True:
+                raise ValueError('untrusted stop evidence')
+        elif evidence.kind == 'boot_changed':
+            try:
+                if (evidence.free_fixture or not evidence.current_boot_id or evidence.current_boot_id == evidence.boot_id
+                        or _boot_id() != evidence.current_boot_id):
+                    raise ValueError('untrusted boot evidence')
+            except OSError as exc:
+                raise ValueError('boot identity unavailable') from exc
+        else:
+            raise ValueError('untrusted stop evidence')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            identity = data.get('process_identity')
+            expected = {'boot_id': evidence.boot_id, 'pid': evidence.pid, 'started_at': evidence.started_at, 'nonce': evidence.nonce}
+            if (evidence.domain_id != self.domain_id or evidence.job_id != row['job_id'] or evidence.attempt_id != row['id']
+                    or type(evidence.generation) is not int or evidence.generation != data['generation']
+                    or type(evidence.pid) is not int or evidence.pid <= 0 or not evidence.boot_id or not evidence.started_at
+                    or evidence.nonce != row['nonce'] or data.get('boot_id') != evidence.boot_id or identity != expected
+                    or row['state'] not in ('cancel_requested', 'quarantined', 'interrupted', 'result_ready')):
+                raise ValueError('stop evidence identity mismatch')
+            if row['state'] == 'result_ready':
+                result = c.execute('SELECT disposition FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()
+                generation = c.execute('SELECT generation FROM jobs WHERE id=?', (row['job_id'],)).fetchone()[0]
+                if result is None or result['disposition'] != 'current' or generation != evidence.generation:
+                    raise ValueError('result is no longer current')
+            encoded = dict(evidence.__dict__)
+            if data.get('execution_released') is True:
+                if data.get('stop_evidence') != encoded:
+                    raise ValueError('conflicting stop evidence')
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                if type(evidence.free_fixture) is not bool:
+                    raise ValueError('invalid usage evidence')
+                if not evidence.free_fixture and c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone() is None:
+                    if c.execute('UPDATE sessions SET unknown_spend=1 WHERE id=?', (data.get('session_id'),)).rowcount != 1:
+                        raise ValueError('unknown session')
+                data.update({'execution_released': True, 'stop_evidence': encoded})
+                c.execute('UPDATE attempts SET data=? WHERE id=?', (canonical_json(data), attempt_id))
+                if row['state'] == 'cancel_requested' and data.get('cancel_reason') != 'infrastructure':
+                    state = 'cancelled' if data.get('cancel_reason') == 'stop' else 'needs_attention'
+                    c.execute("UPDATE jobs SET state=? WHERE id=? AND generation=? AND state='active'",
+                              (state, row['job_id'], data['generation'] + 1))
+                self._event('execution_stopped', {'attempt_id': attempt_id})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def quarantine_attempt(self, attempt_id, reason, expected_revision):
+        """Fence uncertain work while retaining its execution and scope claim."""
+        if any(not isinstance(x, str) or not x for x in (attempt_id, reason)):
+            raise ValueError('invalid quarantine')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            row = c.execute('SELECT attempts.*, jobs.generation AS current_generation FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            if row['state'] == 'quarantined':
+                if data.get('quarantine_reason') != reason:
+                    raise ValueError('conflicting quarantine')
+            else:
+                if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                    raise ValueError('revision mismatch')
+                if row['state'] in ('reconciled', 'failed', 'interrupted'):
+                    raise ValueError('attempt cannot be quarantined')
+                if row['current_generation'] == data['generation']:
+                    c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (row['job_id'],))
+                data.update({'state': 'quarantined', 'quarantine_reason': reason})
+                c.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?", (canonical_json(data), attempt_id))
+                c.execute("UPDATE jobs SET state='needs_attention' WHERE id=?", (row['job_id'],))
+                self._event('attempt_quarantined', {'attempt_id': attempt_id, 'reason': reason})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def request_cancellation(self, attempt_id, request_id, reason, expected_revision, *, now=None, grace_seconds=30):
+        """Persist cancellation and revoke authority in one transaction before signaling."""
+        if any(not isinstance(x, str) or not x for x in (attempt_id, request_id, reason)):
+            raise ValueError('invalid cancellation')
+        if (now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0)) or type(grace_seconds) not in (int, float) or not math.isfinite(grace_seconds) or grace_seconds <= 0:
+            raise ValueError('invalid cancellation deadline')
+        request = canonical_json({'type': 'cancel_attempt', 'attempt_id': attempt_id,
+                                  'id': request_id, 'reason': reason, 'expected_revision': expected_revision,
+                                  'now': now, 'grace_seconds': grace_seconds})
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request_id,)).fetchone()
+            if prior:
+                if prior['request'] != request:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+            else:
+                revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+                if type(expected_revision) is not int or expected_revision != revision:
+                    raise ValueError('revision mismatch')
+                row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
+                if row is None or row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
+                    raise ValueError('attempt cannot be cancelled')
+                data = json.loads(row['data'])
+                requested_at = time.time() if now is None else now
+                data.update({'state': 'cancel_requested', 'cancel_reason': reason,
+                             'cancel_requested_at': requested_at, 'cancel_grace_deadline': requested_at + grace_seconds})
+                c.execute("UPDATE attempts SET state='cancel_requested',data=? WHERE id=?", (canonical_json(data), attempt_id))
+                c.execute('UPDATE jobs SET generation=generation+1 WHERE id=? AND generation=?', (row['job_id'], data['generation']))
+                result = {'attempt_id': attempt_id, 'revision': revision + 1}
+                c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id, request, canonical_json(result)))
+                self._event('cancellation_requested', {'attempt_id': attempt_id, 'reason': reason})
+            c.execute('COMMIT')
+            return result
         except Exception:
             c.execute('ROLLBACK')
             raise
@@ -439,7 +897,12 @@ class Store:
                 session = original.get('session_id')
                 if not isinstance(session, str) or c.execute('SELECT 1 FROM sessions WHERE id=?', (session,)).fetchone() is None:
                     raise ValueError('unknown session')
-                disposition = 'current' if attempt['current_generation'] == envelope['generation'] else 'stale'
+                disposition = 'current' if attempt['current_generation'] == envelope['generation'] and attempt['state'] not in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled') else 'stale'
+                semantic_failure = disposition == 'current' and envelope['outcome'] != 'success'
+                if semantic_failure:
+                    disposition = 'stale'
+                    c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (attempt['job_id'],))
+                    c.execute("UPDATE attempts SET state='failed' WHERE id=?", (attempt_id,))
                 c.execute('INSERT INTO results VALUES(?,?,?)', (attempt_id, encoded, disposition))
                 if usage is None:
                     c.execute('UPDATE sessions SET unknown_spend=1 WHERE id=?', (session,))
@@ -448,7 +911,8 @@ class Store:
                     if not math.isfinite(current_spend + usage['cost_usd']):
                         raise ValueError('usage total overflow')
                     c.execute('UPDATE sessions SET known_spend=known_spend+? WHERE id=?', (usage['cost_usd'], session))
-                c.execute("UPDATE attempts SET state='result_ready' WHERE id=?", (attempt_id,))
+                if disposition == 'current' and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
+                    c.execute("UPDATE attempts SET state='result_ready' WHERE id=?", (attempt_id,))
                 self._event('result_recorded', {'attempt_id': attempt_id, 'disposition': disposition})
                 result = {'disposition': disposition}
             c.execute('COMMIT')
