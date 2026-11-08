@@ -1,5 +1,6 @@
 """Offline contract cases for journaled supervisor effects."""
 import json
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -37,10 +38,19 @@ class FakeAdapter:
         observation = {'operation_key': intent['operation_key'], 'kind': self.kind,
                        'external_id': 'ext-' + intent['operation_key'],
                        'input_revision': intent.get('input_revision')}
+        if self.kind == 'branch_refresh':
+            observation['input_evidence'] = intent.get('input_evidence')
         self.external[intent['operation_key']] = observation
         if self.fail == 'after':
             raise TimeoutError('injected after mutation')
         return observation
+
+
+def refresh_fields(path='src/reviewed.py'):
+    evidence = {'job_id': 'job-1', 'generation': 1, 'head_sha': 'a' * 40,
+                'input_sha': 'b' * 64, 'changed_paths': [path]}
+    revision = hashlib.sha256(json.dumps(evidence, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return {'input_revision': revision, 'input_evidence': evidence, 'changed_paths': [path]}
 
 
 class Authority:
@@ -184,7 +194,7 @@ class EffectContract(unittest.TestCase):
         for index, kind in enumerate(KINDS):
             with self.subTest(kind=kind):
                 key = 'boundary-' + str(index)
-                fields = {'input_revision': 'validated-v2', 'changed_paths': ['src/change.py']} if kind == 'branch_refresh' else {}
+                fields = refresh_fields('src/change.py') if kind == 'branch_refresh' else {}
                 before, before_adapter, _ = self.prepare(key + '-before', kind, **fields)
                 before.inject_failure('before_mutation')
                 self.assertEqual(before.apply()['status'], 'pending')
@@ -207,21 +217,26 @@ class EffectContract(unittest.TestCase):
 
     def test_branch_refresh_revisions_evidence_without_spending_retry(self):
         effect, adapter, preconditions = self.prepare('refresh-op', 'branch_refresh',
-                                                       input_revision='validated-v2',
-                                                       changed_paths=['src/reviewed.py'])
+                                                       **refresh_fields())
         result = effect.apply()
         self.assertEqual(result['status'], 'observed')
-        self.assertEqual(result['input_revision'], 'validated-v2')
+        self.assertEqual(result['input_revision'], refresh_fields()['input_revision'])
         self.assertEqual(result['invalidated_evidence'], ['review', 'test'])
         stored = json.loads(self.store.snapshot()['effects'][0]['observation'])
-        self.assertEqual(stored['input_revision'], 'validated-v2')
+        self.assertEqual(stored['input_revision'], refresh_fields()['input_revision'])
         self.assertEqual(stored['invalidated_evidence'], ['review', 'test'])
         resumed = Effect(self.store, adapter, self.authority.validate)
         resumed.prepare('refresh-op', preconditions,
-                        {'kind': 'branch_refresh', 'input_revision': 'validated-v2',
-                         'changed_paths': ['src/reviewed.py']})
-        self.assertEqual(resumed.reconcile()['input_revision'], 'validated-v2')
+                        {'kind': 'branch_refresh', **refresh_fields()})
+        self.assertEqual(resumed.reconcile()['input_revision'], refresh_fields()['input_revision'])
         self.assertEqual(self.store.snapshot()['jobs'][0]['retries_used'], 0)
+
+    def test_branch_refresh_rejects_arbitrary_revision_string(self):
+        fields = refresh_fields()
+        fields['input_revision'] = 'trust-me-this-is-new'
+        effect, _, _ = self.prepare('refresh-invalid', 'branch_refresh', **fields)
+        self.assertEqual(effect.apply()['status'], 'pending')
+        self.assertIsNone(self.store.snapshot()['effects'][0]['observation'])
 
     def test_bounded_script_adapter_marks_posts_and_cleans_temporary_reports(self):
         self.assertIsNotNone(BoundedScriptAdapter, 'bounded script adapter is not implemented')
@@ -268,6 +283,100 @@ class EffectContract(unittest.TestCase):
         self.assertIn('parse-report.sh', runner.calls[1][0])
         self.assertEqual(runner.calls[2][1:3], ['17', '23'])
         self.assertEqual(seen, [('report_post', 'report-op'), ('followup_file', 'followup-op')])
+
+    def test_helper_command_vectors_are_allowlisted_and_bounded(self):
+        self.assertIsNotNone(BoundedScriptAdapter, 'bounded script adapter is not implemented')
+        class Result:
+            returncode, stdout, stderr = 0, '{"status":"clean"}', ''
+        calls = []
+        def runner(command, **kwargs):
+            calls.append(command)
+            return Result()
+        adapter = BoundedScriptAdapter(Path(__file__).resolve().parents[2],
+                                       lambda kind, intent: None, runner=runner)
+        worktree, patch, report = (self.root / name for name in ('wt', 'patch.json', 'report.txt'))
+        patch.write_text('{}')
+        report.write_text('fixture')
+        cases = [
+            ({'kind': 'worktree_prepare', 'card': '17', 'operation': 'create',
+              'branch': 'fleet/17-fixture', 'worktree': str(worktree)},
+             ['worktree.sh', 'create', '17', 'fleet/17-fixture', str(worktree)]),
+            ({'kind': 'worktree_prepare', 'card': '17', 'operation': 'review', 'pr': '23'},
+             ['worktree.sh', 'review', '17', '23']),
+            ({'kind': 'branch_refresh', 'card': '17', 'pr': '23',
+              'branch': 'fleet/17-fixture', 'worktree': str(worktree)},
+             ['update-branch.sh', '17', '23', 'fleet/17-fixture', str(worktree)]),
+            ({'kind': 'commit_publication', 'card': '17', 'branch': 'fleet/17-fixture',
+              'worktree': str(worktree)}, ['git', 'push', '--set-upstream', 'origin', 'fleet/17-fixture']),
+            ({'kind': 'pr_create', 'card': '17', 'title': 'Fixture', 'body': 'Body'},
+             ['gh', 'pr', 'create', '--title', 'Fixture', '--body', 'BODY_MARKER',
+              '--base', 'main']),
+            ({'kind': 'pr_update', 'card': '17', 'pr': '23', 'title': 'Fixture', 'body': 'Body'},
+             ['gh', 'pr', 'edit', '23', '--title', 'Fixture', '--body', 'Body', '--base', 'main']),
+            ({'kind': 'note_update', 'card': '17', 'patch_file': str(patch)},
+             ['note.sh', 'merge', '17', str(patch)]),
+            ({'kind': 'card_move', 'card': '17', 'state': 'ready'},
+             ['board-move.sh', '17', 'ready']),
+            ({'kind': 'cleanup', 'card': '17', 'worktree': str(worktree)},
+             ['worktree.sh', 'remove', '17', str(worktree)]),
+        ]
+        for index, (intent, expected_suffix) in enumerate(cases):
+            intent['operation_key'] = 'op' if intent['kind'] == 'pr_create' else 'op-' + str(index)
+            result = adapter._command(intent)
+            command, temporary = result[0], result[2] if len(result) > 2 else None
+            if intent['kind'] == 'pr_create':
+                expected_suffix[6] = 'Body' + chr(10) + chr(10) + 'Controller-Operation: op'
+            normalized = [Path(command[0]).name, *command[1:]]
+            self.assertEqual(normalized[-len(expected_suffix):], expected_suffix)
+            if temporary:
+                Path(temporary).unlink()
+        followup_result = adapter._command({'kind': 'followup_file', 'operation_key': 'followup-op',
+                                            'card': '17', 'pr': '23', 'role': 'reviewer',
+                                            'report_file': str(report)})
+        followup, temporary = followup_result[0], followup_result[2]
+        # follow-up preparation calls parse-report and writes private parsed JSON.
+        self.assertEqual(followup[-3:-1], ['17', '23'])
+        self.assertEqual(Path(temporary).read_text(), '{"status":"clean"}')
+        Path(temporary).unlink()
+
+    def test_review_card_move_routes_before_state_change_and_fails_closed(self):
+        class Result:
+            def __init__(self, returncode=0, stdout='', stderr=''):
+                self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+        class Runner:
+            def __init__(self, fail_route=False):
+                self.calls, self.state, self.fail_route = [], 'ready', fail_route
+            def __call__(self, command, **kwargs):
+                self.calls.append(command)
+                if command[0].endswith('review-stages.sh'):
+                    if not self.fail_route:
+                        self.state = 'routed'
+                    return Result(returncode=1 if self.fail_route else 0)
+                if command[0].endswith('board-move.sh'):
+                    self.state = command[-1]
+                return Result(stdout='ok')
+        def run_case(fail_route):
+            runner = Runner(fail_route)
+            adapter = BoundedScriptAdapter(
+                Path(__file__).resolve().parents[2],
+                lambda kind, intent: ({'operation_key': intent['operation_key'], 'state': runner.state}
+                                      if runner.state == 'in_review' else None),
+                runner=runner)
+            effect = Effect(self.store, adapter, self.authority.validate)
+            effect.prepare('stage-move-' + str(fail_route),
+                           {'card': '17', 'generation': 1, 'card_state': 'ready',
+                            'head': 'head-1', 'note_valid': True},
+                           {'kind': 'card_move', 'card': '17', 'state': 'in_review', 'pr': '23'})
+            outcome = effect.apply()
+            return runner, outcome
+        ok_runner, ok_outcome = run_case(False)
+        self.assertEqual(ok_outcome['status'], 'observed', ok_outcome)
+        self.assertEqual([Path(call[0]).name for call in ok_runner.calls],
+                         ['review-stages.sh', 'board-move.sh'])
+        failed_runner, failed_outcome = run_case(True)
+        self.assertEqual(failed_outcome['status'], 'attention')
+        self.assertEqual([Path(call[0]).name for call in failed_runner.calls], ['review-stages.sh'])
+        self.assertEqual(failed_runner.state, 'ready')
 
 
 if __name__ == '__main__':
