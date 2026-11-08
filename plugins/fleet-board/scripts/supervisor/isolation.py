@@ -39,6 +39,12 @@ def _forged_control_rejection_frame():
     return struct.pack('!I', len(payload)) + payload
 
 
+def _create_probe_symlink(path, target, cleanup_paths):
+    """Register a probe path before creating it so partial setup is cleanable."""
+    cleanup_paths.append(path)
+    path.symlink_to(target)
+
+
 def _private_directory(path, *, create=False):
     path = Path(path)
     if not path.is_absolute():
@@ -285,10 +291,10 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
         tcp_listener.bind(('127.0.0.1', 0))
         tcp_listener.listen(1)
         escape = Path(policy['workspace']) / ('.isolation-probe-escape-' + probe_name)
-        escape.symlink_to(protected['controller_db'][0])
+        _create_probe_symlink(escape, protected['controller_db'][0], workspace_probe_paths)
         own_read = Path(policy['workspace']) / ('.isolation-probe-readable-' + probe_name)
+        workspace_probe_paths.append(own_read)
         own_read.write_text('ok', encoding='utf-8')
-        workspace_probe_paths.extend((escape, own_read))
         publication = probe_root / ('publication-' + probe_name + '.out')
         nc = shutil.which('nc')
         lines = [
@@ -325,8 +331,6 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
                 shlex.quote(str(forged_response_path))))
         script = '\n'.join(lines) + '\n'
         script_path = Path(policy['workspace']) / ('.isolation-probe-' + probe_name + '.sh')
-        script_path.write_text(script, encoding='utf-8')
-        script_path.chmod(0o700)
         workspace_probe_paths.extend((script_path, Path(policy['workspace']) /
                                       ('.isolation-probe-write-' + probe_name),
                                       Path(policy['channels']) /
@@ -334,6 +338,8 @@ def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=No
         if forged_control_path is not None:
             workspace_probe_paths.append(Path(policy['workspace']) /
                                          ('.isolation-probe-forged-received-' + probe_name))
+        script_path.write_text(script, encoding='utf-8')
+        script_path.chmod(0o700)
         completed = subprocess.run(_wrapped_command(['/bin/sh', str(script_path)], policy),
                                    cwd=policy['workspace'], stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
