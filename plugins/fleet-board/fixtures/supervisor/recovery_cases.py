@@ -71,6 +71,38 @@ class RecoveryContract(unittest.TestCase):
         Recovery(self.store).reconcile(now=11)
         self.assertEqual(len(self.store.snapshot()['results']), 1)
 
+    def test_result_ready_live_runner_still_respects_hard_deadline(self):
+        import json
+        import time
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        barrier = self.root / 'release'
+        command = [sys.executable, '-c',
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
+                   str(scratch / 'ready.json')]
+        process = Runner(self.store.directory, fixture_command=command, fixture_finish_barrier=barrier).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        try:
+            result = self.store.directory / 'attempts' / 'n' / 'result.json'
+            limit = time.monotonic() + 8
+            while not result.exists() and time.monotonic() < limit:
+                time.sleep(.02)
+            self.assertTrue(result.exists())
+            self.store.update_attempt('n', {'state': 'running', 'deadline': 10}, self.store.snapshot()['domain']['revision'])
+            Recovery(self.store).reconcile(now=10)
+            snapshot = self.store.snapshot()
+            self.assertEqual(len(snapshot['results']), 1)
+            self.assertEqual(snapshot['attempts'][0]['state'], 'cancel_requested')
+            self.assertEqual(snapshot['jobs'][0]['generation'], 2)
+            control = json.loads((result.parent / 'control.json').read_text())
+            self.assertEqual(control, {'nonce': 'n', 'signal': 'TERM'})
+            self.assertEqual(len(snapshot['claims']), 1)
+        finally:
+            barrier.write_text('release')
+            process.wait(timeout=5)
+
     def test_published_result_is_recorded_when_receipt_is_unavailable(self):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
