@@ -277,6 +277,69 @@ class ProviderCases(unittest.TestCase):
             import shutil
             shutil.rmtree(channel_dir)
 
+    def test_attempt_scoped_result_heartbeat_and_scope_operations(self):
+        request = self.request
+        binding = {
+            "domain_id": "domain-1", "job_id": "job-1", "attempt_id": request.attempt_id,
+            "generation": request.generation, "input_sha": request.input_sha,
+            "role": request.role, "stage": request.stage,
+            "provider": request.provider, "model": request.model,
+        }
+        provider_binding = {key: getattr(request, key) for key in
+                            ("generation", "role", "stage", "provider", "model", "input_sha")}
+        command = self.script(
+            "operations-provider.py",
+            "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'ok','usage':None}))\n",
+        )
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts={request.attempt_id: provider_binding})
+        received = {"heartbeat": [], "result": [], "scope_request": []}
+        handlers = {
+            "heartbeat": lambda payload: received["heartbeat"].append(payload) or {"accepted": True},
+            "result": lambda payload: received["result"].append(payload) or {"accepted": True},
+            "scope_request": lambda payload: received["scope_request"].append(payload) or {
+                "granted": False, "waiting_on": "23", "retry_penalty": False,
+                "attempt_should_exit": True,
+            },
+        }
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-worker-operations-", dir="/private/tmp"))
+        try:
+            with InferenceChannel(broker, channel_dir, (request.attempt_id,)) as channel:
+                channel.bind_attempt_operations(request.attempt_id, binding, handlers)
+                self.assertEqual(channel.operations_for(request.attempt_id),
+                                 ("heartbeat", "result", "scope_request"))
+                bootstrap = prepare_worker_bootstrap(binding, channel, request.to_dict())
+                self.assertEqual(bootstrap["operations"],
+                                 ["heartbeat", "result", "scope_request"])
+                client = InferenceClient(channel.socket_path, request.attempt_id,
+                                         channel.capability_for(request.attempt_id), timeout=3)
+                heartbeat = dict(binding, schema_version=1, at=time.time())
+                self.assertEqual(client.request(heartbeat, operation="heartbeat"), {"accepted": True})
+                result = dict(binding, schema_version=1, outcome="success",
+                              report_path="/trusted/artifacts/attempt-1/report.json",
+                              artifact_hashes={"/trusted/artifacts/attempt-1/report.json": "a" * 64},
+                              usage=None, exit_code=0)
+                self.assertEqual(client.request(result, operation="result"), {"accepted": True})
+                scope = dict(binding, schema_version=1, paths=["src/worker.py"],
+                             expected_revision=7)
+                denied = client.request(scope, operation="scope_request")
+                self.assertFalse(denied["granted"])
+                self.assertFalse(denied["retry_penalty"])
+                self.assertTrue(denied["attempt_should_exit"])
+                with self.assertRaises(ContractError):
+                    client.request(dict(heartbeat, input_sha="0" * 64), operation="heartbeat")
+                with self.assertRaises(ContractError):
+                    client.request(dict(scope, generation=request.generation + 1),
+                                   operation="scope_request")
+                with self.assertRaises(ContractError):
+                    client.request({}, operation="board_merge")
+                self.assertEqual(len(received["heartbeat"]), 1)
+                self.assertEqual(len(received["result"]), 1)
+                self.assertEqual(len(received["scope_request"]), 1)
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
+
     def test_subprocess_stdout_stderr_are_bounded_and_missing_executable_fails(self):
         noisy = self.script("noisy.py", "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('x'*4096)\nsys.stderr.write('y'*4096)\n")
         with self.assertRaises(ContractError):
