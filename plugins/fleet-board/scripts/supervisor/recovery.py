@@ -28,6 +28,8 @@ class NativeInspector:
                 expected = attempt['job_id'] if field == 'job_id' else attempt['id'] if field == 'attempt_id' else original[field]
                 if prepared.get(field) != expected:
                     return {'status': 'unknown'}
+            if any(field in prepared and prepared[field] != original.get(field) for field in ('started_at', 'deadline')):
+                return {'status': 'unknown'}
             result = read_result(path)
             if result is None:
                 try:
@@ -120,12 +122,13 @@ class Recovery:
             if (observation.get('status') == 'never_started' and attempt['state'] == 'prepared'
                     and self.retry_launcher is not None and self.retry_limits is not None):
                 try:
-                    launch_input = self.retry_launcher.prepare(self.store, attempt['id'])
                     self.store.begin_recovered_launch(attempt['id'], observation.get('launch_evidence'), now=now,
-                                                      limits=self.retry_limits, expected_revision=self.store.snapshot()['domain']['revision'])
+                                                      limits=self.retry_limits, expected_revision=self.store.snapshot()['domain']['revision'],
+                                                      timeout_seconds=self.settings['attempt_timeout_seconds'])
                 except (OSError, ValueError):
                     continue
                 try:
+                    launch_input = self.retry_launcher.prepare(self.store, attempt['id'])
                     self.retry_launcher.launch(launch_input)
                 except Exception:
                     self.store.quarantine_attempt(attempt['id'], 'recovered_launch_uncertain', self.store.snapshot()['domain']['revision'])
@@ -161,8 +164,16 @@ class Recovery:
             if observation.get('status') == 'alive' and attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
                 updates = {}
                 identity = observation.get('identity')
-                if isinstance(identity, ProcessIdentity) and 'process_identity' not in data and 'boot_id' not in data:
-                    updates.update({'boot_id': identity.boot_id, 'process_identity': identity.__dict__})
+                if isinstance(identity, ProcessIdentity):
+                    started, deadline = data.get('started_at'), data.get('deadline')
+                    if (type(started) not in (int, float) or type(deadline) not in (int, float)
+                            or not math.isfinite(started) or not math.isfinite(deadline) or deadline < started):
+                        self.store.quarantine_attempt(attempt['id'], 'launch_timing_uncertain', self.store.snapshot()['domain']['revision'])
+                        continue
+                    if 'process_identity' not in data and 'boot_id' not in data:
+                        updates.update({'boot_id': identity.boot_id, 'process_identity': identity.__dict__})
+                    if attempt['state'] in ('prepared', 'launching'):
+                        updates['state'] = 'running'
                 heartbeat = observation.get('heartbeat')
                 if isinstance(heartbeat, dict):
                     at = heartbeat.get('at')
@@ -185,6 +196,8 @@ class Recovery:
                 if updates:
                     self.store.update_attempt(attempt['id'], updates, self.store.snapshot()['domain']['revision'])
                     data.update(updates)
+                    if updates.get('state') == 'running':
+                        attempt = dict(attempt, state='running')
             if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
                 deadline = data.get('deadline')
                 boot_interruption = observation.get('status') == 'stopped' and result is None and observation.get('stop_evidence') is not None
@@ -261,10 +274,11 @@ class Recovery:
                                                             expected_revision=self.store.snapshot()['domain']['revision'])
                         if self.retry_launcher is not None:
                             attempt_id = prepared['attempt_id']
-                            launch_input = self.retry_launcher.prepare(self.store, attempt_id)
                             self.store.begin_retry_launch(job['id'], evidence, now=now, limits=self.retry_limits,
-                                                          expected_revision=self.store.snapshot()['domain']['revision'])
+                                                          expected_revision=self.store.snapshot()['domain']['revision'],
+                                                          timeout_seconds=self.settings['attempt_timeout_seconds'])
                             try:
+                                launch_input = self.retry_launcher.prepare(self.store, attempt_id)
                                 self.retry_launcher.launch(launch_input)
                             except Exception:
                                 self.store.quarantine_attempt(attempt_id, 'retry_launch_uncertain', self.store.snapshot()['domain']['revision'])

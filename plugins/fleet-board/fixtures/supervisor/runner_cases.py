@@ -274,6 +274,7 @@ def test_store_integration_retains_claim():
             store.start_session({'id':'s','started_at':1,'deadline':100,'known_spend':0,'unknown_spend':False,'budget_stop':None})
             job = {'id':'j','card':'1','action':'review','role':'reviewer','stage':'code','round':1,'input_sha':'abc','input_version':'v1','generation':1,'provider':'p','model':'m','nonce':'n','session_id':'s'}
             store.prepare_attempt(job, store.snapshot()['domain']['revision'], {'global_cap':1,'provider_cap':1,'paths':['src']})
+            store.update_attempt('n', {'started_at': 1, 'deadline': 100}, store.snapshot()['domain']['revision'])
             scratch = root / 'scratch'
             scratch.mkdir()
             (scratch / 'report').write_text('{"status":"clean"}')

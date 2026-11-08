@@ -92,6 +92,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         command = [sys.executable, '-c',
                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
@@ -114,6 +115,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)']).launch(
             prepared_from_store(self.store, 'n', scratch))
         try:
@@ -187,6 +189,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         command = [sys.executable, '-c',
                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
@@ -215,6 +218,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store, read_result
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         command = [sys.executable, '-c',
                    "import pathlib,sys,time; time.sleep(.3); pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
@@ -250,6 +254,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         barrier = self.root / 'release'
         command = [sys.executable, '-c',
@@ -295,6 +300,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         barrier = self.root / 'release'
         command = [sys.executable, '-c',
@@ -323,6 +329,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         command = [sys.executable, '-c',
                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
@@ -339,6 +346,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         (scratch / 'report').write_text('{"status":"clean"}')
         command = [sys.executable, '-c',
                    "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
@@ -394,7 +402,7 @@ class RecoveryContract(unittest.TestCase):
         scratch = self.root / 'scratch'
         scratch.mkdir()
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(1)']).launch(
-            prepared_from_store(self.store, 'n', scratch))
+            {'domain_id': self.store.domain_id, 'job_id': 'j', 'attempt_id': 'n', 'nonce': 'n', 'generation': 1, 'input_sha': 'abc', 'role': 'reviewer', 'stage': 'code', 'session_id': 's', 'scratch': str(scratch)})
         try:
             receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
             limit = time.monotonic() + 8
@@ -448,6 +456,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         path = self.store.directory / 'attempts' / 'n'
         path.mkdir(parents=True)
         (path / 'prepared.json').write_text(json.dumps(prepared_from_store(self.store, 'n', scratch)))
@@ -472,6 +481,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(.3)']).launch(
             prepared_from_store(self.store, 'n', scratch))
         receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
@@ -525,6 +535,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(.3)']).launch(
             prepared_from_store(self.store, 'n', scratch))
         receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
@@ -561,6 +572,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 1000}, self.store.snapshot()['domain']['revision'])
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', 'import time; time.sleep(.3)']).launch(
             prepared_from_store(self.store, 'n', scratch))
         receipt = self.store.directory / 'attempts' / 'n' / 'receipt.json'
@@ -635,6 +647,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
         ready, stopped = scratch / 'ready', scratch / 'stopped'
         script = "import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, lambda *_: (pathlib.Path(sys.argv[2]).write_text('term'), sys.exit(0))); pathlib.Path(sys.argv[1]).write_text('ready'); time.sleep(30)"
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', script, str(ready), str(stopped)]).launch(
@@ -666,6 +679,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
         pidfile = scratch / 'grandchild.pid'
         child = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
         parent = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); time.sleep(30)"
@@ -707,6 +721,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
         pidfile = scratch / 'child.pid'
         script = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
         process = Runner(self.store.directory, fixture_command=[sys.executable, '-c', script, str(pidfile)]).launch(
@@ -748,6 +763,7 @@ class RecoveryContract(unittest.TestCase):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
         scratch.mkdir()
+        self.store.update_attempt('n', {'started_at': 1, 'deadline': 10}, self.store.snapshot()['domain']['revision'])
         pidfile = scratch / 'child.pid'
         child_script = "import os,pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); time.sleep(30)"
         script = "import subprocess,sys,time; subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL); time.sleep(30)"

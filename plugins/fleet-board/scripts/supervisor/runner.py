@@ -1,5 +1,6 @@
 """Detached, fixture-only attempt runner. Production execution is not enabled."""
 import json
+import math
 import hashlib
 import fcntl
 import tempfile
@@ -53,17 +54,20 @@ def _publish(path, value):
 
 def prepared_from_store(store, attempt_id, scratch):
     snapshot = store.snapshot()
-    matches = [item for item in snapshot['attempts'] if item['id'] == attempt_id and item['state'] == 'prepared']
+    matches = [item for item in snapshot['attempts'] if item['id'] == attempt_id and item['state'] in ('prepared', 'launching')]
     claims = [item for item in snapshot['claims'] if item['attempt_id'] == attempt_id]
     if len(matches) != 1 or len(claims) != 1:
         raise ValueError('attempt is not prepared with a claim')
     job = json.loads(matches[0]['data'])
     if job['nonce'] != attempt_id or matches[0]['job_id'] != job['id']:
         raise ValueError('inconsistent attempt binding')
+    if (any(type(job.get(key)) not in (int, float) or not math.isfinite(job[key]) for key in ('started_at', 'deadline'))
+            or job['started_at'] < 0 or job['deadline'] <= job['started_at']):
+        raise ValueError('attempt timing is not durable')
     return {'domain_id': store.domain_id, 'job_id': job['id'], 'attempt_id': attempt_id,
             'nonce': job['nonce'], 'generation': job['generation'], 'input_sha': job['input_sha'],
             'role': job['role'], 'stage': job['stage'], 'session_id': job['session_id'],
-            'scratch': str(Path(scratch))}
+            'scratch': str(Path(scratch)), 'started_at': job['started_at'], 'deadline': job['deadline']}
 
 
 def read_result(attempt):
@@ -116,8 +120,12 @@ class Runner:
         binding_fields = {'domain_id', 'job_id', 'generation', 'input_sha', 'role', 'stage', 'session_id'}
         if binding_fields & set(prepared_attempt):
             required = binding_fields | {'attempt_id', 'nonce', 'scratch'}
-            if set(prepared_attempt) != required or attempt_id != nonce:
+            keys = set(prepared_attempt)
+            if keys not in (required, required | {'started_at', 'deadline'}) or attempt_id != nonce:
                 raise ValueError('incomplete attempt binding')
+            if 'started_at' in prepared_attempt and (any(type(prepared_attempt[k]) not in (int, float) or not math.isfinite(prepared_attempt[k]) for k in ('started_at', 'deadline'))
+                                                     or prepared_attempt['deadline'] <= prepared_attempt['started_at']):
+                raise ValueError('invalid attempt timing')
             if any(not isinstance(prepared_attempt[k], str) or not prepared_attempt[k] for k in ('domain_id', 'job_id', 'input_sha', 'role', 'session_id', 'scratch')):
                 raise ValueError('invalid attempt binding')
             if type(prepared_attempt['generation']) is not int or prepared_attempt['generation'] < 0 or (prepared_attempt['stage'] is not None and (not isinstance(prepared_attempt['stage'], str) or not prepared_attempt['stage'])):
