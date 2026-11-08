@@ -72,9 +72,9 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Interfaces:** `ProcessIdentity(boot_id, pid, started_at, nonce)`, `Runner.launch(prepared_attempt)`, `Runner.inspect(identity)`, `Runner.cancel(identity, deadline)`. Runner artifacts use the envelope in the design; provider execution begins only after exclusive attempt registration.
 
 - [ ] Write real fake-process cases: parent exits while child continues; supervisor dies before registration acknowledgement; duplicate launch nonce permits one provider invocation; worker writes a result while notification is lost; provider scratch is deleted after durable artifact ingestion but before notification; partial result file is ignored; result appears before process exit and slot stays held.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-runner.sh` to intended failure; commit tests.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-runner.sh` to intended failure; commit tests.
 - [ ] Implement detached runner/process containment, execution lock and receipt, identity registration, heartbeat/progress channels, bounded logs, immutable artifact ingestion with hashes and safe retention, result validation and atomic publication. Close inherited supervisor-lock/socket descriptors. Separate runner heartbeat from provider progress.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S4 process lifecycle subset. Production provider integration remains disabled.
 
@@ -87,7 +87,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Add liveness cases: heartbeat without progress, legitimate quiet bounded tool, hard deadline, graceful cancellation, TERM-resistant child, uncertain termination, and intentional Stop not consuming/triggering infrastructure retry.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-recovery.sh` to failure; commit tests.
 - [ ] Implement suspected-stuck inspection, generation revocation, TERM/grace/KILL with descendant confirmation, quarantine on uncertainty, and one backoff retry only after safe infrastructure classification. Retain workspace/scope/occupancy until termination is proven. Ordinary semantic failure remains attention, not an infrastructure retry.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S5. Test records must show at most two attempts for one automatically retried job even after multiple restarts.
 
@@ -108,7 +108,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-scheduler.sh` to failure; commit tests.
 - [ ] Implement coalesced bounded cycles, async planning snapshots, fresh precondition checks and atomic claim/attempt preparation. Implement normal priority default plus explicit labels `fleet:priority:high|normal|low`; conflicting priority labels require attention. Age the full combined class-and-priority rank until any eligible card reaches the highest rank, preserving initial eligibility sequence as the tie breaker.
 - [ ] Make deadline and cancellation timers independent of planning completion. Bound concurrent control operations separately; keep status/cancel responsive under saturated worker capacity.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S1, S6, S11. Acceptance uses durable attempt counts and simulated time, not thread timing guesses.
 
@@ -122,7 +122,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Test override rejection while any live/uncertain writer or pending effect exists; successful human release audits identity/reason/revision; stale release command rejected; resume waits for scope, refreshes branch and invalidates evidence; QA remains unchanged.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-reservations.sh` to failure; commit tests.
 - [ ] Implement durable reservation union and command contracts. For providers without enforceable scoped-write mediation, assign repository-wide write ownership; expose the reduced concurrency in status rather than claiming safe disjoint execution. Add unauthorized-write detection and publication hold.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S7 and S4 scope safety. Resume's real branch refresh is supplied by Task 4.1; this phase tests its requested effect contract with an injected deterministic effect adapter.
 
@@ -139,7 +139,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Assert controller-generated operation IDs are separate from untrusted report text and all effect mutations revalidate current authority/generation and card state.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-effects.sh` to failure; commit tests.
 - [ ] Implement bounded subprocess effect adapters and safe observation/replay. No direct filesystem edits to board storage. Uncertain non-idempotent results enter attention. Resume refresh produces a new validated input revision and resets only invalidated review evidence, not infrastructure retry history for unchanged work.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S3, S4, S7, S8. This phase does not claim exactly-once external delivery.
 
@@ -153,7 +153,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Cover head drift, configured review stages, dependency readiness, green CI requirement, post-merge refresh and deferred cleanup. `ok: "true"`, missing `ok`, and `ok: false` are all failure.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-integration.sh` to failure; commit tests.
 - [ ] Implement lane scheduling and effect recovery outside the event loop. Already-merged verification can proceed while paused/stopping; no new merge can. Cleanup cannot remove active/quarantined/pending-QA worktrees.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S1, S3, S8, S11.
 
@@ -167,7 +167,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` to failure; commit tests.
 - [ ] Implement versioned provider adapter contracts, native macOS sandbox policy and Linux bubblewrap isolation with required capability probes, private Git metadata, and a minimal inference-only credential broker. Keep the trusted runner outside the worker boundary and pass only the attempt-scoped result/heartbeat/scope-request channel. Test real access denial on supported hosts separately from injected adapter tests. Unsupported sandbox hosts fail closed; no prompt-only or environment-only fallback. Pin/review external sandbox requirements at execution time using their official documentation linked in the design. Capture provider-level transport/report retries visibly under one attempt, with their existing bounds; never multiply them through an unclassified supervisor retry.
 - [ ] Keep production implementor/fixer activation blocked until re-authored role contracts pass Phase 7. A fake-provider success is not production qualification.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S5, S8, S11 transport subset. No paid calls occur in this task.
 
