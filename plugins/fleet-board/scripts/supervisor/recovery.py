@@ -7,7 +7,8 @@ from .runner import Runner, _read_regular, read_result
 
 class NativeInspector:
     """Read the runner's durable evidence; absence is never proof of termination."""
-    def __init__(self, directory):
+    def __init__(self, directory, domain_id):
+        self.domain_id = domain_id
         self.runner = Runner(directory)
         self.directory = directory
 
@@ -18,13 +19,18 @@ class NativeInspector:
         try:
             original = json.loads(attempt['data'])
             prepared = json.loads(_read_regular(path / 'prepared.json', 65536))
+            if prepared.get('domain_id') != self.domain_id:
+                return {'status': 'unknown'}
             for field in ('job_id', 'attempt_id', 'nonce', 'generation', 'input_sha', 'role', 'stage', 'session_id'):
                 expected = attempt['job_id'] if field == 'job_id' else attempt['id'] if field == 'attempt_id' else original[field]
                 if prepared.get(field) != expected:
                     return {'status': 'unknown'}
             result = read_result(path)
             if result is None:
-                self.runner.resume_publication(attempt['id'])
+                try:
+                    self.runner.resume_publication(attempt['id'])
+                except (OSError, ValueError, TypeError):
+                    pass
                 result = read_result(path)
             if result is not None:
                 return {'status': 'result', 'result': result}
@@ -40,7 +46,7 @@ class NativeInspector:
 class Recovery:
     def __init__(self, store, inspector=None):
         self.store = store
-        self.inspector = inspector if inspector is not None else NativeInspector(store.directory)
+        self.inspector = inspector if inspector is not None else NativeInspector(store.directory, store.domain_id)
 
     def reconcile(self, now):
         snapshot = self.store.snapshot()
