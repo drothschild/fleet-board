@@ -678,7 +678,12 @@ class StoreContract(unittest.TestCase):
                                     boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
         with self.assertRaises(ValueError):
             self.store.record_execution_stopped('n1', dict(verified=True), revision)
-        self.store.record_execution_stopped('n1', proof, revision)
+        with self.assertRaises(ValueError):
+            self.store.record_execution_stopped('n1', proof, revision)
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                             stop_evidence_verifier=lambda candidate: candidate == proof)
+        self.addCleanup(trusted.close)
+        trusted.record_execution_stopped('n1', proof, revision)
         after = self.store.snapshot()
         self.assertTrue(json.loads(after['attempts'][0]['data'])['execution_released'])
         self.assertEqual(len(after['claims']), 1)
