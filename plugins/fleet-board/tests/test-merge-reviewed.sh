@@ -410,7 +410,7 @@ assert_eq "keyed merge: only the exact PR/head merged" "$(cnt "pr merge 34 --rep
 if grep -R -q 'op-12' "$FAKE_GH_DIR/inputs" 2>/dev/null; then pass "keyed merge: operation identity persisted in the manager note"; else fail "keyed merge: operation identity persisted in the manager note" "no note write carried the operation key"; fi
 
 setup_case auto
-KEYED_NOTE="$(jq -c --arg key op-12 '.merge_operation={operation_key:$key,pr:34,head_sha:"abc1234"} | .main_check={commit:"def5678",ok:true,results:[]}' <<<"$CLEAN")"
+KEYED_NOTE="$(jq -c --arg key op-12 '.merge_operation={operation_key:$key,pr:34,head_sha:"abc1234",main_check:{commit:"def5678",ok:true,results:[]}} | .main_check={commit:"def5678",ok:true,results:[]}' <<<"$CLEAN")"
 card 12 in_review "$KEYED_NOTE"
 pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
@@ -429,6 +429,22 @@ mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
 INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234)"
 assert_eq "inspection: prior main verification is not credited to a pending operation" "$(jq -c '.main_check' <<<"$INSPECT")" null
+
+echo "crash after merge with a bound marker recovers through verification only"
+setup_case auto
+INCOMPLETE_NOTE="$(jq -c --arg key op-12 '.merge_operation={operation_key:$key,pr:34,head_sha:"abc1234"}' <<<"$CLEAN")"
+card 12 in_review "$INCOMPLETE_NOTE"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+printf '#!/bin/sh\nprintf "%s %s\\n" "$1" "$2" >> "%s"\nprintf \'{"commit":"abc1234","ok":true,"results":[]}\\n\'\n' "$FX/verify.log" > "$FLEET_BOARD_VERIFY_MAIN"
+chmod +x "$FLEET_BOARD_VERIFY_MAIN"
+finalize
+run_merge --card 12 --operation-key op-12 --pr 34 --head abc1234
+assert_exit "crash recovery: exit 0" 0
+assert_eq "crash recovery: no second merge" "$(cnt "pr merge 34 ")" 0
+assert_eq "crash recovery: main verification reran once" "$(cat "$FX/verify.log")" "12 34"
+if grep -R -q '"ok": true' "$FAKE_GH_DIR/inputs" 2>/dev/null; then pass "crash recovery: operation-bound main result persisted"; else fail "crash recovery: operation-bound main result persisted" "missing note write"; fi
 
 echo ""
 echo "-----------------------------------"
