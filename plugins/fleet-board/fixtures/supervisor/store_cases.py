@@ -49,6 +49,22 @@ class StoreContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.record_command(dict(request, command="stop"))
 
+    def test_default_inspector_accepts_real_local_scratch(self):
+        other = Store.open(self.domain)
+        other.close()
+
+    def test_concurrent_first_open_creates_one_store(self):
+        domain = dict(self.domain, board_identity="new-concurrent-domain")
+        def open_store(_):
+            store = Store.open(domain, filesystem_inspector=lambda path: "local")
+            try:
+                return store.snapshot()["domain"]["id"]
+            finally:
+                store.close()
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+            ids = list(executor.map(open_store, range(8)))
+        self.assertEqual(len(set(ids)), 1)
+
     def test_session_budget_survives_reopen(self):
         self.store.start_session({"id": "s1", "started_at": 1, "deadline": 100,
                                   "known_spend": 2.5, "unknown_spend": True,
