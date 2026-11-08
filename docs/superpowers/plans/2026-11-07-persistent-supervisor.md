@@ -6,11 +6,11 @@
 
 **Baseline:** `db52f9f313adf2d6d5cd6c70c793296a13abb679` (revalidated 2026-11-07; originally `28866b0`). All existing paths below were checked against the original baseline and the intervening PR #200/#207 changes. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
 
-**Status:** Planning only. Every execution checkbox is intentionally unchecked. Numeric policy defaults and internal module/API choices in the design are proposed implementation decisions. This plan defines contracts, sequence, focused verification, and execution gates; it does not assert that the production runner or boot service already exists.
+**Status:** Phase 1 in progress. Configuration and the initial store are implemented behind the disabled supervisor flag; later phases, including the runner and boot service, remain unimplemented.
 
 ## Current-main impact assessment
 
-PR #200 (`bf5152e`) and PR #207 (`db52f9f`) are merged into this planning branch. They affect board rendering/API and server hardening, not the supervisor architecture, phase ordering, retry policy, boot default, or scope lifecycle. Task 5.2 and acceptance coverage now explicitly preserve their behavior. The runtime implementation remains unstarted.
+PR #200 (`bf5152e`) and PR #207 (`db52f9f`) are merged into this planning branch. They affect board rendering/API and server hardening, not the supervisor architecture, phase ordering, retry policy, boot default, or scope lifecycle. Task 5.2 and acceptance coverage now explicitly preserve their behavior. The persistent supervisor runtime remains incomplete.
 
 Reuse the new DOM interaction harness and atomic-import regression suite rather than recreate them. Preserve per-import concurrency independently from execution scheduling. Do not mistake import metadata's atomic rename helper for the flush-and-publish durability required by Task 2.1.
 
@@ -54,10 +54,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Interfaces:** `Store.open(domain)`, `prepare_attempt(job, expected_revision, claims)`, `record_result(envelope)`, `record_command(request)`, `append_event(event)`, `snapshot()`, `backup(destination)`. Transactions own expected-revision checks and claims; callers cannot mutate tables directly.
 
 - [ ] Write persistence/reopen tests for every design record, desired state and session budgets; uniqueness tests for job key, attempt nonce, operation key and command ID; concurrent claim tests using two independent connections.
-- [ ] Add failure cases for schema mismatch, invalid paths/results, foreign identity/generation, and transaction rollback leaving no partial claims. Verify unknown usage remains null/unknown and stale results cannot double-charge usage.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-store.sh` to intended failure; commit tests.
-- [ ] Implement versioned schema, explicit transactions, private runtime directories, WAL/full synchronous settings, local-storage requirement, atomic revision/event writes and SQLite backup API. Make schema migration backup-first and fail closed for future versions.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Add failure cases for schema mismatch, invalid paths/results, foreign identity/generation, and transaction rollback leaving no partial claims. Verify unknown usage remains null/unknown and stale results cannot double-charge usage.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-store.sh` to intended failure; commit tests.
+- [x] Implement versioned schema, explicit transactions, private runtime directories, WAL/full synchronous settings, local-storage requirement, atomic revision/event writes and SQLite backup API. Make schema migration backup-first and fail closed for future versions.
+- [x] Run the focused suite and clean-room check; commit/push.
+
+**Initial schema:** Version 1 is the first supported schema; populated unversioned and future stores fail closed. There are no supported migrations yet; future migrations must use a backup before writing. Report semantics and durable artifact ingestion are runner responsibilities. Scope expansion is Task 3.2.
 
 **Verifies:** S3, S5, S6, S10, S11 durable-state subset. No background service starts in this phase.
 
