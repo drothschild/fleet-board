@@ -9,6 +9,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -309,6 +310,130 @@ class ProviderCases(unittest.TestCase):
                     "ssh_agent", "keychain", "symlink_escape", "loopback_network",
                     "publication", "forged_human_control", "inference_channel"}
         self.assertEqual(set(capability.get("checks", {})), expected)
+
+    def test_host_probe_handles_an_existing_inference_socket(self):
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-existing-channel-", dir="/private/tmp"))
+        protected_sockets = []
+        try:
+            policy = build_policy(self.workspace, self.root / "private-git", channel_dir)
+            controller_db = self.root / "controller.db"
+            controller_db.write_bytes(b"test fixture")
+            board = self.root / "board"
+            board.mkdir()
+            shared_git = self.root / "shared-git"
+            shared_git.mkdir()
+            credentials = self.root / "credentials"
+            credentials.write_bytes(b"test fixture")
+            keychain = self.root / "keychain"
+            keychain.write_bytes(b"test fixture")
+            for name in ("controller", "ssh-agent"):
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                path = self.root / (name + ".sock")
+                listener.bind(str(path))
+                listener.listen(1)
+                protected_sockets.append(listener)
+            protected = {
+                "controller_db": str(controller_db),
+                "controller_socket": str(self.root / "controller.sock"),
+                "board_storage": str(board),
+                "shared_git_metadata": str(shared_git),
+                "host_credentials": [str(credentials)],
+                "ssh_agent": str(self.root / "ssh-agent.sock"),
+                "keychain": [str(keychain)],
+            }
+            with InferenceChannel(
+                    InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                    attempts={"attempt-1": {
+                                        key: getattr(self.request, key) for key in
+                                        ("generation", "role", "stage", "provider", "model", "input_sha")
+                                    }}), channel_dir, ("attempt-1",)) as channel:
+                result = probe_capabilities(policy, inference_socket=channel.socket_path,
+                                            protected_resources=protected)
+                self.assertFalse(result["available"])
+                self.assertNotIn("NameError", result["reason"] or "")
+        finally:
+            import shutil
+            for listener in protected_sockets:
+                listener.close()
+            shutil.rmtree(channel_dir)
+
+    def test_host_probe_requires_complete_real_protected_resource_map(self):
+        policy = build_policy(self.workspace, self.root / "private-git",
+                              self.root / "channels")
+        result = probe_capabilities(policy, protected_resources={"controller_db": str(self.root / "db")})
+        self.assertFalse(result["available"])
+        self.assertIn("protected", result["reason"].lower())
+
+    def test_unauthenticated_connections_do_not_consume_channel_quota(self):
+        command = self.script("quota-provider.py", "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'accepted','usage':None}))\n")
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts={"attempt-1": binding})
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-auth-quota-", dir="/private/tmp"))
+        try:
+            with InferenceChannel(broker, channel_dir, ("attempt-1",)) as channel:
+                for _ in range(channel.MAX_REQUESTS + 1):
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as raw:
+                        raw.settimeout(2)
+                        raw.connect(str(channel.socket_path))
+                client = InferenceClient(channel.socket_path, "attempt-1",
+                                         channel.capability_for("attempt-1"), timeout=3)
+                self.assertEqual(client.infer(self.request.to_dict())["text"], "accepted")
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
+
+    def test_production_launch_requires_durable_deadline_and_cancellation(self):
+        prepared = {
+            "attempt_id": "attempt-1", "generation": 1, "input_sha": self.request.input_sha,
+            "role": "reviewer", "provider": "fake", "model": "fake-v1",
+            "started_at": time.time(), "deadline": time.time() + 60,
+        }
+        runner = Runner(self.root / "runner", production_enabled=True)
+        policy = build_policy(self.workspace, self.root / "private-git", self.root / "channels")
+        fake_channel = object()
+        with patch("supervisor.runner.probe_capabilities", return_value={"available": True}), \
+             patch("supervisor.runner.prepare_private_git"), \
+             patch("supervisor.runner.prepare_worker_bootstrap", return_value={"schema_version": 1}), \
+             patch("supervisor.runner.run_isolated") as isolated:
+            with self.assertRaises((TypeError, ValueError)):
+                runner.launch_production(prepared, ["/usr/bin/true"], policy,
+                                         channel=fake_channel, request={},
+                                         source_repository=self.root)
+            cancel = threading.Event()
+            result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
+                                              channel=fake_channel, request={},
+                                              source_repository=self.root, cancel_event=cancel)
+        self.assertIs(result, isolated.return_value)
+        self.assertAlmostEqual(isolated.call_args.kwargs["timeout"],
+                               prepared["deadline"] - time.time(), delta=1)
+        self.assertIs(isolated.call_args.kwargs["cancel_event"], cancel)
+
+    def test_isolated_worker_deadline_and_cancellation_kill_process_group(self):
+        child_marker = self.root / "cancelled-descendant"
+        ready = self.root / "cancel-descendant-ready"
+        command = [sys.executable] + self.script(
+            "cancel-parent.py",
+            "#!/usr/bin/env python3\nimport pathlib,signal,subprocess,sys,time\nchild=\"import pathlib,signal,sys,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); pathlib.Path(sys.argv[2]).write_text('ready'); time.sleep(.8); pathlib.Path(sys.argv[1]).write_text('alive')\"\np=subprocess.Popen([sys.executable, '-c', child, sys.argv[1], sys.argv[2]])\nwhile not pathlib.Path(sys.argv[2]).exists(): time.sleep(.01)\nwhile True: time.sleep(.05)\n",
+        ) + [str(child_marker), str(ready)]
+        with patch("supervisor.isolation._wrapped_command", return_value=command):
+            with self.assertRaises(IsolationUnavailable):
+                run_isolated(["ignored"], {"workspace": str(self.workspace)},
+                             capability={"available": True}, timeout=.1,
+                             cancel_event=threading.Event())
+            cancellation = threading.Event()
+            timer = threading.Timer(.1, cancellation.set)
+            timer.start()
+            try:
+                with self.assertRaises(IsolationUnavailable):
+                    run_isolated(["ignored"], {"workspace": str(self.workspace)},
+                                 capability={"available": True}, timeout=3,
+                                 cancel_event=cancellation)
+            finally:
+                timer.cancel()
+        time.sleep(.9)
+        self.assertFalse(child_marker.exists(), "cancelled worker descendant survived")
 
     def test_fixture_and_human_control_authority_are_not_worker_capabilities(self):
         policy = build_policy(self.workspace, self.root / "private-git",
