@@ -150,6 +150,12 @@ class Recovery:
                     suspected = (stale_progress or stale_heartbeat) and not bounded_tool
                     if suspected != bool(data.get('suspected_stuck', False)):
                         self.store.update_attempt(attempt['id'], {'suspected_stuck': suspected}, self.store.snapshot()['domain']['revision'])
+                    if suspected and observation.get('activity') == 'confirmed_stall':
+                        revision = self.store.snapshot()['domain']['revision']
+                        self.store.request_cancellation(attempt['id'], 'stall-' + attempt['id'], 'unexplained_stall', revision,
+                                                        now=now, grace_seconds=self.settings['shutdown_grace_seconds'])
+                        attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
+                        data = json.loads(attempt['data'])
                 elif observation.get('status') == 'unknown' and attempt['state'] in ('prepared', 'launching', 'running'):
                     revision = self.store.snapshot()['domain']['revision']
                     self.store.quarantine_attempt(attempt['id'], 'identity_uncertain', revision)
