@@ -726,6 +726,31 @@ class StoreContract(unittest.TestCase):
                                      expected_revision=snapshot['domain']['revision'])
         self.assertEqual(len(restarted.snapshot()['attempts']), 2)
 
+    def test_old_boot_proof_requires_current_stable_boot_identity(self):
+        from supervisor import models
+        import inspect
+        self.assertIn('current_boot_id', inspect.signature(models.StopEvidence).parameters,
+                      'boot-change evidence is not implemented')
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()['domain']['revision'],
+                                   {'global_cap': 1, 'provider_cap': 1, 'paths': ['src']})
+        identity = {'boot_id': 'old', 'pid': 42, 'started_at': 'start', 'nonce': 'n1'}
+        self.store.update_attempt('n1', {'state': 'running', 'boot_id': 'old', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        self.store.request_cancellation('n1', 'cancel', 'infrastructure', self.store.snapshot()['domain']['revision'], now=10)
+        proof = models.StopEvidence(domain_id=self.store.domain_id, job_id='j1', attempt_id='n1', generation=1,
+                                    boot_id='old', pid=42, started_at='start', nonce='n1', kind='boot_changed', current_boot_id='new')
+        revision = self.store.snapshot()['domain']['revision']
+        with mock.patch('supervisor.store._boot_id', return_value='other'):
+            with self.assertRaises(ValueError):
+                self.store.record_execution_stopped('n1', proof, revision)
+        with mock.patch('supervisor.store._boot_id', return_value='new'):
+            self.store.record_execution_stopped('n1', proof, revision)
+        self.assertTrue(json.loads(self.store.snapshot()['attempts'][0]['data'])['execution_released'])
+        self.assertTrue(self.store.snapshot()['sessions'][0]['unknown_spend'])
+
     def test_stopped_attempt_without_usage_marks_original_session_unknown(self):
         from supervisor.models import StopEvidence
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
