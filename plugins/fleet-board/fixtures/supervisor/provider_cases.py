@@ -53,6 +53,18 @@ class ProviderCases(unittest.TestCase):
         with self.assertRaises(ContractError):
             validate_result(self.request, forged)
 
+    def test_result_generation_rejects_json_boolean(self):
+        request = ProviderRequest.create(
+            attempt_id="attempt-1", generation=1, role="reviewer", stage=None,
+            provider="fake", model="fake-v1", input_text="review this",
+        )
+        result = {'schema_version': 1, 'attempt_id': request.attempt_id,
+                  'generation': True, 'input_sha': request.input_sha,
+                  'provider': request.provider, 'model': request.model,
+                  'text': 'clean', 'usage': None}
+        with self.assertRaises(ContractError):
+            validate_result(request, result)
+
     def test_provider_selection_is_explicit_and_attempt_bound(self):
         binding = {key: getattr(self.request, key) for key in
                    ("generation", "role", "stage", "provider", "model", "input_sha")}
