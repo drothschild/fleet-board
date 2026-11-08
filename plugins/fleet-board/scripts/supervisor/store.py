@@ -313,7 +313,7 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
-    def request_cancellation(self, attempt_id, request_id, reason, expected_revision, *, now=None, grace_seconds=5):
+    def request_cancellation(self, attempt_id, request_id, reason, expected_revision, *, now=None, grace_seconds=30):
         """Persist cancellation and revoke authority in one transaction before signaling."""
         if any(not isinstance(x, str) or not x for x in (attempt_id, request_id, reason)):
             raise ValueError('invalid cancellation')

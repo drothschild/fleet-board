@@ -1,5 +1,8 @@
 """Bounded recovery of durable attempts using independently supplied evidence."""
 import json
+import math
+import os
+import signal
 
 from .processes import ProcessIdentity
 from .runner import Runner, _read_regular, read_result
@@ -32,21 +35,39 @@ class NativeInspector:
                 except (OSError, ValueError, TypeError):
                     pass
                 result = read_result(path)
-            if result is not None:
-                return {'status': 'result', 'result': result}
             receipt = json.loads(_read_regular(path / 'receipt.json', 8192))
             identity = ProcessIdentity(**receipt['identity'])
             if identity.nonce != attempt['nonce']:
                 return {'status': 'unknown'}
-            return {'status': self.runner.inspect(identity)}
+            return {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
         except (OSError, ValueError, TypeError, KeyError):
             return {'status': 'unknown'}
 
+    def signal(self, attempt, kind):
+        observation = self.inspect(attempt)
+        identity = observation.get('identity')
+        if observation.get('status') != 'alive' or identity is None or kind not in ('TERM', 'KILL'):
+            return 'unknown'
+        try:
+            if os.getpgid(identity.pid) != identity.pid or self.runner.inspect(identity) != 'alive':
+                return 'unknown'
+            os.killpg(identity.pid, signal.SIGTERM if kind == 'TERM' else signal.SIGKILL)
+        except OSError:
+            return 'unknown'
+        return 'sent'
+
 
 class Recovery:
-    def __init__(self, store, inspector=None):
+    def __init__(self, store, inspector=None, settings=None):
         self.store = store
         self.inspector = inspector if inspector is not None else NativeInspector(store.directory, store.domain_id)
+        self.settings = {'shutdown_grace_seconds': 30, 'heartbeat_timeout_seconds': 60,
+                         'progress_timeout_seconds': 900, 'attempt_timeout_seconds': 7200,
+                         'retry_backoff_seconds': 60}
+        if settings:
+            if not set(settings) <= set(self.settings) or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0 for v in settings.values()):
+                raise ValueError('invalid recovery settings')
+            self.settings.update(settings)
 
     def reconcile(self, now):
         snapshot = self.store.snapshot()
@@ -57,8 +78,24 @@ class Recovery:
                 observation = self.inspector.inspect(attempt)
             except (OSError, ValueError):
                 observation = {'status': 'unknown'}
-            if observation.get('status') == 'result':
-                self.store.record_result(observation['result'])
-            elif observation.get('status') == 'unknown' and attempt['state'] in ('prepared', 'launching', 'running'):
-                revision = self.store.snapshot()['domain']['revision']
-                self.store.update_attempt(attempt['id'], {'state': 'quarantined'}, revision)
+            result = observation.get('result')
+            if result is not None:
+                self.store.record_result(result)
+                attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
+            data = json.loads(attempt['data'])
+            if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready'):
+                deadline = data.get('deadline')
+                if observation.get('status') == 'alive' and type(deadline) in (int, float) and math.isfinite(deadline) and now >= deadline:
+                    revision = self.store.snapshot()['domain']['revision']
+                    self.store.request_cancellation(attempt['id'], 'deadline-' + attempt['id'], 'deadline', revision,
+                                                    now=now, grace_seconds=self.settings['shutdown_grace_seconds'])
+                    attempt = next(x for x in self.store.snapshot()['attempts'] if x['id'] == attempt['id'])
+                    data = json.loads(attempt['data'])
+                elif observation.get('status') == 'unknown' and attempt['state'] in ('prepared', 'launching', 'running'):
+                    revision = self.store.snapshot()['domain']['revision']
+                    self.store.update_attempt(attempt['id'], {'state': 'quarantined'}, revision)
+                    continue
+            if attempt['state'] == 'cancel_requested' and observation.get('status') == 'alive':
+                deadline = data.get('cancel_grace_deadline')
+                if type(deadline) in (int, float) and math.isfinite(deadline):
+                    self.inspector.signal(attempt, 'KILL' if now >= deadline else 'TERM')
