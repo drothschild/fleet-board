@@ -359,8 +359,15 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(len(retried['attempts']), 2)
         self.assertEqual(retried['jobs'][0]['retries_used'], 1)
         self.assertEqual(retried['claims'][0]['attempt_id'], retried['attempts'][1]['id'])
-        Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=17)
-        self.assertEqual(len(trusted.snapshot()['attempts']), 2)
+        reopened = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
+                              stop_evidence_verifier=lambda candidate: candidate == proof,
+                              retry_evidence_verifier=lambda candidate: candidate == eligible)
+        self.addCleanup(reopened.close)
+        Recovery(reopened, retry_limits=limits).reconcile(now=17)
+        Recovery(reopened, retry_limits=limits).reconcile(now=18)
+        self.assertEqual(len(reopened.snapshot()['attempts']), 2)
+        self.assertEqual(reopened.snapshot()['jobs'][0]['retries_used'], 1)
+        self.assertEqual(launcher.counter.read_text(), 'x')
 
     def test_real_managed_child_handles_term_gracefully(self):
         import time
