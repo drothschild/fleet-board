@@ -30,9 +30,9 @@
       </button>
     </div>
     <div class="btn-group" role="group" aria-label="Cards">
-      <button type="button" id="import-btn" class="btn">
-        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 2.5h4.5l2.5 2.5v8.5h-7z M9 2.5v2.5h2.5" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
-        <span>Import plan</span>
+      <button type="button" id="plan-btn" class="btn" aria-expanded="false" aria-controls="planner">
+        <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3.5h10v7H8l-3 2.5v-2.5H3z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" fill="none"/></svg>
+        <span>Plan</span>
       </button>
       <button type="button" id="new-card-btn" class="btn">
         <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.5v9M3.5 8h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
@@ -43,24 +43,29 @@
 </header>
 <pre id="log" class="log" hidden></pre>
 <main id="board" aria-label="Board"></main>
+<section id="planner" class="pl" aria-labelledby="pl-h" hidden>
+  <div class="pl-head">
+    <h2 id="pl-h" class="pl-title">Plan with Claude</h2>
+    <span id="pl-running" class="pl-running" role="status" hidden><span class="active-dot" aria-hidden="true"></span><span>Claude is replying</span></span>
+    <button type="button" id="pl-close" class="btn pl-close">Close</button>
+  </div>
+  <div id="pl-transcript" class="pl-transcript" role="log" aria-label="Conversation"></div>
+  <div class="pl-foot">
+    <textarea id="pl-input" class="pl-input" spellcheck="false" aria-label="Message" placeholder="Describe what to build, or paste a plan"></textarea>
+    <div class="pl-actions">
+      <button type="button" id="pl-draft" class="btn" disabled>Draft cards</button>
+      <button type="button" id="pl-send" class="btn primary">Send</button>
+    </div>
+  </div>
+</section>
 <section id="import" class="imp" aria-labelledby="imp-h" data-phase="edit" hidden>
   <div class="imp-head">
-    <h2 id="imp-h" class="imp-title">Import plan</h2>
+    <h2 id="imp-h" class="imp-title">Draft cards</h2>
     <span id="imp-status" class="imp-status"></span>
-    <label class="imp-target">
-      <span class="sr-only">Create the cards in</span>
-      <select id="imp-target" class="dr-state">
-        <option value="backlog">Backlog</option>
-        <option value="ready">Ready</option>
-      </select>
-    </label>
   </div>
   <div class="imp-main">
-    <div id="imp-drop" class="imp-drop">
-      <textarea id="imp-plan" class="imp-plan" spellcheck="false" aria-label="Plan" placeholder="Paste a plan here, or drop a .md or .txt file"></textarea>
-    </div>
-    <div id="imp-stage" class="imp-stage" hidden>
-      <div id="imp-sheet" class="imp-sheet" aria-hidden="true"><pre class="imp-sheet-text"></pre></div>
+    <div id="imp-stage" class="imp-stage">
+      <div id="imp-sheet" class="imp-sheet" aria-hidden="true"><pre id="imp-sheet-text" class="imp-sheet-text"></pre></div>
       <svg class="imp-arrow" viewBox="0 0 32 16" aria-hidden="true"><path d="M2 8h26M22 3l6 5-6 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
       <div class="imp-result">
         <ol id="imp-grid" class="imp-grid" aria-label="Cards to create"></ol>
@@ -78,9 +83,8 @@
   <div class="imp-foot">
     <label id="imp-embed-row" class="imp-embed" hidden><input type="checkbox" id="imp-embed" checked> embed referenced doc sections</label>
     <div class="imp-actions">
-      <button type="button" id="imp-discard" class="btn">Discard</button>
+      <button type="button" id="imp-discard" class="btn">Back to chat</button>
       <span id="imp-progress" class="imp-progress" role="status" hidden><span class="active-dot" aria-hidden="true"></span><span id="imp-elapsed" class="imp-elapsed"></span><span id="imp-last" class="imp-last"></span></span>
-      <button type="button" id="imp-group" class="btn" disabled>Group with Claude</button>
       <button type="button" id="imp-create" class="btn primary" hidden>Create cards</button>
     </div>
   </div>
