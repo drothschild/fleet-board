@@ -900,6 +900,72 @@ class StoreContract(unittest.TestCase):
         trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
         self.assertTrue(trusted.snapshot()['sessions'][0]['unknown_spend'])
 
+    def test_retry_rejects_unknown_usage_effects_stale_proof_and_lowered_caps(self):
+        from dataclasses import replace
+        from supervisor.models import StopEvidence, RetryEvidence
+        def setup(label, *, free=True, effect=False):
+            root = self.root / label
+            root.mkdir(mode=0o700)
+            domain = {'common_dir': str(root), 'board_backend': 'local', 'board_identity': label,
+                      'runtime_root': str(root / 'runtime')}
+            store = Store.open(domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda _: True,
+                               retry_evidence_verifier=lambda _: True)
+            self.addCleanup(store.close)
+            store.start_session({'id': 's', 'started_at': 1, 'deadline': 100, 'known_spend': 0,
+                                 'unknown_spend': False, 'budget_stop': None})
+            store.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                  'expected_revision': store.snapshot()['domain']['revision']})
+            job = {'id': 'j', 'card': '1', 'action': 'review', 'role': 'reviewer', 'stage': 'code', 'round': 1,
+                   'input_sha': 'abc', 'input_version': 'v1', 'generation': 1, 'provider': 'p', 'model': 'm',
+                   'nonce': 'n', 'session_id': 's'}
+            store.prepare_attempt(job, store.snapshot()['domain']['revision'],
+                                  {'global_cap': 2, 'provider_cap': 2, 'paths': ['src']})
+            identity = {'boot_id': 'boot', 'pid': 42, 'started_at': 'start', 'nonce': 'n'}
+            store.update_attempt('n', {'state': 'running', 'boot_id': 'boot', 'process_identity': identity},
+                                 store.snapshot()['domain']['revision'])
+            if effect:
+                store.record_effect({'operation_key': 'op', 'job_id': 'j', 'generation': 1,
+                                     'preconditions': {}, 'intent': {}})
+                store.observe_effect('op', {'status': 'unknown'}, store.snapshot()['domain']['revision'])
+            store.request_cancellation('n', 'cancel', 'infrastructure', store.snapshot()['domain']['revision'], now=10)
+            proof = StopEvidence(domain_id=store.domain_id, job_id='j', attempt_id='n', generation=1,
+                                 boot_id='boot', pid=42, started_at='start', nonce='n',
+                                 kind='fixture_complete_tree', free_fixture=free)
+            with self.assertRaises(ValueError):
+                store.record_execution_stopped('n', replace(proof, nonce='wrong'), store.snapshot()['domain']['revision'])
+            store.record_execution_stopped('n', proof, store.snapshot()['domain']['revision'])
+            evidence = RetryEvidence(domain_id=store.domain_id, job_id='j', attempt_id='n', generation=1)
+            return store, job, evidence
+        limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
+        unknown, _, evidence = setup('unknown', free=False)
+        unknown.schedule_retry('j', 'n', evidence, retry_at=20, expected_revision=unknown.snapshot()['domain']['revision'])
+        with self.assertRaises(ValueError):
+            unknown.prepare_retry('j', evidence, now=20, limits=limits, expected_revision=unknown.snapshot()['domain']['revision'])
+        effects, _, evidence = setup('effects', effect=True)
+        with self.assertRaises(ValueError):
+            effects.schedule_retry('j', 'n', evidence, retry_at=20, expected_revision=effects.snapshot()['domain']['revision'])
+        capped, job, evidence = setup('caps')
+        capped.schedule_retry('j', 'n', evidence, retry_at=20, expected_revision=capped.snapshot()['domain']['revision'])
+        retry = capped.prepare_retry('j', evidence, now=20, limits=limits, expected_revision=capped.snapshot()['domain']['revision'])
+        prior = next(item for item in capped.snapshot()['attempts'] if item['id'] == 'n')
+        old_proof = StopEvidence(**json.loads(prior['data'])['stop_evidence'])
+        capped.record_execution_stopped('n', old_proof, capped.snapshot()['domain']['revision'])
+        fresh = next(item for item in capped.snapshot()['attempts'] if item['id'] == retry['attempt_id'])
+        self.assertIsNot(json.loads(fresh['data']).get('execution_released'), True)
+        denied = Store.open({'common_dir': str(self.root / 'caps'), 'board_backend': 'local', 'board_identity': 'caps',
+                             'runtime_root': str(self.root / 'caps' / 'runtime')},
+                            filesystem_inspector=lambda _: 'local', retry_evidence_verifier=lambda _: False)
+        self.addCleanup(denied.close)
+        with self.assertRaises(ValueError):
+            denied.prepare_retry('j', evidence, now=21, limits=limits, expected_revision=denied.snapshot()['domain']['revision'])
+        capped.prepare_attempt(dict(job, id='other', card='2', nonce='other', input_sha='def'),
+                               capped.snapshot()['domain']['revision'],
+                               {'global_cap': 2, 'provider_cap': 2, 'paths': ['other']})
+        with self.assertRaises(ValueError):
+            capped.prepare_retry('j', evidence, now=21, limits=limits, expected_revision=capped.snapshot()['domain']['revision'])
+        self.assertEqual(len(capped.snapshot()['attempts']), 3)
+        self.assertEqual(capped.snapshot()['jobs'][0]['retries_used'], 1)
+
     def test_fresh_attempt_rejects_preloaded_lifecycle_authority(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
