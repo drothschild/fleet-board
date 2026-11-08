@@ -153,6 +153,10 @@ assert_code 404 "GET unknown id"
 api POST /api/planner/nope/messages '{"text":"hi"}'
 assert_code 404 "POST unknown id"
 
+echo "Case: the first turn's board context carries the real card data"
+first_argv="$(sed -n 1p "$ARGV_LOG" | tr '\037' '\n')"
+case "$first_argv" in *'"title": "Context card"'*) pass "argv board context holds the created card's title" ;; *) fail "argv board context holds the created card's title" "$first_argv" ;; esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
