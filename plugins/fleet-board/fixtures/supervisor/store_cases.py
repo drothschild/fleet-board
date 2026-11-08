@@ -694,7 +694,7 @@ class StoreContract(unittest.TestCase):
                                trusted.snapshot()['domain']['revision'])
         trusted.request_cancellation('n1', 'cancel', 'infrastructure', trusted.snapshot()['domain']['revision'], now=10)
         proof = models.StopEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1,
-                                    boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree')
+                                    boot_id='boot1', pid=42, started_at='start', nonce='n1', kind='fixture_complete_tree', free_fixture=True)
         trusted.record_execution_stopped('n1', proof, trusted.snapshot()['domain']['revision'])
         eligibility = models.RetryEvidence(domain_id=trusted.domain_id, job_id='j1', attempt_id='n1', generation=1)
         trusted.schedule_retry('j1', 'n1', eligibility, retry_at=20, expected_revision=trusted.snapshot()['domain']['revision'])

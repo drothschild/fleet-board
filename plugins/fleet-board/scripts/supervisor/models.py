@@ -20,6 +20,7 @@ class StopEvidence:
     started_at: str
     nonce: str
     kind: str
+    free_fixture: bool = False
 
 
 @dataclass(frozen=True)

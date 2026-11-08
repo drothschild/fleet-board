@@ -457,6 +457,11 @@ class Store:
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
                     raise ValueError('revision mismatch')
+                if type(evidence.free_fixture) is not bool:
+                    raise ValueError('invalid usage evidence')
+                if not evidence.free_fixture and c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone() is None:
+                    if c.execute('UPDATE sessions SET unknown_spend=1 WHERE id=?', (data.get('session_id'),)).rowcount != 1:
+                        raise ValueError('unknown session')
                 data.update({'execution_released': True, 'stop_evidence': encoded})
                 c.execute('UPDATE attempts SET data=? WHERE id=?', (canonical_json(data), attempt_id))
                 self._event('execution_stopped', {'attempt_id': attempt_id})

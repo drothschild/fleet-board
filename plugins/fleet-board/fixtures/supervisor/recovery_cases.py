@@ -179,7 +179,7 @@ class RecoveryContract(unittest.TestCase):
         self.store.request_cancellation('n', 'infra', 'infrastructure', self.store.snapshot()['domain']['revision'], now=10)
         proof = StopEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1,
                              boot_id=identity['boot_id'], pid=identity['pid'], started_at=identity['started_at'],
-                             nonce=identity['nonce'], kind='fixture_complete_tree')
+                             nonce=identity['nonce'], kind='fixture_complete_tree', free_fixture=True)
         eligible = RetryEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1)
         trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local',
                              stop_evidence_verifier=lambda candidate: candidate == proof,
