@@ -422,7 +422,10 @@ card_input() {
   fi
   if [ -z "$failed" ]; then
     body="$(jq -r '.body // ""' <<<"$read" 2>/dev/null)" || failed="board-read.sh $n (unparsable)"
-    card_labels="$(jq -ce '(.labels // []) | if type == "array" then . else error("invalid labels") end' <<<"$read" 2>/dev/null)" || card_labels='[]'
+    if ! card_labels="$(jq -ce '(.labels // []) | if type == "array" and all(.[]; type == "string") then . else error("invalid labels") end' <<<"$read" 2>/dev/null)"; then
+      card_labels='[]'
+      failed="board-read.sh $n (malformed labels)"
+    fi
     state_revision="$(jq -c '.revision // .updatedAt // null' <<<"$read" 2>/dev/null)" || state_revision=null
   fi
   if [ -z "$failed" ]; then

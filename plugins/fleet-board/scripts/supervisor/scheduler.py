@@ -5,6 +5,8 @@ current claims, validated limits, and an atomic attempt-preparation callback.
 Clock, planning and persistence are injectable so tests never wait on wall time.
 """
 from concurrent.futures import ThreadPoolExecutor
+import copy
+import math
 import threading
 
 
@@ -13,6 +15,41 @@ _ACTION_CLASS = {
     'start_review': 1, 'unblock': 1, 'start': 2,
 }
 _PRIORITY = {'high': 0, 'normal': 1, 'low': 2}
+
+
+class _BoundedExecutor:
+    """Thread pool with a hard bound on running plus queued submissions."""
+    def __init__(self, workers, queue_limit, name):
+        if type(workers) is not int or workers < 1 or type(queue_limit) is not int or queue_limit < 0:
+            raise ValueError('invalid ' + name + ' capacity')
+        self._pool = ThreadPoolExecutor(max_workers=workers)
+        self._slots = threading.BoundedSemaphore(workers + queue_limit)
+        self.name = name
+
+    def submit(self, operation, *args, **kwargs):
+        if not self._slots.acquire(blocking=False):
+            raise RuntimeError(self.name + ' queue is full')
+        try:
+            future = self._pool.submit(operation, *args, **kwargs)
+        except Exception:
+            self._slots.release()
+            raise
+        future.add_done_callback(lambda _future: self._slots.release())
+        return future
+
+    def shutdown(self, wait=False, cancel_futures=True):
+        self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+
+class _SystemTimerDriver:
+    def __init__(self, clock):
+        self.clock = clock
+
+    def call_at(self, when, callback):
+        timer = threading.Timer(max(0, when - self.clock()), callback)
+        timer.daemon = True
+        timer.start()
+        return timer
 
 
 def _scope(path):
@@ -38,24 +75,37 @@ def _overlap(left, right):
 
 class Scheduler:
     """Bounded, thread-safe admissions with fake-clock friendly timing."""
-    def __init__(self, clock=None, state=None, max_workers=4, max_control_workers=2):
+    def __init__(self, clock=None, state=None, max_workers=4, max_control_workers=2,
+                 plan_queue_limit=16, control_queue_limit=16, priority_workers=2,
+                 priority_queue_limit=32, timer_scheduler=None, state_writer=None):
         self.clock = clock or __import__('time').time
-        self.state = dict(state or {})
+        self.state = copy.deepcopy(state or {})
         self.state.setdefault('eligible_since', {})
         self.state.setdefault('rate_limit_since', {})
+        self.state.setdefault('session', None)
         self._lock = threading.RLock()
         self._cycles = threading.Semaphore(1)
-        self._planning = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
-        self._control = ThreadPoolExecutor(max_workers=max(1, int(max_control_workers)))
+        self._planning = _BoundedExecutor(max(1, int(max_workers)), plan_queue_limit, 'planning')
+        self._control = _BoundedExecutor(max(1, int(max_control_workers)), control_queue_limit, 'control')
+        self._priority_control = _BoundedExecutor(max(1, int(priority_workers)), priority_queue_limit, 'priority control')
         self._cycle_future = None
         self._cycle_pending = False
         self._cycle_request = None
         self._limits = None
         self._last_launch = self.state.get('last_launch_at')
+        self._timer_scheduler = timer_scheduler or _SystemTimerDriver(self.clock)
+        self._attempt_timers = {}
+        self._state_writer = state_writer
 
     def close(self):
+        with self._lock:
+            for handles in self._attempt_timers.values():
+                for handle in handles:
+                    _cancel_timer(handle)
+            self._attempt_timers.clear()
         self._planning.shutdown(wait=False, cancel_futures=True)
         self._control.shutdown(wait=False, cancel_futures=True)
+        self._priority_control.shutdown(wait=False, cancel_futures=True)
 
     def reload(self, limits):
         """Atomically install valid limits; invalid reload closes admissions."""
@@ -108,8 +158,98 @@ class Scheduler:
         return future
 
     def control_async(self, operation, *args, **kwargs):
-        """Run bounded control work on capacity separate from planning/workers."""
+        """Submit control work; status/cancel use reserved responsive capacity."""
+        kind = kwargs.pop('kind', 'normal')
+        if kind in ('status', 'cancel'):
+            return self._priority_control.submit(operation, *args, **kwargs)
+        if kind != 'normal':
+            raise ValueError('unknown control operation kind')
         return self._control.submit(operation, *args, **kwargs)
+
+    def watch_attempt(self, attempt, on_deadline=None, on_cancel_grace=None):
+        """Independently schedule deadline and cancel-grace notifications.
+
+        Timer callbacks run even while planning is blocked. They use a reserved
+        control pool; if that bounded pool is saturated, delivery runs directly
+        on the timer thread rather than dropping a cancellation signal.
+        """
+        if not isinstance(attempt, dict) or not isinstance(attempt.get('attempt_id'), str) or not attempt['attempt_id']:
+            raise ValueError('invalid timed attempt')
+        attempt_id = attempt['attempt_id']
+        registrations = []
+        for field, callback in (('deadline', on_deadline), ('cancel_grace_deadline', on_cancel_grace)):
+            when = attempt.get(field)
+            if callback is None or when is None:
+                continue
+            if type(when) not in (int, float) or not math.isfinite(when):
+                raise ValueError('invalid attempt timer')
+            snapshot = copy.deepcopy(attempt)
+
+            def fire(callback=callback, snapshot=snapshot):
+                try:
+                    self._priority_control.submit(callback, copy.deepcopy(snapshot))
+                except RuntimeError:
+                    callback(copy.deepcopy(snapshot))
+
+            registrations.append(self._timer_scheduler.call_at(when, fire))
+        with self._lock:
+            old = self._attempt_timers.pop(attempt_id, [])
+            for handle in old:
+                _cancel_timer(handle)
+            self._attempt_timers[attempt_id] = registrations
+        return len(registrations)
+
+    def cancel_attempt_timers(self, attempt_id):
+        with self._lock:
+            handles = self._attempt_timers.pop(attempt_id, [])
+        for handle in handles:
+            _cancel_timer(handle)
+        return len(handles)
+
+    def begin_session(self, session_id, started_at, deadline, max_cost, known_spend=0, unknown_spend=False):
+        """Persist a new run-session accounting record before admissions."""
+        if not isinstance(session_id, str) or not session_id:
+            raise ValueError('invalid session identity')
+        for value in (started_at, deadline, known_spend):
+            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                raise ValueError('invalid session accounting number')
+        if deadline < started_at or (max_cost is not None and
+                (type(max_cost) not in (int, float) or not math.isfinite(max_cost) or max_cost < 0)):
+            raise ValueError('invalid session limits')
+        if type(unknown_spend) is not bool:
+            raise ValueError('invalid unknown-spend flag')
+        proposed = self.export_state()
+        proposed['session'] = {'id': session_id, 'started_at': started_at, 'deadline': deadline,
+                               'max_cost': max_cost, 'known_spend': known_spend,
+                               'unknown_spend': unknown_spend}
+        self._write_state(proposed)
+
+    def record_spend(self, amount):
+        """Durably add known spend, or permanently mark this session unknown."""
+        proposed = self.export_state()
+        session = proposed.get('session')
+        if not isinstance(session, dict):
+            raise ValueError('no active session')
+        if amount is None:
+            session['unknown_spend'] = True
+        elif type(amount) in (int, float) and math.isfinite(amount) and amount >= 0:
+            session['known_spend'] += amount
+        else:
+            raise ValueError('invalid spend amount')
+        self._write_state(proposed)
+
+    def session_snapshot(self):
+        return copy.deepcopy(self.state.get('session'))
+
+    def export_state(self):
+        return copy.deepcopy(self.state)
+
+    def _write_state(self, proposed):
+        if self._state_writer is None:
+            raise RuntimeError('durable state writer is required for session accounting')
+        with self._lock:
+            self._state_writer(copy.deepcopy(proposed))
+            self.state = proposed
 
     def due_timers(self, attempts, now=None):
         """Return expired attempt deadlines and cancellation grace timers."""
@@ -137,21 +277,42 @@ class Scheduler:
         try:
             _validate_limits(limits)
         except (TypeError, ValueError):
-            return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.state.copy()}
+            return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
+        limits = self._limits_with_session(limits)
+        try:
+            _validate_limits(limits)
+        except (TypeError, ValueError):
+            return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
         with self._cycles, self._lock:
             return self._admit_locked(candidates, active, limits, validate, prepare, now)
+
+    def _limits_with_session(self, limits):
+        if not isinstance(limits, dict):
+            return limits
+        session = self.state.get('session')
+        if not isinstance(session, dict):
+            return limits
+        effective = dict(limits)
+        supplied_deadline = effective.get('session_deadline', session['deadline'])
+        effective['session_deadline'] = min(supplied_deadline, session['deadline'])
+        supplied_cost = effective.get('max_cost')
+        effective['max_cost'] = session['max_cost'] if supplied_cost is None else (
+            supplied_cost if session['max_cost'] is None else min(supplied_cost, session['max_cost']))
+        effective['known_spend'] = max(effective.get('known_spend', 0), session['known_spend'])
+        effective['unknown_spend'] = bool(effective.get('unknown_spend', False) or session['unknown_spend'])
+        return effective
 
     def _admit_locked(self, candidates, active, limits, validate, prepare, now):
         eligible, attention, waits = [], [], []
         if limits.get('unknown_spend'):
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
-                    'stop_reason': 'provider spend is unknown', 'state': self.state.copy()}
+                    'stop_reason': 'provider spend is unknown', 'state': self.export_state()}
         if now >= limits.get('session_deadline', float('inf')):
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
-                    'stop_reason': 'session deadline reached', 'state': self.state.copy()}
+                    'stop_reason': 'session deadline reached', 'state': self.export_state()}
         if limits.get('max_cost') is not None and limits.get('known_spend', 0) >= limits['max_cost']:
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
-                    'stop_reason': 'session cost limit reached', 'state': self.state.copy()}
+                    'stop_reason': 'session cost limit reached', 'state': self.export_state()}
         seen = set(self.state['eligible_since'])
         for original in candidates:
             c = dict(original)
@@ -198,10 +359,10 @@ class Scheduler:
                 waits.append({'number': number, 'reason': 'provider spend is unknown'}); continue
             if now >= limits.get('session_deadline', float('inf')):
                 return {'admitted': admitted, 'active': occupied, 'attention': attention, 'waits': waits,
-                        'stop_reason': 'session deadline reached', 'state': self.state.copy()}
+                        'stop_reason': 'session deadline reached', 'state': self.export_state()}
             if limits.get('max_cost') is not None and limits.get('known_spend', 0) >= limits['max_cost']:
                 return {'admitted': admitted, 'active': occupied, 'attention': attention, 'waits': waits,
-                        'stop_reason': 'session cost limit reached', 'state': self.state.copy()}
+                        'stop_reason': 'session cost limit reached', 'state': self.export_state()}
             retry_at = limits.get('retry_at', {}).get(str(number))
             if retry_at is not None and now < retry_at:
                 waits.append({'number': number, 'reason': 'retry backoff', 'until': retry_at}); continue
@@ -258,8 +419,15 @@ class Scheduler:
         self.state['last_launch_at'] = self._last_launch
         return {'admitted': [{k:v for k,v in c.items() if not k.startswith('_')} for c in admitted],
                 'active': occupied, 'attention': attention, 'waits': waits, 'stop_reason': None,
-                'state': {'eligible_since': dict(self.state['eligible_since']),
-                          'rate_limit_since': dict(self.state['rate_limit_since']), 'last_launch_at': self._last_launch}}
+                'state': self.export_state()}
+
+
+def _cancel_timer(handle):
+    cancel = getattr(handle, 'cancel', None)
+    if callable(cancel):
+        cancel()
+    elif isinstance(handle, dict):
+        handle['cancelled'] = True
 
 
 def _validate_limits(limits):
