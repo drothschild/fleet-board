@@ -1,6 +1,7 @@
 """Offline contract cases for the transactional supervisor store."""
 import os
 import concurrent.futures
+import hashlib
 import sys
 import unittest
 from pathlib import Path
@@ -110,6 +111,43 @@ class StoreContract(unittest.TestCase):
             self.store.prepare_attempt(dict(job, id="j2", card="2", nonce="n2"), before["domain"]["revision"],
                                        {"global_cap": 1, "provider_cap": 1, "paths": ["elsewhere"]})
         self.assertEqual(self.store.snapshot(), before)
+
+    def test_result_replay_and_unknown_usage(self):
+        self.store.start_session({"id": "s1", "started_at": 1, "deadline": 100,
+                                  "known_spend": 0, "unknown_spend": False, "budget_stop": None})
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer",
+               "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
+               "generation": 1, "provider": "p", "model": "m", "nonce": "n1", "session_id": "s1"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        artifacts = self.store.directory / "artifacts" / "n1"
+        artifacts.mkdir(parents=True, mode=0o700)
+        report = artifacts / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": None, "exit_code": 0}
+        result = self.store.record_result(envelope)
+        after = self.store.snapshot()
+        self.assertTrue(after["sessions"][0]["unknown_spend"])
+        self.assertEqual(after["sessions"][0]["known_spend"], 0)
+        self.assertEqual(len(after["claims"]), 1)
+        self.assertEqual(self.store.record_result(envelope), result)
+        self.assertEqual(self.store.snapshot(), after)
+        with self.assertRaises(ValueError):
+            self.store.record_result(dict(envelope, outcome="failure"))
+        self.assertEqual(self.store.snapshot(), after)
+
+    def test_backup_includes_uncheckpointed_commits(self):
+        self.store.append_event({"type": "fixture", "payload": {"value": 7}})
+        destination = self.root / "backup.sqlite3"
+        self.store.backup(destination)
+        import sqlite3
+        with sqlite3.connect(str(destination)) as backup:
+            self.assertEqual(backup.execute("SELECT type FROM events").fetchone()[0], "fixture")
+        with self.assertRaises(ValueError):
+            self.store.backup(self.store.directory / "store.sqlite3")
 
     def test_rejects_nonlocal_storage(self):
         with self.assertRaises(ValueError):
