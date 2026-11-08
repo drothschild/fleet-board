@@ -19,6 +19,18 @@ from .models import canonical_json
 SCHEMA_VERSION = 1
 
 
+SCHEMA = '''
+                    CREATE TABLE domain (id TEXT PRIMARY KEY, identity TEXT NOT NULL, desired_mode TEXT NOT NULL, phase TEXT NOT NULL, revision INTEGER NOT NULL, config_hash TEXT, service_version TEXT);
+                    CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL, deadline REAL NOT NULL, known_spend REAL NOT NULL, unknown_spend INTEGER NOT NULL, budget_stop TEXT);
+                    CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
+                    CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
+                    CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL, reservation_revision INTEGER NOT NULL);
+                    CREATE TABLE effects (operation_key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), card TEXT NOT NULL, generation INTEGER NOT NULL, preconditions TEXT NOT NULL, intent TEXT NOT NULL, observation TEXT, status TEXT NOT NULL);
+                    CREATE TABLE results (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), envelope TEXT NOT NULL, disposition TEXT NOT NULL);
+                    CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
+                    CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
+                    PRAGMA user_version=1;'''
+
 def _filesystem(path):
     """Classify filesystems conservatively: unknown types are not safe for WAL."""
     if sys.platform == 'darwin':
@@ -101,34 +113,24 @@ class Store:
             if version == 0:
                 if conn.execute("SELECT count(*) FROM sqlite_master WHERE type='table'").fetchone()[0]:
                     raise ValueError('unversioned supervisor database is not empty')
-                schema = '''
-                    CREATE TABLE domain (id TEXT PRIMARY KEY, identity TEXT NOT NULL, desired_mode TEXT NOT NULL, phase TEXT NOT NULL, revision INTEGER NOT NULL, config_hash TEXT, service_version TEXT);
-                    CREATE TABLE sessions (id TEXT PRIMARY KEY, started_at REAL NOT NULL, deadline REAL NOT NULL, known_spend REAL NOT NULL, unknown_spend INTEGER NOT NULL, budget_stop TEXT);
-                    CREATE TABLE jobs (id TEXT PRIMARY KEY, logical_key TEXT UNIQUE NOT NULL, card TEXT NOT NULL, generation INTEGER NOT NULL, input_sha TEXT NOT NULL, role TEXT NOT NULL, stage TEXT NOT NULL, state TEXT NOT NULL, retries_used INTEGER NOT NULL, data TEXT NOT NULL);
-                    CREATE TABLE attempts (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), nonce TEXT UNIQUE NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL, data TEXT NOT NULL);
-                    CREATE TABLE claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), card TEXT NOT NULL, provider TEXT NOT NULL, paths TEXT NOT NULL, merge_lane INTEGER NOT NULL, reservation_revision INTEGER NOT NULL);
-                    CREATE TABLE effects (operation_key TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), card TEXT NOT NULL, generation INTEGER NOT NULL, preconditions TEXT NOT NULL, intent TEXT NOT NULL, observation TEXT, status TEXT NOT NULL);
-                    CREATE TABLE results (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id), envelope TEXT NOT NULL, disposition TEXT NOT NULL);
-                    CREATE TABLE commands (id TEXT PRIMARY KEY, request TEXT NOT NULL, outcome TEXT NOT NULL);
-                    CREATE TABLE events (sequence INTEGER PRIMARY KEY AUTOINCREMENT, timestamp REAL NOT NULL, type TEXT NOT NULL, payload TEXT NOT NULL);
-                    PRAGMA user_version=1;'''
-                for statement in schema.split(';'):
+                for statement in SCHEMA.split(';'):
                     if statement.strip():
                         conn.execute(statement)
-            required_columns = {
-                'domain': {'id', 'identity', 'desired_mode', 'phase', 'revision', 'config_hash', 'service_version'},
-                'sessions': {'id', 'started_at', 'deadline', 'known_spend', 'unknown_spend', 'budget_stop'},
-                'jobs': {'id', 'logical_key', 'card', 'generation', 'input_sha', 'role', 'stage', 'state', 'retries_used', 'data'},
-                'attempts': {'id', 'job_id', 'nonce', 'provider', 'state', 'data'},
-                'claims': {'attempt_id', 'card', 'provider', 'paths', 'merge_lane', 'reservation_revision'},
-                'effects': {'operation_key', 'job_id', 'card', 'generation', 'preconditions', 'intent', 'observation', 'status'},
-                'results': {'attempt_id', 'envelope', 'disposition'},
-                'commands': {'id', 'request', 'outcome'},
-                'events': {'sequence', 'timestamp', 'type', 'payload'},
-            }
-            for table, columns in required_columns.items():
-                if {row[1] for row in conn.execute('PRAGMA table_info(' + table + ')')} != columns:
-                    raise ValueError('corrupt supervisor schema: ' + table)
+            # The stored table SQL includes primary, unique, foreign-key and
+            # nullability constraints. Compare against SQLite's own rendering of
+            # this version's trusted schema, rather than only column names.
+            expected = sqlite3.connect(':memory:')
+            try:
+                for statement in SCHEMA.split(';'):
+                    if statement.strip():
+                        expected.execute(statement)
+                query = "SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                actual_tables = [tuple(row) for row in conn.execute(query)]
+                expected_tables = list(expected.execute(query))
+                if actual_tables != expected_tables:
+                    raise ValueError('corrupt supervisor schema')
+            finally:
+                expected.close()
             if conn.execute('PRAGMA quick_check').fetchone()[0] != 'ok' or conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
                 raise ValueError('corrupt supervisor database')
             conn.execute('COMMIT')
