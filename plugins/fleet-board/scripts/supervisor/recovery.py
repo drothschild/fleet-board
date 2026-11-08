@@ -35,11 +35,14 @@ class NativeInspector:
                 except (OSError, ValueError, TypeError):
                     pass
                 result = read_result(path)
-            receipt = json.loads(_read_regular(path / 'receipt.json', 8192))
-            identity = ProcessIdentity(**receipt['identity'])
-            if identity.nonce != attempt['nonce']:
-                return {'status': 'unknown'}
-            return {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
+            try:
+                receipt = json.loads(_read_regular(path / 'receipt.json', 8192))
+                identity = ProcessIdentity(**receipt['identity'])
+                if identity.nonce != attempt['nonce']:
+                    raise ValueError('receipt nonce mismatch')
+                return {'status': self.runner.inspect(identity), 'result': result, 'identity': identity}
+            except (OSError, ValueError, TypeError, KeyError):
+                return {'status': 'unknown', 'result': result}
         except (OSError, ValueError, TypeError, KeyError):
             return {'status': 'unknown'}
 
