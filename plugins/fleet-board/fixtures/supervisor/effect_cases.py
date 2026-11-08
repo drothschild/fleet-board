@@ -16,7 +16,7 @@ except ModuleNotFoundError as exc:
 ROOT = Path(sys.argv.pop()).resolve()
 KINDS = ('worktree_prepare', 'branch_refresh', 'commit_publication', 'pr_create',
          'pr_update', 'report_post', 'note_update', 'card_move', 'followup_file', 'cleanup')
-NON_IDEMPOTENT = {'commit_publication', 'pr_create', 'report_post', 'followup_file'}
+NON_IDEMPOTENT = {'branch_refresh', 'commit_publication', 'pr_create', 'report_post', 'followup_file'}
 
 
 class FakeAdapter:
@@ -33,7 +33,8 @@ class FakeAdapter:
         self.calls.append(intent['operation_key'])
         if self.fail == 'before':
             raise OSError('injected before mutation')
-        observation = {'kind': self.kind, 'external_id': 'ext-' + intent['operation_key'],
+        observation = {'operation_key': intent['operation_key'], 'kind': self.kind,
+                       'external_id': 'ext-' + intent['operation_key'],
                        'input_revision': intent.get('input_revision')}
         self.external[intent['operation_key']] = observation
         if self.fail == 'after':
@@ -177,6 +178,30 @@ class EffectContract(unittest.TestCase):
         self.assertEqual(adapter.calls, ['note-op'])
         self.assertEqual(effect.reconcile()['status'], 'observed')
         self.assertEqual(adapter.calls, ['note-op'])
+
+    def test_fault_boundaries_cover_every_external_mutation(self):
+        for index, kind in enumerate(KINDS):
+            with self.subTest(kind=kind):
+                key = 'boundary-' + str(index)
+                before, before_adapter, _ = self.prepare(key + '-before', kind)
+                before.inject_failure('before_mutation')
+                self.assertEqual(before.apply()['status'], 'pending')
+                self.assertEqual(before_adapter.calls, [])
+
+                after_adapter = FakeAdapter(kind)
+                after, _, _ = self.prepare(key + '-after', kind, after_adapter)
+                after.inject_failure('after_mutation')
+                result = after.apply()
+                self.assertEqual(result['status'], 'attention' if kind in NON_IDEMPOTENT else 'pending')
+                self.assertEqual(after_adapter.calls, [key + '-after'])
+
+                observe_adapter = FakeAdapter(kind)
+                observe, _, _ = self.prepare(key + '-observe', kind, observe_adapter)
+                observe.inject_failure('before_observation_commit')
+                self.assertEqual(observe.apply()['status'], 'pending')
+                self.assertEqual(observe_adapter.calls, [key + '-observe'])
+                self.assertEqual(observe.reconcile()['status'], 'observed')
+                self.assertEqual(observe_adapter.calls, [key + '-observe'])
 
     def test_branch_refresh_revisions_evidence_without_spending_retry(self):
         effect, _, _ = self.prepare('refresh-op', 'branch_refresh', input_revision='validated-v2',
