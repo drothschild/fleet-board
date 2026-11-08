@@ -372,16 +372,25 @@ def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_
         if process is not None:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
+            except OSError:
+                pass
+            try:
                 process.wait(timeout=.3)
-            except (OSError, subprocess.TimeoutExpired):
+            except subprocess.TimeoutExpired:
+                pass
+            try:
+                os.killpg(process.pid, 0)
+            except OSError:
+                pass
+            else:
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
                 except OSError:
                     pass
-                try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    pass
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
         raise
     finally:
         selector.close()
