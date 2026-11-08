@@ -698,6 +698,72 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     return out
 
 
+DEPENDS_HEADING_RE = re.compile(r"^#{1,6}\s*depends on\s*$", re.I)
+DEPENDS_BULLET_RE = re.compile(r"^\s*[-*]\s*#(\d+)\b")
+PR_STATES = ("open", "draft", "merged", "closed")
+
+
+def depends_on(body) -> list:
+    """Card numbers listed as "#n" bullets under a "## Depends on" heading."""
+    nums, on = [], False
+    for line in (body if isinstance(body, str) else "").split("\n"):
+        if re.match(r"^#{1,6}\s", line):
+            on = bool(DEPENDS_HEADING_RE.match(line))
+            continue
+        m = on and DEPENDS_BULLET_RE.match(line)
+        if m and int(m.group(1)) not in nums:
+            nums.append(int(m.group(1)))
+    return nums
+
+
+def board_context(cache: dict = None) -> list:
+    """The planner's snapshot: every card with state, labels, depends_on, PR and review round.
+
+    One subprocess lists every state through board-list.sh; card details come from
+    the store. Pass the same dict as `cache` to reuse one snapshot for a planner turn.
+    """
+    if cache is not None and "snapshot" in cache:
+        return cache["snapshot"]
+    cfg, dir = ctx()
+    prog = (
+        '. "$1/board-lib.sh" && fb_load_config || exit $?; '
+        'for s in $FB_STATES; do bash "$1/board-list.sh" "$s" || exit $?; done'
+    )
+    rc, out, err = run_script(APP["root"], ["bash", "-c", prog, "board-list", APP["scripts"]])
+    if rc != 0:
+        raise ApiError(500, err.rstrip("\n") or "board-list exited %d" % rc)
+    listed = set()
+    for line in out.splitlines():
+        try:
+            items = json.loads(line)
+        except ValueError:
+            continue
+        for item in items if isinstance(items, list) else []:
+            if isinstance(item, dict) and isinstance(item.get("number"), int):
+                listed.add(item["number"])
+    snapshot = []
+    for card in read_cards(dir):
+        n = card.get("number")
+        if listed and n not in listed:
+            continue
+        note = parse_note(card) or {}
+        pr = note.get("pr")
+        has_pr = isinstance(pr, int) and not isinstance(pr, bool)
+        pr_state = note.get("pr_state")
+        snapshot.append({
+            "number": n,
+            "title": card.get("title"),
+            "state": card.get("state"),
+            "labels": card.get("labels") or [],
+            "depends_on": depends_on(card.get("body")),
+            "pr": {"number": pr, "state": pr_state if pr_state in PR_STATES else "open"} if has_pr else None,
+            "round": note.get("round"),
+        })
+    if cache is not None:
+        cache["snapshot"] = snapshot
+    return snapshot
+
+
 def get_board(params, body):
     cfg, dir = ctx()
     alive = run_alive()  # one liveness check per request
