@@ -93,6 +93,25 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(result["attempt_id"], self.request.attempt_id)
         self.assertIsNone(result["usage"])
 
+    def test_broker_deduplicates_request_ids_and_records_unknown_usage(self):
+        calls = self.root / "provider-calls"
+        command = self.script("counting-provider.py", "#!/usr/bin/env python3\nimport json,os,sys\nr=json.load(sys.stdin)\nwith open(os.environ['CALLS'], 'a') as f: f.write('call\\n')\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'clean','usage':None}))\n")
+        binding = {key: getattr(self.request, key) for key in
+                   ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts={"attempt-1": binding},
+                                 trusted_environment={"CALLS": str(calls)})
+        request = dict(self.request.to_dict(), request_id="call-1")
+        result = broker.infer(request, timeout=3)
+        self.assertIsNone(result["usage"])
+        with self.assertRaises(ContractError):
+            broker.infer(request, timeout=3)
+        self.assertEqual(calls.read_text(encoding="utf-8").splitlines(), ["call"])
+        record = broker.accounting_for("attempt-1")
+        self.assertEqual(len(record), 1)
+        self.assertEqual(record[0]["request_id"], "call-1")
+        self.assertIsNone(record[0]["usage"])
+
     def test_local_channel_authenticates_attempt_and_exposes_inference_only(self):
         command = self.script("channel-provider.py", "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'channel result','usage':None}))\n")
         binding = {key: getattr(self.request, key) for key in
