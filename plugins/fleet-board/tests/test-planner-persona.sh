@@ -55,7 +55,8 @@ echo "Case: config default and shipped persona are portable"
 cfg_default="$(grep -c '"persona"' "$SCRIPTS/config-defaults.json")"
 if [ "$cfg_default" -ge 1 ]; then pass "config-defaults.json declares planner.persona"
 else fail "config-defaults.json declares planner.persona" "no persona key"; fi
-if [ -f "$DEFAULT_PERSONA" ] && ! grep -Eq '/Users/|/home/|~/' "$DEFAULT_PERSONA" "$SCRIPTS/config-defaults.json"; then
+ABS_RE='(^|[[:space:]"'"'"'(=`])/[A-Za-z0-9_.-]+|~/|[A-Za-z]:\\|\$HOME'
+if [ -f "$DEFAULT_PERSONA" ] && ! grep -Eq "$ABS_RE" "$DEFAULT_PERSONA" "$SCRIPTS/config-defaults.json"; then
   pass "no absolute or personal path in the shipped default or config-defaults.json"
 else fail "no absolute or personal path in the shipped default or config-defaults.json" "missing persona file or path found"; fi
 
