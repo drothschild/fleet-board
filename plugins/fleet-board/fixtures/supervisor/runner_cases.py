@@ -447,3 +447,57 @@ def test_parent_directories_synced_before_execution_and_ingest():
 
 
 test_parent_directories_synced_before_execution_and_ingest()
+
+
+def test_fifo_ready_rejected_without_blocking():
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        os.mkfifo(scratch / 'ready.json')
+        attempt = root / 'attempts' / 'n'
+        attempt.mkdir(parents=True)
+        prepared = {'domain_id':'d','job_id':'j','attempt_id':'n','nonce':'n','generation':1,'input_sha':'abc','role':'reviewer','stage':None,'session_id':'s','scratch':str(scratch)}
+        (attempt / 'prepared.json').write_text(json.dumps(prepared))
+        (attempt / 'exit.json').write_text('{"exit_code":0}')
+        code = "import sys; from supervisor.runner import Runner; Runner(sys.argv[1]).resume_publication('n')"
+        env = dict(os.environ, PYTHONPATH=str(ROOT / 'scripts'), PYTHONDONTWRITEBYTECODE='1')
+        process = subprocess.Popen([sys.executable, '-c', code, str(root)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            process.wait(timeout=3)
+            assert process.returncode != 0
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def test_fifo_progress_does_not_stop_heartbeat():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        os.mkfifo(scratch / 'progress.json')
+        runner = Runner(root, fixture_command=[sys.executable, '-c', 'import time; time.sleep(2)'])
+        process = runner.launch({'attempt_id':'a','nonce':'n','scratch':str(scratch)})
+        try:
+            heartbeat = root / 'attempts' / 'a' / 'heartbeat.json'
+            deadline = time.monotonic() + 5
+            while not heartbeat.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            assert heartbeat.exists(), 'FIFO progress blocked heartbeat'
+            first = heartbeat.read_bytes()
+            deadline = time.monotonic() + 1
+            while heartbeat.read_bytes() == first and time.monotonic() < deadline:
+                time.sleep(.05)
+            assert heartbeat.read_bytes() != first, 'FIFO progress stopped heartbeat updates'
+            process.wait(timeout=5)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
+
+test_fifo_progress_does_not_stop_heartbeat()
+test_fifo_ready_rejected_without_blocking()
