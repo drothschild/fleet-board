@@ -84,12 +84,14 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Modify:** `models.py`, `store.py`, `processes.py`, `workers.py` as required by these contracts.
 
 - [ ] Add restart matrix for every launch/result boundary; matching live worker adoption; missing worker; boot change; PID reuse; unreachable process inspector; detached descendant; stale generation result; retry count preserved across repeated restart.
-- [ ] Add liveness cases: heartbeat without progress, legitimate quiet bounded tool, hard deadline, graceful cancellation, TERM-resistant child, uncertain termination, and intentional Stop not consuming/triggering infrastructure retry.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-recovery.sh` to failure; commit tests.
+- [x] Add liveness cases: heartbeat without progress, legitimate quiet bounded tool, hard deadline, graceful cancellation, TERM-resistant child, uncertain termination, and intentional Stop not consuming/triggering infrastructure retry.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-recovery.sh` to failure; commit tests.
 - [ ] Implement suspected-stuck inspection, generation revocation, TERM/grace/KILL with descendant confirmation, quarantine on uncertainty, and one backoff retry only after safe infrastructure classification. Retain workspace/scope/occupancy until termination is proven. Ordinary semantic failure remains attention, not an infrastructure retry.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S5. Test records must show at most two attempts for one automatically retried job even after multiple restarts.
+
+**Evidence pending independent review:** Task 2.1 was independently approved at `6793a88`. Task 2.2's recovery tests began with the failing ambiguous-launch case (`9f923af`; `/private/tmp/supervisor-recovery-red.log`). Subsequent test-first slices cover receipt adoption, missing and unreachable workers, changed boot UUID, PID-start mismatch, stale and corrupt results, durable publication, bounded cycles, quiet tools, heartbeat/progress separation, managed TERM/KILL, escaped descendants, and intentional stop. A real fixture retry is launched once after trusted stop evidence and backoff, then the store is reopened and repeated recovery retains exactly two attempts (`01fbdf3`); retry tests also cover unknown usage, unsettled effects, stale proof, card eligibility and lowered caps. At implementation head `1163fcc`, the final focused store suite passed 52 cases, recovery suite passed 30 cases, touched runner suite passed, and clean-room passed 118 checks; logs are `/private/tmp/supervisor-store-final.log`, `/private/tmp/supervisor-recovery-final.log`, `/private/tmp/supervisor-runner-final.log`, and `/private/tmp/supervisor-clean-room-final.log`. Native same-boot descendant containment remains unproven and holds claims; fixture complete-tree and never-executed proofs require explicitly injected trusted verifiers. Effect-bearing retries remain blocked pending Phase 4.1. The complete restart-boundary matrix and implementation checkboxes remain open for independent audit; no production provider, live board, paid call, or service installation was used.
 
 ## Phase 3 — Scheduling, limits, and scope
 
