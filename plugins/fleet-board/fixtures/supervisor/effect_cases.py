@@ -215,7 +215,8 @@ class EffectContract(unittest.TestCase):
         self.assertEqual(adapter.calls, ['note-op'])
 
     def test_fault_boundaries_cover_every_external_mutation(self):
-        for index, kind in enumerate(KINDS):
+        ordered_kinds = [kind for kind in KINDS if kind != 'branch_refresh'] + ['branch_refresh']
+        for index, kind in enumerate(ordered_kinds):
             with self.subTest(kind=kind):
                 key = 'boundary-' + str(index)
                 fields = refresh_fields('src/change.py') if kind == 'branch_refresh' else {}
