@@ -313,12 +313,15 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
-    def request_cancellation(self, attempt_id, request_id, reason, expected_revision):
+    def request_cancellation(self, attempt_id, request_id, reason, expected_revision, *, now=None, grace_seconds=5):
         """Persist cancellation and revoke authority in one transaction before signaling."""
         if any(not isinstance(x, str) or not x for x in (attempt_id, request_id, reason)):
             raise ValueError('invalid cancellation')
+        if (now is not None and (type(now) not in (int, float) or not math.isfinite(now) or now < 0)) or type(grace_seconds) not in (int, float) or not math.isfinite(grace_seconds) or grace_seconds <= 0:
+            raise ValueError('invalid cancellation deadline')
         request = canonical_json({'type': 'cancel_attempt', 'attempt_id': attempt_id,
-                                  'id': request_id, 'reason': reason, 'expected_revision': expected_revision})
+                                  'id': request_id, 'reason': reason, 'expected_revision': expected_revision,
+                                  'now': now, 'grace_seconds': grace_seconds})
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
@@ -335,7 +338,9 @@ class Store:
                 if row is None or row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
                     raise ValueError('attempt cannot be cancelled')
                 data = json.loads(row['data'])
-                data.update({'state': 'cancel_requested', 'cancel_reason': reason, 'cancel_requested_at': time.time()})
+                requested_at = time.time() if now is None else now
+                data.update({'state': 'cancel_requested', 'cancel_reason': reason,
+                             'cancel_requested_at': requested_at, 'cancel_grace_deadline': requested_at + grace_seconds})
                 c.execute("UPDATE attempts SET state='cancel_requested',data=? WHERE id=?", (canonical_json(data), attempt_id))
                 c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (row['job_id'],))
                 result = {'attempt_id': attempt_id, 'revision': revision + 1}
