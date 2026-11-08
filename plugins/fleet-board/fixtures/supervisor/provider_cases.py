@@ -279,7 +279,12 @@ class ProviderCases(unittest.TestCase):
             shutil.rmtree(channel_dir)
 
     def test_attempt_scoped_result_heartbeat_and_scope_operations(self):
-        request = self.request
+        from supervisor.workers import build_attempt_result_handler
+
+        request = ProviderRequest.create(
+            attempt_id="attempt-1", generation=2, role="stage-reviewer", stage="code",
+            provider="fake", model="fake-v1", input_text="review this",
+        )
         binding = {
             "domain_id": "domain-1", "job_id": "job-1", "attempt_id": request.attempt_id,
             "generation": request.generation, "input_sha": request.input_sha,
@@ -297,9 +302,24 @@ class ProviderCases(unittest.TestCase):
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
                                  attempts={request.attempt_id: provider_binding})
         received = {"heartbeat": [], "result": [], "scope_request": []}
+
+        class ResultStore:
+            directory = self.root
+            domain_id = "domain-1"
+
+            def record_result(self, envelope):
+                received["result"].append(envelope)
+                return {"disposition": "current"}
+
+        (self.workspace / "report.md").write_text(
+            "## Status\nclean\n\n## Findings\n- none\n\n## For the card\nReviewed.\n\n"
+            "VERIFIED: `true` -> 1 check\n", encoding="utf-8")
+        report_hash = hashlib.sha256((self.workspace / "report.md").read_bytes()).hexdigest()
+        result_handler = build_attempt_result_handler(
+            ResultStore(), operation_binding, self.workspace)
         handlers = {
             "heartbeat": lambda payload: received["heartbeat"].append(payload) or {"accepted": True},
-            "result": lambda payload: received["result"].append(payload) or {"accepted": True},
+            "result": result_handler,
             "scope_request": lambda payload: received["scope_request"].append(payload) or {
                 "granted": False, "waiting_on": "23", "retry_penalty": False,
                 "attempt_should_exit": True, "checkpointed": True,
@@ -325,13 +345,12 @@ class ProviderCases(unittest.TestCase):
                 self.assertEqual(client.request(heartbeat, operation="heartbeat"), {"accepted": True})
                 result = dict(operation_binding, schema_version=1, outcome="success",
                               request_id="result-1",
-                              report_path="/trusted/artifacts/attempt-1/report.json",
-                              artifact_hashes={"/trusted/artifacts/attempt-1/report.json": "a" * 64},
+                              report_path="report.md", artifact_hashes={"report.md": report_hash},
                               usage=None, exit_code=0)
-                self.assertEqual(client.request(result, operation="result"), {"accepted": True})
+                self.assertEqual(client.request(result, operation="result"), {"disposition": "current"})
                 forged_result = dict(result, request_id="result-forged",
-                                     report_path="/private/tmp/../outside/report",
-                                     artifact_hashes={"/private/tmp/../outside/report": "b" * 64})
+                                     report_path="../outside/report",
+                                     artifact_hashes={"../outside/report": "b" * 64})
                 with self.assertRaises(ContractError):
                     client.request(forged_result, operation="result")
                 scope = dict(operation_binding, schema_version=1, paths=["src/worker.py"],
@@ -362,6 +381,10 @@ class ProviderCases(unittest.TestCase):
             def __init__(self):
                 self.calls = []
                 self.conflict = True
+                self.domain_id = "d" * 64
+
+            def record_result(self, _envelope):
+                return {"disposition": "current"}
 
             def expand_scope(self, card, paths, revision):
                 self.calls.append((card, paths, revision))
@@ -370,10 +393,13 @@ class ProviderCases(unittest.TestCase):
                 return {"card": card, "paths": paths, "reservation_revision": 2}
 
         store = Store()
+        store.directory = self.root
         callbacks = []
+        binding = {"domain_id": "d" * 64, "job_id": "job-1", "attempt_id": "attempt-1",
+                   "generation": 1, "input_sha": "a" * 64, "role": "stage-reviewer", "stage": "code"}
         handlers = build_attempt_operation_handlers(
-            store, "22", heartbeat=lambda payload: {"accepted": True},
-            result=lambda payload: {"accepted": True},
+            store, "22", binding=binding, scratch=self.workspace,
+            heartbeat=lambda payload: {"accepted": True},
             checkpoint=lambda: callbacks.append("checkpoint"),
             release_slot=lambda: callbacks.append("release"),
         )
@@ -431,7 +457,7 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(durable_report.read_text(encoding="utf-8"), report)
         stored = store.snapshot()["results"]
         self.assertEqual(len(stored), 1)
-        self.assertEqual(stored[0]["envelope"]["report_path"], str(durable_report))
+        self.assertEqual(stored[0]["disposition"], "current")
 
     def test_trusted_result_handler_rejects_paths_outside_attempt_artifacts(self):
         from supervisor.workers import build_attempt_result_handler
@@ -655,6 +681,16 @@ class ProviderCases(unittest.TestCase):
         policy = build_policy(self.workspace, self.root / "private-git", self.root / "channels")
         controls = []
         operation_bindings = []
+        from supervisor.workers import build_attempt_result_handler
+        class HandlerStore:
+            directory = self.root
+            domain_id = "domain-1"
+            def record_result(self, envelope):
+                return {"disposition": "current"}
+        operation_binding = {key: prepared[key] for key in
+                             ("domain_id", "job_id", "attempt_id", "generation", "input_sha", "role", "stage")}
+        trusted_result = build_attempt_result_handler(HandlerStore(), operation_binding,
+                                                       self.workspace)
         class FakeChannel:
             socket_path = self.root / "inference.sock"
             def bind_attempt_control(self, attempt_id, deadline, cancel_event):
@@ -682,12 +718,19 @@ class ProviderCases(unittest.TestCase):
                 runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                          channel=fake_channel, request={},
                                          source_repository=self.root, cancel_event=object())
+            with self.assertRaises(IsolationUnavailable):
+                runner.launch_production(
+                    prepared, ["/usr/bin/true"], policy, channel=fake_channel, request={},
+                    source_repository=self.root, cancel_event=threading.Event(),
+                    operation_handlers={"heartbeat": lambda value: value,
+                                        "result": lambda value: value,
+                                        "scope_request": lambda value: value})
             cancel = threading.Event()
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                               channel=fake_channel, request={},
                                               source_repository=self.root, cancel_event=cancel,
                                               operation_handlers={"heartbeat": lambda value: value,
-                                                                  "result": lambda value: value,
+                                                                  "result": trusted_result,
                                                                   "scope_request": lambda value: value})
         self.assertIs(result, isolated.return_value)
         self.assertAlmostEqual(isolated.call_args.kwargs["timeout"],
