@@ -717,7 +717,7 @@ function renderHeader(run) {
   const stop = $("stop-btn");
   start.disabled = S.offline || S.busy || isAlive(run);
   stop.disabled = S.offline || S.busy || run.state !== "running";
-  start.classList.toggle("primary", !start.disabled && !S.imp); // one filled button per page
+  start.classList.toggle("primary", !start.disabled && !S.imp && !S.pl); // one filled button per page
 
   if (S.logOpen && run.log_tail) renderLog(logLines(run));
 }
@@ -903,6 +903,7 @@ function showDrawer() {
   $("drawer-dim").hidden = false;
   $("board").inert = true;
   $("import").inert = true;
+  $("planner").inert = true;
   $("top").inert = true;
 }
 
@@ -914,6 +915,7 @@ function closeDrawer() {
   $("drawer-dim").hidden = true;
   $("board").inert = false;
   $("import").inert = false;
+  $("planner").inert = false;
   $("top").inert = false;
   if (location.pathname !== "/") history.replaceState(null, "", "/");
   if (!d) return;
@@ -1687,21 +1689,17 @@ const SPLIT_STAGGER_MAX = 8; // strips after the ninth leave with the ninth
 const SPLIT_TEXT_HOLD_MS = 200; // a strip shows its band of the plan this long in flight
 const SHEET_CHARS = 4000;    // the sheet only ever shows the top of the plan
 
-// S.imp while the view is open: {phase: edit|running|splitting|ready|failed|
-// creating, id (the import id once started), fileName (a dropped file), cards,
-// timer (the next poll)}. Every await checks S.imp is still the same object,
+// S.imp while the view is open: {phase: running|splitting|ready|failed|
+// creating, id (the import id), fileName, cards, timer (the next poll)}. Every await checks S.imp is still the same object,
 // so a closed view stops polling and ignores late replies.
 S.imp = null;
 
-function openImport() {
-  if (S.imp) {
-    if (S.imp.phase === "edit") $("imp-plan").focus();
-    return;
-  }
-  if (S.drawer) return;
-  S.imp = { phase: "edit", id: null, fileName: null, cards: [], timer: null };
-  $("imp-plan").value = "";
-  $("imp-target").value = "backlog";
+// openDraft(id, text): the preview view for a planner draft. The sheet shows
+// the top of the conversation the draft was made from; pollImport takes over.
+function openDraft(id, text) {
+  if (S.imp) return;
+  const imp = { phase: "running", id: id, fileName: null, cards: [], timer: null };
+  S.imp = imp;
   $("imp-embed").checked = true;
   $("imp-grid").replaceChildren();
   $("imp-error").hidden = true;
@@ -1709,20 +1707,18 @@ function openImport() {
   $("imp-table").textContent = "";
   $("imp-dry").open = false;
   $("imp-sheet").className = "imp-sheet";
-  $("imp-sheet").firstElementChild.textContent = "";
-  $("imp-drop").classList.remove("over");
-  setImportPhase("edit");
-  setImportStatus("");
-  updateGroupButton();
-  $("board").hidden = true;
+  $("imp-sheet-text").textContent = String(text || "").slice(0, SHEET_CHARS);
+  setImportPhase("running");
+  showImportProgress(0, "");
+  $("planner").hidden = true;
   $("import").hidden = false;
-  $("import-btn").setAttribute("aria-expanded", "true");
   renderHeader();
-  $("imp-plan").focus();
+  $("imp-discard").focus({ preventScroll: true });
+  imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
 }
 
-// closeImport(): back to the board. Nothing is created; a grouping session
-// still running on the server is left to finish on its own.
+// closeImport(): back to the chat the draft came from, or to the board. Nothing
+// is created; a session still running on the server is left to finish.
 function closeImport() {
   const imp = S.imp;
   if (!imp) return;
@@ -1732,10 +1728,14 @@ function closeImport() {
   if (fly) fly.remove();
   const inside = $("import").contains(document.activeElement);
   $("import").hidden = true;
-  $("board").hidden = false;
-  $("import-btn").setAttribute("aria-expanded", "false");
+  if (S.pl) {
+    $("planner").hidden = false;
+    if (inside) $("pl-input").focus({ preventScroll: true });
+  } else {
+    $("board").hidden = false;
+    if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
+  }
   renderHeader();
-  if (inside || document.activeElement === document.body) $("import-btn").focus({ preventScroll: true });
 }
 
 // setImportPhase(phase): shows the parts of the view that phase has.
@@ -1744,18 +1744,18 @@ function setImportPhase(phase) {
   if (imp) imp.phase = phase;
   const ready = phase === "ready" || phase === "creating";
   $("import").dataset.phase = phase;
-  $("imp-drop").hidden = phase !== "edit";
-  $("imp-stage").hidden = phase === "edit";
-  $("imp-group").hidden = phase !== "edit";
   $("imp-progress").hidden = phase !== "running";
   $("imp-create").hidden = !ready;
   $("imp-embed-row").hidden = !ready;
   $("imp-dry").hidden = !ready || !$("imp-table").textContent;
-  $("imp-target").disabled = phase !== "edit";
   const busy = phase === "creating";
   $("imp-create").disabled = busy;
   $("imp-embed").disabled = busy;
   $("imp-discard").disabled = busy;
+  const grid = $("imp-grid");
+  for (const n of grid.all ? grid.all() : grid.querySelectorAll("button")) {
+    if (n.tagName === "BUTTON") n.disabled = phase !== "ready";
+  }
 }
 
 // setImportStatus(text): the muted header line, after the dropped file's name.
@@ -1765,62 +1765,6 @@ function setImportStatus(text) {
   if (text && imp && imp.fileName) parts.push(imp.fileName);
   if (text) parts.push(text);
   $("imp-status").textContent = parts.join(" · ");
-}
-
-function updateGroupButton() {
-  const btn = $("imp-group");
-  const empty = !$("imp-plan").value.trim();
-  btn.disabled = empty;
-  btn.classList.toggle("primary", !empty);
-}
-
-// readPlanFile(file): a dropped .md or .txt file replaces the textarea.
-function readPlanFile(file) {
-  const imp = S.imp;
-  if (!imp || imp.phase !== "edit" || !file) return;
-  if (!/\.(md|markdown|txt)$/i.test(file.name) && !/^text\//.test(file.type)) {
-    showToast("Drop a .md or .txt file; " + file.name + " is not one.", "error");
-    return;
-  }
-  const reader = new FileReader();
-  reader.onload = function () {
-    if (S.imp !== imp || imp.phase !== "edit") return;
-    $("imp-plan").value = String(reader.result || "");
-    imp.fileName = file.name;
-    updateGroupButton();
-    $("imp-plan").focus();
-  };
-  reader.onerror = function () {
-    showToast("Could not read " + file.name + ".", "error");
-  };
-  reader.readAsText(file);
-}
-
-function hasFiles(e) {
-  const types = e.dataTransfer && e.dataTransfer.types;
-  return !!types && Array.prototype.indexOf.call(types, "Files") !== -1;
-}
-
-// startImport(): sends the plan to Claude for grouping, then polls.
-async function startImport() {
-  const imp = S.imp;
-  const plan = $("imp-plan").value;
-  if (!imp || imp.phase !== "edit" || !plan.trim()) return;
-  $("imp-sheet").firstElementChild.textContent = plan.slice(0, SHEET_CHARS);
-  setImportPhase("running");
-  showImportProgress(0, "");
-  $("imp-discard").focus();
-  const r = await writeApi("POST", "/api/import", { plan: plan, status: $("imp-target").value });
-  if (S.imp !== imp) return;
-  if (!r.ok || typeof r.data.import_id !== "string") {
-    showToast("Grouping did not start: " + errorText(r), "error");
-    setImportPhase("edit");
-    setImportStatus("");
-    $("imp-plan").focus();
-    return;
-  }
-  imp.id = r.data.import_id;
-  imp.timer = setTimeout(function () { pollImport(imp.id); }, IMPORT_POLL_MS);
 }
 
 function showImportProgress(elapsed, lastText) {
@@ -1924,7 +1868,12 @@ function renderPreview(cards) {
   const frag = document.createDocumentFragment();
   for (const c of cards) {
     const li = el("li", "imp-card");
-    li.appendChild(el("div", "imp-card-title", c.title || c.key || "(untitled)"));
+    const btn = el("button", "imp-card-btn");
+    btn.type = "button";
+    btn.disabled = !(S.imp && S.imp.phase === "ready");
+    btn.addEventListener("click", function () { openImportDetail(c); });
+    li.appendChild(btn);
+    btn.appendChild(el("div", "imp-card-title", c.title || c.key || "(untitled)"));
     const meta = el("div", "imp-card-meta");
     const n = Array.isArray(c.acceptance) ? c.acceptance.length : 0;
     meta.appendChild(document.createTextNode(n + " acceptance"));
@@ -1936,12 +1885,12 @@ function renderPreview(cards) {
     } else if (produces.length) {
       meta.appendChild(document.createTextNode(" · produces " + produces.join(", ")));
     }
-    li.appendChild(meta);
+    btn.appendChild(meta);
     const labels = (Array.isArray(c.labels) ? c.labels : []).filter(function (l) { return typeof l === "string"; });
     if (labels.length) {
       const ul = el("ul", "labels");
       for (const l of labels) ul.appendChild(el("li", "label", l));
-      li.appendChild(ul);
+      btn.appendChild(ul);
     }
     frag.appendChild(li);
   }
@@ -2040,12 +1989,14 @@ async function createImport(id) {
   const created = Array.isArray(r.data.created) ? r.data.created.filter(Number.isInteger) : [];
   const nums = created.map(function (n) { return "#" + n; }).join(", ");
   if (r.ok && created.length) {
+    closePlanner();
     closeImport();
     showToast("Created " + nums);
     fetchBoard(true);
     return;
   }
   if (created.length) { // a create that failed partway: those cards exist now
+    closePlanner();
     closeImport();
     showToast("Created " + nums + ", then stopped: " + errorText(r), "error");
     fetchBoard(true);
@@ -2055,42 +2006,267 @@ async function createImport(id) {
   setImportPhase("ready");
 }
 
+// --- import card detail -------------------------------------------------------
+
+const DETAIL_LISTS = { labels: "imp-d-labels", scope: "imp-d-scope", acceptance: "imp-d-acceptance", depends_on: "imp-d-depends" };
+
+function strList(v) {
+  return (Array.isArray(v) ? v : []).filter(function (x) { return typeof x === "string"; });
+}
+
+function lines(text) {
+  return String(text).split("\n").map(function (s) { return s.trim(); }).filter(Boolean);
+}
+
+// openImportDetail(card): the editable detail dialog for one previewed card.
+function openImportDetail(card) {
+  const imp = S.imp;
+  if (!imp || imp.phase !== "ready") return;
+  imp.detail = card;
+  imp.detailOpener = document.activeElement;
+  $("imp-d-key").textContent = card.key || "";
+  $("imp-d-title").value = card.title || "";
+  $("imp-d-why").value = typeof card.why === "string" ? card.why : "";
+  for (const f in DETAIL_LISTS) $(DETAIL_LISTS[f]).value = strList(card[f]).join("\n");
+  $("imp-d-repo").textContent = card.repo || "";
+  $("imp-d-consumes").textContent = strList(card.consumes).join(", ");
+  $("imp-d-produces").textContent = strList(card.produces).join(", ");
+  $("imp-d-error").hidden = true;
+  $("imp-d-error").textContent = "";
+  $("imp-detail").hidden = false;
+  $("imp-d-title").focus({ preventScroll: true });
+}
+
+function closeImportDetail() {
+  $("imp-detail").hidden = true;
+  const imp = S.imp;
+  if (imp) {
+    const back = imp.detailOpener;
+    imp.detail = null;
+    imp.detailOpener = null;
+    if (back && back.focus) back.focus({ preventScroll: true });
+  }
+}
+
+// saveImportDetail(): one PATCH with the changed fields; the grid is re-rendered
+// from the response without replaying the split. A refusal stays in the dialog.
+async function saveImportDetail() {
+  const imp = S.imp;
+  const card = imp && imp.detail;
+  if (!card || imp.detailBusy) return;
+  const edits = {};
+  const title = $("imp-d-title").value;
+  if (title !== (card.title || "")) edits.title = title;
+  const why = $("imp-d-why").value;
+  if (why !== (typeof card.why === "string" ? card.why : "")) edits.why = why;
+  for (const f in DETAIL_LISTS) {
+    const now = lines($(DETAIL_LISTS[f]).value);
+    if (JSON.stringify(now) !== JSON.stringify(strList(card[f]))) edits[f] = now;
+  }
+  if (!Object.keys(edits).length) {
+    closeImportDetail();
+    return;
+  }
+  imp.detailBusy = true;
+  $("imp-d-save").disabled = true;
+  const r = await writeApi("PATCH", "/api/import/" + encodeURIComponent(imp.id) + "/cards/" + encodeURIComponent(card.key), edits);
+  imp.detailBusy = false;
+  $("imp-d-save").disabled = false;
+  if (S.imp !== imp) return;
+  const d = r.data;
+  const cards = r.ok && d.cards && Array.isArray(d.cards.cards) ? d.cards.cards.filter(function (c) {
+    return c && typeof c === "object";
+  }) : null;
+  if (!cards || !cards.length) {
+    const box = $("imp-d-error");
+    box.textContent = r.ok ? "The server's reply held no cards." : errorText(r);
+    box.hidden = false;
+    return;
+  }
+  imp.cards = cards;
+  if (typeof d.table === "string") $("imp-table").textContent = d.table.replace(/\s+$/, "");
+  renderPreview(cards);
+  closeImportDetail();
+}
+
 function bindImport() {
-  const sec = $("import");
-  const plan = $("imp-plan");
-  plan.addEventListener("input", updateGroupButton);
-  plan.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      startImport();
-    }
+  $("imp-detail").hidden = true;
+  $("imp-d-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    saveImportDetail();
   });
-  $("imp-group").addEventListener("click", startImport);
+  $("imp-d-save").addEventListener("click", function () { saveImportDetail(); });
+  $("imp-d-cancel").addEventListener("click", closeImportDetail);
+  $("imp-detail").addEventListener("keydown", function (e) {
+    if (e.key === "Escape") closeImportDetail();
+  });
   $("imp-discard").addEventListener("click", closeImport);
   $("imp-create").addEventListener("click", function () {
     if (S.imp) createImport(S.imp.id);
   });
-  // A file dropped anywhere on the view is read, never opened by the browser.
-  sec.addEventListener("dragover", function (e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    const ok = !!S.imp && S.imp.phase === "edit";
-    e.dataTransfer.dropEffect = ok ? "copy" : "none";
-    $("imp-drop").classList.toggle("over", ok);
-  });
-  sec.addEventListener("dragleave", function (e) {
-    if (!sec.contains(e.relatedTarget)) $("imp-drop").classList.remove("over");
-  });
-  sec.addEventListener("drop", function (e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    $("imp-drop").classList.remove("over");
-    readPlanFile(e.dataTransfer.files[0]);
+}
+
+// --- planner chat ------------------------------------------------------------
+
+const PLANNER_POLL_MS = 1000;
+
+// S.pl while the chat is open: {id (the conversation id once started), busy (a
+// reply is running), turns, timer (the next poll)}. Every await checks S.pl is
+// still the same object, so a closed chat stops polling and ignores late replies.
+S.pl = null;
+
+function plannerHasUserTurn() {
+  return !!S.pl && S.pl.turns.some(function (t) { return t.role === "user"; });
+}
+
+function renderTurns() {
+  const box = $("pl-transcript");
+  box.replaceChildren();
+  for (const t of S.pl.turns) {
+    const div = document.createElement("div");
+    div.className = "pl-turn";
+    div.dataset.role = t.role;
+    div.textContent = String(t.text);
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
+// setPlannerBusy(busy): the input and Send are off while a reply is running.
+function setPlannerBusy(busy) {
+  const pl = S.pl;
+  if (pl) pl.busy = busy;
+  $("pl-input").disabled = busy;
+  $("pl-send").disabled = busy;
+  $("pl-draft").disabled = busy || !plannerHasUserTurn();
+  $("pl-running").hidden = !busy;
+}
+
+async function openPlanner() {
+  if (S.pl) {
+    if (!S.imp) $("pl-input").focus();
+    return;
+  }
+  if (S.drawer || S.imp) return;
+  const pl = { id: null, busy: true, turns: [], timer: null };
+  S.pl = pl;
+  $("pl-transcript").replaceChildren();
+  $("pl-input").value = "";
+  $("board").hidden = true;
+  $("planner").hidden = false;
+  $("plan-btn").setAttribute("aria-expanded", "true");
+  setPlannerBusy(true);
+  $("pl-running").hidden = true;
+  renderHeader();
+  const r = await writeApi("POST", "/api/planner", {});
+  if (S.pl !== pl) return;
+  if (!r.ok || typeof r.data.id !== "string") {
+    showToast("The planner did not start: " + errorText(r), "error");
+    closePlanner();
+    return;
+  }
+  pl.id = r.data.id;
+  setPlannerBusy(false);
+  $("pl-input").focus();
+}
+
+// closePlanner(): back to the board. A reply still running on the server is left to land.
+function closePlanner() {
+  const pl = S.pl;
+  if (!pl) return;
+  clearTimeout(pl.timer);
+  S.pl = null;
+  const inside = $("planner").contains(document.activeElement);
+  $("planner").hidden = true;
+  if (!S.imp) $("board").hidden = false;
+  $("plan-btn").setAttribute("aria-expanded", "false");
+  renderHeader();
+  if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
+}
+
+async function sendPlanner() {
+  const pl = S.pl;
+  const text = $("pl-input").value.trim();
+  if (!pl || !pl.id || pl.busy || !text) return;
+  pl.turns.push({ role: "user", text: text });
+  renderTurns();
+  $("pl-input").value = "";
+  setPlannerBusy(true);
+  const r = await writeApi("POST", "/api/planner/" + encodeURIComponent(pl.id) + "/messages", { text: text });
+  if (S.pl !== pl) return;
+  if (!r.ok) {
+    showToast("Message not sent: " + errorText(r), "error");
+    pl.turns.pop();
+    renderTurns();
+    $("pl-input").value = text;
+    setPlannerBusy(false);
+    $("pl-input").focus();
+    return;
+  }
+  pl.timer = setTimeout(function () { pollPlanner(pl); }, PLANNER_POLL_MS);
+}
+
+// pollPlanner(pl): one GET a second while a reply runs; running false shows the turns.
+async function pollPlanner(pl) {
+  if (S.pl !== pl || !pl.busy) return;
+  let r;
+  try {
+    r = await api("GET", "/api/planner/" + encodeURIComponent(pl.id));
+  } catch (e) {
+    r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
+  }
+  if (S.pl !== pl) return;
+  if (!r.ok) {
+    if (r.status === 404) {
+      showToast("The conversation is gone: " + errorText(r), "error");
+      setPlannerBusy(false);
+      return;
+    }
+    pl.timer = setTimeout(function () { pollPlanner(pl); }, PLANNER_POLL_MS); // a blip
+    return;
+  }
+  if (r.data.running !== false) {
+    pl.timer = setTimeout(function () { pollPlanner(pl); }, PLANNER_POLL_MS);
+    return;
+  }
+  if (Array.isArray(r.data.turns)) {
+    pl.turns = r.data.turns.filter(function (t) { return t && typeof t === "object"; });
+    renderTurns();
+  }
+  setPlannerBusy(false);
+  $("pl-input").focus({ preventScroll: true });
+}
+
+// draftPlanner(): the conversation becomes a plan; the import id goes to the preview.
+async function draftPlanner() {
+  const pl = S.pl;
+  if (!pl || !pl.id || pl.busy || !plannerHasUserTurn()) return;
+  const text = pl.turns.map(function (t) { return t.text; }).join("\n\n");
+  setPlannerBusy(true);
+  const r = await writeApi("POST", "/api/planner/" + encodeURIComponent(pl.id) + "/draft", {});
+  if (S.pl !== pl) return;
+  setPlannerBusy(false);
+  if (!r.ok || typeof r.data.import_id !== "string") {
+    showToast("Drafting did not start: " + errorText(r), "error");
+    return;
+  }
+  openDraft(r.data.import_id, text);
+}
+
+function bindPlanner() {
+  $("pl-send").addEventListener("click", sendPlanner);
+  $("pl-draft").addEventListener("click", draftPlanner);
+  $("pl-close").addEventListener("click", closePlanner);
+  $("pl-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      sendPlanner();
+    }
   });
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && S.imp && S.imp.phase === "edit" && !S.drawer && !e.defaultPrevented) {
+    if (e.key === "Escape" && S.pl && !S.imp && !S.drawer && !e.defaultPrevented) {
       e.preventDefault();
-      closeImport();
+      closePlanner();
     }
   });
 }
@@ -2101,7 +2277,7 @@ function init() {
   $("start-btn").addEventListener("click", startRun);
   $("stop-btn").addEventListener("click", stopRun);
   $("log-btn").addEventListener("click", toggleLog);
-  $("import-btn").addEventListener("click", function () { openImport(); });
+  $("plan-btn").addEventListener("click", function () { openPlanner(); });
   $("new-card-btn").addEventListener("click", function () { openNewCard(); });
   $("toast").addEventListener("click", hideToast);
   document.addEventListener("visibilitychange", function () {
@@ -2112,6 +2288,7 @@ function init() {
   });
   bindDrawer();
   bindImport();
+  bindPlanner();
   fetchBoard().then(drawerFromUrl);
   pollRun();
 }

@@ -449,6 +449,16 @@ if setup_case; then
   assert_code 200
   api GET /static/index.html
   assert_code 200
+  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -q 'Import plan' "$SCRIPTS/board-web/static/index.html"; then
+    fail "index.html no longer contains the Import plan button" "import-btn or the text Import plan still present"
+  else
+    pass "index.html no longer contains the Import plan button"
+  fi
+  if grep -q 'id="planner"' "$SCRIPTS/board-web/static/index.html" && grep -q 'id="pl-transcript"' "$SCRIPTS/board-web/static/index.html"; then
+    pass "index.html contains the planner chat panel"
+  else
+    fail "index.html contains the planner chat panel" "planner or pl-transcript missing"
+  fi
   api GET /static/../board-web.py
   assert_code 404
   api GET /static/%2e%2e/board-web.py
