@@ -87,7 +87,9 @@ const cardButtons = (h) => h.$("imp-grid").all().filter((n) => n.tagName === "BU
     {
       const {h} = await setup(true, () => ({status: 200, data: {}}));
       await cardButtons(h)[0].fire("click");
-      const text = h.$("imp-detail").textContent + " " + h.$("imp-detail").all().map((n) => n.value || "").join(" ");
+      // The harness does not parse index.html, so read each dialog field by id.
+      const ids = ["imp-d-key", "imp-d-title", "imp-d-labels", "imp-d-why", "imp-d-scope", "imp-d-acceptance", "imp-d-depends", "imp-d-repo", "imp-d-consumes", "imp-d-produces"];
+      const text = ids.map((i) => h.$(i).textContent + " " + h.$(i).value).join(" ");
       const need = ["a", "Alpha", "acme/toy", "backend", "api", "Expose the thing.", "src/a.js", "src/b.js", "POST /a returns 201", "GET /a returns 200", "X", "POST /a"];
       const missing = need.filter((s) => !text.includes(s));
       ok("the dialog shows every field of the cards.json entry", missing.length === 0, "missing=" + missing.join("|"));
