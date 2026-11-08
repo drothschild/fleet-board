@@ -287,6 +287,31 @@ class StoreContract(unittest.TestCase):
             finally:
                 other.close()
 
+    def test_database_rejects_duplicate_job_keys_and_attempt_nonces(self):
+        import sqlite3
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 2, "provider_cap": 2, "paths": ["src/a"]})
+        before = self.store.snapshot()
+        connection = sqlite3.connect(str(self.store.directory / "store.sqlite3"))
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            statements = [
+                ("INSERT INTO jobs SELECT ?,logical_key,card,generation,input_sha,role,stage,state,retries_used,data FROM jobs WHERE id=?", ("j2", "j1")),
+                ("INSERT INTO jobs SELECT id,?,card,generation,input_sha,role,stage,state,retries_used,data FROM jobs WHERE id=?", ("new-key", "j1")),
+                ("INSERT INTO attempts SELECT ?,job_id,nonce,provider,state,data FROM attempts WHERE id=?", ("n2", "n1")),
+                ("INSERT INTO attempts SELECT id,job_id,?,provider,state,data FROM attempts WHERE id=?", ("new-nonce", "n1")),
+            ]
+            for sql, parameters in statements:
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(sql, parameters)
+                connection.rollback()
+                self.assertEqual(self.store.snapshot(), before)
+        finally:
+            connection.close()
+
     def test_duplicate_nonce_does_not_leave_partial_job(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,

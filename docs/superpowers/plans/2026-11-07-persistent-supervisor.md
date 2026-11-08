@@ -53,7 +53,7 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Interfaces:** `Store.open(domain)`, `prepare_attempt(job, expected_revision, claims)`, `record_result(envelope)`, `record_command(request)`, `append_event(event)`, `snapshot()`, `backup(destination)`. Transactions own expected-revision checks and claims; callers cannot mutate tables directly.
 
-- [ ] Write persistence/reopen tests for every design record, desired state and session budgets; uniqueness tests for job key, attempt nonce, operation key and command ID; concurrent claim tests using two independent connections.
+- [x] Write persistence/reopen tests for every design record, desired state and session budgets; uniqueness tests for job key, attempt nonce, operation key and command ID; concurrent claim tests using two independent connections.
 - [x] Add failure cases for schema mismatch, invalid paths/results, foreign identity/generation, and transaction rollback leaving no partial claims. Verify unknown usage remains null/unknown and stale results cannot double-charge usage.
 - [x] Run `bash plugins/fleet-board/tests/test-supervisor-store.sh` to intended failure; commit tests.
 - [x] Implement versioned schema, explicit transactions, private runtime directories, WAL/full synchronous settings, local-storage requirement, atomic revision/event writes and SQLite backup API. Make schema migration backup-first and fail closed for future versions.
