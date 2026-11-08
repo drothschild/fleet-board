@@ -257,7 +257,8 @@ class ProviderCases(unittest.TestCase):
                 prepared = {key: getattr(self.request, key) for key in
                             ("attempt_id", "generation", "role", "provider", "model", "input_sha")}
                 bootstrap = prepare_worker_bootstrap(prepared, channel, self.request.to_dict())
-                self.assertEqual(set(bootstrap), {"schema_version", "attempt", "provider_request", "inference"})
+                self.assertEqual(set(bootstrap), {"schema_version", "attempt", "provider_request", "inference", "operations"})
+                self.assertEqual(bootstrap["operations"], [])
                 self.assertEqual(bootstrap["inference"]["capability"], token)
                 self.assertNotIn("database", json.dumps(bootstrap).lower())
                 with self.assertRaises(ContractError):
@@ -285,6 +286,8 @@ class ProviderCases(unittest.TestCase):
             "role": request.role, "stage": request.stage,
             "provider": request.provider, "model": request.model,
         }
+        operation_binding = {key: binding[key] for key in
+                             ("domain_id", "job_id", "attempt_id", "generation", "input_sha", "role", "stage")}
         provider_binding = {key: getattr(request, key) for key in
                             ("generation", "role", "stage", "provider", "model", "input_sha")}
         command = self.script(
@@ -299,13 +302,16 @@ class ProviderCases(unittest.TestCase):
             "result": lambda payload: received["result"].append(payload) or {"accepted": True},
             "scope_request": lambda payload: received["scope_request"].append(payload) or {
                 "granted": False, "waiting_on": "23", "retry_penalty": False,
-                "attempt_should_exit": True,
+                "attempt_should_exit": True, "checkpointed": True,
+                "worker_slot_released": True,
             },
         }
         channel_dir = Path(tempfile.mkdtemp(prefix="fb-worker-operations-", dir="/private/tmp"))
         try:
             with InferenceChannel(broker, channel_dir, (request.attempt_id,)) as channel:
-                channel.bind_attempt_operations(request.attempt_id, binding, handlers)
+                channel.bind_attempt_operations(
+                    request.attempt_id,
+                    operation_binding, handlers)
                 self.assertEqual(channel.operations_for(request.attempt_id),
                                  ("heartbeat", "result", "scope_request"))
                 bootstrap = prepare_worker_bootstrap(binding, channel, request.to_dict())
@@ -313,19 +319,23 @@ class ProviderCases(unittest.TestCase):
                                  ["heartbeat", "result", "scope_request"])
                 client = InferenceClient(channel.socket_path, request.attempt_id,
                                          channel.capability_for(request.attempt_id), timeout=3)
-                heartbeat = dict(binding, schema_version=1, at=time.time())
+                heartbeat = dict(operation_binding, schema_version=1,
+                                 request_id="heartbeat-1", at=time.time())
                 self.assertEqual(client.request(heartbeat, operation="heartbeat"), {"accepted": True})
-                result = dict(binding, schema_version=1, outcome="success",
+                self.assertEqual(client.request(heartbeat, operation="heartbeat"), {"accepted": True})
+                result = dict(operation_binding, schema_version=1, outcome="success",
+                              request_id="result-1",
                               report_path="/trusted/artifacts/attempt-1/report.json",
                               artifact_hashes={"/trusted/artifacts/attempt-1/report.json": "a" * 64},
                               usage=None, exit_code=0)
                 self.assertEqual(client.request(result, operation="result"), {"accepted": True})
-                scope = dict(binding, schema_version=1, paths=["src/worker.py"],
-                             expected_revision=7)
+                scope = dict(operation_binding, schema_version=1, paths=["src/worker.py"],
+                             request_id="scope-1", expected_revision=7)
                 denied = client.request(scope, operation="scope_request")
                 self.assertFalse(denied["granted"])
                 self.assertFalse(denied["retry_penalty"])
                 self.assertTrue(denied["attempt_should_exit"])
+                self.assertEqual(client.request(scope, operation="scope_request"), denied)
                 with self.assertRaises(ContractError):
                     client.request(dict(heartbeat, input_sha="0" * 64), operation="heartbeat")
                 with self.assertRaises(ContractError):
@@ -528,17 +538,23 @@ class ProviderCases(unittest.TestCase):
 
     def test_production_launch_requires_durable_deadline_and_cancellation(self):
         prepared = {
+            "domain_id": "domain-1", "job_id": "job-1",
             "attempt_id": "attempt-1", "generation": 1, "input_sha": self.request.input_sha,
-            "role": "reviewer", "provider": "fake", "model": "fake-v1",
+            "role": "reviewer", "stage": None, "provider": "fake", "model": "fake-v1",
             "started_at": time.time(), "deadline": time.time() + 60,
         }
         runner = Runner(self.root / "runner", production_enabled=True)
         policy = build_policy(self.workspace, self.root / "private-git", self.root / "channels")
         controls = []
+        operation_bindings = []
         class FakeChannel:
             socket_path = self.root / "inference.sock"
             def bind_attempt_control(self, attempt_id, deadline, cancel_event):
                 controls.append((attempt_id, deadline, cancel_event))
+            def bind_attempt_operations(self, attempt_id, binding, handlers):
+                operation_bindings.append((attempt_id, binding, handlers))
+            def operations_for(self, attempt_id):
+                return ("heartbeat", "result", "scope_request")
         fake_channel = FakeChannel()
         with patch("supervisor.runner.probe_capabilities", return_value={"available": True}), \
              patch("supervisor.runner.prepare_private_git"), \
@@ -561,12 +577,18 @@ class ProviderCases(unittest.TestCase):
             cancel = threading.Event()
             result = runner.launch_production(prepared, ["/usr/bin/true"], policy,
                                               channel=fake_channel, request={},
-                                              source_repository=self.root, cancel_event=cancel)
+                                              source_repository=self.root, cancel_event=cancel,
+                                              operation_handlers={"heartbeat": lambda value: value,
+                                                                  "result": lambda value: value,
+                                                                  "scope_request": lambda value: value})
         self.assertIs(result, isolated.return_value)
         self.assertAlmostEqual(isolated.call_args.kwargs["timeout"],
                                prepared["deadline"] - time.time(), delta=1)
         self.assertIs(isolated.call_args.kwargs["cancel_event"], cancel)
         self.assertEqual(controls, [("attempt-1", prepared["deadline"], cancel)])
+        self.assertEqual(operation_bindings[0][0], "attempt-1")
+        self.assertEqual(operation_bindings[0][1]["input_sha"], prepared["input_sha"])
+        self.assertEqual(set(operation_bindings[0][2]), {"heartbeat", "result", "scope_request"})
 
     def test_isolated_worker_deadline_and_cancellation_kill_process_group(self):
         child_marker = self.root / "cancelled-descendant"
