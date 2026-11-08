@@ -141,6 +141,29 @@ class RecoveryContract(unittest.TestCase):
         self.assertTrue(finished, 'inspection blocked on publication lock')
         self.assertEqual(results[0]['status'], 'unknown')
 
+    def test_hard_deadline_fences_before_term_then_kills_after_persisted_grace(self):
+        class Inspector:
+            def __init__(self, store):
+                self.store, self.signals = store, []
+            def inspect(self, attempt):
+                return {'status': 'alive'}
+            def signal(self, attempt, kind):
+                snapshot = self.store.snapshot()
+                assert snapshot['jobs'][0]['generation'] == 2
+                assert snapshot['attempts'][0]['state'] == 'cancel_requested'
+                self.signals.append(kind)
+        self.store.update_attempt('n', {'state': 'running', 'heartbeat': 10, 'progress': 10, 'deadline': 20},
+                                  self.store.snapshot()['domain']['revision'])
+        inspector = Inspector(self.store)
+        Recovery(self.store, inspector, settings={'shutdown_grace_seconds': 5}).reconcile(now=20)
+        self.assertEqual(inspector.signals, ['TERM'])
+        self.assertEqual(self.store.snapshot()['jobs'][0]['retries_used'], 0)
+        Recovery(self.store, inspector, settings={'shutdown_grace_seconds': 5}).reconcile(now=24)
+        self.assertNotIn('KILL', inspector.signals)
+        Recovery(self.store, inspector, settings={'shutdown_grace_seconds': 5}).reconcile(now=25)
+        self.assertEqual(inspector.signals[-1], 'KILL')
+        self.assertEqual(len(self.store.snapshot()['claims']), 1)
+
     def test_matching_live_runner_is_adopted_and_unknown_running_runner_is_quarantined(self):
         class Inspector:
             def __init__(self, status):
