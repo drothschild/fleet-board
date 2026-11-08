@@ -315,3 +315,25 @@ def test_reject_unsafe_launch_root():
 
 
 test_reject_unsafe_launch_root()
+
+
+def test_structured_progress_is_separate():
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        scratch = root / 'scratch'
+        scratch.mkdir()
+        marker = scratch / 'progress.json'
+        code = "import pathlib,sys,time; pathlib.Path(sys.argv[1]).write_text('{\"sequence\":1,\"kind\":\"checkpoint\"}'); time.sleep(1)"
+        runner = Runner(root, fixture_command=[sys.executable, '-c', code, str(marker)])
+        process = runner.launch({'attempt_id':'a','nonce':'n','scratch':str(scratch)})
+        progress = root / 'attempts' / 'a' / 'progress.json'
+        deadline = time.monotonic() + 8
+        while not progress.exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert json.loads(progress.read_text()) == {'sequence':1,'kind':'checkpoint'}
+        assert (progress.parent / 'heartbeat.json').exists()
+        process.wait(timeout=10)
+
+
+test_structured_progress_is_separate()
