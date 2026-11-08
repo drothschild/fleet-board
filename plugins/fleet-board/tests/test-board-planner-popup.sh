@@ -26,7 +26,7 @@ else
 fi
 RULE="$(tr '\n' ' ' < "$STATIC/board.css" | grep -o '\.pl-panel *{[^}]*}' | head -1)"
 if printf '%s' "$RULE" | grep -q 'position: *fixed' && printf '%s' "$RULE" | grep -Eq 'width: *[0-9]+(\.[0-9]+)?(vw|%)' \
-  && ! printf '%s' "$RULE" | grep -Eq 'width: *100(vw|%)'; then
+  && printf '%s' "$RULE" | grep -Eo 'width: *[0-9.]+(vw|%)' | head -1 | grep -Eo '[0-9.]+' | awk '{exit !($1 > 0 && $1 < 100)}'; then
   pass "board.css gives the popup container position: fixed and a width below 100vw"
 else
   fail "board.css gives the popup container position: fixed and a width below 100vw" "rule: $RULE"
@@ -95,7 +95,7 @@ const ok = (name, cond, info) => console.log((cond ? "ok   " : "FAIL ") + name +
       h.ctx.openImportDetail(card);
       const open = h.$("imp-detail").hidden === false;
       await pressEscape(h.$("imp-detail"));
-      ok("Pressing Escape while the card detail form is open closes only that form; Draft cards stays open", open && h.$("imp-detail").hidden === true && !!S.imp && h.$("import").hidden === false, "open=" + open + " detail.hidden=" + h.$("imp-detail").hidden + " imp=" + !!S.imp);
+      ok("Pressing Escape while the card detail form is open closes only that form; Draft cards stays open", open && h.$("imp-detail").hidden === true && !!S.imp && h.$("import").hidden === false && h.$("planner-modal").hidden === false, "open=" + open + " detail.hidden=" + h.$("imp-detail").hidden + " imp=" + !!S.imp);
     }
     h.$("imp-fly").remove = () => {};
     await h.$("imp-discard").fire("click");
