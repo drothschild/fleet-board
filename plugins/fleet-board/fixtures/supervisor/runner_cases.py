@@ -52,6 +52,10 @@ def test_detached_unique_invocation():
         conflicting = runner.launch({'attempt_id':'a','nonce':'different'})
         conflicting.wait(timeout=10)
         assert conflicting.returncode != 0
+        reused = runner.launch({'attempt_id':'other','nonce':'n'})
+        reused.wait(timeout=10)
+        assert reused.returncode != 0
+        assert counter.read_text().splitlines() == ['invoked']
         assert (directory / 'attempts' / 'a' / 'receipt.json').exists()
 
 
