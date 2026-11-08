@@ -117,6 +117,19 @@ class Recovery:
                 observation = self.inspector.inspect(attempt)
             except (OSError, ValueError):
                 observation = {'status': 'unknown'}
+            if (observation.get('status') == 'never_started' and attempt['state'] == 'prepared'
+                    and self.retry_launcher is not None and self.retry_limits is not None):
+                try:
+                    launch_input = self.retry_launcher.prepare(self.store, attempt['id'])
+                    self.store.begin_recovered_launch(attempt['id'], observation.get('launch_evidence'), now=now,
+                                                      limits=self.retry_limits, expected_revision=self.store.snapshot()['domain']['revision'])
+                except (OSError, ValueError):
+                    continue
+                try:
+                    self.retry_launcher.launch(launch_input)
+                except Exception:
+                    self.store.quarantine_attempt(attempt['id'], 'recovered_launch_uncertain', self.store.snapshot()['domain']['revision'])
+                continue
             if observation.get('status') == 'invalid_result':
                 if attempt['state'] in ('prepared', 'launching', 'running', 'result_ready', 'cancel_requested'):
                     self.store.quarantine_attempt(attempt['id'], 'invalid_result', self.store.snapshot()['domain']['revision'])
