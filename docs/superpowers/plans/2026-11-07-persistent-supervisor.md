@@ -103,14 +103,14 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Planner contract:** add `--candidates` read-only mode returning schema version, per-card action/preconditions, declared/actual paths and completeness, dependencies, stage/head/round, priority and observed state revision. Keep existing default/settle behavior until cutover. Candidate mode removes tick-local ordering/reservation decisions while preserving workflow eligibility and fail-closed reads.
 
-- [ ] First extend `test-tick-plan.sh` with candidate-mode workflow parity and invalid-mode cases; demonstrate failure, commit, implement, and run this suite plus clean-room.
-- [ ] Write scheduler cases for a blocked A while B finishes and C launches, racing admission requests, global/provider/card caps, independent candidates bypassing conflicts, lowering caps, priority/aging ties and age persistence across restart, including a sustained stream of new high-priority reviews while an old low-priority start eventually runs.
-- [ ] Add an unknown-workflow-state case matching PR #200: no admission or silent state normalization, existing claims retained for reconciliation, and a visible wait/attention reason for status consumers.
-- [ ] Add fake-clock cases for retry backoff, launch-rate spacing, rate-limit wait caps, session deadlines/cost stops, unknown spend and invalid reload; no sleeps proportional to configured production timeouts.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-scheduler.sh` to failure; commit tests.
-- [ ] Implement coalesced bounded cycles, async planning snapshots, fresh precondition checks and atomic claim/attempt preparation. Implement normal priority default plus explicit labels `fleet:priority:high|normal|low`; conflicting priority labels require attention. Age the full combined class-and-priority rank until any eligible card reaches the highest rank, preserving initial eligibility sequence as the tie breaker.
-- [ ] Make deadline and cancellation timers independent of planning completion. Bound concurrent control operations separately; keep status/cancel responsive under saturated worker capacity.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] First extend `test-tick-plan.sh` with candidate-mode workflow parity and invalid-mode cases; demonstrate failure, commit, implement, and run this suite plus clean-room.
+- [x] Write scheduler cases for a blocked A while B finishes and C launches, racing admission requests, global/provider/card caps, independent candidates bypassing conflicts, lowering caps, priority/aging ties and age persistence across restart, including a sustained stream of new high-priority reviews while an old low-priority start eventually runs.
+- [x] Add an unknown-workflow-state case matching PR #200: no admission or silent state normalization, existing claims retained for reconciliation, and a visible wait/attention reason for status consumers.
+- [x] Add fake-clock cases for retry backoff, launch-rate spacing, rate-limit wait caps, session deadlines/cost stops, unknown spend and invalid reload; no sleeps proportional to configured production timeouts.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-scheduler.sh` to failure; commit tests.
+- [x] Implement coalesced bounded cycles, async planning snapshots, fresh precondition checks and atomic claim/attempt preparation. Implement normal priority default plus explicit labels `fleet:priority:high|normal|low`; conflicting priority labels require attention. Age the full combined class-and-priority rank until any eligible card reaches the highest rank, preserving initial eligibility sequence as the tie breaker.
+- [x] Make deadline and cancellation timers independent of planning completion. Bound concurrent control operations separately; keep status/cancel responsive under saturated worker capacity.
+- [x] Run the focused suite and clean-room check; commit locally. Push deferred because network access is unavailable.
 
 **Verifies:** S1, S6, S11. Acceptance uses durable attempt counts and simulated time, not thread timing guesses.
 
@@ -119,12 +119,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Modify:** `store.py`, `scheduler.py`, `workers.py`; `scripts/tick-plan.sh` candidate scope completeness and Human-QA coverage.
 **Create:** `tests/test-supervisor-reservations.sh`; `fixtures/supervisor/reservation_cases.py`.
 
-- [ ] Extend `test-scope-reservations.sh` in its own TDD slice for Human-QA scope evidence and incomplete PR-file handling without changing legacy mode expectations.
-- [ ] Add persistent reservation cases across review/CI/QA/retry/pause; normalized directory boundaries, traversal and symlink escapes; atomic competing expansions; denied expansion checkpoints with slot release but retained scope; cyclic waits surfaced.
-- [ ] Test override rejection while any live/uncertain writer or pending effect exists; successful human release audits identity/reason/revision; stale release command rejected; resume waits for scope, refreshes branch and invalidates evidence; QA remains unchanged.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-reservations.sh` to failure; commit tests.
-- [ ] Implement durable reservation union and command contracts. For providers without enforceable scoped-write mediation, assign repository-wide write ownership; expose the reduced concurrency in status rather than claiming safe disjoint execution. Add unauthorized-write detection and publication hold.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Extend `test-scope-reservations.sh` in its own TDD slice for Human-QA scope evidence and incomplete PR-file handling without changing legacy mode expectations.
+- [x] Add persistent reservation cases across review/CI/QA/retry/pause; normalized directory boundaries, traversal and symlink escapes; atomic competing expansions; denied expansion checkpoints with slot release but retained scope; cyclic waits surfaced.
+- [x] Test override rejection while any live/uncertain writer or pending effect exists; successful human release audits identity/reason/revision; stale release command rejected; resume waits for scope, refreshes branch and invalidates evidence; QA remains unchanged.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-reservations.sh` to failure; commit tests.
+- [x] Implement durable reservation union and command contracts. For providers without enforceable scoped-write mediation, assign repository-wide write ownership; expose the reduced concurrency in status rather than claiming safe disjoint execution. Add unauthorized-write detection and publication hold.
+- [x] Run the focused suite and clean-room check; commit locally. Push is deferred by the explicit Task 3.2 guard.
 
 **Verifies:** S7 and S4 scope safety. Resume's real branch refresh is supplied by Task 4.1; this phase tests its requested effect contract with an injected deterministic effect adapter.
 
