@@ -732,6 +732,108 @@ class ProviderCases(unittest.TestCase):
         import shutil
         shutil.rmtree(test_root)
 
+    def test_operation_admission_racing_retirement_cannot_resurrect_journal(self):
+        from supervisor.workers import (OwnerThreadDispatcher, build_attempt_operation_handlers,
+                                        build_attempt_terminal_checker)
+
+        request = ProviderRequest.create(
+            attempt_id="attempt-retire-race", generation=5, role="stage-reviewer", stage="code",
+            provider="fake", model="fake-v1", input_text="retire admission race")
+        broker_binding = {key: getattr(request, key) for key in
+                          ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
+                                 attempts={request.attempt_id: broker_binding})
+        test_root = Path(tempfile.mkdtemp(prefix="fb-retire-race-", dir="/private/tmp"))
+        state_dir = test_root / "state"
+        state_dir.mkdir(mode=0o700)
+        store_dir = state_dir / "store"
+        store_dir.mkdir(mode=0o700)
+        channel_dir = test_root / "channel"
+        channel_dir.mkdir(mode=0o700)
+        binding = {"domain_id": "domain-1", "job_id": "job-1",
+                   "attempt_id": request.attempt_id, "generation": request.generation,
+                   "input_sha": request.input_sha, "role": request.role, "stage": request.stage}
+        authority = {"value": "active"}
+        calls = []
+
+        class Store:
+            directory = store_dir
+            domain_id = "domain-1"
+
+            def record_result(self, _envelope, **_trusted):
+                return {"disposition": "current"}
+
+            def expand_scope(self, card, paths, revision):
+                return {"card": card, "paths": paths, "reservation_revision": revision + 1}
+
+            def operation_attempt_authority(self, _attempt_id, _generation, _input_sha):
+                return authority["value"]
+
+        dispatcher = OwnerThreadDispatcher()
+        store = Store()
+        handlers = build_attempt_operation_handlers(
+            store, "22", binding=binding, scratch=self.workspace, dispatcher=dispatcher,
+            heartbeat=lambda _payload: calls.append("heartbeat") or {"accepted": True},
+            checkpoint=lambda: None, release_slot=lambda: None)
+        terminal_checker = build_attempt_terminal_checker(store, dispatcher)
+        journal = state_dir / "operations.json"
+        channel = InferenceChannel(broker, channel_dir, (request.attempt_id,),
+                                   operation_journal=journal,
+                                   terminal_attempt_checker=terminal_checker,
+                                   controller_dispatcher=dispatcher)
+        channel.bind_attempt_operations(request.attempt_id, binding, handlers)
+
+        payload = {"schema_version": 1, **binding, "request_id": "race-1", "at": time.time()}
+        snapshot_taken = threading.Event()
+        continue_dispatch = threading.Event()
+        original_validate = channel._validate_operation_payload
+
+        def paused_validate(operation, value, attempt_binding):
+            snapshot_taken.set()
+            if not continue_dispatch.wait(2):
+                raise AssertionError("test did not release operation admission")
+            return original_validate(operation, value, attempt_binding)
+
+        channel._validate_operation_payload = paused_validate
+        results = []
+        errors = []
+
+        def dispatch():
+            try:
+                results.append(channel._dispatch_worker_operation(
+                    request.attempt_id, "heartbeat", payload))
+            except Exception as exc:
+                errors.append(exc)
+
+        worker = threading.Thread(target=dispatch)
+        worker.start()
+        try:
+            self.assertTrue(snapshot_taken.wait(1), "operation did not reach the admission barrier")
+            authority["value"] = "terminal_released"
+            retirement_errors = []
+            try:
+                channel.retire_attempt_operations(request.attempt_id)
+            except ContractError as exc:
+                retirement_errors.append(exc)
+        finally:
+            continue_dispatch.set()
+            deadline = time.monotonic() + 2
+            while worker.is_alive() and time.monotonic() < deadline:
+                dispatcher.run_pending(timeout=0.02)
+                worker.join(timeout=0.005)
+            worker.join(timeout=0.1)
+
+        self.assertFalse(worker.is_alive(), "operation dispatch did not finish")
+        self.assertEqual(len(retirement_errors), 1,
+                         "retirement must refuse while a dispatch has snapshotted its handler")
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [{"accepted": True}])
+        self.assertEqual(calls, ["heartbeat"])
+        self.assertIn((request.attempt_id, "heartbeat", "race-1"), channel._operation_calls)
+        self.assertTrue(channel.retire_attempt_operations(request.attempt_id))
+        self.assertEqual(channel._operation_calls, {})
+        channel.stop()
+
     def make_result_case(self, report_text, role="stage-reviewer"):
         from supervisor.store import Store
 
