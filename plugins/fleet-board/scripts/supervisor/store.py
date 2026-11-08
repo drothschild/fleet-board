@@ -213,6 +213,21 @@ class Store:
             c.execute('ROLLBACK')
             raise
 
+    def revoke_generation(self, job_id, expected_revision):
+        """Fence old attempts without releasing claims or changing retry accounting."""
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
+                raise ValueError('revision mismatch')
+            if c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (job_id,)).rowcount != 1:
+                raise ValueError('unknown job')
+            self._event('generation_revoked', {'job_id': job_id})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
     def increment_retry(self, job_id, expected_revision):
         """Consume the single automatic retry; classification belongs to the caller."""
         c = self.__connection
