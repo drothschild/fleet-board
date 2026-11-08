@@ -71,6 +71,42 @@ class RecoveryContract(unittest.TestCase):
         Recovery(self.store).reconcile(now=11)
         self.assertEqual(len(self.store.snapshot()['results']), 1)
 
+    def test_completed_result_releases_occupancy_only_after_proven_stop(self):
+        import json
+        import time
+        from supervisor.models import StopEvidence
+        from supervisor.runner import Runner, prepared_from_store, read_result
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        command = [sys.executable, '-c',
+                   "import pathlib,sys,time; time.sleep(.3); pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
+                   str(scratch / 'ready.json')]
+        process = Runner(self.store.directory, fixture_command=command).launch(prepared_from_store(self.store, 'n', scratch))
+        path = self.store.directory / 'attempts' / 'n'
+        limit = time.monotonic() + 8
+        while not (path / 'receipt.json').exists() and time.monotonic() < limit:
+            time.sleep(.02)
+        identity = json.loads((path / 'receipt.json').read_text())['identity']
+        process.wait(timeout=5)
+        self.store.update_attempt('n', {'state': 'running', 'boot_id': identity['boot_id'], 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        proof = StopEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1,
+                             boot_id=identity['boot_id'], pid=identity['pid'], started_at=identity['started_at'],
+                             nonce=identity['nonce'], kind='fixture_complete_tree', free_fixture=True)
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda x: x == proof)
+        self.addCleanup(trusted.close)
+        class Inspector:
+            def inspect(self, attempt):
+                return {'status': 'stopped', 'result': read_result(path), 'stop_evidence': proof}
+        Recovery(trusted, Inspector()).reconcile(now=10)
+        snapshot = trusted.snapshot()
+        self.assertTrue(json.loads(snapshot['attempts'][0]['data']).get('execution_released'))
+        self.assertEqual(snapshot['attempts'][0]['state'], 'result_ready')
+        self.assertEqual(snapshot['results'][0]['disposition'], 'current')
+        self.assertEqual(snapshot['jobs'][0]['generation'], 1)
+        self.assertEqual(len(snapshot['claims']), 1)
+
     def test_result_ready_live_runner_still_respects_hard_deadline(self):
         import json
         import time
