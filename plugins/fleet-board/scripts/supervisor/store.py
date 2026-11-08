@@ -115,6 +115,22 @@ class Store:
                 for statement in schema.split(';'):
                     if statement.strip():
                         conn.execute(statement)
+            required_columns = {
+                'domain': {'id', 'identity', 'desired_mode', 'phase', 'revision', 'config_hash', 'service_version'},
+                'sessions': {'id', 'started_at', 'deadline', 'known_spend', 'unknown_spend', 'budget_stop'},
+                'jobs': {'id', 'logical_key', 'card', 'generation', 'input_sha', 'role', 'stage', 'state', 'retries_used', 'data'},
+                'attempts': {'id', 'job_id', 'nonce', 'provider', 'state', 'data'},
+                'claims': {'attempt_id', 'card', 'provider', 'paths', 'merge_lane', 'reservation_revision'},
+                'effects': {'operation_key', 'job_id', 'card', 'generation', 'preconditions', 'intent', 'observation', 'status'},
+                'results': {'attempt_id', 'envelope', 'disposition'},
+                'commands': {'id', 'request', 'outcome'},
+                'events': {'sequence', 'timestamp', 'type', 'payload'},
+            }
+            for table, columns in required_columns.items():
+                if {row[1] for row in conn.execute('PRAGMA table_info(' + table + ')')} != columns:
+                    raise ValueError('corrupt supervisor schema: ' + table)
+            if conn.execute('PRAGMA quick_check').fetchone()[0] != 'ok' or conn.execute('PRAGMA foreign_key_check').fetchone() is not None:
+                raise ValueError('corrupt supervisor database')
             conn.execute('COMMIT')
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=FULL')
