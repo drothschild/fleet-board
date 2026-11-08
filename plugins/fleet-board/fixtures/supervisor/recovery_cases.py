@@ -437,6 +437,32 @@ class RecoveryContract(unittest.TestCase):
         self.assertEqual(snapshot['jobs'][0]['retries_used'], 0)
         self.assertEqual(len(snapshot['claims']), 1)
 
+    def test_quarantined_attempt_releases_occupancy_after_later_trusted_stop(self):
+        import json
+        from supervisor.models import StopEvidence
+        identity = {'boot_id': 'old', 'pid': 42, 'started_at': 'start', 'nonce': 'n'}
+        self.store.update_attempt('n', {'state': 'running', 'boot_id': 'old', 'process_identity': identity},
+                                  self.store.snapshot()['domain']['revision'])
+        class Unknown:
+            def inspect(self, attempt):
+                return {'status': 'unknown'}
+        Recovery(self.store, Unknown()).reconcile(now=10)
+        self.assertEqual(self.store.snapshot()['attempts'][0]['state'], 'quarantined')
+        proof = StopEvidence(domain_id=self.store.domain_id, job_id='j', attempt_id='n', generation=1,
+                             boot_id='old', pid=42, started_at='start', nonce='n', kind='fixture_complete_tree')
+        trusted = Store.open(self.domain, filesystem_inspector=lambda _: 'local', stop_evidence_verifier=lambda x: x == proof)
+        self.addCleanup(trusted.close)
+        class Stopped:
+            def inspect(self, attempt):
+                return {'status': 'stopped', 'stop_evidence': proof}
+        Recovery(trusted, Stopped()).reconcile(now=11)
+        after = trusted.snapshot()
+        self.assertTrue(json.loads(after['attempts'][0]['data']).get('execution_released'))
+        self.assertEqual(after['attempts'][0]['state'], 'quarantined')
+        self.assertEqual(after['jobs'][0]['state'], 'needs_attention')
+        self.assertEqual(after['jobs'][0]['retries_used'], 0)
+        self.assertEqual(len(after['claims']), 1)
+
     def test_intentional_stop_never_schedules_retry_even_with_proven_exit(self):
         import json
         import time
