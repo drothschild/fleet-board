@@ -201,6 +201,40 @@ class ProviderCases(unittest.TestCase):
             import shutil
             shutil.rmtree(channel_dir)
 
+    def test_over_quota_attempt_cannot_consume_shared_channel_quota(self):
+        other = ProviderRequest.create(
+            attempt_id="attempt-2", generation=2, role="reviewer", stage=None,
+            provider="fake", model="fake-v1", input_text="review another input",
+        )
+        command = self.script(
+            "multi-attempt-provider.py",
+            "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'accepted','usage':None}))\n",
+        )
+        bindings = {}
+        for request in (self.request, other):
+            bindings[request.attempt_id] = {key: getattr(request, key) for key in
+                                            ("generation", "role", "stage", "provider", "model", "input_sha")}
+        broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
+                                 attempts=bindings)
+        channel_dir = Path(tempfile.mkdtemp(prefix="fb-over-quota-", dir="/private/tmp"))
+        try:
+            with InferenceChannel(broker, channel_dir, tuple(bindings)) as channel:
+                channel.MAX_REQUESTS = 2
+                channel.MAX_REQUESTS_PER_ATTEMPT = 1
+                first = channel.request("attempt-1", channel.capability_for("attempt-1"),
+                                        self.request.to_dict())
+                self.assertEqual(first["text"], "accepted")
+                for index in range(3):
+                    rejected = dict(self.request.to_dict(), request_id="over-quota-{}".format(index))
+                    with self.assertRaises(ContractError):
+                        channel.request("attempt-1", channel.capability_for("attempt-1"), rejected)
+                second = channel.request("attempt-2", channel.capability_for("attempt-2"),
+                                         other.to_dict())
+                self.assertEqual(second["text"], "accepted")
+        finally:
+            import shutil
+            shutil.rmtree(channel_dir)
+
     def test_local_channel_authenticates_attempt_and_exposes_inference_only(self):
         command = self.script("channel-provider.py", "#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\nprint(json.dumps({'schema_version':1,'attempt_id':r['attempt_id'],'generation':r['generation'],'input_sha':r['input_sha'],'provider':r['provider'],'model':r['model'],'text':'channel result','usage':None}))\n")
         binding = {key: getattr(self.request, key) for key in
