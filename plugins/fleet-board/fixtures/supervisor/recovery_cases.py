@@ -260,6 +260,20 @@ class RecoveryContract(unittest.TestCase):
         self.assertTrue(json.loads(scheduled['attempts'][0]['data'])['execution_released'])
         Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}).reconcile(now=12)
         self.assertEqual(trusted.snapshot(), scheduled)
+        import inspect
+        self.assertIn('retry_limits', inspect.signature(Recovery).parameters, 'retry admission is unavailable')
+        trusted.record_command({'id': 'start', 'actor': 'fixture', 'command': 'start', 'payload': {},
+                                'expected_revision': trusted.snapshot()['domain']['revision']})
+        limits = {'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10}
+        Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=15)
+        self.assertEqual(len(trusted.snapshot()['attempts']), 1)
+        Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=16)
+        retried = trusted.snapshot()
+        self.assertEqual(len(retried['attempts']), 2)
+        self.assertEqual(retried['jobs'][0]['retries_used'], 1)
+        self.assertEqual(retried['claims'][0]['attempt_id'], retried['attempts'][1]['id'])
+        Recovery(trusted, Inspector(), settings={'retry_backoff_seconds': 5}, retry_limits=limits).reconcile(now=17)
+        self.assertEqual(len(trusted.snapshot()['attempts']), 2)
 
     def test_real_managed_resistant_child_receives_kill_after_grace(self):
         import os
