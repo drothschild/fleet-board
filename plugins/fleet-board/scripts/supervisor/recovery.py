@@ -51,7 +51,7 @@ class Recovery:
     def reconcile(self, now):
         snapshot = self.store.snapshot()
         for attempt in snapshot['attempts']:
-            if attempt['state'] not in ('prepared', 'launching', 'running', 'result_ready'):
+            if attempt['state'] not in ('prepared', 'launching', 'running', 'result_ready', 'cancel_requested', 'interrupted', 'failed', 'quarantined'):
                 continue
             try:
                 observation = self.inspector.inspect(attempt)
@@ -59,6 +59,6 @@ class Recovery:
                 observation = {'status': 'unknown'}
             if observation.get('status') == 'result':
                 self.store.record_result(observation['result'])
-            elif observation.get('status') == 'unknown' and attempt['state'] != 'result_ready':
+            elif observation.get('status') == 'unknown' and attempt['state'] in ('prepared', 'launching', 'running'):
                 revision = self.store.snapshot()['domain']['revision']
                 self.store.update_attempt(attempt['id'], {'state': 'quarantined'}, revision)
