@@ -32,3 +32,24 @@ def test_production_fails_closed():
 test_identity()
 test_production_fails_closed()
 print('runner identity tests passed')
+
+
+def test_detached_unique_invocation():
+    fixture = pathlib.Path(__file__).with_name('fake_worker.py')
+    with tempfile.TemporaryDirectory() as tmp:
+        directory = pathlib.Path(tmp)
+        counter = directory / 'counter'
+        runner = Runner(directory, fixture_command=[sys.executable, str(fixture), str(counter), '0.4'])
+        attempt = {'attempt_id': 'a', 'nonce': 'n'}
+        first = runner.launch(attempt)
+        second = runner.launch(attempt)
+        first.wait(timeout=10)
+        second.wait(timeout=10)
+        assert counter.read_text().splitlines() == ['invoked']
+        third = runner.launch(attempt)
+        third.wait(timeout=10)
+        assert counter.read_text().splitlines() == ['invoked']
+        assert (directory / 'attempts' / 'a' / 'receipt.json').exists()
+
+
+test_detached_unique_invocation()
