@@ -73,13 +73,33 @@ def _scope_key(path):
     return path.lower() if path.isascii() else ''
 
 
+def _sync_directory(path):
+    fd = os.open(str(path), os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _private_directory(path):
     path = Path(path).absolute()
     # Refuse symlinks at every existing component, including ancestors.
     for part in (path, *path.parents):
         if part.is_symlink():
             raise ValueError('symlink in runtime path')
-    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    missing = []
+    cursor = path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor = cursor.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            if directory.is_symlink() or not directory.is_dir():
+                raise ValueError('unsafe runtime directory')
+        _sync_directory(directory)
+        _sync_directory(directory.parent)
     info = path.stat()
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('runtime directory must be private and owned by user')
@@ -110,6 +130,7 @@ class Store:
             try:
                 fd = os.open(str(db), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
                 os.close(fd)
+                _sync_directory(directory)
             except FileExistsError:
                 pass
         conn = sqlite3.connect(str(db), timeout=30, isolation_level=None)
