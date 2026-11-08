@@ -2,6 +2,7 @@
 import os
 import concurrent.futures
 import hashlib
+import threading
 import sys
 import unittest
 from pathlib import Path
@@ -354,6 +355,49 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(json.loads(snapshot["jobs"][0]["data"])["eligible_since"], 123)
         self.assertEqual(json.loads(snapshot["attempts"][0]["data"])["process_identity"], {"pid": 42})
         self.assertGreater(snapshot["claims"][0]["reservation_revision"], 0)
+
+    def test_corrupt_schema_fails_closed(self):
+        import sqlite3
+        database = self.store.directory / "store.sqlite3"
+        self.store.close()
+        connection = sqlite3.connect(str(database))
+        connection.execute("DROP TABLE claims")
+        connection.commit()
+        connection.close()
+        with self.assertRaises(ValueError):
+            Store.open(self.domain, filesystem_inspector=lambda path: "local")
+
+    def test_racing_capacity_rechecks_after_revision_change(self):
+        for cap_type in ("global_cap", "provider_cap"):
+            domain = dict(self.domain, board_identity=cap_type)
+            initial = Store.open(domain, filesystem_inspector=lambda path: "local")
+            initial.start_session({"id": "default", "started_at": 1, "deadline": 100,
+                                   "known_spend": 0, "unknown_spend": False, "budget_stop": None})
+            initial.close()
+            barrier = threading.Barrier(2)
+            def admit(index):
+                store = Store.open(domain, filesystem_inspector=lambda path: "local")
+                try:
+                    job = {"id": "j" + str(index), "card": str(index), "action": "review", "role": "reviewer",
+                           "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
+                           "generation": 1, "provider": "p", "model": "m", "nonce": "n" + str(index), "session_id": "default"}
+                    revision = store.snapshot()["domain"]["revision"]
+                    claims = {"global_cap": 2, "provider_cap": 2, "paths": ["src/" + str(index)]}
+                    claims[cap_type] = 1
+                    barrier.wait()
+                    try:
+                        store.prepare_attempt(job, revision, claims)
+                        return True
+                    except ValueError:
+                        try:
+                            store.prepare_attempt(job, store.snapshot()["domain"]["revision"], claims)
+                            return True
+                        except ValueError:
+                            return False
+                finally:
+                    store.close()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                self.assertEqual(sum(executor.map(admit, (1, 2))), 1)
 
     def test_future_schema_fails_closed_without_modification(self):
         import sqlite3
