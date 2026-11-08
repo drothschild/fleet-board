@@ -759,8 +759,15 @@ class StoreContract(unittest.TestCase):
         with self.assertRaises(ValueError):
             restarted.prepare_retry('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
                                     expected_revision=paused['domain']['revision'])
+        self.assertTrue(hasattr(restarted, 'begin_retry_launch'), 'atomic retry launch admission is unavailable')
+        with self.assertRaises(ValueError):
+            restarted.begin_retry_launch('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                        expected_revision=paused['domain']['revision'])
         restarted.record_command({'id': 'resume', 'actor': 'fixture', 'command': 'resume', 'payload': {},
                                   'expected_revision': paused['domain']['revision']})
+        restarted.begin_retry_launch('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=restarted.snapshot()['domain']['revision'])
+        self.assertEqual(next(x for x in restarted.snapshot()['attempts'] if x['id'] == retry['attempt_id'])['state'], 'launching')
         restarted.revoke_generation('j1', restarted.snapshot()['domain']['revision'])
         drifted = restarted.snapshot()
         with self.assertRaises(ValueError):
