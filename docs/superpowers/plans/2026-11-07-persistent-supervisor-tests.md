@@ -4,7 +4,7 @@
 
 **Implementation plan:** [Persistent Supervisor](2026-11-07-persistent-supervisor.md)
 
-**Status:** Requirements only. No runtime tests, paid behavioral runs, service installation, or reboot rehearsals have been performed for this document. All implementation and validation gates remain pending.
+**Status:** Phase 1 and Phase 2 offline implementation evidence is recorded below. Phase 2 specification and quality review are approved; later runtime, host, and paid qualification remain pending.
 
 ## Execution and evidence rules
 
@@ -204,3 +204,30 @@ Integrity: `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks
 Schema 1 is the initial released format. Empty databases initialize transactionally; populated unversioned, corrupt, and unsupported-version databases are rejected. There is no historical supported schema migration to execute. Future registered migrations must use the backup API before changing an existing supported schema.
 
 Scope alias regression at `7ee4e32`: `test_scope_aliases_conflict_even_for_nonexistent_descendants` rejects case aliases of an existing path, case aliases of nonexistent descendants, and composed/decomposed Unicode aliases. Test-only commit `466fb68` produced three failures before the fix; the focused store suite then passed 31 cases and the clean-room check passed 118 checks. Logs are `/private/tmp/supervisor-store-scope-red.log`, `/private/tmp/supervisor-store-scope-green.log`, and `/private/tmp/supervisor-cleanroom-scope-green.log`. Original claim path strings remain persisted; ASCII paths are compared without case sensitivity, while any non-ASCII scope conservatively conflicts repository-wide because filesystem Unicode equivalence varies. This can reduce concurrency. Independent specification re-review and final Phase 1 quality review approved `9c77d54`; no actionable findings remain within the foundation scope. End-to-end qualification remains pending.
+
+
+### Phase 2 Task 2.1 evidence in progress — draft PR #229
+
+At head 06614f6, `bash plugins/fleet-board/tests/test-supervisor-runner.sh` passed (exit 0; `/private/tmp/supervisor-runners-green17.log`), and `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks (exit 0; `/private/tmp/supervisor-runners-cleanroom17.log`). The focused run required host process metadata access because the sandbox denies the macOS boot identity query. Tests use local fixture processes only.
+
+Cases exercised: process identity and fail-closed production launch; simultaneous and sequential duplicate invocation and cross-attempt nonce reuse; canonical private launch root; launcher exit, inherited lock closure and killed controller; safe bounded artifact copy and retry after failed copy; partial and corrupt result handling; Store claim retention while the runner is held after result publication; separate runner heartbeat and structured fixture progress; bounded continuously drained logs; receipt-bound cancellation and foreign nonce rejection. Earlier red and green slice logs are retained under `/private/tmp/supervisor-runners-{red,green,cleanroom}*.log`.
+
+These are implementation-slice results, not completion of S2–S4. Additional crash boundaries, socket descriptor closure, artifact publication recovery, result validation and independent review remain pending. Recovery Task 2.2, production worker isolation, host installation and paid qualification remain pending.
+
+Additional Task 2.1 evidence at head 3ba30bd: the focused runner suite passed (exit 0, `/private/tmp/supervisor-runners-green20.log`) and clean-room passed 118 checks (exit 0, `/private/tmp/supervisor-runners-cleanroom20.log`). Added explicit inherited socket descriptor closure, complete fixture binding validation, and a real runner termination after durable ingest followed by scratch deletion and idempotent publication resume; missing exit receipt is rejected and an interrupted temporary result is ignored. Review is pending; these cases do not complete the broader S2–S4 recovery requirements.
+
+Spec-review durability fix at code head e452d0a: `test_parent_directories_synced_before_execution_and_ingest` checks the runner root is flushed after creation of nonce, attempt, and artifact directories before worker invocation or artifact ingest. The regression failed before the fix (`/private/tmp/supervisor-runners-red21.log`, test commit b6ed070); `bash plugins/fleet-board/tests/test-supervisor-runner.sh` then passed (exit 0, `/private/tmp/supervisor-runners-green21.log`), and `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks (exit 0, `/private/tmp/supervisor-runners-cleanroom21.log`). Independent re-review remains pending.
+
+Quality-review FIFO fix at code head 136c7a3: `test_fifo_ready_rejected_without_blocking` and `test_fifo_progress_does_not_stop_heartbeat` failed before the fix (`/private/tmp/supervisor-runners-red22.log` and `/private/tmp/supervisor-runners-red22-progress.log`, test commit f7a1f6b). The shared bounded regular-file reader rejects FIFOs and other unsafe metadata before reading. `bash plugins/fleet-board/tests/test-supervisor-runner.sh` passed (exit 0, `/private/tmp/supervisor-runners-green22.log`); `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks (exit 0, `/private/tmp/supervisor-runners-cleanroom22.log`). Independent re-review remains pending.
+
+
+### Phase 2 specification review and final offline verification
+
+Task 2.1 specification and quality reviews approved `6793a88`. Task 2.2 specification re-review approved `35dcf35`; independent quality review remains pending. The review fixes cover authenticated adoption with immutable original deadlines, later trusted stop proof for quarantined attempts, and cancellation of resistant same-group descendants with inherited or redirected output. Native same-boot complete-tree absence remains unproven; uncertain executions retain capacity and scope. Recorded effects block retries until Phase 4 supplies reconciliation.
+
+Focused store verification passed 52 cases at `29b126a` (`/private/tmp/supervisor-review-store-final.log`); subsequent cancellation changes do not alter store code. At `35dcf35`, recovery passed 37 cases, the runner suite passed, and clean-room passed 118 checks. Independent specification re-review reran all 37 recovery cases successfully with host subprocess access. The earlier test-first review failures are indexed in the Task 2.2 evidence. Both manifests are now 0.18.0; the version check failed before the bump (`/private/tmp/supervisor-phase2-version-red.log`) and passed afterward (`/private/tmp/supervisor-phase2-version-green.log`).
+
+This is offline Phase 2 evidence, not production-provider, service, UI, reboot, or end-to-end rollout qualification. No paid execution or service installation was performed.
+
+
+Final Phase 2 review at `5a815d2`: independent specification and quality reviews approved with no remaining findings. Receipt-before-adoption reboot recovery now validates and binds durable identity in a revision-fenced transaction, including quarantined and cancellation-requested attempts, without restoring authority or changing reservations. Store verification passed 52 cases, recovery passed 41, and clean-room passed 118 checks; foreign nonce and fenced-state regressions are included. The runner suite passed at `35dcf35` and runner code is unchanged since that run. Release metadata validation passed, and clean-room passed again after the 0.18.0 bump. PR #229 contains review summaries, resolved findings, and final validation scope. Later-phase and host/paid gates remain pending.
