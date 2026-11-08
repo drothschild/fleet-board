@@ -71,6 +71,22 @@ class RecoveryContract(unittest.TestCase):
         Recovery(self.store).reconcile(now=11)
         self.assertEqual(len(self.store.snapshot()['results']), 1)
 
+    def test_published_result_is_recorded_when_receipt_is_unavailable(self):
+        from supervisor.runner import Runner, prepared_from_store
+        scratch = self.root / 'scratch'
+        scratch.mkdir()
+        (scratch / 'report').write_text('{"status":"clean"}')
+        command = [sys.executable, '-c',
+                   "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text('{\"exit_code\":0}')",
+                   str(scratch / 'ready.json')]
+        process = Runner(self.store.directory, fixture_command=command).launch(
+            prepared_from_store(self.store, 'n', scratch))
+        process.wait(timeout=10)
+        (self.store.directory / 'attempts' / 'n' / 'receipt.json').unlink()
+        Recovery(self.store).reconcile(now=10)
+        self.assertEqual(len(self.store.snapshot()['results']), 1)
+        self.assertEqual(len(self.store.snapshot()['claims']), 1)
+
     def test_quarantined_attempt_still_records_late_durable_result_as_evidence(self):
         from supervisor.runner import Runner, prepared_from_store
         scratch = self.root / 'scratch'
