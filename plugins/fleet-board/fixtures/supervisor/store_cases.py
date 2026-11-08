@@ -736,6 +736,11 @@ class StoreContract(unittest.TestCase):
                                     expected_revision=paused['domain']['revision'])
         restarted.record_command({'id': 'resume', 'actor': 'fixture', 'command': 'resume', 'payload': {},
                                   'expected_revision': paused['domain']['revision']})
+        restarted.revoke_generation('j1', restarted.snapshot()['domain']['revision'])
+        drifted = restarted.snapshot()
+        with self.assertRaises(ValueError):
+            restarted.prepare_retry('j1', eligibility, now=21, limits={'global_cap': 1, 'provider_cap': 1, 'max_cost_usd': 10},
+                                    expected_revision=drifted['domain']['revision'])
         restarted.request_cancellation(retry['attempt_id'], 'cancel-retry', 'stop',
                                        restarted.snapshot()['domain']['revision'], now=21)
         snapshot = restarted.snapshot()

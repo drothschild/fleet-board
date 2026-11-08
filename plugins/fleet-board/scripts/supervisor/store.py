@@ -398,29 +398,32 @@ class Store:
             if (domain['desired_mode'] != 'running' or session is None or now >= session['deadline']
                     or session['unknown_spend'] or session['budget_stop'] or session['known_spend'] >= limits['max_cost_usd']):
                 raise ValueError('retry admission is blocked')
-            existing = c.execute('SELECT id FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or revision != expected_revision:
+                raise ValueError('revision mismatch')
+            existing = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
+            prior_data = json.loads(prior['data'])
+            if (now < data['retry_at'] or job['generation'] != prior_data['generation'] + 1
+                    or prior_data.get('execution_released') is not True
+                    or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
+                    or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
+                raise ValueError('retry admission is blocked')
+            claim_id = nonce if existing else prior['id']
+            claim = c.execute('SELECT * FROM claims WHERE attempt_id=?', (claim_id,)).fetchone()
+            if claim is None:
+                raise ValueError('missing reservation')
+            active = list(c.execute('SELECT claims.attempt_id,claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if item['attempt_id'] != nonce and json.loads(item['data']).get('execution_released') is not True]
+            if len(occupied) >= limits['global_cap'] or sum(item['provider'] == prior['provider'] for item in occupied) >= limits['provider_cap']:
+                raise ValueError('capacity exhausted')
             if existing:
+                if (job['state'] != 'active' or existing['state'] != 'prepared'
+                        or json.loads(existing['data']).get('generation') != job['generation']):
+                    raise ValueError('retry is no longer prepared')
                 result = {'attempt_id': nonce}
             else:
-                revision = c.execute('SELECT revision FROM domain').fetchone()[0]
-                if type(expected_revision) is not int or revision != expected_revision:
-                    raise ValueError('revision mismatch')
-                domain = c.execute('SELECT desired_mode FROM domain').fetchone()
-                session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
-                prior_data = json.loads(prior['data'])
-                if (job['state'] != 'retry_wait' or now < data['retry_at'] or domain['desired_mode'] != 'running'
-                        or session is None or now >= session['deadline'] or session['unknown_spend'] or session['budget_stop']
-                        or session['known_spend'] >= limits['max_cost_usd'] or prior_data.get('execution_released') is not True
-                        or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
-                        or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (prior['id'],)).fetchone()):
-                    raise ValueError('retry admission is blocked')
-                claim = c.execute('SELECT * FROM claims WHERE attempt_id=?', (prior['id'],)).fetchone()
-                if claim is None:
-                    raise ValueError('missing reservation')
-                active = list(c.execute('SELECT claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
-                occupied = [item for item in active if json.loads(item['data']).get('execution_released') is not True]
-                if len(occupied) >= limits['global_cap'] or sum(item['provider'] == prior['provider'] for item in occupied) >= limits['provider_cap']:
-                    raise ValueError('capacity exhausted')
+                if job['state'] != 'retry_wait':
+                    raise ValueError('retry is not waiting')
                 fresh = {key: value for key, value in data.items() if key not in ('retry_prior', 'retry_at', 'retry_nonce')}
                 fresh.update({'nonce': nonce, 'generation': job['generation']})
                 if 'worktree' in prior_data:
