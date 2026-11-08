@@ -111,3 +111,23 @@ def request_scope_expansion(store, card, paths, expected_revision, checkpoint, r
         return {'granted': False, 'waiting_on': str(exc).split('#', 1)[1],
                 'checkpointed': True, 'worker_slot_released': True,
                 'retry_penalty': False, 'attempt_should_exit': True}
+
+
+def build_attempt_operation_handlers(store, card, *, heartbeat, result, checkpoint, release_slot):
+    """Create trusted controller callbacks for one worker's restricted IPC surface.
+
+    The returned functions stay in the controller. The worker receives only the
+    authenticated channel capability and operation names; Store access is never
+    serialized into bootstrap data.
+    """
+    if not isinstance(card, str) or not card or not callable(getattr(store, 'expand_scope', None)):
+        raise ValueError('attempt operation handlers require a card and reservation store')
+    if any(not callable(callback) for callback in (heartbeat, result, checkpoint, release_slot)):
+        raise ValueError('attempt operation handlers require trusted callbacks')
+
+    def expand_scope(payload):
+        return request_scope_expansion(
+            store, card, payload['paths'], payload['expected_revision'], checkpoint, release_slot,
+        )
+
+    return {'heartbeat': heartbeat, 'result': result, 'scope_request': expand_scope}

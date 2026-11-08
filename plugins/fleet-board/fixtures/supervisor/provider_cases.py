@@ -329,6 +329,11 @@ class ProviderCases(unittest.TestCase):
                               artifact_hashes={"/trusted/artifacts/attempt-1/report.json": "a" * 64},
                               usage=None, exit_code=0)
                 self.assertEqual(client.request(result, operation="result"), {"accepted": True})
+                forged_result = dict(result, request_id="result-forged",
+                                     report_path="/private/tmp/../outside/report",
+                                     artifact_hashes={"/private/tmp/../outside/report": "b" * 64})
+                with self.assertRaises(ContractError):
+                    client.request(forged_result, operation="result")
                 scope = dict(operation_binding, schema_version=1, paths=["src/worker.py"],
                              request_id="scope-1", expected_revision=7)
                 denied = client.request(scope, operation="scope_request")
@@ -356,10 +361,13 @@ class ProviderCases(unittest.TestCase):
         class Store:
             def __init__(self):
                 self.calls = []
+                self.conflict = True
 
             def expand_scope(self, card, paths, revision):
                 self.calls.append((card, paths, revision))
-                raise ValueError("scope conflict with #23")
+                if self.conflict:
+                    raise ValueError("scope conflict with #23")
+                return {"card": card, "paths": paths, "reservation_revision": 2}
 
         store = Store()
         callbacks = []
@@ -375,6 +383,10 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(result["waiting_on"], "23")
         self.assertFalse(result["retry_penalty"])
         self.assertTrue(result["attempt_should_exit"])
+        store.conflict = False
+        granted = handlers["scope_request"]({"paths": ["src/next.py"], "expected_revision": 9})
+        self.assertTrue(granted["granted"])
+        self.assertEqual(granted["reservation"]["reservation_revision"], 2)
 
     def test_subprocess_stdout_stderr_are_bounded_and_missing_executable_fails(self):
         noisy = self.script("noisy.py", "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('x'*4096)\nsys.stderr.write('y'*4096)\n")

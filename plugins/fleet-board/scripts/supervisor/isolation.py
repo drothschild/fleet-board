@@ -399,35 +399,46 @@ def run_isolated(argv, policy, *, capability=None, cwd=None, timeout=300, input_
             bytes(captured[process.stdout]), bytes(captured[process.stderr]),
         )
     except (OSError, subprocess.SubprocessError) as exc:
+        _terminate_process_group(process)
         raise IsolationUnavailable(str(exc)[:200]) from exc
     except BaseException:
-        if process is not None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except OSError:
-                pass
-            try:
-                process.wait(timeout=.3)
-            except subprocess.TimeoutExpired:
-                pass
-            try:
-                os.killpg(process.pid, 0)
-            except OSError:
-                pass
-            else:
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except OSError:
-                    pass
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate_process_group(process)
         raise
     finally:
         selector.close()
+        if process is not None and process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
         for stream in captured:
             try:
                 stream.close()
             except OSError:
                 pass
+
+
+def _terminate_process_group(process):
+    """Stop the owned worker group even when bootstrap or selector I/O fails."""
+    if process is None:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=.3)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, 0)
+    except OSError:
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass

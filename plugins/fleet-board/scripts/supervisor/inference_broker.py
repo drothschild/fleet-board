@@ -4,7 +4,7 @@ import hmac
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import selectors
 import secrets
 import signal
@@ -20,6 +20,14 @@ from dataclasses import dataclass
 
 class ContractError(RuntimeError):
     pass
+
+
+class _AnyCancellation:
+    def __init__(self, *events):
+        self.events = events
+
+    def is_set(self):
+        return any(event.is_set() for event in self.events)
 
 
 @dataclass(frozen=True)
@@ -271,7 +279,8 @@ class InferenceChannel:
     MAX_REQUESTS = 32
     MAX_REQUESTS_PER_ATTEMPT = 8
 
-    def __init__(self, broker, directory, attempt_ids, *, request_timeout=310, frame_timeout=5):
+    def __init__(self, broker, directory, attempt_ids, *, request_timeout=310, frame_timeout=5,
+                 attempt_controls=None):
         self.broker = broker
         self.directory = Path(directory)
         if (not self.directory.is_absolute() or self.directory.is_symlink()
@@ -306,8 +315,171 @@ class InferenceChannel:
         self._attempt_requests = {attempt_id: 0 for attempt_id in self._capabilities}
         self._attempt_inflight = set()
         self._request_lock = threading.Lock()
+        self._attempt_controls = {}
+        self._attempt_bindings = {}
+        self._operation_handlers = {}
+        self._operation_calls = {}
         self._executor = None
         self._inode = None
+        for attempt_id, control in (attempt_controls or {}).items():
+            if not isinstance(control, dict) or set(control) != {'deadline', 'cancel_event'}:
+                raise ValueError('invalid inference attempt control')
+            self.bind_attempt_control(attempt_id, control['deadline'], control['cancel_event'])
+
+    def bind_attempt_control(self, attempt_id, deadline, cancel_event):
+        """Bind provider subprocess lifetime to one durable attempt's controls."""
+        if (attempt_id not in self._capabilities
+                or type(deadline) not in (int, float) or not math.isfinite(deadline)
+                or deadline <= 0 or not isinstance(cancel_event, threading.Event)):
+            raise ContractError('invalid inference attempt control')
+        with self._request_lock:
+            self._attempt_controls[attempt_id] = (deadline, cancel_event)
+
+    def bind_attempt_operations(self, attempt_id, binding, handlers):
+        """Bind trusted controller handlers to one worker attempt."""
+        fields = {'domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage'}
+        if (attempt_id not in self._capabilities or not isinstance(binding, dict)
+                or set(binding) != fields or binding.get('attempt_id') != attempt_id
+                or not isinstance(binding.get('domain_id'), str) or not binding['domain_id']
+                or not isinstance(binding.get('job_id'), str) or not binding['job_id']
+                or type(binding.get('generation')) is not int or binding['generation'] < 0
+                or not isinstance(binding.get('input_sha'), str)
+                or len(binding['input_sha']) != 64
+                or any(char not in '0123456789abcdef' for char in binding['input_sha'])
+                or not isinstance(binding.get('role'), str) or not binding['role']
+                or (binding.get('stage') is not None
+                    and (not isinstance(binding['stage'], str) or not binding['stage']))):
+            raise ContractError('invalid worker operation binding')
+        broker_binding = self.broker.attempts.get(attempt_id)
+        if not isinstance(broker_binding, dict) or any(
+                broker_binding.get(key) != binding[key]
+                for key in ('generation', 'input_sha', 'role', 'stage')):
+            raise ContractError('worker operations do not match broker attempt')
+        allowed = {'heartbeat', 'result', 'scope_request'}
+        if (not isinstance(handlers, dict) or set(handlers) != allowed
+                or any(not callable(handlers[name]) for name in allowed)):
+            raise ContractError('worker operations require trusted heartbeat, result, and scope handlers')
+        with self._request_lock:
+            if attempt_id in self._operation_handlers:
+                raise ContractError('worker operations already bound for attempt')
+            self._attempt_bindings[attempt_id] = dict(binding)
+            self._operation_handlers[attempt_id] = dict(handlers)
+
+    def operations_for(self, attempt_id):
+        with self._request_lock:
+            if attempt_id not in self._operation_handlers:
+                return ()
+            return ('heartbeat', 'result', 'scope_request')
+
+    @staticmethod
+    def _validate_operation_payload(operation, payload, binding):
+        identity = {'schema_version', 'domain_id', 'job_id', 'attempt_id',
+                    'generation', 'input_sha', 'role', 'stage'}
+        if not isinstance(payload, dict):
+            raise ContractError('invalid worker operation payload')
+        if (type(payload.get('generation')) is not int
+                or any(payload.get(key) != binding[key] for key in identity - {'schema_version'})):
+            raise ContractError('worker operation does not match attempt')
+        request_id = payload.get('request_id')
+        if (not isinstance(request_id, str) or not request_id or len(request_id) > 128
+                or any(ord(char) < 32 or ord(char) == 127 for char in request_id)):
+            raise ContractError('invalid worker operation request id')
+        if type(payload.get('schema_version')) is not int or payload['schema_version'] != 1:
+            raise ContractError('unsupported worker operation schema')
+        if operation == 'heartbeat':
+            if set(payload) != identity | {'request_id', 'at'} or type(payload['at']) not in (int, float) or not math.isfinite(payload['at']) or payload['at'] <= 0 or payload['at'] > time.time() + 5:
+                raise ContractError('invalid attempt heartbeat')
+        elif operation == 'result':
+            required = identity | {'request_id', 'outcome', 'report_path', 'artifact_hashes', 'usage', 'exit_code'}
+            if set(payload) != required or payload['outcome'] not in ('success', 'failure', 'cancelled'):
+                raise ContractError('invalid attempt result envelope')
+            if not isinstance(payload['report_path'], str) or not payload['report_path']:
+                raise ContractError('attempt result has no report path')
+            hashes = payload['artifact_hashes']
+            if (not isinstance(hashes, dict) or len(hashes) < 1 or len(hashes) > 128
+                    or payload['report_path'] not in hashes
+                    or any(not isinstance(path, str) or not path or not Path(path).is_absolute()
+                           or '..' in Path(path).parts or not isinstance(digest, str)
+                           or len(digest) != 64 or any(char not in '0123456789abcdef' for char in digest)
+                           for path, digest in hashes.items())):
+                raise ContractError('invalid attempt result artifacts')
+            usage = payload['usage']
+            if usage is not None and (not isinstance(usage, dict) or set(usage) != {'cost_usd'}
+                                      or type(usage['cost_usd']) not in (int, float)
+                                      or not math.isfinite(usage['cost_usd']) or usage['cost_usd'] < 0):
+                raise ContractError('invalid attempt result usage')
+            if type(payload['exit_code']) is not int:
+                raise ContractError('invalid attempt result exit code')
+        elif operation == 'scope_request':
+            if set(payload) != identity | {'request_id', 'paths', 'expected_revision'}:
+                raise ContractError('invalid scope request envelope')
+            paths = payload['paths']
+            if (not isinstance(paths, list) or not paths or len(paths) > 256
+                    or any(not isinstance(path, str) or not path or len(path) > 4096
+                           or '\\' in path or any(ord(char) < 32 or ord(char) == 127 for char in path)
+                           or PurePosixPath(path).is_absolute() or PurePosixPath(path).as_posix() != path
+                           or any(part in ('', '.', '..') for part in path.split('/'))
+                           for path in paths)):
+                raise ContractError('invalid scope expansion paths')
+            if type(payload['expected_revision']) is not int or payload['expected_revision'] < 0:
+                raise ContractError('invalid scope revision')
+        else:
+            raise ContractError('worker operation is not allowed')
+        return payload
+
+    def _dispatch_worker_operation(self, attempt_id, operation, payload):
+        with self._request_lock:
+            binding = self._attempt_bindings.get(attempt_id)
+            handlers = self._operation_handlers.get(attempt_id)
+        if binding is None or handlers is None or operation not in handlers:
+            raise ContractError('worker operation is not authorized')
+        validated = self._validate_operation_payload(operation, payload, binding)
+        if operation in ('heartbeat', 'scope_request'):
+            control = self._attempt_controls.get(attempt_id)
+            if (self._stop.is_set() or (control is not None and
+                    (control[1].is_set() or control[0] <= time.time()))):
+                raise ContractError('attempt control authority has expired')
+        request_id = validated['request_id']
+        body_sha = hashlib.sha256(json.dumps(validated, sort_keys=True, separators=(',', ':'),
+                                              allow_nan=False).encode('utf-8')).hexdigest()
+        key = (attempt_id, operation, request_id)
+        with self._request_lock:
+            previous = self._operation_calls.get(key)
+            if previous is not None:
+                if previous['body_sha'] != body_sha:
+                    raise ContractError('worker request id reused with a different body')
+                if previous['state'] == 'complete':
+                    return dict(previous['result'])
+                raise ContractError('worker request id is already consumed')
+            self._operation_calls[key] = {'body_sha': body_sha, 'state': 'in_flight'}
+        try:
+            result = handlers[operation](validated)
+            if operation == 'scope_request':
+                if (not isinstance(result, dict) or type(result.get('granted')) is not bool
+                        or (result['granted'] and not isinstance(result.get('reservation'), dict))
+                        or (not result['granted'] and (
+                            result.get('retry_penalty') is not False
+                            or result.get('attempt_should_exit') is not True
+                            or result.get('worker_slot_released') is not True
+                            or result.get('checkpointed') is not True
+                            or not isinstance(result.get('waiting_on'), str)))):
+                    raise ContractError('scope handler returned an unsafe result')
+            if not isinstance(result, dict):
+                raise ContractError('worker operation handler returned an invalid result')
+            encoded = json.dumps(result, separators=(',', ':'), allow_nan=False).encode('utf-8')
+            if not encoded or len(encoded) > self.MAX_RESPONSE_BYTES - 64:
+                raise ContractError('worker operation result exceeded limit')
+            with self._request_lock:
+                self._operation_calls[key] = {'body_sha': body_sha, 'state': 'complete',
+                                              'result': dict(result)}
+            return result
+        except Exception as exc:
+            with self._request_lock:
+                self._operation_calls[key] = {'body_sha': body_sha, 'state': 'failed',
+                                              'error': str(exc)[:200]}
+            if isinstance(exc, ContractError):
+                raise
+            raise ContractError('worker operation handler failed') from exc
 
     def capability_for(self, attempt_id):
         """Return the one-attempt token for trusted launch code to pass over a private fd."""
@@ -361,6 +533,10 @@ class InferenceChannel:
             self._executor = None
         self._unlink_socket()
         self._capabilities.clear()
+        self._attempt_controls.clear()
+        self._attempt_bindings.clear()
+        self._operation_handlers.clear()
+        self._operation_calls.clear()
 
     def _unlink_socket(self):
         try:
@@ -406,7 +582,7 @@ class InferenceChannel:
         if (not isinstance(raw, dict)
                 or set(raw) != {'schema_version', 'operation', 'attempt_id', 'capability', 'request'}
                 or type(raw['schema_version']) is not int or raw['schema_version'] != 1
-                or raw['operation'] != 'infer'
+                or not isinstance(raw['operation'], str)
                 or not isinstance(raw['attempt_id'], str)
                 or not isinstance(raw['capability'], str)
                 or not isinstance(raw['request'], dict)):
@@ -416,13 +592,28 @@ class InferenceChannel:
             raise ContractError('inference channel authentication failed')
         if raw['request'].get('attempt_id') != raw['attempt_id']:
             raise ContractError('inference channel attempt mismatch')
-        if not self._claim_global_request():
-            raise ContractError('inference channel quota exhausted')
+        if raw['operation'] != 'infer':
+            result = self._dispatch_worker_operation(raw['attempt_id'], raw['operation'], raw['request'])
+            self._write_frame(connection, {'schema_version': 1, 'result': result}, self.MAX_RESPONSE_BYTES)
+            return
         if not self._claim_attempt(raw['attempt_id']):
             raise ContractError('attempt inference quota or concurrency limit exceeded')
+        if not self._claim_global_request():
+            self._release_attempt(raw['attempt_id'])
+            raise ContractError('inference channel quota exhausted')
         try:
-            result = self.broker.infer(raw['request'], timeout=self.request_timeout - 1,
-                                       cancel_event=self._stop)
+            control = self._attempt_controls.get(raw['attempt_id'])
+            cancel_event = self._stop
+            timeout = self.request_timeout - 1
+            if control is not None:
+                durable_deadline, attempt_cancel = control
+                remaining = durable_deadline - time.time()
+                if remaining <= 0 or attempt_cancel.is_set():
+                    raise ContractError('attempt cancelled or durable deadline exceeded')
+                cancel_event = _AnyCancellation(self._stop, attempt_cancel)
+                timeout = min(timeout, remaining)
+            result = self.broker.infer(raw['request'], timeout=timeout,
+                                       cancel_event=cancel_event)
             self._write_frame(connection, {'schema_version': 1, 'result': result}, self.MAX_RESPONSE_BYTES)
         finally:
             self._release_attempt(raw['attempt_id'])
@@ -454,6 +645,11 @@ class InferenceChannel:
                 connection.settimeout(1.0)
                 self._serve_request(connection)
             except (OSError, ValueError, TypeError, KeyError, ContractError, UnicodeDecodeError):
+                try:
+                    self._write_frame(connection, {'schema_version': 1, 'error': 'request rejected'}, 1024)
+                except OSError:
+                    pass
+            except Exception:
                 try:
                     self._write_frame(connection, {'schema_version': 1, 'error': 'request rejected'}, 1024)
                 except OSError:
@@ -527,6 +723,10 @@ class InferenceClient:
             raise ContractError('invalid inference channel response')
         if 'error' in response:
             raise ContractError('inference channel request rejected')
+        if operation != 'infer':
+            if not isinstance(response['result'], dict):
+                raise ContractError('invalid worker operation result')
+            return response['result']
         try:
             return validate_result(ProviderRequest(**request), response['result'])
         except (TypeError, ValueError) as exc:

@@ -36,12 +36,15 @@ def prepare_worker_bootstrap(prepared_attempt, channel, request):
     if prepared_attempt.get('stage') != authorized.stage:
         raise ContractError('worker bootstrap stage does not match prepared attempt')
     capability = channel.capability_for(authorized.attempt_id)
+    operations = list(channel.operations_for(authorized.attempt_id))
     return {
         'schema_version': 1,
-        'attempt': {key: prepared_attempt.get(key) for key in keys + ('stage',)},
+        'attempt': {key: prepared_attempt.get(key) for key in
+                    ('domain_id', 'job_id') + keys + ('stage',)},
         'provider_request': request,
         'inference': {'schema_version': 1, 'socket_path': str(channel.socket_path),
                       'attempt_id': authorized.attempt_id, 'capability': capability},
+        'operations': operations,
     }
 
 
@@ -134,13 +137,19 @@ class Runner:
 
     def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None,
                           source_repository=None, protected_resources=None,
-                          cancel_event=None):
+                          cancel_event=None, operation_handlers=None):
         """Run only an explicit production request behind verified host isolation."""
         if not self.production_enabled:
             raise IsolationUnavailable('production supervisor admission is disabled')
-        required = {'attempt_id', 'generation', 'input_sha', 'role', 'provider', 'model'}
+        required = {'domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha',
+                    'role', 'stage', 'provider', 'model'}
         if not isinstance(prepared_attempt, dict) or not required <= set(prepared_attempt):
             raise ValueError('incomplete production attempt binding')
+        if any(not isinstance(prepared_attempt[key], str) or not prepared_attempt[key]
+               for key in ('domain_id', 'job_id')):
+            raise ValueError('invalid production attempt binding')
+        if prepared_attempt['stage'] is not None and not isinstance(prepared_attempt['stage'], str):
+            raise ValueError('invalid production attempt binding')
         if (type(prepared_attempt['generation']) is not int
                 or not re.fullmatch(r'[0-9a-f]{64}', str(prepared_attempt['input_sha']))
                 or any(not isinstance(prepared_attempt[key], str) or not prepared_attempt[key]
@@ -162,7 +171,20 @@ class Runner:
             raise IsolationUnavailable('production role contract is gated on Phase 7')
         if source_repository is None:
             raise IsolationUnavailable('production launch requires private worker Git metadata')
+        if not isinstance(operation_handlers, dict):
+            raise IsolationUnavailable('production launch requires trusted attempt operation handlers')
+        bind_control = getattr(channel, 'bind_attempt_control', None)
+        if not callable(bind_control):
+            raise IsolationUnavailable('production inference channel lacks attempt controls')
+        bind_control(prepared_attempt['attempt_id'], deadline, cancel_event)
         prepare_private_git(source_repository, policy['workspace'], policy['private_git'])
+        bind_operations = getattr(channel, 'bind_attempt_operations', None)
+        if not callable(bind_operations):
+            raise IsolationUnavailable('production inference channel lacks attempt operation dispatch')
+        operation_binding = {key: prepared_attempt[key] for key in
+                             ('domain_id', 'job_id', 'attempt_id', 'generation',
+                              'input_sha', 'role', 'stage')}
+        bind_operations(prepared_attempt['attempt_id'], operation_binding, operation_handlers)
         bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
         payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
         return run_isolated(command, policy, capability=capability, input_data=payload,
