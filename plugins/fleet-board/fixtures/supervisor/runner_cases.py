@@ -132,3 +132,23 @@ def test_published_result_survives_scratch_deletion():
 
 
 test_published_result_survives_scratch_deletion()
+
+
+def test_heartbeat_and_bounded_logs():
+    import json
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp).resolve()
+        runner = Runner(root, fixture_command=[sys.executable, '-c',
+                        "import sys,time; sys.stdout.write('x'*200000); sys.stdout.flush(); time.sleep(1)"])
+        process = runner.launch({'attempt_id': 'logs', 'nonce': 'n'})
+        attempt = root / 'attempts' / 'logs'
+        deadline = time.monotonic() + 8
+        while not (attempt / 'heartbeat.json').exists() and time.monotonic() < deadline:
+            time.sleep(.05)
+        assert (attempt / 'heartbeat.json').exists()
+        assert not (attempt / 'progress.json').exists()
+        process.wait(timeout=10)
+        assert (attempt / 'stdout.log').stat().st_size <= 65536
+
+
+test_heartbeat_and_bounded_logs()
