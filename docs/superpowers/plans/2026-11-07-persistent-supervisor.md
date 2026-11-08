@@ -6,7 +6,7 @@
 
 **Baseline:** `db52f9f313adf2d6d5cd6c70c793296a13abb679` (revalidated 2026-11-07; originally `28866b0`). All existing paths below were checked against the original baseline and the intervening PR #200/#207 changes. New paths are explicitly marked Create. The prototype on `codex/standalone-profiles` is not merged and is not a prerequisite; do not copy its fixture worker as a production adapter.
 
-**Status:** Phase 1 merged at e4ea2c7. Task 2.1 implementation is pending independent review on its draft PR; recovery (Task 2.2), later phases, and the boot service remain unimplemented. Supervisor execution remains disabled.
+**Status:** Phase 1 merged at e4ea2c7. Phase 2 implementation and specification review are complete on draft PR #229; final quality review is pending. Later phases and boot service remain unimplemented. Supervisor execution remains disabled.
 
 ## Current-main impact assessment
 
@@ -71,10 +71,10 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Interfaces:** `ProcessIdentity(boot_id, pid, started_at, nonce)`, `Runner.launch(prepared_attempt)`, `Runner.inspect(identity)`, `Runner.cancel(identity, deadline)`. Runner artifacts use the envelope in the design; provider execution begins only after exclusive attempt registration.
 
-- [ ] Write real fake-process cases: parent exits while child continues; supervisor dies before registration acknowledgement; duplicate launch nonce permits one provider invocation; worker writes a result while notification is lost; provider scratch is deleted after durable artifact ingestion but before notification; partial result file is ignored; result appears before process exit and slot stays held.
+- [x] Write real fake-process cases: parent exits while child continues; supervisor dies before registration acknowledgement; duplicate launch nonce permits one provider invocation; worker writes a result while notification is lost; provider scratch is deleted after durable artifact ingestion but before notification; partial result file is ignored; result appears before process exit and slot stays held.
 - [x] Run `bash plugins/fleet-board/tests/test-supervisor-runner.sh` to intended failure; commit tests.
-- [ ] Implement detached runner/process containment, execution lock and receipt, identity registration, heartbeat/progress channels, bounded logs, immutable artifact ingestion with hashes and safe retention, result validation and atomic publication. Close inherited supervisor-lock/socket descriptors. Separate runner heartbeat from provider progress.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Implement detached runner/process containment, execution lock and receipt, identity registration, heartbeat/progress channels, bounded logs, immutable artifact ingestion with hashes and safe retention, result validation and atomic publication. Close inherited supervisor-lock/socket descriptors. Separate runner heartbeat from provider progress.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S4 process lifecycle subset. Production provider integration remains disabled.
 
@@ -83,10 +83,10 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Create:** `scripts/supervisor/recovery.py`; `tests/test-supervisor-recovery.sh`; `fixtures/supervisor/recovery_cases.py`.
 **Modify:** `models.py`, `store.py`, `processes.py`, `workers.py` as required by these contracts.
 
-- [ ] Add restart matrix for every launch/result boundary; matching live worker adoption; missing worker; boot change; PID reuse; unreachable process inspector; detached descendant; stale generation result; retry count preserved across repeated restart.
+- [x] Add restart matrix for every launch/result boundary; matching live worker adoption; missing worker; boot change; PID reuse; unreachable process inspector; detached descendant; stale generation result; retry count preserved across repeated restart.
 - [x] Add liveness cases: heartbeat without progress, legitimate quiet bounded tool, hard deadline, graceful cancellation, TERM-resistant child, uncertain termination, and intentional Stop not consuming/triggering infrastructure retry.
 - [x] Run `bash plugins/fleet-board/tests/test-supervisor-recovery.sh` to failure; commit tests.
-- [ ] Implement suspected-stuck inspection, generation revocation, TERM/grace/KILL with descendant confirmation, quarantine on uncertainty, and one backoff retry only after safe infrastructure classification. Retain workspace/scope/occupancy until termination is proven. Ordinary semantic failure remains attention, not an infrastructure retry.
+- [x] Implement suspected-stuck inspection, generation revocation, TERM/grace/KILL with descendant confirmation, quarantine on uncertainty, and one backoff retry only after safe infrastructure classification. Retain workspace/scope/occupancy until termination is proven. Ordinary semantic failure remains attention, not an infrastructure retry.
 - [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S2-S5. Test records must show at most two attempts for one automatically retried job even after multiple restarts.

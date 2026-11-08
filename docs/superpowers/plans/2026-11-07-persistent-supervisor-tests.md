@@ -4,7 +4,7 @@
 
 **Implementation plan:** [Persistent Supervisor](2026-11-07-persistent-supervisor.md)
 
-**Status:** Requirements only. No runtime tests, paid behavioral runs, service installation, or reboot rehearsals have been performed for this document. All implementation and validation gates remain pending.
+**Status:** Phase 1 and Phase 2 offline implementation evidence is recorded below. Final Phase 2 quality review and later runtime, host, and paid qualification remain pending.
 
 ## Execution and evidence rules
 
@@ -219,3 +219,12 @@ Additional Task 2.1 evidence at head 3ba30bd: the focused runner suite passed (e
 Spec-review durability fix at code head e452d0a: `test_parent_directories_synced_before_execution_and_ingest` checks the runner root is flushed after creation of nonce, attempt, and artifact directories before worker invocation or artifact ingest. The regression failed before the fix (`/private/tmp/supervisor-runners-red21.log`, test commit b6ed070); `bash plugins/fleet-board/tests/test-supervisor-runner.sh` then passed (exit 0, `/private/tmp/supervisor-runners-green21.log`), and `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks (exit 0, `/private/tmp/supervisor-runners-cleanroom21.log`). Independent re-review remains pending.
 
 Quality-review FIFO fix at code head 136c7a3: `test_fifo_ready_rejected_without_blocking` and `test_fifo_progress_does_not_stop_heartbeat` failed before the fix (`/private/tmp/supervisor-runners-red22.log` and `/private/tmp/supervisor-runners-red22-progress.log`, test commit f7a1f6b). The shared bounded regular-file reader rejects FIFOs and other unsafe metadata before reading. `bash plugins/fleet-board/tests/test-supervisor-runner.sh` passed (exit 0, `/private/tmp/supervisor-runners-green22.log`); `bash plugins/fleet-board/tests/test-clean-room.sh` passed 118 checks (exit 0, `/private/tmp/supervisor-runners-cleanroom22.log`). Independent re-review remains pending.
+
+
+### Phase 2 specification review and final offline verification
+
+Task 2.1 specification and quality reviews approved `6793a88`. Task 2.2 specification re-review approved `35dcf35`; independent quality review remains pending. The review fixes cover authenticated adoption with immutable original deadlines, later trusted stop proof for quarantined attempts, and cancellation of resistant same-group descendants with inherited or redirected output. Native same-boot complete-tree absence remains unproven; uncertain executions retain capacity and scope. Recorded effects block retries until Phase 4 supplies reconciliation.
+
+Focused store verification passed 52 cases at `29b126a` (`/private/tmp/supervisor-review-store-final.log`); subsequent cancellation changes do not alter store code. At `35dcf35`, recovery passed 37 cases, the runner suite passed, and clean-room passed 118 checks. Independent specification re-review reran all 37 recovery cases successfully with host subprocess access. The earlier test-first review failures are indexed in the Task 2.2 evidence. Both manifests are now 0.18.0; the version check failed before the bump (`/private/tmp/supervisor-phase2-version-red.log`) and passed afterward (`/private/tmp/supervisor-phase2-version-green.log`).
+
+This is offline Phase 2 evidence, not production-provider, service, UI, reboot, or end-to-end rollout qualification. No paid execution or service installation was performed.
