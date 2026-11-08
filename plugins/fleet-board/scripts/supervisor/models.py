@@ -31,3 +31,12 @@ class RetryEvidence:
     job_id: str
     attempt_id: str
     generation: int
+
+
+@dataclass(frozen=True)
+class NeverExecutedEvidence:
+    """Trusted launch and current-card eligibility observation."""
+    domain_id: str
+    job_id: str
+    attempt_id: str
+    generation: int

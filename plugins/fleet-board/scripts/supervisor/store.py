@@ -15,7 +15,7 @@ import sys
 import time
 from pathlib import Path
 
-from .models import RetryEvidence, StopEvidence, canonical_json
+from .models import NeverExecutedEvidence, RetryEvidence, StopEvidence, canonical_json
 from .processes import _boot_id
 
 SCHEMA_VERSION = 1
@@ -110,7 +110,7 @@ def _private_directory(path):
 
 class Store:
     @classmethod
-    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None):
+    def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
         if not all(isinstance(v, str) and v for v in identity.values()):
             raise ValueError('invalid domain identity')
@@ -181,12 +181,13 @@ class Store:
                 conn.execute('ROLLBACK')
             conn.close()
             raise
-        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier, retry_evidence_verifier)
+        return cls(conn, directory, domain_id, Path(identity['common_dir']), fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier)
 
-    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier, retry_evidence_verifier):
+    def __init__(self, connection, directory, domain_id, common_dir, fault_injector, stop_evidence_verifier, retry_evidence_verifier, launch_evidence_verifier):
         self.__connection = connection
         self.__stop_evidence_verifier = stop_evidence_verifier
         self.__retry_evidence_verifier = retry_evidence_verifier
+        self.__launch_evidence_verifier = launch_evidence_verifier
         self.directory = directory
         self.domain_id = domain_id
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
@@ -333,6 +334,45 @@ class Store:
             data.update(details)
             c.execute('UPDATE attempts SET state=?,data=? WHERE id=?', (details.get('state', row['state']), canonical_json(data), attempt_id))
             self._event('attempt_updated', {'attempt_id': attempt_id, 'fields': sorted(details)})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def begin_recovered_launch(self, attempt_id, evidence, *, now, limits, expected_revision):
+        """Commit same-attempt launch intent after trusted proof and fresh admission checks."""
+        if (type(evidence) is not NeverExecutedEvidence or self.__launch_evidence_verifier is None
+                or self.__launch_evidence_verifier(evidence) is not True
+                or type(now) not in (int, float) or not math.isfinite(now) or now < 0
+                or not isinstance(limits, dict) or set(limits) != {'global_cap', 'provider_cap', 'max_cost_usd'}
+                or any(type(limits[k]) is not int or limits[k] < 1 for k in ('global_cap', 'provider_cap'))
+                or type(limits['max_cost_usd']) not in (int, float) or not math.isfinite(limits['max_cost_usd']) or limits['max_cost_usd'] <= 0):
+            raise ValueError('untrusted launch evidence or limits')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            domain = c.execute('SELECT revision,desired_mode FROM domain').fetchone()
+            row = c.execute('SELECT attempts.*,jobs.generation AS current_generation,jobs.state AS job_state FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (attempt_id,)).fetchone()
+            if row is None:
+                raise ValueError('unknown attempt')
+            data = json.loads(row['data'])
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (data['session_id'],)).fetchone()
+            claim = c.execute('SELECT 1 FROM claims WHERE attempt_id=?', (attempt_id,)).fetchone()
+            active = list(c.execute('SELECT claims.provider,attempts.data FROM claims JOIN attempts ON attempts.id=claims.attempt_id'))
+            occupied = [item for item in active if json.loads(item['data']).get('execution_released') is not True]
+            if (type(expected_revision) is not int or domain['revision'] != expected_revision or domain['desired_mode'] != 'running'
+                    or evidence.domain_id != self.domain_id or evidence.attempt_id != attempt_id or evidence.job_id != row['job_id']
+                    or type(evidence.generation) is not int or evidence.generation != data['generation']
+                    or row['current_generation'] != data['generation'] or row['state'] != 'prepared' or row['job_state'] != 'active'
+                    or session is None or now >= session['deadline'] or session['unknown_spend'] or session['budget_stop']
+                    or session['known_spend'] >= limits['max_cost_usd'] or claim is None
+                    or len(occupied) > limits['global_cap'] or sum(item['provider'] == row['provider'] for item in occupied) > limits['provider_cap']
+                    or c.execute('SELECT 1 FROM effects WHERE job_id=?', (row['job_id'],)).fetchone()
+                    or c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()):
+                raise ValueError('recovered launch admission blocked')
+            data['state'] = 'launching'
+            c.execute("UPDATE attempts SET state='launching',data=? WHERE id=?", (canonical_json(data), attempt_id))
+            self._event('recovered_launch_started', {'attempt_id': attempt_id})
             c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
