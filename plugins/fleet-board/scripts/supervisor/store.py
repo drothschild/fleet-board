@@ -473,8 +473,13 @@ class Store:
                     or type(evidence.generation) is not int or evidence.generation != data['generation']
                     or type(evidence.pid) is not int or evidence.pid <= 0 or not evidence.boot_id or not evidence.started_at
                     or evidence.nonce != row['nonce'] or data.get('boot_id') != evidence.boot_id or identity != expected
-                    or row['state'] not in ('cancel_requested', 'quarantined', 'interrupted')):
+                    or row['state'] not in ('cancel_requested', 'quarantined', 'interrupted', 'result_ready')):
                 raise ValueError('stop evidence identity mismatch')
+            if row['state'] == 'result_ready':
+                result = c.execute('SELECT disposition FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()
+                generation = c.execute('SELECT generation FROM jobs WHERE id=?', (row['job_id'],)).fetchone()[0]
+                if result is None or result['disposition'] != 'current' or generation != evidence.generation:
+                    raise ValueError('result is no longer current')
             encoded = dict(evidence.__dict__)
             if data.get('execution_released') is True:
                 if data.get('stop_evidence') != encoded:
