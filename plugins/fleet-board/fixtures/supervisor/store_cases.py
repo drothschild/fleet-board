@@ -27,6 +27,8 @@ class StoreContract(unittest.TestCase):
         }
         self.store = Store.open(self.domain, filesystem_inspector=lambda path: "local")
         self.addCleanup(self.store.close)
+        self.store.start_session({"id": "default", "started_at": 1, "deadline": 100,
+                                  "known_spend": 0, "unknown_spend": False, "budget_stop": None})
 
     def test_reopen_retains_domain_state_and_events(self):
         before = self.store.snapshot()
@@ -73,9 +75,9 @@ class StoreContract(unittest.TestCase):
         other = Store.open(self.domain, filesystem_inspector=lambda path: "local")
         self.addCleanup(other.close)
         restored = other.snapshot()
-        self.assertEqual(restored["sessions"][0]["known_spend"], 2.5)
-        self.assertTrue(restored["sessions"][0]["unknown_spend"])
-        self.assertEqual(restored["sessions"][0]["budget_stop"], "unknown")
+        self.assertEqual(next(x for x in restored["sessions"] if x["id"] == "s1")["known_spend"], 2.5)
+        self.assertTrue(next(x for x in restored["sessions"] if x["id"] == "s1")["unknown_spend"])
+        self.assertEqual(next(x for x in restored["sessions"] if x["id"] == "s1")["budget_stop"], "unknown")
 
     def test_concurrent_same_card_admission_is_atomic(self):
         revision = self.store.snapshot()["domain"]["revision"]
@@ -83,7 +85,7 @@ class StoreContract(unittest.TestCase):
             store = Store.open(self.domain, filesystem_inspector=lambda path: "local")
             job = {"id": "j" + str(index), "card": "1", "action": "review", "role": "reviewer",
                    "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
-                   "generation": 1, "provider": "p" + str(index), "model": "m", "nonce": "n" + str(index)}
+                   "generation": 1, "provider": "p" + str(index), "model": "m", "nonce": "n" + str(index), "session_id": "default"}
             try:
                 store.prepare_attempt(job, revision, {"global_cap": 2, "provider_cap": 2, "paths": ["src"]})
                 return True
@@ -103,7 +105,7 @@ class StoreContract(unittest.TestCase):
     def test_admission_conflict_rolls_back_job_and_event(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer",
                "stage": "code", "round": 1, "input_sha": "abc", "input_version": "v1",
-               "generation": 1, "provider": "p", "model": "m", "nonce": "n1"}
+               "generation": 1, "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
         revision = self.store.snapshot()["domain"]["revision"]
         self.store.prepare_attempt(job, revision, {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
         before = self.store.snapshot()
@@ -130,8 +132,8 @@ class StoreContract(unittest.TestCase):
                     "usage": None, "exit_code": 0}
         result = self.store.record_result(envelope)
         after = self.store.snapshot()
-        self.assertTrue(after["sessions"][0]["unknown_spend"])
-        self.assertEqual(after["sessions"][0]["known_spend"], 0)
+        self.assertTrue(next(x for x in after["sessions"] if x["id"] == "s1")["unknown_spend"])
+        self.assertEqual(next(x for x in after["sessions"] if x["id"] == "s1")["known_spend"], 0)
         self.assertEqual(len(after["claims"]), 1)
         self.assertEqual(self.store.record_result(envelope), result)
         self.assertEqual(self.store.snapshot(), after)
@@ -139,10 +141,101 @@ class StoreContract(unittest.TestCase):
             self.store.record_result(dict(envelope, outcome="failure"))
         self.assertEqual(self.store.snapshot(), after)
 
+    def test_rejects_invalid_result_and_preserves_accounting(self):
+        self.store.start_session({"id": "s1", "started_at": 1, "deadline": 100,
+                                  "known_spend": 0, "unknown_spend": False, "budget_stop": None})
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "s1"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        artifacts = self.store.directory / "artifacts" / "n1"
+        artifacts.mkdir(parents=True, mode=0o700)
+        report = artifacts / "report.json"
+        report.write_text("{}")
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(report), "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": {"cost_usd": 1.5}, "exit_code": 0}
+        before = self.store.snapshot()
+        invalid = [dict(envelope, usage={"cost_usd": value}) for value in (True, -1, float("nan"), float("inf"))]
+        invalid += [dict(envelope, domain_id="foreign"), dict(envelope, attempt_id="other"),
+                    dict(envelope, generation=2), dict(envelope, input_sha="foreign"),
+                    dict(envelope, artifact_hashes={str(report): "0" * 64})]
+        link = artifacts / "escape"
+        link.symlink_to(report)
+        invalid.append(dict(envelope, report_path=str(link), artifact_hashes={str(link): hashlib.sha256(b"{}").hexdigest()}))
+        invalid.append(dict(envelope, report_path=str(artifacts / ".." / "n1" / "report.json")))
+        for item in invalid:
+            with self.subTest(item=item), self.assertRaises(ValueError):
+                self.store.record_result(item)
+            self.assertEqual(self.store.snapshot(), before)
+        self.store.record_result(envelope)
+        self.assertEqual(next(x for x in self.store.snapshot()["sessions"] if x["id"] == "s1")["known_spend"], 1.5)
+        self.store.record_result(envelope)
+        self.assertEqual(next(x for x in self.store.snapshot()["sessions"] if x["id"] == "s1")["known_spend"], 1.5)
+
+    def test_result_rejects_symlinked_artifact_root_and_spend_overflow(self):
+        self.store.start_session({"id": "large", "started_at": 1, "deadline": 100,
+                                  "known_spend": 1e308, "unknown_spend": False, "budget_stop": None})
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "large"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        outside = self.root / "outside"
+        outside.mkdir(mode=0o700)
+        report = outside / "report.json"
+        report.write_text("{}")
+        artifact_parent = self.store.directory / "artifacts"
+        artifact_parent.mkdir(mode=0o700)
+        (artifact_parent / "n1").symlink_to(outside, target_is_directory=True)
+        artifact = artifact_parent / "n1" / "report.json"
+        envelope = {"schema_version": 1, "domain_id": self.store.domain_id, "job_id": "j1", "attempt_id": "n1",
+                    "generation": 1, "input_sha": "abc", "role": "reviewer", "stage": "code", "outcome": "success",
+                    "report_path": str(artifact), "artifact_hashes": {str(artifact): hashlib.sha256(b"{}").hexdigest()},
+                    "usage": {"cost_usd": 1e308}, "exit_code": 0}
+        before = self.store.snapshot()
+        with self.assertRaises(ValueError):
+            self.store.record_result(envelope)
+        (artifact_parent / "n1").unlink()
+        (artifact_parent / "n1").mkdir(mode=0o700)
+        artifact.write_text("{}")
+        with self.assertRaises(ValueError):
+            self.store.record_result(envelope)
+        self.assertEqual(self.store.snapshot(), before)
+
+    def test_admission_rejects_missing_session_and_unsafe_nonce(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        before = self.store.snapshot()
+        for candidate in (dict(job, session_id="missing"), dict(job, nonce="../escape")):
+            with self.assertRaises(ValueError):
+                self.store.prepare_attempt(candidate, before["domain"]["revision"],
+                                           {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+            self.assertEqual(self.store.snapshot(), before)
+
+    def test_conflicts_are_checked_after_revision_refresh(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
+               "provider": "p1", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 4, "provider_cap": 4, "paths": ["src/a"], "merge_lane": True})
+        for candidate, claims in [
+            (dict(job, id="j2", nonce="n2", provider="p2"), {"global_cap": 4, "provider_cap": 4, "paths": ["else"]}),
+            (dict(job, id="j2", nonce="n2", card="2"), {"global_cap": 4, "provider_cap": 4, "paths": ["else"], "merge_lane": True}),
+            (dict(job, id="j2", nonce="n2", card="2"), {"global_cap": 4, "provider_cap": 4, "paths": ["src/a/b"]}),
+        ]:
+            before = self.store.snapshot()
+            with self.assertRaises(ValueError):
+                self.store.prepare_attempt(candidate, before["domain"]["revision"], claims)
+            self.assertEqual(self.store.snapshot(), before)
+
     def test_retry_tombstone_and_effect_intent_reopen(self):
         job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
                "round": 1, "input_sha": "abc", "input_version": "v1", "generation": 1,
-               "provider": "p", "model": "m", "nonce": "n1"}
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
         self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
                                    {"global_cap": 2, "provider_cap": 2, "paths": ["src"]})
         self.store.increment_retry("j1", self.store.snapshot()["domain"]["revision"])
@@ -167,7 +260,7 @@ class StoreContract(unittest.TestCase):
         import sqlite3
         backup = sqlite3.connect(str(destination))
         try:
-            self.assertEqual(backup.execute("SELECT type FROM events").fetchone()[0], "fixture")
+            self.assertEqual(backup.execute("SELECT type FROM events ORDER BY sequence DESC LIMIT 1").fetchone()[0], "fixture")
         finally:
             backup.close()
         with self.assertRaises(ValueError):
