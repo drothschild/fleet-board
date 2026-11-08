@@ -175,28 +175,25 @@ class IntegrationContract(unittest.TestCase):
         self.assertIsNotNone(self.store.integration_lane())
 
     def test_main_verification_failure_closes_new_admissions(self):
-        for result in (False, None, 'true', 'missing'):
-            with self.subTest(result=result):
-                if self.store.snapshot()['domain']['desired_mode'] != 'running':
-                    self.set_mode('start')
-                key = 'verify-' + str(result)
-                fields = {'pr': '91', 'omit_ok': True} if result == 'missing' else {'pr': '91', 'result_ok': result}
-                effect = self.make_effect('17', key, 'main_verification', **fields)
-                self.lane.submit(effect, mode='running').result(timeout=2)
-                self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
-        self.assertEqual(len(self.closed), 4)
+        effect = self.make_effect('17', 'verify-false', 'main_verification',
+                                  pr='91', result_ok=False)
+        self.lane.submit(effect, mode='running').result(timeout=2)
+        self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
+        self.assertIsNotNone(self.store.integration_lane())
+        self.assertEqual(len(self.closed), 1)
+
+    def test_main_verification_requires_literal_boolean_true(self):
+        self.assertTrue(IntegrationLane.main_check_ok({'ok': True}))
+        for observation in ({'ok': False}, {'ok': 'true'}, {}, {'ok': None}):
+            with self.subTest(observation=observation):
+                self.assertFalse(IntegrationLane.main_check_ok(observation))
 
     def test_merge_result_requires_literal_main_ok_true(self):
-        for result in (False, None, 'true', 'missing'):
-            with self.subTest(result=result):
-                if self.store.snapshot()['domain']['desired_mode'] != 'running':
-                    self.set_mode('start')
-                key = 'merge-check-' + str(result)
-                fields = self.eligible_merge(omit_ok=True) if result == 'missing' else self.eligible_merge(result_ok=result)
-                effect = self.make_effect(str(30 + len(self.adapter.merges)), key, **fields)
-                self.lane.submit(effect, mode='running').result(timeout=2)
-                self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
-        self.assertEqual(len(self.closed), 4)
+        effect = self.make_effect('30', 'merge-check-false', **self.eligible_merge(result_ok=False))
+        self.lane.submit(effect, mode='running').result(timeout=2)
+        self.assertEqual(self.store.snapshot()['domain']['desired_mode'], 'stopped')
+        self.assertIsNotNone(self.store.integration_lane())
+        self.assertEqual(len(self.closed), 1)
 
     def test_paused_or_stopped_mode_allows_verification_but_forbids_new_merge(self):
         for mode in ('paused', 'stopped'):
