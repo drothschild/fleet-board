@@ -554,7 +554,7 @@ class ProviderCases(unittest.TestCase):
         import shutil
         shutil.rmtree(test_root)
 
-    def make_result_case(self, report_text):
+    def make_result_case(self, report_text, role="stage-reviewer"):
         from supervisor.store import Store
 
         domain = {
@@ -566,8 +566,9 @@ class ProviderCases(unittest.TestCase):
         self.addCleanup(store.close)
         store.start_session({"id": "session-1", "started_at": 1, "deadline": 100,
                              "known_spend": 0, "unknown_spend": False, "budget_stop": None})
-        job = {"id": "job-1", "card": "22", "action": "review", "role": "stage-reviewer",
-               "stage": "code", "round": 1, "input_sha": self.request.input_sha,
+        stage = "code"
+        job = {"id": "job-1", "card": "22", "action": "review", "role": role,
+               "stage": stage, "round": 1, "input_sha": self.request.input_sha,
                "input_version": "v1", "generation": self.request.generation,
                "provider": "fake", "model": "fake-v1", "nonce": self.request.attempt_id,
                "session_id": "session-1"}
@@ -575,7 +576,7 @@ class ProviderCases(unittest.TestCase):
                               {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
         binding = {"domain_id": store.domain_id, "job_id": job["id"],
                    "attempt_id": self.request.attempt_id, "generation": self.request.generation,
-                   "input_sha": self.request.input_sha, "role": "stage-reviewer", "stage": "code"}
+                   "input_sha": self.request.input_sha, "role": role, "stage": stage}
         report = self.workspace / "report.md"
         report.write_text(report_text, encoding="utf-8")
         digest = hashlib.sha256(report.read_bytes()).hexdigest()
@@ -598,6 +599,45 @@ class ProviderCases(unittest.TestCase):
         stored = store.snapshot()["results"]
         self.assertEqual(len(stored), 1)
         self.assertEqual(stored[0]["disposition"], "current")
+
+    def test_trusted_result_handler_derives_failure_from_blocked_implementor_report(self):
+        from supervisor.workers import build_attempt_result_handler
+
+        report = ("## Status\nblocked\n\n## Findings\n- none\n\n## For the card\n"
+                  "Blocked by: #23\n\n## PR\n#88\n\nVERIFIED: `true` -> 1 check\n")
+        store, binding, payload, _source = self.make_result_case(report, role="implementor")
+        handler = build_attempt_result_handler(store, binding, self.workspace)
+        result = handler(payload)
+        self.assertEqual(result["disposition"], "stale")
+        stored = store.snapshot()["results"][0]
+        self.assertEqual(json.loads(stored["envelope"])["outcome"], "failure")
+        self.assertEqual(store.snapshot()["jobs"][0]["state"], "needs_attention")
+
+    def test_trusted_result_handler_derives_failure_from_nonzero_exit(self):
+        from supervisor.workers import build_attempt_result_handler
+
+        report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
+                  "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
+        store, binding, payload, _source = self.make_result_case(report)
+        handler = build_attempt_result_handler(store, binding, self.workspace)
+        result = handler(dict(payload, exit_code=7))
+        self.assertEqual(result["disposition"], "stale")
+        stored = store.snapshot()["results"][0]
+        self.assertEqual(json.loads(stored["envelope"])["outcome"], "failure")
+
+    def test_trusted_result_handler_honors_durable_cancellation_state(self):
+        from supervisor.workers import build_attempt_result_handler
+
+        report = ("## Status\nclean\n\n## Findings\n- none\n\n## For the card\n"
+                  "Reviewed the change.\n\nVERIFIED: `true` -> 1 check\n")
+        store, binding, payload, _source = self.make_result_case(report)
+        store.request_cancellation(binding["attempt_id"], "cancel-result", "stop",
+                                   store.snapshot()["domain"]["revision"])
+        handler = build_attempt_result_handler(store, binding, self.workspace)
+        result = handler(payload)
+        self.assertEqual(result["disposition"], "stale")
+        stored = store.snapshot()["results"][0]
+        self.assertEqual(json.loads(stored["envelope"])["outcome"], "cancelled")
 
     def test_trusted_result_handler_rejects_paths_outside_attempt_artifacts(self):
         from supervisor.workers import build_attempt_result_handler
