@@ -136,6 +136,8 @@ class Effect:
 
     def _save_observation(self, value, intent):
         observation = dict(_observation(value))
+        if intent['kind'] in _NON_IDEMPOTENT and observation.get('operation_key') != self._key:
+            raise ValueError('non-idempotent observation operation key does not match controller key')
         if 'operation_key' in observation and observation['operation_key'] != self._key:
             raise ValueError('observation operation key does not match controller key')
         if intent['kind'] == 'branch_refresh':
@@ -264,6 +266,9 @@ class Effect:
         try:
             return self._save_observation(response, intent)
         except Exception as exc:
+            if intent['kind'] in _NON_IDEMPOTENT and response.get('operation_key') != self._key:
+                return self._attention('uncertain ' + intent['kind']
+                                       + ' after mutation: missing or mismatched operation key')
             return {'status': 'pending', 'operation_key': self._key,
                     'reason': 'observation persistence failed: ' + str(exc)[:240]}
 
