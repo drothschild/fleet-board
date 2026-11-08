@@ -174,7 +174,7 @@ class Recovery:
                     bounded_tool = (observation.get('activity') == 'bounded_tool' and type(tool_until) in (int, float)
                                     and math.isfinite(tool_until) and type(deadline) in (int, float)
                                     and now < tool_until <= deadline)
-                    suspected = (stale_progress or stale_heartbeat) and not bounded_tool
+                    suspected = stale_heartbeat or (stale_progress and not bounded_tool)
                     if suspected != bool(data.get('suspected_stuck', False)):
                         self.store.update_attempt(attempt['id'], {'suspected_stuck': suspected}, self.store.snapshot()['domain']['revision'])
                     if suspected and observation.get('activity') == 'confirmed_stall':
