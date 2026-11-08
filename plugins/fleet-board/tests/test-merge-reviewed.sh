@@ -416,9 +416,19 @@ pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
 mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
-INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 2>/dev/null)"
+INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234)"
 assert_eq "inspection: operation key, PR, planned/observed head and merged state agree" "$(jq -c '[.operation_key,.pr,.planned_head,.observed_head,.state] | .[:2] + .[2:]' <<<"$INSPECT")" '["op-12",34,"abc1234","abc1234","MERGED"]'
 assert_eq "inspection: literal main verification evidence is retained" "$(jq -c '.main_check.ok' <<<"$INSPECT")" true
+
+setup_case auto
+PENDING_NOTE="$(jq -c --arg key op-12 '.pending_merge={operation_key:$key,pr:34,head_sha:"abc1234"} | .main_check={commit:"old1234",ok:true,results:[]}' <<<"$CLEAN")"
+card 12 in_review "$PENDING_NOTE"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234)"
+assert_eq "inspection: prior main verification is not credited to a pending operation" "$(jq -c '.main_check' <<<"$INSPECT")" null
 
 echo ""
 echo "-----------------------------------"
