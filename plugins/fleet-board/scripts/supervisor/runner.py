@@ -175,14 +175,33 @@ class Runner:
                 or set(operation_handlers) != {'heartbeat', 'result', 'scope_request'}
                 or type(operation_handlers.get('result')) is not TrustedAttemptResultHandler):
             raise IsolationUnavailable('production launch requires trusted attempt operation handlers')
+        bind_operations = getattr(channel, 'bind_attempt_operations', None)
+        if not callable(bind_operations):
+            raise IsolationUnavailable('production inference channel lacks attempt operation dispatch')
+        operation_journal = getattr(channel, 'operation_journal', None)
+        try:
+            journal = Path(operation_journal)
+            if (not journal.is_absolute() or journal.is_symlink()
+                    or journal.parent.is_symlink()
+                    or journal.parent.resolve(strict=True) != journal.parent
+                    or not journal.parent.is_dir()
+                    or journal.parent.stat().st_uid != os.getuid()
+                    or journal.parent.stat().st_mode & 0o077):
+                raise ValueError('unsafe operation journal')
+            if journal.exists():
+                info = journal.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077 or info.st_nlink != 1):
+                    raise ValueError('unsafe operation journal file')
+            elif journal.parent.resolve(strict=True) != journal.parent:
+                raise ValueError('non-canonical operation journal parent')
+        except (TypeError, ValueError, OSError) as exc:
+            raise IsolationUnavailable('production inference channel requires a private durable operation journal') from exc
         bind_control = getattr(channel, 'bind_attempt_control', None)
         if not callable(bind_control):
             raise IsolationUnavailable('production inference channel lacks attempt controls')
         bind_control(prepared_attempt['attempt_id'], deadline, cancel_event)
         prepare_private_git(source_repository, policy['workspace'], policy['private_git'])
-        bind_operations = getattr(channel, 'bind_attempt_operations', None)
-        if not callable(bind_operations):
-            raise IsolationUnavailable('production inference channel lacks attempt operation dispatch')
         operation_binding = {key: prepared_attempt[key] for key in
                              ('domain_id', 'job_id', 'attempt_id', 'generation',
                               'input_sha', 'role', 'stage')}
@@ -193,8 +212,17 @@ class Runner:
                 or operation_handlers['result'].scratch != workspace):
             raise IsolationUnavailable('production result handler is not bound to the worker workspace')
         store_directory = operation_handlers['result'].store_directory
+        journal_canonical = journal.resolve(strict=False)
         for writable_root in (workspace, Path(policy['private_git']), Path(policy['channels'])):
             canonical = writable_root.resolve(strict=True)
+            try:
+                shared_root = os.path.commonpath((str(journal_canonical), str(canonical)))
+            except ValueError as exc:
+                raise IsolationUnavailable('operation journal and worker roots are incompatible') from exc
+            if shared_root in (str(journal_canonical), str(canonical)):
+                raise IsolationUnavailable('operation journal overlaps worker-writable isolation roots')
+        for writable_root in (workspace, Path(policy['private_git']), Path(policy['channels']), journal):
+            canonical = writable_root.resolve(strict=writable_root != journal)
             try:
                 shared_root = os.path.commonpath((str(store_directory), str(canonical)))
             except ValueError as exc:

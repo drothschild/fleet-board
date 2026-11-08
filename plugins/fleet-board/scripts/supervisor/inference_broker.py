@@ -4,6 +4,7 @@ import hmac
 import json
 import math
 import os
+import fcntl
 from pathlib import Path, PurePosixPath
 import selectors
 import secrets
@@ -98,6 +99,33 @@ def validate_result(request, result):
     return result
 
 
+def _terminate_provider_group(process):
+    """Terminate the whole provider group even when its leader exits first."""
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=0.3)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return
+    except OSError:
+        # Still try SIGKILL: the process group may exist but deny a signal-0 probe.
+        pass
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
 def run_provider(argv, request, *, timeout=300, stdout_limit=1048576, stderr_limit=65536,
                  cancel_event=None, cancel_after=None, trusted_environment=None):
     """Run one explicit CLI with bounded pipes, a hard deadline and process-group cancel."""
@@ -165,18 +193,7 @@ def run_provider(argv, request, *, timeout=300, stdout_limit=1048576, stderr_lim
             raise ContractError('provider returned invalid JSON') from exc
         return validate_result(request, response)
     except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=0.3)
-        except (OSError, subprocess.TimeoutExpired):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except OSError:
-                pass
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                pass
+        _terminate_provider_group(process)
         raise
     finally:
         selector.close()
@@ -278,9 +295,11 @@ class InferenceChannel:
     MAX_RESPONSE_BYTES = 1049600
     MAX_REQUESTS = 32
     MAX_REQUESTS_PER_ATTEMPT = 8
+    MAX_OPERATION_JOURNAL_BYTES = 16 * 1048576
+    MAX_OPERATION_ENTRIES = 4096
 
     def __init__(self, broker, directory, attempt_ids, *, request_timeout=310, frame_timeout=5,
-                 attempt_controls=None):
+                 attempt_controls=None, operation_journal=None):
         self.broker = broker
         self.directory = Path(directory)
         if (not self.directory.is_absolute() or self.directory.is_symlink()
@@ -288,6 +307,33 @@ class InferenceChannel:
                 or not self.directory.is_dir() or self.directory.stat().st_uid != os.getuid()
                 or self.directory.stat().st_mode & 0o077):
             raise ValueError('inference channel directory must be private')
+        self.operation_journal = None
+        self._operation_calls = {}
+        self._journal_snapshot = None
+        if operation_journal is not None:
+            journal = Path(operation_journal)
+            if not journal.is_absolute() or journal.is_symlink():
+                raise ValueError('operation journal must be an absolute private file')
+            parent = journal.parent
+            if (parent.is_symlink() or parent.resolve(strict=True) != parent
+                    or not parent.is_dir() or parent.stat().st_uid != os.getuid()
+                    or parent.stat().st_mode & 0o077):
+                raise ValueError('operation journal directory must be private')
+            try:
+                common = os.path.commonpath((str(journal), str(self.directory)))
+            except ValueError as exc:
+                raise ValueError('operation journal and channel paths are incompatible') from exc
+            if common == str(self.directory):
+                raise ValueError('operation journal cannot be inside the worker channel directory')
+            if journal.exists():
+                info = journal.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077 or info.st_nlink != 1
+                        or info.st_size > self.MAX_OPERATION_JOURNAL_BYTES):
+                    raise ValueError('unsafe operation journal')
+                self._journal_snapshot = journal.read_bytes()
+                self._operation_calls = self._load_operation_journal_bytes(self._journal_snapshot)
+            self.operation_journal = journal
         self.socket_path = self.directory / 'inference.sock'
         if len(os.fsencode(self.socket_path)) >= 104:
             raise ValueError('inference channel socket path is too long')
@@ -318,7 +364,6 @@ class InferenceChannel:
         self._attempt_controls = {}
         self._attempt_bindings = {}
         self._operation_handlers = {}
-        self._operation_calls = {}
         self._executor = None
         self._inode = None
         for attempt_id, control in (attempt_controls or {}).items():
@@ -337,6 +382,8 @@ class InferenceChannel:
 
     def bind_attempt_operations(self, attempt_id, binding, handlers):
         """Bind trusted controller handlers to one worker attempt."""
+        if self.operation_journal is None:
+            raise ContractError('worker operation dispatch requires a durable controller journal')
         fields = {'domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha', 'role', 'stage'}
         if (attempt_id not in self._capabilities or not isinstance(binding, dict)
                 or set(binding) != fields or binding.get('attempt_id') != attempt_id
@@ -456,7 +503,14 @@ class InferenceChannel:
                 if previous['state'] == 'complete':
                     return dict(previous['result'])
                 raise ContractError('worker request id is already consumed')
+            if len(self._operation_calls) >= self.MAX_OPERATION_ENTRIES:
+                raise ContractError('worker operation journal capacity exceeded')
             self._operation_calls[key] = {'body_sha': body_sha, 'state': 'in_flight'}
+            try:
+                self._persist_operation_journal()
+            except Exception as exc:
+                del self._operation_calls[key]
+                raise ContractError('worker operation could not be durably recorded') from exc
         try:
             result = handlers[operation](validated)
             if operation == 'scope_request':
@@ -477,14 +531,133 @@ class InferenceChannel:
             with self._request_lock:
                 self._operation_calls[key] = {'body_sha': body_sha, 'state': 'complete',
                                               'result': dict(result)}
+                self._persist_operation_journal()
             return result
         except Exception as exc:
             with self._request_lock:
                 self._operation_calls[key] = {'body_sha': body_sha, 'state': 'failed',
                                               'error': str(exc)[:200]}
+                try:
+                    self._persist_operation_journal()
+                except Exception:
+                    # The already-persisted in_flight record still prevents replay.
+                    self._operation_calls[key] = {'body_sha': body_sha, 'state': 'in_flight'}
             if isinstance(exc, ContractError):
                 raise
             raise ContractError('worker operation handler failed') from exc
+
+    @classmethod
+    def _load_operation_journal(cls, path):
+        try:
+            return cls._load_operation_journal_bytes(path.read_bytes())
+        except Exception as exc:
+            raise ValueError('invalid operation journal') from exc
+
+    @classmethod
+    def _load_operation_journal_bytes(cls, raw):
+        try:
+            if len(raw) > cls.MAX_OPERATION_JOURNAL_BYTES:
+                raise ValueError('operation journal exceeded limit')
+            value = json.loads(raw.decode('utf-8'))
+        except Exception as exc:
+            raise ValueError('invalid operation journal') from exc
+        if not isinstance(value, dict) or set(value) != {'schema_version', 'operations'} or value['schema_version'] != 1:
+            raise ValueError('invalid operation journal schema')
+        operations = value['operations']
+        if not isinstance(operations, list) or len(operations) > cls.MAX_OPERATION_ENTRIES:
+            raise ValueError('invalid operation journal entries')
+        calls = {}
+        for item in operations:
+            if not isinstance(item, dict):
+                raise ValueError('invalid operation journal entry')
+            state = item.get('state')
+            fields = {'attempt_id', 'operation', 'request_id', 'body_sha', 'state'}
+            if state == 'complete':
+                fields.add('result')
+            elif state == 'failed':
+                fields.add('error')
+            if set(item) != fields or state not in ('in_flight', 'complete', 'failed'):
+                raise ValueError('invalid operation journal entry')
+            attempt_id, operation, request_id, body_sha = (
+                item.get('attempt_id'), item.get('operation'), item.get('request_id'), item.get('body_sha'))
+            if (not isinstance(attempt_id, str) or not attempt_id
+                    or operation not in ('heartbeat', 'result', 'scope_request')
+                    or not isinstance(request_id, str) or not request_id
+                    or not isinstance(body_sha, str) or len(body_sha) != 64
+                    or any(char not in '0123456789abcdef' for char in body_sha)):
+                raise ValueError('invalid operation journal key')
+            key = (attempt_id, operation, request_id)
+            if key in calls:
+                raise ValueError('duplicate operation journal key')
+            record = {'body_sha': body_sha, 'state': state}
+            if state == 'complete':
+                if not isinstance(item['result'], dict):
+                    raise ValueError('invalid operation journal result')
+                record['result'] = item['result']
+            elif state == 'failed':
+                if not isinstance(item['error'], str):
+                    raise ValueError('invalid operation journal error')
+                record['error'] = item['error']
+            calls[key] = record
+        return calls
+
+    def _persist_operation_journal(self):
+        if self.operation_journal is None:
+            raise ContractError('worker operation dispatch requires a durable controller journal')
+        entries = []
+        for (attempt_id, operation, request_id), record in sorted(self._operation_calls.items()):
+            item = {'attempt_id': attempt_id, 'operation': operation, 'request_id': request_id,
+                    'body_sha': record['body_sha'], 'state': record['state']}
+            if record['state'] == 'complete':
+                item['result'] = record['result']
+            elif record['state'] == 'failed':
+                item['error'] = record['error']
+            entries.append(item)
+        data = json.dumps({'schema_version': 1, 'operations': entries}, sort_keys=True,
+                          separators=(',', ':'), allow_nan=False).encode('utf-8')
+        if len(data) > self.MAX_OPERATION_JOURNAL_BYTES:
+            raise ContractError('worker operation journal exceeded limit')
+        lock_path = self.operation_journal.with_name(self.operation_journal.name + '.lock')
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+        lock_fd = os.open(str(lock_path), flags, 0o600)
+        try:
+            lock_info = os.fstat(lock_fd)
+            if (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.getuid()
+                    or lock_info.st_mode & 0o077 or lock_info.st_nlink != 1):
+                raise ContractError('unsafe operation journal lock')
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                current = (self.operation_journal.read_bytes()
+                           if self.operation_journal.exists() else None)
+                if current != self._journal_snapshot:
+                    raise ContractError('operation journal changed in another controller')
+                temp = self.operation_journal.with_name('.' + self.operation_journal.name + '.' + secrets.token_hex(8))
+                fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                try:
+                    view = memoryview(data)
+                    while view:
+                        written = os.write(fd, view)
+                        view = view[written:]
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+                try:
+                    os.replace(str(temp), str(self.operation_journal))
+                    dir_fd = os.open(str(self.operation_journal.parent), os.O_RDONLY)
+                    try:
+                        os.fsync(dir_fd)
+                    finally:
+                        os.close(dir_fd)
+                    self._journal_snapshot = data
+                finally:
+                    try:
+                        temp.unlink()
+                    except FileNotFoundError:
+                        pass
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
     def capability_for(self, attempt_id):
         """Return the one-attempt token for trusted launch code to pass over a private fd."""
