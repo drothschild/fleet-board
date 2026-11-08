@@ -69,6 +69,23 @@ docs/                              # repo-level documentation
 Plugins version independently using semver. `marketplace.json` tracks each plugin's current
 version; the two must not drift.
 
+## Fleet agents: version bump
+
+This section applies to this repository only; the shipped plugin does not know about it.
+`plugins/fleet-board/tests/test-version-bumped.sh` fails CI when a change under `plugins/`
+does not bump both manifests above the `origin/main` version. Fleet implementors and fixers
+working on this repo, for any change under `plugins/`:
+
+1. Run `git fetch origin`. If the branch is behind `origin/main`, merge `origin/main` into it
+   (never rebase or force-push) before bumping.
+2. Bump `plugins/fleet-board/.claude-plugin/plugin.json` and the fleet-board entry in
+   `.claude-plugin/marketplace.json` (patch by default) strictly above the `origin/main` version (an equal version fails), in the
+   implementation commit (not the test-first commit).
+3. Collisions: bump at card start against the current `origin/main`. If `origin/main` moves
+   to the same or a higher version before merge, merge it again and re-bump above it.
+4. Run `bash plugins/fleet-board/tests/test-version-bumped.sh` (wired as `commands.lint` in
+   `.fleet-board.yml`) before pushing; it must print no `not ok` line.
+
 ## Primitive Types
 
 | Type | Directory | Purpose |

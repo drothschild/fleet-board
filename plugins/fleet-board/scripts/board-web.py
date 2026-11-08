@@ -529,6 +529,22 @@ def new_import_id() -> str:
         "%s-%s" % (time.strftime("%Y%m%d-%H%M%S"), secrets.token_hex(2)))
 
 
+def draft_planner(id: str) -> str:
+    """Writes the conversation as a plan and starts the import preview; returns the import id."""
+    pdir = planner_dir(id)
+    with _PLANNER_LOCK:
+        turns = read_turns(pdir)
+        if id in _PLANNER_BUSY:
+            raise ApiError(409, "conversation %s is still replying" % id)
+    if not any(t.get("role") == "user" and str(t.get("text", "")).strip() for t in turns if isinstance(t, dict)):
+        raise ApiError(409, "conversation %s has no user turns to draft from" % id)
+    parts = ["# Plan drafted from the planner conversation\n"]
+    for t in turns:
+        if isinstance(t, dict) and t.get("role") in ("user", "assistant"):
+            parts.append("## %s\n\n%s\n" % ("User" if t["role"] == "user" else "Planner", t.get("text", "")))
+    return start_import("\n".join(parts), "backlog")
+
+
 def start_import(plan_text: str, status: str) -> str:
     """Starts the headless preview session for a plan; returns the import id."""
     cfg, _ = ctx()
@@ -1263,6 +1279,10 @@ def get_planner(params, body):
     return 200, planner_status(params["id"])
 
 
+def post_planner_draft(params, body):
+    return 200, {"import_id": draft_planner(params["id"])}
+
+
 def post_import(params, body):
     plan = require_str(body, "plan")
     status = body.get("status", "backlog")
@@ -1301,6 +1321,7 @@ ROUTES = [
     ("POST", r"/api/run/stop", stop_run),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
+    ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
     ("GET", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_planner),
     ("POST", r"/api/import", post_import),
     ("GET", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_import),

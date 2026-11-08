@@ -4,6 +4,7 @@ board:
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Requires Human QA" }
 commands:
   test_one: "bash {file}"
+  lint: "bash plugins/fleet-board/tests/test-version-bumped.sh"
 merge:
   policy: "auto"
 limits:
