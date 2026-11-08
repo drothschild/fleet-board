@@ -94,10 +94,6 @@ def states(cfg: dict) -> list:
     hit = _STATES_CACHE.get(cache_key)
     if hit is not None:
         return hit
-    prog = (
-        '. "$1/board-lib.sh" && fb_load_config || exit $?; '
-        'for s in $FB_STATES; do printf "%s\\t%s\\n" "$s" "$(fb_state_name "$s")"; done'
-    )
     rc, out, err = run_script(APP["root"], ["bash", "-c", prog, "states", APP["scripts"]])
     if rc != 0:
         raise ApiError(500, err.rstrip("\n") or "cannot list the board states")
@@ -716,10 +712,34 @@ def depends_on(body) -> list:
     return nums
 
 
+def live_pr_states(repo) -> dict:
+    """PR number -> open/draft/merged/closed from one `gh pr list`; {} when unavailable."""
+    if not repo:
+        return {}
+    try:
+        rc, out, _ = run_script(APP["root"], ["gh", "pr", "list", "--repo", repo, "--state", "all",
+                                              "--limit", "1000", "--json", "number,state,isDraft"])
+        items = json.loads(out) if rc == 0 else []
+    except (OSError, ValueError):
+        return {}
+    states_ = {}
+    for it in items if isinstance(items, list) else []:
+        if not isinstance(it, dict) or not isinstance(it.get("number"), int):
+            continue
+        st = str(it.get("state", "")).upper()
+        if st == "MERGED":
+            states_[it["number"]] = "merged"
+        elif st == "CLOSED":
+            states_[it["number"]] = "closed"
+        elif st == "OPEN":
+            states_[it["number"]] = "draft" if it.get("isDraft") else "open"
+    return states_
+
+
 def board_context(cache: dict = None) -> list:
     """The planner's snapshot: every card with state, labels, depends_on, PR and review round.
 
-    One subprocess lists every state through board-list.sh; card details come from
+    One board-list.sh process lists every state; PR state comes from one gh pr list; card details come from
     the store. Pass the same dict as `cache` to reuse one snapshot for a planner turn.
     """
     if cache is not None and "snapshot" in cache:
@@ -729,7 +749,7 @@ def board_context(cache: dict = None) -> list:
         '. "$1/board-lib.sh" && fb_load_config || exit $?; '
         'for s in $FB_STATES; do bash "$1/board-list.sh" "$s" || exit $?; done'
     )
-    rc, out, err = run_script(APP["root"], ["bash", "-c", prog, "board-list", APP["scripts"]])
+    rc, out, err = run_script(APP["root"], ["bash", script("board-list.sh"), "--all"])
     if rc != 0:
         raise ApiError(500, err.rstrip("\n") or "board-list exited %d" % rc)
     listed = set()
@@ -741,6 +761,7 @@ def board_context(cache: dict = None) -> list:
         for item in items if isinstance(items, list) else []:
             if isinstance(item, dict) and isinstance(item.get("number"), int):
                 listed.add(item["number"])
+    live = live_pr_states((cfg.get("board") or {}).get("repo"))
     snapshot = []
     for card in read_cards(dir):
         n = card.get("number")
@@ -749,14 +770,16 @@ def board_context(cache: dict = None) -> list:
         note = parse_note(card) or {}
         pr = note.get("pr")
         has_pr = isinstance(pr, int) and not isinstance(pr, bool)
-        pr_state = note.get("pr_state")
+        pr_state = live.get(pr) if has_pr else None
+        if pr_state is None:
+            pr_state = note.get("pr_state")  # fallback when the PR lookup is unavailable
         snapshot.append({
             "number": n,
             "title": card.get("title"),
             "state": card.get("state"),
             "labels": card.get("labels") or [],
             "depends_on": depends_on(card.get("body")),
-            "pr": {"number": pr, "state": pr_state if pr_state in PR_STATES else "open"} if has_pr else None,
+            "pr": {"number": pr, "state": pr_state if pr_state in PR_STATES else None} if has_pr else None,
             "round": note.get("round"),
         })
     if cache is not None:
