@@ -40,6 +40,13 @@ class Adapter:
     def apply(self, intent):
         key = intent['operation_key']
         if intent['kind'] == 'integration_merge':
+            if intent.get('verify_only') is True:
+                self.verifications.append(intent['card'])
+                result = dict(self.external[key])
+                result['main_check'] = {'commit': 'b' * 40,
+                                        'ok': intent.get('result_ok', True), 'results': []}
+                self.external[key] = result
+                return result
             self.merges.append((intent['card'], intent['head_sha']))
             self.entered.set()
             if self.block:
@@ -172,6 +179,20 @@ class IntegrationContract(unittest.TestCase):
         self.assertIn(result['status'], ('pending', 'attention'))
         self.assertEqual(self.adapter.merges, [])
         self.assertIsNotNone(self.store.integration_lane())
+
+    def test_stopped_recovery_verifies_an_observed_merge_without_remerging(self):
+        effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
+        self.adapter.external['merge-17'] = {
+            'operation_key': 'merge-17', 'note_operation_key': 'merge-17',
+            'pr': 91, 'planned_head': 'a' * 40, 'observed_head': 'a' * 40,
+            'state': 'MERGED', 'merged': True, 'main_check': None}
+        self.store.acquire_integration_lane('merge-17', '17', 'integration_merge', 'controller-1')
+        self.set_mode('stop')
+        result = self.lane.recover(effect, mode='stopped').result(timeout=2)
+        self.assertEqual(result['status'], 'observed')
+        self.assertEqual(self.adapter.merges, [])
+        self.assertEqual(self.adapter.verifications, ['17'])
+        self.assertIsNone(self.store.integration_lane())
 
     def test_recovery_requires_matching_note_pr_head_and_merged_state(self):
         effect = self.make_effect('17', 'merge-17', **self.eligible_merge())
