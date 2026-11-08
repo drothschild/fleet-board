@@ -1337,7 +1337,21 @@ plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-ast
 assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
 # Candidate mode exposes the same workflow decision without tick-local admission.
+candidate_empty_human_qa_route() {
+  local route_dir
+  route_dir="$(mktemp -d)"
+  CLEANUP_DIRS+=("$route_dir")
+  local route_base
+  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
+  awk -F '\t' -v OFS='\t' -v base="$route_base" \
+    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
+    "$FAKE_GH_ROUTES" > "$route_dir/routes"
+  FAKE_GH_ROUTES="$route_dir/routes"
+  export FAKE_GH_ROUTES
+  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
+}
 setup_case ready-start
+candidate_empty_human_qa_route
 run_check "$SCRIPT" --candidates
 assert_exit "candidate mode: exit" 0
 assert_jq "candidate mode: schema version" '.schema_version' '1'
@@ -1348,6 +1362,7 @@ assert_jq "candidate mode: empty actual paths are complete" '(.candidates[0] | [
 
 # A malformed labels payload from the board-read contract must not silently clear priority metadata.
 setup_case ready-start
+candidate_empty_human_qa_route
 MALFORMED_STUB="$(mktemp -d)"
 CLEANUP_DIRS+=("$MALFORMED_STUB")
 cp -R "$SCRIPT_DIR/../scripts/." "$MALFORMED_STUB/"

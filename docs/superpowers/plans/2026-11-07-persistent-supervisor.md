@@ -119,12 +119,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Modify:** `store.py`, `scheduler.py`, `workers.py`; `scripts/tick-plan.sh` candidate scope completeness and Human-QA coverage.
 **Create:** `tests/test-supervisor-reservations.sh`; `fixtures/supervisor/reservation_cases.py`.
 
-- [ ] Extend `test-scope-reservations.sh` in its own TDD slice for Human-QA scope evidence and incomplete PR-file handling without changing legacy mode expectations.
-- [ ] Add persistent reservation cases across review/CI/QA/retry/pause; normalized directory boundaries, traversal and symlink escapes; atomic competing expansions; denied expansion checkpoints with slot release but retained scope; cyclic waits surfaced.
-- [ ] Test override rejection while any live/uncertain writer or pending effect exists; successful human release audits identity/reason/revision; stale release command rejected; resume waits for scope, refreshes branch and invalidates evidence; QA remains unchanged.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-reservations.sh` to failure; commit tests.
-- [ ] Implement durable reservation union and command contracts. For providers without enforceable scoped-write mediation, assign repository-wide write ownership; expose the reduced concurrency in status rather than claiming safe disjoint execution. Add unauthorized-write detection and publication hold.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Extend `test-scope-reservations.sh` in its own TDD slice for Human-QA scope evidence and incomplete PR-file handling without changing legacy mode expectations.
+- [x] Add persistent reservation cases across review/CI/QA/retry/pause; normalized directory boundaries, traversal and symlink escapes; atomic competing expansions; denied expansion checkpoints with slot release but retained scope; cyclic waits surfaced.
+- [x] Test override rejection while any live/uncertain writer or pending effect exists; successful human release audits identity/reason/revision; stale release command rejected; resume waits for scope, refreshes branch and invalidates evidence; QA remains unchanged.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-reservations.sh` to failure; commit tests.
+- [x] Implement durable reservation union and command contracts. For providers without enforceable scoped-write mediation, assign repository-wide write ownership; expose the reduced concurrency in status rather than claiming safe disjoint execution. Add unauthorized-write detection and publication hold.
+- [x] Run the focused suite and clean-room check; commit locally. Push is deferred by the explicit Task 3.2 guard.
 
 **Verifies:** S7 and S4 scope safety. Resume's real branch refresh is supplied by Task 4.1; this phase tests its requested effect contract with an injected deterministic effect adapter.
 

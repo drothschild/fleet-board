@@ -170,7 +170,7 @@ scope_routes() {
       printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/common/pr-34-open-green.json\n' "$pr" "$TICK"
       printf 'pr view %s --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$pr" "$TICK"
     done
-    for st in ready:"$2" in_progress: in_review:"$3" ${4:-} blocked:; do
+    for st in ready:"$2" in_progress: in_review:"$3" ${4:-} blocked: human_qa:; do
       local col="${st%%:*}" nums="${st#*:}" arr="[]" x
       arr="$(for x in $nums; do jq -cn --argjson n "$x" --arg l "fleet:$col" '{number: $n, title: "Card \($n)", url: "u", labels: [{name: $l}]}'; done | jq -cs '.')"
       printf '%s\n' "$arr" > "$dir/list-$col.json"
@@ -268,6 +268,8 @@ new_scope
 scope_issue "$dir" 12 human_qa '- Modify `src/a.sh`'
 scope_routes "$dir" '' ''
 printf '[{"number":12,"title":"Card 12","url":"u","labels":[{"name":"fleet:human_qa"}]}]\n' > "$dir/list-human_qa.json"
+printf 'api repos/acme/toy/issues/12\t0\t%s/issue-12.json\n' "$dir" >> "$FAKE_GH_ROUTES"
+printf 'api --paginate repos/acme/toy/issues/12/comments\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
 printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/list-human_qa.json\n' "$dir" >> "$FAKE_GH_ROUTES"
 run_check "$SCRIPT"
 assert_jq "legacy plan still omits Human-QA cards" '.cards | length' '0'

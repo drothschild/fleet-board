@@ -444,7 +444,7 @@ card_input() {
   fi
 
   # The card's own PR: known from the note, or discovered from its branch
-  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$review_col" = true ]; }; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
     branch="$(jq -r '.branch // empty' <<<"$note")"
     if [ "$pr" = null ] && [ -n "$branch" ]; then
       cmd="gh pr list --repo $FLEET_REPO --head $branch --state open --json number"
@@ -655,7 +655,7 @@ if [ "$SETTLE" = true ]; then
 fi
 
 SEEN=" "
-for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) blocked); do
+for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
   NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
@@ -672,7 +672,7 @@ done
 # Actual PR paths supplement declared scope only when admitting new work.
 # Reuse the normal card snapshot; settle-only calls never need these lookups.
 SCOPE_FILE="$(mktemp)" || fb_die 1 "cannot create scope input"
-if [ "$SETTLE" != true ] && jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >/dev/null; then
+if [ "$SETTLE" != true ] && { [ "$CANDIDATES" = true ] || jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >/dev/null; }; then
   while IFS= read -r active; do
     [ -n "$active" ] || continue
     n="$(jq -r '.number' <<<"$active")"
@@ -694,7 +694,7 @@ if [ "$SETTLE" != true ] && jq -es 'any(.[]; .state == "ready")' "$CARDS_FILE" >
     fi
     jq -cn --argjson n "$n" --argjson paths "$paths" --argjson unknown "$unknown" \
       '{number:$n, paths:$paths, unknown:$unknown}' >> "$SCOPE_FILE" || fb_die 1 "cannot record scope input"
-  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .stage != null)' "$CARDS_FILE")"
+  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
 fi
 
 # Provider stages whose API key variable is unset or empty (checked here, so

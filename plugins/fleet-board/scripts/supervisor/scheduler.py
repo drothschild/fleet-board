@@ -280,7 +280,7 @@ class Scheduler:
                 due.append({'attempt_id': attempt.get('attempt_id'), 'kind': 'cancel_grace'})
         return due
 
-    def admit(self, candidates, active=None, limits=None, validate=None, prepare=None, now=None):
+    def admit(self, candidates, active=None, limits=None, validate=None, prepare=None, now=None, reservations=None):
         """Select fitting candidates and optionally prepare each atomically.
 
         `validate(candidate)` rechecks board/head/revision immediately before
@@ -289,6 +289,7 @@ class Scheduler:
         """
         now = self.clock() if now is None else now
         active = [dict(item) for item in (active or [])]
+        reservations = [dict(item) for item in (reservations or [])]
         limits = limits if limits is not None else self._limits
         try:
             _validate_limits(limits)
@@ -300,7 +301,7 @@ class Scheduler:
         except (TypeError, ValueError):
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
         with self._cycles, self._lock:
-            return self._admit_locked(candidates, active, limits, validate, prepare, now)
+            return self._admit_locked(candidates, active, limits, validate, prepare, now, reservations)
 
     def _limits_with_session(self, limits):
         if not isinstance(limits, dict):
@@ -318,7 +319,8 @@ class Scheduler:
         effective['unknown_spend'] = bool(effective.get('unknown_spend', False) or session['unknown_spend'])
         return effective
 
-    def _admit_locked(self, candidates, active, limits, validate, prepare, now):
+    def _admit_locked(self, candidates, active, limits, validate, prepare, now, reservations=None):
+        reservations = reservations or []
         eligible, attention, waits = [], [], []
         if limits.get('unknown_spend'):
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
@@ -405,6 +407,11 @@ class Scheduler:
             if sum(str(x.get('number', x.get('card'))) == str(number) for x in occupied) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
             paths = (c.get('declared_paths') or []) + (c.get('actual_paths') or [])
+            reserved = next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
+                             and _overlap(paths, x.get('paths') or [])), None)
+            if reserved:
+                waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
+                continue
             conflict = next((x for x in occupied if str(x.get('number', x.get('card'))) == str(number)
                              or _overlap(paths, x.get('paths') or [])), None)
             if conflict:

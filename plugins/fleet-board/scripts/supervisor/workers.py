@@ -84,3 +84,26 @@ def ingest_artifacts(scratch, destination, names):
         os.close(root_fd)
         if destination.exists():
             shutil.rmtree(destination)
+
+
+def verify_worker_scope(store, card, changed_paths):
+    """Quarantine undeclared changes from publication through the store audit."""
+    result = store.verify_scope_changes(str(card), changed_paths)
+    if not result['authorized']:
+        return {'publication_hold': True, 'quarantined': True, **result}
+    return {'publication_hold': False, 'quarantined': False, **result}
+
+
+def request_scope_expansion(store, card, paths, expected_revision, checkpoint):
+    """Checkpoint denied work before it leaves capacity without consuming retry budget."""
+    try:
+        reservation = store.expand_scope(str(card), paths, expected_revision)
+        return {'granted': True, 'reservation': reservation}
+    except ValueError as exc:
+        if not str(exc).startswith('scope conflict with #'):
+            raise
+        if not callable(checkpoint):
+            raise ValueError('scope expansion requires a checkpoint callback')
+        checkpoint()
+        return {'granted': False, 'waiting_on': str(exc).split('#', 1)[1],
+                'checkpointed': True, 'retry_penalty': False, 'attempt_should_exit': True}

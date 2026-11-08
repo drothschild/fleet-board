@@ -228,6 +228,188 @@ class Store:
         self.__connection.execute('INSERT INTO events(timestamp,type,payload) VALUES(?,?,?)', (time.time(), kind, canonical_json(payload)))
         self.__connection.execute('UPDATE domain SET revision=revision+1')
 
+    def _reservations(self):
+        reservations = {}
+        for event in self.__connection.execute("SELECT type,payload FROM events WHERE type LIKE 'scope_%' OR type='attempt_prepared' ORDER BY sequence"):
+            payload = json.loads(event['payload'])
+            if event['type'] == 'attempt_prepared':
+                payload = payload.get('scope_reservation')
+                if payload is None:
+                    continue
+            if event['type'] not in ('scope_reserved', 'scope_released', 'scope_wait', 'scope_wait_cleared', 'attempt_prepared'):
+                continue
+            card = payload['card']
+            if event['type'] in ('scope_wait', 'scope_wait_cleared'):
+                continue
+            if event['type'] == 'scope_released':
+                reservations.pop(card, None)
+            else:
+                item = reservations.setdefault(card, {'card': card, 'paths': [], 'revision': 0, 'enforceable': True})
+                if event['type'] in ('scope_reserved', 'attempt_prepared'):
+                    item['paths'] = sorted(set(item['paths']) | set(payload['paths']))
+                    item['enforceable'] = item['enforceable'] and payload.get('enforceable', True)
+                    if not item['enforceable']:
+                        item['paths'] = ['']
+                item['revision'] = payload.get('reservation_revision', item['revision'] + 1)
+        return reservations
+
+    def _normalize_scope(self, paths):
+        if not isinstance(paths, list) or any(not isinstance(path, str) for path in paths):
+            raise ValueError('invalid scope')
+        normalized = set()
+        for raw in paths:
+            if raw == '':
+                normalized.add('')
+                continue
+            path = raw.replace('\\', '/')
+            while path.startswith('./'):
+                path = path[2:]
+            path = path.rstrip('/')
+            if path == '':
+                normalized.add('')
+                continue
+            parts = path.split('/')
+            if path.startswith('/') or any(part in ('', '.', '..') for part in parts):
+                raise ValueError('invalid scope path')
+            cursor = self.__scope_root
+            for part in parts:
+                cursor = cursor / part
+                if cursor.is_symlink():
+                    raise ValueError('symlink in scope')
+            normalized.add('/'.join(parts))
+        return sorted(normalized) or ['']
+
+    def scope_conflict(self, card, paths):
+        paths = self._normalize_scope(paths)
+        for owner, reservation in self._reservations().items():
+            if owner == str(card):
+                continue
+            for left in paths:
+                for right in reservation['paths']:
+                    a, b = _scope_key(left), _scope_key(right)
+                    if not a or not b or a == b or a.startswith(b + '/') or b.startswith(a + '/'):
+                        return owner
+        return None
+
+    def _scope_wait_cycles(self):
+        waits = {}
+        for row in self.__connection.execute("SELECT type,payload FROM events WHERE type IN ('scope_wait','scope_wait_cleared') ORDER BY sequence"):
+            payload = json.loads(row['payload'])
+            if row['type'] == 'scope_wait_cleared':
+                waits.pop(payload['card'], None)
+            else:
+                waits[payload['card']] = payload['waiting_on']
+        cycles, visited = [], set()
+        for start in waits:
+            path, positions, node = [], {}, start
+            while node in waits:
+                if node in positions:
+                    cycle = path[positions[node]:]
+                    canonical = tuple(sorted(cycle))
+                    if canonical not in visited:
+                        visited.add(canonical); cycles.append(list(canonical))
+                    break
+                positions[node] = len(path); path.append(node); node = waits[node]
+        return cycles
+
+    def reserve_scope(self, card, paths, expected_revision, *, enforceable=True):
+        if not isinstance(card, str) or not card or type(enforceable) is not bool:
+            raise ValueError('invalid reservation')
+        paths = self._normalize_scope(paths)
+        if not enforceable:
+            paths = ['']
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        denied = None
+        try:
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or revision != expected_revision:
+                raise ValueError('revision mismatch')
+            owner = self.scope_conflict(card, paths)
+            if owner is not None:
+                denied = owner
+                self._event('scope_wait', {'card': card, 'waiting_on': owner})
+                cycles = self._scope_wait_cycles()
+                if cycles:
+                    self._event('scope_cycle_attention', {'cycles': cycles})
+                c.execute('COMMIT')
+            else:
+                current = self._reservations().get(card)
+                combined = sorted(set((current or {}).get('paths', [])) | set(paths))
+                if not enforceable:
+                    combined = ['']
+                next_revision = (current or {}).get('revision', 0) + 1
+                payload = {'card': card, 'paths': combined, 'enforceable': enforceable, 'reservation_revision': next_revision}
+                self._event('scope_wait_cleared', {'card': card})
+                self._event('scope_reserved', payload)
+                c.execute('COMMIT')
+                return dict(payload)
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+        if denied is not None:
+            raise ValueError('scope conflict with #' + denied)
+
+    def expand_scope(self, card, paths, expected_revision):
+        return self.reserve_scope(card, paths, expected_revision)
+
+    def release_scope(self, card, command_id, actor, reason, expected_revision, *, reservation_revision=None):
+        if any(not isinstance(x, str) or not x for x in (card, command_id, actor, reason)):
+            raise ValueError('invalid release request')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or expected_revision != revision:
+                raise ValueError('revision mismatch')
+            if c.execute('SELECT desired_mode FROM domain').fetchone()[0] != 'paused':
+                raise ValueError('card must be paused before release')
+            reservation = self._reservations().get(card)
+            if reservation is None:
+                raise ValueError('no reservation')
+            if reservation_revision is not None and reservation['revision'] != reservation_revision:
+                raise ValueError('reservation revision mismatch')
+            if any(json.loads(row['data']).get('execution_released') is not True for row in c.execute("SELECT data FROM attempts WHERE job_id IN (SELECT id FROM jobs WHERE card=?)", (card,))):
+                raise ValueError('live or uncertain writer')
+            if c.execute("SELECT 1 FROM effects WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (card,)).fetchone():
+                raise ValueError('pending effect')
+            payload = {'card': card, 'actor': actor, 'reason': reason, 'released_paths': reservation['paths'],
+                       'reservation_revision': reservation['revision'], 'command_id': command_id}
+            self._event('scope_released', payload)
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (command_id, canonical_json({'actor': actor, 'command': 'release_reservations', 'payload': {'card': card, 'reason': reason}, 'expected_revision': expected_revision}), canonical_json(payload)))
+            c.execute('COMMIT')
+            return payload
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def resume_scope(self, card, paths, workflow_state, refresh_branch, *, expected_revision):
+        try:
+            self.reserve_scope(card, paths, expected_revision)
+        except ValueError as exc:
+            if not str(exc).startswith('scope conflict with #'):
+                raise
+            return {'state': 'scope_wait', 'waiting_on': str(exc).split('#', 1)[1], 'workflow_state': workflow_state}
+        refresh_branch()
+        self.append_event({'type': 'scope_resumed', 'payload': {'card': card, 'workflow_state': workflow_state, 'evidence_invalidated': True}})
+        return {'state': 'ready', 'workflow_state': workflow_state, 'evidence_invalidated': True}
+
+    def verify_scope_changes(self, card, changed_paths):
+        reservation = self._reservations().get(str(card))
+        if reservation is None:
+            return {'authorized': False, 'publication_hold': True, 'reason': 'missing reservation'}
+        changed = self._normalize_scope(changed_paths)
+        if '' in reservation['paths']:
+            return {'authorized': True, 'publication_hold': False}
+        unauthorized = []
+        for path in changed:
+            if not any(path == owned or path.startswith(owned + '/') for owned in reservation['paths']):
+                unauthorized.append(path)
+        if unauthorized:
+            self.append_event({'type': 'scope_violation', 'payload': {'card': str(card), 'paths': unauthorized}})
+            return {'authorized': False, 'publication_hold': True, 'paths': unauthorized}
+        return {'authorized': True, 'publication_hold': False}
+
     def start_session(self, session):
         required = ('id', 'started_at', 'deadline', 'known_spend', 'unknown_spend', 'budget_stop')
         if any(k not in session for k in required) or not isinstance(session['id'], str) or not session['id']:
@@ -274,6 +456,11 @@ class Store:
                 if candidate.is_symlink():
                     raise ValueError('symlink in scope')
         paths = sorted(set(paths)) or ['']
+        enforceable = claims.get('enforceable', True)
+        if type(enforceable) is not bool:
+            raise ValueError('invalid scope enforcement')
+        if not enforceable:
+            paths = ['']
         lane = claims.get('merge_lane', False)
         if type(lane) is not bool:
             raise ValueError('invalid merge claim')
@@ -296,13 +483,24 @@ class Store:
                         a_key, b_key = _scope_key(a), _scope_key(b)
                         if not a_key or not b_key or a_key == b_key or a_key.startswith(b_key + '/') or b_key.startswith(a_key + '/'):
                             raise ValueError('scope conflict')
+            owner = self.scope_conflict(job['card'], paths)
+            if owner is not None:
+                raise ValueError('scope conflict with #' + owner)
+            prior_reservation = self._reservations().get(job['card'])
+            reservation_paths = sorted(set((prior_reservation or {}).get('paths', [])) | set(paths))
+            if not enforceable:
+                reservation_paths = ['']
+            reservation = {'card': job['card'], 'paths': reservation_paths,
+                           'enforceable': enforceable,
+                           'reservation_revision': (prior_reservation or {}).get('revision', 0) + 1}
             logical = canonical_json([job[k] for k in ('card', 'action', 'role', 'stage', 'round', 'input_sha', 'input_version')])
             c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?)', (job['id'], logical, job['card'], job['generation'], job['input_sha'], job['role'], job['stage'], 'active', 0, canonical_json(job)))
             c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (job['nonce'], job['id'], job['nonce'], job['provider'], 'prepared', canonical_json(job)))
             if self.__fault_injector is not None:
                 self.__fault_injector('after_attempt')
             c.execute('INSERT INTO claims VALUES(?,?,?,?,?,?)', (job['nonce'], job['card'], job['provider'], canonical_json(paths), lane, expected_revision + 1))
-            self._event('attempt_prepared', {'job_id': job['id'], 'attempt_id': job['nonce']})
+            self._event('attempt_prepared', {'job_id': job['id'], 'attempt_id': job['nonce'],
+                                             'scope_reservation': reservation})
             c.execute('COMMIT')
             return {'job_id': job['id'], 'attempt_id': job['nonce']}
         except sqlite3.IntegrityError as exc:
@@ -994,8 +1192,11 @@ class Store:
                 event['payload'] = json.loads(event['payload'])
             commands = [dict(row) for row in connection.execute('SELECT * FROM commands ORDER BY rowid')]
             records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results', 'effects')}
+            attention = [{'type': 'scope_cycle', 'cards': cycle} for cycle in self._scope_wait_cycles()]
+            reservations = sorted(self._reservations().values(), key=lambda item: item['card'])
             connection.execute('COMMIT')
-            return {'domain': domain, 'events': events, 'commands': commands, **records}
+            return {'domain': domain, 'events': events, 'commands': commands, 'attention': attention,
+                    'reservations': reservations, **records}
         except Exception:
             connection.execute('ROLLBACK')
             raise
