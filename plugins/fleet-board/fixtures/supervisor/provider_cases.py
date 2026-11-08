@@ -350,6 +350,32 @@ class ProviderCases(unittest.TestCase):
             import shutil
             shutil.rmtree(channel_dir)
 
+    def test_controller_scope_handler_uses_reservations_and_releases_without_retry(self):
+        from supervisor.workers import build_attempt_operation_handlers
+
+        class Store:
+            def __init__(self):
+                self.calls = []
+
+            def expand_scope(self, card, paths, revision):
+                self.calls.append((card, paths, revision))
+                raise ValueError("scope conflict with #23")
+
+        store = Store()
+        callbacks = []
+        handlers = build_attempt_operation_handlers(
+            store, "22", heartbeat=lambda payload: {"accepted": True},
+            result=lambda payload: {"accepted": True},
+            checkpoint=lambda: callbacks.append("checkpoint"),
+            release_slot=lambda: callbacks.append("release"),
+        )
+        result = handlers["scope_request"]({"paths": ["src/new.py"], "expected_revision": 8})
+        self.assertEqual(store.calls, [("22", ["src/new.py"], 8)])
+        self.assertEqual(callbacks, ["checkpoint", "release"])
+        self.assertEqual(result["waiting_on"], "23")
+        self.assertFalse(result["retry_penalty"])
+        self.assertTrue(result["attempt_should_exit"])
+
     def test_subprocess_stdout_stderr_are_bounded_and_missing_executable_fails(self):
         noisy = self.script("noisy.py", "#!/usr/bin/env python3\nimport sys\nsys.stdout.write('x'*4096)\nsys.stderr.write('y'*4096)\n")
         with self.assertRaises(ContractError):
