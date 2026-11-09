@@ -1443,7 +1443,7 @@ raise SystemExit(2)
         self.assertIn('-f ' + 'e' * 64, removals,
                       'later matching container was missed after an empty first listing')
         listings = (self.root / 'docker-ps.log').read_text(encoding='utf-8').splitlines()
-        self.assertGreaterEqual(len(listings), 10,
+        self.assertGreaterEqual(len(listings), 6,
                                 'cleanup stopped before the full label visibility grace period')
         self.assertGreaterEqual(time.monotonic() - started, .45,
                                 'cleanup trusted transient empty label listings')

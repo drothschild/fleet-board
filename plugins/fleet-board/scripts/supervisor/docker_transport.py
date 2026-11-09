@@ -116,7 +116,7 @@ class DockerWorkerTransport:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return False
+                return empty_listings >= _LABEL_RECONCILE_EMPTY_LISTINGS
             try:
                 completed = subprocess.run(
                     [docker, 'ps', '-aq', '--filter', 'label=' + label],
@@ -149,17 +149,16 @@ class DockerWorkerTransport:
                 empty_listings = 0
             else:
                 empty_listings += 1
-                if empty_listings >= _LABEL_RECONCILE_EMPTY_LISTINGS:
-                    return True
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return False
+                return empty_listings >= _LABEL_RECONCILE_EMPTY_LISTINGS
             time.sleep(min(_LABEL_RECONCILE_POLL_SECONDS, remaining))
 
     def run(self, argv, policy, *, bootstrap, channel, attempt_id, capability,
             timeout, cancel_event):
         self.last_container_id = None
-        if (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or timeout <= 0 or timeout > 86400
                 or not isinstance(cancel_event, threading.Event)
                 or not callable(getattr(channel, 'request', None))):
             raise ValueError('invalid Docker transport bounds or broker')
