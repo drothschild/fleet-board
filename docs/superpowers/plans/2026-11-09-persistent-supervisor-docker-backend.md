@@ -87,5 +87,6 @@
 - [x] Implement the Docker host probe and shell wrapper. Run with the existing cached image ID `sha256:043ab74ba0ad529734d7d77ca3e893f286410864619329d5e8ca0524c3d260c1`; no pull/build.
 - [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` (63 tests) and `bash plugins/fleet-board/tests/test-supervisor-docker-host.sh` with the cached image ID (all 23 checks true, including guest-package read-only).
 - [x] Run `bash plugins/fleet-board/tests/test-clean-room.sh` (118 checks), `test-version-bumped.sh`, Python AST checks, `bash -n`, and `git diff --check`.
+- [x] Add RED regression cases for bounded frame queuing, relay-task settlement after transport failure, verified Docker Desktop daemon identity, deadline/cancellation-aware startup writes with CID cleanup, and a separate cancellation-cleanup qualification check. The focused provider suite reports the expected eight assertion failures; 11 existing Unix-socket tests also error with sandbox `EPERM`.
 - [ ] Obtain fresh `gpt-6-luna` spec and quality reviews at the final commit; fix findings test-first and rerun focused checks.
 - [ ] Push commits to the existing draft PR #237 only after the final reviews; do not mark ready or merge.

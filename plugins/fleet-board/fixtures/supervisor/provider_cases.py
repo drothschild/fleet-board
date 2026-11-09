@@ -1085,6 +1085,45 @@ class ProviderCases(unittest.TestCase):
         self.assertEqual(policy["docker_image"], image)
         self.assertTrue(policy["command"])
 
+    def test_docker_policy_rejects_remote_daemon_overrides(self):
+        image = "sha256:" + "a" * 64
+        for variable, value in (("DOCKER_HOST", "tcp://remote.example:2376"),
+                                ("DOCKER_CONTEXT", "remote-production")):
+            with self.subTest(variable=variable):
+                with patch.dict(os.environ, {variable: value}):
+                    with self.assertRaises((ValueError, IsolationUnavailable)):
+                        build_policy(self.workspace, self.root / "docker-private-git",
+                                     self.root / "docker-channels", backend="docker",
+                                     docker_image=image)
+
+    def test_docker_policy_records_verified_desktop_linux_vm_identity(self):
+        from subprocess import CompletedProcess
+
+        image = "sha256:" + "a" * 64
+        responses = [
+            CompletedProcess([], 0, b"desktop-linux\n", b""),
+            CompletedProcess([], 0,
+                             b'[{"Endpoints":{"docker":{"Host":"unix:///Users/fixture/.docker/run/docker.sock"}}}]',
+                             b""),
+            CompletedProcess([], 0,
+                             b'{"OSType":"linux","OperatingSystem":"Docker Desktop","ServerVersion":"29.9.2"}',
+                             b""),
+        ]
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DOCKER_HOST", None)
+            os.environ.pop("DOCKER_CONTEXT", None)
+            with patch("supervisor.isolation.shutil.which", return_value="/usr/local/bin/docker"), \
+                    patch("supervisor.isolation.subprocess.run", side_effect=responses):
+                policy = build_policy(self.workspace, self.root / "docker-private-git",
+                                      self.root / "docker-channels", backend="docker",
+                                      docker_image=image)
+        self.assertEqual(policy.get("daemon_identity"), {
+            "context": "desktop-linux",
+            "endpoint": "unix:///Users/fixture/.docker/run/docker.sock",
+            "os_type": "linux",
+            "operating_system": "Docker Desktop",
+        })
+
     def test_docker_run_argv_enforces_offline_readonly_boundary(self):
         from supervisor.isolation import docker_run_argv
 
@@ -1303,6 +1342,133 @@ write_frame({'type':'exit','code':0})
         channel = Channel()
         return bootstrap, channel
 
+    def test_docker_host_transport_bounds_the_frame_queue(self):
+        import queue
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        constructed = []
+        real_queue = queue.Queue
+
+        def recording_queue(*args, **kwargs):
+            instance = real_queue(*args, **kwargs)
+            constructed.append(instance)
+            return instance
+
+        bootstrap, channel = self.docker_transport_args()
+        with patch("supervisor.docker_transport.queue.Queue", side_effect=recording_queue):
+            DockerWorkerTransport().run(
+                ["python3", "-m", "worker"], self.docker_policy(self.fake_docker("relay")),
+                bootstrap=bootstrap, channel=channel, attempt_id="attempt-1",
+                capability="secret", timeout=4, cancel_event=threading.Event())
+        self.assertEqual(len(constructed), 1)
+        self.assertGreater(constructed[0].maxsize, 0,
+                           "Docker frame reader must apply bounded-queue backpressure")
+
+    def test_docker_host_transport_stops_and_settles_relay_tasks_on_failure(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        release = threading.Event()
+        started = threading.Event()
+        finished = threading.Event()
+
+        class BlockingChannel:
+            def request(inner, attempt_id, capability, request, *, operation="infer",
+                        timeout=None, cancel_event=None):
+                started.set()
+                while not release.wait(.01):
+                    if cancel_event is not None and cancel_event.is_set():
+                        finished.set()
+                        raise ContractError("relay request cancelled")
+                finished.set()
+                return {"accepted": True}
+
+        source = """#!/usr/bin/env python3
+import json,struct,sys,time
+if sys.argv[1] == 'rm': raise SystemExit(0)
+cid=next(a.split('=',1)[1] for a in sys.argv if a.startswith('--cidfile='))
+open(cid,'w').write('""" + "a" * 64 + """')
+def read():
+ h=sys.stdin.buffer.read(4); n=struct.unpack('!I',h)[0]
+ return json.loads(sys.stdin.buffer.read(n))
+def write(v):
+ b=json.dumps(v,separators=(',',':')).encode()
+ sys.stdout.buffer.write(struct.pack('!I',len(b))+b); sys.stdout.buffer.flush()
+s=read()
+write({'type':'rpc','id':'rpc-1','operation':'heartbeat','attempt_id':s['attempt_id'],
+       'capability':s['capability'],'request':{'attempt_id':s['attempt_id'],'request_id':'req-1'}})
+time.sleep(.1)
+write({'type':'unknown'})
+time.sleep(10)
+"""
+        fake = self.script("fake-docker-relay-failure", source)[0]
+        bootstrap, _ = self.docker_transport_args()
+        bootstrap["inference"]["capability"] = "secret"
+        try:
+            with self.assertRaises((ContractError, IsolationUnavailable)):
+                DockerWorkerTransport().run(
+                    ["python3", "-m", "worker"], self.docker_policy(fake),
+                    bootstrap=bootstrap, channel=BlockingChannel(),
+                    attempt_id="attempt-1", capability="secret", timeout=3,
+                    cancel_event=threading.Event())
+            self.assertTrue(started.is_set(), "fake broker callback never became active")
+            self.assertTrue(finished.wait(.5),
+                            "transport returned while an authorized broker callback was still active")
+        finally:
+            release.set()
+
+    def test_docker_host_transport_bounds_large_start_write_by_deadline_and_cancellation(self):
+        import signal
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        pidfile = self.root / "docker-no-reader.pid"
+        rm_log = self.root / "docker-no-reader-rm.log"
+        source = """#!/usr/bin/env python3
+import os,sys,time
+if len(sys.argv)>1 and sys.argv[1]=='rm':
+ open(""" + repr(str(rm_log)) + """,'a').write(' '.join(sys.argv[2:])+'\\n')
+ raise SystemExit(0)
+cid=next(a.split('=',1)[1] for a in sys.argv if a.startswith('--cidfile='))
+open(cid,'w').write('""" + "a" * 64 + """')
+open(""" + repr(str(pidfile)) + """,'w').write(str(os.getpid()))
+time.sleep(10)
+"""
+        fake = self.script("fake-docker-no-reader", source)[0]
+        bootstrap, channel = self.docker_transport_args()
+        bootstrap["padding"] = "x" * (3 * 1024 * 1024)
+
+        def call(cancel_event, timeout, outcome):
+            try:
+                DockerWorkerTransport().run(
+                    ["python3", "-m", "worker"], self.docker_policy(fake),
+                    bootstrap=bootstrap, channel=channel, attempt_id="attempt-1",
+                    capability="secret", timeout=timeout, cancel_event=cancel_event)
+            except (ContractError, IsolationUnavailable):
+                outcome.append("stopped")
+
+        for cancel_after in (0.15, None):
+            with self.subTest(cancel_after=cancel_after):
+                cancel_event = threading.Event()
+                outcome = []
+                timer = None
+                if cancel_after is not None:
+                    timer = threading.Timer(cancel_after, cancel_event.set)
+                    timer.start()
+                thread = threading.Thread(target=call,
+                                          args=(cancel_event, 3 if cancel_after else .15, outcome))
+                thread.start()
+                thread.join(timeout=1)
+                completed_without_intervention = not thread.is_alive()
+                if thread.is_alive() and pidfile.exists():
+                    os.kill(int(pidfile.read_text(encoding="ascii")), signal.SIGKILL)
+                thread.join(timeout=3)
+                if timer is not None:
+                    timer.join(timeout=1)
+                self.assertTrue(completed_without_intervention,
+                                "bootstrap write ignored cancellation/deadline while Docker did not read stdin")
+                self.assertEqual(outcome, ["stopped"])
+                self.assertIn("-f " + "a" * 64,
+                              rm_log.read_text(encoding="utf-8"))
+
     def test_docker_host_transport_relays_authorized_request_and_output(self):
         from supervisor.docker_transport import DockerWorkerTransport
 
@@ -1457,6 +1623,12 @@ write_frame({'type':'exit','code':0})
         from supervisor.isolation import _DOCKER_PROBE_CHECKS
 
         self.assertIn("guest_package_write_denied", _DOCKER_PROBE_CHECKS)
+
+    def test_docker_probe_qualifies_cancellation_separately_from_deadline_cleanup(self):
+        from supervisor.isolation import _DOCKER_PROBE_CHECKS
+
+        self.assertIn("timeout_cleanup", _DOCKER_PROBE_CHECKS)
+        self.assertIn("cancellation_cleanup", _DOCKER_PROBE_CHECKS)
 
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
