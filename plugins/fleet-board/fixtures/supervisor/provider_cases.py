@@ -1387,6 +1387,67 @@ write_frame({'type':'exit','code':0})
             channel=channel, attempt_id="attempt-1", capability="secret", timeout=5,
             cancel_event=cancel)
 
+    def protected_resources_for_probe(self):
+        paths = {}
+        db = self.root / "probe-controller.db"
+        db.write_text("sentinel", encoding="utf-8")
+        board = self.root / "probe-board"
+        shared = self.root / "probe-shared-git"
+        board.mkdir(mode=0o700)
+        shared.mkdir(mode=0o700)
+        credential = self.root / "probe-credential"
+        credential.write_text("sentinel", encoding="utf-8")
+        keychain = self.root / "probe-keychain"
+        keychain.write_text("sentinel", encoding="utf-8")
+        sockets = []
+        socket_paths = []
+        for name in ("controller.sock", "agent.sock"):
+            path = self.root / name
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.bind(str(path))
+            sockets.append(sock)
+            socket_paths.append(str(path))
+        return ({"controller_db": str(db), "controller_socket": socket_paths[0],
+                 "board_storage": str(board), "shared_git_metadata": str(shared),
+                 "host_credentials": [str(credential)], "ssh_agent": socket_paths[1],
+                 "keychain": [str(keychain)]}, sockets)
+
+    def test_docker_probe_fails_closed_when_daemon_or_cached_image_is_unavailable(self):
+        from supervisor.isolation import probe_docker_capabilities
+        from subprocess import CompletedProcess
+
+        resources, sockets = self.protected_resources_for_probe()
+        try:
+            policy = self.docker_policy(self.fake_docker("daemon"))
+            with patch("supervisor.isolation.subprocess.run",
+                       return_value=CompletedProcess([], 1, b"", b"daemon unavailable")):
+                result = probe_docker_capabilities(policy, protected_resources=resources)
+            self.assertFalse(result["available"])
+            self.assertFalse(result["checks"]["docker_daemon"])
+            self.assertFalse(result["checks"]["image_present"])
+
+            with patch("supervisor.isolation.subprocess.run", side_effect=[
+                    CompletedProcess([], 0, b"29.9.2\n", b""),
+                    CompletedProcess([], 1, b"", b"image not found")]) as docker:
+                result = probe_docker_capabilities(policy, protected_resources=resources)
+            self.assertFalse(result["available"])
+            self.assertTrue(result["checks"]["docker_daemon"])
+            self.assertFalse(result["checks"]["image_present"])
+            self.assertEqual(docker.call_count, 2)
+            self.assertTrue(all(not value for key, value in result["checks"].items()
+                                if key not in ("docker_daemon", "image_present")))
+        finally:
+            for sock in sockets:
+                sock.close()
+
+    def test_docker_probe_requires_complete_host_protected_resource_map(self):
+        from supervisor.isolation import probe_docker_capabilities
+
+        result = probe_docker_capabilities(self.docker_policy(self.fake_docker("daemon")),
+                                           protected_resources={"controller_db": "/missing"})
+        self.assertFalse(result["available"])
+        self.assertIn("protected-resource", result["reason"])
+
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
                    return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):
