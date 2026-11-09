@@ -1390,6 +1390,10 @@ if sys.argv[1:2] == ['ps']:
         count = sum(1 for _line in open(@LISTLOG@, 'r'))
         print('e' * 64 if count == 5 else '')
         raise SystemExit(0)
+    if mode == 'late-across-invocations':
+        launched = os.path.exists(@RUNLOG@) and time.time() - os.path.getmtime(@RUNLOG@) > .52
+        print('e' * 64 if launched else '')
+        raise SystemExit(0)
     print('\\n'.join(ids)); raise SystemExit(0)
 if sys.argv[1:2] == ['rm']:
     open(@RMLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
@@ -1397,13 +1401,31 @@ if sys.argv[1:2] == ['rm']:
     raise SystemExit(0)
 if sys.argv[1:2] == ['run']:
     open(@RUNLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
+    if mode == 'pending-check':
+        registry = open(@REGISTRY@, 'r').read()
+        if '"attempt_id":"attempt-1"' not in registry:
+            raise SystemExit(91)
+        time.sleep(.05)
+        raise SystemExit(125)
+    if mode == 'late-across-invocations' and len(open(@RUNLOG@, 'r').readlines()) > 1:
+        cidfile = next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--cidfile='))
+        with open(cidfile, 'w') as stream: stream.write('f' * 64)
+        header = sys.stdin.buffer.read(4)
+        if len(header) == 4:
+            size = __import__('struct').unpack('!I', header)[0]
+            sys.stdin.buffer.read(size)
+            data = json.dumps({'type': 'exit', 'code': 0}, separators=(',', ':')).encode()
+            sys.stdout.buffer.write(__import__('struct').pack('!I', len(data)) + data)
+            sys.stdout.buffer.flush()
+        raise SystemExit(0)
     time.sleep(.05)
     raise SystemExit(125)
 raise SystemExit(2)
 """.replace('@MODE@', repr(mode)).replace('@IDS@', repr(ids)).replace(
             '@LISTLOG@', repr(str(self.root / 'docker-ps.log'))).replace(
             '@RMLOG@', repr(str(self.root / 'docker-label-rm.log'))).replace(
-            '@RUNLOG@', repr(str(self.root / 'docker-label-run.log')))
+            '@RUNLOG@', repr(str(self.root / 'docker-label-run.log'))).replace(
+            '@REGISTRY@', repr(str(self.root / 'controller' / 'operations.json.docker-cleanup.json')))
         return self.script('fake-docker-label-' + mode, script)[0]
 
     def test_docker_host_transport_reconciles_missing_cidfile_by_attempt_label(self):
@@ -1447,6 +1469,120 @@ raise SystemExit(2)
                                 'cleanup stopped before the full label visibility grace period')
         self.assertGreaterEqual(time.monotonic() - started, .45,
                                 'cleanup trusted transient empty label listings')
+
+    def test_docker_pending_cleanup_is_recorded_before_launch_and_blocks_next_launch(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        journal = self.root / 'controller' / 'operations.json'
+        journal.parent.mkdir(mode=0o700)
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        channel.operation_journal = journal
+        fake = self.fake_docker_missing_cidfile('pending-check')
+        with self.assertRaisesRegex(IsolationUnavailable, 'cleanup pending'):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        registry = journal.with_name(journal.name + '.docker-cleanup.json')
+        self.assertTrue(registry.exists(), 'pending cleanup record was not retained')
+        self.assertEqual([item['attempt_id'] for item in
+                          json.loads(registry.read_text(encoding='utf-8'))['attempts']],
+                         ['attempt-1'])
+        run_log = self.root / 'docker-label-run.log'
+        self.assertTrue(run_log.exists(), 'first launch did not reach fake Docker')
+        first_launch = run_log.read_text(encoding='utf-8')
+        with self.assertRaisesRegex(IsolationUnavailable, 'cleanup pending'):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        self.assertEqual(run_log.read_text(encoding='utf-8'), first_launch,
+                         'unresolved cleanup must block the next Docker launch')
+
+    def test_docker_late_labeled_container_is_removed_on_next_invocation(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        journal = self.root / 'controller' / 'operations.json'
+        journal.parent.mkdir(mode=0o700)
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        channel.operation_journal = journal
+        fake = self.fake_docker_missing_cidfile('late-across-invocations')
+        with self.assertRaises((ContractError, IsolationUnavailable)):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        registry = journal.with_name(journal.name + '.docker-cleanup.json')
+        self.assertEqual([item['attempt_id'] for item in
+                          json.loads(registry.read_text(encoding='utf-8'))['attempts']],
+                         ['attempt-1'])
+        result = DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        removals = (self.root / 'docker-label-rm.log').read_text(encoding='utf-8')
+        self.assertIn('-f ' + 'e' * 64, removals)
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(registry.exists(), 'confirmed removal and normal exit should clear records')
+
+    def test_docker_known_cid_cleanup_clears_only_its_pending_record(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        journal = self.root / 'controller' / 'operations.json'
+        journal.parent.mkdir(mode=0o700)
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        channel.operation_journal = journal
+        registry = journal.with_name(journal.name + '.docker-cleanup.json')
+        fake = self.fake_docker('ok')
+        result = DockerWorkerTransport().run(
+            ['python3', '-m', 'worker'], self.docker_policy(fake),
+            bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+            capability='secret', timeout=2, cancel_event=threading.Event())
+        self.assertEqual(result.returncode, 0)
+        self.assertFalse(registry.exists(), 'normal exit with known ID should clear its record')
+
+    def test_docker_insecure_cleanup_journal_fails_closed_before_launch(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        journal_dir = self.root / 'controller'
+        journal_dir.mkdir(mode=0o755)
+        journal_dir.chmod(0o755)
+        journal = journal_dir / 'operations.json'
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        channel.operation_journal = journal
+        fake = self.fake_docker('ok')
+        with self.assertRaisesRegex(IsolationUnavailable, 'cleanup registry'):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        self.assertFalse((self.root / 'docker-run.log').exists(),
+                         'insecure cleanup state reached Docker launch')
+
+    def test_docker_cleanup_registry_preserves_concurrent_attempt_records(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from supervisor.docker_transport import _CleanupRegistry
+
+        journal_dir = self.root / 'controller'
+        journal_dir.mkdir(mode=0o700)
+        journal = journal_dir / 'operations.json'
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        registry = _CleanupRegistry(journal)
+        attempt_ids = ['attempt-{}'.format(index) for index in range(12)]
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            list(pool.map(registry.begin, attempt_ids))
+        self.assertEqual({item['attempt_id'] for item in
+                          json.loads(registry.path.read_text(encoding='utf-8'))['attempts']},
+                         set(attempt_ids))
 
     def test_docker_transport_rejects_nonfinite_and_boolean_timeouts_before_launch(self):
         import math
