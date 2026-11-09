@@ -104,6 +104,32 @@ class DockerWorkerTransport:
             return False
         return completed.returncode == 0
 
+    @classmethod
+    def _reconcile_labeled_containers(cls, docker, attempt_id):
+        label = 'org.fleet-board.supervisor.attempt-id=' + attempt_id
+        try:
+            completed = subprocess.run(
+                [docker, 'ps', '-aq', '--filter', 'label=' + label],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=5, check=False, close_fds=True)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        if completed.returncode != 0:
+            return False
+        output = completed.stdout
+        if isinstance(output, bytes):
+            output = output.decode('ascii', 'strict')
+        if not isinstance(output, str):
+            return False
+        container_ids = [line.strip() for line in output.splitlines() if line.strip()]
+        if any(not _CONTAINER_ID.fullmatch(container_id) for container_id in container_ids):
+            return False
+        removed = True
+        for container_id in container_ids:
+            if not cls._remove_container(docker, container_id):
+                removed = False
+        return removed
+
     def run(self, argv, policy, *, bootstrap, channel, attempt_id, capability,
             timeout, cancel_event):
         self.last_container_id = None
@@ -116,6 +142,8 @@ class DockerWorkerTransport:
             raise IsolationUnavailable('Docker executable unavailable')
         if not isinstance(attempt_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', attempt_id):
             raise ContractError('invalid Docker attempt label')
+        started = time.monotonic()
+        deadline = started + timeout
         start_frame = self._start_frame(argv, policy, bootstrap, attempt_id, capability)
         command = None
         process = None
@@ -138,8 +166,6 @@ class DockerWorkerTransport:
         successful = False
         cleanup_failure = None
         overflow = None
-        started = None
-        deadline = None
         cidfile = None
 
         def write_host_frame(frame):
@@ -237,9 +263,16 @@ class DockerWorkerTransport:
         try:
             from .isolation import verify_docker_desktop_identity
 
-            verify_docker_desktop_identity(docker, policy.get('daemon_identity'))
-            started = time.monotonic()
-            deadline = started + timeout
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or cancel_event.is_set():
+                raise IsolationUnavailable('Docker transport deadline or cancellation before identity check')
+            verify_docker_desktop_identity(
+                docker, policy.get('daemon_identity'), timeout=remaining,
+                cancel_event=cancel_event)
+            if cancel_event.is_set():
+                raise IsolationUnavailable('Docker transport cancelled during identity check')
+            if time.monotonic() >= deadline:
+                raise IsolationUnavailable('Docker transport deadline exceeded during identity check')
             command = docker_run_argv(['python3', '-m', 'supervisor.docker_agent'],
                                       policy, cidfile)
             command.insert(command.index('--cidfile=' + cidfile),
@@ -363,10 +396,14 @@ class DockerWorkerTransport:
                 try:
                     container_id = self._read_cid(cidfile) if cidfile else None
                     if container_id is False:
-                        cleanup_failure = 'refusing cleanup with malformed Docker container ID'
+                        if not self._reconcile_labeled_containers(docker, attempt_id):
+                            cleanup_failure = 'Docker container cleanup failed'
                     else:
                         self.last_container_id = container_id
                         if container_id and not self._remove_container(docker, container_id):
+                            cleanup_failure = 'Docker container cleanup failed'
+                        elif not container_id and not self._reconcile_labeled_containers(
+                                docker, attempt_id):
                             cleanup_failure = 'Docker container cleanup failed'
                 except Exception:
                     cleanup_failure = 'Docker container cleanup failed'

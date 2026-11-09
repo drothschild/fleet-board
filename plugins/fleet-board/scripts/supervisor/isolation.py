@@ -23,20 +23,73 @@ class IsolationUnavailable(RuntimeError):
     pass
 
 
-def verify_docker_desktop_identity(docker, expected=None):
+def verify_docker_desktop_identity(docker, expected=None, *, timeout=None,
+                                   cancel_event=None):
     """Return the verified local Docker Desktop Linux VM identity or fail closed."""
     if os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT'):
         raise IsolationUnavailable('Docker daemon overrides are not allowed')
     if not isinstance(docker, str) or not os.path.isabs(docker):
         raise IsolationUnavailable('Docker executable unavailable')
 
+    if timeout is not None and (type(timeout) not in (int, float) or timeout <= 0):
+        raise IsolationUnavailable('Docker Desktop identity check deadline exceeded')
+    deadline = time.monotonic() + timeout if timeout is not None else None
+
     def run(arguments):
+        if cancel_event is not None and cancel_event.is_set():
+            raise IsolationUnavailable('Docker Desktop identity check cancelled')
+        if timeout is None and cancel_event is None:
+            try:
+                result = subprocess.run([docker, *arguments], stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                        timeout=5, check=False, close_fds=True)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise IsolationUnavailable('Docker Desktop identity check failed') from exc
+            if result.returncode != 0:
+                raise IsolationUnavailable('Docker Desktop identity check failed')
+            output = result.stdout
+            if isinstance(output, bytes):
+                output = output.decode('utf-8', 'replace')
+            return str(output).strip()
+        remaining = deadline - time.monotonic() if deadline is not None else 5.0
+        if remaining <= 0:
+            raise IsolationUnavailable('Docker Desktop identity check deadline exceeded')
         try:
-            result = subprocess.run([docker, *arguments], stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    timeout=5, check=False, close_fds=True)
-        except (OSError, subprocess.SubprocessError) as exc:
+            process = subprocess.Popen([docker, *arguments], stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       close_fds=True, start_new_session=True)
+        except OSError as exc:
             raise IsolationUnavailable('Docker Desktop identity check failed') from exc
+        try:
+            while True:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise IsolationUnavailable('Docker Desktop identity check cancelled')
+                remaining = deadline - time.monotonic() if deadline is not None else 5.0
+                if remaining <= 0:
+                    raise IsolationUnavailable('Docker Desktop identity check deadline exceeded')
+                try:
+                    stdout, stderr = process.communicate(timeout=min(.05, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+        except IsolationUnavailable:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+            try:
+                process.communicate(timeout=.2)
+            except subprocess.SubprocessError:
+                pass
+            raise
+        except (OSError, subprocess.SubprocessError) as exc:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+            raise IsolationUnavailable('Docker Desktop identity check failed') from exc
+        result = subprocess.CompletedProcess([docker, *arguments], process.returncode,
+                                             stdout, stderr)
         if result.returncode != 0:
             raise IsolationUnavailable('Docker Desktop identity check failed')
         output = result.stdout
