@@ -23,6 +23,57 @@ class IsolationUnavailable(RuntimeError):
     pass
 
 
+def verify_docker_desktop_identity(docker, expected=None):
+    """Return the verified local Docker Desktop Linux VM identity or fail closed."""
+    if os.environ.get('DOCKER_HOST') or os.environ.get('DOCKER_CONTEXT'):
+        raise IsolationUnavailable('Docker daemon overrides are not allowed')
+    if not isinstance(docker, str) or not os.path.isabs(docker):
+        raise IsolationUnavailable('Docker executable unavailable')
+
+    def run(arguments):
+        try:
+            result = subprocess.run([docker, *arguments], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    timeout=5, check=False, close_fds=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise IsolationUnavailable('Docker Desktop identity check failed') from exc
+        if result.returncode != 0:
+            raise IsolationUnavailable('Docker Desktop identity check failed')
+        output = result.stdout
+        if isinstance(output, bytes):
+            output = output.decode('utf-8', 'replace')
+        return str(output).strip()
+
+    context = run(['context', 'show'])
+    if context != 'desktop-linux':
+        raise IsolationUnavailable('Docker context is not desktop-linux')
+    try:
+        inspected = json.loads(run(['context', 'inspect', 'desktop-linux',
+                                    '--format={{json .Endpoints.docker}}']))
+        info = json.loads(run(['info', '--format={{json .}}']))
+    except (TypeError, ValueError) as exc:
+        raise IsolationUnavailable('Docker Desktop identity response was invalid') from exc
+    if isinstance(inspected, list):
+        inspected = inspected[0] if len(inspected) == 1 else None
+        if isinstance(inspected, dict) and 'Endpoints' in inspected:
+            inspected = inspected.get('Endpoints', {}).get('docker')
+    elif isinstance(inspected, dict) and 'Endpoints' in inspected:
+        inspected = inspected.get('Endpoints', {}).get('docker')
+    endpoint = inspected.get('Host') if isinstance(inspected, dict) else None
+    expected_endpoint = 'unix://' + str(Path.home() / '.docker/run/docker.sock')
+    if endpoint != expected_endpoint:
+        raise IsolationUnavailable('Docker endpoint is not the local Docker Desktop socket')
+    if (not isinstance(info, dict) or info.get('Name') != 'docker-desktop'
+            or info.get('OSType') != 'linux'
+            or info.get('OperatingSystem') != 'Docker Desktop'):
+        raise IsolationUnavailable('Docker daemon is not the Docker Desktop Linux VM')
+    identity = {'context': context, 'endpoint': endpoint, 'name': info['Name'],
+                'os_type': info['OSType'], 'operating_system': info['OperatingSystem']}
+    if expected is not None and identity != expected:
+        raise IsolationUnavailable('Docker Desktop daemon identity changed')
+    return identity
+
+
 def _forged_control_frame(attempt_id, capability):
     """Build an authenticated request for an operation workers must not have."""
     if (not isinstance(attempt_id, str) or not attempt_id
@@ -90,8 +141,10 @@ def build_policy(workspace, private_git, channels, *, backend=None, docker_image
             raise ValueError('Docker mount path contains an unsupported delimiter')
         guest_package = str(Path(__file__).resolve(strict=True).parent)
         docker = shutil.which('docker')
+        daemon_identity = verify_docker_desktop_identity(docker)
         return {**common, 'backend': 'docker', 'docker_image': docker_image,
                 'guest_package': guest_package, 'command': docker,
+                'daemon_identity': daemon_identity,
                 'uid': os.getuid(), 'gid': os.getgid(),
                 'text': 'Docker Desktop offline worker; no host broker socket is mounted'}
     if backend is not None:
@@ -324,47 +377,44 @@ _DOCKER_PROBE_CHECKS = (
     'no_public_egress',
     'no_host_publication', 'symlink_escape_denied', 'inference_relay',
     'forged_human_control_denied', 'channel_path_write_denied', 'timeout_cleanup',
+    'cancellation_cleanup',
 )
 
 
 def probe_docker_capabilities(policy, *, protected_resources=None):
     """Qualify the concrete Docker boundary with a no-cost local fake provider."""
     checks = {name: False for name in _DOCKER_PROBE_CHECKS}
+    identity = None
+
+    def result(available, reason):
+        return {'available': available, 'backend': 'docker', 'reason': reason,
+                'checks': dict(checks), 'daemon_identity': identity}
+
     try:
         protected = _protected_resource_paths(protected_resources)
     except IsolationUnavailable as exc:
-        return {'available': False, 'backend': 'docker', 'reason': str(exc), 'checks': checks}
+        return result(False, str(exc))
     docker = policy.get('command') if isinstance(policy, dict) else None
     image = policy.get('docker_image') if isinstance(policy, dict) else None
     if not isinstance(docker, str) or not os.path.isabs(docker):
-        return {'available': False, 'backend': 'docker',
-                'reason': 'Docker executable unavailable', 'checks': checks}
+        return result(False, 'Docker executable unavailable')
     try:
-        daemon = subprocess.run([docker, 'info', '--format={{.ServerVersion}}'],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, timeout=5, check=False, close_fds=True)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return {'available': False, 'backend': 'docker',
-                'reason': 'Docker daemon unavailable: ' + str(exc)[:120], 'checks': checks}
-    checks['docker_daemon'] = daemon.returncode == 0 and bool(daemon.stdout.strip())
-    if not checks['docker_daemon']:
-        return {'available': False, 'backend': 'docker',
-                'reason': 'Docker daemon unavailable', 'checks': checks}
+        identity = verify_docker_desktop_identity(docker, policy.get('daemon_identity'))
+    except IsolationUnavailable as exc:
+        return result(False, str(exc))
+    checks['docker_daemon'] = True
     if not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
-        return {'available': False, 'backend': 'docker',
-                'reason': 'immutable Docker image ID required', 'checks': checks}
+        return result(False, 'immutable Docker image ID required')
     try:
         inspected = subprocess.run([docker, 'image', 'inspect', '--format={{.Id}}', image],
                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, timeout=5, check=False, close_fds=True)
     except (OSError, subprocess.SubprocessError) as exc:
-        return {'available': False, 'backend': 'docker',
-                'reason': 'cached Docker image unavailable: ' + str(exc)[:120], 'checks': checks}
+        return result(False, 'cached Docker image unavailable: ' + str(exc)[:120])
     checks['image_present'] = (inspected.returncode == 0
                                and inspected.stdout.decode('ascii', 'replace').strip() == image)
     if not checks['image_present']:
-        return {'available': False, 'backend': 'docker',
-                'reason': 'Docker worker image is not present locally', 'checks': checks}
+        return result(False, 'Docker worker image is not present locally')
 
     workspace = Path(policy.get('workspace', ''))
     private_git = Path(policy.get('private_git', ''))
@@ -378,6 +428,8 @@ def probe_docker_capabilities(policy, *, protected_resources=None):
     escape = workspace / (probe_name + '-escape')
     channel_path = channels / (probe_name + '-host-channel')
     guest_write_host = Path(policy.get('guest_package', '')) / (probe_name + '-guest-write')
+    timeout_marker = workspace / (probe_name + '-timeout-started')
+    cancellation_marker = workspace / (probe_name + '-cancellation-started')
     scratch_parent = '/private/tmp' if Path('/private/tmp').is_dir() else None
     probe_root = None
     listeners = []
@@ -529,7 +581,6 @@ Path(p['report']).write_text(json.dumps(c,sort_keys=True))
                                                      or arg.startswith('--publish=')
                                                      for arg in command))
 
-        timeout_marker = workspace / (probe_name + '-timeout-started')
         timeout_code = ('from pathlib import Path; import time; '
                         'Path("/workspace/' + timeout_marker.name + '").write_text("started"); '
                         'time.sleep(30)')
@@ -566,6 +617,51 @@ Path(p['report']).write_text(json.dumps(c,sort_keys=True))
                                      and remaining.returncode == 0
                                      and not remaining.stdout.strip())
 
+        cancellation_attempt_id = attempt_id + '-cancel'
+        cancellation_bootstrap = dict(bootstrap)
+        cancellation_bootstrap['inference'] = dict(bootstrap['inference'])
+        cancellation_bootstrap['inference']['attempt_id'] = cancellation_attempt_id
+        cancellation_code = ('from pathlib import Path; import time; '
+                             'Path("/workspace/' + cancellation_marker.name + '").write_text("started"); '
+                             'time.sleep(30)')
+        cancellation_transport = DockerWorkerTransport()
+        cancellation_event = threading.Event()
+        cancellation_error = []
+
+        def run_cancellation_probe():
+            try:
+                cancellation_transport.run(
+                    ['python3', '-c', cancellation_code], policy,
+                    bootstrap=cancellation_bootstrap, channel=channel,
+                    attempt_id=cancellation_attempt_id, capability=channel_capability,
+                    timeout=20, cancel_event=cancellation_event)
+            except Exception as exc:
+                cancellation_error.append(exc)
+
+        cancellation_thread = threading.Thread(target=run_cancellation_probe, daemon=True)
+        cancellation_thread.start()
+        cancellation_start_deadline = time.monotonic() + 8
+        while (not cancellation_marker.exists() and cancellation_thread.is_alive()
+               and time.monotonic() < cancellation_start_deadline):
+            time.sleep(.05)
+        cancellation_worker_started = cancellation_marker.is_file()
+        cancellation_event.set()
+        cancellation_thread.join(timeout=6)
+        cancellation_label = ('org.fleet-board.supervisor.attempt-id='
+                              + cancellation_attempt_id)
+        cancellation_remaining = subprocess.run(
+            [docker, 'container', 'ls', '--all', '--quiet', '--filter',
+             'label=' + cancellation_label],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=5, check=False, close_fds=True)
+        cancellation_seen = (len(cancellation_error) == 1
+                             and 'cancelled' in str(cancellation_error[0]).lower())
+        checks['cancellation_cleanup'] = (
+            cancellation_worker_started and cancellation_seen
+            and cancellation_thread.is_alive() is False
+            and cancellation_remaining.returncode == 0
+            and not cancellation_remaining.stdout.strip())
+
         missing = [name for name, passed in checks.items() if not passed]
         if missing:
             reason = 'Docker boundary checks failed: ' + ', '.join(missing)
@@ -574,14 +670,13 @@ Path(p['report']).write_text(json.dumps(c,sort_keys=True))
                            ' (timed-out container remains or timeout did not fire)')
                 if timeout_error:
                     reason += ': ' + str(timeout_error[0])[:120]
-            return {'available': False, 'backend': 'docker',
-                    'reason': reason,
-                    'checks': checks}
-        return {'available': True, 'backend': 'docker', 'reason': None, 'checks': checks}
+            if 'cancellation_cleanup' in missing and cancellation_error:
+                reason += ' (cancellation cleanup: ' + str(cancellation_error[0])[:120] + ')'
+            return result(False, reason)
+        return result(True, None)
     except (OSError, ValueError, TypeError, subprocess.SubprocessError,
             RuntimeError) as exc:
-        return {'available': False, 'backend': 'docker', 'reason': str(exc)[:200],
-                'checks': checks}
+        return result(False, str(exc)[:200])
     finally:
         if channel is not None and getattr(channel, '_listener', None) is not None:
             channel.stop()
@@ -591,7 +686,8 @@ Path(p['report']).write_text(json.dumps(c,sort_keys=True))
             except OSError:
                 pass
         for path in (workspace_read, private_read, workspace_write, private_write,
-                     report_path, escape, channel_path, timeout_marker, guest_write_host):
+                     report_path, escape, channel_path, timeout_marker,
+                     cancellation_marker, guest_write_host):
             try:
                 path.unlink()
             except OSError:

@@ -7,15 +7,17 @@ import os
 from pathlib import Path
 import queue
 import re
+import selectors
 import signal
 import shutil
 import subprocess
+import struct
 import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from .docker_agent import MAX_FRAME_BYTES, read_frame, write_frame
+from .docker_agent import MAX_FRAME_BYTES, read_frame
 from .inference_broker import ContractError
 from .isolation import IsolationUnavailable, docker_run_argv
 
@@ -117,7 +119,7 @@ class DockerWorkerTransport:
         start_frame = self._start_frame(argv, policy, bootstrap, attempt_id, capability)
         command = None
         process = None
-        frame_queue = queue.Queue()
+        frame_queue = queue.Queue(maxsize=4)
         writer_lock = threading.Lock()
         stderr = bytearray()
         docker_stderr = bytearray()
@@ -126,27 +128,69 @@ class DockerWorkerTransport:
         active_requests = set()
         active_lock = threading.Lock()
         reader_threads = []
+        writer_thread = None
+        writer_done = threading.Event()
+        writer_errors = []
+        reader_stop = threading.Event()
+        relay_admission_stopped = threading.Event()
+        relay_futures = []
         executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix='docker-broker')
         successful = False
         cleanup_failure = None
         overflow = None
-        started = time.monotonic()
+        started = None
+        deadline = None
         cidfile = None
 
         def write_host_frame(frame):
+            try:
+                payload = json.dumps(frame, separators=(',', ':'), ensure_ascii=False,
+                                     allow_nan=False).encode('utf-8')
+            except (TypeError, ValueError) as exc:
+                raise ContractError('invalid Docker worker control frame') from exc
+            if not payload or len(payload) > self.frame_limit:
+                raise ContractError('Docker worker control frame exceeded limit')
+            wire = struct.pack('!I', len(payload)) + payload
             with writer_lock:
                 if process is None or process.stdin is None:
                     raise ContractError('Docker worker control stream is unavailable')
-                write_frame(process.stdin, frame, self.frame_limit)
+                descriptor = process.stdin.fileno()
+                selector = selectors.DefaultSelector()
+                try:
+                    selector.register(descriptor, selectors.EVENT_WRITE)
+                    offset = 0
+                    while offset < len(wire):
+                        if cancel_event.is_set() or relay_admission_stopped.is_set():
+                            raise ContractError('Docker worker control stream cancelled')
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise ContractError('Docker worker control stream deadline exceeded')
+                        try:
+                            offset += os.write(descriptor, wire[offset:offset + 65536])
+                        except BlockingIOError:
+                            selector.select(min(.05, remaining))
+                finally:
+                    selector.close()
+
+        def enqueue_reader_event(event):
+            while not reader_stop.is_set():
+                try:
+                    frame_queue.put(event, timeout=.05)
+                    return True
+                except queue.Full:
+                    continue
+            return False
 
         def read_frames():
             try:
                 while True:
-                    frame_queue.put(('frame', read_frame(process.stdout, self.frame_limit)))
+                    frame = read_frame(process.stdout, self.frame_limit)
+                    if not enqueue_reader_event(('frame', frame)):
+                        return
             except EOFError:
-                frame_queue.put(('eof', None))
+                enqueue_reader_event(('eof', None))
             except Exception as exc:
-                frame_queue.put(('error', exc))
+                enqueue_reader_event(('error', exc))
 
         def read_docker_stderr():
             while True:
@@ -156,9 +200,18 @@ class DockerWorkerTransport:
                 with stderr_lock:
                     if len(docker_stderr) + len(chunk) > _STDERR_LIMIT:
                         docker_stderr.extend(chunk[:max(0, _STDERR_LIMIT - len(docker_stderr))])
-                        frame_queue.put(('error', ContractError('Docker stderr exceeded limit')))
+                        enqueue_reader_event(('error', ContractError('Docker stderr exceeded limit')))
+                        return
                     else:
                         docker_stderr.extend(chunk)
+
+        def write_start_frame():
+            try:
+                write_host_frame(start_frame)
+            except Exception as exc:
+                writer_errors.append(exc)
+            finally:
+                writer_done.set()
 
         def relay_request(frame, remaining):
             request_id = frame['id']
@@ -169,7 +222,11 @@ class DockerWorkerTransport:
             except Exception:
                 response = {'schema_version': 1, 'error': 'request rejected'}
             try:
-                write_host_frame({'type': 'response', 'id': request_id, 'response': response})
+                if not relay_admission_stopped.is_set():
+                    write_host_frame({'type': 'response', 'id': request_id,
+                                      'response': response})
+            except (OSError, ValueError, ContractError):
+                pass
             finally:
                 with active_lock:
                     active_requests.discard(request_id)
@@ -178,6 +235,11 @@ class DockerWorkerTransport:
         scratch = tempfile.mkdtemp(prefix='fleet-board-docker-', dir=scratch_parent)
         cidfile = os.path.join(scratch, 'worker.cid')
         try:
+            from .isolation import verify_docker_desktop_identity
+
+            verify_docker_desktop_identity(docker, policy.get('daemon_identity'))
+            started = time.monotonic()
+            deadline = started + timeout
             command = docker_run_argv(['python3', '-m', 'supervisor.docker_agent'],
                                       policy, cidfile)
             command.insert(command.index('--cidfile=' + cidfile),
@@ -185,12 +247,13 @@ class DockerWorkerTransport:
             process = subprocess.Popen(command, cwd=policy['workspace'], stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        close_fds=True, start_new_session=True)
-            write_frame(process.stdin, start_frame, self.frame_limit)
+            os.set_blocking(process.stdin.fileno(), False)
             for target in (read_frames, read_docker_stderr):
                 thread = threading.Thread(target=target, daemon=True)
                 thread.start()
                 reader_threads.append(thread)
-            deadline = started + timeout
+            writer_thread = threading.Thread(target=write_start_frame, daemon=True)
+            writer_thread.start()
             exit_code = None
             while exit_code is None:
                 now = time.monotonic()
@@ -198,6 +261,8 @@ class DockerWorkerTransport:
                     raise ContractError('Docker worker cancelled')
                 if now >= deadline:
                     raise ContractError('Docker worker deadline exceeded')
+                if writer_done.is_set() and writer_errors:
+                    raise ContractError('Docker worker bootstrap write failed') from writer_errors[0]
                 try:
                     kind, item = frame_queue.get(timeout=min(.05, deadline - now))
                 except queue.Empty:
@@ -247,7 +312,10 @@ class DockerWorkerTransport:
                         if item['id'] in active_requests or len(active_requests) >= 16:
                             raise ContractError('Docker worker request ID collision or overflow')
                         active_requests.add(item['id'])
-                    executor.submit(relay_request, item, max(.01, deadline - now))
+                    if relay_admission_stopped.is_set():
+                        raise ContractError('Docker worker broker admission stopped')
+                    relay_futures.append(
+                        executor.submit(relay_request, item, max(.01, deadline - now)))
                 elif frame_type == 'exit':
                     if set(item) != {'type', 'code'} or type(item.get('code')) is not int:
                         raise ContractError('invalid Docker worker exit frame')
@@ -256,7 +324,6 @@ class DockerWorkerTransport:
                     raise ContractError('Docker guest agent failed')
                 else:
                     raise ContractError('unknown Docker worker frame type')
-            deadline = started + timeout
             while active_requests and time.monotonic() < deadline:
                 time.sleep(.01)
             if active_requests:
@@ -284,7 +351,13 @@ class DockerWorkerTransport:
                 raise
             raise IsolationUnavailable('Docker worker launch or relay failed') from exc
         finally:
-            executor.shutdown(wait=False, cancel_futures=True)
+            if not successful:
+                relay_admission_stopped.set()
+                reader_stop.set()
+                cancel_event.set()
+                for future in relay_futures:
+                    future.cancel()
+            executor.shutdown(wait=True, cancel_futures=True)
             if not successful and process is not None:
                 _terminate_group(process)
                 try:
@@ -299,6 +372,8 @@ class DockerWorkerTransport:
                     cleanup_failure = 'Docker container cleanup failed'
             for thread in reader_threads:
                 thread.join(timeout=.5)
+            if writer_thread is not None:
+                writer_thread.join(timeout=.5)
             if process is not None:
                 try:
                     process.stdin.close()
