@@ -1079,8 +1079,8 @@ class ProviderCases(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_policy(self.workspace, private_git, channels,
                          backend="docker", docker_image="latest")
-        policy = build_policy(self.workspace, private_git, channels,
-                              backend="docker", docker_image=image)
+        policy = self.build_docker_policy(self.workspace, private_git, channels,
+                                          docker_image=image)
         self.assertEqual(policy["backend"], "docker")
         self.assertEqual(policy["docker_image"], image)
         self.assertTrue(policy["command"])
@@ -1100,15 +1100,7 @@ class ProviderCases(unittest.TestCase):
         from subprocess import CompletedProcess
 
         image = "sha256:" + "a" * 64
-        responses = [
-            CompletedProcess([], 0, b"desktop-linux\n", b""),
-            CompletedProcess([], 0,
-                             b'[{"Endpoints":{"docker":{"Host":"unix:///Users/fixture/.docker/run/docker.sock"}}}]',
-                             b""),
-            CompletedProcess([], 0,
-                             b'{"OSType":"linux","OperatingSystem":"Docker Desktop","ServerVersion":"29.9.2"}',
-                             b""),
-        ]
+        responses = self.docker_identity_responses(CompletedProcess)
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("DOCKER_HOST", None)
             os.environ.pop("DOCKER_CONTEXT", None)
@@ -1119,7 +1111,8 @@ class ProviderCases(unittest.TestCase):
                                       docker_image=image)
         self.assertEqual(policy.get("daemon_identity"), {
             "context": "desktop-linux",
-            "endpoint": "unix:///Users/fixture/.docker/run/docker.sock",
+            "endpoint": "unix://" + str(Path.home() / ".docker/run/docker.sock"),
+            "name": "docker-desktop",
             "os_type": "linux",
             "operating_system": "Docker Desktop",
         })
@@ -1130,8 +1123,8 @@ class ProviderCases(unittest.TestCase):
         private_git = self.root / "docker-private-git"
         channels = self.root / "docker-channels"
         image = "sha256:" + "b" * 64
-        policy = build_policy(self.workspace, private_git, channels,
-                              backend="docker", docker_image=image)
+        policy = self.build_docker_policy(self.workspace, private_git, channels,
+                                          docker_image=image)
         argv = docker_run_argv(["python3", "-m", "supervisor.docker_agent"],
                                policy, str(self.root / "worker.cid"))
         self.assertEqual(argv[:3], [policy["command"], "run", "--rm"])
@@ -1278,11 +1271,37 @@ class ProviderCases(unittest.TestCase):
             output_frame("stdout", b"x" * 65537)
 
     def docker_policy(self, fake_docker):
+        return self.build_docker_policy(
+            self.workspace, self.root / "docker-private-git",
+            self.root / "docker-channels", docker_image="sha256:" + "e" * 64) | {
+                "command": fake_docker}
+
+    @staticmethod
+    def docker_identity_responses(completed_process=None):
+        import json
+        from subprocess import CompletedProcess
+
+        completed_process = completed_process or CompletedProcess
+        endpoint = "unix://" + str(Path.home() / ".docker/run/docker.sock")
+        return [
+            completed_process([], 0, b"desktop-linux\n", b""),
+            completed_process([], 0, json.dumps([{"Endpoints": {"docker": {"Host": endpoint}}}]).encode(), b""),
+            completed_process([], 0, json.dumps({"Name": "docker-desktop", "OSType": "linux",
+                                                 "OperatingSystem": "Docker Desktop",
+                                                 "ServerVersion": "29.9.2"}).encode(), b""),
+        ]
+
+    def build_docker_policy(self, workspace, private_git, channels, *, docker_image):
         from supervisor.isolation import build_policy
 
-        return build_policy(self.workspace, self.root / "docker-private-git",
-                            self.root / "docker-channels", backend="docker",
-                            docker_image="sha256:" + "e" * 64) | {"command": fake_docker}
+        responses = self.docker_identity_responses()
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("DOCKER_HOST", None)
+            os.environ.pop("DOCKER_CONTEXT", None)
+            with patch("supervisor.isolation.shutil.which", return_value="/usr/local/bin/docker"), \
+                    patch("supervisor.isolation.subprocess.run", side_effect=responses):
+                return build_policy(workspace, private_git, channels, backend="docker",
+                                    docker_image=docker_image)
 
     def fake_docker(self, mode):
         body = """#!/usr/bin/env python3
@@ -1299,6 +1318,14 @@ def write_frame(value):
     sys.stdout.buffer.flush()
 if len(sys.argv) > 1 and sys.argv[1] == 'rm':
     open(@LOG@, 'a').write(' '.join(sys.argv[2:]) + '\\n')
+    raise SystemExit(0)
+if sys.argv[1:] == ['context', 'show']:
+    print('desktop-linux'); raise SystemExit(0)
+if sys.argv[1:3] == ['context', 'inspect']:
+    print(json.dumps([{'Endpoints': {'docker': {'Host': 'unix://' + os.path.expanduser('~/.docker/run/docker.sock')}}}]))
+    raise SystemExit(0)
+if sys.argv[1:2] == ['info']:
+    print(json.dumps({'Name':'docker-desktop','OSType':'linux','OperatingSystem':'Docker Desktop','ServerVersion':'29.9.2'}))
     raise SystemExit(0)
 open(@RUNLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
 if mode == 'daemon': raise SystemExit(125)
@@ -1386,6 +1413,14 @@ write_frame({'type':'exit','code':0})
         source = """#!/usr/bin/env python3
 import json,struct,sys,time
 if sys.argv[1] == 'rm': raise SystemExit(0)
+if sys.argv[1:] == ['context', 'show']:
+ print('desktop-linux'); raise SystemExit(0)
+if sys.argv[1:3] == ['context', 'inspect']:
+ print(json.dumps([{'Endpoints': {'docker': {'Host': 'unix://' + __import__('os').path.expanduser('~/.docker/run/docker.sock')}}}]))
+ raise SystemExit(0)
+if sys.argv[1:2] == ['info']:
+ print(json.dumps({'Name':'docker-desktop','OSType':'linux','OperatingSystem':'Docker Desktop','ServerVersion':'29.9.2'}))
+ raise SystemExit(0)
 cid=next(a.split('=',1)[1] for a in sys.argv if a.startswith('--cidfile='))
 open(cid,'w').write('""" + "a" * 64 + """')
 def read():
@@ -1429,6 +1464,14 @@ time.sleep(10)
 import os,sys,time
 if len(sys.argv)>1 and sys.argv[1]=='rm':
  open(""" + repr(str(rm_log)) + """,'a').write(' '.join(sys.argv[2:])+'\\n')
+ raise SystemExit(0)
+if sys.argv[1:] == ['context', 'show']:
+ print('desktop-linux'); raise SystemExit(0)
+if sys.argv[1:3] == ['context', 'inspect']:
+ print('[{"Endpoints":{"docker":{"Host":"unix://' + os.path.expanduser('~/.docker/run/docker.sock') + '"}}}]')
+ raise SystemExit(0)
+if sys.argv[1:2] == ['info']:
+ print('{"Name":"docker-desktop","OSType":"linux","OperatingSystem":"Docker Desktop","ServerVersion":"29.9.2"}')
  raise SystemExit(0)
 cid=next(a.split('=',1)[1] for a in sys.argv if a.startswith('--cidfile='))
 open(cid,'w').write('""" + "a" * 64 + """')
@@ -1601,13 +1644,13 @@ time.sleep(10)
             self.assertFalse(result["checks"]["image_present"])
 
             with patch("supervisor.isolation.subprocess.run", side_effect=[
-                    CompletedProcess([], 0, b"29.9.2\n", b""),
+                    *self.docker_identity_responses(CompletedProcess),
                     CompletedProcess([], 1, b"", b"image not found")]) as docker:
                 result = probe_docker_capabilities(policy, protected_resources=resources)
             self.assertFalse(result["available"])
             self.assertTrue(result["checks"]["docker_daemon"])
             self.assertFalse(result["checks"]["image_present"])
-            self.assertEqual(docker.call_count, 2)
+            self.assertEqual(docker.call_count, 4)
             self.assertTrue(all(not value for key, value in result["checks"].items()
                                 if key not in ("docker_daemon", "image_present")))
         finally:
