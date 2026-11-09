@@ -1370,13 +1370,14 @@ write_frame({'type':'exit','code':0})
         release = threading.Event()
         started = threading.Event()
         finished = threading.Event()
+        transport_cancel = threading.Event()
 
         class BlockingChannel:
             def request(inner, attempt_id, capability, request, *, operation="infer",
-                        timeout=None, cancel_event=None):
+                        timeout=None):
                 started.set()
                 while not release.wait(.01):
-                    if cancel_event is not None and cancel_event.is_set():
+                    if transport_cancel.is_set():
                         finished.set()
                         raise ContractError("relay request cancelled")
                 finished.set()
@@ -1409,8 +1410,10 @@ time.sleep(10)
                     ["python3", "-m", "worker"], self.docker_policy(fake),
                     bootstrap=bootstrap, channel=BlockingChannel(),
                     attempt_id="attempt-1", capability="secret", timeout=3,
-                    cancel_event=threading.Event())
+                    cancel_event=transport_cancel)
             self.assertTrue(started.is_set(), "fake broker callback never became active")
+            self.assertTrue(transport_cancel.is_set(),
+                            "failed transport did not cancel its authorized broker callback")
             self.assertTrue(finished.wait(.5),
                             "transport returned while an authorized broker callback was still active")
         finally:
