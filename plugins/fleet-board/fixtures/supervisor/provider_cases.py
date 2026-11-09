@@ -1438,7 +1438,8 @@ raise SystemExit(2)
         from supervisor.docker_transport import DockerWorkerTransport
 
         bootstrap, channel = self.docker_transport_args()
-        for mode, ids in (('list-failure', []), ('remove-failure', ['c' * 64])):
+        for mode, ids in (('list-failure', []),
+                          ('remove-failure', ['c' * 64, 'd' * 64])):
             with self.subTest(mode=mode):
                 fake = self.fake_docker_missing_cidfile(mode, ids)
                 with self.assertRaisesRegex(IsolationUnavailable, 'cleanup failed'):
@@ -1446,6 +1447,10 @@ raise SystemExit(2)
                         ['python3', '-m', 'worker'], self.docker_policy(fake),
                         bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
                         capability='secret', timeout=2, cancel_event=threading.Event())
+                if mode == 'remove-failure':
+                    removals = (self.root / 'docker-label-rm.log').read_text(encoding='utf-8')
+                    for container_id in ids:
+                        self.assertIn('-f ' + container_id, removals)
 
     def test_docker_host_transport_deadline_bounds_stalled_identity_check(self):
         from supervisor.docker_transport import DockerWorkerTransport
