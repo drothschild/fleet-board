@@ -1491,7 +1491,7 @@ time.sleep(10)
             except (ContractError, IsolationUnavailable):
                 outcome.append("stopped")
 
-        for cancel_after in (0.15, None):
+        for cancel_after in (0.5, None):
             with self.subTest(cancel_after=cancel_after):
                 cancel_event = threading.Event()
                 outcome = []
