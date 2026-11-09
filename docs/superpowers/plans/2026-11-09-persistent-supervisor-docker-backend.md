@@ -83,9 +83,9 @@
 
 **Interfaces:** The host probe runs only when `FLEET_BOARD_DOCKER_PROBE_IMAGE` contains an immutable image ID already present locally. It never pulls or builds. It verifies protected host paths and daemon sockets are absent, only intended mounts are writable, public egress is blocked, the relay works, forged human control is rejected after authentication, and timeout leaves no container. Attempt-labeled containers let the probe confirm the exact timed-out worker was removed. Every named check must be true for `available: true`; missing image/daemon or any probe failure returns unavailable.
 
-- [x] Add unit tests for fail-closed missing-daemon/image and incomplete protected-resource paths, plus an attempt-label assertion for exact cleanup; observe RED and commit tests.
-- [ ] Implement the Docker host probe and shell wrapper. Run with the existing cached image ID `sha256:043ab74ba0ad529734d7d77ca3e893f286410864619329d5e8ca0524c3d260c1`; no pull/build.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` and `bash plugins/fleet-board/tests/test-supervisor-docker-host.sh` with the cached image ID.
-- [ ] Run `bash plugins/fleet-board/tests/test-clean-room.sh`, `test-version-bumped.sh`, Python AST checks, `bash -n`, and `git diff --check`.
+- [x] Add unit tests for fail-closed missing-daemon/image, incomplete protected-resource paths, exact cleanup labeling, and the read-only guest package check; observe RED and commit tests.
+- [x] Implement the Docker host probe and shell wrapper. Run with the existing cached image ID `sha256:043ab74ba0ad529734d7d77ca3e893f286410864619329d5e8ca0524c3d260c1`; no pull/build.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` (62 tests) and `bash plugins/fleet-board/tests/test-supervisor-docker-host.sh` with the cached image ID (all 22 checks true).
+- [x] Run `bash plugins/fleet-board/tests/test-clean-room.sh` (118 checks), `test-version-bumped.sh`, Python AST checks, `bash -n`, and `git diff --check`.
 - [ ] Obtain fresh `gpt-6-luna` spec and quality reviews at the final commit; fix findings test-first and rerun focused checks.
 - [ ] Push commits to the existing draft PR #237 only after the final reviews; do not mark ready or merge.

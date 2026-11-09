@@ -1453,6 +1453,11 @@ write_frame({'type':'exit','code':0})
         self.assertFalse(result["available"])
         self.assertIn("protected-resource", result["reason"])
 
+    def test_docker_probe_requires_guest_transport_mount_to_be_read_only(self):
+        from supervisor.isolation import _DOCKER_PROBE_CHECKS
+
+        self.assertIn("guest_package_write_denied", _DOCKER_PROBE_CHECKS)
+
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
                    return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):
