@@ -48,8 +48,8 @@
 
 **Interfaces:** Add `build_policy(..., backend='docker', docker_image=<sha256 image ID>)`. Add pure `docker_run_argv(argv, policy, cidfile)` returning a Docker CLI argument list with `--pull=never`, `--network=none`, `--read-only`, `--cap-drop=ALL`, `--security-opt=no-new-privileges`, bounded PIDs/resources, non-root UID/GID, a private `/tmp`, workspace/private-Git mounts, and a read-only guest-package mount. It must not include a channel, host home, host socket, Docker socket, or credential mount.
 
-- [ ] Write `test_docker_policy_requires_explicit_local_image_and_never_pulls` and `test_docker_run_argv_enforces_offline_readonly_boundary`.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh`; confirm the new assertions fail because Docker policy/argv construction is absent or incomplete.
+- [x] Write explicit local-image, offline/read-only argv, and unsafe mount-root rejection cases.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` with required host socket access; the three new cases fail because Docker policy/argv construction is absent. The sandboxed invocation also fails pre-existing socket tests with `EPERM`.
 - [ ] Commit the failing tests.
 - [ ] Implement explicit image validation and deterministic Docker argv construction; reject missing/unpinned images and unsafe mount paths.
 - [ ] Bump plugin manifests to a patch version above `origin/main` in the implementation commit.

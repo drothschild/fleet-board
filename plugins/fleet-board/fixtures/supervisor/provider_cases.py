@@ -1070,6 +1070,63 @@ class ProviderCases(unittest.TestCase):
             with self.assertRaises(IsolationUnavailable):
                 runner.launch_production({"attempt_id": "attempt-1"}, ["/usr/bin/true"], policy)
 
+    def test_docker_policy_requires_explicit_local_image_and_never_pulls(self):
+        private_git = self.root / "docker-private-git"
+        channels = self.root / "docker-channels"
+        image = "sha256:" + "a" * 64
+        with self.assertRaises((TypeError, ValueError)):
+            build_policy(self.workspace, private_git, channels, backend="docker")
+        with self.assertRaises(ValueError):
+            build_policy(self.workspace, private_git, channels,
+                         backend="docker", docker_image="latest")
+        policy = build_policy(self.workspace, private_git, channels,
+                              backend="docker", docker_image=image)
+        self.assertEqual(policy["backend"], "docker")
+        self.assertEqual(policy["docker_image"], image)
+        self.assertTrue(policy["command"])
+
+    def test_docker_run_argv_enforces_offline_readonly_boundary(self):
+        from supervisor.isolation import docker_run_argv
+
+        private_git = self.root / "docker-private-git"
+        channels = self.root / "docker-channels"
+        image = "sha256:" + "b" * 64
+        policy = build_policy(self.workspace, private_git, channels,
+                              backend="docker", docker_image=image)
+        argv = docker_run_argv(["python3", "-m", "supervisor.docker_agent"],
+                               policy, str(self.root / "worker.cid"))
+        self.assertEqual(argv[:3], ["docker", "run", "--rm"])
+        self.assertIn("--pull=never", argv)
+        self.assertIn("--network=none", argv)
+        self.assertIn("--read-only", argv)
+        self.assertIn("--cap-drop=ALL", argv)
+        self.assertIn("--security-opt=no-new-privileges", argv)
+        self.assertIn("--pids-limit=64", argv)
+        self.assertIn("--user=501:20", argv)
+        self.assertIn(image, argv)
+        self.assertEqual(argv[-3:], ["python3", "-m", "supervisor.docker_agent"])
+        joined = "\0".join(argv)
+        for forbidden in ("host.docker.internal", str(Path.home()), "docker.sock",
+                          "ssh-agent", str(channels)):
+            self.assertNotIn(forbidden, joined)
+        self.assertIn(str(self.workspace) + ":/workspace:rw", joined)
+        self.assertIn(str(private_git) + ":/private-git:rw", joined)
+        self.assertIn(":/guest:ro", joined)
+
+    def test_docker_policy_rejects_mount_delimiters_and_symlink_roots(self):
+        delimiter_root = self.root / "path,with-comma"
+        delimiter_root.mkdir(mode=0o700)
+        with self.assertRaises(ValueError):
+            build_policy(delimiter_root, self.root / "private-git",
+                         self.root / "channels", backend="docker",
+                         docker_image="sha256:" + "c" * 64)
+        alias = self.root / "docker-workspace-alias"
+        alias.symlink_to(self.workspace)
+        with self.assertRaises(ValueError):
+            build_policy(alias, self.root / "private-git",
+                         self.root / "channels", backend="docker",
+                         docker_image="sha256:" + "d" * 64)
+
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
                    return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):
