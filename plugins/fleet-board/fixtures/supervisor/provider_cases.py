@@ -1369,6 +1369,109 @@ write_frame({'type':'exit','code':0})
         channel = Channel()
         return bootstrap, channel
 
+    def fake_docker_missing_cidfile(self, mode, ids=None):
+        ids = ids or []
+        script = """#!/usr/bin/env python3
+import json, os, sys, time
+mode = @MODE@
+ids = @IDS@
+if sys.argv[1:] == ['context', 'show']:
+    print('desktop-linux'); raise SystemExit(0)
+if sys.argv[1:3] == ['context', 'inspect']:
+    print(json.dumps([{'Endpoints': {'docker': {'Host': 'unix://' + os.path.expanduser('~/.docker/run/docker.sock')}}}]))
+    raise SystemExit(0)
+if sys.argv[1:2] == ['info']:
+    print(json.dumps({'Name':'docker-desktop','OSType':'linux','OperatingSystem':'Docker Desktop'}))
+    raise SystemExit(0)
+if sys.argv[1:2] == ['ps']:
+    open(@LISTLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
+    if mode == 'list-failure': raise SystemExit(1)
+    print('\\n'.join(ids)); raise SystemExit(0)
+if sys.argv[1:2] == ['rm']:
+    open(@RMLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
+    if mode == 'remove-failure': raise SystemExit(1)
+    raise SystemExit(0)
+if sys.argv[1:2] == ['run']:
+    open(@RUNLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
+    time.sleep(.05)
+    raise SystemExit(125)
+raise SystemExit(2)
+""".replace('@MODE@', repr(mode)).replace('@IDS@', repr(ids)).replace(
+            '@LISTLOG@', repr(str(self.root / 'docker-ps.log'))).replace(
+            '@RMLOG@', repr(str(self.root / 'docker-label-rm.log'))).replace(
+            '@RUNLOG@', repr(str(self.root / 'docker-label-run.log')))
+        return self.script('fake-docker-label-' + mode, script)[0]
+
+    def test_docker_host_transport_reconciles_missing_cidfile_by_attempt_label(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        ids = ['a' * 64, 'b' * 64]
+        fake = self.fake_docker_missing_cidfile('matches', ids)
+        with self.assertRaises((ContractError, IsolationUnavailable)):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        run_log = (self.root / 'docker-label-run.log').read_text(encoding='utf-8')
+        self.assertIn('--label=org.fleet-board.supervisor.attempt-id=attempt-1', run_log)
+        self.assertTrue((self.root / 'docker-label-rm.log').exists(),
+                        'missing cidfile left the labeled container without cleanup')
+        removals = (self.root / 'docker-label-rm.log').read_text(encoding='utf-8')
+        self.assertIn('-f ' + ids[0], removals)
+        self.assertIn('-f ' + ids[1], removals)
+
+    def test_docker_host_transport_refuses_malformed_labeled_container_id(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        fake = self.fake_docker_missing_cidfile('matches', ['not-a-container-id'])
+        with self.assertRaisesRegex(IsolationUnavailable, 'cleanup failed'):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        self.assertFalse((self.root / 'docker-label-rm.log').exists(),
+                         'malformed IDs must never be passed to docker rm')
+
+    def test_docker_host_transport_surfaces_label_listing_or_removal_failure(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        for mode, ids in (('list-failure', []), ('remove-failure', ['c' * 64])):
+            with self.subTest(mode=mode):
+                fake = self.fake_docker_missing_cidfile(mode, ids)
+                with self.assertRaisesRegex(IsolationUnavailable, 'cleanup failed'):
+                    DockerWorkerTransport().run(
+                        ['python3', '-m', 'worker'], self.docker_policy(fake),
+                        bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                        capability='secret', timeout=2, cancel_event=threading.Event())
+
+    def test_docker_host_transport_deadline_bounds_stalled_identity_check(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        run_log = self.root / 'docker-identity-stall-run.log'
+        fake = self.script('fake-docker-identity-stall', """#!/usr/bin/env python3
+import os, sys, time
+if sys.argv[1:] == ['context', 'show']:
+    time.sleep(10)
+    print('desktop-linux'); raise SystemExit(0)
+if sys.argv[1:2] == ['run']:
+    open(@RUNLOG@, 'a').write('launched\\n')
+    raise SystemExit(0)
+raise SystemExit(2)
+""".replace('@RUNLOG@', repr(str(run_log))))[0]
+        bootstrap, channel = self.docker_transport_args()
+        started = time.monotonic()
+        with self.assertRaises(IsolationUnavailable):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=.2, cancel_event=threading.Event())
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, 'identity verification exceeded the transport deadline')
+        self.assertFalse(run_log.exists(), 'Docker worker launched after identity deadline expired')
+
     def test_docker_host_transport_bounds_the_frame_queue(self):
         import queue
         from supervisor.docker_transport import DockerWorkerTransport
