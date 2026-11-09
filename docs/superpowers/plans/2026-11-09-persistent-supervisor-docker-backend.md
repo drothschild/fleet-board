@@ -50,10 +50,10 @@
 
 - [x] Write explicit local-image, offline/read-only argv, and unsafe mount-root rejection cases.
 - [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` with required host socket access; the three new cases fail because Docker policy/argv construction is absent. The sandboxed invocation also fails pre-existing socket tests with `EPERM`.
-- [ ] Commit the failing tests.
-- [ ] Implement explicit image validation and deterministic Docker argv construction; reject missing/unpinned images and unsafe mount paths.
-- [ ] Bump plugin manifests to a patch version above `origin/main` in the implementation commit.
-- [ ] Run the focused provider suite and `test-version-bumped.sh`; commit the implementation.
+- [x] Commit the failing tests (`14d95ff`).
+- [x] Implement explicit immutable image validation and deterministic Docker argv construction; reject missing/unpinned images and unsafe mount paths.
+- [x] Bump plugin manifests from `0.18.12` to `0.18.13`, above `origin/main` `0.18.6`.
+- [x] Run the focused provider suite (50 tests), `test-version-bumped.sh`, and `git diff --check`; commit the implementation.
 
 ### Task 2: Implement the guest stdio relay agent
 

@@ -2,6 +2,7 @@
 import os
 import errno
 import json
+import re
 import stat
 from pathlib import Path
 import selectors
@@ -68,7 +69,7 @@ def _private_directory(path, *, create=False):
     return str(path)
 
 
-def build_policy(workspace, private_git, channels):
+def build_policy(workspace, private_git, channels, *, backend=None, docker_image=None):
     """Build a deny-by-default policy around three attempt-owned directories."""
     workspace = _private_directory(workspace)
     private_git = _private_directory(private_git, create=True)
@@ -79,6 +80,21 @@ def build_policy(workspace, private_git, channels):
         raise ValueError('isolation roots must not contain one another')
     common = {'workspace': workspace, 'private_git': private_git,
               'channels': channels, 'channel_names': ('result', 'heartbeat', 'scope-request', 'inference')}
+    if backend == 'docker':
+        if (not isinstance(docker_image, str)
+                or not re.fullmatch(r'sha256:[0-9a-f]{64}', docker_image)):
+            raise ValueError('Docker backend requires an immutable sha256 image ID')
+        if any(',' in path or any(ord(char) < 32 for char in path)
+               for path in (workspace, private_git, channels)):
+            raise ValueError('Docker mount path contains an unsupported delimiter')
+        guest_package = str(Path(__file__).resolve(strict=True).parent)
+        docker = shutil.which('docker')
+        return {**common, 'backend': 'docker', 'docker_image': docker_image,
+                'guest_package': guest_package, 'command': docker,
+                'uid': os.getuid(), 'gid': os.getgid(),
+                'text': 'Docker Desktop offline worker; no host broker socket is mounted'}
+    if backend is not None:
+        raise ValueError('unknown isolation backend')
     if os.uname().sysname == 'Darwin':
         roots = (workspace, private_git, channels)
         if any(any(ord(char) < 32 for char in path) for path in roots):
@@ -198,6 +214,62 @@ def _wrapped_command(argv, policy):
         command.extend(('--chdir', policy['workspace'], '--', executable, *argv[1:]))
         return command
     raise IsolationUnavailable('host isolation backend unsupported')
+
+
+def docker_run_argv(argv, policy, cidfile):
+    """Build a deterministic offline Docker command without host control mounts."""
+    if (not isinstance(argv, (list, tuple)) or not argv
+            or any(not isinstance(arg, str) or not arg or '\x00' in arg for arg in argv)):
+        raise ValueError('worker command must be a non-empty argv array')
+    if not isinstance(policy, dict) or policy.get('backend') != 'docker':
+        raise IsolationUnavailable('Docker policy required')
+    image = policy.get('docker_image')
+    if (not isinstance(image, str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}', image)):
+        raise IsolationUnavailable('immutable Docker image ID required')
+    docker = policy.get('command')
+    if not isinstance(docker, str) or not os.path.isabs(docker):
+        raise IsolationUnavailable('Docker executable unavailable')
+    uid, gid = policy.get('uid'), policy.get('gid')
+    if type(uid) is not int or uid <= 0 or type(gid) is not int or gid < 0:
+        raise IsolationUnavailable('non-root Docker worker identity required')
+
+    def canonical_directory(key):
+        raw = policy.get(key)
+        if not isinstance(raw, str) or not os.path.isabs(raw):
+            raise IsolationUnavailable('Docker ' + key + ' path is invalid')
+        path = Path(raw)
+        if path.is_symlink() or not path.is_dir() or path.resolve(strict=True) != path:
+            raise IsolationUnavailable('Docker ' + key + ' path is not canonical')
+        if ',' in raw or any(ord(char) < 32 for char in raw):
+            raise IsolationUnavailable('Docker mount path contains an unsupported delimiter')
+        return raw
+
+    workspace = canonical_directory('workspace')
+    private_git = canonical_directory('private_git')
+    guest = canonical_directory('guest_package')
+    cidfile = os.path.abspath(cidfile) if isinstance(cidfile, str) and cidfile else None
+    if (cidfile is None or ',' in cidfile or any(ord(char) < 32 for char in cidfile)
+            or not os.path.isdir(os.path.dirname(cidfile))):
+        raise ValueError('Docker cidfile path must have a safe existing parent')
+    for key, value in (('workspace', workspace), ('private Git', private_git)):
+        if os.path.commonpath((value, guest)) in (value, guest):
+            raise IsolationUnavailable('Docker ' + key + ' overlaps guest transport')
+    if os.path.commonpath((workspace, private_git)) in (workspace, private_git):
+        raise IsolationUnavailable('Docker writable roots overlap')
+    mounts = ('type=bind,src=' + workspace + ',dst=/workspace,rw',
+              'type=bind,src=' + private_git + ',dst=/private-git,rw',
+              'type=bind,src=' + guest + ',dst=/guest/supervisor,readonly')
+    command = [docker, 'run', '--rm', '-i', '--pull=never', '--network=none',
+               '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+               '--pids-limit=64', '--memory=2g', '--cpus=2',
+               '--user={}:{}'.format(uid, gid), '--workdir=/workspace',
+               '--env=PYTHONPATH=/guest', '--tmpfs=/tmp:rw,noexec,nosuid,size=64m,mode=1777',
+               '--cidfile=' + cidfile]
+    for mount in mounts:
+        command.extend(('--mount', mount))
+    command.extend(('--entrypoint=' + argv[0], image, *argv[1:]))
+    return command
 
 
 _PROTECTED_RESOURCE_KEYS = {

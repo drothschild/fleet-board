@@ -1095,23 +1095,26 @@ class ProviderCases(unittest.TestCase):
                               backend="docker", docker_image=image)
         argv = docker_run_argv(["python3", "-m", "supervisor.docker_agent"],
                                policy, str(self.root / "worker.cid"))
-        self.assertEqual(argv[:3], ["docker", "run", "--rm"])
+        self.assertEqual(argv[:3], [policy["command"], "run", "--rm"])
         self.assertIn("--pull=never", argv)
         self.assertIn("--network=none", argv)
         self.assertIn("--read-only", argv)
         self.assertIn("--cap-drop=ALL", argv)
         self.assertIn("--security-opt=no-new-privileges", argv)
         self.assertIn("--pids-limit=64", argv)
-        self.assertIn("--user=501:20", argv)
+        self.assertIn("--memory=2g", argv)
+        self.assertIn("--cpus=2", argv)
+        self.assertIn("--user={}:{}".format(os.getuid(), os.getgid()), argv)
         self.assertIn(image, argv)
-        self.assertEqual(argv[-3:], ["python3", "-m", "supervisor.docker_agent"])
+        self.assertEqual(argv[-2:], ["-m", "supervisor.docker_agent"])
         joined = "\0".join(argv)
-        for forbidden in ("host.docker.internal", str(Path.home()), "docker.sock",
-                          "ssh-agent", str(channels)):
+        for forbidden in ("host.docker.internal", "docker.sock", "ssh-agent",
+                          str(channels)):
             self.assertNotIn(forbidden, joined)
-        self.assertIn(str(self.workspace) + ":/workspace:rw", joined)
-        self.assertIn(str(private_git) + ":/private-git:rw", joined)
-        self.assertIn(":/guest:ro", joined)
+        self.assertNotIn("src={},dst=".format(Path.home()), joined)
+        self.assertIn("src={},dst=/workspace,rw".format(self.workspace), joined)
+        self.assertIn("src={},dst=/private-git,rw".format(private_git), joined)
+        self.assertIn("dst=/guest/supervisor,readonly", joined)
 
     def test_docker_policy_rejects_mount_delimiters_and_symlink_roots(self):
         delimiter_root = self.root / "path,with-comma"
