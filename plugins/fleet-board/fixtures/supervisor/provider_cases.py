@@ -1162,10 +1162,14 @@ class ProviderCases(unittest.TestCase):
                     "request": {"request_id": "roundtrip"}}
         payload = json.dumps(envelope, separators=(",", ":")).encode()
         left.sendall(struct.pack("!I", len(payload)) + payload)
-        size = struct.unpack("!I", isolation_module._read_exact(left, 4,
-                                                                 time.monotonic() + 2))[0]
-        response = json.loads(isolation_module._read_exact(left, size,
-                                                           time.monotonic() + 2))
+        def receive_exact(size):
+            chunks = bytearray()
+            while len(chunks) < size:
+                chunks.extend(left.recv(size - len(chunks)))
+            return bytes(chunks)
+
+        size = struct.unpack("!I", receive_exact(4))[0]
+        response = json.loads(receive_exact(size))
         self.assertEqual(response, {"schema_version": 1, "result": {"accepted": True}})
         self.assertEqual(calls, [(envelope, "attempt-1", "secret")])
         thread.join(timeout=2)

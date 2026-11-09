@@ -63,8 +63,8 @@
 
 - [x] Write tests for worker Unix-socket roundtrip, concurrent out-of-order responses, output forwarding, oversized/truncated frames, and unsupported operations.
 - [x] Run the focused provider suite with host socket access; all five new cases are RED because `docker_agent.py` does not exist. The prior sandbox EPERM still applies to existing local-socket cases.
-- [ ] Implement the guest agent with standard-library sockets, `json`, and base64 only; do not add dependencies.
-- [ ] Run the focused provider suite; commit the guest agent.
+- [x] Implement the guest agent with standard-library sockets, `json`, and base64 only; do not add dependencies.
+- [x] Run the focused provider suite (55 tests); commit the guest agent.
 
 ### Task 3: Implement host Docker transport and Runner integration
 
