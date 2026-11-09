@@ -173,6 +173,8 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 Execution note (2026-11-08): Provider contract, attempt-bound inference socket, bootstrap, and fail-closed macOS/Linux policy code are implemented. The host is macOS 27.2, but `sandbox-exec` aborts or returns `Operation not permitted` even under the approved host probe, so supported-host denial behavior remains unqualified. The production supervisor remains disabled, and the implementation checkbox stays open until real host isolation probes and execution-time sandbox requirement review are complete. The focused runner suite passes only with host process metadata access; see the implementation report for commands and results.
 
+Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsupported inside Docker Desktop's Linux VM, so the approved Docker backend design uses an attempt-local guest socket and framed stdio relay to the trusted host controller. Its detailed spec and task-by-task TDD plan are `docs/superpowers/specs/2026-11-09-persistent-supervisor-docker-backend-design.md` and `docs/superpowers/plans/2026-11-09-persistent-supervisor-docker-backend.md`. Task 4.3 remains incomplete until Docker-backed denial probes and clean-room validation pass; production stays disabled.
+
 **Verifies:** S2-S5, S8, S11 transport subset. No paid calls occur in this task.
 
 ## Phase 5 — Persistent service, commands, and UI
