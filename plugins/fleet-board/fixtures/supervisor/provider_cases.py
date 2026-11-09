@@ -1248,7 +1248,7 @@ class ProviderCases(unittest.TestCase):
     def fake_docker(self, mode):
         body = """#!/usr/bin/env python3
 import base64, json, os, struct, sys, time
-mode = {mode!r}
+mode = @MODE@
 def read_frame():
     header = sys.stdin.buffer.read(4)
     if len(header) != 4: raise SystemExit(2)
@@ -1259,11 +1259,11 @@ def write_frame(value):
     sys.stdout.buffer.write(struct.pack('!I', len(data)) + data)
     sys.stdout.buffer.flush()
 if len(sys.argv) > 1 and sys.argv[1] == 'rm':
-    open({log!r}, 'a').write(' '.join(sys.argv[2:]) + '\\n')
+    open(@LOG@, 'a').write(' '.join(sys.argv[2:]) + '\\n')
     raise SystemExit(0)
 if mode == 'daemon': raise SystemExit(125)
 cidfile = next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--cidfile='))
-with open(cidfile, 'w') as stream: stream.write({cid!r})
+with open(cidfile, 'w') as stream: stream.write(@CID@)
 if mode == 'cancel': time.sleep(20); raise SystemExit(0)
 start = read_frame()
 if mode == 'malformed':
@@ -1281,8 +1281,8 @@ if mode == 'oversize':
     write_frame({'type':'stdout','data':base64.b64encode(b'x'*(1024*1024+1)).decode()})
     time.sleep(10); raise SystemExit(0)
 write_frame({'type':'exit','code':0})
-""".format(mode=mode, log=str(self.root / "docker-rm.log"),
-           cid="not-a-container-id" if mode == "malformed" else "a" * 64)
+""".replace("@MODE@", repr(mode)).replace("@LOG@", repr(str(self.root / "docker-rm.log"))).replace(
+            "@CID@", repr("not-a-container-id" if mode == "malformed" else "a" * 64))
         return self.script("fake-docker-" + mode, body)[0]
 
     def docker_transport_args(self):
@@ -1296,7 +1296,7 @@ write_frame({'type':'exit','code':0})
 
             def request(inner, attempt_id, capability, request, *, operation="infer", timeout=None):
                 inner.calls.append((attempt_id, capability, request, operation))
-                return {"schema_version": 1, "result": {"accepted": True}}
+                return {"accepted": True}
 
         channel = Channel()
         return bootstrap, channel
@@ -1330,7 +1330,7 @@ write_frame({'type':'exit','code':0})
                 channel=channel, attempt_id="attempt-1", capability="secret", timeout=2,
                 cancel_event=threading.Event())
         self.assertEqual(channel.calls, [])
-        self.assertIn("rm -f " + "a" * 64,
+        self.assertIn("-f " + "a" * 64,
                       (self.root / "docker-rm.log").read_text(encoding="utf-8"))
 
     def test_docker_host_transport_fails_closed_on_daemon_or_malformed_cid(self):
@@ -1364,8 +1364,28 @@ write_frame({'type':'exit','code':0})
                         cancel_event=cancel)
                 if mode == "cancel":
                     timer.join(timeout=1)
-                self.assertIn("rm -f " + "a" * 64,
+                self.assertIn("-f " + "a" * 64,
                               (self.root / "docker-rm.log").read_text(encoding="utf-8"))
+
+    def test_runner_dispatches_only_explicit_docker_policy_to_docker_transport(self):
+        from supervisor.runner import run_worker_isolated
+
+        policy = {"backend": "docker"}
+        channel = object()
+        cancel = threading.Event()
+        expected = object()
+        with patch("supervisor.runner.DockerWorkerTransport") as transport:
+            transport.return_value.run.return_value = expected
+            result = run_worker_isolated(
+                ["python3", "-m", "worker"], policy, capability_result={"available": True},
+                input_data=b"ignored", bootstrap={"inference": {}}, channel=channel,
+                attempt_id="attempt-1", inference_capability="secret", timeout=5,
+                cancel_event=cancel)
+        self.assertIs(result, expected)
+        transport.return_value.run.assert_called_once_with(
+            ["python3", "-m", "worker"], policy, bootstrap={"inference": {}},
+            channel=channel, attempt_id="attempt-1", capability="secret", timeout=5,
+            cancel_event=cancel)
 
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
