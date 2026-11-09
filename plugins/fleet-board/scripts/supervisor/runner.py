@@ -22,6 +22,20 @@ from .workers import (OwnerThreadDispatcher, TrustedAttemptOperationHandlers,
 from .isolation import (IsolationUnavailable, prepare_private_git,
                         probe_capabilities, run_isolated)
 from .inference_broker import ContractError
+from .docker_transport import DockerWorkerTransport
+
+
+def run_worker_isolated(command, policy, *, capability_result, input_data, bootstrap,
+                        channel, attempt_id, inference_capability, timeout, cancel_event):
+    """Select only the explicitly configured isolation transport."""
+    if isinstance(policy, dict) and policy.get('backend') == 'docker':
+        if not capability_result or not capability_result.get('available'):
+            raise IsolationUnavailable('Docker capability probe unavailable')
+        return DockerWorkerTransport().run(
+            command, policy, bootstrap=bootstrap, channel=channel, attempt_id=attempt_id,
+            capability=inference_capability, timeout=timeout, cancel_event=cancel_event)
+    return run_isolated(command, policy, capability=capability_result,
+                        input_data=input_data, timeout=timeout, cancel_event=cancel_event)
 
 
 def prepare_worker_bootstrap(prepared_attempt, channel, request):
@@ -252,8 +266,11 @@ class Runner:
         bind_operations(prepared_attempt['attempt_id'], operation_binding, operation_handlers)
         bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
         payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
-        return run_isolated(command, policy, capability=capability, input_data=payload,
-                            timeout=deadline - time.time(), cancel_event=cancel_event)
+        return run_worker_isolated(
+            command, policy, capability_result=capability, input_data=payload,
+            bootstrap=bootstrap, channel=channel, attempt_id=prepared_attempt['attempt_id'],
+            inference_capability=channel.capability_for(prepared_attempt['attempt_id']),
+            timeout=deadline - time.time(), cancel_event=cancel_event)
 
     def launch(self, prepared_attempt):
         if self.fixture_command is None:

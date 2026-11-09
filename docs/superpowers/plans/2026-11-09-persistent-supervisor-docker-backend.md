@@ -74,8 +74,8 @@
 
 - [x] Write host-transport tests for authorized request relay/output, unknown-operation refusal, cancellation/output overflow cleanup, malformed CID, and daemon failure.
 - [x] Run the focused provider suite with host socket access; the four transport cases and explicit Runner-dispatch case were RED before their respective implementations.
-- [ ] Implement host relay, validated container cleanup, and explicit Runner dispatch.
-- [ ] Run the focused provider suite; commit implementation.
+- [x] Implement host relay, validated container cleanup, bounded output, cancellation/deadline handling, and explicit Runner dispatch.
+- [x] Run the focused provider suite (60 tests), Python compile checks, and `git diff --check`; commit implementation.
 
 ### Task 4: Add Docker host qualification probes
 
