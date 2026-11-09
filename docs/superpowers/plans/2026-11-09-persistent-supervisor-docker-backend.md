@@ -59,10 +59,10 @@
 
 **Files:** create `scripts/supervisor/docker_agent.py`; modify `fixtures/supervisor/provider_cases.py`.
 
-**Interfaces:** The guest accepts one framed `start` message, creates an attempt-local Unix socket under `/tmp`, and runs the worker. Each worker socket request is sent as a framed `rpc` message with a unique request ID; host responses are correlated by ID and returned to the waiting socket client. The agent separately emits bounded stdout/stderr frames. Reject malformed, oversized, duplicate-ID, and unsupported-operation frames.
+**Interfaces:** The guest accepts one framed `start` message, creates an attempt-local Unix socket under `/tmp`, and runs the worker. Each worker socket envelope is validated for the attempt binding and exact four-operation allowlist, then sent as a framed `rpc` message with a unique request ID; host responses are correlated by ID and returned to the waiting socket client. The agent separately emits bounded stdout/stderr frames. Reject malformed, oversized, truncated, duplicate-ID, and unsupported-operation frames.
 
-- [ ] Write tests for worker Unix-socket roundtrip, concurrent out-of-order responses, output forwarding, oversized/truncated frames, and unsupported operations.
-- [ ] Run the focused provider suite and confirm RED; commit the tests.
+- [x] Write tests for worker Unix-socket roundtrip, concurrent out-of-order responses, output forwarding, oversized/truncated frames, and unsupported operations.
+- [x] Run the focused provider suite with host socket access; all five new cases are RED because `docker_agent.py` does not exist. The prior sandbox EPERM still applies to existing local-socket cases.
 - [ ] Implement the guest agent with standard-library sockets, `json`, and base64 only; do not add dependencies.
 - [ ] Run the focused provider suite; commit the guest agent.
 

@@ -1130,6 +1130,110 @@ class ProviderCases(unittest.TestCase):
                          self.root / "channels", backend="docker",
                          docker_image="sha256:" + "d" * 64)
 
+    def test_docker_guest_framing_roundtrip_and_rejects_truncation(self):
+        from supervisor.docker_agent import MAX_FRAME_BYTES, read_frame, write_frame
+
+        stream = __import__("io").BytesIO()
+        write_frame(stream, {"type": "response", "id": "r1", "result": {"ok": True}})
+        stream.seek(0)
+        self.assertEqual(read_frame(stream),
+                         {"type": "response", "id": "r1", "result": {"ok": True}})
+        with self.assertRaises(ValueError):
+            read_frame(__import__("io").BytesIO(b"\0\0\0\x05{}"))
+        with self.assertRaises(ValueError):
+            read_frame(__import__("io").BytesIO(struct.pack("!I", MAX_FRAME_BYTES + 1)))
+
+    def test_docker_guest_worker_socket_roundtrip(self):
+        from supervisor.docker_agent import serve_worker_connection
+
+        left, right = socket.socketpair()
+        calls = []
+
+        class Relay:
+            def request(self, envelope, attempt_id, capability, *, timeout=None):
+                calls.append((envelope, attempt_id, capability))
+                return {"schema_version": 1, "result": {"accepted": True}}
+
+        thread = threading.Thread(target=serve_worker_connection,
+                                  args=(right, Relay(), "attempt-1", "secret"))
+        thread.start()
+        envelope = {"schema_version": 1, "operation": "heartbeat",
+                    "attempt_id": "attempt-1", "capability": "secret",
+                    "request": {"request_id": "roundtrip"}}
+        payload = json.dumps(envelope, separators=(",", ":")).encode()
+        left.sendall(struct.pack("!I", len(payload)) + payload)
+        size = struct.unpack("!I", isolation_module._read_exact(left, 4,
+                                                                 time.monotonic() + 2))[0]
+        response = json.loads(isolation_module._read_exact(left, size,
+                                                           time.monotonic() + 2))
+        self.assertEqual(response, {"schema_version": 1, "result": {"accepted": True}})
+        self.assertEqual(calls, [(envelope, "attempt-1", "secret")])
+        thread.join(timeout=2)
+        left.close()
+        self.assertFalse(thread.is_alive())
+
+    def test_docker_guest_rpc_allowlist_and_attempt_binding(self):
+        from supervisor.docker_agent import validate_worker_envelope
+
+        for operation in ("infer", "heartbeat", "result", "scope_request"):
+            envelope = {"schema_version": 1, "operation": operation,
+                        "attempt_id": "attempt-1", "capability": "secret",
+                        "request": {"request_id": "req-" + operation}}
+            self.assertEqual(validate_worker_envelope(envelope, "attempt-1", "secret"),
+                             (operation, envelope["request"]))
+        forged = {"schema_version": 1, "operation": "human_control",
+                  "attempt_id": "attempt-1", "capability": "secret", "request": {}}
+        with self.assertRaises(ValueError):
+            validate_worker_envelope(forged, "attempt-1", "secret")
+        with self.assertRaises(ValueError):
+            validate_worker_envelope(dict(envelope, capability="wrong"),
+                                     "attempt-1", "secret")
+
+    def test_docker_guest_multiplexer_correlates_concurrent_out_of_order_responses(self):
+        from supervisor.docker_agent import RelayMultiplexer
+
+        sent = []
+        sent_lock = threading.Lock()
+
+        def send(frame):
+            with sent_lock:
+                sent.append(frame)
+
+        relay = RelayMultiplexer(send)
+        results = {}
+
+        def request(name):
+            envelope = {"schema_version": 1, "operation": "heartbeat",
+                        "attempt_id": "attempt-1", "capability": "secret",
+                        "request": {"request_id": name}}
+            results[name] = relay.request(envelope, "attempt-1", "secret", timeout=2)
+
+        calls = [threading.Thread(target=request, args=(name,)) for name in ("slow", "fast")]
+        for call in calls:
+            call.start()
+        deadline = time.monotonic() + 1
+        while len(sent) < 2 and time.monotonic() < deadline:
+            time.sleep(.001)
+        self.assertEqual(len(sent), 2)
+        by_request = {frame["request"]["request_id"]: frame["id"] for frame in sent}
+        relay.deliver({"type": "response", "id": by_request["fast"],
+                       "response": {"schema_version": 1, "result": {"done": "fast"}}})
+        relay.deliver({"type": "response", "id": by_request["slow"],
+                       "response": {"schema_version": 1, "result": {"done": "slow"}}})
+        for call in calls:
+            call.join(timeout=2)
+            self.assertFalse(call.is_alive())
+        self.assertEqual(results, {"fast": {"schema_version": 1, "result": {"done": "fast"}},
+                                   "slow": {"schema_version": 1, "result": {"done": "slow"}}})
+
+    def test_docker_guest_output_frames_are_separate_and_bounded(self):
+        from supervisor.docker_agent import output_frame
+
+        self.assertEqual(output_frame("stderr", b"worker output"),
+                         {"type": "stderr", "data": "d29ya2VyIG91dHB1dA=="})
+        with self.assertRaises(ValueError):
+            output_frame("stdout", b"x" * 65537)
+
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
                    return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):
