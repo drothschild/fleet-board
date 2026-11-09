@@ -1388,7 +1388,7 @@ if sys.argv[1:2] == ['ps']:
     if mode == 'list-failure': raise SystemExit(1)
     if mode == 'late-match':
         count = sum(1 for _line in open(@LISTLOG@, 'r'))
-        print('e' * 64 if count == 2 else '')
+        print('e' * 64 if count == 5 else '')
         raise SystemExit(0)
     print('\\n'.join(ids)); raise SystemExit(0)
 if sys.argv[1:2] == ['rm']:
@@ -1430,6 +1430,7 @@ raise SystemExit(2)
 
         bootstrap, channel = self.docker_transport_args()
         fake = self.fake_docker_missing_cidfile('late-match')
+        started = time.monotonic()
         with self.assertRaises((ContractError, IsolationUnavailable)) as raised:
             DockerWorkerTransport().run(
                 ['python3', '-m', 'worker'], self.docker_policy(fake),
@@ -1442,8 +1443,10 @@ raise SystemExit(2)
         self.assertIn('-f ' + 'e' * 64, removals,
                       'later matching container was missed after an empty first listing')
         listings = (self.root / 'docker-ps.log').read_text(encoding='utf-8').splitlines()
-        self.assertGreaterEqual(len(listings), 5,
-                                'cleanup trusted fewer than three empty listings after removal')
+        self.assertGreaterEqual(len(listings), 10,
+                                'cleanup stopped before the full label visibility grace period')
+        self.assertGreaterEqual(time.monotonic() - started, .45,
+                                'cleanup trusted transient empty label listings')
 
     def test_docker_transport_rejects_nonfinite_and_boolean_timeouts_before_launch(self):
         import math
@@ -1452,7 +1455,7 @@ raise SystemExit(2)
         bootstrap, channel = self.docker_transport_args()
         fake = self.fake_docker('ok')
         policy = self.docker_policy(fake)
-        for timeout in (math.nan, math.inf, True):
+        for timeout in (math.nan, math.inf, True, 86400.001):
             with self.subTest(timeout=timeout):
                 with self.assertRaises(ValueError):
                     DockerWorkerTransport().run(
@@ -1461,18 +1464,23 @@ raise SystemExit(2)
                         timeout=timeout, cancel_event=threading.Event())
         self.assertFalse((self.root / 'docker-run.log').exists(),
                          'invalid timeout reached Docker launch')
+        self.assertEqual(DockerWorkerTransport().run(
+            ['python3', '-m', 'worker'], policy, bootstrap=bootstrap,
+            channel=channel, attempt_id='attempt-1', capability='secret',
+            timeout=86400, cancel_event=threading.Event()).returncode, 0)
 
     def test_docker_identity_check_rejects_nonfinite_and_boolean_timeouts(self):
         import math
         from supervisor.isolation import verify_docker_desktop_identity
 
-        fake = self.script('fake-docker-invalid-identity-timeout',
-                           '#!/usr/bin/env python3\nraise SystemExit(0)\n')[0]
-        for timeout in (math.nan, math.inf, True):
+        fake = self.fake_docker('ok')
+        for timeout in (math.nan, math.inf, True, 86400.001):
             with self.subTest(timeout=timeout):
                 with self.assertRaises(IsolationUnavailable):
                     verify_docker_desktop_identity(fake, timeout=timeout,
                                                    cancel_event=threading.Event())
+        self.assertEqual(verify_docker_desktop_identity(
+            fake, timeout=86400, cancel_event=threading.Event())['os_type'], 'linux')
 
     def test_docker_host_transport_refuses_malformed_labeled_container_id(self):
         from supervisor.docker_transport import DockerWorkerTransport
