@@ -1238,6 +1238,135 @@ class ProviderCases(unittest.TestCase):
         with self.assertRaises(ValueError):
             output_frame("stdout", b"x" * 65537)
 
+    def docker_policy(self, fake_docker):
+        from supervisor.isolation import build_policy
+
+        return build_policy(self.workspace, self.root / "docker-private-git",
+                            self.root / "docker-channels", backend="docker",
+                            docker_image="sha256:" + "e" * 64) | {"command": fake_docker}
+
+    def fake_docker(self, mode):
+        body = """#!/usr/bin/env python3
+import base64, json, os, struct, sys, time
+mode = {mode!r}
+def read_frame():
+    header = sys.stdin.buffer.read(4)
+    if len(header) != 4: raise SystemExit(2)
+    size = struct.unpack('!I', header)[0]
+    return json.loads(sys.stdin.buffer.read(size))
+def write_frame(value):
+    data = json.dumps(value, separators=(',', ':')).encode()
+    sys.stdout.buffer.write(struct.pack('!I', len(data)) + data)
+    sys.stdout.buffer.flush()
+if len(sys.argv) > 1 and sys.argv[1] == 'rm':
+    open({log!r}, 'a').write(' '.join(sys.argv[2:]) + '\\n')
+    raise SystemExit(0)
+if mode == 'daemon': raise SystemExit(125)
+cidfile = next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--cidfile='))
+with open(cidfile, 'w') as stream: stream.write({cid!r})
+if mode == 'cancel': time.sleep(20); raise SystemExit(0)
+start = read_frame()
+if mode == 'malformed':
+    write_frame({'type': 'exit', 'code': 0}); raise SystemExit(0)
+operation = 'human_control' if mode == 'unknown' else 'heartbeat'
+write_frame({'type':'rpc','id':'rpc-1','operation':operation,
+             'attempt_id':start['attempt_id'],'capability':start['capability'],
+             'request':{'attempt_id':start['attempt_id'],'request_id':'req-1'}})
+if mode == 'unknown': time.sleep(20); raise SystemExit(0)
+response = read_frame()
+if response.get('type') != 'response' or response.get('id') != 'rpc-1': raise SystemExit(3)
+write_frame({'type':'stdout','data':base64.b64encode(b'worker stdout').decode()})
+write_frame({'type':'stderr','data':base64.b64encode(b'worker stderr').decode()})
+if mode == 'oversize':
+    write_frame({'type':'stdout','data':base64.b64encode(b'x'*(1024*1024+1)).decode()})
+    time.sleep(10); raise SystemExit(0)
+write_frame({'type':'exit','code':0})
+""".format(mode=mode, log=str(self.root / "docker-rm.log"),
+           cid="not-a-container-id" if mode == "malformed" else "a" * 64)
+        return self.script("fake-docker-" + mode, body)[0]
+
+    def docker_transport_args(self):
+        bootstrap = {"attempt": {"attempt_id": "attempt-1"},
+                     "inference": {"schema_version": 1, "socket_path": "/host/channels/inference.sock",
+                                   "attempt_id": "attempt-1", "capability": "secret"}}
+
+        class Channel:
+            def __init__(self):
+                self.calls = []
+
+            def request(inner, attempt_id, capability, request, *, operation="infer", timeout=None):
+                inner.calls.append((attempt_id, capability, request, operation))
+                return {"schema_version": 1, "result": {"accepted": True}}
+
+        channel = Channel()
+        return bootstrap, channel
+
+    def test_docker_host_transport_relays_authorized_request_and_output(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        fake = self.fake_docker("relay")
+        policy = self.docker_policy(fake)
+        bootstrap, channel = self.docker_transport_args()
+        result = DockerWorkerTransport().run(
+            ["python3", "-m", "worker"], policy, bootstrap=bootstrap,
+            channel=channel, attempt_id="attempt-1", capability="secret", timeout=4,
+            cancel_event=threading.Event())
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, b"worker stdout")
+        self.assertEqual(result.stderr, b"worker stderr")
+        self.assertEqual(len(channel.calls), 1)
+        self.assertEqual(channel.calls[0][0:2], ("attempt-1", "secret"))
+        self.assertEqual(channel.calls[0][3], "heartbeat")
+
+    def test_docker_host_transport_rejects_unknown_operation_and_cleans_container(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        fake = self.fake_docker("unknown")
+        policy = self.docker_policy(fake)
+        bootstrap, channel = self.docker_transport_args()
+        with self.assertRaises((ContractError, IsolationUnavailable)):
+            DockerWorkerTransport().run(
+                ["python3", "-m", "worker"], policy, bootstrap=bootstrap,
+                channel=channel, attempt_id="attempt-1", capability="secret", timeout=2,
+                cancel_event=threading.Event())
+        self.assertEqual(channel.calls, [])
+        self.assertIn("rm -f " + "a" * 64,
+                      (self.root / "docker-rm.log").read_text(encoding="utf-8"))
+
+    def test_docker_host_transport_fails_closed_on_daemon_or_malformed_cid(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        for mode in ("daemon", "malformed"):
+            with self.subTest(mode=mode):
+                with self.assertRaises((ContractError, IsolationUnavailable)):
+                    DockerWorkerTransport().run(
+                        ["python3", "-m", "worker"], self.docker_policy(self.fake_docker(mode)),
+                        bootstrap=bootstrap, channel=channel, attempt_id="attempt-1",
+                        capability="secret", timeout=2, cancel_event=threading.Event())
+
+    def test_docker_host_transport_cancellation_and_output_overflow_remove_container(self):
+        from supervisor.docker_transport import DockerWorkerTransport
+
+        bootstrap, channel = self.docker_transport_args()
+        for mode in ("cancel", "oversize"):
+            with self.subTest(mode=mode):
+                fake = self.fake_docker(mode)
+                policy = self.docker_policy(fake)
+                cancel = threading.Event()
+                if mode == "cancel":
+                    timer = threading.Timer(.2, cancel.set)
+                    timer.start()
+                with self.assertRaises((ContractError, IsolationUnavailable)):
+                    DockerWorkerTransport().run(
+                        ["python3", "-m", "worker"], policy, bootstrap=bootstrap,
+                        channel=channel, attempt_id="attempt-1", capability="secret", timeout=3,
+                        cancel_event=cancel)
+                if mode == "cancel":
+                    timer.join(timeout=1)
+                self.assertIn("rm -f " + "a" * 64,
+                              (self.root / "docker-rm.log").read_text(encoding="utf-8"))
+
     def test_isolated_worker_output_capture_is_bounded(self):
         with patch("supervisor.isolation._wrapped_command",
                    return_value=["/bin/sh", "-c", "head -c 1048577 /dev/zero"]):

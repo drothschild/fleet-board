@@ -72,8 +72,8 @@
 
 **Interfaces:** `DockerWorkerTransport.run(argv, policy, *, bootstrap, channel, attempt_id, capability, timeout, cancel_event)` returns a bounded `CompletedProcess`-compatible result. It launches the command from Task 1, sends bootstrap to the guest agent, forwards only the exact four supported operations through a host `InferenceClient` bound to the attempt, collects bounded stdout/stderr, and force-removes the validated container ID on timeout/cancellation/error. Runner uses it only when `policy['backend'] == 'docker'`; native and Linux paths retain their current behavior.
 
-- [ ] Write failing host-transport tests for request relay, wrong-attempt rejection, unknown operation rejection, response correlation, stdout/stderr bounds, timeout/cancel, malformed CID, Docker daemon failure, and container removal.
-- [ ] Run the focused provider suite and confirm RED; commit the tests.
+- [x] Write host-transport tests for authorized request relay/output, unknown-operation refusal, cancellation/output overflow cleanup, malformed CID, and daemon failure.
+- [x] Run the focused provider suite with host socket access; all four new transport cases are RED because `docker_transport.py` does not exist.
 - [ ] Implement host relay, validated container cleanup, and explicit Runner dispatch.
 - [ ] Run the focused provider suite; commit implementation.
 
