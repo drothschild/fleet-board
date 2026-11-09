@@ -1441,6 +1441,9 @@ raise SystemExit(2)
             if (self.root / 'docker-label-rm.log').exists() else ''
         self.assertIn('-f ' + 'e' * 64, removals,
                       'later matching container was missed after an empty first listing')
+        listings = (self.root / 'docker-ps.log').read_text(encoding='utf-8').splitlines()
+        self.assertGreaterEqual(len(listings), 5,
+                                'cleanup trusted fewer than three empty listings after removal')
 
     def test_docker_transport_rejects_nonfinite_and_boolean_timeouts_before_launch(self):
         import math

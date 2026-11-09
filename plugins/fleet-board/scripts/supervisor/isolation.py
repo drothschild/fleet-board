@@ -2,6 +2,7 @@
 import os
 import errno
 import json
+import math
 import re
 import stat
 from pathlib import Path
@@ -31,7 +32,8 @@ def verify_docker_desktop_identity(docker, expected=None, *, timeout=None,
     if not isinstance(docker, str) or not os.path.isabs(docker):
         raise IsolationUnavailable('Docker executable unavailable')
 
-    if timeout is not None and (type(timeout) not in (int, float) or timeout <= 0):
+    if timeout is not None and (type(timeout) not in (int, float)
+                                or not math.isfinite(timeout) or timeout <= 0):
         raise IsolationUnavailable('Docker Desktop identity check deadline exceeded')
     deadline = time.monotonic() + timeout if timeout is not None else None
 

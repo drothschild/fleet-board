@@ -26,7 +26,7 @@ The container receives no network interface beyond Docker's `none` network. Dock
 
 Replace the host-mounted Unix socket with a framed bidirectional stdio relay. A small guest transport agent exposes an attempt-local Unix socket inside the container for the existing worker client. It forwards only inference, result, heartbeat, and scope requests over Docker's attached stdin/stdout stream to the trusted macOS controller. The guest agent uses request IDs to multiplex concurrent calls. The host validates the worker-visible operation allowlist and forwards through the existing authenticated `InferenceChannel` using the exact attempt binding. Store callbacks remain on the host controller; the Docker daemon API is never exposed inside the container.
 
-Worker stdout/stderr travel as separate bounded relay frames and cannot be parsed as control messages. Malformed frames, unknown operations, broken streams, deadlines, and cancellation fail closed and force container removal by a validated container ID.
+Worker stdout/stderr travel as separate bounded relay frames and cannot be parsed as control messages. Malformed frames, unknown operations, broken streams, deadlines, and cancellation fail closed and force container removal by a validated container ID. If the Docker CLI exits before producing a usable cidfile, attempt-label reconciliation polls for at most 0.5 seconds at 50 ms intervals, removes every validated matching ID on each poll, and requires three consecutive empty listings before reporting cleanup success. Any listing or removal uncertainty fails closed.
 
 ### Image contract
 
