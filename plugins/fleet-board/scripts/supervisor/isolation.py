@@ -13,6 +13,7 @@ import secrets
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -257,8 +258,8 @@ def docker_run_argv(argv, policy, cidfile):
             raise IsolationUnavailable('Docker ' + key + ' overlaps guest transport')
     if os.path.commonpath((workspace, private_git)) in (workspace, private_git):
         raise IsolationUnavailable('Docker writable roots overlap')
-    mounts = ('type=bind,src=' + workspace + ',dst=/workspace,rw',
-              'type=bind,src=' + private_git + ',dst=/private-git,rw',
+    mounts = ('type=bind,src=' + workspace + ',dst=/workspace',
+              'type=bind,src=' + private_git + ',dst=/private-git',
               'type=bind,src=' + guest + ',dst=/guest/supervisor,readonly')
     command = [docker, 'run', '--rm', '-i', '--pull=never', '--network=none',
                '--read-only', '--cap-drop=ALL', '--security-opt=no-new-privileges',
@@ -314,9 +315,296 @@ def _protected_resource_paths(resources):
     return paths
 
 
+_DOCKER_PROBE_CHECKS = (
+    'docker_daemon', 'image_present', 'workspace_read', 'workspace_write',
+    'private_git_read', 'private_git_write', 'controller_db_absent',
+    'controller_socket_absent', 'board_storage_absent', 'shared_git_metadata_absent',
+    'host_credentials_absent', 'ssh_agent_absent', 'keychain_absent',
+    'host_home_absent', 'docker_socket_absent', 'guest_package_write_denied',
+    'no_public_egress',
+    'no_host_publication', 'symlink_escape_denied', 'inference_relay',
+    'forged_human_control_denied', 'channel_path_write_denied', 'timeout_cleanup',
+)
+
+
+def probe_docker_capabilities(policy, *, protected_resources=None):
+    """Qualify the concrete Docker boundary with a no-cost local fake provider."""
+    checks = {name: False for name in _DOCKER_PROBE_CHECKS}
+    try:
+        protected = _protected_resource_paths(protected_resources)
+    except IsolationUnavailable as exc:
+        return {'available': False, 'backend': 'docker', 'reason': str(exc), 'checks': checks}
+    docker = policy.get('command') if isinstance(policy, dict) else None
+    image = policy.get('docker_image') if isinstance(policy, dict) else None
+    if not isinstance(docker, str) or not os.path.isabs(docker):
+        return {'available': False, 'backend': 'docker',
+                'reason': 'Docker executable unavailable', 'checks': checks}
+    try:
+        daemon = subprocess.run([docker, 'info', '--format={{.ServerVersion}}'],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=5, check=False, close_fds=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {'available': False, 'backend': 'docker',
+                'reason': 'Docker daemon unavailable: ' + str(exc)[:120], 'checks': checks}
+    checks['docker_daemon'] = daemon.returncode == 0 and bool(daemon.stdout.strip())
+    if not checks['docker_daemon']:
+        return {'available': False, 'backend': 'docker',
+                'reason': 'Docker daemon unavailable', 'checks': checks}
+    if not isinstance(image, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', image):
+        return {'available': False, 'backend': 'docker',
+                'reason': 'immutable Docker image ID required', 'checks': checks}
+    try:
+        inspected = subprocess.run([docker, 'image', 'inspect', '--format={{.Id}}', image],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, timeout=5, check=False, close_fds=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {'available': False, 'backend': 'docker',
+                'reason': 'cached Docker image unavailable: ' + str(exc)[:120], 'checks': checks}
+    checks['image_present'] = (inspected.returncode == 0
+                               and inspected.stdout.decode('ascii', 'replace').strip() == image)
+    if not checks['image_present']:
+        return {'available': False, 'backend': 'docker',
+                'reason': 'Docker worker image is not present locally', 'checks': checks}
+
+    workspace = Path(policy.get('workspace', ''))
+    private_git = Path(policy.get('private_git', ''))
+    channels = Path(policy.get('channels', ''))
+    probe_name = '.docker-isolation-probe-' + secrets.token_hex(8)
+    workspace_read = workspace / (probe_name + '-workspace-read')
+    private_read = private_git / (probe_name + '-private-read')
+    workspace_write = workspace / (probe_name + '-workspace-write')
+    private_write = private_git / (probe_name + '-private-write')
+    report_path = workspace / (probe_name + '-report.json')
+    escape = workspace / (probe_name + '-escape')
+    channel_path = channels / (probe_name + '-host-channel')
+    guest_write_host = Path(policy.get('guest_package', '')) / (probe_name + '-guest-write')
+    scratch_parent = '/private/tmp' if Path('/private/tmp').is_dir() else None
+    probe_root = None
+    listeners = []
+    channel = None
+    transport = None
+    timeout_transport = None
+    try:
+        supplemental = policy.get('_docker_probe_host_paths', {})
+        if not isinstance(supplemental, dict):
+            raise IsolationUnavailable('invalid Docker host probe paths')
+        for key in ('ssh_agent', 'docker_socket'):
+            extra = supplemental.get(key, [])
+            if (not isinstance(extra, (list, tuple))
+                    or any(not isinstance(path, str) or not os.path.isabs(path) for path in extra)):
+                raise IsolationUnavailable('invalid supplemental Docker probe paths')
+        protected['ssh_agent'].extend(supplemental.get('ssh_agent', []))
+        for key, root in (('workspace', workspace), ('private Git', private_git),
+                          ('channel', channels)):
+            if root.is_symlink() or not root.is_dir() or root.resolve(strict=True) != root:
+                raise IsolationUnavailable('Docker ' + key + ' root is not canonical')
+            if ',' in str(root) or any(ord(char) < 32 for char in str(root)):
+                raise IsolationUnavailable('Docker mount root contains an unsupported delimiter')
+        workspace_read.write_text('workspace-probe', encoding='utf-8')
+        private_read.write_text('private-git-probe', encoding='utf-8')
+        controller_db = protected['controller_db'][0]
+        _create_probe_symlink(escape, controller_db, [])
+
+        probe_root = Path(tempfile.mkdtemp(prefix='fb-docker-probe-', dir=scratch_parent))
+        probe_root.chmod(0o700)
+        provider = probe_root / 'provider.py'
+        provider.write_text(
+            '#!/usr/bin/env python3\nimport json,sys\nr=json.load(sys.stdin)\n'
+            'print(json.dumps({"schema_version":1,"attempt_id":r["attempt_id"],'
+            '"generation":r["generation"],"input_sha":r["input_sha"],'
+            '"provider":r["provider"],"model":r["model"],'
+            '"text":"docker-probe-ok","usage":None}))\n', encoding='utf-8')
+        provider.chmod(0o700)
+        from .inference_broker import InferenceBroker, InferenceChannel, ProviderRequest
+        from .docker_transport import DockerWorkerTransport
+
+        attempt_id = 'docker-probe-' + secrets.token_hex(8)
+        request = ProviderRequest.create(attempt_id=attempt_id, generation=0,
+                                         role='reviewer', stage=None,
+                                         provider='docker-probe', model='offline-v1',
+                                         input_text='Docker boundary qualification')
+        binding = {'generation': 0, 'role': 'reviewer', 'stage': None,
+                   'provider': 'docker-probe', 'model': 'offline-v1',
+                   'input_sha': request.input_sha}
+        broker = InferenceBroker(
+            {'docker-probe': {'command': [sys.executable, str(provider)],
+                              'model': 'offline-v1', 'credential_env': None}},
+            attempts={attempt_id: binding})
+        channel_dir = probe_root / 'channel'
+        channel_dir.mkdir(mode=0o700)
+        channel = InferenceChannel(broker, channel_dir, (attempt_id,),
+                                   request_timeout=8, frame_timeout=3)
+        channel_capability = channel.capability_for(attempt_id)
+        docker_dir = probe_root / 'docker'
+        docker_dir.mkdir(mode=0o700)
+        transport = DockerWorkerTransport()
+        bootstrap = {'schema_version': 1,
+                     'attempt': {'attempt_id': attempt_id, 'generation': 0,
+                                 'input_sha': request.input_sha, 'role': 'reviewer',
+                                 'stage': None, 'provider': 'docker-probe', 'model': 'offline-v1'},
+                     'provider_request': request.to_dict(),
+                     'inference': {'schema_version': 1, 'socket_path': str(channel.socket_path),
+                                   'attempt_id': attempt_id,
+                                   'capability': channel_capability},
+                     'docker_probe': {
+                         'workspace_read': '/workspace/' + workspace_read.name,
+                         'private_git_read': '/private-git/' + private_read.name,
+                         'workspace_write': '/workspace/' + workspace_write.name,
+                         'private_git_write': '/private-git/' + private_write.name,
+                         'report': '/workspace/' + report_path.name,
+                         'escape': '/workspace/' + escape.name,
+                         'guest_package_write': '/guest/supervisor/' + guest_write_host.name,
+                         'channel_path': str(channel_path),
+                         'protected': protected,
+                         'host_home': str(Path.home()),
+                         'docker_sockets': list(supplemental.get('docker_socket', [])) or
+                             ['/var/run/docker.sock',
+                              str(Path.home() / '.docker/run/docker.sock')],
+                         'provider_request': request.to_dict(),
+                     }}
+        worker = r'''import json,os,socket,sys
+from pathlib import Path
+from supervisor.inference_broker import ContractError,InferenceClient
+b=json.load(sys.stdin); p=b['docker_probe']; c={}
+for key,expected in (('workspace_read','workspace-probe'),('private_git_read','private-git-probe')):
+    try: c[key]=Path(p[key]).read_text()==expected
+    except OSError: c[key]=False
+for key in ('workspace_write','private_git_write'):
+    try: Path(p[key]).write_text('written'); c[key]=True
+    except OSError: c[key]=False
+for key,paths in p['protected'].items():
+    c[key+'_absent']=all(not os.path.lexists(path) for path in paths)
+c['host_home_absent']=not os.path.lexists(p['host_home'])
+c['docker_socket_absent']=all(not os.path.lexists(path) for path in p['docker_sockets'])
+try:
+    with open(p['escape'],'rb') as f: f.read(1)
+    c['symlink_escape_denied']=False
+except OSError: c['symlink_escape_denied']=True
+try:
+    with open(p['channel_path'],'wb') as f: f.write(b'x')
+    c['channel_path_write_denied']=False
+except OSError: c['channel_path_write_denied']=True
+try:
+    with open(p['guest_package_write'],'wb') as f: f.write(b'x')
+    c['guest_package_write_denied']=False
+except OSError: c['guest_package_write_denied']=True
+try:
+    socket.create_connection(('1.1.1.1',80),timeout=.5).close()
+    c['no_public_egress']=False
+except OSError: c['no_public_egress']=True
+try:
+    i=b['inference']; client=InferenceClient(i['socket_path'],i['attempt_id'],i['capability'],timeout=6)
+    c['inference_relay']=client.infer(p['provider_request'])['text']=='docker-probe-ok'
+except Exception: c['inference_relay']=False
+try:
+    client.request({'attempt_id':b['inference']['attempt_id']},operation='human_control')
+    c['forged_human_control_denied']=False
+except ContractError: c['forged_human_control_denied']=True
+Path(p['report']).write_text(json.dumps(c,sort_keys=True))
+'''
+        with channel:
+            completed = transport.run(
+                ['python3', '-c', worker], policy, bootstrap=bootstrap, channel=channel,
+                attempt_id=attempt_id, capability=channel_capability,
+                timeout=20, cancel_event=threading.Event())
+        if completed.returncode != 0 or not report_path.is_file():
+            detail = completed.stderr.decode('utf-8', 'replace').strip()
+            raise IsolationUnavailable('Docker boundary worker did not complete (exit {}): {}'.format(
+                completed.returncode, detail[-140:]))
+        observed = json.loads(report_path.read_text(encoding='utf-8'))
+        for name in ('workspace_read', 'workspace_write', 'private_git_read',
+                     'private_git_write'):
+            checks[name] = observed.get(name) is True
+        for name in ('controller_db', 'controller_socket', 'board_storage',
+                     'shared_git_metadata', 'host_credentials', 'ssh_agent', 'keychain'):
+            checks[name + '_absent'] = observed.get(name + '_absent') is True
+        for name in ('host_home_absent', 'docker_socket_absent', 'no_public_egress',
+                     'guest_package_write_denied', 'symlink_escape_denied', 'inference_relay',
+                     'forged_human_control_denied', 'channel_path_write_denied'):
+            checks[name] = observed.get(name) is True
+        command = docker_run_argv(['python3', '-m', 'supervisor.docker_agent'], policy,
+                                  str(probe_root / 'argv.cid'))
+        checks['no_host_publication'] = ('--network=none' in command
+                                         and not any(arg in ('-p', '--publish')
+                                                     or arg.startswith('--publish=')
+                                                     for arg in command))
+
+        timeout_marker = workspace / (probe_name + '-timeout-started')
+        timeout_code = ('from pathlib import Path; import time; '
+                        'Path("/workspace/' + timeout_marker.name + '").write_text("started"); '
+                        'time.sleep(30)')
+        timeout_worker = ['python3', '-c', timeout_code]
+        timeout_transport = DockerWorkerTransport()
+        timeout_error = []
+
+        def run_timeout_probe():
+            try:
+                timeout_transport.run(timeout_worker, policy, bootstrap=bootstrap,
+                                      channel=channel, attempt_id=attempt_id,
+                                      capability=channel_capability,
+                                      timeout=5, cancel_event=threading.Event())
+            except Exception as exc:
+                timeout_error.append(exc)
+
+        timeout_thread = threading.Thread(target=run_timeout_probe, daemon=True)
+        timeout_thread.start()
+        start_deadline = time.monotonic() + 8
+        while not timeout_marker.exists() and timeout_thread.is_alive() and time.monotonic() < start_deadline:
+            time.sleep(.05)
+        worker_started = timeout_marker.is_file()
+        timeout_thread.join(timeout=6)
+        container_id = timeout_transport.last_container_id
+        label = 'org.fleet-board.supervisor.attempt-id=' + attempt_id
+        remaining = subprocess.run(
+            [docker, 'container', 'ls', '--all', '--quiet', '--filter', 'label=' + label],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            timeout=5, check=False, close_fds=True)
+        deadline_hit = (len(timeout_error) == 1 and isinstance(timeout_error[0], RuntimeError)
+                        and 'deadline exceeded' in str(timeout_error[0]))
+        checks['timeout_cleanup'] = (worker_started and deadline_hit
+                                     and timeout_thread.is_alive() is False
+                                     and remaining.returncode == 0
+                                     and not remaining.stdout.strip())
+
+        missing = [name for name, passed in checks.items() if not passed]
+        if missing:
+            reason = 'Docker boundary checks failed: ' + ', '.join(missing)
+            if 'timeout_cleanup' in missing:
+                reason += (' (worker did not reach its timeout marker)' if not worker_started else
+                           ' (timed-out container remains or timeout did not fire)')
+                if timeout_error:
+                    reason += ': ' + str(timeout_error[0])[:120]
+            return {'available': False, 'backend': 'docker',
+                    'reason': reason,
+                    'checks': checks}
+        return {'available': True, 'backend': 'docker', 'reason': None, 'checks': checks}
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError,
+            RuntimeError) as exc:
+        return {'available': False, 'backend': 'docker', 'reason': str(exc)[:200],
+                'checks': checks}
+    finally:
+        if channel is not None and getattr(channel, '_listener', None) is not None:
+            channel.stop()
+        for sock in listeners:
+            try:
+                sock.close()
+            except OSError:
+                pass
+        for path in (workspace_read, private_read, workspace_write, private_write,
+                     report_path, escape, channel_path, timeout_marker, guest_write_host):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        if probe_root is not None:
+            shutil.rmtree(probe_root, ignore_errors=True)
+
+
 def probe_capabilities(policy, *, inference_socket=None, inference_attempt_id=None,
                        inference_capability=None, protected_resources=None):
     """Require real positive and negative checks for every worker boundary."""
+    if isinstance(policy, dict) and policy.get('backend') == 'docker':
+        return probe_docker_capabilities(policy, protected_resources=protected_resources)
     expected = ('workspace_read', 'workspace_write', 'controller_db', 'controller_socket',
                 'board_storage', 'shared_git_metadata', 'host_credentials', 'ssh_agent',
                 'keychain', 'symlink_escape', 'loopback_network', 'publication',

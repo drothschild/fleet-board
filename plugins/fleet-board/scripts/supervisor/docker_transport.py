@@ -55,6 +55,7 @@ class DockerWorkerTransport:
         if type(frame_limit) is not int or frame_limit < 1024:
             raise ValueError('invalid Docker relay frame limit')
         self.frame_limit = frame_limit
+        self.last_container_id = None
 
     @staticmethod
     def _start_frame(argv, policy, bootstrap, attempt_id, capability):
@@ -103,6 +104,7 @@ class DockerWorkerTransport:
 
     def run(self, argv, policy, *, bootstrap, channel, attempt_id, capability,
             timeout, cancel_event):
+        self.last_container_id = None
         if (type(timeout) not in (int, float) or timeout <= 0
                 or not isinstance(cancel_event, threading.Event)
                 or not callable(getattr(channel, 'request', None))):
@@ -110,6 +112,8 @@ class DockerWorkerTransport:
         docker = policy.get('command') if isinstance(policy, dict) else None
         if not isinstance(docker, str) or not os.path.isabs(docker):
             raise IsolationUnavailable('Docker executable unavailable')
+        if not isinstance(attempt_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', attempt_id):
+            raise ContractError('invalid Docker attempt label')
         start_frame = self._start_frame(argv, policy, bootstrap, attempt_id, capability)
         command = None
         process = None
@@ -124,6 +128,7 @@ class DockerWorkerTransport:
         reader_threads = []
         executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix='docker-broker')
         successful = False
+        cleanup_failure = None
         overflow = None
         started = time.monotonic()
         cidfile = None
@@ -175,6 +180,8 @@ class DockerWorkerTransport:
         try:
             command = docker_run_argv(['python3', '-m', 'supervisor.docker_agent'],
                                       policy, cidfile)
+            command.insert(command.index('--cidfile=' + cidfile),
+                           '--label=org.fleet-board.supervisor.attempt-id=' + attempt_id)
             process = subprocess.Popen(command, cwd=policy['workspace'], stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        close_fds=True, start_new_session=True)
@@ -198,7 +205,15 @@ class DockerWorkerTransport:
                         raise ContractError('Docker worker exited without an exit frame')
                     continue
                 if kind == 'error':
-                    raise ContractError('Docker worker relay failed') from item
+                    try:
+                        process.wait(timeout=.2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    for thread in reader_threads:
+                        thread.join(timeout=.2)
+                    detail = bytes(docker_stderr).decode('utf-8', 'replace').strip()
+                    raise ContractError('Docker worker relay failed: ' +
+                                        (detail[-180:] if detail else str(item)[:180])) from item
                 if kind == 'eof':
                     raise ContractError('Docker worker control stream closed')
                 if not isinstance(item, dict) or not isinstance(item.get('type'), str):
@@ -260,6 +275,7 @@ class DockerWorkerTransport:
                 raise ContractError('Docker returned a malformed container ID')
             if not container_id:
                 raise ContractError('Docker did not return a container ID')
+            self.last_container_id = container_id
             successful = True
             return subprocess.CompletedProcess(command, exit_code,
                                                 bytes(stdout), bytes(stderr + docker_stderr))
@@ -271,11 +287,16 @@ class DockerWorkerTransport:
             executor.shutdown(wait=False, cancel_futures=True)
             if not successful and process is not None:
                 _terminate_group(process)
-                container_id = self._read_cid(cidfile) if cidfile else None
-                if container_id is False:
-                    raise IsolationUnavailable('refusing cleanup with malformed Docker container ID')
-                if container_id and not self._remove_container(docker, container_id):
-                    raise IsolationUnavailable('Docker container cleanup failed')
+                try:
+                    container_id = self._read_cid(cidfile) if cidfile else None
+                    if container_id is False:
+                        cleanup_failure = 'refusing cleanup with malformed Docker container ID'
+                    else:
+                        self.last_container_id = container_id
+                        if container_id and not self._remove_container(docker, container_id):
+                            cleanup_failure = 'Docker container cleanup failed'
+                except Exception:
+                    cleanup_failure = 'Docker container cleanup failed'
             for thread in reader_threads:
                 thread.join(timeout=.5)
             if process is not None:
@@ -289,3 +310,5 @@ class DockerWorkerTransport:
                     except OSError:
                         pass
             shutil.rmtree(scratch, ignore_errors=True)
+            if cleanup_failure:
+                raise IsolationUnavailable(cleanup_failure)

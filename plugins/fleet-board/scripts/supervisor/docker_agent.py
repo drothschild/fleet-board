@@ -250,7 +250,7 @@ def run_guest(start, stdin, stdout):
     process = None
     pumps = []
     try:
-        env = {'PATH': '/usr/bin:/bin', 'HOME': '/nonexistent',
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': '/nonexistent',
                'PYTHONPATH': '/guest',
                'FLEET_BOARD_CHANNEL_SOCKET': str(socket_path),
                'FLEET_BOARD_ATTEMPT_ID': start['attempt_id'],
