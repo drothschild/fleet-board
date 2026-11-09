@@ -72,10 +72,13 @@
 
 **Interfaces:** `DockerWorkerTransport.run(argv, policy, *, bootstrap, channel, attempt_id, capability, timeout, cancel_event)` returns a bounded `CompletedProcess`-compatible result. It launches the command from Task 1, sends bootstrap to the guest agent, forwards only the exact four supported operations through a host `InferenceClient` bound to the attempt, collects bounded stdout/stderr, and force-removes the validated container ID on timeout/cancellation/error. Runner uses it only when `policy['backend'] == 'docker'`; native and Linux paths retain their current behavior.
 
+Docker transport and identity timeout values are exact `int`/`float` (excluding `bool`), finite, greater than zero, and at most 86,400 seconds. Missing-cid label reconciliation polls through the full 0.5-second grace and requires three consecutive empty listings after any matching container is removed.
+
 - [x] Write host-transport tests for authorized request relay/output, unknown-operation refusal, cancellation/output overflow cleanup, malformed CID, and daemon failure.
 - [x] Run the focused provider suite with host socket access; the four transport cases and explicit Runner-dispatch case were RED before their respective implementations.
 - [x] Implement host relay, validated container cleanup, bounded output, cancellation/deadline handling, and explicit Runner dispatch.
 - [x] Run the focused provider suite (60 tests), Python compile checks, and `git diff --check`; commit implementation.
+- [x] Add test-first bounds for Docker transport/identity timeouts and delayed label visibility; validate timeout types, finiteness and range, and retain label reconciliation through the full 0.5-second grace.
 
 ### Task 4: Add Docker host qualification probes
 

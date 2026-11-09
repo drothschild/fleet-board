@@ -28,6 +28,8 @@ Replace the host-mounted Unix socket with a framed bidirectional stdio relay. A 
 
 Worker stdout/stderr travel as separate bounded relay frames and cannot be parsed as control messages. Malformed frames, unknown operations, broken streams, deadlines, and cancellation fail closed and force container removal by a validated container ID. If the Docker CLI exits before producing a usable cidfile, attempt-label reconciliation polls for at most 0.5 seconds at 50 ms intervals, removes every validated matching ID on each poll, and requires three consecutive empty listings before reporting cleanup success. Any listing or removal uncertainty fails closed.
 
+Docker transport and daemon-identity timeout inputs must be exact integers or floats (booleans are rejected), finite, greater than zero, and no greater than 86,400 seconds. Identity checks may omit the timeout to use their bounded default. Attempt-label reconciliation must use the full 0.5-second visibility grace even after three empty listings, so delayed Docker daemon label visibility cannot be mistaken for successful cleanup; after any matching ID is found and removed, require three consecutive empty listings before success.
+
 ### Image contract
 
 The worker image is an explicit immutable image reference already available locally. `docker run --pull=never` is mandatory. The image must provide Python 3 for the guest relay and any role-specific executable selected inside the image. Tests may use only an already-cached image for fake workers. Production implementor/fixer activation and provider image preparation remain gated on Phase 7; missing executables fail closed.
