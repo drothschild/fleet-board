@@ -1112,8 +1112,8 @@ class ProviderCases(unittest.TestCase):
                           str(channels)):
             self.assertNotIn(forbidden, joined)
         self.assertNotIn("src={},dst=".format(Path.home()), joined)
-        self.assertIn("src={},dst=/workspace,rw".format(self.workspace), joined)
-        self.assertIn("src={},dst=/private-git,rw".format(private_git), joined)
+        self.assertIn("src={},dst=/workspace".format(self.workspace), joined)
+        self.assertIn("src={},dst=/private-git".format(private_git), joined)
         self.assertIn("dst=/guest/supervisor,readonly", joined)
 
     def test_docker_policy_rejects_mount_delimiters_and_symlink_roots(self):
@@ -1261,6 +1261,7 @@ def write_frame(value):
 if len(sys.argv) > 1 and sys.argv[1] == 'rm':
     open(@LOG@, 'a').write(' '.join(sys.argv[2:]) + '\\n')
     raise SystemExit(0)
+open(@RUNLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
 if mode == 'daemon': raise SystemExit(125)
 cidfile = next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--cidfile='))
 with open(cidfile, 'w') as stream: stream.write(@CID@)
@@ -1282,6 +1283,7 @@ if mode == 'oversize':
     time.sleep(10); raise SystemExit(0)
 write_frame({'type':'exit','code':0})
 """.replace("@MODE@", repr(mode)).replace("@LOG@", repr(str(self.root / "docker-rm.log"))).replace(
+            "@RUNLOG@", repr(str(self.root / "docker-run.log"))).replace(
             "@CID@", repr("not-a-container-id" if mode == "malformed" else "a" * 64))
         return self.script("fake-docker-" + mode, body)[0]
 
@@ -1364,6 +1366,9 @@ write_frame({'type':'exit','code':0})
                         cancel_event=cancel)
                 if mode == "cancel":
                     timer.join(timeout=1)
+                if mode == "cancel":
+                    self.assertIn("--label=org.fleet-board.supervisor.attempt-id=attempt-1",
+                                  (self.root / "docker-run.log").read_text(encoding="utf-8"))
                 self.assertIn("-f " + "a" * 64,
                               (self.root / "docker-rm.log").read_text(encoding="utf-8"))
 
