@@ -1469,7 +1469,7 @@ raise SystemExit(2)
         self.assertGreaterEqual(time.monotonic() - started, 1.95,
                                 'cleanup did not consume the full stabilization grace')
 
-    def test_docker_pending_cleanup_is_recorded_before_launch_and_blocks_next_launch(self):
+    def test_docker_pending_cleanup_is_recorded_and_allows_next_launch_after_empty_grace(self):
         from supervisor.docker_transport import DockerWorkerTransport
 
         bootstrap, channel = self.docker_transport_args()
@@ -1483,7 +1483,7 @@ raise SystemExit(2)
             DockerWorkerTransport().run(
                 ['python3', '-m', 'worker'], self.docker_policy(fake),
                 bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
-                capability='secret', timeout=2, cancel_event=threading.Event())
+                capability='secret', timeout=5, cancel_event=threading.Event())
         registry = journal.with_name(journal.name + '.docker-cleanup.json')
         self.assertTrue(registry.exists(), 'pending cleanup record was not retained')
         self.assertEqual([item['attempt_id'] for item in
@@ -1496,9 +1496,39 @@ raise SystemExit(2)
             DockerWorkerTransport().run(
                 ['python3', '-m', 'worker'], self.docker_policy(fake),
                 bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
-                capability='secret', timeout=2, cancel_event=threading.Event())
-        self.assertEqual(run_log.read_text(encoding='utf-8'), first_launch,
-                         'unresolved cleanup must block the next Docker launch')
+                capability='secret', timeout=5, cancel_event=threading.Event())
+        second_launch = run_log.read_text(encoding='utf-8')
+        self.assertGreater(len(second_launch), len(first_launch),
+                           'a full empty-label grace must admit the next Docker launch')
+        attempts = json.loads(registry.read_text(encoding='utf-8'))['attempts']
+        self.assertEqual({item['attempt_id'] for item in attempts},
+                         {'attempt-1', 'attempt-2'},
+                         'empty label listings must retain records for later polling')
+
+    def test_docker_stale_record_with_auto_removed_container_allows_launch(self):
+        from supervisor.docker_transport import DockerWorkerTransport, _CleanupRegistry
+
+        bootstrap, channel = self.docker_transport_args()
+        journal = self.root / 'controller' / 'operations.json'
+        journal.parent.mkdir(mode=0o700)
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        channel.operation_journal = journal
+        registry = _CleanupRegistry(journal)
+        registry._write([{'attempt_id': 'auto-removed-attempt', 'state': 'active',
+                          'pid': 2147483000, 'pid_start': 'Mon Jan  1 00:00:00 2001'}])
+        fake = self.fake_docker('ok')
+        result = DockerWorkerTransport().run(
+            ['python3', '-m', 'worker'], self.docker_policy(fake),
+            bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
+            capability='secret', timeout=2, cancel_event=threading.Event())
+        self.assertEqual(result.returncode, 0)
+        records = json.loads(registry.path.read_text(encoding='utf-8'))['attempts']
+        self.assertEqual([item['attempt_id'] for item in records],
+                         ['auto-removed-attempt'],
+                         'an empty full-grace listing must preserve the old record for future polling')
+        self.assertTrue((self.root / 'docker-run.log').exists(),
+                        'an auto-removed stale container must not block an independent launch')
 
     def test_docker_late_labeled_container_is_removed_on_next_invocation(self):
         from supervisor.docker_transport import DockerWorkerTransport
