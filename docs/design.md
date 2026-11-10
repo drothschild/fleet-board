@@ -1,6 +1,6 @@
 # The tradeoffs behind fleet-board
 
-fleet-board turns a GitHub issue board into a work queue for coding agents. A manager advances cards, role agents (implementor, reviewer, fixer) do the work in git worktrees, and a hook enforces the human gates. This document covers the decisions that are not obvious from the code, each with the alternative I considered and the reason I chose what I did.
+fleet-board turns a local card board into a work queue for coding agents. A manager advances cards, role agents (implementor, reviewer, fixer) do the work in git worktrees, and a hook enforces the human gates. This document covers the decisions that are not obvious from the code, each with the alternative I considered and the reason I chose what I did.
 
 ## The card state machine
 
@@ -52,11 +52,11 @@ Reason for the choice: a single writer of state is far easier to reason about th
 
 ## The manager note is the only persistent state
 
-The manager keeps exactly one piece of durable state: a note stored as a comment on the card. It starts with a marker and holds one fenced JSON block: the PR number, branch, worktree, round count and failure counters.
+The manager keeps exactly one piece of durable state: a note stored as a comment on the card (a local file, see below). It starts with a marker and holds one fenced JSON block: the PR number, branch, worktree, round count and failure counters.
 
 Alternative: a local state file or database on the machine running the manager, which is faster to read and does not clutter the card.
 
-Because the card is already the shared, durable, human-visible place where the work lives. State stored on the card survives a lost laptop, can be read by anyone looking at the card, and cannot drift away from the card it describes. The price is a trust boundary: anyone who can comment on the issue can post something that looks like a note. So only a marker comment authored by the authenticated login counts. Fields that later steer shell commands, such as the branch, the worktree path and the PR number, are validated against strict shapes before use: the branch must look like `fleet/<n>-<slug>`, the worktree must be an absolute path inside the worktrees base, and the counters must be integers. An invalid note is treated as empty, and the writer refuses to overwrite a stored invalid note.
+Because the card is already the shared, durable, human-visible place where the work lives. State stored on the card survives a lost laptop, can be read by anyone looking at the card, and cannot drift away from the card it describes. The price is a trust boundary: anyone who can write the store can post something that looks like a note. So only a marker comment authored by the local login (`FLEET_BOARD_USER`, else `$USER`) counts. Fields that later steer shell commands, such as the branch, the worktree path and the PR number, are validated against strict shapes before use: the branch must look like `fleet/<n>-<slug>`, the worktree must be an absolute path inside the worktrees base, and the counters must be integers. An invalid note is treated as empty, and the writer refuses to overwrite a stored invalid note.
 
 ## Fail closed everywhere
 
@@ -68,7 +68,7 @@ Because the mistakes this system can make are expensive and sometimes irreversib
 
 ## The gate is a text check, with branch protection behind it
 
-A PreToolUse hook reads the text of each shell command an agent is about to run. It blocks moving a card out of human QA, blocks merging when policy says a human merges, and blocks moving a card to Ready without an Acceptance section.
+A PreToolUse hook reads the text of each shell command an agent is about to run. It blocks moving a card out of human QA, blocks merging when policy says a human merges, and blocks moving a card to Ready without acceptance criteria.
 
 Alternative: a sandbox or proxy that enforces the same rules at the process or network level, where the agent cannot route around it by changing how a command is written.
 
@@ -128,17 +128,19 @@ Alternative: write the agent prompts by hand, iterating in place, which is faste
 
 Because hand-written prompts accumulate the author's assumptions and private context, and they can quietly depend on tools or files that exist only on one machine. A spec-first process forces the behavior to be written down, and a fresh session with no local setup shows whether the spec alone is enough. It also keeps the plugin portable. What it protects against is hidden coupling: a prompt that works only because of the author's own configuration. What it cost is real: slower iteration, a ceiling on API spend for each authoring run, a rule against hand-editing the generated files, and a harder time debugging when the output is slightly off. Specs get re-authored rather than patched.
 
-## A local board instead of GitHub issues
+## A local board only, with first-class card fields
 
-The board can live as JSON files under the repo (`board.backend: local`), with a localhost page to drag cards, start and stop the run, and import a plan.
+Cards are JSON files under the repo (`board.dir`), with a localhost page to drag cards, start and stop the run, and import a plan. There is no GitHub issue or Projects backend: `board.backend`, `board.project_number` and `board.project_owner` are rejected. PRs stay on GitHub.
 
-Alternative: keep GitHub issues and cache the board locally, so a tick reads the cache and only refreshes what changed.
+Alternative: keep GitHub issues and Projects as the board and cache it locally, so a tick reads the cache and only refreshes what changed. That was the first design, and for a while the repo carried three backends (labels, Projects, local).
 
-Because the quota is spent on issue reads: every tick lists columns, reads each card and its comments, and writes notes and reports. A cache keeps two copies of the truth, needs invalidation when a person edits a card on github.com, and still writes through. A backend with no remote issue side removes those calls outright. PR calls remain, so a tick still costs some quota, but much less.
+Reason one is rate limits. The quota is spent on issue reads: every tick lists columns, reads each card and its comments, and writes notes and reports. A cache keeps two copies of the truth, needs invalidation when a person edits a card on github.com, and still writes through. With no remote issue side those calls are gone; PR calls remain, so a tick still costs some quota, but much less.
 
-It costs two things. The card is no longer durable, shared state: it lives on one machine, so a lost laptop loses the board unless you commit it, and a teammate on another machine cannot see it. And the note's trust boundary weakens. On GitHub only a comment by the authenticated login counts; locally the author is `FLEET_BOARD_USER` or `$USER`, so the boundary is filesystem access, and a raw write into the store is not caught by the gate hook.
+Reason two is that cards stop being a text blob. On GitHub the only place for acceptance bullets and dependencies was the issue body, found again by heading (`## Acceptance`, `## Depends on`), so every reader parsed prose, and a card with two headings or one inside a code fence was read differently by different scripts. A local card has `acceptance` (a list), `blocked_by` (card numbers) and `pr_url` as fields, so the Ready gate, the lint, the dependency check and the role prompts read data, and the page can edit each field on its own. Three backends also meant every feature was written three times and tested against fakes that agreed with the code they were meant to check.
 
-The adapter seam made this cheap. Callers only run the `board-*.sh` contract scripts, which dispatch to `adapters/<backend>/<verb>.sh`, so the manager, the tick plan and the roles did not change. The new backend implements the same verbs, plus a few helpers for the page.
+It costs two things. The card is no longer durable, shared state: it lives on one machine, so a lost laptop loses the board unless you commit it, and a teammate on another machine cannot see it. And the note's trust boundary weakens: the author is the local login, so the boundary is filesystem access, and a raw write into the store is not caught by the gate hook. A dependency on a card in another repo has no home either; it stays in the body as prose, and multi-repo plans go into one board.
+
+Existing users keep their history: `migrate-card-fields.sh` moves an older local store's body sections into the fields, and `import-github.sh` reads a GitHub labels or Projects board (read only) into the local store.
 
 ## What I would do next
 

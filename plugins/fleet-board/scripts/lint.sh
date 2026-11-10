@@ -12,16 +12,19 @@
 # Prints one line per violation, "#<id>: <rule>: <detail>", and exits 1; prints
 # nothing and exits 0 when every card passes. Rules:
 #   (all of card-lint.sh's rules: no-heading, no-bullets, manual-check; this
-#    script runs card-lint.sh --body-file on each card rather than reimplement them)
-#   untestable-bullet      an Acceptance bullet holds "manual", "manually",
+#    script runs card-lint.sh on each card's fields (--read-file) rather than
+#    reimplement them; with --bodies it lints the file as a body)
+#   untestable-bullet      an acceptance item holds "manual", "manually",
 #                          "visually" or "looks"; it is not a testable assertion.
-#   dependency-cycle       the card is in a cycle of "## Depends on" references
+#   dependency-cycle       the card is in a cycle of blocked_by references
 #                          among the linted cards; the detail names every card in it.
-#   unresolved-dependency  a "## Depends on" reference is neither a linted card
-#                          nor an issue "gh issue view" finds (on the local
-#                          backend a board.repo reference is a card file
-#                          under board.dir; a missing file is unresolved).
-#   missing-file           a backticked path (dir/name.ext) is not on the default
+#   unresolved-dependency  a blocked_by reference (a card number) is
+#                          neither a linted card nor a card file under
+#                          board.dir. A reference to another repo is outside
+#                          this board: it is not checked; card creation keeps
+#                          it in the body as prose.
+#   missing-file           a backticked path (dir/name.ext; in the body or an
+#                          acceptance item) is not on the default
 #                          branch of the card's own repo (with --bodies, the
 #                          <dir>/<id>.repo file names it). Lines under a
 #                          "## Creates" heading are skipped: they name files
@@ -45,7 +48,7 @@ while [ $# -gt 0 ]; do
 done
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
-LCARDS="" # set on the local backend: the card files a board.repo ref resolves to
+LCARDS="" # the card files a board.repo ref resolves to (unset without a config)
 OUT="$WORK/out"; : > "$OUT"
 EDGES="$WORK/edges"; : > "$EDGES"
 IDS=()
@@ -55,7 +58,7 @@ if [ -n "$BODIES" ]; then
   CFG="$(bash "$FB_SCRIPTS/config.sh" 2>/dev/null)" || CFG=""
   REPO=""; [ -z "$CFG" ] || REPO="$(jq -r '.board.repo // ""' <<<"$CFG")"
   ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-  if [ -n "$CFG" ] && [ "$(jq -r '.board.backend // ""' <<<"$CFG")" = local ]; then
+  if [ -n "$CFG" ]; then
     LCOMMON="$(fb_git_common_dir .)" && LROOT="$(dirname "$LCOMMON")" || LROOT="$(pwd)"
     LCARDS="$LROOT/$(jq -r '.board.dir // ".fleet-board"' <<<"$CFG")/cards"
   fi
@@ -70,7 +73,7 @@ if [ -n "$BODIES" ]; then
 else
   fb_load_config
   REPO="$FLEET_REPO"; ROOT="$FLEET_ROOT"
-  [ "$(fb_cfg board.backend)" != local ] || LCARDS="$FLEET_ROOT/$(fb_cfg board.dir)/cards"
+  LCARDS="$FLEET_ROOT/$(fb_cfg board.dir)/cards"
   if [ ${#ARGS[@]} -gt 0 ]; then
     IDS=("${ARGS[@]}")
   else
@@ -82,7 +85,9 @@ else
   for id in ${IDS[@]+"${IDS[@]}"}; do
     fb_valid_number "$id" || fb_die 2 "card number must be numeric, got: $id"
     READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$id")" || fb_die 3 "cannot read card #$id"
-    jq -r '.body // ""' <<<"$READ" | tr -d '\r' > "$WORK/$id.md" || fb_die 3 "cannot parse card #$id"
+    fb_card_text "$READ" | tr -d '\r' > "$WORK/$id.md" || fb_die 3 "cannot parse card #$id"
+    # a card is linted on its fields (see card-lint.sh --read-file)
+    printf '%s\n' "$READ" > "$WORK/$id.read"
   done
 fi
 
@@ -103,14 +108,15 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
   # card-lint.sh's rules
   while IFS= read -r line; do
     [ -n "$line" ] && printf '#%s: %s\n' "$id" "$line" >> "$OUT"
-  done < <(bash "$FB_SCRIPTS/card-lint.sh" --body-file "$F")
+  done < <(if [ -f "$WORK/$id.read" ]; then bash "$FB_SCRIPTS/card-lint.sh" --read-file "$WORK/$id.read"; else bash "$FB_SCRIPTS/card-lint.sh" --body-file "$F"; fi)
 
   # untestable-bullet
   while IFS= read -r line; do
     if grep -Eiq '(^|[^[:alpha:]])(manual|manually|visually|looks)([^[:alpha:]]|$)' <<<"$line"; then
       emit "$id" untestable-bullet "${line#- }"
     fi
-  done < <(awk '/^##[ \t]+Acceptance([ \t].*)?$/{s=1;next} /^##[ \t]/{s=0} s && /^- /' "$F")
+  done < <(if [ -f "$WORK/$id.read" ]; then jq -r '(.acceptance // [])[] | tostring | gsub("\n"; " ") | "- " + .' "$WORK/$id.read"
+           else awk '/^##[ \t]+Acceptance([ \t].*)?$/{s=1;next} /^##[ \t]/{s=0} s && /^- /' "$F"; fi)
 
   # dependencies
   while IFS= read -r tok; do
@@ -131,18 +137,19 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
       */*#[0-9]*) ;;
       *) emit "$id" unresolved-dependency "$tok is not a card in this set"; continue ;;
     esac
-    if [ -n "$LCARDS" ] && [ -n "$REPO" ] && [ "$drepo" = "$REPO" ]; then
-      [ -f "$LCARDS/$num.json" ] || emit "$id" unresolved-dependency "$tok does not exist"
-      continue
+    if [ -n "$REPO" ] && [ "$(printf '%s' "$drepo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$REPO" | tr '[:upper:]' '[:lower:]')" ]; then
+      continue # outside this board: nothing to look it up in
     fi
-    if [ -z "$drepo" ] || ! gh issue view "$num" --repo "$drepo" --json state >/dev/null 2>&1; then
+    if [ -z "$LCARDS" ] || [ ! -f "$LCARDS/$num.json" ]; then
       emit "$id" unresolved-dependency "$tok does not exist"
     fi
-  done < <(awk '
+  done < <(if [ -f "$WORK/$id.read" ]; then
+             jq -r --arg r "$REPO" '(.blocked_by // [])[] | $r + "#" + tostring' "$WORK/$id.read"
+           else awk '
     /^##[ \t]+[Dd]epends[ \t]+[Oo]n[ \t]*$/ { s = 1; next }
     /^#/ { s = 0 }
     s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
-  ' "$F")
+  ' "$F"; fi)
 
   # missing-file: in the card's own repo. A card whose repo differs from the
   # board repo (<dir>/<id>.repo, written by import-plan.sh) is checked on that

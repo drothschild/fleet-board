@@ -26,9 +26,7 @@ SB="$(mktemp -d)"; CLEANUP_DIRS+=("$SB")
 ROOT="$SB/root"; STUBS="$SB/stubs"; D="$SB/gh"
 mkdir -p "$ROOT/docs" "$STUBS" "$D/bodies"
 "$REALGIT" -C "$ROOT" init -q
-printf '%s\n' 'board:' '  backend: github-projects' '  repo: acme/api' '  project_number: 3' 'worktrees:' '  dir: ".wt"' > "$ROOT/.fleet-board.yml"
-mkdir -p "$ROOT/.wt/.cache"
-echo '{"project_id":"PID","field_id":"FID","options":{"Backlog":"OPT_BACKLOG","Ready":"OPT_READY"}}' > "$ROOT/.wt/.cache/projects.json"
+printf '%s\n' 'board:' '  repo: acme/api' 'worktrees:' '  dir: ".wt"' > "$ROOT/.fleet-board.yml"
 
 # Local (unmerged) docs: present in the working tree, absent from the default branch.
 printf '%s\n' '# Coach design' '' '## Overview' 'Intro text.' '' '## Scoring rules' \
@@ -76,13 +74,26 @@ cat > "$SB/cards.json" <<'EOF'
 ]}
 EOF
 
-reset_gh() { rm -rf "$D"; mkdir -p "$D/bodies"; }
+# reset_gh: a fresh gh log and an empty local store
+reset_gh() {
+  rm -rf "$D"; mkdir -p "$D/bodies"
+  rm -rf "$ROOT/.fleet-board"; mkdir -p "$ROOT/.fleet-board/cards"; echo 1 > "$ROOT/.fleet-board/next"
+}
 run_import() { # <stdin> args...
   local ans="$1"; shift
   OUT="$(cd "$ROOT" && printf '%b' "$ans" | FAKE_D="$D" FAKE_EXISTING="$SB/existing" PATH="$STUBS:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
   RC=$?
+  # each local card's body as board-read.sh returns it, followed by its acceptance
+  # items as "- " lines (the path checks cover the field too), at bodies/<100 + n>.md
+  # (where the GitHub stub saved issue n's body)
+  local f n
+  for f in "$ROOT/.fleet-board/cards/"*.json; do
+    [ -e "$f" ] || continue
+    n="$(jq -r .number "$f")"
+    (cd "$ROOT" && bash "$SCRIPT_DIR/../scripts/board-read.sh" "$n" 2>/dev/null) | jq -j '(.body // "") + ((.acceptance // []) | map("\n- " + .) | join(""))' > "$D/bodies/$((100 + n)).md"
+  done
 }
-issues() { cat "$D/calls.log" 2>/dev/null | grep -c "^issue create"; true; }
+issues() { ls "$ROOT/.fleet-board/cards/" 2>/dev/null | grep -c '\.json$'; true; }
 
 echo "# missing doc, user picks merge"
 reset_gh

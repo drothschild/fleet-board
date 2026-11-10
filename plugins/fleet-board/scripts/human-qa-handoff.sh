@@ -4,7 +4,7 @@
 # Usage: human-qa-handoff.sh [--qa-summary <file>] <card-n> <pr-n>
 #
 # The comment is headed "What to check in Human QA" and holds:
-#   - the card's ## Acceptance section as a blockquote;
+#   - the card's acceptance items as a blockquote;
 #   - a checklist of the pre-merge steps a person must do, from the PR's state
 #     (draft, conflicting, no checks) and each bullet of the card's
 #     ## Human QA section. No steps means no checklist at all;
@@ -71,7 +71,9 @@ section() {
     on { print }'
 }
 
-ACCEPTANCE="$(section Acceptance)"
+# the acceptance field's items
+ACCEPTANCE="$(jq -r '(.acceptance // [])[] | tostring | gsub("\n"; " ") | "- " + .' <<<"$READ")" \
+  || fb_die 1 "cannot read the acceptance of card #$CARD"
 QA_ITEMS="$(section "Human QA" | sed -n 's/^- \(.*\)$/\1/p')"
 
 STEPS=""

@@ -2,16 +2,16 @@
 
 ## 1. Purpose
 
-The implementor takes one Ready card and turns its `## Acceptance` bullets into a draft PR, working test-first. It works in the git worktree it is given, which is already on the card's branch. It writes failing tests, commits them alone, implements the minimum needed to make them pass, and pushes. It then opens a draft PR that closes the card, or pushes to the existing PR when this is a continuation. Last, it posts one fixed-shape report on the card. If the card cannot be started, it stops before writing anything and still reports, with Status `blocked`. It never moves cards, never merges and never dispatches other agents. Its report must pass `parse-report.sh --role implementor`.
+The implementor takes one Ready card and turns its acceptance items (the card's `acceptance` field) into a draft PR, working test-first. It works in the git worktree it is given, which is already on the card's branch. It writes failing tests, commits them alone, implements the minimum needed to make them pass, and pushes. It then opens a draft PR that closes the card, or pushes to the existing PR when this is a continuation. Last, it posts one fixed-shape report on the card. If the card cannot be started, it stops before writing anything and still reports, with Status `blocked`. It never moves cards, never merges and never dispatches other agents. Its report must pass `parse-report.sh --role implementor`.
 
 ## 2. Inputs
 
-- **Card:** the number, title and body. The body holds an `## Acceptance` section of `- ` bullets, one testable behavior per bullet.
+- **Card:** the number, title, body and acceptance items. The acceptance items are the card's `acceptance` field, an array of strings, one testable behavior per item, as `board-read.sh <n> | jq '.acceptance'` prints it. They are not read from a section of the body.
 - **Worktree path:** an absolute path to a git worktree that is already checked out on the card's branch.
 - **Branch name:** the card's branch.
 - **Config JSON:** the parsed project config. It includes `commands.test_one`, a command template with a `{file}` placeholder (for example `node --test {file}`), and the optional `commands.typecheck` and `commands.lint`. It also includes `test_paths`, the globs that identify test files (for example `test/**/*.test.js`).
 - **Manager note:** set when this is a continuation. It may record that a PR already exists, and its number, along with the branch, round and earlier `VERIFIED:` line.
-- **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh` and `parse-report.sh`.
+- **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh`, `board-read.sh` and `parse-report.sh`.
 
 ## 3. Required behavior
 
@@ -22,18 +22,17 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
 2. **Checks that the card can start, before writing any test.** It confirms three things:
    - the worktree path exists and is a git worktree;
    - `git -C <worktree> branch --show-current` prints the given branch name;
-   - the card body has an `## Acceptance` section containing at least one `- ` bullet.
+   - the card's `acceptance` field holds at least one item.
 
    If any check fails, the implementor is **blocked before any test or PR exists**:
    - It makes no commit, no push and no PR, and it writes no file in the worktree. `git -C <worktree> status --porcelain` is left empty (when the worktree exists).
    - It posts a report by the usual route (temp file, `parse-report.sh --role implementor`, `board-comment.sh`). The report has:
      - `## Status`: `blocked`.
-     - `## Findings`: one `[Important]` finding that names the block. Example: `- [Important] The card has no ## Acceptance section, so there is nothing to write a failing test against.` A missing or empty Acceptance section counts as a defect in the card's Acceptance. Other examples: the Acceptance section has no `- ` bullet; the worktree path does not exist; the worktree is on a different branch.
-     - `## For the card`: what the card needs before it can start. Example: add a `## Acceptance` section with one `- ` bullet per testable behavior, then move the card back to Ready. For a worktree or branch problem, the text says the manager must recreate the worktree on the card's branch.
+     - `## Findings`: one `[Important]` finding that names the block. Example: `- [Important] The card has no acceptance items, so there is nothing to write a failing test against.` An empty `acceptance` field counts as a defect in the card's Acceptance. Other examples: the worktree path does not exist; the worktree is on a different branch.
+     - `## For the card`: what the card needs before it can start. Example: add acceptance items to the card's `acceptance` field, one per testable behavior, then move the card back to Ready. For a worktree or branch problem, the text says the manager must recreate the worktree on the card's branch.
      - `## PR`: present, and states that no PR exists. Example: `No PR: blocked before any test was written.` It contains no `#` followed by digits. This is allowed only because Status is `blocked`.
      - `VERIFIED:` a real command the implementor ran, which printed an integer relevant to the block. The command contains no backtick character. Examples:
-       - Missing Acceptance section: `gh issue view <card number> --json body --jq .body | grep -c '^## Acceptance'` prints `0`. grep exits 1 on a zero count, but the printed integer is still the result.
-       - No bullets: `gh issue view <card number> --json body --jq .body | sed -n '/^## Acceptance/,/^## [^A]/p' | grep -c '^- '` prints `0`.
+       - No acceptance items: `bash <scripts dir>/board-read.sh <card number> | jq '.acceptance | length'` prints `0`.
        - Missing worktree: `ls -d <worktree> 2>/dev/null | wc -l` prints `0`.
        - Wrong branch: `git -C <worktree> branch --show-current | grep -cx '<branch>'` prints `0`.
    - It never invents a PR number, a commit, a test file or a test command for this report.
@@ -44,7 +43,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
 
    When the note records no PR, the implementor runs `gh pr list --head <branch> --json number` before opening one. If that returns a PR, the implementor reuses it and does not open a second one.
 
-4. **Writes a test first for each Acceptance item.** Every `- ` bullet under `## Acceptance` gets at least one test before any implementation code is written.
+4. **Writes a test first for each Acceptance item.** Every item in the card's `acceptance` field gets at least one test before any implementation code is written.
    - Each test lives in a file whose path matches a `test_paths` glob.
    - Each test's name echoes its bullet's text closely enough that a reviewer can map the bullet to that test by name. The reviewer's map uses the form `<test file>::<test name>`.
 
@@ -103,8 +102,8 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
 ## 4. Must never
 
 - Run the full suite. Prohibited: `commands.test_one` without a file (with `{file}` left empty or unreplaced), `npm test`, `node --test` without a path, or any other runner call not scoped to one named test file.
-- Move cards or edit labels. No `board-move.sh`, no `gh issue edit`, no `gh project item-edit`, and no other state change on the board.
-- Touch any board script other than `board-comment.sh`. `board-move.sh`, `board-note.sh`, `board-list.sh` and `board-read.sh` are not run. `parse-report.sh` is a checker, not a board script, and may be run on the implementor's own report.
+- Move cards or edit labels. No `board-move.sh` (the only way a card changes state on the local board), no edit of a card's labels or fields, and no other state change on the board.
+- Touch any board script other than `board-comment.sh` and `board-read.sh`. `board-read.sh` only reads the card, for example to count its acceptance items. `board-move.sh`, `board-note.sh` and `board-list.sh` are not run. `parse-report.sh` is a checker, not a board script, and may be run on the implementor's own report.
 - Mark the PR ready (`gh pr ready`) or merge it (`gh pr merge`).
 - Edit files outside the worktree. The only exception is the report temp file in the system temp directory.
 - Dispatch agents.
@@ -113,7 +112,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
 - Commit implementation code in the first commit, or commit tests and implementation together.
 - Force-push, amend or rewrite commits already on the branch.
 - Weaken, skip or delete a test to make it pass.
-- File issues or bug cards itself (`gh issue create`). Bugs and out-of-scope work are only reported.
+- File issues or bug cards itself (`board-create.sh`). Bugs and out-of-scope work are only reported.
 - Open a second PR for a card that already has one.
 - List, glob, search or sort any temp directory (for example `ls -t $TMPDIR`, `/var/folders/...`, or `find` in a temp directory). Never post or pass to a board script any file other than the report file it created with `mktemp` in this dispatch.
 
@@ -226,7 +225,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 
 ### Pitfalls for the report writer
 
-- The `VERIFIED:` command sits between single backticks, so it cannot contain a backtick itself. A command that would need one must be rewritten. For example, a command that pastes card text containing backticks should instead read the text with `gh issue view <n> --json body --jq .body`.
+- The `VERIFIED:` command sits between single backticks, so it cannot contain a backtick itself. A command that would need one must be rewritten. For example, a command that pastes card text containing backticks should instead read the text with `board-read.sh <n> | jq -r '.body'`.
 - In `## PR`, the first `#` followed by digits is read as the PR number. So `## PR` must contain no `#<digits>` except the real PR number: not the card number, not an example.
 - In `## For the card`, free text must not start a line with `- ` unless that line is an entry directly under `Out of scope:` or `Bugs found:`. Otherwise it is a stray list line. Put free text before the sub-lists, and do not leave a blank line between a sub-list header and its entries.
 - Each heading appears once. Do not repeat `## Findings` or `## PR`.
@@ -264,15 +263,15 @@ Leave out `Out of scope:` and `Bugs found:` when there is nothing to list. The n
 blocked
 
 ## Findings
-- [Important] The card has no ## Acceptance section, so there is nothing to write a failing test against.
+- [Important] The card has no acceptance items, so there is nothing to write a failing test against.
 
 ## For the card
-Add a ## Acceptance section with one bullet per testable behavior, then move the card back to Ready. No test, commit, push or PR was made, and the worktree is unchanged.
+Add acceptance items to the card's acceptance field, one per testable behavior, then move the card back to Ready. No test, commit, push or PR was made, and the worktree is unchanged.
 
 ## PR
 No PR: blocked before any test was written.
 
-VERIFIED: `gh issue view 7 --json body --jq .body | grep -c '^## Acceptance'` -> 0 Acceptance sections in the card body
+VERIFIED: `bash /plugins/fleet-board/scripts/board-read.sh 7 | jq '.acceptance | length'` -> 0 acceptance items on the card
 ```
 
 For the other block causes, the finding names that cause, and the `VERIFIED:` line uses the matching command from Required behavior step 2.

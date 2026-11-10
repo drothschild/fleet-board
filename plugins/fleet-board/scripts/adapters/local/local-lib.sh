@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Store helpers for the local board backend. Source after board-lib.sh, once the
+# Store helpers for the local card store. Source after board-lib.sh, once the
 # config is loaded (FLEET_ROOT and FLEET_CFG set).
 
 fl_dir() { printf '%s/%s\n' "$FLEET_ROOT" "$(fb_cfg board.dir)"; }
@@ -58,12 +58,13 @@ fl_write_card() {
   mv -f "$tmp" "$(fl_card_file "$1")" || { rm -f "$tmp"; fb_die 1 "cannot write card #$1"; }
 }
 
-# fl_next_number: allocates and prints the next card number, under <dir>/.next.lock.
-fl_next_number() {
-  local d lock wait stale_min=5 waited=0 f n
-  d="$(fl_dir)"; f="$d/next"; lock="$d/.next.lock"
+# fl_lock_next / fl_unlock_next: <dir>/.next.lock, the lock every writer of
+# <dir>/next takes (a lock older than 5 minutes is stale and removed).
+fl_lock_next() {
+  local d lock wait stale_min=5 waited=0
+  d="$(fl_dir)"; lock="$d/.next.lock"
   wait="${FLEET_BOARD_LOCK_WAIT:-30}"
-  [ -f "$f" ] || fb_die 1 "no local board at $d; run /fleet-board:init"
+  mkdir -p "$d" || fb_die 1 "cannot create $d"
   while ! mkdir "$lock" 2>/dev/null; do
     if [ -n "$(find "$lock" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
       rm -rf "$lock"; continue
@@ -71,6 +72,15 @@ fl_next_number() {
     [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
     sleep 0.1; waited=$((waited + 1))
   done
+}
+fl_unlock_next() { rm -rf "$(fl_dir)/.next.lock"; }
+
+# fl_next_number: allocates and prints the next card number, under <dir>/.next.lock.
+fl_next_number() {
+  local d lock f n
+  d="$(fl_dir)"; f="$d/next"; lock="$d/.next.lock"
+  [ -f "$f" ] || fb_die 1 "no local board at $d; run /fleet-board:init"
+  fl_lock_next
   n="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
   case "$n" in
     ''|*[!0-9]*|0|0[0-9]*) rm -rf "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
@@ -80,4 +90,101 @@ fl_next_number() {
   fi
   rm -rf "$lock"
   printf '%s\n' "$n"
+}
+
+# fl_split_body <body-file> [repo]: prints {"body","acceptance","blocked_by","outside"}.
+# Removes the FIRST "## Acceptance" and the FIRST "## Depends on" section that
+# sit outside code fences (a section runs to the next heading); a repeat of
+# either heading, or one inside a fence, stays in the body as prose. Bullets
+# lose their "- " and are trimmed; "#n" and "<repo>#n" (repo defaults to board.repo) become numbers in
+# blocked_by, any other dependency entry goes to outside. A body with neither
+# section comes back byte for byte.
+fl_split_body() {
+  jq -n --rawfile b "$1" --arg repo "${2:-$(fb_cfg board.repo)}" '
+    def trim: sub("^[ \t]+"; "") | sub("[ \t\r]+$"; "");
+    def isbullet: test("^[ \t]*[-*][ \t]+");
+    def clean: sub("^[ \t]*[-*][ \t]+"; "") | trim;
+    def cont($l): if (.acc | length) == 0 then .body += [$l] else .acc[-1] += "\n" + ($l | trim) end;
+    def inside($l):
+      if .sec == "acc" then cont($l)
+      elif .sec == "dep" then .dep += [$l | trim]
+      else .body += [$l] end;
+    def ref:
+      if test("^#[0-9]+$") then {n: (.[1:] | tonumber)}
+      elif test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+$")
+           and ((split("#")[0] | ascii_downcase) == ($repo | ascii_downcase))
+        then {n: (split("#")[1] | tonumber)}
+      else {o: .} end;
+    ($b | split("\n")) as $lines
+    | reduce $lines[] as $l ({fence: false, sec: null, sa: false, sd: false, hit: false, body: [], acc: [], dep: []};
+        if ($l | test("^[ ]{0,3}(```|~~~)")) then
+          .fence = (.fence | not) | inside($l)
+        elif .fence then inside($l)
+        elif ($l | test("^#{1,6}([ \t]|$)")) then
+          if ($l | test("^##[ \t]+Acceptance([ \t].*)?$")) and (.sa | not) then .sec = "acc" | .sa = true | .hit = true
+          elif ($l | test("^##[ \t]+depends[ \t]+on[ \t]*$"; "i")) and (.sd | not) then .sec = "dep" | .sd = true | .hit = true
+          else .sec = null | .body += [$l] end
+        elif .sec == null then .body += [$l]
+        elif ($l | test("^[ \t\r]*$")) then .
+        elif .sec == "acc" then (if ($l | isbullet) then .acc += [$l | clean] else cont($l) end)
+        else .dep += [$l | clean] end)
+    | . as $s
+    | ($s.dep | map(select(. != "") | ref)) as $refs
+    | {body: (if $s.hit then ($s.body | join("\n") | sub("\n+$"; "") | if . == "" then "" else . + "\n" end) else $b end),
+       acceptance: ($s.acc | map(select(. != ""))),
+       blocked_by: ([$refs[] | select(.n != null) | .n] | reduce .[] as $x ([]; if index($x) then . else . + [$x] end)),
+       outside: [$refs[] | select(.o != null) | .o]}'
+}
+
+# fl_acceptance_json <file>: the bullets (a leading "- " or "* " is optional)
+# of an acceptance file as a JSON array of trimmed, non-empty strings.
+fl_acceptance_json() {
+  jq -Rs 'split("\n") | map(sub("^[ \t]*[-*][ \t]+"; "") | sub("^[ \t]+"; "") | sub("[ \t\r]+$"; "")) | map(select(. != ""))' < "$1"
+}
+
+# fl_uniq_json: stdin JSON array -> the array without repeats, order kept.
+fl_uniq_json() { jq -c 'reduce .[] as $x ([]; if index($x) then . else . + [$x] end)'; }
+
+# fl_fold_outside <split-json> <card-n-for-message>: prints the split body with
+# each outside dependency kept as a prose line (so nothing is lost), and warns.
+fl_fold_outside() {
+  jq -r '.outside[]' <<<"$1" | while IFS= read -r r; do
+    printf 'fleet-board: warning: card %s: dependency %s is outside this board; kept in the body as prose\n' "$2" "$r" >&2
+  done
+  jq -j '.body as $b | if (.outside | length) == 0 then $b
+    else ($b | sub("\n+$"; "")) + (if $b == "" then "" else "\n\n" end) + (.outside | map("Depends on (outside this board): " + .) | join("\n")) + "\n" end' <<<"$1"
+}
+
+# fl_note_pr_info <note-body-file>: reads the note's fenced json block and
+# prints {"ok": false} when it has none or its "pr" is not a positive integer
+# or null, else {"ok": true, "has": <key present>, "pr": <value>}.
+fl_note_pr_info() {
+  jq -Rsc '
+  split("\n") | reduce .[] as $l ({on: false, buf: [], done: false};
+    if .done then .
+    elif .on and ($l | test("^```")) then .done = true
+    elif .on then .buf += [$l]
+    elif ($l | test("^```json")) then .on = true
+    else . end)
+  | if .done | not then {ok: false}
+    else (.buf | join("\n") | try fromjson catch null) as $j
+      | if ($j | type) != "object" then {ok: false}
+        elif ($j | has("pr") | not) then {ok: true, has: false}
+        elif $j.pr == null then {ok: true, has: true, pr: null}
+        elif ($j.pr | type) == "number" and $j.pr == ($j.pr | floor) and $j.pr > 0 then {ok: true, has: true, pr: $j.pr}
+        else {ok: false} end
+    end' < "$1"
+}
+
+# fl_check_blocked_by <self-number|""> <json>: exit 2 unless <json> is an array
+# of positive integers naming cards that exist in the store, none of them the
+# card itself.
+fl_check_blocked_by() {
+  local self="$1" b
+  jq -e 'type == "array" and all(.[]; type == "number" and . == floor and . > 0)' <<<"$2" >/dev/null 2>&1 \
+    || fb_die 2 "blocked_by must be a JSON array of positive integers, got: $2"
+  for b in $(jq -r '.[]' <<<"$2"); do
+    [ "$b" != "$self" ] || fb_die 2 "blocked_by names #$b, the card itself"
+    [ -f "$(fl_card_file "$b")" ] || fb_die 2 "blocked_by names #$b, which does not exist in $(fl_cards_dir)"
+  done
 }

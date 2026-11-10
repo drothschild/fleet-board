@@ -104,6 +104,23 @@ function formatModels(models) {
   };
 }
 
+// prNumber(url): the pull number in a github.com pull URL, or null.
+const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/([1-9][0-9]*)$/;
+function prNumber(url) {
+  const m = typeof url === "string" ? PR_URL_RE.exec(url) : null;
+  return m ? Number(m[1]) : null;
+}
+
+function prLink(url, text) {
+  const a = el("a", null, text);
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.draggable = false;
+  a.title = url;
+  return a;
+}
+
 function formatHours(h) {
   return (h < 1 ? h.toFixed(2) : h.toFixed(1)) + " h";
 }
@@ -334,9 +351,16 @@ function renderBoard(board, force) {
   }
 
   const byState = {};
+  const stateOf = {};
   for (const s of board.states) byState[s.key] = [];
+  for (const c of board.cards) stateOf[c.number] = c.state;
   const unknown = [];
   for (const c of board.cards) {
+    // the open blockers depend on other cards: kept on the card so a column
+    // re-renders when only a blocker's state changed
+    c.open_blockers = (Array.isArray(c.blocked_by) ? c.blocked_by : []).filter(function (b) {
+      return stateOf[b] !== "done";
+    });
     if (byState[c.state] && c.known !== false) byState[c.state].push(c);
     else unknown.push(c);
   }
@@ -495,29 +519,32 @@ function renderCard(c, repo) {
   }
   id.appendChild(document.createTextNode("#" + n));
   if (c.active) id.appendChild(el("span", "sr-only", "an agent is working on it now"));
+  if (c.acceptance_count > 0) id.appendChild(el("span", "card-acc", c.acceptance_count + " acceptance"));
   li.appendChild(id);
 
   li.appendChild(el("div", "card-title", c.title || "(untitled)"));
   if (c.known === false) li.appendChild(el("div", "card-meta warn card-state", "state: " + c.state));
 
   const note = c.note || null;
-  if (note && (note.round != null || note.pr != null)) {
+  const open = c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : [];
+  if (open.length) {
+    li.classList.add("blocked");
+    li.appendChild(el("div", "card-meta blocked-by", "blocked by " + open.map(function (b) { return "#" + b; }).join(", ")));
+  }
+  const parts = [];
+  if (note && note.round != null) parts.push(document.createTextNode("round " + note.round));
+  const prNum = prNumber(c.pr_url);
+  if (prNum !== null) {
+    parts.push(prLink(c.pr_url, "PR #" + prNum));
+  } else if (note && note.pr != null && !c.pr_url) {
+    parts.push(document.createTextNode("PR #" + note.pr));
+  }
+  if (parts.length) {
     const meta = el("div", "card-meta");
-    if (note.round != null) meta.appendChild(document.createTextNode("round " + note.round));
-    if (note.pr != null) {
-      if (note.round != null) meta.appendChild(document.createTextNode(" · "));
-      const label = "PR #" + note.pr;
-      if (repo && Number.isInteger(note.pr)) {
-        const a = el("a", null, label);
-        a.href = "https://github.com/" + repo + "/pull/" + note.pr;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.draggable = false;
-        meta.appendChild(a);
-      } else {
-        meta.appendChild(document.createTextNode(label));
-      }
-    }
+    parts.forEach(function (p, i) {
+      if (i) meta.appendChild(document.createTextNode(" · "));
+      meta.appendChild(p);
+    });
     li.appendChild(meta);
   }
   const models = note && formatModels(note.models);
@@ -770,12 +797,13 @@ function hideToast() {
 // --- card drawer -------------------------------------------------------------
 
 const NOTE_MARKER = "<!-- fleet-board:manager-note -->";
-const NEW_CARD_BODY = "## Acceptance\n- ";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // S.drawer while open: {n (null = new card), card (the last GET reply),
-// base: {title, body, labels, state} as saved, labels: the edited label list,
-// opener: the element to refocus on close, seq, busy}.
+// base: {title, body, labels, state, acceptance, blocked_by, pr_url} as saved,
+// labels / acc / blk / pr: the edited labels, acceptance items, blocker
+// numbers and PR URL (null = none), opener: the element to refocus on close,
+// seq, busy}. The body is prose only; the fields travel as fields.
 S.drawer = null;
 
 function openCard(n) {
@@ -794,6 +822,9 @@ async function openDrawer(n, opener) {
     card: null,
     base: null,
     labels: [],
+    acc: [],
+    blk: [],
+    pr: null,
     opener: opener || (prev ? prev.opener : document.activeElement),
     seq: prev ? prev.seq + 1 : 1,
     busy: false,
@@ -818,7 +849,8 @@ async function openDrawer(n, opener) {
   $("dr-title").focus();
 }
 
-const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-comment", "dr-comment-btn"];
+const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-acc-input", "dr-blk-input",
+  "dr-pr-edit", "dr-pr-clear", "dr-pr-input", "dr-pr-done", "dr-comment", "dr-comment-btn"];
 
 // clearDrawer(n): empties every field, the comment box and the label input,
 // and disables them until renderDrawer fills them, so nothing typed or shown
@@ -828,10 +860,20 @@ function clearDrawer(n) {
   $("dr-title").value = "";
   $("dr-body").value = "";
   $("dr-label-input").value = "";
+  $("dr-acc-input").value = "";
+  $("dr-blk-input").value = "";
+  $("dr-pr-input").value = "";
   $("dr-comment").value = "";
   $("dr-state").replaceChildren();
   $("dr-preview").replaceChildren();
   $("dr-labels").replaceChildren();
+  $("dr-acc").replaceChildren();
+  $("dr-acc-count").textContent = "";
+  $("dr-blk").replaceChildren();
+  setFieldError("dr-blk-input", "dr-blk-err", "");
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  showPrForm(false);
+  $("dr-pr-view").replaceChildren();
   $("dr-comments").replaceChildren();
   $("dr-meta").replaceChildren();
   setDrawerFields(false);
@@ -897,9 +939,20 @@ function renderDrawer(card) {
   const isNew = card === null;
   d.card = card;
   d.base = isNew
-    ? { title: "", body: NEW_CARD_BODY, labels: [], state: "backlog" }
-    : { title: card.title || "", body: card.body || "", labels: (card.labels || []).slice(), state: card.state };
+    ? { title: "", body: "", labels: [], state: "backlog", acceptance: [], blocked_by: [], pr_url: null }
+    : {
+        title: card.title || "",
+        body: typeof card.body === "string" ? card.body : "",
+        labels: (card.labels || []).slice(),
+        state: card.state,
+        acceptance: (Array.isArray(card.acceptance) ? card.acceptance : []).slice(),
+        blocked_by: (Array.isArray(card.blocked_by) ? card.blocked_by : []).slice(),
+        pr_url: typeof card.pr_url === "string" && card.pr_url ? card.pr_url : null,
+      };
   d.labels = d.base.labels.slice();
+  d.acc = d.base.acceptance.slice();
+  d.blk = d.base.blocked_by.slice();
+  d.pr = d.base.pr_url;
   setDrawerFields(true);
 
   const drawer = $("drawer");
@@ -910,6 +963,12 @@ function renderDrawer(card) {
   $("dr-body").value = d.base.body;
   fillStateSelect(d.base.state);
   renderLabels();
+  renderAcceptance();
+  renderBlockers();
+  setFieldError("dr-blk-input", "dr-blk-err", "");
+  $("dr-pr-field").hidden = isNew; // a card has no PR before it exists
+  showPrForm(false);
+  renderPr();
   renderBodyPreview();
   renderDrawerMeta();
   $("dr-comments-sec").hidden = isNew;
@@ -976,6 +1035,278 @@ function addLabel() {
   updateDirty();
 }
 
+// --- acceptance, blocked by, pull request ------------------------------------
+
+// accItems(list): the items that would be saved: trimmed, empties dropped.
+function accItems(list) {
+  return list.map(function (a) { return String(a).trim(); }).filter(function (a) { return a !== ""; });
+}
+
+function iconButton(cls, label, child) {
+  const b = el("button", "acc-btn " + cls);
+  b.type = "button";
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  if (child) b.appendChild(child); else b.textContent = "×";
+  return b;
+}
+
+// autosize(textarea): grows a one-line criterion to fit its text.
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
+
+// renderAcceptance(focus): the editable list; focus = {i, end} puts the caret
+// in item i after the re-render (or in the add box when i is past the end).
+function renderAcceptance(focus) {
+  const d = S.drawer;
+  const ol = $("dr-acc");
+  const frag = document.createDocumentFragment();
+  const last = d.acc.length - 1;
+  d.acc.forEach(function (text, i) {
+    const li = el("li", "acc-item");
+    li.appendChild(el("span", "acc-box"));
+    li.firstChild.setAttribute("aria-hidden", "true");
+    const ta = el("textarea", "acc-text");
+    ta.rows = 1;
+    ta.value = text;
+    ta.spellcheck = true;
+    ta.setAttribute("aria-label", "Criterion " + (i + 1));
+    ta.addEventListener("input", function () {
+      d.acc[i] = ta.value.replace(/[\r\n]+/g, " ");
+      if (ta.value !== d.acc[i]) ta.value = d.acc[i];
+      autosize(ta);
+      updateAccCount();
+      updateDirty();
+    });
+    ta.addEventListener("keydown", function (e) { accKey(e, i, ta); });
+    li.appendChild(ta);
+    const tools = el("span", "acc-tools");
+    const up = iconButton("acc-up", "Move criterion " + (i + 1) + " up", chevron());
+    up.disabled = i === 0;
+    up.addEventListener("click", function () { moveAcc(i, -1); });
+    const down = iconButton("acc-down", "Move criterion " + (i + 1) + " down", chevron());
+    down.disabled = i === last;
+    down.addEventListener("click", function () { moveAcc(i, 1); });
+    const x = iconButton("acc-x", "Remove criterion " + (i + 1));
+    x.addEventListener("click", function () { removeAcc(i); });
+    tools.appendChild(up);
+    tools.appendChild(down);
+    tools.appendChild(x);
+    li.appendChild(tools);
+    frag.appendChild(li);
+  });
+  ol.replaceChildren(frag);
+  for (const ta of ol.querySelectorAll(".acc-text")) autosize(ta);
+  updateAccCount();
+  if (focus) focusAcc(focus.i, focus.end, focus.sel);
+}
+
+function focusAcc(i, end, sel) {
+  const items = $("dr-acc").querySelectorAll(".acc-text");
+  if (i >= items.length || i < 0) {
+    $("dr-acc-input").focus();
+    return;
+  }
+  const t = items[i];
+  if (sel) {
+    t.parentNode.querySelector(sel).focus();
+    return;
+  }
+  t.focus();
+  const at = end ? t.value.length : 0;
+  t.setSelectionRange(at, at);
+}
+
+function updateAccCount() {
+  const n = accItems(S.drawer.acc).length;
+  $("dr-acc-count").textContent = n ? String(n) : "";
+}
+
+// accKey: Enter goes to the next criterion (or the add box), Backspace in an
+// empty one removes it, Alt+Up/Down moves it.
+function accKey(e, i, ta) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    focusAcc(i + 1, true);
+  } else if (e.key === "Backspace" && ta.value === "") {
+    e.preventDefault();
+    S.drawer.acc.splice(i, 1);
+    renderAcceptance({ i: i > 0 ? i - 1 : 0, end: true });
+    updateDirty();
+  } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    e.preventDefault();
+    moveAcc(i, e.key === "ArrowUp" ? -1 : 1, true);
+  }
+}
+
+function moveAcc(i, by, keepCaret) {
+  const d = S.drawer;
+  const j = i + by;
+  if (j < 0 || j >= d.acc.length) return;
+  const item = d.acc.splice(i, 1)[0];
+  d.acc.splice(j, 0, item);
+  const sel = keepCaret ? null : (j === 0 ? ".acc-down" : j === d.acc.length - 1 ? ".acc-up" : by < 0 ? ".acc-up" : ".acc-down");
+  renderAcceptance({ i: j, end: true, sel: sel });
+  updateDirty();
+}
+
+function removeAcc(i) {
+  const d = S.drawer;
+  d.acc.splice(i, 1);
+  renderAcceptance({ i: d.acc.length ? Math.min(i, d.acc.length - 1) : 0, end: true, sel: d.acc.length ? ".acc-x" : null });
+  updateDirty();
+}
+
+function addAcc() {
+  const d = S.drawer;
+  const input = $("dr-acc-input");
+  const text = input.value.replace(/[\r\n]+/g, " ").trim();
+  if (!d || !text) return;
+  d.acc.push(text);
+  input.value = "";
+  renderAcceptance();
+  updateDirty();
+}
+
+// setFieldError(inputId, errId, msg): an inline error under a field; "" clears.
+function setFieldError(inputId, errId, msg) {
+  const input = $(inputId);
+  const err = $(errId);
+  err.textContent = msg;
+  err.hidden = !msg;
+  if (msg) input.setAttribute("aria-invalid", "true");
+  else input.removeAttribute("aria-invalid");
+}
+
+// renderBlockers(): one chip per blocker: amber while it is open (not done,
+// or not on the board), quiet once done.
+function renderBlockers() {
+  const d = S.drawer;
+  const frag = document.createDocumentFragment();
+  d.blk.forEach(function (n, i) {
+    const c = boardCard(n);
+    const done = !!c && c.state === "done";
+    const li = el("li", "label blk-chip" + (done ? " done" : " open"));
+    li.appendChild(el("span", "blk-num", "#" + n));
+    li.appendChild(el("span", "blk-title", c ? c.title || "(untitled)" : "not on this board"));
+    li.title = c ? "#" + n + " " + (c.title || "") + " · " + stateName(c.state) : "#" + n + " is not on this board";
+    const x = el("button", "label-x", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", "Remove blocker #" + n);
+    x.addEventListener("click", function () {
+      d.blk.splice(i, 1);
+      renderBlockers();
+      updateDirty();
+      $("dr-blk-input").focus();
+    });
+    li.appendChild(x);
+    frag.appendChild(li);
+  });
+  $("dr-blk").replaceChildren(frag);
+  d.blkSig = JSON.stringify(d.blk.map(function (n) {
+    const c = boardCard(n);
+    return c ? [c.state, c.title] : null;
+  }));
+}
+
+// addBlocker() -> false when the typed text is refused inline: it must be a
+// card number, `#12` or `12`, and not this card. Whether the card exists is
+// the server's call, on Save.
+function addBlocker() {
+  const d = S.drawer;
+  const input = $("dr-blk-input");
+  const raw = input.value.trim();
+  if (!d || !raw) {
+    setFieldError("dr-blk-input", "dr-blk-err", "");
+    return true;
+  }
+  const m = /^#?\s*([1-9][0-9]*)$/.exec(raw);
+  if (!m) {
+    setFieldError("dr-blk-input", "dr-blk-err", "Type a card number, like #12. “" + raw + "” is not one.");
+    return false;
+  }
+  const n = Number(m[1]);
+  if (n === d.n) {
+    setFieldError("dr-blk-input", "dr-blk-err", "A card cannot block itself.");
+    return false;
+  }
+  setFieldError("dr-blk-input", "dr-blk-err", "");
+  if (d.blk.indexOf(n) === -1) d.blk.push(n);
+  input.value = "";
+  renderBlockers();
+  updateDirty();
+  return true;
+}
+
+// renderPr(): the PR link (or None) with Edit and Clear.
+function renderPr() {
+  const d = S.drawer;
+  const view = $("dr-pr-view");
+  const n = prNumber(d.pr);
+  if (d.pr && n !== null) {
+    view.replaceChildren(prLink(d.pr, prRepo(d.pr) + "#" + n));
+  } else if (d.pr) {
+    view.replaceChildren(el("span", null, d.pr)); // never a link to an unchecked URL
+  } else {
+    view.replaceChildren(el("span", "dr-pr-none", "None"));
+  }
+  $("dr-pr-edit").textContent = d.pr ? "Edit" : "Add";
+  $("dr-pr-clear").hidden = !d.pr;
+}
+
+function prRepo(url) {
+  const m = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\//.exec(url);
+  return m ? m[1] : "";
+}
+
+function showPrForm(on) {
+  $("dr-pr-form").hidden = !on;
+  $("dr-pr-show").hidden = on;
+}
+
+function editPr() {
+  const d = S.drawer;
+  const input = $("dr-pr-input");
+  input.value = d.pr || "";
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  showPrForm(true);
+  input.focus();
+  input.select();
+}
+
+// applyPr() -> false when the URL is refused inline. Empty clears the PR.
+function applyPr() {
+  const d = S.drawer;
+  const v = $("dr-pr-input").value.trim();
+  if (v && prNumber(v) === null) {
+    const repo = (S.board && S.board.repo) || "owner/repo";
+    setFieldError("dr-pr-input", "dr-pr-err", "Paste a pull request link, like https://github.com/" + repo + "/pull/12.");
+    return false;
+  }
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  d.pr = v || null;
+  showPrForm(false);
+  renderPr();
+  updateDirty();
+  $("dr-pr-edit").focus();
+  return true;
+}
+
+function cancelPr() {
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  showPrForm(false);
+  $("dr-pr-edit").focus();
+}
+
+function clearPr() {
+  S.drawer.pr = null;
+  renderPr();
+  updateDirty();
+  $("dr-pr-edit").focus();
+}
+
 // boardCard(n): the card's summary in the last board poll, or null.
 function boardCard(n) {
   return (S.board && S.board.cards.find(function (c) { return c.number === n; })) || null;
@@ -994,8 +1325,7 @@ function noteJson(text) {
   }
 }
 
-// renderDrawerMeta(): `round r · PR #p · models (escalated) · agent working
-// now`. Called on render and after every board poll (the active part is live).
+// renderDrawerMeta(): `round r · models (escalated) · agent working now`. Called on render and after every board poll (the active part is live).
 function renderDrawerMeta() {
   const d = S.drawer;
   const meta = $("dr-meta");
@@ -1006,18 +1336,7 @@ function renderDrawerMeta() {
   const note = noteJson(d.card.manager_note) || {};
   const parts = [];
   if (note.round != null) parts.push(document.createTextNode("round " + note.round));
-  if (note.pr != null) {
-    const label = "PR #" + note.pr;
-    if (d.card.pr_url) {
-      const a = el("a", null, label);
-      a.href = d.card.pr_url;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      parts.push(a);
-    } else {
-      parts.push(document.createTextNode(label));
-    }
-  }
+  // the PR is its own field below
   const models = formatModels(note.models);
   if (models) {
     const span = el("span", null, models.text + (note.escalated ? " (escalated)" : ""));
@@ -1117,16 +1436,24 @@ function drawerEdits() {
     body: $("dr-body").value,
     labels: d.labels.slice(),
     state: $("dr-state").value,
+    acceptance: accItems(d.acc),
+    blocked_by: d.blk.slice(),
+    pr_url: d.pr,
   };
 }
+
+const same = function (a, b) { return JSON.stringify(a) === JSON.stringify(b); };
 
 function isDirty() {
   const d = S.drawer;
   if (!d || !d.base) return false;
   if (d.n === null) return true;
+  // text typed in an add box is saved with the rest
+  if ($("dr-acc-input").value.trim() || $("dr-blk-input").value.trim()) return true;
   const e = drawerEdits();
   return e.title !== d.base.title || e.body !== d.base.body || e.state !== d.base.state ||
-    JSON.stringify(e.labels) !== JSON.stringify(d.base.labels);
+    !same(e.labels, d.base.labels) || !same(e.acceptance, d.base.acceptance) ||
+    !same(e.blocked_by, d.base.blocked_by) || e.pr_url !== d.base.pr_url;
 }
 
 // updateDirty(): Save is the page's one filled button only while there is
@@ -1157,7 +1484,17 @@ async function writeApi(method, path, body) {
 async function saveDrawer() {
   const d = S.drawer;
   if (!d || d.busy) return;
-  if ($("dr-label-input").value.trim()) addLabel(); // a typed label counts
+  // what is typed in an add box counts
+  if ($("dr-label-input").value.trim()) addLabel();
+  if ($("dr-acc-input").value.trim()) addAcc();
+  if (!addBlocker()) {
+    $("dr-blk-input").focus();
+    return;
+  }
+  if (!$("dr-pr-form").hidden && !applyPr()) {
+    $("dr-pr-input").focus();
+    return;
+  }
   if (!isDirty()) return;
   const e = drawerEdits();
   if (!e.title.trim()) {
@@ -1167,7 +1504,10 @@ async function saveDrawer() {
   }
   setDrawerBusy(true);
   if (d.n === null) {
-    const r = await writeApi("POST", "/api/cards", { title: e.title, body: e.body, labels: e.labels, state: e.state });
+    const r = await writeApi("POST", "/api/cards", {
+      title: e.title, body: e.body, labels: e.labels, state: e.state,
+      acceptance: e.acceptance, blocked_by: e.blocked_by,
+    });
     if (S.drawer !== d) return;
     setDrawerBusy(false);
     fetchBoard(true);
@@ -1186,7 +1526,10 @@ async function saveDrawer() {
   const patch = {};
   if (e.title !== d.base.title) patch.title = e.title;
   if (e.body !== d.base.body) patch.body = e.body;
-  if (JSON.stringify(e.labels) !== JSON.stringify(d.base.labels)) patch.labels = e.labels;
+  if (!same(e.labels, d.base.labels)) patch.labels = e.labels;
+  if (!same(e.acceptance, d.base.acceptance)) patch.acceptance = e.acceptance;
+  if (!same(e.blocked_by, d.base.blocked_by)) patch.blocked_by = e.blocked_by;
+  if (e.pr_url !== d.base.pr_url) patch.pr_url = e.pr_url;
   if (Object.keys(patch).length) {
     const r = await writeApi("PATCH", "/api/cards/" + n, patch);
     if (S.drawer !== d) return;
@@ -1246,7 +1589,19 @@ async function submitComment() {
 
 // syncDrawer(): after a board poll, refresh the live parts of the drawer.
 function syncDrawer() {
-  if (S.drawer && S.drawer.card) renderDrawerMeta();
+  const d = S.drawer;
+  if (!d || !d.base) return;
+  if (d.card) renderDrawerMeta();
+  // a blocker that moved to done (or appeared) changes its chip
+  const sig = JSON.stringify(d.blk.map(function (n) {
+    const c = boardCard(n);
+    return c ? [c.state, c.title] : null;
+  }));
+  if (sig !== d.blkSig) {
+    const hadFocus = $("dr-blk").contains(document.activeElement);
+    renderBlockers();
+    if (hadFocus) $("dr-blk-input").focus();
+  }
 }
 
 function bindDrawer() {
@@ -1264,6 +1619,38 @@ function bindDrawer() {
     if (e.key === "Enter") {
       e.preventDefault();
       addLabel();
+    }
+  });
+  $("dr-acc-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addAcc();
+    } else if (e.key === "Backspace" && !e.target.value && S.drawer && S.drawer.acc.length) {
+      e.preventDefault();
+      focusAcc(S.drawer.acc.length - 1, true);
+    }
+  });
+  $("dr-acc-input").addEventListener("input", updateDirty);
+  $("dr-blk-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addBlocker();
+    }
+  });
+  $("dr-blk-input").addEventListener("input", function () {
+    if (!$("dr-blk-err").hidden) setFieldError("dr-blk-input", "dr-blk-err", "");
+    updateDirty();
+  });
+  $("dr-pr-edit").addEventListener("click", editPr);
+  $("dr-pr-clear").addEventListener("click", clearPr);
+  $("dr-pr-done").addEventListener("click", applyPr);
+  $("dr-pr-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyPr();
+    } else if (e.key === "Escape") {
+      e.preventDefault(); // closes the PR box, not the drawer
+      cancelPr();
     }
   });
   $("dr-title").addEventListener("keydown", function (e) {

@@ -8,7 +8,7 @@ The reviewer is a fresh-context role agent that judges one card's pull request o
 
 The manager passes exactly these, and nothing else (in particular, no transcript of any other agent):
 
-- **Card number and card body.** The body holds an `Acceptance` section of bullets; each bullet is one Acceptance item.
+- **Card number, card body and acceptance items.** The acceptance items are the card's `acceptance` field, an array of strings, as `board-read.sh <n> | jq '.acceptance'` prints it; each string is one Acceptance item. They are not read from a section of the body.
 - **PR number.**
 - **PR diff**, as produced by `gh pr diff <PR number>`.
 - **Latest implementor or fixer report text** (the report only, never a transcript).
@@ -33,7 +33,7 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 0. **Record the head.** Run `git rev-parse HEAD` in the review worktree and record the SHA. The report's `## For the card` contains a plain line `reviewed head: <sha>` with that SHA, so the manager can pass it as the previous review SHA in the next round.
 
 1. **Map every Acceptance item to a test in the diff.**
-   - Every bullet of the card's `Acceptance` section produces exactly one line in `## Acceptance map`: `- <item text> -> <test file>::<test name>` when a test in the diff maps to it, ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>` when one of the two rules below allows it, or `- <item text> -> UNMAPPED` otherwise.
+   - Every item of the card's `acceptance` field produces exactly one line in `## Acceptance map`: `- <item text> -> <test file>::<test name>` when a test in the diff maps to it, ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>` when one of the two rules below allows it, or `- <item text> -> UNMAPPED` otherwise.
    - An item maps to a test in the diff when that test **exercises the item's behavior**: it calls the code under the item's inputs or scenario. A test that calls `subtract(5, 2)` maps to "subtract(5, 2) returns 3" even if its only assertion is `typeof subtract(5, 2) === 'number'`. Whether the assertion actually pins the behavior is judged by the mutation step (step 3), not by the map: a weak mapped test lets its mutant survive, and the survivor is the `[Critical]` finding.
    - An item is `UNMAPPED` only when no test in the diff exercises it at all. So with `review.mutation` on, a weak test gets a mutant, never an `UNMAPPED` line that skips mutation. The reviewer may additionally note a weak assertion in `## For the card` or as a `[Minor]` finding, but never instead of the mutant.
    - Every `UNMAPPED` item produces one `[Important]` finding naming the item, e.g. `- [Important] Acceptance item "subtract(2, 5) returns -3" has no test in the diff`.
@@ -99,7 +99,7 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 
 - Edit code or tests in the review worktree, other than a transient mutant that is reverted with `git checkout -- <file>` before the next step.
 - Commit, push, or create or delete branches.
-- Move a card, write the manager note, or change labels or project fields (no `board-move`, `board-note`, `gh issue edit`, `gh project item-edit`).
+- Move a card, write the manager note, or change a card's labels or fields (no `board-move`, `board-note`; on the local board a card changes state only through `board-move.sh`).
 - Merge a PR (`gh pr merge`), mark it ready (`gh pr ready`), or otherwise change the PR's state.
 - Leave a mutation in place: mutations are reverted before the report is posted, and `git status --porcelain` in the review worktree is empty at the end.
 - Mutate test files, or mutate the review worktree when `worktrees.mutate_on_copy` is true.
