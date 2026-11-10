@@ -194,6 +194,24 @@ Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsuppor
 
 **Verifies:** S2, S9-S12 service subset. Stopping an uncertain writer reports unresolved shutdown, not successful termination.
 
+### Task 5.1A: Record usage in tokens, not dollars
+
+**Why:** The main user runs on subscription plans with both providers, so a dollar estimate measures nothing. Per-card token totals are the useful signal, and each supervisor attempt already belongs to one card. Design amendment of 2026-11-10: no cost limit; usage is `{input_tokens, output_tokens, cache_read_tokens}`, each a nonnegative integer or null.
+
+**Start after:** Task 5.1 (PR #245) merges. **Finish before:** Task 5.2 starts, so the UI is built on tokens.
+
+**Modify:** `scripts/supervisor/{workers,inference_broker,runner,store,scheduler,service,cli}.py`; the matching `fixtures/supervisor/*_cases.py` (`store`, `scheduler`, `runner`, `provider`, `recovery`, `effect`, `integration`, `reservation`, and `lifecycle` after 5.1) and their focused suites. `limits.max_cost_usd` stays in `config-defaults.json` and `fleet-board-run.sh`: the legacy wrapper keeps it until cutover.
+
+- [ ] One slice per suite: first change that suite's cases so an attempt result, broker result and `record_usage` request carry the three token fields and reject `cost_usd`; run that suite to failure; commit tests.
+- [ ] Attempt usage validation in `workers.py`, `inference_broker.py` and `runner.py` accepts exactly the three token fields (nonnegative int or null) or a null usage.
+- [ ] `store.py` sessions keep token totals instead of `known_spend`, with an unknown-usage flag; add a schema migration that keeps existing sessions readable and leaves dollar history out of the new totals. Stale results still cannot double count.
+- [ ] `store.py` exposes a card total: the sum over that card's attempts, with unknown reported as unknown, not zero.
+- [ ] `scheduler.py` drops `max_cost` and the cost stop from sessions and admission. Unknown usage no longer closes admissions. The time limit, retry ceiling and turn limit are unchanged.
+- [ ] `service.py` and `cli.py`: `record_usage` takes the three token fields; status reports session token totals; a config that sets `limits.max_cost_usd` gets one "ignored by the supervisor" report.
+- [ ] Run each touched focused suite and the clean-room check; commit/push. Bump both manifests per repository rules.
+
+**Verifies:** S9.4 data subset, S10.2, S11.2, S11.5.
+
 ### Task 5.2: Replace PID/log inference with supervisor status and controls
 
 **Modify:** `scripts/board-web.py` (`is_active`, `run_status`, `start_run`, `stop_run`, routes); `scripts/board-web/static/{board.js,board.css,index.html}`; `tests/test-board-web.sh`.
@@ -203,9 +221,9 @@ Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsuppor
 - [ ] Preserve legacy-mode API cases in `test-board-web.sh`; add focused routing assertions where its handlers change. New-mode lifecycle cases belong to the new suite. Retain PR #207 request-size/time limits, corrupt-card errors, temp cleanup, per-import create locks/atomic metadata, `created` status, private run-file modes, actual-listen-port URLs, and legacy log-cache behavior.
 - [ ] Reuse the existing DOM harness to test `known: false`, the Unknown state group and drawer repair while supervisor status is active/unreachable. Never auto-normalize or dispatch an unknown-state card; retain existing reservations pending reconciliation. Run `bash plugins/fleet-board/tests/test-board-unknown-interaction.sh` only for this rendering slice, plus clean-room checks.
 - [ ] Preserve import independence while the supervisor is saturated or unreachable: separate imports can create concurrently, one import remains serialized, and metadata readers see a complete old or new value. For the import-metadata slice, run `bash plugins/fleet-board/tests/test-board-web-atomic.sh` plus clean-room; do not reuse its non-fsync helper as the durable runner publication implementation.
-- [ ] Add API cases for every design route, CSRF/Host enforcement, idempotency and stale revisions, acknowledgement versus ready status, unreachable versus stopped, bounded event replay/cursor expiration, safe log IDs, explicit reservation release audit, and QA-preserving resume. Include audited resolution cases for manual retry after exhaustion (automatic count/budget unchanged), evidence-backed usage recording, verified external-effect confirmation, and safe abandonment; reject resolution while a writer/effect remains uncertain.
+- [ ] Add API cases for every design route, CSRF/Host enforcement, idempotency and stale revisions, acknowledgement versus ready status, unreachable versus stopped, bounded event replay/cursor expiration, safe log IDs, explicit reservation release audit, and QA-preserving resume. Include audited resolution cases for manual retry after exhaustion (automatic count/budget unchanged), evidence-backed token-usage recording, verified external-effect confirmation, and safe abandonment; reject resolution while a writer/effect remains uncertain.
 - [ ] Run `bash plugins/fleet-board/tests/test-supervisor-web.sh` to failure; commit tests.
-- [ ] Implement HTTP-to-socket proxy and compatibility `/api/run` projection. Remove marker clearing/PID inference in supervisor mode. Render health/slots/budgets/boot status, wait reasons, attempt history and reservation controls; show dates/ages from structured data rather than log parsing.
+- [ ] Implement HTTP-to-socket proxy and compatibility `/api/run` projection. Remove marker clearing/PID inference in supervisor mode. Render health/slots, session token usage and time limit, boot status, per-card token totals (unknown shown as unknown), wait reasons, attempt history and reservation controls; show dates/ages from structured data rather than log parsing.
 - [ ] Implement bounded cursor polling with reconnect/full-snapshot behavior; disable unsafe controls while stale/unreachable and show the reason. Never use optimistic Running for spawn acknowledgement.
 - [ ] Run focused suite and clean-room check. Manually inspect desktop/narrow layouts, keyboard controls, Stop menu and error states with fake workers; record evidence before commit/push.
 
@@ -270,7 +288,7 @@ Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsuppor
 - [ ] Every acceptance criterion maps to tests or explicit host/behavioral verification in [test requirements](2026-11-07-persistent-supervisor-tests.md).
 - [ ] No runtime claim is based only on instruction text, PID existence, or fake provider success.
 - [ ] Scheduler never waits on worker or network operations in its event loop.
-- [ ] Restart cannot reset retry/spend/time limits or override paused/stopped intent.
+- [ ] Restart cannot reset retry/time limits or usage accounting, or override paused/stopped intent.
 - [ ] Fencing, process termination, scope release and Human QA are independently enforced.
 - [ ] Concurrent upstream standalone work has been reconciled against actual main before implementation.
 

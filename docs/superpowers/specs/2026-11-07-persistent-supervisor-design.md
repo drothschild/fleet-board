@@ -9,7 +9,7 @@ Status: design and implementation proposal based on the agreed discussion; no ru
 ## Definition of done
 
 - A long or stuck worker cannot prevent unrelated cards from progressing through implementation, review, merge, and main verification.
-- Jobs, attempts, reservations, operating intent, budgets, and effects survive controller restarts. Reconciliation never blindly repeats an external mutation.
+- Jobs, attempts, reservations, operating intent, limits, usage accounting, and effects survive controller restarts. Reconciliation never blindly repeats an external mutation.
 - One automatic retry is allowed for a confirmed infrastructure interruption; repeated stalls and ambiguous effects require attention.
 - Global/provider concurrency and one active attempt per card are enforced atomically. A separate merge lane serializes integration per repository.
 - Scope remains reserved across review, CI, retry, and human-QA waits. An explicit human release on a safely paused card requires reacquisition and refresh before resumption.
@@ -91,7 +91,7 @@ Minimal records:
 | Record | Required fields and constraints |
 | --- | --- |
 | `domain` | identity, canonical root/common-dir, desired mode, lifecycle phase, revision, config hash, service version |
-| `sessions` | ID, start time, deadline, known spend, unknown-spend flag, budget stop reason; restored across restarts |
+| `sessions` | ID, start time, deadline, known token usage (input, output, cache-read), unknown-usage flag, limit stop reason; restored across restarts |
 | `jobs` | ID, card, action/role/stage/round, input SHA, input state revision, generation, state, eligible-since, priority, automatic retries used |
 | `attempts` | ID, job/generation, provider/model, launch nonce, state, host boot identity, process identity, worktree, started/deadline timestamps, heartbeat/progress, exit/result reference, cancellation reason |
 | `claims` | card ownership, global/provider slot, reserved normalized path and reservation revision, merge lane; transactionally acquired |
@@ -149,7 +149,7 @@ Prefer continuations, fixes, and reviews over new starts. Within classes use exp
 
 Hold one merge lane per repository through merge and verification, using `merge-reviewed.sh` checks and lock semantics. Refactor its drain into a bounded candidate operation. Pending verification is recovered before another merge. A card can reach this lane while unrelated implementation runs. Refresh plans after integration; dependency and exact-head review checks remain authoritative.
 
-Run-session time and known spend persist across restart. Check deadlines on timers, not only between cycles. At the time limit, stop admissions and cancel active execution under the normal grace protocol. At the cost limit, close admissions and request cancellation; in-flight/provider-delayed charges may overshoot, which must be reported. Unknown usage remains unknown, never fabricated as zero; stop new paid admissions pending explicit resolution. A Resume preserves session accounting. Starting after an explicitly stopped/finished session creates a new session only through an explicit Start command.
+Run-session time and token usage persist across restart. Check deadlines on timers, not only between cycles. At the time limit, stop admissions and cancel active execution under the normal grace protocol. There is no cost limit: the supervisor records usage in tokens, never dollars, because subscription plans make a price estimate meaningless. Each attempt's usage is `{input_tokens, output_tokens, cache_read_tokens}`, each a nonnegative integer or null when the provider did not report it; a card's usage is the sum over its attempts, and a session's usage is the sum over the session's attempts. Unknown usage remains unknown, never fabricated as zero, and is shown as unknown in totals; it does not stop admissions. A Resume preserves session accounting. Starting after an explicitly stopped/finished session creates a new session only through an explicit Start command.
 
 ## Scope reservations and human release
 
@@ -190,7 +190,7 @@ supervisor:
 
 All durations are positive integers; heartbeat timeout exceeds heartbeat interval, attempt timeout exceeds shutdown grace; provider caps are positive integers referencing configured providers or reserved `claude` identity for built-in roles. One automatic retry is a fixed policy, not an uncapped YAML knob. A role/provider's existing smaller hard timeout still applies. Role-specific structured long-operation signals avoid pretending all tasks have identical progress behavior.
 
-Reuse `limits.concurrency`, `max_hours`, `max_cost_usd`, `max_turns`, rate-limit margins/waits, and shared token staggering. Rate-limit waits consume no worker slot once a provider attempt has ended. Persist wait caps and launch rate-limit timestamps; `min_tick_gap` becomes minimum provider session-start spacing. Legacy `tick_interval` applies only in legacy mode; supervisor uses its own reconciliation interval. `max_consecutive_failures` bounds consecutive supervisor planning/control failures, closing admissions without erasing job state. Report unknown legacy configuration rather than silently reinterpret unrelated fields.
+Reuse `limits.concurrency`, `max_hours`, `max_turns`, rate-limit margins/waits, and shared token staggering. Rate-limit waits consume no worker slot once a provider attempt has ended. Persist wait caps and launch rate-limit timestamps; `min_tick_gap` becomes minimum provider session-start spacing. Legacy `tick_interval` applies only in legacy mode; supervisor uses its own reconciliation interval. `max_consecutive_failures` bounds consecutive supervisor planning/control failures, closing admissions without erasing job state. Report unknown legacy configuration rather than silently reinterpret unrelated fields. `limits.max_cost_usd` stays legacy-only: the supervisor ignores it and reports once that it is ignored.
 
 Configuration reload is validated and atomic. Invalid edits retain the last valid runtime config, display an error, and close new admissions until corrected. Existing attempts retain captured deadlines/model contracts. Startup reads YAML before admission; an unavailable repository/config causes a recoverable service wait, not a new empty board. Boot-time missing credentials produce waiting/attention status and no paid dispatch.
 
@@ -215,22 +215,22 @@ Derive actor identity from the authenticated local control channel and board-ser
 | Endpoint | Contract |
 | --- | --- |
 | `GET /api/supervisor` | schema version, revision, desired/observed state, heartbeat freshness, session limits/usage, capacity, queue counts, config/boot registration status, last error |
-| `POST /api/supervisor/start` | Ensure service, recover, enable scheduling; reconnect when already running; existing paused session resumes without budget reset |
+| `POST /api/supervisor/start` | Ensure service, recover, enable scheduling; reconnect when already running; existing paused session resumes without resetting session accounting or limits |
 | `POST /api/supervisor/pause` | Close worker/merge admissions, drain existing operations, record results; remains alive |
-| `POST /api/supervisor/resume` | Refresh eligibility and resume same session; does not clear Human QA or budget stop |
+| `POST /api/supervisor/resume` | Refresh eligibility and resume same session; does not clear Human QA or a limit stop |
 | `POST /api/supervisor/stop` | Body `mode: drain|cancel`; persist stopped intent immediately, then finish/cancel active operations and shut down |
 | `GET /api/supervisor/events?after=<sequence>&limit=<n>` | Durable ordered events, next cursor; bounded polling for v1; expired cursor returns snapshot-required response |
-| `GET /api/cards/<n>/execution` | job/attempt state, progress, deadlines, retries, waiting reason, claims, safe log references |
+| `GET /api/cards/<n>/execution` | job/attempt state, progress, deadlines, retries, waiting reason, claims, per-attempt and card-total token usage (unknown shown as unknown), safe log references |
 | `POST /api/cards/<n>/execution/pause` | Pause admissions for this card; body chooses drain or cancel |
 | `POST /api/cards/<n>/execution/release-reservations` | Human actor/reason and expected reservation revision; safe-release checks above |
 | `POST /api/cards/<n>/execution/resolve` | Explicit human resolution: body `action: retry|record_usage|confirm_effect|abandon`, reason, evidence references and expected revision; safety checks below |
 | `POST /api/cards/<n>/execution/resume` | Reacquire/refresh before dispatch; preserve existing workflow approval gates |
 
-Resolution is separate from Resume. `retry` is an explicit manual attempt after confirming no possible old writer or unresolved effect; it does not reset the recorded automatic retry count or session budget. Further manual attempts each require a new audited command. `record_usage` records observed nonnegative usage and evidence for the named attempt, recomputes session totals and retains the original unknown-usage event; it cannot clear a budget stop or silently write zero for missing evidence. `confirm_effect` asks the controller to verify supplied external evidence against actual state before resolving ambiguity, never trusts a human text assertion as proof of a safe merge. `abandon` stops further work and releases claims only after writers/effects are safely resolved, preserving artifacts. Unverifiable process/effect state remains quarantined even after a command. None of these actions bypasses human QA, merge policy, current-head review, scope acquisition, or fresh validation. CLI `resolve --card <n> --action <action>` uses the same revision-bound protocol.
+Resolution is separate from Resume. `retry` is an explicit manual attempt after confirming no possible old writer or unresolved effect; it does not reset the recorded automatic retry count or session accounting. Further manual attempts each require a new audited command. `record_usage` records observed nonnegative token counts (`input_tokens`, `output_tokens`, `cache_read_tokens`) and evidence for the named attempt, recomputes card and session totals and retains the original unknown-usage event; it cannot clear a limit stop or silently write zero for missing evidence. `confirm_effect` asks the controller to verify supplied external evidence against actual state before resolving ambiguity, never trusts a human text assertion as proof of a safe merge. `abandon` stops further work and releases claims only after writers/effects are safely resolved, preserving artifacts. Unverifiable process/effect state remains quarantined even after a command. None of these actions bypasses human QA, merge policy, current-head review, scope acquisition, or fresh validation. CLI `resolve --card <n> --action <action>` uses the same revision-bound protocol.
 
 Retain `/api/run` as a compatibility status projection; `/api/run/start` delegates Start and `/api/run/stop` delegates drain-stop. No endpoint claims running merely because a spawn succeeded. While unreachable, show last known state with timestamp and unknown occupancy, not zero active jobs. Logs redact credentials and are served through validated IDs, never arbitrary filesystem paths.
 
-UI status bar: desired mode/observed phase, occupied slots/global cap, per-provider occupancy, ready/running/waiting/attention counts, budget and boot status. Cards: activity, elapsed time, heartbeat and progress ages separately, retry count, exact wait reason (including blocking card/path), reservation state, logs/results. Timeline: launches, completions, retry decisions, cancellation, release overrides, recovery, and control actions. Durable cursors make refresh/reconnection lossless; compacted history triggers a full snapshot.
+UI status bar: desired mode/observed phase, occupied slots/global cap, per-provider occupancy, ready/running/waiting/attention counts, session token usage, time limit and boot status. Cards: activity, token usage, elapsed time, heartbeat and progress ages separately, retry count, exact wait reason (including blocking card/path), reservation state, logs/results. Timeline: launches, completions, retry decisions, cancellation, release overrides, recovery, and control actions. Durable cursors make refresh/reconnection lossless; compacted history triggers a full snapshot.
 
 Pause is the primary everyday action; Stop menu offers drain/cancel. Drain means current attempts and already-started safe mutation chains only, not their follow-on review/fix/merge. Necessary verification of an already-merged commit continues as recovery work. Cancel does not interrupt an irreversible operation blindly: observe its outcome before shutting down; ambiguity remains needs-attention and cannot be advertised as cleanly stopped. Control intent remains stopped across a crash while draining/cancelling.
 
@@ -257,8 +257,8 @@ Clean-room manager/role/tick/run/status changes require spec edits and an explic
 | S7 | Reservations survive all wait states; expansion conflicts block writes; human release/reacquisition preserves QA and review validity |
 | S8 | Exact-head review, merge policy, CI, review stages, dependency rules, and main verification remain enforced |
 | S9 | UI controls implement stated transitions, show unreachable honestly, and replay events without duplicate commands |
-| S10 | YAML defaults boot true; running/paused/stopped intent and same-session budgets survive restart/reboot; false suppresses boot activation |
-| S11 | Deadline/cost/config failures close admissions promptly while control/recovery remains responsive; unknown spend is visible |
+| S10 | YAML defaults boot true; running/paused/stopped intent and same-session accounting and limits survive restart/reboot; false suppresses boot activation |
+| S11 | Deadline/config failures close admissions promptly while control/recovery remains responsive; usage is recorded in tokens and unknown usage is visible, never zero |
 | S12 | Legacy/new exclusion, migration/rollback, clean-room provenance, and supported-host startup validation are complete |
 
 ## Implementation phases
