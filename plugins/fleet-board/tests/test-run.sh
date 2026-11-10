@@ -1311,6 +1311,73 @@ case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
 esac
 assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
 
+echo "run lock: service compatibility and linked worktrees"
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\nservice\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock-service: legacy wrapper refuses a live service claim" 1
+assert_stderr_contains "run-lock-service: preserves contention message" "another run holds $LOGS/acme-toy.lock (pid $$)"
+assert_eq "run-lock-service: no tick ran" "$(count)" "absent"
+
+new_case
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+LOCK_CLAIM="$SCRIPT_DIR/../scripts/claim-run-lock.py"
+python3 "$LOCK_CLAIM" "$LOGS/acme-toy.lock" "$$" --kind service > "$T/service-claim.out" 2> "$T/service-claim.err"
+LAST_EXIT=$?
+assert_exit "run-lock-service-claim: refuses a live legacy lock" 1
+assert_file_contains "run-lock-service-claim: names live legacy owner" "$T/service-claim.err" "another run holds $LOGS/acme-toy.lock (pid $$)"
+assert_eq "run-lock-service-claim: legacy lock remains two lines" "$(lines "$LOGS/acme-toy.lock")" "2"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+python3 "$LOCK_CLAIM" "$LOGS/acme-toy.lock" "$$" --kind service > "$T/service-stale.out" 2> "$T/service-stale.err"
+LAST_EXIT=$?
+assert_exit "run-lock-service-claim: replaces stale reused-pid lock" 0
+assert_eq "run-lock-service-claim: writes pid first" "$(sed -n 1p "$LOGS/acme-toy.lock")" "$$"
+assert_eq "run-lock-service-claim: writes start time second" "$(sed -n 2p "$LOGS/acme-toy.lock")" "$(lstart_of $$)"
+assert_eq "run-lock-service-claim: writes service owner third" "$(sed -n 3p "$LOGS/acme-toy.lock")" "service"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+WT="$T/linked"
+git -C "$REPO" worktree add -q -b linked-test "$WT"
+C_CLEANUP=""
+C_SETTLE=""
+MARKER="$T/first-tick-started"
+SAVED_FAKE_CLAUDE="$FAKE_CLAUDE"
+FAKE_CLAUDE="$T/claude-hold"
+printf '#!/bin/sh\nprintf started > "%s"\nsleep 30\n' "$MARKER" > "$FAKE_CLAUDE"
+chmod +x "$FAKE_CLAUDE"
+(
+  case_env
+  export FLEET_BOARD_CLAUDE="$FAKE_CLAUDE"
+  exec "$BASH_EXE" "$SCRIPT" --repo "$REPO"
+) > "$T/linked-first.out" 2> "$T/linked-first.err" &
+FIRST_PID=$!
+i=0
+while [ ! -e "$MARKER" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+run_wrapper --repo "$WT"
+assert_exit "run-lock-worktree: second linked worktree is refused" 1
+assert_eq "run-lock-worktree: loser runs no tick" "$(count)" "1"
+assert_stderr_contains "run-lock-worktree: loser reports active owner" "another run holds $LOGS/acme-toy.lock (pid $FIRST_PID)"
+kill -TERM "$FIRST_PID" 2>/dev/null || true
+wait "$FIRST_PID" 2>/dev/null || true
+pkill -f "$MARKER" 2>/dev/null || true
+FAKE_CLAUDE="$SAVED_FAKE_CLAUDE"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\nservice\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock-service-release: wrapper refuses foreign ownership" 1
+assert_true "run-lock-service-release: service lock survives wrapper exit" test -f "$LOGS/acme-toy.lock"
+assert_eq "run-lock-service-release: pid remains first line" "$(sed -n 1p "$LOGS/acme-toy.lock")" "$$"
+assert_eq "run-lock-service-release: lstart remains second line" "$(sed -n 2p "$LOGS/acme-toy.lock")" "$(lstart_of $$)"
+assert_eq "run-lock-service-release: service remains third line" "$(sed -n 3p "$LOGS/acme-toy.lock")" "service"
+
 
 echo ""
 echo "-----------------------------------"
