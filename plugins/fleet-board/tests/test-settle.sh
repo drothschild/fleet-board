@@ -595,6 +595,18 @@ assert_exit "list fails: exit 1" 1
 assert_eq "list fails: no write of any kind" "$(all_writes)" 0
 assert_eq "list fails: no card was read" "$(cnt "api repos")" 0
 
+echo "bounded settle handles only the requested card from a fresh plan"
+setup_case
+card 12 in_review "$CLEAN_REVIEW_NOTE"
+card 13 in_review "$(jq -c '.branch = "fleet/13-add-subtract" | .pr = 35' <<<"$CLEAN_REVIEW_NOTE")"
+pr 34 true
+pr 35 true
+finalize
+run_settle --card 12
+assert_exit "bounded settle: exit 0" 0
+assert_eq "bounded settle: selected PR marked ready" "$(cnt "pr ready 34 --repo acme/toy")" 1
+assert_eq "bounded settle: unrelated PR untouched" "$(cnt "pr ready 35 --repo acme/toy")" 0
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
