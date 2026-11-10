@@ -4,6 +4,7 @@ import sys
 import unittest
 from pathlib import Path
 from unittest import mock
+import hashlib
 
 ROOT = Path(sys.argv.pop()).resolve()
 try:
@@ -40,6 +41,31 @@ class ControlContracts(unittest.TestCase):
             self.service = Service.open(self.domain, clock=self.clock, host_boot_id="boot-test",
                                         peer_resolver=lambda _peer: "fixture-human")
         self.addCleanup(self.service.close)
+
+    def make_attempt(self, card="12", job_id="job-12", attempt_id="attempt-12", session_id="s1"):
+        store = self.service.store
+        if not any(item["id"] == session_id for item in store.snapshot()["sessions"]):
+            store.start_session({"id": session_id, "started_at": 1, "deadline": 1000,
+                                 "known_spend": 0, "unknown_spend": False, "budget_stop": None})
+        job = {"id": job_id, "card": str(card), "action": "review", "role": "reviewer",
+               "stage": "code", "round": 1, "input_sha": "a" * 64, "input_version": "v1",
+               "generation": 1, "provider": "fixture", "model": "fixture", "nonce": attempt_id,
+               "session_id": session_id}
+        store.prepare_attempt(job, store.snapshot()["domain"]["revision"],
+                              {"global_cap": 4, "provider_cap": 4, "paths": ["src/card-" + str(card)]})
+        return job
+
+    def result_envelope(self, job, attempt_id, usage=None):
+        artifacts = self.service.store.directory / "artifacts" / attempt_id
+        artifacts.mkdir(parents=True, mode=0o700)
+        report = artifacts / "report.json"
+        report.write_text("{}", encoding="utf-8")
+        return {"schema_version": 1, "domain_id": self.service.store.domain_id,
+                "job_id": job["id"], "attempt_id": attempt_id, "generation": 1,
+                "input_sha": job["input_sha"], "role": job["role"], "stage": job["stage"],
+                "outcome": "failure", "report_path": str(report),
+                "artifact_hashes": {str(report): hashlib.sha256(b"{}").hexdigest()},
+                "usage": usage, "exit_code": 1}
 
     def require_api(self, name):
         api = getattr(self.service, name, None)
@@ -118,48 +144,120 @@ class ControlContracts(unittest.TestCase):
 
     def test_retry_resolution_requires_safe_writer_state_and_preserves_retry_budget(self):
         resolve = self.require_api("resolve")
+        job = self.make_attempt()
+        store = self.service.store
+        store.quarantine_attempt("attempt-12", "writer state uncertain", store.snapshot()["domain"]["revision"])
+        before = store.snapshot()
+        self.assertEqual(before["attempts"][0]["state"], "quarantined")
+        self.assertEqual(len(before["claims"]), 1)
         with self.assertRaisesRegex(Exception, "writer|effect|uncertain"):
             resolve(12, action="retry", request_id="manual-retry-1", reason="inspect",
                     evidence=[], expected_revision=self.service.get_status()["revision"])
+        from supervisor.models import StopEvidence
+        # Trusted evidence is created in-process after the fixture has established
+        # the concrete attempt identity; Store accepts it through its verifier hook.
+        evidence = StopEvidence(store.domain_id, job["id"], "attempt-12", 1, "boot-test", 42,
+                                "start", "attempt-12", "fixture_complete_tree", True)
+        self.service.store.retry_evidence_verifier = lambda candidate: candidate == evidence
         safe = resolve(12, action="retry", request_id="manual-retry-2", reason="verified safe",
-                       evidence=["attempt-log"], expected_revision=self.service.get_status()["revision"])
+                       evidence=evidence, expected_revision=self.service.get_status()["revision"])
         self.assertTrue(safe.get("applied"), "retry reports applied only after durable state change")
-        self.assertNotEqual(resolve(12, action="retry", request_id="manual-retry-3", reason="again",
-                                    evidence=["attempt-log"], expected_revision=safe["revision"]), safe,
-                            "each manual retry requires a distinct audited command")
+        after = store.snapshot()
+        self.assertEqual(len(after["attempts"]), 1, "manual authorization must not dispatch an attempt")
+        self.assertEqual(after["jobs"][0]["retries_used"], before["jobs"][0]["retries_used"])
+        self.assertEqual(next(x for x in after["sessions"] if x["id"] == "s1")["known_spend"], 0)
+        with self.assertRaisesRegex(Exception, "request|command|audit|retry"):
+            resolve(12, action="retry", request_id="manual-retry-3", reason="again",
+                    evidence=evidence, expected_revision=self.service.get_status()["revision"])
 
     def test_usage_resolution_requires_evidence_retains_unknown_event_and_cannot_clear_budget_stop(self):
         resolve = self.require_api("resolve")
+        job = self.make_attempt()
+        store = self.service.store
+        store.record_result(self.result_envelope(job, "attempt-12", usage=None))
+        session = next(x for x in store.snapshot()["sessions"] if x["id"] == "s1")
+        store.start_session({"id": "s2", "started_at": 2, "deadline": 1000,
+                             "known_spend": session["known_spend"], "unknown_spend": True,
+                             "budget_stop": "unknown usage"})
         with self.assertRaisesRegex(Exception, "evidence"):
             resolve(12, action="record_usage", request_id="usage-no-proof", reason="observed",
-                    attempt_id="attempt-1", usage={"input_tokens": 0, "output_tokens": 0}, evidence=[],
+                    attempt_id="attempt-12", usage={"cost_usd": 0}, evidence=[],
                     expected_revision=self.service.get_status()["revision"])
+        self.service.usage_evidence_verifier = lambda evidence: (
+            isinstance(evidence, dict) and evidence.get("kind") == "provider_receipt"
+            and evidence.get("attempt_id") == "attempt-12" and evidence.get("cost_usd") == 1.25)
         result = resolve(12, action="record_usage", request_id="usage-proof", reason="provider receipt",
-                         attempt_id="attempt-1", usage={"input_tokens": 2, "output_tokens": 3},
-                         evidence=["receipt-1"], expected_revision=self.service.get_status()["revision"])
+                         attempt_id="attempt-12", usage={"cost_usd": 1.25},
+                         evidence={"kind": "provider_receipt", "attempt_id": "attempt-12", "cost_usd": 1.25},
+                         expected_revision=self.service.get_status()["revision"])
         self.assertTrue(result.get("applied"))
-        status = self.service.get_status()
-        self.assertTrue(status["session"]["unknown_spend"])
-        self.assertTrue(status["session"].get("budget_stop"), "usage recording cannot clear a budget stop")
+        snapshot = store.snapshot()
+        resolved_session = next(x for x in snapshot["sessions"] if x["id"] == "s1")
+        self.assertEqual(resolved_session["known_spend"], 1.25)
+        self.assertTrue(resolved_session["unknown_spend"], "historical unknown usage remains auditable")
+        self.assertTrue(any(x["type"] == "result_recorded" for x in snapshot["events"]))
+        self.assertTrue(resolved_session["unknown_spend"])
+        self.assertEqual(next(x for x in snapshot["sessions"] if x["id"] == "s2")["budget_stop"],
+                         "unknown usage", "usage recording cannot clear a budget stop")
 
     def test_effect_confirmation_uses_verifier_and_abandon_retains_artifacts(self):
         resolve = self.require_api("resolve")
-        verifier = getattr(self.service, "effect_verifier", None)
-        self.assertTrue(callable(verifier), "confirm_effect requires an injected external-state verifier")
-        self.assertTrue(callable(getattr(self.service, "resolve", None)), "resolution API missing")
-        for action in ("confirm_effect", "abandon"):
-            result = resolve(12, action=action, request_id="resolve-" + action, reason="human note",
-                             evidence=["external-evidence"], expected_revision=self.service.get_status()["revision"])
-            self.assertTrue(result.get("applied"))
-            self.assertTrue(result.get("artifacts_preserved", True))
+        job = self.make_attempt()
+        store = self.service.store
+        store.record_effect({"operation_key": "external-op-12", "job_id": job["id"], "generation": 1,
+                             "preconditions": {"card": "12"},
+                             "intent": {"kind": "pr_create", "card": "12", "marker": "external-op-12"}})
+        store.observe_effect("external-op-12", {"status": "unknown"}, store.snapshot()["domain"]["revision"])
+        artifacts = store.directory / "artifacts" / "attempt-12"
+        artifacts.mkdir(parents=True, mode=0o700)
+        artifact = artifacts / "worker.log"
+        artifact.write_text("retained evidence", encoding="utf-8")
+        observations = {"accepted": {"operation_key": "external-op-12", "external_id": "pr-91"},
+                        "rejected": None}
+        class EffectVerifier:
+            def __init__(self, value): self.value = value
+            def verify(self, effect, evidence):
+                return bool(self.value and effect["operation_key"] == evidence.get("operation_key")
+                            and self.value.get("operation_key") == effect["operation_key"])
+        self.service.effect_verifier = EffectVerifier(observations["accepted"])
+        with self.assertRaisesRegex(Exception, "verif|evidence|effect"):
+            resolve(12, action="confirm_effect", request_id="resolve-human-text", reason="human note",
+                    effect_id="external-op-12", evidence="I saw it", expected_revision=self.service.get_status()["revision"])
+        self.service.effect_verifier = EffectVerifier(observations["rejected"])
+        with self.assertRaisesRegex(Exception, "verif|evidence|effect"):
+            resolve(12, action="confirm_effect", request_id="resolve-reject", reason="provider check",
+                    effect_id="external-op-12", evidence={"operation_key": "external-op-12"},
+                    expected_revision=self.service.get_status()["revision"])
+        self.service.effect_verifier = EffectVerifier(observations["accepted"])
+        accepted = resolve(12, action="confirm_effect", request_id="resolve-verified", reason="provider check",
+                           effect_id="external-op-12", evidence={"operation_key": "external-op-12"},
+                           expected_revision=self.service.get_status()["revision"])
+        self.assertTrue(accepted.get("applied"))
+        self.service.effect_verifier = EffectVerifier(None)
+        abandoned = resolve(12, action="abandon", request_id="resolve-abandon", reason="retain for inspection",
+                            effect_id="external-op-12", artifact_paths=[str(artifact)],
+                            expected_revision=self.service.get_status()["revision"])
+        self.assertTrue(abandoned.get("artifacts_preserved"))
+        self.assertTrue(artifact.exists())
+        self.assertEqual(abandoned.get("released_claims"), 1)
+        self.assertFalse(store.snapshot()["claims"])
 
     def test_unknown_state_is_quarantined_and_reservations_are_retained(self):
         reconcile = self.require_api("reconcile_card")
+        reservation = self.service.store.reserve_scope("12", ["src/card-12"],
+                                                       self.service.store.snapshot()["domain"]["revision"])
+        revision = reservation["reservation_revision"]
+        before = self.service.store.snapshot()
         result = reconcile(12, known=False)
         self.assertEqual(result.get("state"), "needs_attention")
         self.assertTrue(result.get("quarantined"))
         self.assertTrue(result.get("reservation_retained"))
         self.assertFalse(result.get("dispatchable"), "unknown cards are never dispatched")
+        after = self.service.store.snapshot()
+        exact = next(x for x in after["reservations"] if x["card"] == "12")
+        self.assertEqual(exact["paths"], before["reservations"][0]["paths"])
+        self.assertEqual(exact["reservation_revision"], revision)
+        self.assertEqual(after["reservations"], before["reservations"])
 
 
 if __name__ == "__main__":
