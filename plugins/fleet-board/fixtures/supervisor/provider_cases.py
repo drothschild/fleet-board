@@ -1557,6 +1557,42 @@ raise SystemExit(2)
         self.assertFalse(ok, 'fewer than three post-removal empty listings must fail closed')
         self.assertTrue(removed, 'the successfully removed matching ID must remain observable')
 
+    def test_docker_label_reconciliation_accepts_slow_initial_empty_listing(self):
+        from unittest.mock import patch
+        from supervisor import docker_transport
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls):
+                return cls.now
+
+            @classmethod
+            def sleep(cls, seconds):
+                cls.now += seconds
+
+        queries = []
+
+        def slow_empty_listing(command, **_kwargs):
+            if command[1] != 'ps':
+                raise AssertionError('unexpected Docker command: ' + repr(command))
+            queries.append(command)
+            Clock.now += 1.85
+            return docker_transport.subprocess.CompletedProcess(command, 0, b'', b'')
+
+        with patch.object(docker_transport.time, 'monotonic', Clock.monotonic), \
+                patch.object(docker_transport.time, 'sleep', Clock.sleep), \
+                patch.object(docker_transport.subprocess, 'run', side_effect=slow_empty_listing):
+            ok, removed = docker_transport.DockerWorkerTransport._reconcile_labeled_containers(
+                'docker', 'attempt-1', return_removed=True)
+
+        self.assertTrue(ok, 'a successful no-match listing should permit independent admission')
+        self.assertFalse(removed, 'no-match listing must not report a container removal')
+        self.assertEqual(len(queries), 1, 'no second Docker query should start in the final 0.2 seconds')
+        self.assertAlmostEqual(Clock.now, 2.0, places=6,
+                               msg='reconciliation did not sleep through the remaining grace')
+
     def test_docker_pending_cleanup_is_recorded_and_allows_next_launch_after_empty_grace(self):
         from supervisor.docker_transport import DockerWorkerTransport
 
