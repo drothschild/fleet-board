@@ -137,6 +137,16 @@ def _private_directory(path):
 
 
 class Store:
+    @property
+    def retry_evidence_verifier(self):
+        return self.__retry_evidence_verifier
+
+    @retry_evidence_verifier.setter
+    def retry_evidence_verifier(self, verifier):
+        if not callable(verifier):
+            raise ValueError('retry evidence verifier must be callable')
+        self.__retry_evidence_verifier = verifier
+
     @classmethod
     def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None, human_actor_verifier=None):
         identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
@@ -269,6 +279,8 @@ class Store:
                     if not item['enforceable']:
                         item['paths'] = ['']
                 item['revision'] = payload.get('reservation_revision', item['revision'] + 1)
+        for item in reservations.values():
+            item['reservation_revision'] = item['revision']
         return reservations
 
     def _normalize_scope(self, paths):
@@ -1476,7 +1488,7 @@ class Store:
                 if type(request.get('expected_revision')) is not int or request['expected_revision'] != revision:
                     raise ValueError('revision mismatch')
                 modes = {'start': 'running', 'resume': 'running', 'pause': 'paused', 'stop': 'stopped',
-                         'resolve': None}
+                         'resolve': None, 'card_pause': None, 'card_resume': None}
                 if request['command'] not in modes:
                     raise ValueError('unsupported command')
                 mode = modes[request['command']]
@@ -1491,6 +1503,145 @@ class Store:
             return result
         except Exception:
             connection.execute('ROLLBACK')
+            raise
+
+    def authorize_manual_retry(self, request):
+        """Durably authorize a manual retry without changing execution or retry counters."""
+        required = ('request_id', 'card', 'job_id', 'attempt_id', 'actor', 'reason', 'expected_revision')
+        if any(not isinstance(request.get(k), str) or not request[k] for k in required[:-1]):
+            raise ValueError('invalid manual retry authorization')
+        if type(request.get('expected_revision')) is not int:
+            raise ValueError('invalid revision')
+        c = self.__connection
+        encoded = canonical_json(request)
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request['request_id'],)).fetchone()
+            if prior:
+                if prior['request'] != encoded:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return result
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if request['expected_revision'] != revision:
+                raise ValueError('revision mismatch')
+            attempt = c.execute('SELECT attempts.state, attempts.data, jobs.card, jobs.id AS job_id, jobs.generation, jobs.retries_used FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (request['attempt_id'],)).fetchone()
+            if (attempt is None or attempt['job_id'] != request['job_id'] or attempt['card'] != request['card']
+                    or attempt['state'] != 'quarantined'):
+                raise ValueError('manual retry requires matching quarantined attempt')
+            for event in c.execute("SELECT payload FROM events WHERE type='manual_retry_authorized'"):
+                if json.loads(event['payload']).get('attempt_id') == request['attempt_id']:
+                    raise ValueError('manual retry already authorized for this attempt')
+            if c.execute("SELECT 1 FROM effects WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (request['card'],)).fetchone():
+                raise ValueError('unresolved effect prevents retry')
+            result = {'authorized': True, 'card': request['card'], 'job_id': request['job_id'],
+                      'attempt_id': request['attempt_id'], 'revision': revision + 1}
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request['request_id'], encoded, canonical_json(result)))
+            self._event('manual_retry_authorized', {k: request[k] for k in ('request_id','card','job_id','attempt_id','actor','reason')})
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def confirm_effect(self, operation_key, observation, expected_revision):
+        """Replace an ambiguous observation only after the caller verifies external state."""
+        if not isinstance(operation_key, str) or not operation_key or not isinstance(observation, dict):
+            raise ValueError('invalid effect confirmation')
+        encoded = canonical_json(observation)
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or expected_revision != revision:
+                raise ValueError('revision mismatch')
+            row = c.execute('SELECT observation,status FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            if row is None:
+                raise ValueError('unknown effect')
+            if row['status'] in ('applied','complete','reconciled'):
+                if row['observation'] != encoded:
+                    raise ValueError('conflicting confirmed effect')
+                c.execute('COMMIT')
+                return {'confirmed': True, 'changed': False, 'revision': revision}
+            c.execute("UPDATE effects SET observation=?,status='applied' WHERE operation_key=?", (encoded,operation_key))
+            self._event('effect_confirmed', {'operation_key': operation_key, 'observation': observation})
+            c.execute('COMMIT')
+            return {'confirmed': True, 'changed': True, 'revision': revision + 1}
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def abandon_prepared_claim(self, card, request_id, actor, reason, operation_key, expected_revision):
+        """Release only a never-launched claim after its external effect is resolved."""
+        if any(not isinstance(v, str) or not v for v in (card,request_id,actor,reason,operation_key)):
+            raise ValueError('invalid prepared claim abandonment')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or revision != expected_revision:
+                raise ValueError('revision mismatch')
+            effect = c.execute('SELECT status FROM effects WHERE operation_key=? AND card=?', (operation_key,card)).fetchone()
+            if effect is None or effect['status'] not in ('applied','complete','reconciled'):
+                raise ValueError('unresolved effect prevents abandonment')
+            rows = list(c.execute('SELECT attempts.id,attempts.state,attempts.data FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE jobs.card=?', (card,)))
+            if not rows or any(row['state'] != 'prepared' and json.loads(row['data']).get('execution_released') is not True for row in rows):
+                raise ValueError('live or uncertain writer prevents abandonment')
+            reservation = self._reservations().get(card)
+            if reservation is None: raise ValueError('reservation missing')
+            c.execute('DELETE FROM claims WHERE card=?', (card,))
+            payload = {'card':card,'actor':actor,'reason':reason,'released_paths':reservation['paths'],
+                       'reservation_revision':reservation['revision'],'command_id':request_id,'effect_id':operation_key}
+            self._event('scope_released', payload)
+            self._event('effect_abandoned', payload)
+            outcome = {'released':True,'paths':reservation['paths'],'revision':revision+2}
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id,canonical_json({'actor':actor,'command':'abandon','payload':payload,'expected_revision':expected_revision}),canonical_json(outcome)))
+            c.execute('COMMIT')
+            return outcome
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def reconcile_usage(self, request):
+        """Add verified usage to its original session without clearing uncertainty or stops."""
+        required = ('request_id', 'session_id', 'attempt_id', 'actor', 'reason', 'cost_usd', 'expected_revision')
+        if any(not isinstance(request.get(k), str) or not request[k] for k in required[:5]):
+            raise ValueError('invalid usage reconciliation')
+        cost = request.get('cost_usd')
+        if type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0:
+            raise ValueError('invalid usage cost')
+        if type(request.get('expected_revision')) is not int:
+            raise ValueError('invalid revision')
+        c = self.__connection
+        encoded = canonical_json(request)
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request['request_id'],)).fetchone()
+            if prior:
+                if prior['request'] != encoded:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return result
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if request['expected_revision'] != revision:
+                raise ValueError('revision mismatch')
+            attempt = c.execute('SELECT data FROM attempts WHERE id=?', (request['attempt_id'],)).fetchone()
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (request['session_id'],)).fetchone()
+            if attempt is None or session is None or json.loads(attempt['data']).get('session_id') != request['session_id']:
+                raise ValueError('usage attempt/session mismatch')
+            total = session['known_spend'] + cost
+            if not math.isfinite(total):
+                raise ValueError('usage total overflow')
+            c.execute('UPDATE sessions SET known_spend=? WHERE id=?', (total, request['session_id']))
+            result = {'recorded': True, 'session_id': request['session_id'], 'known_spend': total, 'revision': revision + 1}
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request['request_id'], encoded, canonical_json(result)))
+            self._event('usage_reconciled', {k: request[k] for k in ('request_id','session_id','attempt_id','actor','reason','cost_usd')})
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
             raise
 
     def append_event(self, event):

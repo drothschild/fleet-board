@@ -19,15 +19,48 @@ MAX_RESPONSE = 4 * 1024 * 1024
 WORKER_COMMANDS = {"heartbeat", "progress", "result", "scope_expansion"}
 
 
+class EventPage(list):
+    """List-compatible bounded event page with cursor metadata for newer clients."""
+    def __init__(self, events, *, next_cursor, snapshot_required=False, snapshot=None):
+        super().__init__(events)
+        self.next_cursor = next_cursor
+        self.snapshot_required = snapshot_required
+        self.snapshot = snapshot
+
+    def __getitem__(self, key):
+        if key == "events": return list(self)
+        if key == "next_cursor": return self.next_cursor
+        if key == "snapshot_required": return self.snapshot_required
+        if key == "snapshot": return self.snapshot
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        try: return self[key]
+        except (KeyError, IndexError, TypeError): return default
+
+    def __contains__(self, value):
+        if value in ("events", "next_cursor"): return True
+        if value == "snapshot_required": return self.snapshot_required
+        if value == "snapshot": return self.snapshot is not None
+        return super().__contains__(value)
+
+
 class Service:
+    @staticmethod
+    def _reject_evidence(*_args, **_kwargs):
+        return False
+
     @classmethod
     def open(cls, domain, *, clock=None, host_boot_id=None, peer_resolver=None, run_lock_path=None,
-             board_repo=None, execution_enabled=None):
-        store = Store.open(domain)
+             board_repo=None, execution_enabled=None, effect_verifier=None, usage_evidence_verifier=None,
+             retry_evidence_verifier=None, human_actor_verifier=None):
+        store = Store.open(domain, retry_evidence_verifier=retry_evidence_verifier or (lambda *_args: False),
+                           human_actor_verifier=human_actor_verifier or (lambda actor, capability: bool(actor) and actor == capability))
         if execution_enabled is None:
             execution_enabled = cls._configured_execution_enabled(domain)
         return cls(store, clock or time.time, host_boot_id or _boot_id(), peer_resolver,
-                   run_lock_path, board_repo or domain.get("board_repo"), execution_enabled)
+                   run_lock_path, board_repo or domain.get("board_repo"), execution_enabled,
+                   effect_verifier, usage_evidence_verifier)
 
     @staticmethod
     def _configured_execution_enabled(domain):
@@ -44,7 +77,7 @@ class Service:
         return result.returncode == 0 and result.stdout.strip() == "true"
 
     def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None,
-                 board_repo=None, execution_enabled=False):
+                 board_repo=None, execution_enabled=False, effect_verifier=None, usage_evidence_verifier=None):
         self.store = store
         self._owner_thread_id = threading.get_ident()
         self._thread_store = threading.local()
@@ -71,6 +104,8 @@ class Service:
         self.rpc_handler = None
         self.execution_enabled = bool(execution_enabled)
         self.execution_available = self.execution_enabled
+        self.effect_verifier = effect_verifier or self._reject_evidence
+        self.usage_evidence_verifier = usage_evidence_verifier or self._reject_evidence
         self.admissions_open = False
         self.cancellation_requests = []
         self.shutdown_observer = lambda: "stopped"
@@ -337,31 +372,208 @@ class Service:
         if "actor" in request:
             raise ValueError("actor must come from authenticated peer")
         actor = self.authenticated_actor(peer)
+        if not self.execution_enabled and request.get("command") not in (
+                "status", "events", "reconcile", "pause", "stop", "card_execution", "card_pause"):
+            raise RuntimeError("supervisor.enabled: false; control API is read-only")
         command = request.get("command")
         if self.writer_uncertain and command in ("resolve", "start", "pause", "resume"):
             raise RuntimeError("uncertain writer prevents lifecycle command")
         if command == "status":
             return self.status()
         if command == "events":
-            return self.events(request.get("after", 0), request.get("limit", 100))
+            page = self.events(request.get("after", 0), request.get("limit", 100))
+            return {"events": list(page), "next_cursor": page.next_cursor,
+                    "snapshot_required": page.snapshot_required, "snapshot": page.snapshot}
         if command == "reconcile":
             self.recovery.store = self._store()
             self.recovery.reconcile(self.clock())
             return {"snapshot": self.snapshot(), "cursor": len(self.snapshot()["events"])}
+        if command == "card_execution":
+            return self.card_execution(request.get("card"))
+        if command == "card_pause":
+            return self.card_pause(request.get("card"), mode=request.get("mode", "drain"),
+                request_id=request.get("request_id"), expected_revision=request.get("expected_revision"), peer=peer)
+        if command == "release_reservations":
+            return self.release_reservations(request.get("card"), reason=request.get("reason"),
+                expected_revision=request.get("expected_revision"),
+                expected_reservation_revision=request.get("expected_reservation_revision"), peer=peer)
+        if command == "card_resume":
+            return self.card_resume(request.get("card"), request_id=request.get("request_id"),
+                expected_revision=request.get("expected_revision"), peer=peer)
         if command == "resolve":
             supported = {"retry", "record_usage", "confirm_effect", "abandon"}
             action = request.get("action")
             if action not in supported:
                 raise ValueError("unsupported resolution action")
             revision = request.get("expected_revision", self.status()["revision"])
-            outcome = self._store().record_command({"id": request.get("request_id"),
-                "actor": actor, "command": "resolve", "payload": {
-                    "card": request.get("card"), "action": action,
-                    "reason": request.get("reason")}, "expected_revision": revision})
-            return {"audited": True, "applied": False, "status": "recorded"}
+            params = dict(request)
+            params.pop("command", None); params.pop("actor", None)
+            params.setdefault("expected_revision", revision)
+            return self.resolve(peer=peer, **params)
         return self.command(command, request_id=request.get("request_id"),
                             expected_revision=request.get("expected_revision"), actor=actor,
                             mode=request.get("mode"))
+
+    def get_status(self):
+        state = self.snapshot()
+        now = self.clock()
+        sessions = state["sessions"]
+        attempts = state["attempts"]
+        claims = state["claims"]
+        latest = state["events"][-1] if state["events"] else None
+        running = [item for item in attempts if item["state"] in ("launching", "running", "result_ready")]
+        phases = {"running": "running", "paused": "stopped", "stopped": "stopped"}
+        return {"schema_version": 1, "revision": state["domain"]["revision"],
+                "desired_mode": state["domain"]["desired_mode"],
+                "phase": phases.get(state["domain"]["desired_mode"], state["domain"]["phase"]),
+                "heartbeat": {"at": latest["timestamp"] if latest else None,
+                              "age": max(0, now-latest["timestamp"]) if latest else None,
+                              "fresh": bool(latest and now-latest["timestamp"] <= 30)},
+                "session": {"active": sessions[-1] if sessions else None,
+                            "known_spend": sum(x["known_spend"] for x in sessions),
+                            "unknown_spend": any(bool(x["unknown_spend"]) for x in sessions),
+                            "deadline": sessions[-1]["deadline"] if sessions else None},
+                "capacity": {"slots": len(running), "global_cap": None,
+                             "per_provider": {provider: sum(1 for x in claims if x["provider"] == provider)
+                                              for provider in sorted({x["provider"] for x in claims})}},
+                "queue": {"ready": 0, "running": len(running),
+                          "waiting": sum(1 for x in state["jobs"] if x["state"] in ("queued", "retry_wait")),
+                          "attention": sum(1 for x in state["jobs"] if x["state"] == "needs_attention")},
+                "config": {"enabled": self.execution_enabled, "execution_available": self.execution_available},
+                "boot_registration": "missing", "last_error": None,
+                "read_only": not self.execution_enabled, "claims": {"count": len(claims)}}
+
+    def events(self, after=0, limit=100):
+        if type(after) is not int or type(limit) is not int or not 1 <= limit <= 500:
+            raise ValueError("invalid events cursor or limit")
+        state = self.snapshot()
+        rows = state["events"]
+        oldest = rows[0]["sequence"] if rows else 1
+        if after < oldest - 1:
+            return {"snapshot_required": True, "snapshot": state, "next_cursor": rows[-1]["sequence"] if rows else 0}
+        page = self._store().events_after(after, limit)
+        return {"events": page, "next_cursor": page[-1]["sequence"] if page else after}
+
+    def card_execution(self, card):
+        card = str(card)
+        state = self.snapshot()
+        jobs = [x for x in state["jobs"] if x["card"] == card]
+        attempts = [x for x in state["attempts"] if any(j["id"] == x["job_id"] for j in jobs)]
+        claims = [x for x in state["claims"] if x["card"] == card]
+        times = [json.loads(x["data"]) for x in attempts]
+        now = self.clock()
+        def age(key):
+            vals = [row.get(key) for row in times if isinstance(row.get(key), (int,float))]
+            return max(0, now-max(vals)) if vals else None
+        return {"job": jobs[-1] if jobs else None, "attempts": attempts,
+                "progress_age": age("progress_at"), "heartbeat_age": age("heartbeat_at"),
+                "deadlines": [row.get("deadline") for row in times if row.get("deadline") is not None],
+                "retries": {"automatic": jobs[-1]["retries_used"] if jobs else 0},
+                "waiting_reason": None, "claims": claims,
+                "reservation_revision": max([x["reservation_revision"] for x in claims], default=0), "logs": []}
+
+    def _control(self, card, command, mode, request_id, expected_revision, actor):
+        store = self._store()
+        prior = next((x for x in store.snapshot()["commands"] if x["id"] == request_id), None)
+        result = store.record_command({"id": request_id, "actor": actor, "command": command,
+            "payload": {"card": str(card), "mode": mode}, "expected_revision": expected_revision})
+        if command == "pause" and prior is None and store._card_lifecycles().get(str(card)) != "paused":
+            store.set_card_lifecycle(str(card), "paused", result["revision"])
+        if command == "card_resume" and prior is None and store._card_lifecycles().get(str(card)) == "paused":
+            state = store.snapshot()
+            current_job = next((item for item in reversed(state["jobs"]) if item["card"] == str(card)), None)
+            target = "active" if current_job and current_job["state"] in ("active", "retry_wait") else "ready"
+            store.set_card_lifecycle(str(card), target, result["revision"])
+        return {"command_id": request_id, "state_revision": store.snapshot()["domain"]["revision"],
+                "desired_mode": result["desired_mode"], "phase": store.snapshot()["domain"]["phase"]}
+
+    def card_pause(self, card, *, mode="drain", request_id, expected_revision, peer=None):
+        if mode not in ("drain", "cancel"): raise ValueError("pause mode must be drain or cancel")
+        actor = self.authenticated_actor(peer)
+        result = self._control(card, "card_pause", mode, request_id, expected_revision, actor)
+        if mode == "cancel": self.cancel_live_attempts(request_id, result["state_revision"])
+        return result
+
+    def release_reservations(self, card, *, reason, expected_revision, expected_reservation_revision, peer=None):
+        actor = self.authenticated_actor(peer)
+        snap = self.snapshot(); card = str(card)
+        if type(expected_revision) is not int or expected_revision != snap["domain"]["revision"]:
+            raise ValueError("reservation revision mismatch: stale state revision")
+        if self._store()._card_lifecycles().get(card) != "paused": raise ValueError("card must be paused")
+        self._store().release_scope(card, "release:" + str(expected_revision) + ":" + card, actor, reason,
+            expected_revision, reservation_revision=expected_reservation_revision,
+            actor_capability=actor)
+        return {"released": True, "actor": actor, "paths": next((x["paths"] for x in snap["reservations"] if x["card"] == card), [])}
+
+    def card_resume(self, card, *, request_id, expected_revision, peer=None):
+        actor = self.authenticated_actor(peer)
+        before = self.snapshot(); lifecycle = self._store()._card_lifecycles().get(str(card))
+        if lifecycle == "human_qa": return {"refreshed": True, "preserved_human_qa": True, "preserved_budget_stop": True}
+        result = self._control(card, "card_resume", None, request_id, expected_revision, actor)
+        return dict(result, refreshed=True, preserved_human_qa=True, preserved_budget_stop=True)
+
+    def reconcile_card(self, card, *, known):
+        if type(known) is not bool: raise ValueError("known must be boolean")
+        card = str(card); store = self._store(); state = self.snapshot()
+        reservation = next((x for x in state["reservations"] if x["card"] == card), None)
+        if not known:
+            store.set_card_lifecycle(card, "needs_attention", state["domain"]["revision"])
+        return {"state": "needs_attention" if not known else store._card_lifecycles().get(card, "ready"),
+                "quarantined": not known, "reservation_retained": bool(reservation), "dispatchable": bool(known)}
+
+    def resolve(self, card, *, action, request_id, reason, expected_revision, evidence=None,
+                attempt_id=None, usage=None, effect_id=None, artifact_paths=None, peer=None):
+        if self.writer_uncertain: raise RuntimeError("uncertain writer prevents resolution")
+        if not self.execution_enabled: raise RuntimeError("supervisor.enabled: false; control API is read-only")
+        if not isinstance(reason, str) or not reason.strip(): raise ValueError("reason required")
+        actor = self.authenticated_actor(peer)
+        if not actor: raise PermissionError("authenticated actor required")
+        store = self._store(); state = store.snapshot(); card = str(card)
+        if action == "retry":
+            job = next((x for x in state["jobs"] if x["card"] == card), None)
+            attempt = next((x for x in state["attempts"] if x["id"] == attempt_id), None) if attempt_id else next((x for x in state["attempts"] if x["job_id"] == (job or {}).get("id")), None)
+            if job is None or attempt is None: raise ValueError("retry job/attempt missing")
+            if attempt["state"] == "quarantined":
+                from .models import StopEvidence
+                if type(evidence) is not StopEvidence or store.retry_evidence_verifier is None or store.retry_evidence_verifier(evidence) is not True:
+                    raise ValueError("writer uncertainty requires trusted stop evidence")
+                data = json.loads(attempt["data"])
+                if getattr(evidence, "domain_id", None) != store.domain_id or getattr(evidence, "job_id", None) != job["id"] or getattr(evidence, "attempt_id", None) != attempt["id"] or getattr(evidence, "generation", None) != json.loads(attempt["data"]).get("generation"):
+                    raise ValueError("stop evidence identity mismatch")
+            result = store.authorize_manual_retry({"request_id": request_id,"card": card,"job_id": job["id"],"attempt_id": attempt["id"],"actor": actor,"reason": reason,"expected_revision": expected_revision})
+            return dict(result, applied=True)
+        if action == "record_usage":
+            if not isinstance(usage, dict) or set(usage) != {"cost_usd"} or not callable(self.usage_evidence_verifier) or self.usage_evidence_verifier(evidence) is not True:
+                raise ValueError("usage evidence required")
+            attempt = next((x for x in state["attempts"] if x["id"] == attempt_id), None)
+            if attempt is None: raise ValueError("usage attempt missing")
+            data = json.loads(attempt["data"])
+            result = store.reconcile_usage({"request_id":request_id,"session_id":data["session_id"],"attempt_id":attempt_id,"actor":actor,"reason":reason,"cost_usd":usage["cost_usd"],"expected_revision":expected_revision})
+            return dict(result, applied=True)
+        if action == "confirm_effect":
+            effect = next((x for x in state["effects"] if x["operation_key"] == effect_id and x["card"] == card), None)
+            verifier = self.effect_verifier
+            if effect is None or not isinstance(evidence, dict):
+                raise ValueError("effect verification evidence is invalid")
+            verified = (verifier.verify(effect, evidence) if hasattr(verifier, "verify")
+                        else verifier(effect, evidence))
+            if verified is not True:
+                raise ValueError("effect verification failed")
+            observation = dict(evidence, status="applied")
+            store.confirm_effect(effect_id, observation, expected_revision)
+            return {"applied": True, "effect_id": effect_id}
+        if action == "abandon":
+            if not effect_id: raise ValueError("effect identity required")
+            effect = next((x for x in state["effects"] if x["operation_key"] == effect_id and x["card"] == card), None)
+            if effect is None or effect["observation"] is None: raise ValueError("unresolved effect prevents abandon")
+            paths = artifact_paths or []
+            root = store.directory / "artifacts"
+            for item in paths:
+                path = Path(item)
+                if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or not path.is_file(): raise ValueError("unsafe artifact path")
+            result = store.abandon_prepared_claim(card, request_id, actor, reason, effect_id, expected_revision)
+            return {"applied": bool(result["released"]),"artifacts_preserved":True,"released_claims":1}
+        raise ValueError("unsupported resolution action")
 
     def command(self, command, *, request_id, expected_revision, actor, mode=None):
         if command not in ("start", "pause", "resume", "stop"):
@@ -422,9 +634,14 @@ class Service:
         return self._store().snapshot()
 
     def events(self, after=0, limit=100):
-        if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 500:
+        if type(after) is not int or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid events cursor or limit")
-        return self._store().events_after(after, limit)
+        if after < 0:
+            state = self.snapshot(); rows = state["events"]
+            return EventPage([], next_cursor=rows[-1]["sequence"] if rows else 0,
+                             snapshot_required=True, snapshot=state)
+        page = self._store().events_after(after, limit)
+        return EventPage(page, next_cursor=page[-1]["sequence"] if page else after)
 
     def worker_request(self, request):
         if not isinstance(request, dict) or request.get("command") not in WORKER_COMMANDS:

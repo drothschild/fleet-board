@@ -320,7 +320,8 @@ class LifecycleContract(unittest.TestCase):
         self.assertFalse(Path(self.service.worker_socket_path).exists())
         self.assertFalse(Path(self.service.run_lock_path).exists())
 
-    def test_supported_resolve_is_audited_and_uncertain_writer_rejects_it(self):
+    def test_resolve_rejects_uncertain_writer_and_missing_job_without_false_success(self):
+        # Application semantics are covered by control_cases.py (real durable state).
         self.service.start_serving()
         self.service.writer_uncertain = True
         with self.assertRaisesRegex((ValueError, RuntimeError), "uncertain|writer"):
@@ -328,33 +329,24 @@ class LifecycleContract(unittest.TestCase):
                                          "card": 17, "action": "retry", "reason": "reviewed"},
                                         peer=object())
         self.service.writer_uncertain = False
-        self.service.handle_request({"command": "resolve", "request_id": "resolve-ok",
-                                     "card": 17, "action": "retry", "reason": "reviewed"},
-                                    peer=object())
-        audited = [json.loads(item["request"]) for item in self.service.snapshot()["commands"]]
-        self.assertTrue(any(item.get("command") == "resolve" and item.get("actor")
-                            for item in audited))
+        before = len(self.service.snapshot()["commands"])
+        with self.assertRaisesRegex(ValueError, "missing"):
+            self.service.handle_request({"command": "resolve", "request_id": "resolve-missing",
+                                         "card": 17, "action": "retry", "reason": "reviewed"},
+                                        peer=object())
+        self.assertEqual(len(self.service.snapshot()["commands"]), before)
 
-    def test_supported_resolve_reports_recorded_without_claiming_application(self):
-        self.service.start_serving()
-        result = self.service.handle_request({"command": "resolve", "request_id": "resolve-recorded",
-                                              "card": 17, "action": "retry", "reason": "reviewed"},
-                                             peer=object())
-        self.assertEqual(result, {"audited": True, "applied": False, "status": "recorded"})
-
-    def test_cli_resolve_prints_recorded_status_and_rejects_unsupported_action(self):
+    def test_cli_resolve_reports_errors_and_rejects_unsupported_action(self):
         self.service.start_serving()
         def transport(request):
-            if request.get("command") == "status":
-                return self.service.handle_request(request, peer=object())
             return self.service.handle_request(request, peer=object())
         from io import StringIO
         out, err = StringIO(), StringIO()
         code = main(["resolve", "--card", "17", "--action", "retry"],
                     env={}, stdout=out, stderr=err, transport=transport)
-        self.assertEqual(code, 0, err.getvalue())
-        self.assertEqual(json.loads(out.getvalue()),
-                         {"audited": True, "applied": False, "status": "recorded"})
+        self.assertEqual(code, 1)
+        self.assertIn("missing", err.getvalue())
+        self.assertEqual(out.getvalue(), "")
         code, _, err = self.command(["resolve", "--card", "17", "--action", "bogus"])
         self.assertEqual(code, 2, err)
 
