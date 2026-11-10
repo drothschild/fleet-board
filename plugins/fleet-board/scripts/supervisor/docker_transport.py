@@ -1,6 +1,8 @@
 """Trusted host-side Docker worker transport and attempt-scoped broker relay."""
 import base64
 import binascii
+import fcntl
+from contextlib import contextmanager
 import hmac
 import json
 import math
@@ -11,6 +13,7 @@ import re
 import selectors
 import signal
 import shutil
+import stat
 import subprocess
 import struct
 import tempfile
@@ -29,7 +32,202 @@ _STDOUT_LIMIT = 1048576
 _STDERR_LIMIT = 65536
 _LABEL_RECONCILE_GRACE_SECONDS = .5
 _LABEL_RECONCILE_POLL_SECONDS = .05
-_LABEL_RECONCILE_EMPTY_LISTINGS = 3
+_ATTEMPT_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
+
+
+class _CleanupRegistry:
+    """Atomic, locked pending-label journal beside a trusted operation journal."""
+
+    def __init__(self, operation_journal):
+        journal = Path(operation_journal)
+        if (not journal.is_absolute() or journal.is_symlink()
+                or journal.parent.is_symlink()):
+            raise ValueError('unsafe cleanup registry journal path')
+        parent = journal.parent
+        if parent.resolve(strict=True) != parent or not parent.is_dir():
+            raise ValueError('unsafe cleanup registry parent')
+        parent_info = parent.stat()
+        if parent_info.st_uid != os.getuid() or parent_info.st_mode & 0o077:
+            raise ValueError('unsafe cleanup registry parent')
+        if journal.exists():
+            info = journal.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1):
+                raise ValueError('unsafe cleanup registry journal')
+        self.path = journal.with_name(journal.name + '.docker-cleanup.json')
+        self.lock_path = journal.with_name(journal.name + '.docker-cleanup.lock')
+        self.parent = parent
+        if self.path.is_symlink():
+            raise ValueError('unsafe cleanup registry file')
+
+    @contextmanager
+    def exclusive(self):
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(str(self.lock_path), flags, 0o600)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1):
+                raise ValueError('unsafe cleanup registry lock')
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    def _read(self):
+        if not self.path.exists():
+            return []
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(str(self.path), flags)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1 or info.st_size > 65536):
+                raise ValueError('unsafe cleanup registry file')
+            raw = b''
+            while len(raw) <= 65536:
+                chunk = os.read(fd, 65537 - len(raw))
+                if not chunk:
+                    break
+                raw += chunk
+        finally:
+            os.close(fd)
+        value = json.loads(raw.decode('ascii'))
+        if (not isinstance(value, dict) or set(value) != {'schema_version', 'attempts'}
+                or value.get('schema_version') != 1 or not isinstance(value.get('attempts'), list)
+                or any(not isinstance(item, dict)
+                       or set(item) != {'attempt_id', 'state', 'pid', 'pid_start'}
+                       or not isinstance(item.get('attempt_id'), str)
+                       or not _ATTEMPT_ID.fullmatch(item['attempt_id'])
+                       or item.get('state') not in ('starting', 'active', 'pending')
+                       or (item.get('state') in ('starting', 'active') and
+                           (type(item.get('pid')) is not int or item['pid'] < 1
+                            or not isinstance(item.get('pid_start'), str)
+                            or not item['pid_start']))
+                       or (item.get('state') == 'pending' and
+                           (item.get('pid') is not None or item.get('pid_start') is not None))
+                       for item in value['attempts'])
+                or len({item['attempt_id'] for item in value['attempts']}) != len(value['attempts'])):
+            raise ValueError('malformed cleanup registry')
+        return value['attempts']
+
+    def _write(self, attempts):
+        data = json.dumps({'schema_version': 1,
+                           'attempts': sorted(attempts, key=lambda item: item['attempt_id'])},
+                          separators=(',', ':'), sort_keys=True).encode('ascii')
+        temp = self.path.with_name('.' + self.path.name + '.' + os.urandom(8).hex())
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(fd, view)
+                view = view[written:]
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            os.replace(str(temp), str(self.path))
+            dir_fd = os.open(str(self.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
+
+    def _update(self, attempt_id, state, pid=None, pid_start=None):
+        with self.exclusive():
+            attempts = self._read()
+            found = False
+            for item in attempts:
+                if item['attempt_id'] == attempt_id:
+                    item.update(state=state, pid=pid, pid_start=pid_start)
+                    found = True
+                    break
+            if not found:
+                attempts.append({'attempt_id': attempt_id, 'state': state,
+                                 'pid': pid, 'pid_start': pid_start})
+            self._write(attempts)
+
+    def begin(self, attempt_id, pid, pid_start):
+        if type(pid) is not int or pid < 1 or not pid_start:
+            raise ValueError('controller process identity is unavailable')
+        with self.exclusive():
+            attempts = self._read()
+            if any(item['attempt_id'] == attempt_id for item in attempts):
+                raise ValueError('Docker attempt label is already registered')
+            attempts.append({'attempt_id': attempt_id, 'state': 'starting',
+                             'pid': pid, 'pid_start': pid_start})
+            self._write(attempts)
+
+    def activate(self, attempt_id, pid, pid_start):
+        if not pid_start:
+            raise ValueError('Docker process identity is unavailable')
+        self._update(attempt_id, 'active', pid, pid_start)
+
+    def pending(self, attempt_id):
+        self._update(attempt_id, 'pending')
+
+    def process_identity(self, pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return None
+        try:
+            completed = subprocess.run(['ps', '-o', 'lstart=', '-p', str(pid)],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, timeout=1, check=False,
+                                       close_fds=True)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if completed.returncode != 0:
+            return None
+        output = completed.stdout
+        if isinstance(output, bytes):
+            try:
+                output = output.decode('ascii', 'strict')
+            except UnicodeError:
+                return None
+        identity = output.strip() if isinstance(output, str) else ''
+        return identity or None
+
+    def _remove_locked(self, attempt_id):
+        attempts = [item for item in self._read() if item['attempt_id'] != attempt_id]
+        if attempts:
+            self._write(attempts)
+        else:
+            try:
+                self.path.unlink()
+                dir_fd = os.open(str(self.parent), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except FileNotFoundError:
+                pass
+
+    def _clear_locked(self):
+        try:
+            self.path.unlink()
+            dir_fd = os.open(str(self.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except FileNotFoundError:
+            pass
+
+    def remove(self, attempt_id):
+        with self.exclusive():
+            self._remove_locked(attempt_id)
 
 
 def _terminate_group(process):
@@ -109,53 +307,115 @@ class DockerWorkerTransport:
         return completed.returncode == 0
 
     @classmethod
-    def _reconcile_labeled_containers(cls, docker, attempt_id):
+    def _reconcile_labeled_containers(cls, docker, attempt_id, *, return_removed=False):
         label = 'org.fleet-board.supervisor.attempt-id=' + attempt_id
         deadline = time.monotonic() + _LABEL_RECONCILE_GRACE_SECONDS
-        empty_listings = 0
+        removed_any = False
+        def result(ok):
+            return (ok, removed_any) if return_removed else ok
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return empty_listings >= _LABEL_RECONCILE_EMPTY_LISTINGS
+                return result(True)
             try:
                 completed = subprocess.run(
                     [docker, 'ps', '-aq', '--filter', 'label=' + label],
                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                     timeout=remaining, check=False, close_fds=True)
             except (OSError, subprocess.SubprocessError):
-                return False
+                return result(False)
             if completed.returncode != 0:
-                return False
+                return result(False)
             output = completed.stdout
             try:
                 if isinstance(output, bytes):
                     output = output.decode('ascii', 'strict')
             except UnicodeError:
-                return False
+                return result(False)
             if not isinstance(output, str):
-                return False
+                return result(False)
             container_ids = [line.strip() for line in output.splitlines() if line.strip()]
             if any(not _CONTAINER_ID.fullmatch(container_id) for container_id in container_ids):
-                return False
+                return result(False)
             removed_all = True
             for container_id in container_ids:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not cls._remove_container(
                         docker, container_id, timeout=max(.001, remaining)):
                     removed_all = False
+                else:
+                    removed_any = True
             if not removed_all:
-                return False
-            if container_ids:
-                empty_listings = 0
-            else:
-                empty_listings += 1
+                return result(False)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return empty_listings >= _LABEL_RECONCILE_EMPTY_LISTINGS
+                return result(True)
             time.sleep(min(_LABEL_RECONCILE_POLL_SECONDS, remaining))
 
     def run(self, argv, policy, *, bootstrap, channel, attempt_id, capability,
             timeout, cancel_event):
+        if (type(timeout) not in (int, float) or not math.isfinite(timeout)
+                or timeout <= 0 or timeout > 86400
+                or not isinstance(cancel_event, threading.Event)
+                or not callable(getattr(channel, 'request', None))):
+            raise ValueError('invalid Docker transport bounds or broker')
+        docker = policy.get('command') if isinstance(policy, dict) else None
+        if not isinstance(docker, str) or not os.path.isabs(docker):
+            raise IsolationUnavailable('Docker executable unavailable')
+        if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
+            raise ContractError('invalid Docker attempt label')
+        journal = getattr(channel, 'operation_journal', None)
+        registry = None
+        if journal is not None:
+            try:
+                registry = _CleanupRegistry(journal)
+                unresolved = []
+                with registry.exclusive():
+                    attempts = registry._read()
+                    retained = []
+                    for record in attempts:
+                        if record['state'] in ('active', 'starting'):
+                            identity = registry.process_identity(record['pid'])
+                            if identity is None:
+                                unresolved.append(record['attempt_id'])
+                                retained.append(record)
+                                continue
+                            if identity == record['pid_start']:
+                                if record['state'] == 'starting':
+                                    unresolved.append(record['attempt_id'])
+                                retained.append(record)
+                                continue
+                            record.update(state='pending', pid=None, pid_start=None)
+                        if record['state'] == 'starting':
+                            unresolved.append(record['attempt_id'])
+                            retained.append(record)
+                            continue
+                        ok, removed = self._reconcile_labeled_containers(
+                            docker, record['attempt_id'], return_removed=True)
+                        if ok and removed:
+                            continue
+                        unresolved.append(record['attempt_id'])
+                        retained.append(record)
+                    if retained != attempts:
+                        if retained:
+                            registry._write(retained)
+                        else:
+                            registry._clear_locked()
+                if unresolved:
+                    raise IsolationUnavailable(
+                        'Docker cleanup pending for attempt label(s): ' + ', '.join(unresolved))
+            except (OSError, ValueError, TypeError, UnicodeError,
+                    json.JSONDecodeError) as exc:
+                if isinstance(exc, IsolationUnavailable):
+                    raise
+                raise IsolationUnavailable('Docker cleanup registry is unavailable or malformed') from exc
+        return self._run_locked(
+            argv, policy, bootstrap=bootstrap, channel=channel, attempt_id=attempt_id,
+            capability=capability, timeout=timeout, cancel_event=cancel_event,
+            cleanup_registry=registry)
+
+    def _run_locked(self, argv, policy, *, bootstrap, channel, attempt_id, capability,
+                    timeout, cancel_event, cleanup_registry):
         self.last_container_id = None
         if (type(timeout) not in (int, float) or not math.isfinite(timeout)
                 or timeout <= 0 or timeout > 86400
@@ -165,7 +425,7 @@ class DockerWorkerTransport:
         docker = policy.get('command') if isinstance(policy, dict) else None
         if not isinstance(docker, str) or not os.path.isabs(docker):
             raise IsolationUnavailable('Docker executable unavailable')
-        if not isinstance(attempt_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', attempt_id):
+        if not isinstance(attempt_id, str) or not _ATTEMPT_ID.fullmatch(attempt_id):
             raise ContractError('invalid Docker attempt label')
         started = time.monotonic()
         deadline = started + timeout
@@ -192,6 +452,7 @@ class DockerWorkerTransport:
         cleanup_failure = None
         overflow = None
         cidfile = None
+        registered_attempt = False
 
         def write_host_frame(frame):
             try:
@@ -302,9 +563,16 @@ class DockerWorkerTransport:
                                       policy, cidfile)
             command.insert(command.index('--cidfile=' + cidfile),
                            '--label=org.fleet-board.supervisor.attempt-id=' + attempt_id)
+            if cleanup_registry is not None:
+                controller_identity = cleanup_registry.process_identity(os.getpid())
+                cleanup_registry.begin(attempt_id, os.getpid(), controller_identity)
+                registered_attempt = True
             process = subprocess.Popen(command, cwd=policy['workspace'], stdin=subprocess.PIPE,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        close_fds=True, start_new_session=True)
+            if cleanup_registry is not None:
+                cleanup_registry.activate(
+                    attempt_id, process.pid, cleanup_registry.process_identity(process.pid))
             os.set_blocking(process.stdin.fileno(), False)
             for target in (read_frames, read_docker_stderr):
                 thread = threading.Thread(target=target, daemon=True)
@@ -419,19 +687,54 @@ class DockerWorkerTransport:
             if not successful and process is not None:
                 _terminate_group(process)
                 try:
+                    if cleanup_registry is not None:
+                        cleanup_registry.pending(attempt_id)
                     container_id = self._read_cid(cidfile) if cidfile else None
                     if container_id is False:
-                        if not self._reconcile_labeled_containers(docker, attempt_id):
-                            cleanup_failure = 'Docker container cleanup failed'
+                        ok, removed = self._reconcile_labeled_containers(
+                            docker, attempt_id, return_removed=True)
+                        if ok and removed and cleanup_registry is not None:
+                            cleanup_registry.remove(attempt_id)
+                        elif not ok:
+                            cleanup_failure = 'Docker container cleanup failed: label reconciliation failed'
+                        else:
+                            cleanup_failure = ('Docker cleanup pending for attempt label: ' + attempt_id
+                                               if cleanup_registry is not None else
+                                               'Docker cleanup pending: no durable registry for attempt label ' + attempt_id)
                     else:
                         self.last_container_id = container_id
                         if container_id and not self._remove_container(docker, container_id):
                             cleanup_failure = 'Docker container cleanup failed'
-                        elif not container_id and not self._reconcile_labeled_containers(
-                                docker, attempt_id):
-                            cleanup_failure = 'Docker container cleanup failed'
+                        elif container_id and cleanup_registry is not None:
+                            cleanup_registry.remove(attempt_id)
+                        elif not container_id:
+                            ok, removed = self._reconcile_labeled_containers(
+                                docker, attempt_id, return_removed=True)
+                            if ok and removed and cleanup_registry is not None:
+                                cleanup_registry.remove(attempt_id)
+                            elif not ok:
+                                cleanup_failure = 'Docker container cleanup failed: label reconciliation failed'
+                            else:
+                                cleanup_failure = ('Docker cleanup pending for attempt label: ' + attempt_id
+                                                   if cleanup_registry is not None else
+                                                   'Docker cleanup pending: no durable registry for attempt label ' + attempt_id)
                 except Exception:
                     cleanup_failure = 'Docker container cleanup failed'
+                    if cleanup_registry is not None:
+                        try:
+                            cleanup_registry.pending(attempt_id)
+                        except Exception:
+                            pass
+            elif not successful and cleanup_registry is not None and registered_attempt:
+                try:
+                    cleanup_registry.remove(attempt_id)
+                except Exception:
+                    cleanup_failure = 'Docker cleanup registry could not clear unlaunched attempt'
+            elif successful and cleanup_registry is not None:
+                try:
+                    cleanup_registry.remove(attempt_id)
+                except Exception:
+                    cleanup_failure = 'Docker cleanup registry could not clear completed attempt'
             for thread in reader_threads:
                 thread.join(timeout=.5)
             if writer_thread is not None:

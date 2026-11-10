@@ -1391,12 +1391,12 @@ if sys.argv[1:2] == ['ps']:
         print('e' * 64 if count == 5 else '')
         raise SystemExit(0)
     if mode == 'late-across-invocations':
-        launched = os.path.exists(@RUNLOG@) and time.time() - os.path.getmtime(@RUNLOG@) > .52
-        print('e' * 64 if launched else '')
+        print('e' * 64 if os.path.exists(@LATE@) and not os.path.exists(@REMOVED@) else '')
         raise SystemExit(0)
     print('\\n'.join(ids)); raise SystemExit(0)
 if sys.argv[1:2] == ['rm']:
     open(@RMLOG@, 'a').write(' '.join(sys.argv[1:]) + '\\n')
+    if mode == 'late-across-invocations': open(@REMOVED@, 'w').write('removed')
     if mode == 'remove-failure': raise SystemExit(1)
     raise SystemExit(0)
 if sys.argv[1:2] == ['run']:
@@ -1425,7 +1425,9 @@ raise SystemExit(2)
             '@LISTLOG@', repr(str(self.root / 'docker-ps.log'))).replace(
             '@RMLOG@', repr(str(self.root / 'docker-label-rm.log'))).replace(
             '@RUNLOG@', repr(str(self.root / 'docker-label-run.log'))).replace(
-            '@REGISTRY@', repr(str(self.root / 'controller' / 'operations.json.docker-cleanup.json')))
+            '@REGISTRY@', repr(str(self.root / 'controller' / 'operations.json.docker-cleanup.json'))).replace(
+            '@LATE@', repr(str(self.root / 'docker-late-container-visible'))).replace(
+            '@REMOVED@', repr(str(self.root / 'docker-late-container-removed')))
         return self.script('fake-docker-label-' + mode, script)[0]
 
     def test_docker_host_transport_reconciles_missing_cidfile_by_attempt_label(self):
@@ -1520,6 +1522,12 @@ raise SystemExit(2)
         self.assertEqual([item['attempt_id'] for item in
                           json.loads(registry.read_text(encoding='utf-8'))['attempts']],
                          ['attempt-1'])
+        (self.root / 'docker-late-container-visible').write_text('late', encoding='utf-8')
+        listing = subprocess.run([fake, 'ps', '-aq', '--filter',
+                                  'label=org.fleet-board.supervisor.attempt-id=attempt-1'],
+                                 stdout=subprocess.PIPE, check=False)
+        self.assertEqual(listing.stdout.decode().strip(), 'e' * 64)
+        bootstrap['inference']['attempt_id'] = 'attempt-2'
         result = DockerWorkerTransport().run(
                 ['python3', '-m', 'worker'], self.docker_policy(fake),
                 bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
@@ -1579,10 +1587,34 @@ raise SystemExit(2)
         registry = _CleanupRegistry(journal)
         attempt_ids = ['attempt-{}'.format(index) for index in range(12)]
         with ThreadPoolExecutor(max_workers=6) as pool:
-            list(pool.map(registry.begin, attempt_ids))
+            pid_start = registry.process_identity(os.getpid())
+            list(pool.map(lambda attempt_id: registry.begin(
+                attempt_id, os.getpid(), pid_start), attempt_ids))
         self.assertEqual({item['attempt_id'] for item in
                           json.loads(registry.path.read_text(encoding='utf-8'))['attempts']},
                          set(attempt_ids))
+
+    def test_docker_cleanup_reconciles_stale_active_pid_record(self):
+        from supervisor.docker_transport import DockerWorkerTransport, _CleanupRegistry
+
+        bootstrap, channel = self.docker_transport_args()
+        journal_dir = self.root / 'controller'
+        journal_dir.mkdir(mode=0o700)
+        journal = journal_dir / 'operations.json'
+        journal.write_text('{"schema_version":1,"operations":[]}', encoding='utf-8')
+        journal.chmod(0o600)
+        channel.operation_journal = journal
+        registry = _CleanupRegistry(journal)
+        registry._write([{'attempt_id': 'stale-attempt', 'state': 'active',
+                          'pid': 2147483000, 'pid_start': 'Mon Jan  1 00:00:00 2001'}])
+        fake = self.fake_docker_missing_cidfile('matches', ['a' * 64])
+        with self.assertRaises((ContractError, IsolationUnavailable)):
+            DockerWorkerTransport().run(
+                ['python3', '-m', 'worker'], self.docker_policy(fake),
+                bootstrap=bootstrap, channel=channel, attempt_id='attempt-1',
+                capability='secret', timeout=2, cancel_event=threading.Event())
+        removals = (self.root / 'docker-label-rm.log').read_text(encoding='utf-8')
+        self.assertIn('-f ' + 'a' * 64, removals)
 
     def test_docker_transport_rejects_nonfinite_and_boolean_timeouts_before_launch(self):
         import math
