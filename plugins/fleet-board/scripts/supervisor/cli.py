@@ -137,6 +137,10 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                 if not ack.get("ready") or not ack.get("owner") or ack.get("socket_unavailable"):
                     child.terminate()
                     raise RuntimeError("supervisor service failed to become ready: " + json.dumps(ack))
+                if not ack.get("execution_available", True):
+                    print("supervisor: supervisor.enabled: false; service is running read-only",
+                          file=stderr)
+                    return 3
                 return _print_result(ack, stdout)
             else:
                 from .store import Store

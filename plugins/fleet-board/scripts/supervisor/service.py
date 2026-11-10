@@ -22,13 +22,29 @@ WORKER_COMMANDS = {"heartbeat", "progress", "result", "scope_expansion"}
 class Service:
     @classmethod
     def open(cls, domain, *, clock=None, host_boot_id=None, peer_resolver=None, run_lock_path=None,
-             board_repo=None):
+             board_repo=None, execution_enabled=None):
         store = Store.open(domain)
+        if execution_enabled is None:
+            execution_enabled = cls._configured_execution_enabled(domain)
         return cls(store, clock or time.time, host_boot_id or _boot_id(), peer_resolver,
-                   run_lock_path, board_repo or domain.get("board_repo"))
+                   run_lock_path, board_repo or domain.get("board_repo"), execution_enabled)
+
+    @staticmethod
+    def _configured_execution_enabled(domain):
+        root = domain.get("board_identity") or domain.get("root") or domain.get("common_dir")
+        if not root:
+            return False
+        config = Path(__file__).resolve().parents[1] / "config.sh"
+        try:
+            result = subprocess.run(["bash", str(config), "--dir", str(root),
+                                     "supervisor.enabled"], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0 and result.stdout.strip() == "true"
 
     def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None,
-                 board_repo=None):
+                 board_repo=None, execution_enabled=True):
         self.store = store
         self._owner_thread_id = threading.get_ident()
         self._thread_store = threading.local()
@@ -53,7 +69,8 @@ class Service:
         self._owner_fd = None
         self.request_timeout = 5.0
         self.rpc_handler = None
-        self.execution_available = True
+        self.execution_enabled = bool(execution_enabled)
+        self.execution_available = self.execution_enabled
         self.admissions_open = False
         self.cancellation_requests = []
         self.shutdown_observer = lambda: "stopped"
@@ -155,7 +172,8 @@ class Service:
                 self._release_ownership()
                 self.writer_uncertain = False
             if self._server is not None:
-                return {"ready": True, "recovery_complete": True, "owner": False}
+                return {"ready": True, "recovery_complete": True, "owner": False,
+                        "execution_available": self.execution_available}
             self._prepare_socket_root()
             lock_path = Path(self.directory) / "service.lock"
             fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
@@ -163,7 +181,8 @@ class Service:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except (BlockingIOError, OSError):
                 os.close(fd)
-                return {"ready": True, "recovery_complete": True, "owner": False}
+                return {"ready": True, "recovery_complete": True, "owner": False,
+                        "execution_available": self.execution_available}
             self._owner_fd = fd
             claim_script = Path(__file__).resolve().parents[1] / "claim-run-lock.py"
             Path(self.run_lock_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -196,7 +215,8 @@ class Service:
                         pass
                 self.execution_available = False
                 self._owner = True
-                return {"ready": True, "recovery_complete": True, "owner": True, "socket_unavailable": True}
+                return {"ready": True, "recovery_complete": True, "owner": True,
+                        "socket_unavailable": True, "execution_available": False}
             self._owner = True
             self.writer_uncertain = False
             for server, worker in ((self._server, False), (self._worker_server, True)):
@@ -204,7 +224,8 @@ class Service:
                 thread.start()
                 self._threads.append(thread)
             return {"ready": True, "recovery_complete": True, "owner": True,
-                    "host_boot_id": self.host_boot_id}
+                    "host_boot_id": self.host_boot_id,
+                    "execution_available": self.execution_available}
 
     def _serve(self, server, worker):
         while server is not None:
@@ -339,6 +360,8 @@ class Service:
             raise ValueError("unsupported command")
         if command == "stop" and mode not in ("drain", "cancel"):
             raise ValueError("stop mode must be drain or cancel")
+        if command in ("start", "resume") and not self.execution_enabled:
+            raise RuntimeError("supervisor.enabled: false; execution lifecycle is disabled")
         payload = {"mode": mode} if command == "stop" else {}
         store = self._store()
         outcome = store.record_command({"id": request_id, "actor": actor,

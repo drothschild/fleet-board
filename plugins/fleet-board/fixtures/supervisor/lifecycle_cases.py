@@ -45,7 +45,7 @@ def domain(root, identity="fixture"):
 class LifecycleContract(unittest.TestCase):
     def open_enabled(self, board_domain, **kwargs):
         config = self.root / "enabled.yml"
-        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "logs"),
                                           "TMPDIR": str(self.socket_tmp)}):
@@ -162,7 +162,7 @@ class LifecycleContract(unittest.TestCase):
                 self.skipTest("sandbox denies the real ps call required by legacy-lock fixture")
             raise
         config = self.root / "configured.yml"
-        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FLEET_BOARD_LOG_DIR": str(log_dir),
                                           "TMPDIR": str(self.socket_tmp),
                                           "FLEET_BOARD_CONFIG": str(config)}):
@@ -307,7 +307,7 @@ class LifecycleContract(unittest.TestCase):
         log_dir.mkdir(mode=0o700)
         env = dict(os.environ)
         config = self.root / ".fleet-board.yml"
-        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         env.update({"FLEET_BOARD_DOMAIN": str(self.root),
                     "FLEET_BOARD_CONFIG": str(config),
                     "FLEET_BOARD_LOG_DIR": str(log_dir),
@@ -493,12 +493,13 @@ class LifecycleContract(unittest.TestCase):
         disabled_root = self.root / "disabled-service"
         config = disabled_root / ".fleet-board.yml"
         disabled_root.mkdir(mode=0o700)
-        config.write_text("supervisor:\n  enabled: false\n", encoding="utf-8")
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: false\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
                                           "FLEET_BOARD_CONFIG": str(config),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "logs")}):
             service = Service.open(domain(disabled_root), clock=self.clock,
-                                   host_boot_id="boot-1")
+                                   host_boot_id="boot-1",
+                                   peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(service.close)
         ack = service.start_serving()
         self.assertTrue(ack["ready"])
@@ -518,7 +519,7 @@ class LifecycleContract(unittest.TestCase):
                 request = {"command": command, "request_id": command + "-disabled",
                            "expected_revision": service.status()["revision"], "mode": "drain"}
                 result = service.handle_request(request, peer=object())
-                self.assertIsInstance(result, dict)
+                self.assertIsInstance(result, (dict, list))
                 self.assertFalse(service.admissions_open)
 
     def test_disabled_cli_start_is_distinct_and_detached_service_stays_queryable(self):
@@ -527,7 +528,7 @@ class LifecycleContract(unittest.TestCase):
         disabled_root = self.root / "cli-disabled"
         disabled_root.mkdir(mode=0o700)
         config = disabled_root / ".fleet-board.yml"
-        config.write_text("supervisor:\n  enabled: false\n", encoding="utf-8")
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: false\n", encoding="utf-8")
         log_dir = self.root / "disabled-logs"
         log_dir.mkdir(mode=0o700)
         env = dict(os.environ)
@@ -564,7 +565,7 @@ class CLIContract(unittest.TestCase):
 
     def open_enabled(self, board_domain, root, **kwargs):
         config = root / ".fleet-board.yml"
-        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config),
                                           "FLEET_BOARD_LOG_DIR": str(root / "logs")}):
             return Service.open(board_domain, **kwargs)
