@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/tick-plan.sh"
 NOTE_SH="${SCRIPT_DIR}/../scripts/note.sh"
 TICK="$SCRIPT_DIR/../fixtures/gh/tick"
@@ -69,6 +70,7 @@ run_check() {
   local script="$1"
   shift
   local tmpout tmperr
+  store_sync
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"
   "$BASH_EXE" "$script" "$@" > "$tmpout" 2> "$tmperr"

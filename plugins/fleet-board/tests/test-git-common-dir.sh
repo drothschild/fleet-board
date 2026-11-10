@@ -15,6 +15,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 LIB="${SCRIPT_DIR}/../scripts/board-lib.sh"
 WORKTREE_SH="${SCRIPT_DIR}/../scripts/worktree.sh"
 CONFIG_SH="${SCRIPT_DIR}/../scripts/config.sh"
@@ -51,6 +52,7 @@ assert_exit() {
 }
 
 run_check() {
+  store_sync
   local tmpout tmperr
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"

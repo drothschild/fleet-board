@@ -3,12 +3,20 @@
 #
 # Usage: card-lint.sh <number>
 #        card-lint.sh --body-file <file>     (lint a body already read; used by tick-plan.sh)
+#        card-lint.sh --read-file <file>     (lint a board-read.sh result already read)
+#
+# A card (<number> or --read-file) is linted on its "acceptance" array (a card
+# without the field has none): empty is "empty-acceptance", and manual-check
+# scans its items. --body-file (import-plan.sh's generated bodies, through
+# lint.sh --bodies) lints the body as below.
 #
 # Prints one line per violation, "<rule>: <detail>", and exits 1; prints
 # nothing and exits 0 for a card that passes. Rules:
 #   no-heading    no "## Acceptance" heading. When the body has "**Acceptance**"
 #                 or "Acceptance:" the detail starts with "found " and names it.
 #   no-bullets    the heading is there but no "- " bullet is under it.
+#   empty-acceptance  a card whose "acceptance" array is empty or missing;
+#                 replaces no-heading and no-bullets for a card.
 #   manual-check  an Acceptance bullet holds a phrase that marks a check no
 #                 agent can run (on device, on a device, verify on, by hand,
 #                 Human QA, simulator, any case); it belongs under "## Human QA".
@@ -21,22 +29,44 @@ unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
 BODY=""
+READ=""
 if [ $# -eq 2 ] && [ "$1" = "--body-file" ]; then
   [ -r "$2" ] || fb_die 2 "cannot read file: $2"
   BODY="$(cat "$2")"
+elif [ $# -eq 2 ] && [ "$1" = "--read-file" ]; then
+  [ -r "$2" ] || fb_die 2 "cannot read file: $2"
+  READ="$(cat "$2")"
+  BODY="$(jq -r '.body // ""' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read in $2"
 elif [ $# -eq 1 ]; then
   fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
   fb_load_config
   READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1")" || fb_die 3 "cannot read card #$1"
   BODY="$(jq -r '.body // ""' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse card #$1"
 else
-  fb_die 2 "usage: card-lint.sh <number> | card-lint.sh --body-file <file>"
+  fb_die 2 "usage: card-lint.sh <number> | card-lint.sh --body-file <file> | card-lint.sh --read-file <file>"
 fi
 
-# Issue bodies edited in the web UI often carry CRLF line endings
+# Bodies edited in the board page or pasted in often carry CRLF line endings
 BODY="${BODY//$'\r'/}"
 
 FOUND=0
+
+# A card with an acceptance field: the items are the Acceptance section
+if [ -n "$READ" ]; then
+  READ="$(jq -c '.acceptance |= (if type == "array" then . else [] end)' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read"
+  if [ "$(jq -r '.acceptance | length' <<<"$READ")" = 0 ]; then
+    echo "empty-acceptance: the card has no acceptance items"
+    exit 1
+  fi
+  while IFS= read -r item; do
+    if grep -Eiq 'on (a )?device|verify on|by hand|human qa|simulator' <<<"$item"; then
+      printf 'manual-check: %s\n' "$item"
+      FOUND=1
+    fi
+  done < <(jq -r '.acceptance[] | tostring | gsub("\n"; " ")' <<<"$READ")
+  [ "$FOUND" -eq 0 ] || exit 1
+  exit 0
+fi
 
 if ! fb_has_acceptance "$BODY"; then
   hint="$(grep -Eio -m1 '^[[:space:]]*(\*\*Acceptance[^*]*\*\*|Acceptance:)' <<<"$BODY" | sed 's/^[[:space:]]*//')"

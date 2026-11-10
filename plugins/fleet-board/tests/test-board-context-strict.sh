@@ -29,7 +29,7 @@ BIN="$TMP/bin"
 LOG="$TMP/list.log"
 export SCRIPTS LOG REPO
 git init -q "$REPO"
-printf 'board:\n  backend: local\n  repo: acme/toy\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards" "$BIN"
 echo 4 > "$REPO/.fleet-board/next"
 cp -R "$SRC" "$SCRIPTS"

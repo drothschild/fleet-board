@@ -41,7 +41,7 @@ Step 1 initializes the tick. The completion scheduler repeats steps 1a, 2, 3 and
 0.8. **Gate blocks.** Besides unreadable commands, the gate blocks:
    - any move out of `human_qa`;
    - `gh pr merge` under `merge.policy: human`, on a draft PR, without an explicit PR number, with `--admin`, or when checks are not green;
-   - a move to `ready` for a card without `## Acceptance`.
+   - a move to `ready` for a card whose `acceptance` field is empty (`board-read.sh N | jq '.acceptance | length'` prints `0`).
 
    The manager never retries a blocked command in another form. It records the block as the action's result, adds a warning (the gate's stderr line) to the tick report, and counts the action as one that made no progress (2.C).
 
@@ -68,13 +68,13 @@ Step 1 initializes the tick. The completion scheduler repeats steps 1a, 2, 3 and
 
 0.15. **What each role is given.** Roles have no `Skill` tool; the manager never asks a role to use, load or follow the reporting skill.
    - **implementor** (`subagent_type: fleet-board:implementor`, `model` = the plan card's `models.implementor`):
-     - the card number, title and body, from `board-read.sh N`;
+     - the card number, title and body, and the card's acceptance items (`.acceptance`, an array of strings), all from `board-read.sh N`;
      - the absolute worktree path and the branch (the plan card's);
      - the config JSON;
      - the manager note (`note.sh get N`) for a continuation;
      - the absolute scripts dir.
    - **reviewer** (`fleet-board:reviewer`, `model` = the plan card's `models.reviewer`):
-     - the card number and body;
+     - the card number and body, and the card's acceptance items (`.acceptance` from `board-read.sh N`);
      - the PR number;
      - the PR diff, from `gh pr diff <pr> --repo R`. When the diff is longer than 1500 lines, the manager writes it to a file in the temp directory and passes that file's absolute path instead, saying so.
      - Only the latest implementor or fixer report text. In the tick where the fixer just ran, this is the report the fixer returned. Otherwise it is the newest comment on the card whose body has a `## Status` line and a line starting `VERIFIED:`, and has no `## Acceptance map` line.
@@ -85,14 +85,14 @@ Step 1 initializes the tick. The completion scheduler repeats steps 1a, 2, 3 and
      - the previous findings: in round 2 and later, `note.last_review.findings` filtered to Critical and Important, each written as the line `- [<severity>] <text>`; in round 1, none;
      - the absolute scripts dir.
    - **fixer** (`fleet-board:fixer`, `model` = the plan card's `models.fixer`):
-     - the card number, title and body;
+     - the card number, title and body, and the card's acceptance items (`.acceptance` from `board-read.sh N`);
      - the PR number;
      - the worktree path (the plan card's `worktree`, on the PR branch);
      - the findings list: for a conflict dispatch (2.9a), the plan card's `findings`; otherwise `note.last_review.findings` filtered to Critical and Important. Write each as `- [<severity>] <text>`;
      - the config JSON;
      - the absolute scripts dir.
    - **stage agent** (`subagent_type` = the plan card's `stage.agent`, `model` = the plan card's `stage.model`), for an agent stage (`stage.provider` is null):
-     - the card number and body;
+     - the card number and body, and the card's acceptance items (`.acceptance` from `board-read.sh N`);
      - the PR number;
      - the PR diff, from `gh pr diff <pr> --repo R`, passed as a file path when it is longer than 1500 lines, as for the reviewer;
      - only the latest implementor or fixer report text, chosen as for the reviewer;
@@ -156,7 +156,7 @@ Step 1 initializes the tick. The completion scheduler repeats steps 1a, 2, 3 and
    - **Exit 1 with JSON on stdout:** the printed entries are merged, and the rest stay in `pending_followups` (the stored set minus what was filed). A warning is added.
    - **Exit 1 with empty stdout:** nothing is merged except the failure count (2.C), `pending_followups` is unchanged, and a warning is added.
 
-1a.4. A retry never files an item twice. Items already filed are skipped by `file-followups.sh`'s note-history and open-issue checks. Nothing reported is ever dropped: every item is filed or stays in `pending_followups`.
+1a.4. A retry never files an item twice. Items already filed are skipped by `file-followups.sh`'s note-history and card-title checks (a card on this board with the same title). Nothing reported is ever dropped: every item is filed or stays in `pending_followups`.
 
 1a.5. A successful filing does not override the fresh final plan. Determine the stop signal only under 5.5.
 
@@ -183,7 +183,7 @@ Step 1 initializes the tick. The completion scheduler repeats steps 1a, 2, 3 and
 | `verify_main` | `verify-main.sh N <pr>` → `note.sh merge` with `main_check`. If `p0_card` is present, report it. |
 | `finish` | `board-move.sh N done` → `note.sh merge` with `state: done`, `action_failures: 0` and `last_action_error: null` (best-effort) |
 | `unblock` | `board-move.sh N ready` → `note.sh merge` with `blocking_pr: null`, `blocked_from: null`, `blocked_findings: null`, `action_failures: 0` and `last_action_error: null`, so stale data does not carry into the next cycle |
-| `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs a `## Acceptance` section before it can start. Otherwise do nothing. |
+| `skip_no_acceptance` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with `<!-- fleet-board:skip-no-acceptance -->` and explains that the card needs at least one acceptance item (its `acceptance` field) before it can start. Otherwise do nothing. |
 | `skip_card_lint` | When `comment_needed` is true, post with `board-comment.sh` a comment that starts with the plan card's `lint_marker` (an HTML comment, verbatim), then lists each line of the card's `lint` (`<rule>: <detail>`) and says to fix the card; the card stays in Ready. Otherwise do nothing. |
 | `skip` | nothing |
 | `wait` | nothing, except for a plan card in `ready`: its `waiting_on` lists the unmet dependencies. Unless `note.deps_commented` already equals that list, post one comment `Waiting for <waiting_on, joined with ", ">` → only after it posts, `note.sh merge` with `deps_commented` = `waiting_on`. |
@@ -242,7 +242,7 @@ Every script in the table runs as `cd <repo root> && bash <scripts>/<script> ...
 2.11. **`to_human_qa`.**
    - The worktree is the plan card's `worktree`. `commands.qa_build`, when set, runs in that worktree. The summary is its exit code and the last 20 lines of its output, in a fenced block. When `commands.qa_build` is unset, the comment says that no QA build is configured.
    - The manager writes the qa_build summary to a temp file made with `mktemp` and passes it as `--qa-summary <file>`.
-   - `human-qa-handoff.sh` builds and posts the comment: the card's `## Acceptance` section as a blockquote, a checklist of pre-merge steps (mark a draft PR ready, resolve a conflict, each bullet of the card's `## Human QA` section), a note when no CI ran on the PR, the qa_build summary, and the sentence saying no agent moves the card out of Human QA and a person moves it to Done. With no steps it posts only the plain statement.
+   - `human-qa-handoff.sh` builds and posts the comment: the card's acceptance items (its `acceptance` field) as a blockquote, a checklist of pre-merge steps (mark a draft PR ready, resolve a conflict, each bullet of the card's `## Human QA` section), a note when no CI ran on the PR, the qa_build summary, and the sentence saying no agent moves the card out of Human QA and a person moves it to Done. With no steps it posts only the plain statement.
    - `board-move.sh N human_qa` runs first. The comment is posted only after the move succeeds, so a failed move never leaves behind a comment that the next tick would post again.
    - The script posts nothing when a comment with the heading line `What to check in Human QA` already exists.
    - If the comment fails after the move, the card is still in `human_qa`, which counts as progress, and the tick report carries the stderr line as a warning. Progress means the card is in `human_qa`.
@@ -395,7 +395,7 @@ When the plan's reason starts with `no progress after `, the manager runs these 
    6. **Follow-ups.** When this report's `out_of_scope` or `bugs` is non-empty, or `note.pending_followups` holds items, the manager writes the follow-up file `{"out_of_scope":[...],"bugs":[...]}`. It holds this report's two lists plus the pending ones, deduplicated by (kind, title) with titles compared case-insensitively. It then runs `file-followups.sh N <pr> <file>`, one call covering both. `<pr>` is `note.pr`, or the implementor's newly reported `pr`.
       - **No PR known yet** (for example a blocked implementor that opened no PR), with items to file: `file-followups.sh` is not run. The items are stored in `pending_followups` with `pr: null`, and a warning is added. The first reconciliation after `note.pr` is set files them.
       - **Nothing to file** (both lists empty and nothing pending): `file-followups.sh` is not run.
-      - **Exit 0** (stdout `{"out_of_scope_created":[...],"bugs_filed":[...]}`, each entry `{title, number, existing}`; `existing: true` means an open issue already had that title and was linked instead of a new card being created): `note.sh merge` appends both lists and sets `pending_followups: null`.
+      - **Exit 0** (stdout `{"out_of_scope_created":[...],"bugs_filed":[...]}`, each entry `{title, number, existing}`; `existing: true` means a card on this board already had that title and was linked instead of a new card being created): `note.sh merge` appends both lists and sets `pending_followups: null`.
       - **Exit 1 with JSON on stdout** (filed partway) or **exit 1 with empty stdout** (nothing filed):
         - the manager merges whatever entries were printed as filed;
         - it stores as `pending_followups` every item not yet filed: the union of the previous pending items and this report's items, deduplicated by (kind, title) with titles compared case-insensitively, minus those just filed, with `pr` set;

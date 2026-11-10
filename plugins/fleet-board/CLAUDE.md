@@ -1,10 +1,10 @@
 # fleet-board
 
-Last verified: 2026-11-06
+Last verified: 2026-11-07
 
 ## Purpose
 
-Turns a GitHub issue board into a work queue for coding agents. A stateless manager
+Turns a local card board into a work queue for coding agents. A stateless manager
 advances eligible cards as workers complete within bounded ticks; role agents (implementor, reviewer, fixer) work in
 worktrees; a PreToolUse hook enforces the human-QA and merge gates. Status: 0.1.0.
 
@@ -16,24 +16,34 @@ no file here. The gate's residual bypasses and false positives are listed in the
 
 ## Contracts
 
-- **Board adapter.** Callers use only the `scripts/board-*.sh` contract scripts
+- **Local store.** The board is always local: cards are JSON files under `board.dir`
+  (default `.fleet-board`). Callers use only the `scripts/board-*.sh` contract scripts
   (`read`, `list`, `move`, `create`, `comment`, `note`, `cache-clear`). Each validates its
-  arguments (exit 2 on usage), loads config, and execs
-  `scripts/adapters/<board.backend>/<verb>.sh`. Backends: `github-labels`,
-  `github-projects`, `local` (cards as files under `board.dir`; its `list` has no truncation
-  rule). `list` fails closed (exit 1) when `gh` returns exactly its `--limit`
-  items (500 labels, 1000 Projects), since the reply may be truncated. Remedies: raise
-  `FLEET_BOARD_LIST_LIMIT`, or shrink the listing (labels: remove `fleet:done` from old
-  closed issues, as done/wont_do grow without bound; Projects: archive done items).
-  `board-list.sh --allow-truncated` downgrades that to a warning; only `cleanup-done.sh`
-  passes it. Active-column callers (tick-plan, status) must keep failing closed.
+  arguments (exit 2 on usage), loads config, and execs `scripts/adapters/local/<verb>.sh`.
+  There is no `board.backend`: `config.sh` exits 5 on `board.backend`, `board.project_number`
+  and `board.project_owner`, pointing at `scripts/import-github.sh`. The github-labels and
+  github-projects adapters, `cards.sh` and `migrate-to-local.sh` are gone; no script under
+  `scripts/` or `hooks/` calls `gh issue`, `gh label`, `gh project` or GraphQL, except the
+  read-only importer `import-github.sh` (pinned by `test-no-github-board.sh`). `list` reads
+  every card file, has no truncation rule and fails closed (exit 1) when a file is
+  unparsable; `--allow-truncated` is accepted and ignored.
+  Card JSON keys: `number`, `title`, `body` (prose only), `state` (canonical, else read as
+  null with a warning), `labels`, `acceptance` (array of strings), `blocked_by` (array of
+  card numbers on this board), `pr_url`, `pr_url_source` (`note`, `person` or null),
+  `created_at`, `updated_at`, `next_comment_id`, `comments`. Every write goes through
+  `fl_write_card` under `fb_lock`. `fl_split_body` moves `## Acceptance` and `## Depends on`
+  sections out of a body into the fields (first real heading wins, not inside a fence);
+  `read` returns the stored prose and the fields side by side, never a rendered section.
+  `blocked_by` naming a missing card or the card itself is refused on write (exit 2). A
+  dependency outside this board stays in the body as prose. `migrate-card-fields.sh
+  [--dry-run]` upgrades an older store in place (idempotent).
   Canonical states (`FB_STATES` in `board-lib.sh`, set by `fb_load_config`, not a
   constant): backlog ready in_progress in_review, then `review_<name>` for each
   `review.stages` entry in config order, then human_qa blocked done wont_do
   (`FB_STATES_FIXED` is the list without stages); board names come from `board.states.*` or
-  the backend default (`fleet:review_<name>` labels, `Review: <name>` columns). A new backend implements the same verbs.
-- **Active marker** (`fb_mark_active` in `board-lib.sh`). On `local` only, `worktree.sh create|review`
-  and `stage-review.sh` write `<board.dir>/active/<n>`; the `local` `comment` verb removes it
+  the default (`Review: <name>` for a stage).
+- **Active marker** (`fb_mark_active` in `board-lib.sh`). `worktree.sh create|review`
+  and `stage-review.sh` write `<board.dir>/active/<n>`; the `comment` verb removes it
   for validated CLI role reports. Web comments and notes leave it in place. The manager writes the note
   between `worktree.sh` and the dispatch on `start`. `stage-review.sh` also removes its marker
   in its EXIT trap, and `fleet-board-run.sh` removes every marker after each tick's session. The
@@ -41,7 +51,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   the server clears them when it sees the run end. A failed write or removal is a warning.
 - **Manager note** (`scripts/note.sh get|parse|put|merge|reset-failures|fail`). One comment per
   card, starting with `FB_MARKER`, holding one fenced JSON block. Trust boundary: only a
-  marker comment authored by the authenticated `gh` login counts (on `local`, `fb_login` is `FLEET_BOARD_USER`, else `$USER`, else `id -un`, with no `gh` call, exit 1 when all are empty, and the boundary is filesystem access); `get` validates fields
+  marker comment authored by `fb_login` counts (`FLEET_BOARD_USER`, else `$USER`, else `id -un`, with no `gh` call, exit 1 when all are empty; the boundary is filesystem access); `get` validates fields
   that could steer shell commands (`pr`, `branch` = `fleet/<n>-<slug>`, absolute `worktree`
   inside the worktrees base, integer counters, control-char-free `last_action_error`) and
   treats an invalid note as `{}` with a warning. `put`/`merge` refuse to write an invalid
@@ -49,6 +59,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
   against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`).
+  Note-to-card mirror: the local `note` verb copies the note's `pr` into the card's `pr_url`
+  (`https://github.com/<board.repo>/pull/<pr>`, `pr_url_source: note`); `pr: null` clears a
+  note-sourced URL. A URL a person set (`pr_url_source: person`) is kept unless a note names
+  a different PR. An unparsable note leaves `pr_url` unchanged and warns.
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
   mark_ready, merge, verify_main, finish, to_human_qa, file_pending, block, unblock,
@@ -86,8 +100,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   push touches cannot be skipped by removing its label, even one before the current
   column, while a label-only stage (empty `paths`) still can. A failed `match` is
   `lookup failed: review-stages.sh match <pr>`. `next` prints the next stage after `--after` that the card's labels route to and
-  `--done` does not list. `setup` creates labels (both backends; state labels on
-  github-labels) or checks Projects columns (exit 1 naming the missing ones). Tick plan:
+  `--done` does not list. `setup` has nothing to create on the local store (exit 0). Tick plan:
   a clean, current review with a next stage plans `advance_stage` (move to
   `review_<stage>`, note `stage`, `round: 1`, `reviewed_stages`); a stage column's
   reviews are `review_stage`; an advisory stage's findings count as clean. The plan
@@ -129,9 +142,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   sets exactly one of `agent` and `provider`; a provider stage needs `model` and `price`.
   A provider entry with `command` (the `codex` preset) runs `chat.sh --command` instead of curl: prompt on stdin, repo root as cwd, stdout is the reply, tokens `null`, so `stage-review.sh` counts cost 0; `base_url` and `api_key_env` must be null with it. `tick-plan.sh` warns when a provider stage's key variable is unset and holds
   `review_stage` in that stage as `wait` (`stage <name>: <ENV> is not set`).
-- **Dependency gate** (`scripts/deps.sh parse|check`). `parse` reads a card body's
-  `## Depends on` bullets (`#n` or `owner/repo#n`); `check` looks each up and prints
-  `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as
+- **Dependency gate** (`scripts/deps.sh parse|check`). `parse-card` reads a card's `blocked_by`
+  card numbers (`parse` still reads a body file's `## Depends on` bullets); `check` looks
+  each up in the local store and prints `{unmet, warnings}`; a failed lookup exits 1 and names its command on stderr as
   `deps-lookup-failed: <command>`. `tick-plan.sh` plans `wait` (with `waiting_on`) for a
   Ready card with an unmet dependency; the manager records the refs it last commented on
   in the note's `deps_commented`. Only Ready cards are gated.
@@ -140,8 +153,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   moves a card out of human_qa. G2: `gh pr merge` blocked under `merge.policy: human`;
   under `auto` only explicit, non-draft, green, non-`--admin`, and, for a `fleet/<n>-*`
   branch, a head whose commits after the note's `last_review.sha` are all clean merges of
-  main (`review-drift.sh`; otherwise blocked as unreviewed). G3: moving to ready needs an
-  `## Acceptance` section. Fails closed on anything it cannot resolve. It is a text check:
+  main (`review-drift.sh`; otherwise blocked as unreviewed). G3: moving to ready needs a non-empty
+  `acceptance` field on the card. Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
   (Phase 4). Policy: add a residual to that list, do not claim the hook covers it.

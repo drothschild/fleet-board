@@ -30,7 +30,7 @@ BIN="$TMP/bin"
 GHLOG="$TMP/gh.log"
 export SCRIPTS REPO GHLOG
 git init -q "$REPO"
-printf 'board:\n  backend: local\n  repo: acme/toy\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards" "$BIN"
 echo 3 > "$REPO/.fleet-board/next"
 # fake gh: logs every call; reports PR 12 as merged so a stray call would also change the result
