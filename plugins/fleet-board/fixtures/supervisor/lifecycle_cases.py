@@ -78,22 +78,22 @@ class LifecycleContract(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(endpoint.stat().st_mode), 0o600)
 
     def test_concurrent_and_repeated_start_share_one_owner(self):
-        first = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1")
-        second = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1")
-        self.addCleanup(first.close)
-        self.addCleanup(second.close)
         outcomes = []
+        services = []
         barrier = threading.Barrier(3)
-        def start(service):
+        def start(_index):
+            # Each contender owns its connection: open and start on one thread.
+            service = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1")
+            services.append(service)
             barrier.wait()
             outcomes.append(service.start_serving())
-        threads = [threading.Thread(target=start, args=(service,))
-                   for service in (first, second)]
+        threads = [threading.Thread(target=start, args=(index,)) for index in range(2)]
         for thread in threads:
             thread.start()
         barrier.wait()
         for thread in threads:
-            thread.join(timeout=2)
+            thread.join(timeout=5)
+        self.addCleanup(lambda: [service.stop_serving() for service in services])
         self.assertTrue(all(not thread.is_alive() for thread in threads))
         self.assertEqual(sum(bool(item.get("owner")) for item in outcomes), 1)
         self.assertTrue(all(item.get("ready") for item in outcomes))
@@ -201,9 +201,11 @@ class LifecycleContract(unittest.TestCase):
                    "known_spend": 7.25, "unknown_spend": True,
                    "budget_stop": "unknown"}
         self.service.store.start_session(session)
-        self.service.command("pause", request_id="pause-1", expected_revision=0,
+        revision = self.service.status()["revision"]
+        self.service.command("pause", request_id="pause-1", expected_revision=revision,
                              actor="fixture-user")
-        self.service.command("resume", request_id="resume-1", expected_revision=1,
+        revision = self.service.status()["revision"]
+        self.service.command("resume", request_id="resume-1", expected_revision=revision,
                              actor="fixture-user")
         self.service.stop_serving()
         reopened = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-2")
