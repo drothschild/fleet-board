@@ -319,10 +319,12 @@ class DockerWorkerTransport:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return result(empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
+                return result(not removed_any or
+                              empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
             if remaining <= _LABEL_RECONCILE_MIN_QUERY_BUDGET_SECONDS:
                 time.sleep(remaining)
-                return result(empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
+                return result(not removed_any or
+                              empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
             try:
                 completed = subprocess.run(
                     [docker, 'ps', '-aq', '--filter', 'label=' + label],
