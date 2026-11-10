@@ -252,7 +252,7 @@ class LifecycleContract(unittest.TestCase):
         result = self.service.stop_serving()
         self.assertEqual(result["status"], "unresolved_shutdown")
         self.assertFalse(result.get("terminated", False))
-        self.assertFalse(Path(self.service.socket_path).exists())
+        self.assertTrue(Path(self.service.socket_path).exists())
         self.assertFalse(Path(self.service.worker_socket_path).exists())
         self.service.shutdown_observer = lambda: "stopped"
         self.assertEqual(self.service.start_serving().get("owner"), True)
@@ -261,6 +261,7 @@ class LifecycleContract(unittest.TestCase):
         self.service.start_serving()
         self.service.shutdown_observer = lambda: "unknown"
         self.assertEqual(self.service.stop_serving()["status"], "unresolved_shutdown")
+        self.assertTrue(Path(self.service.socket_path).exists())
         contender = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1",
                               run_lock_path=self.service.run_lock_path)
         self.addCleanup(contender.close)
@@ -271,6 +272,36 @@ class LifecycleContract(unittest.TestCase):
             pass
         self.service.shutdown_observer = lambda: "stopped"
         self.assertTrue(self.service.start_serving().get("owner"))
+
+    def test_unresolved_shutdown_controller_status_and_later_stop_over_real_socket(self):
+        ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        self.service.shutdown_observer = lambda: "unknown"
+        self.assertEqual(self.service.stop_serving()["status"], "unresolved_shutdown")
+
+        from supervisor.cli import _socket_transport
+        transport = _socket_transport(self.service.socket_path)
+        status = transport({"command": "status"})
+        self.assertEqual(status["shutdown"], "unresolved")
+
+        with self.assertRaisesRegex((ValueError, RuntimeError), "uncertain|writer"):
+            transport({"command": "pause", "request_id": "pause-uncertain",
+                       "expected_revision": status["revision"]})
+
+        contender = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1",
+                                      run_lock_path=self.service.run_lock_path)
+        self.addCleanup(contender.close)
+        self.assertFalse(contender.start_serving().get("owner"))
+
+        self.service.shutdown_observer = lambda: "stopped"
+        stopped = transport({"command": "stop", "mode": "drain",
+                             "request_id": "stop-resolved",
+                             "expected_revision": status["revision"]})
+        self.assertEqual(stopped["status"], "stopped")
+        self.assertFalse(Path(self.service.socket_path).exists())
+        self.assertFalse(Path(self.service.worker_socket_path).exists())
+        self.assertFalse(Path(self.service.run_lock_path).exists())
 
     def test_supported_resolve_is_audited_and_uncertain_writer_rejects_it(self):
         self.service.start_serving()
