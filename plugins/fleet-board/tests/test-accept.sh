@@ -14,6 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCRIPTS_REAL="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
+. "$SCRIPT_DIR/store-sync.sh"
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
 
@@ -60,6 +61,7 @@ run_check() {
   local script="$1"
   shift
   local tmpout tmperr
+  store_sync
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"
   "$BASH_EXE" "$script" "$@" > "$tmpout" 2> "$tmperr"

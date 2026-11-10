@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/merge-reviewed.sh"
 MARK='<!-- fleet-board:manager-note -->'
 
@@ -32,12 +33,19 @@ assert_exit() { if [ "$LAST_EXIT" = "$2" ]; then pass "$1"; else fail "$1" "expe
 assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
 
 run_merge() {
+  store_sync
+  cp "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" 2>/dev/null || : > "$FAKE_GH_DIR/card-12.before"
   local e; e="$(mktemp)"
   "$BASH_EXE" "$SCRIPT" "$@" > /dev/null 2> "$e" </dev/null
   LAST_EXIT=$?
   LAST_ERR="$(cat "$e")"
   rm -f "$e"
 }
+
+# moved_done: 1 when the run moved card 12 to done on the local board, else 0
+moved_done() { [ "$(jq -r .state "$REPO/.fleet-board/cards/12.json" 2>/dev/null)" = done ] && ! cmp -s "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" && echo 1 || echo 0; }
+# board_writes: 1 when the run changed card 12's file, else 0
+board_writes() { cmp -s "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" && echo 0 || echo 1; }
 
 cnt() {
   if [ -f "$FAKE_GH_DIR/calls.log" ]; then grep -cF -- "$1" "$FAKE_GH_DIR/calls.log" || true; else echo 0; fi
@@ -183,7 +191,7 @@ assert_exit "auto: exit 0" 0
 assert_eq "auto: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
 assert_eq "auto: never --admin" "$(cnt "--admin")" 0
 assert_eq "auto: never --auto" "$(cnt "--auto")" 0
-assert_eq "auto: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
+assert_eq "auto: the card moves to done" "$(moved_done)" 1
 
 echo "merge-reviewed re-reads card state after verification before moving to done"
 for midflight_state in human_qa blocked; do
@@ -192,20 +200,21 @@ for midflight_state in human_qa blocked; do
   pr 34 false "$GREEN"
   cat > "$FX/verify-main.sh" <<'VERIFY'
 #!/usr/bin/env bash
-jq --arg state "$FLEET_BOARD_TEST_MIDFLIGHT_STATE" \
-  '.labels=[{name:("fleet:" + $state)}]' \
-  "$FAKE_GH_DIR/fx/issue-$1.json" > "$FAKE_GH_DIR/fx/issue-$1.new"
-mv "$FAKE_GH_DIR/fx/issue-$1.new" "$FAKE_GH_DIR/fx/issue-$1.json"
+# a person moves the card on the local board while verification runs
+jq --arg state "$FLEET_BOARD_TEST_MIDFLIGHT_STATE" '.state=$state' \
+  "$FLEET_BOARD_TEST_CARDS/$1.json" > "$FLEET_BOARD_TEST_CARDS/$1.new"
+mv "$FLEET_BOARD_TEST_CARDS/$1.new" "$FLEET_BOARD_TEST_CARDS/$1.json"
 printf '{"commit":"abc1234","ok":true,"results":[]}\n'
 VERIFY
   chmod +x "$FX/verify-main.sh"
   FLEET_BOARD_VERIFY_MAIN="$FX/verify-main.sh"
   FLEET_BOARD_TEST_MIDFLIGHT_STATE="$midflight_state"
-  export FLEET_BOARD_VERIFY_MAIN FLEET_BOARD_TEST_MIDFLIGHT_STATE
+  FLEET_BOARD_TEST_CARDS="$REPO/.fleet-board/cards"
+  export FLEET_BOARD_VERIFY_MAIN FLEET_BOARD_TEST_MIDFLIGHT_STATE FLEET_BOARD_TEST_CARDS
   finalize
   run_merge
   assert_eq "$midflight_state after verification: card is not moved to done" \
-    "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 0
+    "$(jq -r .state "$REPO/.fleet-board/cards/12.json")" "$midflight_state"
 done
 
 echo "merge.policy auto: a card in a review stage with a clean stage review is merged"
@@ -220,9 +229,8 @@ pr 34 false "$GREEN"
 finalize
 run_merge
 assert_exit "stage: exit 0" 0
-assert_eq "stage: the fleet:review_security column is listed" "$(cnt "issue list --repo acme/toy --label fleet:review_security")" 1
 assert_eq "stage: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
-assert_eq "stage: the card moves to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 1
+assert_eq "stage: the card moves to done" "$(moved_done)" 1
 
 echo "merge.policy human: nothing is merged"
 setup_case human
@@ -232,7 +240,7 @@ finalize
 run_merge
 assert_exit "human: exit 0" 0
 assert_eq "human: no gh pr merge" "$(cnt "pr merge")" 0
-assert_eq "human: no board write" "$(cnt "issue edit")" 0
+assert_eq "human: no board write" "$(board_writes)" 0
 
 echo "a failed merge leaves the card where it is"
 setup_case auto
@@ -242,13 +250,13 @@ printf 'pr merge *\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
 finalize
 run_merge
 assert_exit "failed merge: exit 1" 1
-assert_eq "failed merge: no move to done" "$(cnt "issue edit 12 --repo acme/toy --add-label fleet:done")" 0
+assert_eq "failed merge: no move to done" "$(moved_done)" 0
 
 echo "cases that must never merge"
 no_merge() { # <desc> ; the case is already finalized
   run_merge
   assert_eq "$1: no gh pr merge" "$(cnt "pr merge")" 0
-  assert_eq "$1: no move to done" "$(cnt "add-label fleet:done")" 0
+  assert_eq "$1: no move to done" "$(moved_done)" 0
 }
 setup_case auto
 card 12 in_review "$CLEAN"
@@ -328,7 +336,7 @@ printf '%s\n' '{"commit":"abc1234","ok":$result,"results":[]}'
 VERIFY
   run_merge
   assert_exit "verification $result: fatal stop" 3
-  assert_eq "verification $result: no done" "$(cnt 'add-label fleet:done')" 0
+  assert_eq "verification $result: no done" "$(moved_done)" 0
   assert_eq "verification $result: no second merge" "$(cnt 'pr merge 35 ')" 0
 done
 
@@ -361,6 +369,7 @@ pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
 mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
+store_sync
 plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
 assert_eq "failed recorded verification: recover rather than finish" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
 
@@ -390,7 +399,7 @@ assert_eq "ambiguous merge: no second merge" "$(cnt 'pr merge 35 ')" 0
 setup_pair
 FAKE_MERGE_QUEUED=1 run_merge
 assert_exit "queue acceptance is not a completed merge" 3
-assert_eq "queued PR never marked done" "$(cnt 'add-label fleet:done')" 0
+assert_eq "queued PR never marked done" "$(moved_done)" 0
 assert_eq "queued PR stops later merges" "$(cnt 'pr merge 35 ')" 0
 
 setup_case auto
@@ -399,13 +408,14 @@ pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
 mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
+store_sync
 plan="$(bash "$SCRIPT_DIR/../scripts/tick-plan.sh" --settle-merge 12)"
 assert_eq "verification precedes failure blocks and followups" "$(jq -r '.cards[0].action' <<<"$plan")" verify_main
 
 run_merge
 assert_exit "recovered followups: verification succeeds" 0
 assert_eq "recovered followups: no duplicate merge" "$(cnt 'pr merge ')" 0
-assert_eq "recovered followups: stay in review for filing" "$(cnt 'add-label fleet:done')" 0
+assert_eq "recovered followups: stay in review for filing" "$(moved_done)" 0
 
 echo "bounded per-card merge retains fresh eligibility and head binding"
 setup_pair
@@ -420,7 +430,7 @@ mv "$FX/merged.json" "$FX/pr-34.json"
 run_merge --card 12
 assert_exit "bounded pending verification: exit 0" 0
 assert_eq "bounded pending verification: no duplicate merge" "$(cnt 'pr merge 34 ')" 0
-assert_eq "bounded pending verification: verification completed" "$(cnt 'issue edit 12 --repo acme/toy --add-label fleet:done')" 1
+assert_eq "bounded pending verification: verification completed" "$(moved_done)" 1
 
 echo "controller-key merge records and inspects exact external recovery evidence"
 setup_case auto
@@ -430,7 +440,7 @@ finalize
 run_merge --card 12 --operation-key op-12 --pr 34 --head abc1234
 assert_exit "keyed merge: exit 0" 0
 assert_eq "keyed merge: only the exact PR/head merged" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
-if grep -R -q 'op-12' "$FAKE_GH_DIR/inputs" 2>/dev/null; then pass "keyed merge: operation identity persisted in the manager note"; else fail "keyed merge: operation identity persisted in the manager note" "no note write carried the operation key"; fi
+if jq -r '.comments[].body' "$REPO/.fleet-board/cards/12.json" 2>/dev/null | grep -q 'op-12'; then pass "keyed merge: operation identity persisted in the manager note"; else fail "keyed merge: operation identity persisted in the manager note" "no note write carried the operation key"; fi
 
 setup_case auto
 KEYED_NOTE="$(jq -c --arg key op-12 '.merge_operation={operation_key:$key,pr:34,head_sha:"abc1234",main_check:{commit:"def5678",ok:true,results:[]}} | .main_check={commit:"def5678",ok:true,results:[]}' <<<"$CLEAN")"
@@ -439,6 +449,7 @@ pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
 mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
+store_sync
 INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234)"
 assert_eq "inspection: operation key, PR, planned/observed head and merged state agree" "$(jq -c '[.operation_key,.pr,.planned_head,.observed_head,.state] | .[:2] + .[2:]' <<<"$INSPECT")" '["op-12",34,"abc1234","abc1234","MERGED"]'
 assert_eq "inspection: literal main verification evidence is retained" "$(jq -c '.main_check.ok' <<<"$INSPECT")" true
@@ -450,6 +461,7 @@ pr 34 false "$GREEN"
 jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
 mv "$FX/merged.json" "$FX/pr-34.json"
 finalize
+store_sync
 INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234)"
 assert_eq "inspection: prior main verification is not credited to a pending operation" "$(jq -c '.main_check' <<<"$INSPECT")" null
 
@@ -474,8 +486,8 @@ assert_exit "crash recovery: exit 0" 0
 assert_eq "crash recovery: no second merge" "$(cnt "pr merge 34 ")" 0
 assert_eq "crash recovery: main verification reran once" "$(cat "$FX/verify.log")" "12 34"
 RECORDED=0
-for input in "$FAKE_GH_DIR"/inputs/*; do
-  jq -r '.body' "$input" > "$FAKE_GH_DIR/evidence.md" 2>/dev/null || continue
+for i in $(jq -r '.comments | keys[]' "$REPO/.fleet-board/cards/12.json" 2>/dev/null); do
+  jq -r --argjson i "$i" '.comments[$i].body' "$REPO/.fleet-board/cards/12.json" > "$FAKE_GH_DIR/evidence.md" 2>/dev/null || continue
   if grep -q '"operation_key": "op-12"' "$FAKE_GH_DIR/evidence.md" \
       && grep -q '"main_check": {' "$FAKE_GH_DIR/evidence.md" \
       && grep -q '"ok": true' "$FAKE_GH_DIR/evidence.md"; then RECORDED=1; break; fi

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # board-comment.sh <number> <file> - post <file> as a comment on card <number>
 #
-# Dispatches to adapters/<board.backend>/comment.sh. Refuses (exit 1, nothing
-# posted, before any gh call and for every backend) a body that starts with
+# Dispatches to adapters/local/comment.sh. Refuses (exit 1, nothing
+# posted) a body that starts with
 # the manager-note marker ($FB_MARKER), after optional leading whitespace
 # (CR and LF included) and an optional UTF-8 BOM. The manager reads the newest
 # comment whose body starts with the marker as the card's note, so a role
@@ -40,4 +40,4 @@ case $? in
   *) fb_die 1 "cannot read $2 to check it for the manager-note marker" ;;
 esac
 fb_load_config
-exec bash "$FLEET_SCRIPTS/adapters/$(fb_cfg board.backend)/comment.sh" "$@"
+exec bash "$FLEET_SCRIPTS/adapters/local/comment.sh" "$@"

@@ -1,7 +1,7 @@
 {
   "name": "fleet-board",
-  "version": "0.18.19",
-  "description": "Turns a GitHub issue board into a work queue for a fleet of coding agents: a stateless manager advances every card one step per tick, role agents implement, review, and fix in isolated worktrees, and hooks enforce the human-QA and merge gates.",
+  "version": "0.19.0",
+  "description": "Turns a local card board into a work queue for a fleet of coding agents: a stateless manager advances every card one step per tick, role agents implement, review, and fix in isolated worktrees, and hooks enforce the human-QA and merge gates.",
   "author": {
     "name": "David Rothschild"
   },

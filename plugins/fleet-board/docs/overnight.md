@@ -156,7 +156,7 @@ bash <scripts dir>/cleanup-done.sh
 | `FLEET_BOARD_TOKEN_LOCK` | `$HOME/.fleet-board/token.lock` | the lock file shared by runs on one token, used when `limits.min_tick_gap` is above 0 |
 | `FLEET_BOARD_SETTLE` | `settle.sh` next to the wrapper | the settle script run after each successful tick, before the cleanup |
 | `FLEET_BOARD_CLEANUP` | `cleanup-done.sh` next to the wrapper | the cleanup script run after each successful tick |
-| `FLEET_BOARD_LIST_LIMIT` | 500 (labels), 1000 (Projects) | how many items one board listing asks `gh` for. A reply of exactly this many may be truncated, so the listing fails (exit 1). Two remedies: raise this variable, or shrink what is listed. On labels, the `done` and `wont_do` columns include closed issues and grow without bound: remove the done label (default `fleet:done`) from old closed issues. On Projects, every item counts, done ones included: archive done items. `cleanup-done.sh` alone accepts a done listing at the limit, with a warning; a card it misses only leaves its worktree behind |
+| `FLEET_BOARD_LIST_LIMIT` | 1000 | how many issues or project items `import-github.sh` asks `gh` for. A reply of exactly this many may be truncated, so the import stops (exit 1); raise this variable and run it again. Nothing else reads it |
 
 ## Scheduling with launchd (macOS, optional)
 

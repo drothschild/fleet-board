@@ -6,7 +6,7 @@ The fixer is a fresh-context role agent that the manager dispatches when a card 
 
 ## 2. Inputs
 
-- The card: number, title, and body (the body includes its `## Acceptance` section).
+- The card: number, title, body and acceptance items. The acceptance items are the card's `acceptance` field, an array of strings, as `board-read.sh <n> | jq '.acceptance'` prints it; they are not read from a section of the body.
 - The PR number of the card's open draft PR.
 - The absolute path of a git worktree checked out at the PR branch.
 - The findings list from the latest review: every `[Critical]` and `[Important]` line, as written.
@@ -33,7 +33,7 @@ Throughout this spec, example test commands assume `commands.test_one` is `node 
    - **Conflict regions in a test file.** Behavior 3 and the Must never list forbid editing an existing test, with one narrow exception for a conflict region, meaning the lines between a `<<<<<<<` marker and its `>>>>>>>` marker. In a conflict region of a test file the fixer keeps every test and every assertion from both sides, and where the two sides overlap (the same test changed on both) it combines them into one test that still holds every assertion from both. It changes no line of a test file outside a conflict region. Nothing may be dropped, skipped or weakened to make the merge easier.
    - **When both sides cannot be kept.** If a conflict region cannot be resolved while keeping every test and assertion from both sides (the two sides contradict each other), the fixer aborts the merge with `git -C <worktree> merge --abort`, pushes nothing, marks that finding `not fixed: needs human decision` with a short reason, and sets Status to `blocked`.
    After resolving, it runs each touched test file (behavior 6). When a touched test fails after the resolution, it does not push: it resets the unpushed merge commit with `git -C <worktree> reset --hard <base head>`, marks each conflicted-file finding `not fixed: <the failing test>` and sets Status to `blocked`, naming the conflicted files under `## For the card`. The fixer does not touch the manager note: the manager resets `last_review` for the resolved merge, so the next tick plans a review of the merged head, and a merge with conflict resolution never skips review.
-4. **Escalates test-only resolutions.** When a finding can be resolved only by any change forbidden in behavior 3 (for example the existing test asserts behavior that contradicts the card's Acceptance section), it leaves the test untouched, writes that finding's Resolutions line as `not fixed: needs human decision` followed by a short reason, and sets Status to `blocked`.
+4. **Escalates test-only resolutions.** When a finding can be resolved only by any change forbidden in behavior 3 (for example the existing test asserts behavior that contradicts one of the card's acceptance items), it leaves the test untouched, writes that finding's Resolutions line as `not fixed: needs human decision` followed by a short reason, and sets Status to `blocked`.
 5. **Reports cross-PR blocks.** When the work cannot go on until another open PR merges (for example the fix needs code that exists only on that PR's branch), it sets Status to `blocked`, puts the line `Blocked by: #<that PR number>` under `## For the card`, and marks each finding that depends on it `not fixed: blocked by #<that PR number>`. It does not copy that PR's code into this branch.
 6. **Runs only touched test files.** The touched test files are the test files in the PR's diff against its base branch plus any test files the fixer added or restored. It runs each one on its own, through `commands.test_one` with `{file}` replaced by that single path (for example `node --test test/calc.test.js`). It runs them after its last change, and every touched test file it reports as passing really passed in that run. It never runs a command that could run the whole suite.
 7. **Runs configured static checks.** If `commands.typecheck` or `commands.lint` is set, it runs each once after its last change and records pass or fail under `## For the card`.
@@ -60,8 +60,8 @@ Throughout this spec, example test commands assume `commands.test_one` is `node 
 - Delete an existing test, or delete an existing test file.
 - Rebase, or force-push, when resolving a conflict. A conflict is resolved by a merge commit and a plain push.
 - Resolve a finding by weakening, skipping or removing a test. When nothing else would resolve it, report `not fixed: needs human decision` with Status `blocked`.
-- Move cards or edit labels. That includes `board-move.sh`, `board-note.sh`, `gh issue edit`, `gh project item-edit` and any label change.
-- Run any board script other than `board-comment.sh`. `parse-report.sh` is a local checker, not a board script, and running it is allowed.
+- Move cards or edit labels. That includes `board-move.sh` (the only way a card changes state on the local board), `board-note.sh` and any change to a card's labels or fields.
+- Run any board script other than `board-comment.sh` and `board-read.sh`. `board-read.sh` only reads the card. `parse-report.sh` is a local checker, not a board script, and running it is allowed.
 - Mark the PR ready for review, or merge it.
 - Force-push, rebase and rewrite published commits, create another branch, or open another PR.
 - Edit or create files outside the worktree. The one exception is the report temp file made with `mktemp`.
@@ -179,7 +179,7 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 
 ### Pitfalls the fixer must avoid
 
-- The `VERIFIED:` command sits between single backticks, so it cannot contain a backtick. A command that would need one must be rewritten. For example, read card text with `gh issue view <n> --json body --jq .body` instead of pasting text that holds backticks.
+- The `VERIFIED:` command sits between single backticks, so it cannot contain a backtick. A command that would need one must be rewritten. For example, read card text with `board-read.sh <n> | jq -r '.body'` instead of pasting text that holds backticks.
 - In `## PR`, the checker reads the first `#` followed by digits as the PR number, so `## PR` must contain no `#<digits>` other than the real PR number.
 - A finding copied into `## Resolutions` may itself contain ` :: `. The split is at the first ` :: ` followed by `fixed` or `not fixed: `, so copy the finding text as given and add the outcome after it.
 - Leave the `[Critical]` / `[Important]` prefix out of the finding text in `## Resolutions`, or keep it consistently. Either way, the line must still start with `- ` and hold exactly one outcome.

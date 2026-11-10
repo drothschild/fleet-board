@@ -6,4 +6,4 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
 fb_load_config # before the state check: the valid states include the config's review stages
 fb_valid_state "$2" || fb_die 2 "invalid state: $2"
-exec bash "$FLEET_SCRIPTS/adapters/$(fb_cfg board.backend)/move.sh" "$@"
+exec bash "$FLEET_SCRIPTS/adapters/local/move.sh" "$@"

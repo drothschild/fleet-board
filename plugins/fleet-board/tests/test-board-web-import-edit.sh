@@ -65,7 +65,7 @@ REPO="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 git init -q "$REPO"
 git -C "$REPO" config user.email t@example.com
 git -C "$REPO" config user.name T
-printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
 git -C "$REPO" add .fleet-board.yml
 git -C "$REPO" commit -q -m initial
 mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"

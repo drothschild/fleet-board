@@ -9,6 +9,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 LINT="$SCRIPT_DIR/../scripts/card-lint.sh"
 PLAN="$SCRIPT_DIR/../scripts/tick-plan.sh"
 FIX="$SCRIPT_DIR/lint-fixtures"
@@ -40,6 +41,7 @@ assert_not_contains() {
 }
 
 run_check() {
+  store_sync
   local script="$1"; shift
   local o e
   o="$(mktemp)"; e="$(mktemp)"
@@ -49,8 +51,8 @@ run_check() {
   rm -f "$o" "$e"
 }
 
-# setup_card <body-file> [comments-json]: a temp repo whose fake gh serves
-# card 13 (Ready) with that body, on the labels backend
+# setup_card <body-file> [comments-json]: a temp repo whose routes describe
+# card 13 (Ready) with that body; store_sync turns it into a local card
 setup_card() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -85,7 +87,8 @@ setup_card() {
   cd "$REPO"
 }
 
-lint() { setup_card "$1"; run_check "$LINT" 13; }
+# the body rules: card-lint.sh --body-file (a card is linted on its fields)
+lint() { setup_card "$1"; run_check "$LINT" --body-file "$1"; }
 plan() { setup_card "$@"; run_check "$PLAN"; }
 card() { jq -c "(.cards[] | select(.number == 13)).$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
 
@@ -149,22 +152,18 @@ echo ""
 echo "Test: tick-plan.sh skip_card_lint"
 echo ""
 
-plan "$FIX/no-bullets.md"
-assert_eq "plan no-bullets: exit" "$LAST_EXIT" 0
-assert_eq "plan no-bullets: action" "$(card action)" '"skip_card_lint"'
-assert_contains "plan no-bullets: lint result in the plan" "$(card lint)" "no-bullets"
-assert_eq "plan no-bullets: comment_needed" "$(card comment_needed)" true
-assert_eq "plan no-bullets: dispatchable (a comment is due)" "$(jq -c .dispatchable <<<"$LAST_OUT")" true
-MARKER="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
-assert_contains "plan no-bullets: marker shape" "$MARKER" "<!-- fleet-board:card-lint:"
-
 plan "$FIX/manual-check.md"
+assert_eq "plan manual-check: exit" "$LAST_EXIT" 0
 assert_eq "plan manual-check: action" "$(card action)" '"skip_card_lint"'
 assert_contains "plan manual-check: lint names the bullet" "$(card lint)" "The slider looks right on device"
+assert_eq "plan manual-check: comment_needed" "$(card comment_needed)" true
+assert_eq "plan manual-check: dispatchable (a comment is due)" "$(jq -c .dispatchable <<<"$LAST_OUT")" true
+MARKER="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
+assert_contains "plan manual-check: marker shape" "$MARKER" "<!-- fleet-board:card-lint:"
+CHANGED="$(mktemp)"; CLEANUP_DIRS+=("$CHANGED")
+printf '## Acceptance\n- clamp returns 3\n- verify on the simulator\n' > "$CHANGED"
+plan "$CHANGED"
 MARKER2="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
-
-plan "$FIX/no-heading-bold.md"
-assert_eq "plan bold Acceptance: action" "$(card action)" '"skip_card_lint"'
 
 # a body with no hint at all stays skip_no_acceptance
 plan "$FIX/plain-no-heading.md"
@@ -178,11 +177,11 @@ assert_eq "plan ok: lint null" "$(card lint)" null
 # same lint result already commented: no new comment; a changed result: new one
 COMMENTS="$(jq -cn --arg b "$MARKER
 Card lint failed" '[{"id":5,"user":{"login":"fleet-bot"},"body":$b,"created_at":"2026-01-01T00:00:00Z"}]')"
-plan "$FIX/no-bullets.md" "$COMMENTS"
+plan "$FIX/manual-check.md" "$COMMENTS"
 assert_eq "plan repeat: still skip_card_lint" "$(card action)" '"skip_card_lint"'
 assert_eq "plan repeat: same result needs no comment" "$(card comment_needed)" false
 assert_eq "plan repeat: not dispatchable" "$(jq -c .dispatchable <<<"$LAST_OUT")" false
-plan "$FIX/manual-check.md" "$COMMENTS"
+plan "$CHANGED" "$COMMENTS"
 assert_eq "plan changed: new result needs a comment" "$(card comment_needed)" true
 assert_eq "plan changed: marker differs" "$([ "$MARKER" != "$MARKER2" ] && echo yes)" yes
 
@@ -190,7 +189,7 @@ echo ""
 echo "Test: docs"
 echo ""
 section="$(sed -n '/^### Writing a card/,/^## /p' "$README")"
-for rule in no-heading no-bullets manual-check; do
+for rule in no-heading no-bullets empty-acceptance manual-check; do
   assert_contains "README Writing a card links $rule" "$section" "(#card-lint-$rule)"
   assert_contains "README has an anchor heading for $rule" "$(cat "$README")" "card-lint-$rule"
 done
@@ -211,6 +210,55 @@ for f in ok-with-human-qa.md no-heading-bold.md plain-no-heading.md no-bullets.m
   plan "$FIX/$f"
   assert_eq "plan $f: stderr empty" "$LAST_ERR" ""
 done
+
+echo ""
+echo "Test: card fields on the local backend"
+echo ""
+# setup_local <acceptance-json> <body>: a local-backend repo whose ready card 13 has those fields
+setup_local() {
+  REPO="$(mktemp -d)"
+  git init -q "$REPO"
+  git -C "$REPO" config user.email t@example.com
+  git -C "$REPO" config user.name T
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  git -C "$REPO" add .fleet-board.yml
+  git -C "$REPO" commit -q -m initial
+  mkdir -p "$REPO/.fleet-board/cards"
+  echo 14 > "$REPO/.fleet-board/next"
+  jq -n --argjson a "$1" --arg b "$2" \
+    '{number: 13, title: "Add clamp", body: $b, acceptance: $a, blocked_by: [], state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$REPO/.fleet-board/cards/13.json"
+  PATH="$ORIG_PATH"; export PATH
+  CLEANUP_DIRS+=("$REPO")
+  cd "$REPO"
+}
+
+setup_local '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
+run_check "$LINT" 13
+assert_eq "local: acceptance [] fails whatever the body says (exit)" "$LAST_EXIT" 1
+assert_contains "local: acceptance [] reports empty-acceptance" "$LAST_OUT" "empty-acceptance"
+setup_local '["clamp returns 3","check the layout on device"]' ""
+run_check "$LINT" 13
+assert_eq "local: manual-check on a field item (exit)" "$LAST_EXIT" 1
+assert_contains "local: manual-check names the item" "$LAST_OUT" "manual-check: check the layout on device"
+assert_not_contains "local: items with no heading are not no-heading" "$LAST_OUT" "no-heading"
+setup_local '["clamp returns 3"]' ""
+run_check "$LINT" 13
+assert_eq "local: a clean field item passes" "$LAST_EXIT" 0
+setup_local '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
+run_check "$PLAN"
+assert_eq "local plan: acceptance [] is skip_no_acceptance whatever the body says" "$(card action)" '"skip_no_acceptance"'
+setup_local '["clamp returns 3"]' ""
+run_check "$PLAN"
+assert_eq "local plan: field items let the card start" "$(card action)" '"start"'
+setup_local '["clamp returns 3"]' ""
+echo 15 > "$REPO/.fleet-board/next"
+jq '.blocked_by = [14]' "$REPO/.fleet-board/cards/13.json" > "$REPO/t.json" && mv "$REPO/t.json" "$REPO/.fleet-board/cards/13.json"
+jq '.number = 14 | .blocked_by = [13]' "$REPO/.fleet-board/cards/13.json" > "$REPO/.fleet-board/cards/14.json"
+run_check "$PLAN"
+assert_eq "local plan: a blocked_by cycle waits, not loops (exit)" "$LAST_EXIT" 0
+assert_eq "local plan: a cycle member waits" "$(card action)" '"wait"'
+assert_contains "local plan: the plan warns about the cycle" "$(jq -c .warnings <<<"$LAST_OUT")" "dependency cycle"
 
 echo ""
 echo "Passed: $PASS  Failed: $FAIL"

@@ -1,0 +1,6 @@
+# import-github.sh, labels board (paths are relative to this file)
+api user	0	../../labels/user.json
+issue list --repo acme/toy --state all *	0	issues.json
+api --paginate repos/acme/toy/issues/12/comments	0	comments-12.json
+api --paginate repos/acme/toy/issues/13/comments	0	comments-13.json
+api --paginate repos/acme/toy/issues/14/comments	0	../../labels/comments-none.json

@@ -10,6 +10,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/worktree.sh"
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
@@ -70,6 +71,7 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
   local script="$1"
   shift
   local tmpout tmperr
@@ -100,7 +102,8 @@ line_count() { if [ -f "$1" ]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
 # Whether `git worktree list` in the repo names the path
 wt_listed() { git -C "$REPO" worktree list --porcelain | grep -qxF "worktree $1"; }
 
-# setup_case <mutate_on_copy true|false> [local]  (local: board.backend local)
+# setup_case <mutate_on_copy true|false> [local]  (the second argument is kept
+# for the callers; every board is local)
 # A bare origin with:
 #   main                 A (README) then B (main.txt)
 #   fleet/13-existing    A then E (existing.txt)
@@ -135,9 +138,7 @@ setup_case() {
   git clone -q "$ORIGIN" "$REPO" 2>/dev/null
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
-  local backend=""
-  if [ "${2:-}" = local ]; then backend='  backend: local\n'; fi
-  printf "board:\n${backend}"'  repo: acme/toy\nworktrees:\n  dir: .fw\n  setup: "echo ran >> .setup-ran"\n  mutate_on_copy: %s\n' "$1" \
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n  setup: "echo ran >> .setup-ran"\n  mutate_on_copy: %s\n' "$1" \
     > "$REPO/.fleet-board.yml"
 
   unset CDPATH FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG || true
@@ -427,14 +428,7 @@ assert_exit "review-no-copy: remove exit" 0
 assert_false "review-no-copy: review worktree gone" test -e "$BASE/12-review"
 
 # ---------------------------------------------------------------------------
-# active marker: written on the local backend only, never by remove
-setup_case false
-run_wt create 12 fleet/12-marker "$BASE/12-marker"
-assert_exit "marker-labels-create: exit" 0
-assert_false "labels config writes no marker (create)" test -e "$REPO/.fleet-board/active/12"
-run_wt review 12 7
-assert_exit "marker-labels-review: exit" 0
-assert_false "labels config writes no marker (review)" test -e "$REPO/.fleet-board/active/12"
+# active marker: written by create and review, never by remove
 
 setup_case false local
 run_wt create 12 fleet/12-marker "$BASE/12-marker"

@@ -4,9 +4,9 @@
 
 `hooks/gate.sh` is a `PreToolUse` hook on Bash. It reads every Bash command the manager or a role agent is about to run, and blocks it with exit 2 and a one-line reason:
 
-1. **Human QA.** Nothing moves a card out of `human_qa`: not `board-move.sh`, `gh issue edit`, `gh project item-edit`/`item-archive`/`item-delete`, editing or deleting a state label, or a raw label or Status API write.
+1. **Human QA.** Nothing moves a card out of `human_qa`: not `board-move.sh` or an adapter's `move.sh`, and `import-github.sh --force` keeps a card that is in `human_qa` instead of overwriting it. Cards live in files under `board.dir`, so there are no GitHub label or Status writes to gate; see the raw-write residual below.
 2. **Merges.** Under `merge.policy: human`, every `gh pr merge` is blocked. Under `auto`, a merge is blocked when it uses `--admin`, names no PR, targets a draft, or the PR's checks are not green. Raw merges through the API are blocked.
-3. **Ready.** `board-move.sh N ready` is blocked when the card has no `## Acceptance` section.
+3. **Ready.** `board-move.sh N ready` is blocked when the card's `acceptance` field is empty, whatever its body says.
 
 The gate is inert in a directory without `.fleet-board.yml`, so it does nothing in other repos. With an invalid config, it fails closed and blocks board and merge commands until the file is fixed. A command with no gated keyword passes after one `jq` call, without reading the config or the network. When it can't tell what a gated command would do (a variable where a card, PR, state or directory belongs) or can't look up the board or PR in time, it blocks.
 
@@ -15,23 +15,6 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 ## settle.sh runs outside the gate
 
 `scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress, in_review and every review stage column; besides the move into human_qa after a clean review it moves cards between review columns, `advance_stage`, and adds routing labels with `review-stages.sh route`, before the move). A person's interactive `/fleet-board:tick` does not run it.
-
-## The cards.sh helper
-
-Bulk card setup used to mean one command per call and literal item ids: a shell loop calling `gh project item-edit --id $ITEM` is blocked ("could not verify project item"), because the gate cannot know what `$ITEM` is. `scripts/cards.sh` is the first-class replacement, and the gate recognizes it:
-
-- `cards.sh create <title> <body-file> [--label L]... [--repo OWNER/REPO]` replaces `gh issue create` + `gh project item-add` + `gh project item-edit` (it runs `board-create.sh`).
-- `cards.sh add <number> [--repo OWNER/REPO]` replaces `gh project item-add` + `gh project item-edit`: it puts an issue that is not on the board into Backlog, and does nothing for one that is.
-- `cards.sh move <number> <state> [--repo OWNER/REPO]` replaces `gh project item-edit --id ...` and `board-move.sh` in loops (it runs `board-move.sh`).
-
-Each subcommand prints a usage line and exits 2 on a bad flag or argument. What the gate does with a call:
-
-- `move N STATE` and `add N` with a card number it can read are judged like `board-move.sh`: a card in Human QA stays put (any state but `human_qa`), and `move N ready` needs the card's `## Acceptance` section.
-- A card number or state it cannot read (`cards.sh move "$n" ready` in a loop) is allowed, because `cards.sh` itself refuses to move a card out of Human QA. So `for n in 12 13; do cards.sh move $n ready; done` passes, where the same loop over `gh project item-edit --id $ITEM` is still blocked.
-- `--repo` (or `-R`) must name the repo in `board.repo`; any other repo, or one the gate cannot read (`--repo "$R"`), is blocked. Without the flag the configured repo is used.
-- A subcommand it cannot read (`cards.sh $SUB`) or `cards.sh` under `xargs` is blocked.
-
-The gate matches the command word `cards.sh` by name, like `board-move.sh`.
 
 ## A commit and a PR in one call
 
@@ -42,17 +25,15 @@ A single call such as `cd sub && git commit -F- <<'EOF' ... EOF` followed by `gh
 The gate reads command text before it runs. A string check cannot see:
 
 - commands written to a script file and then run (`bash x.sh`), including `cat > x.sh <<'EOF'` or `tee x.sh <<'EOF'` with the script as a quoted here-document body, which is not read, even when `. x.sh` follows in the same call, and the same body written to a named pipe, `/dev/fd/N` or `/dev/tcp/...` that a shell started earlier in the call is reading (`mkfifo p; bash < p & cat > p <<'EOF'`);
-- `gh api graphql -F query=@file`, and `-f query="$(cat q.graphql)"`;
+- `gh api graphql -F query=@file` (a merge through GraphQL), and `-f query="$(cat q.graphql)"`;
 - gh aliases (`gh alias set`) and gh extensions;
 - HTTP clients other than `curl` and `gh api`: `wget`, `httpie`, `python -c`, `node -e` and so on;
-- `gh issue close N` on a Projects board, whose auto-Done workflow moves the card (on the labels board, closing leaves the labels alone);
-- `gh issue edit N --remove-project`, which takes the card off the board;
 - `git push origin :main` and other pushes: merges by push are not gated;
 - obfuscation beyond what the hook decodes: `$'gh'`, `eval "$(printf ...)"`, a variable holding a whole command (`C="gh pr merge 5"; $C`), `alias` with `shopt -s expand_aliases`, `env -C dir` or `sudo -D dir`, and shell functions defined in an earlier Bash call;
 - `gh ... -R owner/board` or `GH_REPO=owner/board` from a directory without a config, which is inert by design;
 - `parallel board-move.sh ::: 14 ::: done`;
 - `cd -P link/..`, which the hook resolves logically and the shell physically;
-- raw writes into `board.dir` on a `local` board (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered;
+- raw writes into `board.dir` (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered;
 - with the board page running, `curl` against the page's API (`curl -X POST -H 'X-Fleet-Board: 1' http://127.0.0.1:<port>/api/cards/<n>/move`), which can move a card out of Human QA: the gate classifies `curl` only against the GitHub API. This is a residual, not covered.
 
 It also blocks some harmless commands, because it prefers a block to a miss:

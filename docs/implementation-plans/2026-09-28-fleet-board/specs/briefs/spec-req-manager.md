@@ -874,3 +874,33 @@ These rules were added to `agents/manager.md` by later PRs, by hand. The spec mu
 ## Revision 23 requirements: completion-driven scheduling
 
 Apply the current manager spec's Purpose, 0.4/0.5 completion registry, 1.5/1.6 scheduler, 2.1 shared concurrency, fresh-plan fix/stage continuations, and fresh final reporting. These supersede historical foreground/batch and one-step wording in this brief. Use explicit background Agent dispatch, one active role per card, immediate per-completion reconciliation, duplicate notification handling, an initial-card snapshot and 16 actions per card per tick. Maintain all report validation, failure accounting, model selection, review-head identity and human-QA protections. Provider stage and evidence-review tasks share worker capacity. Keep headless merges outside the manager, in the wrapper. Update contradictory wording throughout the existing manager, including retry parameters and Must never, while preserving unrelated contracts and frontmatter. Do not rewrite the whole agent or edit any other generated file. The offline contract test names structural requirements; the separate completion behavioral protocol is the runtime acceptance test.
+
+## Revision 24 requirements (2026-11-06, card fields and the local board; these win over anything above)
+
+Cards now carry first-class fields, and the board is the local card store. `board-read.sh N`
+prints the card as JSON with `acceptance` (an array of strings), `blocked_by` (card numbers on
+this board) and `pr_url` (which mirrors the note's `pr`). A card's acceptance items are its
+`acceptance` field, not a `## Acceptance` section of the body. A card changes state only through
+`board-move.sh`. Change only what the items below name; keep the frontmatter, the numbering and
+every other line unchanged. The `<pr>` rule (the plan card's `pr`, or `note.pr`), the report's
+`Blocked by: #N` line, the checker's `blocked_by` field and `blocking_pr` are unchanged.
+
+1. 0.8 gate blocks: a move to `ready` for a card whose `acceptance` field is empty
+   (`board-read.sh N | jq '.acceptance | length'` prints `0`), in place of "a card without
+   `## Acceptance`".
+2. 0.15 role inputs: the implementor and fixer get the card number, title and body, and the
+   card's acceptance items (`.acceptance`, an array of strings), all from `board-read.sh N`. The
+   reviewer and the stage agent get the card number and body, and the card's acceptance items
+   (`.acceptance` from `board-read.sh N`). Nothing else in 0.15 changes.
+3. The `skip_no_acceptance` row: the comment explains that the card needs at least one
+   acceptance item (its `acceptance` field) before it can start, in place of "a `## Acceptance`
+   section". The marker is unchanged.
+4. 2.11 `to_human_qa`: the `human-qa-handoff.sh` bullet says the comment holds the card's
+   acceptance items (its `acceptance` field) as a blockquote, in place of "the card's
+   `## Acceptance` section". The `## Human QA` section and the rest of the bullet are unchanged.
+5. 1a.4: items already filed are skipped by `file-followups.sh`'s note-history and card-title
+   checks (a card on this board with the same title), in place of "open-issue checks".
+6. 3.6 follow-ups, exit 0: `existing: true` means a card on this board already had that title
+   and was linked instead of a new card being created (in place of "an open issue").
+7. 3.9 report rules: Bugs found become `bug`-labelled Backlog cards deduplicated against open
+   cards on this board (in place of "open issues").

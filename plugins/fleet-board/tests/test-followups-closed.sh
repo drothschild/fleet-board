@@ -10,6 +10,8 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/file-followups.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
@@ -70,6 +72,8 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
+  store_snap
   local script="$1"
   shift
   local tmpout tmperr
@@ -80,6 +84,7 @@ run_check() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  store_calls
 }
 
 jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
@@ -264,7 +269,7 @@ local_card() {
 }
 setup_local() {
   setup_case
-  printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
   mkdir -p "$REPO/.fleet-board/cards"
   echo 70 > "$REPO/.fleet-board/next"
   local_card 12 "The card" in_progress "$RECENT"

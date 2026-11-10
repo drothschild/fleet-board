@@ -1,14 +1,15 @@
 ---
 name: import-plan
-description: Use when the user has a spec and one or more implementation plans and wants them turned into fleet-board cards - groups plan tasks into PR-sized cards, infers dependencies across repos, shows a dry-run table, and after confirmation creates the issues in dependency order on the project. Invoke as /fleet-board:import-plan <spec> <plan...> [--status ready] [--preview <file>].
+description: Use when the user has a spec and one or more implementation plans and wants them turned into fleet-board cards - groups plan tasks into PR-sized cards, infers dependencies across repos, shows a dry-run table, and after confirmation creates the cards in dependency order on the local board. Invoke as /fleet-board:import-plan <spec> <plan...> [--status ready] [--preview <file>].
 user-invocable: true
 ---
 
 # fleet-board: import-plan
 
 Turns a spec plus per-repo plans into board cards. You do the reading and grouping;
-`import-plan.sh` does the mechanical part (dependency order, real issue numbers, project
-and status). Never create issues yourself with `gh issue create`.
+`import-plan.sh` does the mechanical part (dependency order, real card numbers, state). It
+writes each card's acceptance and blockers into the card's `acceptance` and `blocked_by`
+fields. Never create cards yourself, with `gh` or by writing files.
 
 ## Locating the script
 
@@ -40,7 +41,7 @@ Group plan tasks into PR-sized cards (one reviewable PR each). For each card wri
   values. Give plain text; the script adds the `- `.
 - `produces` and `consumes`: the interface names from the tasks' Interfaces
   (Produces/Consumes). Use identical spelling for the same interface in both places, also
-  across repos. The script infers `## Depends on` from them. Use `depends_on` (card keys or
+  across repos. The script infers each card's blockers (`blocked_by`) from them. Use `depends_on` (card keys or
   `owner/repo#N`) only for a dependency no interface shows.
 
 Write `{"cards": [...]}` to a file in the system temp directory (create it with `mktemp`).
@@ -65,9 +66,9 @@ Ask the user whether to create the cards. Only on a yes, run:
 echo y | bash <scripts>/import-plan.sh <cards file> [--status ready]
 ```
 
-On no, run nothing. Report the `Created owner/repo#N` lines the script prints (`Created #N` on a local board). Before the table the script lints every card (the same rules as `/fleet-board:lint`) and
+On no, run nothing. Report the `Created #N: <title>` lines the script prints. Before the table the script lints every card (the same rules as `/fleet-board:lint`) and
 creates nothing while one fails: fix the card in the cards file and rerun. A failure
-(cycle, unknown dependency, lint, missing project option) exits 1 with the reason; relay it.
+(cycle, unknown dependency, lint) exits 1 with the reason; relay it.
 
 
 If a card's Why or Acceptance names a `.md` doc that is missing on the default branch,
