@@ -1575,7 +1575,7 @@ raise SystemExit(2)
         def slow_remove(command, **_kwargs):
             if command[1] == 'ps':
                 return docker_transport.subprocess.CompletedProcess(
-                    command, 0, b'g' * 64 + b'\n', b'')
+                    command, 0, b'a' * 64 + b'\n', b'')
             if command[1:3] == ['rm', '-f']:
                 Clock.now = 1.9
                 return docker_transport.subprocess.CompletedProcess(command, 0, b'', b'')
@@ -1591,7 +1591,7 @@ raise SystemExit(2)
                 'docker', 'attempt-1', return_removed=True)
 
         self.assertFalse(ok, 'removal without post-removal empty listings must fail closed')
-        self.assertFalse(removed, 'the deadline path must not report confirmed cleanup')
+        self.assertTrue(removed, 'the successfully removed matching ID must remain observable')
 
     def test_docker_label_reconciliation_accepts_slow_initial_empty_listing(self):
         from unittest.mock import patch
