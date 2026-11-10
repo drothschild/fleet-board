@@ -27,6 +27,9 @@ class Service:
 
     def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None):
         self.store = store
+        self._owner_thread_id = threading.get_ident()
+        self._thread_store = threading.local()
+        self._thread_stores = {}
         self.clock = clock
         self.host_boot_id = host_boot_id
         self.peer_resolver = peer_resolver or self._peer_actor
@@ -55,6 +58,33 @@ class Service:
         self._owner = False
         self.writer_uncertain = False
         self._run_lock_claimed = False
+
+    def _store(self):
+        """Return the Store connection owned by the current thread."""
+        if threading.get_ident() == self._owner_thread_id:
+            return self.store
+        store = getattr(self._thread_store, "store", None)
+        if store is None:
+            store = self.store.fork_connection()
+            self._thread_store.store = store
+            with self._lock:
+                self._thread_stores[threading.get_ident()] = store
+        return store
+
+    def _close_thread_store(self):
+        store = getattr(self._thread_store, "store", None)
+        if store is not None:
+            self._thread_store.store = None
+            with self._lock:
+                self._thread_stores.pop(threading.get_ident(), None)
+            store.close()
+
+    def _close_thread_stores(self):
+        with self._lock:
+            stores = list(self._thread_stores.values())
+            self._thread_stores.clear()
+        for store in stores:
+            store.close()
 
     def _prepare_socket_root(self):
         root = self.socket_root.absolute()
@@ -121,6 +151,7 @@ class Service:
                 self._owner_fd = None
                 raise RuntimeError("legacy run lock: " + (claim.stderr.strip() or "claim failed"))
             self._run_lock_claimed = True
+            self.recovery.store = self._store()
             self.recovery.reconcile(self.clock())
             try:
                 self._server = self._prepare_socket(self.socket_path)
@@ -188,6 +219,8 @@ class Service:
                 payload = {"ok": True, "result": result}
             except Exception as exc:
                 payload = {"ok": False, "error": str(exc)[:300]}
+            finally:
+                self._close_thread_store()
             connection.sendall(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
 
     def request(self, request):
@@ -199,6 +232,7 @@ class Service:
                 except Exception as exc:
                     result["error"] = exc
                 finally:
+                    self._close_thread_store()
                     done.set()
             threading.Thread(target=invoke, daemon=True).start()
             if not done.wait(self.request_timeout):
@@ -248,6 +282,7 @@ class Service:
         if command == "events":
             return self.events(request.get("after", 0), request.get("limit", 100))
         if command == "reconcile":
+            self.recovery.store = self._store()
             self.recovery.reconcile(self.clock())
             return {"snapshot": self.snapshot(), "cursor": len(self.snapshot()["events"])}
         if command == "resolve":
@@ -256,7 +291,7 @@ class Service:
             if action not in supported:
                 raise ValueError("unsupported resolution action")
             revision = request.get("expected_revision", self.status()["revision"])
-            outcome = self.store.record_command({"id": request.get("request_id"),
+            outcome = self._store().record_command({"id": request.get("request_id"),
                 "actor": actor, "command": "resolve", "payload": {
                     "card": request.get("card"), "action": action,
                     "reason": request.get("reason")}, "expected_revision": revision})
@@ -278,7 +313,8 @@ class Service:
         if command == "stop" and mode not in ("drain", "cancel"):
             raise ValueError("stop mode must be drain or cancel")
         payload = {"mode": mode} if command == "stop" else {}
-        outcome = self.store.record_command({"id": request_id, "actor": actor,
+        store = self._store()
+        outcome = store.record_command({"id": request_id, "actor": actor,
             "command": command, "payload": payload, "expected_revision": expected_revision})
         if command in ("start", "resume"):
             self.admissions_open = True
@@ -289,7 +325,7 @@ class Service:
             if mode == "cancel":
                 self.cancel_live_attempts(request_id, outcome["revision"])
         result = {"command_id": request_id, "state_revision": outcome["revision"],
-                "desired_mode": outcome["desired_mode"], "phase": self.snapshot()["domain"]["phase"]}
+                "desired_mode": outcome["desired_mode"], "phase": store.snapshot()["domain"]["phase"]}
         if command == "stop":
             shutdown = self.stop_serving()
             result.update(shutdown)
@@ -301,7 +337,7 @@ class Service:
         for attempt in self.snapshot().get("attempts", []):
             if attempt.get("state") in ("prepared", "launching", "running", "result_ready"):
                 current = self.status()["revision"]
-                self.store.request_cancellation(attempt["id"], request_id + ":" + attempt["id"],
+                self._store().request_cancellation(attempt["id"], request_id + ":" + attempt["id"],
                                                 "supervisor stop requested", current,
                                                 now=self.clock())
                 self.cancellation_requests.append(attempt["id"])
@@ -318,22 +354,22 @@ class Service:
                 "host_boot_id": self.host_boot_id, "execution_available": self.execution_available}
 
     def snapshot(self):
-        return self.store.snapshot()
+        return self._store().snapshot()
 
     def events(self, after=0, limit=100):
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid events cursor or limit")
-        return self.store.events_after(after, limit)
+        return self._store().events_after(after, limit)
 
     def worker_request(self, request):
         if not isinstance(request, dict) or request.get("command") not in WORKER_COMMANDS:
             raise PermissionError("worker operation is not permitted")
-        self.store.append_event({"type": "worker_" + request["command"],
+        self._store().append_event({"type": "worker_" + request["command"],
                                  "payload": {k: v for k, v in request.items() if k != "command"}})
         return {"accepted": True}
 
     def register_runner_version(self, runner_id, protocol):
-        self.store.append_event({"type": "runner_version", "payload": {"runner_id": runner_id, "protocol": protocol}})
+        self._store().append_event({"type": "runner_version", "payload": {"runner_id": runner_id, "protocol": protocol}})
 
     def runner_compatible(self, runner_id, protocol):
         versions = [event["payload"] for event in self.snapshot()["events"]
@@ -341,6 +377,7 @@ class Service:
         return bool(versions and versions[-1].get("protocol") == protocol)
 
     def stop_serving(self):
+        store = self._store()
         observer = self.shutdown_observer()
         for server in (self._server, self._worker_server):
             if server is not None:
@@ -367,8 +404,8 @@ class Service:
             return {"status": "unresolved_shutdown", "terminated": False}
         self.writer_uncertain = False
         try:
-            if self.snapshot()["domain"]["desired_mode"] == "running":
-                self.store.close_admissions("supervisor service stopped")
+            if store.snapshot()["domain"]["desired_mode"] == "running":
+                store.close_admissions("supervisor service stopped")
         except Exception:
             pass
         for path in (self.socket_path, self.worker_socket_path):
@@ -380,4 +417,5 @@ class Service:
 
     def close(self):
         self.stop_serving()
+        self._close_thread_stores()
         self.store.close()
