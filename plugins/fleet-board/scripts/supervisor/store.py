@@ -221,8 +221,23 @@ class Store:
         self.__human_actor_verifier = human_actor_verifier
         self.directory = directory
         self.domain_id = domain_id
+        self.common_dir = Path(common_dir)
         self.__scope_root = common_dir.parent if common_dir.name == ".git" else common_dir
         self.__fault_injector = fault_injector
+
+    def fork_connection(self):
+        """Open a private Store handle for a bounded worker thread."""
+        db = self.directory / 'store.sqlite3'
+        if db.is_symlink() or not db.is_file() or db.stat().st_uid != os.getuid() or db.stat().st_mode & 0o077:
+            raise ValueError('unsafe database')
+        connection = sqlite3.connect(str(db), timeout=30, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute('PRAGMA foreign_keys=ON')
+        connection.execute('PRAGMA synchronous=FULL')
+        return Store(connection, self.directory, self.domain_id, self.common_dir,
+                     self.__fault_injector, self.__stop_evidence_verifier,
+                     self.__retry_evidence_verifier, self.__launch_evidence_verifier,
+                     self.__human_actor_verifier)
 
     def close(self):
         self.__connection.close()
@@ -326,6 +341,104 @@ class Store:
             else:
                 states[payload['card']] = payload['workflow_state']
         return states
+
+    @staticmethod
+    def _integration_lane_state(connection):
+        active = None
+        for row in connection.execute("SELECT type,payload FROM events WHERE type LIKE 'integration_lane_%' ORDER BY sequence"):
+            payload = json.loads(row['payload'])
+            if row['type'] in ('integration_lane_acquired', 'integration_lane_recovered'):
+                active = payload
+            elif row['type'] == 'integration_lane_released':
+                if active is not None and active.get('operation_key') == payload.get('operation_key'):
+                    active = None
+        return active
+
+    def integration_lane(self):
+        """Return the durable repository integration lease, if one is held."""
+        return self._integration_lane_state(self.__connection)
+
+    def acquire_integration_lane(self, operation_key, card, kind, owner_id, *, recover=False):
+        """Atomically claim the repository lane for a journaled integration effect.
+
+        Recovery can transfer only the same pending effect's lease. The caller must
+        already own the supervisor domain lock before requesting that transfer.
+        """
+        if (not isinstance(operation_key, str) or not operation_key
+                or not isinstance(card, str) or not re.fullmatch(r'[1-9][0-9]*', card)
+                or kind not in ('integration_merge', 'main_verification')
+                or not isinstance(owner_id, str) or not re.fullmatch(r'[A-Za-z0-9._:-]{1,128}', owner_id)
+                or type(recover) is not bool):
+            raise ValueError('invalid repository integration lease')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            effect = c.execute('SELECT card,intent,observation FROM effects WHERE operation_key=?',
+                               (operation_key,)).fetchone()
+            if effect is None:
+                raise ValueError('integration lease requires a journaled effect')
+            intent = json.loads(effect['intent'])
+            if (effect['card'] != card or intent.get('card') != card or intent.get('kind') != kind):
+                raise ValueError('integration lease does not match its effect')
+            active = self._integration_lane_state(c)
+            if active is not None:
+                same = (active.get('operation_key'), active.get('card'), active.get('kind')) == (operation_key, card, kind)
+                if not same:
+                    raise ValueError('repository integration lane is occupied')
+                if not recover:
+                    raise ValueError('repository integration lane is already leased')
+                lease = {'operation_key': operation_key, 'card': card, 'kind': kind, 'owner_id': owner_id}
+                self._event('integration_lane_recovered', lease)
+                c.execute('COMMIT')
+                return lease
+            domain = c.execute('SELECT desired_mode FROM domain').fetchone()
+            lifecycle = self._card_lifecycles().get(card)
+            if kind == 'integration_merge':
+                if recover:
+                    raise ValueError('no matching repository integration lease to recover')
+                if domain['desired_mode'] != 'running':
+                    raise ValueError('new merge admission is closed')
+                if lifecycle == 'human_qa':
+                    raise ValueError('Human QA holds this card')
+            lease = {'operation_key': operation_key, 'card': card, 'kind': kind, 'owner_id': owner_id}
+            self._event('integration_lane_acquired', lease)
+            c.execute('COMMIT')
+            return lease
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def release_integration_lane(self, operation_key, owner_id):
+        if not isinstance(operation_key, str) or not operation_key or not isinstance(owner_id, str) or not owner_id:
+            raise ValueError('invalid repository integration release')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            active = self._integration_lane_state(c)
+            if active is None or (active.get('operation_key'), active.get('owner_id')) != (operation_key, owner_id):
+                raise ValueError('repository integration lease is not owned by this controller')
+            effect = c.execute('SELECT observation FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            if effect is None or effect['observation'] is None:
+                raise ValueError('cannot release an unresolved integration effect')
+            self._event('integration_lane_released', {'operation_key': operation_key, 'owner_id': owner_id})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def close_admissions(self, reason):
+        """Durably stop new admissions after repository-wide verification fails."""
+        if not isinstance(reason, str) or not reason or len(reason) > 300:
+            raise ValueError('invalid admission stop reason')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            c.execute("UPDATE domain SET desired_mode='stopped'")
+            self._event('admissions_closed', {'reason': reason})
+            c.execute('COMMIT')
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
 
     def set_card_lifecycle(self, card, state, expected_revision):
         allowed = {'ready', 'active', 'review', 'ci_wait', 'human_qa', 'retry_wait', 'paused', 'blocked', 'complete', 'needs_attention'}
@@ -1109,10 +1222,11 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
-            row = c.execute('SELECT observation,card,intent FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            row = c.execute('SELECT observation,card,intent,job_id,generation FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
             if row is None:
                 raise ValueError('unknown effect')
-            if json.loads(row['intent']).get('kind') in ('publish', 'publication', 'commit_publication', 'pr_update', 'merge') and self._publication_held(row['card']):
+            intent = json.loads(row['intent'])
+            if intent.get('kind') in ('publish', 'publication', 'commit_publication', 'pr_update', 'merge') and self._publication_held(row['card']):
                 raise ValueError('publication held after unauthorized scope change')
             if row['observation'] is not None:
                 if row['observation'] != encoded:
@@ -1120,18 +1234,103 @@ class Store:
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
                     raise ValueError('revision mismatch')
+                event = {'operation_key': operation_key}
+                if intent.get('kind') == 'branch_refresh':
+                    job = c.execute('SELECT * FROM jobs WHERE id=?', (row['job_id'],)).fetchone()
+                    evidence = observation.get('input_evidence')
+                    revision = observation.get('input_revision')
+                    invalidated = observation.get('invalidated_evidence')
+                    required_evidence = {'job_id', 'generation', 'head_sha', 'input_sha', 'changed_paths'}
+                    if (job is None or job['card'] != row['card'] or job['generation'] != row['generation']
+                            or not isinstance(evidence, dict) or set(evidence) != required_evidence):
+                        raise ValueError('stale or invalid branch refresh evidence')
+                    if (evidence['job_id'] != row['job_id'] or evidence['generation'] != row['generation']
+                            or not isinstance(evidence['head_sha'], str)
+                            or not re.fullmatch(r'[0-9a-f]{40}(?:[0-9a-f]{24})?', evidence['head_sha'])
+                            or not isinstance(evidence['input_sha'], str)
+                            or not re.fullmatch(r'[0-9a-f]{64}', evidence['input_sha'])):
+                        raise ValueError('invalid branch refresh evidence identity')
+                    paths = evidence['changed_paths']
+                    if (not isinstance(paths, list) or any(not isinstance(path, str) or not path
+                            or path.startswith('/') or any(part in ('', '.', '..') for part in path.split('/'))
+                            or any(ord(char) < 32 or ord(char) == 127 for char in path) for path in paths)
+                            or paths != sorted(set(paths))
+                            or paths != sorted(set(intent.get('changed_paths', [])))):
+                        raise ValueError('invalid branch refresh changed paths')
+                    expected_input_revision = hashlib.sha256(canonical_json(evidence).encode('utf-8')).hexdigest()
+                    if not isinstance(revision, str) or revision != expected_input_revision:
+                        raise ValueError('branch refresh input revision mismatch')
+                    if not isinstance(invalidated, list) or any(item not in ('review', 'test') for item in invalidated) or len(invalidated) != len(set(invalidated)):
+                        raise ValueError('invalid branch refresh evidence invalidation')
+                    data = json.loads(job['data'])
+                    if paths and revision == data.get('input_version'):
+                        raise ValueError('branch refresh did not create a new input revision')
+                    updated_data = dict(data)
+                    updated_data.update({'input_sha': evidence['input_sha'],
+                                         'input_version': revision,
+                                         'input_revision': revision,
+                                         'evidence_invalidated': {'input_revision': revision,
+                                                                  'items': sorted(invalidated)}})
+                    history = updated_data.get('evidence_invalidations', [])
+                    if not isinstance(history, list):
+                        raise ValueError('invalid stored evidence invalidations')
+                    history = history + [{'input_revision': revision, 'items': sorted(invalidated)}]
+                    updated_data['evidence_invalidations'] = history
+                    round_number = updated_data.get('round')
+                    if type(round_number) is not int or round_number < 0:
+                        raise ValueError('invalid job round for refreshed identity')
+                    logical_key = canonical_json([job['card'], updated_data['action'], job['role'],
+                                                  job['stage'], round_number, evidence['input_sha'], revision])
+                    collision = c.execute('SELECT 1 FROM jobs WHERE logical_key=? AND id<>?',
+                                          (logical_key, row['job_id'])).fetchone()
+                    if collision is not None:
+                        raise ValueError('refreshed job identity already exists')
+                    next_generation = row['generation'] + 1
+                    changed = c.execute('UPDATE jobs SET logical_key=?,generation=?,input_sha=?,data=? WHERE id=? AND generation=?',
+                                        (logical_key, next_generation, evidence['input_sha'],
+                                         canonical_json(updated_data), row['job_id'], row['generation'])).rowcount
+                    if changed != 1:
+                        raise ValueError('branch refresh job changed before observation')
+                    event.update({'job_id': row['job_id'], 'generation': next_generation,
+                                  'input_revision': revision,
+                                  'invalidated_evidence': sorted(invalidated)})
                 c.execute("UPDATE effects SET observation=?,status='observed' WHERE operation_key=?", (encoded, operation_key))
-                self._event('effect_observed', {'operation_key': operation_key})
+                self._event('effect_observed', event)
             c.execute('COMMIT')
         except Exception:
             c.execute('ROLLBACK')
             raise
 
-    def record_result(self, envelope):
-        """Persist a trusted runner's prevalidated report and charge its original session.
+    def operation_attempt_authority(self, attempt_id, generation, input_sha):
+        """Classify whether an exact attempt may bind, is revoked, or may be retired."""
+        if (not isinstance(attempt_id, str) or not attempt_id
+                or type(generation) is not int or generation < 0
+                or not isinstance(input_sha, str) or not re.fullmatch(r'[0-9a-f]{64}', input_sha)):
+            raise ValueError('invalid operation retirement identity')
+        row = self.__connection.execute(
+            'SELECT attempts.state,attempts.data,jobs.generation AS current_generation '
+            'FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?',
+            (attempt_id,)).fetchone()
+        if row is None:
+            raise ValueError('unknown operation retirement attempt')
+        data = json.loads(row['data'])
+        if data.get('generation') != generation or data.get('input_sha') != input_sha:
+            raise ValueError('operation retirement identity mismatch')
+        released = data.get('execution_released') is True
+        if released and row['state'] in ('cancel_requested', 'interrupted', 'failed',
+                                         'quarantined', 'reconciled', 'result_ready'):
+            return 'terminal_released'
+        if (not released and row['current_generation'] == generation
+                and row['state'] in ('prepared', 'launching', 'running')):
+            return 'active'
+        return 'revoked'
 
-        Semantic report parsing and ingestion are runner responsibilities. This layer
-        verifies artifact containment and hashes and binds the envelope to the attempt.
+    def record_result(self, envelope, *, trusted_report_status=None):
+        """Persist a trusted runner's parsed report and charge its original session.
+
+        The trusted adapter supplies parser-derived status; this transaction verifies
+        outcome and applies durable cancellation before persistence. Artifact containment,
+        hashes, and report syntax are verified by the adapter.
         """
         if not isinstance(envelope, dict):
             raise ValueError('invalid result')
@@ -1177,7 +1376,18 @@ class Store:
                     raise ValueError('artifact hash mismatch')
             except (OSError, RuntimeError) as exc:
                 raise ValueError('invalid artifact') from exc
-        encoded = canonical_json(envelope)
+        if trusted_report_status is not None:
+            statuses = {'implementor': {'done', 'blocked'},
+                        'fixer': {'done', 'blocked', 'not_reproducible'},
+                        'reviewer': {'clean', 'findings'},
+                        'stage-reviewer': {'clean', 'findings'}}
+            if trusted_report_status not in statuses.get(envelope['role'], set()):
+                raise ValueError('trusted report status does not match result role')
+            reported_outcome = ('success' if envelope['exit_code'] == 0
+                                and trusted_report_status not in ('blocked', 'not_reproducible')
+                                else 'failure')
+            if envelope['outcome'] != reported_outcome:
+                raise ValueError('result outcome does not match trusted report status and exit code')
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
@@ -1188,6 +1398,14 @@ class Store:
             for field in ('generation', 'input_sha', 'role', 'stage'):
                 if original[field] != envelope[field]:
                     raise ValueError('result identity mismatch')
+            stored_envelope = envelope
+            if trusted_report_status is not None:
+                cancelled = (attempt['state'] == 'cancel_requested'
+                             or (attempt['state'] in ('interrupted', 'failed', 'quarantined')
+                                 and bool(original.get('cancel_reason'))))
+                stored_envelope = dict(envelope, outcome=('cancelled' if cancelled
+                                                           else reported_outcome))
+            encoded = canonical_json(stored_envelope)
             prior = c.execute('SELECT * FROM results WHERE attempt_id=?', (attempt_id,)).fetchone()
             if prior:
                 if prior['envelope'] != encoded:
@@ -1198,7 +1416,7 @@ class Store:
                 if not isinstance(session, str) or c.execute('SELECT 1 FROM sessions WHERE id=?', (session,)).fetchone() is None:
                     raise ValueError('unknown session')
                 disposition = 'current' if attempt['current_generation'] == envelope['generation'] and attempt['state'] not in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled') else 'stale'
-                semantic_failure = disposition == 'current' and envelope['outcome'] != 'success'
+                semantic_failure = disposition == 'current' and stored_envelope['outcome'] != 'success'
                 if semantic_failure:
                     disposition = 'stale'
                     c.execute("UPDATE jobs SET state='needs_attention',generation=generation+1 WHERE id=?", (attempt['job_id'],))
@@ -1294,6 +1512,11 @@ class Store:
                 event['payload'] = json.loads(event['payload'])
             commands = [dict(row) for row in connection.execute('SELECT * FROM commands ORDER BY rowid')]
             records = {table: [dict(row) for row in connection.execute('SELECT * FROM ' + table + ' ORDER BY rowid')] for table in ('sessions', 'jobs', 'attempts', 'claims', 'results', 'effects')}
+            for job in records['jobs']:
+                data = json.loads(job['data'])
+                for key in ('input_version', 'input_revision', 'evidence_invalidated', 'evidence_invalidations'):
+                    if key in data:
+                        job[key] = data[key]
             attention = [{'type': 'scope_cycle', 'cards': cycle} for cycle in self._scope_wait_cycles()]
             reservations = sorted(self._reservations().values(), key=lambda item: item['card'])
             card_lifecycle = self._card_lifecycles()
@@ -1301,7 +1524,8 @@ class Store:
             connection.execute('COMMIT')
             return {'domain': domain, 'events': events, 'commands': commands, 'attention': attention,
                     'reservations': reservations, 'card_lifecycle': card_lifecycle,
-                    'attention_cards': attention_cards, **records}
+                    'attention_cards': attention_cards,
+                    'integration_lane': self._integration_lane_state(connection), **records}
         except Exception:
             connection.execute('ROLLBACK')
             raise

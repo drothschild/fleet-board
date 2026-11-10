@@ -2072,3 +2072,5 @@ Isolation: only built-in `cc-plugin-*@builtin` plugins, tools exactly `Edit` and
 **Merge with main, seventh (2026-11-08).** Main's PRs 235, 238 and 239 moved the plugin to 0.18.4; only the version lines conflicted. Plugin version 0.18.4 (main) to 0.18.5. No authored primitive changed, and it adds no authoring cost.
 
 **Merge with main, eighth (2026-11-08).** Main's PRs 240 to 242 moved the plugin to 0.18.6. PR 242 removed the card 227 shipped-files check that this branch had limited to card 227's branch, so the merge takes main's two test files. Plugin version 0.18.6 (main) to 0.18.7. No authored primitive changed, and it adds no authoring cost.
+
+**Merge with main, ninth (2026-11-10).** Main moved the plugin to 0.18.19 (through PR 237); only the version lines conflicted. Plugin version 0.18.19 (main) to 0.18.20. No authored primitive changed, and it adds no authoring cost.
