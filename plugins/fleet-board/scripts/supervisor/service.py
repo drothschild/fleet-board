@@ -44,7 +44,7 @@ class Service:
         return result.returncode == 0 and result.stdout.strip() == "true"
 
     def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None,
-                 board_repo=None, execution_enabled=True):
+                 board_repo=None, execution_enabled=False):
         self.store = store
         self._owner_thread_id = threading.get_ident()
         self._thread_store = threading.local()

@@ -43,10 +43,14 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     env = os.environ if env is None else env
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
+    # Exit codes: 0 ok; 1 error or unreachable service; 2 usage error;
+    # 3 `start` launched/reached the service but supervisor.enabled is false
+    # (it stays queryable read-only; execution is not started).
     class UsageParser(argparse.ArgumentParser):
         def error(self, message):
             raise ValueError(message)
-    parser = UsageParser(prog="supervisor", description="Control the Fleet Board supervisor")
+    parser = UsageParser(prog="supervisor", description="Control the Fleet Board supervisor",
+                          epilog="exit codes: 0 ok, 1 error, 2 usage, 3 start refused because supervisor.enabled is false")
     subs = parser.add_subparsers(dest="command", required=True, parser_class=UsageParser)
     for name in ("start", "pause", "resume", "status", "reconcile", "events"):
         sub = subs.add_parser(name)

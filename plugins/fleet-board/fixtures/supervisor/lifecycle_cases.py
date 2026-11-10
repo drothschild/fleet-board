@@ -522,6 +522,14 @@ class LifecycleContract(unittest.TestCase):
                 self.assertIsInstance(result, (dict, list))
                 self.assertFalse(service.admissions_open)
 
+    def test_direct_construction_defaults_to_disabled_gate(self):
+        direct = Service(self.service.store, self.clock, "boot-1",
+                         lambda connection: "fixture-user")
+        with self.assertRaisesRegex((ValueError, RuntimeError), "supervisor.enabled"):
+            direct.command("start", request_id="direct-start", expected_revision=0,
+                           actor="fixture-user")
+        self.assertFalse(direct.admissions_open)
+
     def test_disabled_cli_start_is_distinct_and_detached_service_stays_queryable(self):
         import subprocess
         plugin_dir = Path(__file__).resolve().parents[2]
