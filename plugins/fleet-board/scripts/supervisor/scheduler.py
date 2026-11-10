@@ -6,8 +6,11 @@ Clock, planning and persistence are injectable so tests never wait on wall time.
 """
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import json
 import math
 import threading
+
+from .effects import Effect
 
 
 _ACTION_CLASS = {
@@ -39,6 +42,186 @@ class _BoundedExecutor:
 
     def shutdown(self, wait=False, cancel_futures=True):
         self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+
+class IntegrationLane:
+    """Run journaled merge/verification effects in one durable repository lane.
+
+    External helpers run on a dedicated bounded worker, never in the scheduler
+    event loop. Store leases serialize independent supervisors and remain held
+    across uncertain outcomes until the same effect is reconciled.
+    """
+    def __init__(self, store, *, owner_id, close_admissions=None, queue_limit=8):
+        if store is None or not isinstance(owner_id, str) or not owner_id:
+            raise ValueError('integration lane requires a store and owner identity')
+        if close_admissions is not None and not callable(close_admissions):
+            raise ValueError('invalid admission close callback')
+        self.store = store
+        self.owner_id = owner_id
+        self.close_admissions = close_admissions
+        self._executor = _BoundedExecutor(1, queue_limit, 'repository integration')
+
+    def close(self):
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+    @staticmethod
+    def _details(effect):
+        record, preconditions, intent = effect._record()
+        return record, preconditions, intent
+
+    @staticmethod
+    def _validate_merge(intent, mode):
+        if mode != 'running':
+            raise ValueError('new merge admission is closed')
+        if intent.get('merge_policy') != 'auto':
+            raise ValueError('human merge policy forbids mutation')
+        if intent.get('card_state') == 'human_qa' or intent.get('needs_human_qa') is not False:
+            raise ValueError('Human QA forbids mutation')
+        for field in ('head_current', 'review_clean', 'review_stages_complete',
+                      'dependencies_ready', 'ci_green'):
+            if intent.get(field) is not True:
+                raise ValueError('merge precondition is not satisfied: ' + field)
+
+    @staticmethod
+    def main_check_ok(observation):
+        """Only a literal JSON boolean true proves main verification succeeded."""
+        return isinstance(observation, dict) and type(observation.get('ok')) is bool and observation.get('ok') is True
+
+    def submit(self, effect, *, mode=None):
+        """Queue new merges; verification must use a merged-operation recovery."""
+        record, preconditions, intent = self._details(effect)
+        kind = intent.get('kind')
+        if kind not in ('integration_merge', 'main_verification'):
+            raise ValueError('unsupported integration operation')
+        actual_mode = self.store.snapshot()['domain']['desired_mode']
+        if mode is not None and mode != actual_mode:
+            raise ValueError('requested mode is stale')
+        if kind == 'integration_merge':
+            self._validate_merge(intent, actual_mode)
+        else:
+            raise ValueError('main verification requires an already merged operation; use recovery')
+        return self._executor.submit(self._execute, effect, record, preconditions, intent, False)
+
+    def recover(self, effect, *, mode=None):
+        """Queue reconciliation of one persisted lease without a new mutation."""
+        record, preconditions, intent = self._details(effect)
+        kind = intent.get('kind')
+        if kind not in ('integration_merge', 'main_verification'):
+            raise ValueError('unsupported integration recovery')
+        actual_mode = self.store.snapshot()['domain']['desired_mode']
+        if mode is not None and mode != actual_mode:
+            raise ValueError('requested mode is stale')
+        return self._executor.submit(self._execute, effect, record, preconditions, intent, True)
+
+    def _execute(self, effect, record, preconditions, intent, recover):
+        store = self.store.fork_connection()
+        acquired = False
+        try:
+            worker_effect = effect.rebind(store, record=record,
+                                          preconditions=preconditions, intent=intent)
+            key, card, kind = record['operation_key'], record['card'], intent['kind']
+            store.acquire_integration_lane(key, card, kind, self.owner_id, recover=recover)
+            acquired = True
+            mode = store.snapshot()['domain']['desired_mode']
+            if kind == 'main_verification':
+                result = self._recover_main_verification(worker_effect, store, record, intent, key, card)
+            elif recover and mode != 'running':
+                try:
+                    observed = worker_effect.observe()
+                except Exception as exc:
+                    observed = None
+                    unavailable = str(exc)[:200]
+                else:
+                    unavailable = 'PR merge is not proven complete'
+                if not Effect.merge_recovery_matches(observed, intent, key):
+                    result = {'status': 'pending', 'operation_key': key,
+                              'reason': 'paused/stopped recovery requires matching merged PR evidence: ' + unavailable}
+                else:
+                    result = worker_effect.apply()
+            else:
+                result = worker_effect.reconcile() if recover else worker_effect.apply()
+            if result.get('status') == 'observed':
+                observation = result.get('main_check') if kind == 'integration_merge' else result
+                verified = kind not in ('integration_merge', 'main_verification') or self.main_check_ok(observation)
+                if not verified:
+                    reason = 'main verification failed or was unproven for #' + card
+                    store.close_admissions(reason)
+                    if self.close_admissions is not None:
+                        self.close_admissions(reason)
+                else:
+                    store.release_integration_lane(key, self.owner_id)
+            else:
+                reason = 'merge or main verification outcome is unresolved for #' + card
+                store.close_admissions(reason)
+                if self.close_admissions is not None:
+                    self.close_admissions(reason)
+            return result
+        except Exception as exc:
+            if not acquired:
+                raise
+            reason = 'integration effect outcome is unresolved: ' + str(exc)[:200]
+            store.close_admissions(reason)
+            if self.close_admissions is not None:
+                self.close_admissions(reason)
+            return {'status': 'pending', 'operation_key': record['operation_key'], 'reason': reason}
+        finally:
+            store.close()
+
+    @staticmethod
+    def _recover_main_verification(effect, store, record, intent, key, card):
+        """Run verification only after fresh evidence matches a durable merge operation."""
+        if intent.get('merge_operation_key') in (None, key):
+            return {'status': 'pending', 'operation_key': key,
+                    'reason': 'main verification is not paired with a durable merge operation'}
+        matches = []
+        for row in store.snapshot()['effects']:
+            if row['operation_key'] != intent.get('merge_operation_key') or row['card'] != card:
+                continue
+            try:
+                merge_intent = json.loads(row['intent'])
+            except (TypeError, ValueError):
+                continue
+            if (merge_intent.get('kind') == 'integration_merge'
+                    and merge_intent.get('pr') == intent.get('pr')
+                    and merge_intent.get('head_sha') == intent.get('head_sha')):
+                matches.append(merge_intent)
+        if len(matches) != 1:
+            return {'status': 'pending', 'operation_key': key,
+                    'reason': 'main verification has no matching durable merge operation'}
+        try:
+            evidence = effect.adapter.inspect(dict(matches[0], operation_key=intent['merge_operation_key']))
+        except Exception as exc:
+            return {'status': 'pending', 'operation_key': key,
+                    'reason': 'fresh merged evidence unavailable: ' + str(exc)[:200]}
+        if not Effect.merge_recovery_matches(evidence, matches[0], intent['merge_operation_key']):
+            return {'status': 'pending', 'operation_key': key,
+                    'reason': 'fresh merged evidence does not match the durable merge operation'}
+        return effect.apply()
+
+    @staticmethod
+    def cleanup_allowed(snapshot, card):
+        """Permit removal only for complete cards without retained recovery work."""
+        lifecycle = (snapshot.get('card_lifecycle') or {}).get(str(card))
+        if lifecycle != 'complete':
+            return False
+        jobs = {job['id']: job.get('card') for job in snapshot.get('jobs', [])}
+        for attempt in snapshot.get('attempts', []):
+            data = attempt.get('data') or '{}'
+            if isinstance(data, str):
+                try:
+                    data = json.loads(data)
+                except (TypeError, ValueError):
+                    return False
+            if (jobs.get(attempt.get('job_id')) == str(card)
+                    and (attempt.get('state') == 'quarantined'
+                         or attempt.get('state') in ('prepared', 'running', 'result_ready', 'cancel_requested')
+                         or data.get('execution_released') is not True)):
+                return False
+        for effect in snapshot.get('effects', []):
+            if (effect.get('card') == str(card)
+                    and effect.get('status') not in ('applied', 'complete', 'reconciled', 'observed')):
+                return False
+        return True
 
 
 class _SystemTimerDriver:

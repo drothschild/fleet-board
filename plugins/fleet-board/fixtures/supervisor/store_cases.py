@@ -400,6 +400,49 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(json.loads(effect["observation"])["recovery_evidence"], "commit")
         self.assertEqual(effect["card"], "1")
 
+    def test_branch_refresh_observation_updates_job_revision_atomically(self):
+        job = {"id": "j1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "a" * 64, "input_version": "v1", "generation": 1,
+               "provider": "p", "model": "m", "nonce": "n1", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 1, "provider_cap": 1, "paths": ["src"]})
+        self.store.increment_retry("j1", self.store.snapshot()["domain"]["revision"])
+        evidence = {"job_id": "j1", "generation": 1, "head_sha": "b" * 40,
+                    "input_sha": "c" * 64, "changed_paths": ["src/changed.py"]}
+        input_revision = hashlib.sha256(
+            json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        observation = {"input_revision": input_revision, "input_evidence": evidence,
+                       "invalidated_evidence": ["review"]}
+        self.store.record_effect({"operation_key": "refresh-1", "job_id": "j1", "generation": 1,
+                                  "preconditions": {"card": "1", "generation": 1},
+                                  "intent": {"kind": "branch_refresh", "changed_paths": ["src/changed.py"]}})
+        before_bad = self.store.snapshot()
+        with self.assertRaisesRegex(ValueError, "revision"):
+            self.store.observe_effect("refresh-1", dict(observation, input_revision="not-a-revision"),
+                                     before_bad["domain"]["revision"])
+        self.assertEqual(self.store.snapshot(), before_bad)
+
+        self.store.observe_effect("refresh-1", observation, before_bad["domain"]["revision"])
+        updated = self.store.snapshot()
+        current = updated["jobs"][0]
+        data = json.loads(current["data"])
+        self.assertEqual((current["generation"], current["input_sha"], current["retries_used"]),
+                         (2, "c" * 64, 1))
+        self.assertEqual(data["input_version"], input_revision)
+        self.assertEqual(data["evidence_invalidated"],
+                         {"input_revision": input_revision, "items": ["review"]})
+        self.assertNotIn("test", data["evidence_invalidated"]["items"])
+
+        reopened = Store.open(self.domain, filesystem_inspector=lambda _: "local")
+        self.addCleanup(reopened.close)
+        restored = reopened.snapshot()
+        restored_job = restored["jobs"][0]
+        self.assertEqual(restored_job["generation"], 2)
+        self.assertEqual(json.loads(restored_job["data"])["input_version"], input_revision)
+        self.assertEqual(restored_job["retries_used"], 1)
+        reopened.observe_effect("refresh-1", observation, restored["domain"]["revision"])
+        self.assertEqual(reopened.snapshot()["jobs"][0]["generation"], 2)
+
     def test_metadata_and_attempt_lifecycle_survive_reopen(self):
         self.store.configure_domain({"config_hash": "abc", "service_version": "1.2"},
                                     self.store.snapshot()["domain"]["revision"])

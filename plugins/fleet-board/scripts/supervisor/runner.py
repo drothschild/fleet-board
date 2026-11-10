@@ -16,7 +16,52 @@ import threading
 import time
 
 from .processes import identity_for, inspect_identity
-from .workers import ingest_artifacts
+from .workers import (OwnerThreadDispatcher, TrustedAttemptOperationHandlers,
+                      TrustedAttemptResultHandler, TrustedAttemptTerminalChecker,
+                      ingest_artifacts)
+from .isolation import (IsolationUnavailable, prepare_private_git,
+                        probe_capabilities, run_isolated)
+from .inference_broker import ContractError
+from .docker_transport import DockerWorkerTransport
+
+
+def run_worker_isolated(command, policy, *, capability_result, input_data, bootstrap,
+                        channel, attempt_id, inference_capability, timeout, cancel_event):
+    """Select only the explicitly configured isolation transport."""
+    if isinstance(policy, dict) and policy.get('backend') == 'docker':
+        if not capability_result or not capability_result.get('available'):
+            raise IsolationUnavailable('Docker capability probe unavailable')
+        return DockerWorkerTransport().run(
+            command, policy, bootstrap=bootstrap, channel=channel, attempt_id=attempt_id,
+            capability=inference_capability, timeout=timeout, cancel_event=cancel_event)
+    return run_isolated(command, policy, capability=capability_result,
+                        input_data=input_data, timeout=timeout, cancel_event=cancel_event)
+
+
+def prepare_worker_bootstrap(prepared_attempt, channel, request):
+    """Pass one attempt binding and its inference capability to a worker over stdin."""
+    if not isinstance(prepared_attempt, dict) or not isinstance(request, dict):
+        raise ContractError('invalid worker bootstrap')
+    try:
+        authorized = channel.broker.validate_request(request)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ContractError('worker request is not broker-authorized') from exc
+    keys = ('attempt_id', 'generation', 'input_sha', 'role', 'provider', 'model')
+    if any(prepared_attempt.get(key) != getattr(authorized, key) for key in keys):
+        raise ContractError('worker bootstrap does not match prepared attempt')
+    if prepared_attempt.get('stage') != authorized.stage:
+        raise ContractError('worker bootstrap stage does not match prepared attempt')
+    capability = channel.capability_for(authorized.attempt_id)
+    operations = list(channel.operations_for(authorized.attempt_id))
+    return {
+        'schema_version': 1,
+        'attempt': {key: prepared_attempt.get(key) for key in
+                    ('domain_id', 'job_id') + keys + ('stage',)},
+        'provider_request': request,
+        'inference': {'schema_version': 1, 'socket_path': str(channel.socket_path),
+                      'attempt_id': authorized.attempt_id, 'capability': capability},
+        'operations': operations,
+    }
 
 
 def _sync_directory(path):
@@ -98,11 +143,134 @@ def read_result(attempt):
 
 
 class Runner:
-    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None, fixture_publication_barrier=None):
+    def __init__(self, directory, *, fixture_command=None, fixture_finish_barrier=None, fixture_publication_barrier=None,
+                 production_enabled=False):
         self.directory = Path(directory)
         self.fixture_command = fixture_command
         self.fixture_finish_barrier = fixture_finish_barrier
         self.fixture_publication_barrier = fixture_publication_barrier
+        self.production_enabled = production_enabled is True
+
+    def launch_production(self, prepared_attempt, command, policy, *, channel=None, request=None,
+                          source_repository=None, protected_resources=None,
+                          cancel_event=None, operation_handlers=None):
+        """Run only an explicit production request behind verified host isolation."""
+        if not self.production_enabled:
+            raise IsolationUnavailable('production supervisor admission is disabled')
+        required = {'domain_id', 'job_id', 'attempt_id', 'generation', 'input_sha',
+                    'role', 'stage', 'provider', 'model'}
+        if not isinstance(prepared_attempt, dict) or not required <= set(prepared_attempt):
+            raise ValueError('incomplete production attempt binding')
+        if any(not isinstance(prepared_attempt[key], str) or not prepared_attempt[key]
+               for key in ('domain_id', 'job_id')):
+            raise ValueError('invalid production attempt binding')
+        if prepared_attempt['stage'] is not None and not isinstance(prepared_attempt['stage'], str):
+            raise ValueError('invalid production attempt binding')
+        if (type(prepared_attempt['generation']) is not int
+                or not re.fullmatch(r'[0-9a-f]{64}', str(prepared_attempt['input_sha']))
+                or any(not isinstance(prepared_attempt[key], str) or not prepared_attempt[key]
+                       for key in ('attempt_id', 'role', 'provider', 'model'))):
+            raise ValueError('invalid production attempt binding')
+        started_at, deadline = prepared_attempt.get('started_at'), prepared_attempt.get('deadline')
+        if (type(started_at) not in (int, float) or type(deadline) not in (int, float)
+                or not math.isfinite(started_at) or not math.isfinite(deadline)
+                or started_at < 0 or deadline <= started_at or deadline <= time.time()):
+            raise ValueError('production attempt requires a valid, unexpired durable deadline')
+        if not isinstance(cancel_event, threading.Event):
+            raise ValueError('production launch requires a threading.Event cancellation handle')
+        capability = probe_capabilities(
+            policy, inference_socket=getattr(channel, 'socket_path', None),
+            inference_attempt_id=prepared_attempt['attempt_id'],
+            inference_capability=channel.capability_for(prepared_attempt['attempt_id']),
+            protected_resources=protected_resources)
+        if not capability.get('available'):
+            raise IsolationUnavailable(capability.get('reason') or 'host isolation unavailable')
+        if prepared_attempt['role'] in ('implementor', 'fixer'):
+            raise IsolationUnavailable('production role contract is gated on Phase 7')
+        if source_repository is None:
+            raise IsolationUnavailable('production launch requires private worker Git metadata')
+        if (not isinstance(operation_handlers, dict)
+                or set(operation_handlers) != {'heartbeat', 'result', 'scope_request'}
+                or type(operation_handlers) is not TrustedAttemptOperationHandlers
+                or type(operation_handlers.get('result')) is not TrustedAttemptResultHandler):
+            raise IsolationUnavailable('production launch requires trusted attempt operation handlers')
+        dispatcher = getattr(channel, 'controller_dispatcher', None)
+        terminal_checker = getattr(channel, 'terminal_attempt_checker', None)
+        if (type(dispatcher) is not OwnerThreadDispatcher
+                or operation_handlers.dispatcher is not dispatcher
+                or type(terminal_checker) is not TrustedAttemptTerminalChecker
+                or terminal_checker.dispatcher is not dispatcher
+                or terminal_checker._store is not operation_handlers._store
+                or operation_handlers['result'].store is not operation_handlers._store):
+            raise IsolationUnavailable(
+                'production launch requires an owner-thread controller dispatcher and terminal authority')
+        if dispatcher.owner_thread == threading.get_ident():
+            raise IsolationUnavailable(
+                'production launch must run off the Store-owning thread while the controller pumps it')
+        bind_operations = getattr(channel, 'bind_attempt_operations', None)
+        if not callable(bind_operations):
+            raise IsolationUnavailable('production inference channel lacks attempt operation dispatch')
+        operation_journal = getattr(channel, 'operation_journal', None)
+        try:
+            journal = Path(operation_journal)
+            if (not journal.is_absolute() or journal.is_symlink()
+                    or journal.parent.is_symlink()
+                    or journal.parent.resolve(strict=True) != journal.parent
+                    or not journal.parent.is_dir()
+                    or journal.parent.stat().st_uid != os.getuid()
+                    or journal.parent.stat().st_mode & 0o077):
+                raise ValueError('unsafe operation journal')
+            if journal.exists():
+                info = journal.lstat()
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                        or info.st_mode & 0o077 or info.st_nlink != 1):
+                    raise ValueError('unsafe operation journal file')
+            elif journal.parent.resolve(strict=True) != journal.parent:
+                raise ValueError('non-canonical operation journal parent')
+        except (TypeError, ValueError, OSError) as exc:
+            raise IsolationUnavailable('production inference channel requires a private durable operation journal') from exc
+        bind_control = getattr(channel, 'bind_attempt_control', None)
+        if not callable(bind_control):
+            raise IsolationUnavailable('production inference channel lacks attempt controls')
+        bind_control(prepared_attempt['attempt_id'], deadline, cancel_event)
+        prepare_private_git(source_repository, policy['workspace'], policy['private_git'])
+        operation_binding = {key: prepared_attempt[key] for key in
+                             ('domain_id', 'job_id', 'attempt_id', 'generation',
+                              'input_sha', 'role', 'stage')}
+        if operation_handlers['result'].binding != operation_binding:
+            raise IsolationUnavailable('production result handler does not match the prepared attempt')
+        if operation_handlers.binding != operation_binding:
+            raise IsolationUnavailable('production operation handlers do not match the prepared attempt')
+        workspace = Path(policy['workspace'])
+        if (workspace.is_symlink() or workspace.resolve(strict=True) != workspace
+                or operation_handlers['result'].scratch != workspace):
+            raise IsolationUnavailable('production result handler is not bound to the worker workspace')
+        store_directory = operation_handlers['result'].store_directory
+        journal_canonical = journal.resolve(strict=False)
+        for writable_root in (workspace, Path(policy['private_git']), Path(policy['channels'])):
+            canonical = writable_root.resolve(strict=True)
+            try:
+                shared_root = os.path.commonpath((str(journal_canonical), str(canonical)))
+            except ValueError as exc:
+                raise IsolationUnavailable('operation journal and worker roots are incompatible') from exc
+            if shared_root in (str(journal_canonical), str(canonical)):
+                raise IsolationUnavailable('operation journal overlaps worker-writable isolation roots')
+        for writable_root in (workspace, Path(policy['private_git']), Path(policy['channels']), journal):
+            canonical = writable_root.resolve(strict=writable_root != journal)
+            try:
+                shared_root = os.path.commonpath((str(store_directory), str(canonical)))
+            except ValueError as exc:
+                raise IsolationUnavailable('result Store and worker roots are incompatible') from exc
+            if shared_root in (str(store_directory), str(canonical)):
+                raise IsolationUnavailable('result Store overlaps worker-writable isolation roots')
+        bind_operations(prepared_attempt['attempt_id'], operation_binding, operation_handlers)
+        bootstrap = prepare_worker_bootstrap(prepared_attempt, channel, request)
+        payload = json.dumps(bootstrap, separators=(',', ':'), allow_nan=False).encode('utf-8')
+        return run_worker_isolated(
+            command, policy, capability_result=capability, input_data=payload,
+            bootstrap=bootstrap, channel=channel, attempt_id=prepared_attempt['attempt_id'],
+            inference_capability=channel.capability_for(prepared_attempt['attempt_id']),
+            timeout=deadline - time.time(), cancel_event=cancel_event)
 
     def launch(self, prepared_attempt):
         if self.fixture_command is None:
