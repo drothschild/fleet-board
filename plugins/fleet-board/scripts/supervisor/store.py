@@ -1475,11 +1475,15 @@ class Store:
                 revision = connection.execute('SELECT revision FROM domain').fetchone()[0]
                 if type(request.get('expected_revision')) is not int or request['expected_revision'] != revision:
                     raise ValueError('revision mismatch')
-                modes = {'start': 'running', 'resume': 'running', 'pause': 'paused', 'stop': 'stopped'}
+                modes = {'start': 'running', 'resume': 'running', 'pause': 'paused', 'stop': 'stopped',
+                         'resolve': None}
                 if request['command'] not in modes:
                     raise ValueError('unsupported command')
                 mode = modes[request['command']]
-                connection.execute('UPDATE domain SET desired_mode=?', (mode,))
+                if mode is not None:
+                    connection.execute('UPDATE domain SET desired_mode=?', (mode,))
+                else:
+                    mode = connection.execute('SELECT desired_mode FROM domain').fetchone()[0]
                 result = {'desired_mode': mode, 'revision': revision + 1}
                 connection.execute('INSERT INTO commands VALUES(?,?,?)', (request['id'], encoded, canonical_json(result)))
                 self._event('command', {'id': request['id'], 'actor': request['actor'], 'command': request['command']})
@@ -1500,6 +1504,16 @@ class Store:
         except Exception:
             connection.execute('ROLLBACK')
             raise
+
+    def events_after(self, after, limit):
+        """Read one bounded event page without materializing the full store."""
+        rows = self.__connection.execute(
+            'SELECT * FROM events WHERE sequence>? ORDER BY sequence LIMIT ?',
+            (after, limit)).fetchall()
+        result = [dict(row) for row in rows]
+        for event in result:
+            event['payload'] = json.loads(event['payload'])
+        return result
 
     def snapshot(self):
         connection = self.__connection

@@ -5,6 +5,7 @@ import fcntl
 import os
 from pathlib import Path
 import socket
+import subprocess
 import stat
 import threading
 import time
@@ -14,16 +15,17 @@ from .recovery import Recovery
 from .store import Store
 
 MAX_REQUEST = 1024 * 1024
+MAX_RESPONSE = 4 * 1024 * 1024
 WORKER_COMMANDS = {"heartbeat", "progress", "result", "scope_expansion"}
 
 
 class Service:
     @classmethod
-    def open(cls, domain, *, clock=None, host_boot_id=None, peer_resolver=None):
+    def open(cls, domain, *, clock=None, host_boot_id=None, peer_resolver=None, run_lock_path=None):
         store = Store.open(domain)
-        return cls(store, clock or time.time, host_boot_id or _boot_id(), peer_resolver)
+        return cls(store, clock or time.time, host_boot_id or _boot_id(), peer_resolver, run_lock_path)
 
-    def __init__(self, store, clock, host_boot_id, peer_resolver=None):
+    def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None):
         self.store = store
         self.clock = clock
         self.host_boot_id = host_boot_id
@@ -31,14 +33,17 @@ class Service:
         self.recovery = Recovery(store)
         self.directory = str(store.directory)
         socket_root = Path(os.environ.get("TMPDIR", "/tmp")) / ("fb-supervisor-" + store.domain_id[:12])
-        socket_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-        os.chmod(str(socket_root), 0o700)
+        self.socket_root = socket_root
+        if run_lock_path is None:
+            base = os.environ.get("FLEET_BOARD_LOG_DIR") or str(Path.home() / ".fleet-board" / "runs")
+            repo = Path(store.common_dir).name
+            run_lock_path = str(Path(base) / (repo.replace("/", "-") + ".lock"))
+        self.run_lock_path = str(run_lock_path)
         self.socket_path = str(socket_root / "c.sock")
         self.worker_socket_path = str(socket_root / "w.sock")
         self._owner_fd = None
         self.request_timeout = 5.0
         self.rpc_handler = None
-        self.legacy_lock_live = False
         self.execution_available = True
         self.admissions_open = False
         self.cancellation_requests = []
@@ -48,6 +53,21 @@ class Service:
         self._worker_server = None
         self._threads = []
         self._owner = False
+        self.writer_uncertain = False
+        self._run_lock_claimed = False
+
+    def _prepare_socket_root(self):
+        root = self.socket_root.absolute()
+        if root.is_symlink():
+            raise ValueError("unsafe supervisor socket directory")
+        try:
+            root.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+        info = root.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o700):
+            raise ValueError("supervisor socket directory must be private and owned by user")
 
     @staticmethod
     def _peer_actor(connection):
@@ -82,8 +102,7 @@ class Service:
         with self._lock:
             if self._server is not None:
                 return {"ready": True, "recovery_complete": True, "owner": False}
-            if self.legacy_lock_live:
-                raise RuntimeError("legacy run lock is live")
+            self._prepare_socket_root()
             lock_path = Path(self.directory) / "service.lock"
             fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
             try:
@@ -92,6 +111,16 @@ class Service:
                 os.close(fd)
                 return {"ready": True, "recovery_complete": True, "owner": False}
             self._owner_fd = fd
+            claim_script = Path(__file__).resolve().parents[1] / "claim-run-lock.py"
+            Path(self.run_lock_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            claim = subprocess.run([os.environ.get("PYTHON", "python3"), str(claim_script),
+                                    self.run_lock_path, str(os.getpid()), "--kind", "service"],
+                                   capture_output=True, text=True)
+            if claim.returncode:
+                os.close(fd)
+                self._owner_fd = None
+                raise RuntimeError("legacy run lock: " + (claim.stderr.strip() or "claim failed"))
+            self._run_lock_claimed = True
             self.recovery.reconcile(self.clock())
             try:
                 self._server = self._prepare_socket(self.socket_path)
@@ -114,6 +143,7 @@ class Service:
                 self._owner = True
                 return {"ready": True, "recovery_complete": True, "owner": True, "socket_unavailable": True}
             self._owner = True
+            self.writer_uncertain = False
             for server, worker in ((self._server, False), (self._worker_server, True)):
                 thread = threading.Thread(target=self._serve, args=(server, worker), daemon=True)
                 thread.start()
@@ -137,9 +167,21 @@ class Service:
         with connection:
             connection.settimeout(self.request_timeout)
             try:
-                raw = connection.recv(MAX_REQUEST + 1)
-                if len(raw) > MAX_REQUEST:
-                    raise ValueError("request size exceeds limit")
+                chunks, size = [], 0
+                while True:
+                    chunk = connection.recv(min(65536, MAX_REQUEST + 1 - size))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if size > MAX_REQUEST:
+                        raise ValueError("request size exceeds limit")
+                    try:
+                        json.loads(b"".join(chunks).decode("utf-8"))
+                        break
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                raw = b"".join(chunks)
                 request = json.loads(raw.decode("utf-8"))
                 peer = self.peer_resolver(connection)
                 result = self.worker_request(request) if worker else self.handle_request(request, peer=peer)
@@ -169,9 +211,16 @@ class Service:
         try:
             client.connect(self.socket_path)
             client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8"))
-            raw = client.recv(MAX_REQUEST + 1)
-            if len(raw) > MAX_REQUEST:
-                raise ValueError("response size exceeds limit")
+            chunks, size = [], 0
+            while True:
+                chunk = client.recv(min(65536, MAX_RESPONSE + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > MAX_RESPONSE:
+                    raise ValueError("response size exceeds limit")
+            raw = b"".join(chunks)
             response = json.loads(raw.decode("utf-8"))
         finally:
             client.close()
@@ -180,8 +229,6 @@ class Service:
         return response["result"]
 
     def authenticated_actor(self, peer):
-        if isinstance(peer, str) and peer:
-            return peer
         actor = self.peer_resolver(peer)
         if not actor:
             raise PermissionError("actor authentication failed")
@@ -194,6 +241,8 @@ class Service:
             raise ValueError("actor must come from authenticated peer")
         actor = self.authenticated_actor(peer)
         command = request.get("command")
+        if self.writer_uncertain and command in ("resolve", "start", "pause", "resume", "stop"):
+            raise RuntimeError("uncertain writer prevents lifecycle command")
         if command == "status":
             return self.status()
         if command == "events":
@@ -201,6 +250,18 @@ class Service:
         if command == "reconcile":
             self.recovery.reconcile(self.clock())
             return {"snapshot": self.snapshot(), "cursor": len(self.snapshot()["events"])}
+        if command == "resolve":
+            supported = {"retry", "record_usage", "confirm_effect", "abandon"}
+            action = request.get("action")
+            if action not in supported:
+                raise ValueError("unsupported resolution action")
+            revision = request.get("expected_revision", self.status()["revision"])
+            outcome = self.store.record_command({"id": request.get("request_id"),
+                "actor": actor, "command": "resolve", "payload": {
+                    "card": request.get("card"), "action": action,
+                    "reason": request.get("reason")}, "expected_revision": revision})
+            return {"command_id": request.get("request_id"), "state_revision": outcome["revision"],
+                    "action": action, "audited": True}
         return self.command(command, request_id=request.get("request_id"),
                             expected_revision=request.get("expected_revision"), actor=actor,
                             mode=request.get("mode"))
@@ -208,7 +269,11 @@ class Service:
     def command(self, command, *, request_id, expected_revision, actor, mode=None):
         if command not in ("start", "pause", "resume", "stop"):
             if command == "resolve":
-                raise NotImplementedError("resolution is not available in the lifecycle service")
+                action = getattr(self, "resolve_action", None)
+                if action is None:
+                    raise ValueError("unsupported resolution action")
+                return action(request_id=request_id, expected_revision=expected_revision,
+                              actor=actor, **(mode or {}))
             raise ValueError("unsupported command")
         if command == "stop" and mode not in ("drain", "cancel"):
             raise ValueError("stop mode must be drain or cancel")
@@ -222,10 +287,24 @@ class Service:
         elif command == "stop":
             self.admissions_open = False
             if mode == "cancel":
-                self.cancellation_requests.append(request_id)
-                self.store.append_event({"type": "stop_cancellation_requested", "payload": {"request_id": request_id}})
-        return {"command_id": request_id, "state_revision": outcome["revision"],
+                self.cancel_live_attempts(request_id, outcome["revision"])
+        result = {"command_id": request_id, "state_revision": outcome["revision"],
                 "desired_mode": outcome["desired_mode"], "phase": self.snapshot()["domain"]["phase"]}
+        if command == "stop":
+            shutdown = self.stop_serving()
+            result.update(shutdown)
+        return result
+
+    def cancel_live_attempts(self, request_id=None, revision=None):
+        request_id = request_id or "stop-cancel"
+        revision = self.status()["revision"] if revision is None else revision
+        for attempt in self.snapshot().get("attempts", []):
+            if attempt.get("state") in ("prepared", "launching", "running", "result_ready"):
+                current = self.status()["revision"]
+                self.store.request_cancellation(attempt["id"], request_id + ":" + attempt["id"],
+                                                "supervisor stop requested", current,
+                                                now=self.clock())
+                self.cancellation_requests.append(attempt["id"])
 
     def stop(self, *, mode, request_id, expected_revision, actor):
         return self.command("stop", request_id=request_id, expected_revision=expected_revision,
@@ -244,7 +323,7 @@ class Service:
     def events(self, after=0, limit=100):
         if type(after) is not int or after < 0 or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid events cursor or limit")
-        return [event for event in self.snapshot()["events"] if event["sequence"] > after][:limit]
+        return self.store.events_after(after, limit)
 
     def worker_request(self, request):
         if not isinstance(request, dict) or request.get("command") not in WORKER_COMMANDS:
@@ -267,8 +346,26 @@ class Service:
             if server is not None:
                 server.close()
         self._server = self._worker_server = None
+        for path in (self.socket_path, self.worker_socket_path):
+            try:
+                Path(path).unlink()
+            except FileNotFoundError:
+                pass
+        if self._owner_fd is not None:
+            os.close(self._owner_fd)
+            self._owner_fd = None
+        self._owner = False
+        try:
+            lines = Path(self.run_lock_path).read_text(encoding="utf-8").splitlines()
+            if self._run_lock_claimed and len(lines) >= 3 and lines[0] == str(os.getpid()) and lines[2] == "service":
+                Path(self.run_lock_path).unlink()
+        except (OSError, IndexError):
+            pass
+        self._run_lock_claimed = False
         if observer != "stopped":
+            self.writer_uncertain = True
             return {"status": "unresolved_shutdown", "terminated": False}
+        self.writer_uncertain = False
         try:
             if self.snapshot()["domain"]["desired_mode"] == "running":
                 self.store.close_admissions("supervisor service stopped")
@@ -279,15 +376,6 @@ class Service:
                 Path(path).unlink()
             except FileNotFoundError:
                 pass
-        if self._owner_fd is not None:
-            os.close(self._owner_fd)
-            self._owner_fd = None
-        else:
-            for path in (self.socket_path, self.worker_socket_path):
-                try:
-                    Path(path).unlink()
-                except FileNotFoundError:
-                    pass
         return {"status": "stopped", "terminated": True}
 
     def close(self):

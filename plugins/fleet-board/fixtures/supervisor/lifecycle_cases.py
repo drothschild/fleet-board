@@ -171,10 +171,16 @@ class LifecycleContract(unittest.TestCase):
 
     def test_stop_cancel_requests_cancellation_through_store(self):
         self.service.start_serving()
-        self.service.stop(mode="cancel", request_id="stop-1", expected_revision=0,
-                          actor="fixture-user")
-        self.assertTrue(self.service.store.snapshot()["domain"]["desired_mode"] == "stopped")
-        self.assertTrue(self.service.cancellation_requests)
+        real = self.service.snapshot
+        live = [{"id": "a1", "state": "running"}, {"id": "a2", "state": "launching"},
+                {"id": "a3", "state": "done"}]
+        self.service.snapshot = lambda: dict(real(), attempts=live)
+        with mock.patch.object(self.service.store, "request_cancellation") as cancel:
+            self.service.stop(mode="cancel", request_id="stop-1", expected_revision=0,
+                              actor="fixture-user")
+        self.assertEqual([call.args[0] for call in cancel.call_args_list], ["a1", "a2"])
+        self.assertEqual(self.service.cancellation_requests, ["a1", "a2"])
+        self.assertEqual(real()["domain"]["desired_mode"], "stopped")
 
     def test_stop_cancel_targets_each_live_attempt(self):
         self.service.start_serving()
@@ -196,16 +202,18 @@ class LifecycleContract(unittest.TestCase):
 
     def test_supported_resolve_is_audited_and_uncertain_writer_rejects_it(self):
         self.service.start_serving()
+        self.service.writer_uncertain = True
         with self.assertRaisesRegex((ValueError, RuntimeError), "uncertain|writer"):
             self.service.handle_request({"command": "resolve", "request_id": "resolve-uncertain",
                                          "card": 17, "action": "retry", "reason": "reviewed"},
                                         peer=object())
-        self.service.shutdown_observer = lambda: "stopped"
+        self.service.writer_uncertain = False
         self.service.handle_request({"command": "resolve", "request_id": "resolve-ok",
                                      "card": 17, "action": "retry", "reason": "reviewed"},
                                     peer=object())
-        self.assertTrue(any(item.get("command") == "resolve"
-                            for item in self.service.snapshot()["commands"]))
+        audited = [json.loads(item["request"]) for item in self.service.snapshot()["commands"]]
+        self.assertTrue(any(item.get("command") == "resolve" and item.get("actor")
+                            for item in audited))
 
     def test_recovery_runs_while_stopped_without_opening_admissions(self):
         self.service.recovery = mock.Mock()

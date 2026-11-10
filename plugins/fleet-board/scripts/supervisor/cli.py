@@ -9,23 +9,6 @@ from pathlib import Path
 from .service import Service
 
 
-def _parser():
-    parser = argparse.ArgumentParser(prog="supervisor", description="Control the Fleet Board supervisor")
-    subs = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "pause", "resume", "status", "reconcile", "events"):
-        sub = subs.add_parser(name)
-        if name == "events":
-            sub.add_argument("--after", type=int, default=0)
-            sub.add_argument("--limit", type=int, default=100)
-    stop = subs.add_parser("stop")
-    stop.add_argument("--mode", required=True, choices=("drain", "cancel"))
-    resolve = subs.add_parser("resolve")
-    resolve.add_argument("--card", required=True, type=int)
-    resolve.add_argument("--action", required=True, choices=("retry", "record_usage", "confirm_effect", "abandon"))
-    resolve.add_argument("--reason")
-    return parser
-
-
 def _socket_transport(path):
     import socket
     def send(request):
@@ -34,7 +17,16 @@ def _socket_transport(path):
         try:
             client.connect(path)
             client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8"))
-            response = json.loads(client.recv(1024 * 1024 + 1).decode("utf-8"))
+            chunks, size = [], 0
+            while True:
+                chunk = client.recv(min(65536, 4 * 1024 * 1024 + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > 4 * 1024 * 1024:
+                    raise ValueError("response size exceeds limit")
+            response = json.loads(b"".join(chunks).decode("utf-8"))
         finally:
             client.close()
         if not response.get("ok"):
@@ -48,7 +40,6 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     env = os.environ if env is None else env
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
-    parser = _parser()
     class UsageParser(argparse.ArgumentParser):
         def error(self, message):
             raise ValueError(message)
@@ -109,7 +100,8 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         else:
             request = {"command": args.command, "request_id": str(uuid.uuid4())}
             if args.command in ("start", "pause", "resume", "stop"):
-                request["expected_revision"] = 0
+                current = transport({"command": "status"})
+                request["expected_revision"] = current.get("revision", 0) if isinstance(current, dict) else 0
             if args.command == "stop":
                 request["mode"] = args.mode
         result = transport(request)
@@ -119,7 +111,7 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         return 0
     except Exception as exc:
         print("supervisor: " + str(exc), file=stderr)
-        return 1
+        return 2 if "unsupported" in str(exc).lower() else 1
 
 
 if __name__ == "__main__":
