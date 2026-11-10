@@ -394,7 +394,8 @@ class DockerWorkerTransport:
                             docker, record['attempt_id'], return_removed=True)
                         if ok and removed:
                             continue
-                        unresolved.append(record['attempt_id'])
+                        if not ok:
+                            unresolved.append(record['attempt_id'])
                         retained.append(record)
                     if retained != attempts:
                         if retained:

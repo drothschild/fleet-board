@@ -1407,6 +1407,17 @@ if sys.argv[1:2] == ['run']:
             raise SystemExit(91)
         time.sleep(.05)
         raise SystemExit(125)
+    if mode == 'recovery-ok':
+        cidfile = next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--cidfile='))
+        with open(cidfile, 'w') as stream: stream.write('f' * 64)
+        header = sys.stdin.buffer.read(4)
+        if len(header) != 4: raise SystemExit(2)
+        size = __import__('struct').unpack('!I', header)[0]
+        if len(sys.stdin.buffer.read(size)) != size: raise SystemExit(2)
+        data = json.dumps({'type': 'exit', 'code': 0}, separators=(',', ':')).encode()
+        sys.stdout.buffer.write(__import__('struct').pack('!I', len(data)) + data)
+        sys.stdout.buffer.flush()
+        raise SystemExit(0)
     if mode == 'late-across-invocations' and len(open(@RUNLOG@, 'r').readlines()) > 1:
         cidfile = next(arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--cidfile='))
         with open(cidfile, 'w') as stream: stream.write('f' * 64)
@@ -1492,18 +1503,19 @@ raise SystemExit(2)
         run_log = self.root / 'docker-label-run.log'
         self.assertTrue(run_log.exists(), 'first launch did not reach fake Docker')
         first_launch = run_log.read_text(encoding='utf-8')
-        with self.assertRaisesRegex(IsolationUnavailable, 'cleanup pending'):
-            DockerWorkerTransport().run(
-                ['python3', '-m', 'worker'], self.docker_policy(fake),
-                bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
-                capability='secret', timeout=5, cancel_event=threading.Event())
+        bootstrap['inference']['attempt_id'] = 'attempt-2'
+        result = DockerWorkerTransport().run(
+            ['python3', '-m', 'worker'], self.docker_policy(
+                self.fake_docker_missing_cidfile('recovery-ok')),
+            bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
+            capability='secret', timeout=5, cancel_event=threading.Event())
+        self.assertEqual(result.returncode, 0, 'empty old label listing blocked the next launch')
         second_launch = run_log.read_text(encoding='utf-8')
         self.assertGreater(len(second_launch), len(first_launch),
                            'a full empty-label grace must admit the next Docker launch')
         attempts = json.loads(registry.read_text(encoding='utf-8'))['attempts']
-        self.assertEqual({item['attempt_id'] for item in attempts},
-                         {'attempt-1', 'attempt-2'},
-                         'empty label listings must retain records for later polling')
+        self.assertEqual([item['attempt_id'] for item in attempts], ['attempt-1'],
+                         'empty label listings must retain old records for later polling')
 
     def test_docker_stale_record_with_auto_removed_container_allows_launch(self):
         from supervisor.docker_transport import DockerWorkerTransport, _CleanupRegistry
@@ -1515,9 +1527,10 @@ raise SystemExit(2)
         journal.chmod(0o600)
         channel.operation_journal = journal
         registry = _CleanupRegistry(journal)
-        registry._write([{'attempt_id': 'auto-removed-attempt', 'state': 'active',
-                          'pid': 2147483000, 'pid_start': 'Mon Jan  1 00:00:00 2001'}])
-        fake = self.fake_docker('ok')
+        registry._write([{'attempt_id': 'auto-removed-attempt', 'state': 'pending',
+                          'pid': None, 'pid_start': None}])
+        fake = self.fake_docker_missing_cidfile('recovery-ok')
+        bootstrap['inference']['attempt_id'] = 'attempt-2'
         result = DockerWorkerTransport().run(
             ['python3', '-m', 'worker'], self.docker_policy(fake),
             bootstrap=bootstrap, channel=channel, attempt_id='attempt-2',
@@ -1527,7 +1540,7 @@ raise SystemExit(2)
         self.assertEqual([item['attempt_id'] for item in records],
                          ['auto-removed-attempt'],
                          'an empty full-grace listing must preserve the old record for future polling')
-        self.assertTrue((self.root / 'docker-run.log').exists(),
+        self.assertTrue((self.root / 'docker-label-run.log').exists(),
                         'an auto-removed stale container must not block an independent launch')
 
     def test_docker_late_labeled_container_is_removed_on_next_invocation(self):
