@@ -55,6 +55,18 @@ class ProviderCases(unittest.TestCase):
         self.assertTrue(path.is_dir())
         self.assertEqual(path.parent, self.root)
 
+    def test_provider_tempdir_returns_canonical_path_for_symlinked_temp_root(self):
+        from unittest.mock import patch
+
+        canonical_root = self.root / 'canonical-temp'
+        canonical_root.mkdir()
+        temp_alias = self.root / 'temp-alias'
+        temp_alias.symlink_to(canonical_root)
+        with patch('tempfile.gettempdir', return_value=str(temp_alias)):
+            path = _provider_tempdir('fb-canonical-')
+        self.assertEqual(path, path.resolve(strict=True))
+        self.assertEqual(path.parent, canonical_root)
+
     def test_dispatcher_timeout_cancels_callback_before_later_pump(self):
         from supervisor.workers import OwnerThreadDispatcher
 
