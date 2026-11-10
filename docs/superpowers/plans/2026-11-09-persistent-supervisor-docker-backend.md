@@ -29,7 +29,7 @@
 - `scripts/supervisor/docker_agent.py`: guest-side attempt-local Unix socket and framed stdio multiplexer; no controller credentials or Store access.
 - `scripts/supervisor/runner.py`: select Docker transport for an explicit Docker policy and give the worker its in-container socket path.
 - `fixtures/supervisor/provider_cases.py`: red/green policy, guest, host-relay and lifecycle regressions.
-- `tests/test-supervisor-docker-host.sh`: optional real Docker denial probe using only the image ID supplied in `FLEET_BOARD_DOCKER_PROBE_IMAGE`; absent or unavailable images fail qualification and are never pulled.
+- `tests/probe-supervisor-docker-host.sh`: optional real Docker denial probe using only the image ID supplied in `FLEET_BOARD_DOCKER_PROBE_IMAGE`; absent or unavailable images fail qualification and are never pulled.
 - `plugins/fleet-board/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`: bump plugin version in the implementation commit above current `origin/main`.
 
 ## Review Focus
@@ -39,6 +39,11 @@
 - Concurrent worker RPCs and delayed responses: correlate by request ID and preserve attempt binding; test out-of-order responses.
 - Cancellation, timeout, Docker CLI failure, or host relay failure: kill/reap worker and remove its container; test bounded completion and cleanup.
 - Paths containing Docker mount delimiters or symlink roots: reject before launch; test comma/delimiter and canonical-path validation.
+
+
+#### Post-push CI portability correction (2026-11-09)
+
+The first PR CI run (`42763898232`) found that provider fixtures used a noncanonical or unavailable `/private/tmp` path on Linux, and that the Docker host qualification script was included by the generic `test-*.sh` offline-suite glob without its required cached image. The fixtures now use a canonical path under `/tmp`; the macOS policy test selects Darwin explicitly. The host-only qualification script is named `probe-supervisor-docker-host.sh`, with a guard test ensuring it stays opt-in. Local verification after these changes: provider suite 89/89, clean-room 118/0, and all 24 cached-image Docker checks passed. A fresh PR CI run is pending after review and push.
 
 ---
 
@@ -83,13 +88,13 @@ Docker transport and identity timeout values are exact `int`/`float` (excluding 
 
 ### Task 4: Add Docker host qualification probes
 
-**Files:** create `tests/test-supervisor-docker-host.sh`; modify `scripts/supervisor/isolation.py`, `fixtures/supervisor/provider_cases.py`.
+**Files:** create `tests/probe-supervisor-docker-host.sh`; modify `scripts/supervisor/isolation.py`, `fixtures/supervisor/provider_cases.py`.
 
 **Interfaces:** The host probe runs only when `FLEET_BOARD_DOCKER_PROBE_IMAGE` contains an immutable image ID already present locally. It never pulls or builds. It verifies protected host paths and daemon sockets are absent, only intended mounts are writable, public egress is blocked, the relay works, forged human control is rejected after authentication, and timeout leaves no container. Attempt-labeled containers let the probe confirm the exact timed-out worker was removed. Every named check must be true for `available: true`; missing image/daemon or any probe failure returns unavailable.
 
 - [x] Add unit tests for fail-closed missing-daemon/image, incomplete protected-resource paths, exact cleanup labeling, and the read-only guest package check; observe RED and commit tests.
 - [x] Implement the Docker host probe and shell wrapper. Run with the existing cached image ID `sha256:043ab74ba0ad529734d7d77ca3e893f286410864619329d5e8ca0524c3d260c1`; no pull/build.
-- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` (63 tests) and `bash plugins/fleet-board/tests/test-supervisor-docker-host.sh` with the cached image ID (all 23 checks true, including guest-package read-only).
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` (63 tests) and `bash plugins/fleet-board/tests/probe-supervisor-docker-host.sh` with the cached image ID (all 23 checks true, including guest-package read-only).
 - [x] Run `bash plugins/fleet-board/tests/test-clean-room.sh` (118 checks), `test-version-bumped.sh`, Python AST checks, `bash -n`, and `git diff --check`.
 - [x] Add RED regression cases for bounded frame queuing, relay-task settlement after transport failure, verified Docker Desktop daemon identity, deadline/cancellation-aware startup writes with CID cleanup, and a separate cancellation-cleanup qualification check. The focused provider suite reports the expected eight assertion failures; 11 existing Unix-socket tests also error with sandbox `EPERM`.
 - [x] Implement the Docker review fixes: bounded reader backpressure, cancellation and settlement of relay futures, verified local daemon identity at policy/qualification/launch, deadline-aware asynchronous bootstrap writes, and a separate real-container cancellation-cleanup qualification. The focused provider suite passes (69 tests); final live host qualification remains with the integrating agent.

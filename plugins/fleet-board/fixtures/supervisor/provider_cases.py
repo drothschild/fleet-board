@@ -49,8 +49,12 @@ class ProviderCases(unittest.TestCase):
 
     def test_provider_tempdir_uses_canonical_short_host_tmp_root(self):
         path = _provider_tempdir('fb-portable-')
-        self.assertTrue(path.is_dir())
-        self.assertEqual(path.parent, Path('/tmp').resolve(strict=True))
+        try:
+            self.assertTrue(path.is_dir())
+            self.assertEqual(path.parent, Path('/tmp').resolve(strict=True))
+        finally:
+            import shutil
+            shutil.rmtree(path)
 
     def test_provider_tempdir_returns_canonical_path_for_symlinked_temp_root(self):
         from unittest.mock import patch
@@ -291,8 +295,7 @@ class ProviderCases(unittest.TestCase):
                    ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
                                  attempts={"attempt-1": binding})
-        short_tmp = Path("/private/tmp" if Path("/private/tmp").is_dir() else "/tmp")
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-channel-", dir=str(short_tmp)))
+        channel_dir = _provider_tempdir("fb-channel-")
         try:
             with InferenceChannel(broker, channel_dir, ("attempt-1",)) as channel:
                 token = channel.capability_for("attempt-1")
