@@ -42,6 +42,14 @@ class ProviderCases(unittest.TestCase):
         import shutil
         shutil.rmtree(self.root)
 
+    def test_provider_tempdir_uses_platform_temporary_directory(self):
+        from unittest.mock import patch
+
+        with patch('tempfile.gettempdir', return_value=str(self.root)):
+            path = _provider_tempdir('fb-portable-')
+        self.assertTrue(path.is_dir())
+        self.assertEqual(path.parent, self.root)
+
     def test_dispatcher_timeout_cancels_callback_before_later_pump(self):
         from supervisor.workers import OwnerThreadDispatcher
 
@@ -2614,8 +2622,12 @@ time.sleep(10)
                          "worker must connect to attempt IPC without mutating channel paths")
 
     def test_macos_policy_denies_channel_path_mutation(self):
-        policy = build_policy(self.workspace, self.root / "private-git",
-                              self.root / "channels")
+        from types import SimpleNamespace
+
+        with patch.object(isolation_module.os, "uname",
+                          return_value=SimpleNamespace(sysname="Darwin")):
+            policy = build_policy(self.workspace, self.root / "private-git",
+                                  self.root / "channels")
         self.assertIn('(subpath "' + policy["channels"] + '")', policy["text"])
         write_rule = next(line for line in policy["text"].splitlines()
                           if line.startswith("(allow file-write*"))
