@@ -30,7 +30,7 @@ _CONTAINER_ID = re.compile(r'^[0-9a-f]{64}$')
 _ALLOWED_OPERATIONS = frozenset(('infer', 'heartbeat', 'result', 'scope_request'))
 _STDOUT_LIMIT = 1048576
 _STDERR_LIMIT = 65536
-_LABEL_RECONCILE_GRACE_SECONDS = .5
+_LABEL_RECONCILE_GRACE_SECONDS = 2.0
 _LABEL_RECONCILE_POLL_SECONDS = .05
 _ATTEMPT_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 
