@@ -169,6 +169,17 @@ class Service:
             if self.writer_uncertain:
                 if self.shutdown_observer() != "stopped":
                     return {"ready": False, "owner": False, "status": "unresolved_shutdown"}
+                # The writer is confirmed stopped: finish the interrupted shutdown
+                # (listeners, sockets, locks) and fall through to a clean start.
+                for server in (self._server, self._worker_server):
+                    if server is not None:
+                        server.close()
+                self._server = self._worker_server = None
+                for path in (self.socket_path, self.worker_socket_path):
+                    try:
+                        Path(path).unlink()
+                    except FileNotFoundError:
+                        pass
                 self._release_ownership()
                 self.writer_uncertain = False
             if self._server is not None:
@@ -324,7 +335,7 @@ class Service:
             raise ValueError("actor must come from authenticated peer")
         actor = self.authenticated_actor(peer)
         command = request.get("command")
-        if self.writer_uncertain and command in ("resolve", "start", "pause", "resume", "stop"):
+        if self.writer_uncertain and command in ("resolve", "start", "pause", "resume"):
             raise RuntimeError("uncertain writer prevents lifecycle command")
         if command == "status":
             return self.status()
@@ -401,7 +412,8 @@ class Service:
         return {"ready": self._server is not None, "read_only": not self.execution_available,
                 "desired_mode": state["domain"]["desired_mode"],
                 "phase": state["domain"]["phase"], "revision": state["domain"]["revision"],
-                "host_boot_id": self.host_boot_id, "execution_available": self.execution_available}
+                "host_boot_id": self.host_boot_id, "execution_available": self.execution_available,
+                "shutdown": "unresolved" if self.writer_uncertain else "resolved"}
 
     def snapshot(self):
         return self._store().snapshot()
@@ -428,6 +440,23 @@ class Service:
 
     def stop_serving(self):
         observer = self.shutdown_observer()
+        if observer != "stopped":
+            self.admissions_open = False
+            self.writer_uncertain = True
+            if self._worker_server is not None:
+                self._worker_server.close()
+                self._worker_server = None
+            try:
+                Path(self.worker_socket_path).unlink()
+            except FileNotFoundError:
+                pass
+            return {"status": "unresolved_shutdown", "terminated": False}
+        store = self._store()
+        try:
+            if store.snapshot()["domain"]["desired_mode"] == "running":
+                store.close_admissions("supervisor service stopped")
+        except Exception:
+            pass
         for server in (self._server, self._worker_server):
             if server is not None:
                 server.close()
@@ -437,22 +466,8 @@ class Service:
                 Path(path).unlink()
             except FileNotFoundError:
                 pass
-        if observer != "stopped":
-            self.writer_uncertain = True
-            return {"status": "unresolved_shutdown", "terminated": False}
-        store = self._store()
         self._release_ownership()
         self.writer_uncertain = False
-        try:
-            if store.snapshot()["domain"]["desired_mode"] == "running":
-                store.close_admissions("supervisor service stopped")
-        except Exception:
-            pass
-        for path in (self.socket_path, self.worker_socket_path):
-            try:
-                Path(path).unlink()
-            except FileNotFoundError:
-                pass
         self.stopped.set()
         return {"status": "stopped", "terminated": True}
 
