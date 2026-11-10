@@ -78,6 +78,7 @@ class Service:
         self._server = None
         self._worker_server = None
         self._threads = []
+        self._accept_threads = []  # (thread, is_worker)
         self._owner = False
         self.writer_uncertain = False
         self._run_lock_claimed = False
@@ -161,7 +162,7 @@ class Service:
         server.bind(str(target))
         os.chmod(str(target), 0o600)
         server.listen(16)
-        server.settimeout(0.2)
+        server.settimeout(0.05)
         return server
 
     def start_serving(self):
@@ -175,6 +176,7 @@ class Service:
                     if server is not None:
                         server.close()
                 self._server = self._worker_server = None
+                self._join_accept_threads()
                 for path in (self.socket_path, self.worker_socket_path):
                     try:
                         Path(path).unlink()
@@ -234,6 +236,7 @@ class Service:
                 thread = threading.Thread(target=self._serve, args=(server, worker), daemon=True)
                 thread.start()
                 self._threads.append(thread)
+                self._accept_threads.append((thread, worker))
             return {"ready": True, "recovery_complete": True, "owner": True,
                     "host_boot_id": self.host_boot_id,
                     "execution_available": self.execution_available}
@@ -446,6 +449,7 @@ class Service:
             if self._worker_server is not None:
                 self._worker_server.close()
                 self._worker_server = None
+                self._join_accept_threads(worker_only=True)
             try:
                 Path(self.worker_socket_path).unlink()
             except FileNotFoundError:
@@ -461,6 +465,7 @@ class Service:
             if server is not None:
                 server.close()
         self._server = self._worker_server = None
+        self._join_accept_threads()
         for path in (self.socket_path, self.worker_socket_path):
             try:
                 Path(path).unlink()
@@ -470,6 +475,19 @@ class Service:
         self.writer_uncertain = False
         self.stopped.set()
         return {"status": "stopped", "terminated": True}
+
+    def _join_accept_threads(self, worker_only=False):
+        """Wait for closed listeners' accept loops to exit (they poll every 0.2s)."""
+        keep = []
+        for thread, is_worker in self._accept_threads:
+            if worker_only and not is_worker:
+                keep.append((thread, is_worker))
+                continue
+            if thread is not threading.current_thread():
+                thread.join(2.0)
+            if thread.is_alive():
+                keep.append((thread, is_worker))
+        self._accept_threads = keep
 
     def _release_ownership(self):
         if self._owner_fd is not None:

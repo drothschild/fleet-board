@@ -273,6 +273,23 @@ class LifecycleContract(unittest.TestCase):
         self.service.shutdown_observer = lambda: "stopped"
         self.assertTrue(self.service.start_serving().get("owner"))
 
+    def test_restart_after_unresolved_shutdown_leaves_no_stale_accept_threads(self):
+        ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        def accept_loops():
+            return [t for t in threading.enumerate()
+                    if t.is_alive() and getattr(getattr(t, "_target", None), "__name__", "") == "_serve"]
+        self.assertEqual(len(accept_loops()), 2)
+        self.service.shutdown_observer = lambda: "unknown"
+        self.service.stop_serving()
+        self.service.shutdown_observer = lambda: "stopped"
+        self.assertTrue(self.service.start_serving().get("owner"))
+        # Joined during teardown, not left to exit on their next 0.2s accept timeout.
+        self.assertEqual(len(accept_loops()), 2)
+        self.service.stop_serving()
+        self.assertEqual(len(accept_loops()), 0)
+
     def test_unresolved_shutdown_controller_status_and_later_stop_over_real_socket(self):
         ack = self.service.start_serving()
         if ack.get("socket_unavailable"):
