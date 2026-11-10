@@ -28,6 +28,17 @@ except ModuleNotFoundError as exc:
     main = None
 
 
+def _short_socket_tmp():
+    """A short real (non-symlink) directory: AF_UNIX paths are length-limited."""
+    import shutil
+    import tempfile
+    path = Path(tempfile.mkdtemp(prefix="fbs-", dir=os.path.realpath("/tmp")))
+    os.chmod(path, 0o700)
+    import atexit
+    atexit.register(shutil.rmtree, str(path), True)
+    return path
+
+
 class FakeClock:
     def __init__(self, now=100):
         self.now = now
@@ -56,7 +67,7 @@ class LifecycleContract(unittest.TestCase):
         self.assertIsNotNone(main, "persistent supervisor CLI is not implemented")
         self.root = ROOT / self.id().rsplit(".", 1)[-1]
         self.root.mkdir(mode=0o700)
-        self.socket_tmp = Path("/private/tmp/fb-supervisor-tests")
+        self.socket_tmp = _short_socket_tmp()
         self.socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.clock = FakeClock()
         with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
@@ -604,7 +615,7 @@ class CLIContract(unittest.TestCase):
     def test_pause_resume_stop_send_current_revisions_over_real_service(self):
         root = ROOT / "cli-real-service"
         root.mkdir(mode=0o700)
-        socket_tmp = Path("/private/tmp/fb-supervisor-tests")
+        socket_tmp = _short_socket_tmp()
         socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
         with mock.patch.dict(os.environ, {"TMPDIR": str(socket_tmp)}):
             service = self.open_enabled(domain(root), root, host_boot_id="boot-1",

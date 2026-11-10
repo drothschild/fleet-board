@@ -1346,6 +1346,8 @@ printf '#!/bin/sh\nprintf started > "%s"\nsleep 30\n' "$MARKER" > "$FAKE_CLAUDE"
 chmod +x "$FAKE_CLAUDE"
 (
   case_env
+  # The holder outlives this block's checks: keep its temp files out of RUN_TMP.
+  export TMPDIR="$T/holder-tmp"; mkdir -p "$TMPDIR"
   export FLEET_BOARD_CLAUDE="$FAKE_CLAUDE"
   exec "$BASH_EXE" "$SCRIPT" --repo "$REPO"
 ) > "$T/linked-first.out" 2> "$T/linked-first.err" &
