@@ -1686,6 +1686,11 @@ class Store:
             event['payload'] = json.loads(event['payload'])
         return result
 
+    def oldest_event_sequence(self):
+        """Return the first retained event sequence without loading event rows."""
+        row = self.__connection.execute('SELECT MIN(sequence) FROM events').fetchone()
+        return row[0]
+
     def snapshot(self):
         connection = self.__connection
         connection.execute('BEGIN')

@@ -44,6 +44,14 @@ class StoreContract(unittest.TestCase):
         self.assertGreater(reopened["domain"]["revision"], before["domain"]["revision"])
         self.assertTrue(reopened["events"])
 
+    def test_oldest_event_sequence_is_a_bounded_store_read(self):
+        oldest = getattr(self.store, "oldest_event_sequence", None)
+        self.assertTrue(callable(oldest), "oldest event sequence query is missing")
+        self.assertEqual(oldest(), 1)
+        self.store.events_after = mock.Mock(side_effect=AssertionError("event page must not be read"))
+        self.store.snapshot = mock.Mock(side_effect=AssertionError("full snapshot must not be read"))
+        self.assertEqual(oldest(), 1)
+
     def test_command_replay_does_not_advance_revision(self):
         revision = self.store.snapshot()["domain"]["revision"]
         request = {"id": "pause-1", "expected_revision": revision,

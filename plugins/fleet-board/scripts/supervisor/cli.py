@@ -155,8 +155,10 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                     store.close()
                 transport = _socket_transport(path)
         if args.command == "resolve":
+            current = transport({"command": "status"})
             request = {"command": "resolve", "card": args.card, "action": args.action,
-                       "reason": args.reason, "request_id": str(uuid.uuid4())}
+                       "reason": args.reason, "request_id": uuid.uuid4().hex,
+                       "expected_revision": current.get("revision", 0) if isinstance(current, dict) else 0}
         elif args.command == "events":
             request = {"command": "events", "after": args.after, "limit": args.limit}
         else:

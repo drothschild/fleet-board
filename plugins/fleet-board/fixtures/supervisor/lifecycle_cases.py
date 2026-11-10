@@ -322,7 +322,6 @@ class LifecycleContract(unittest.TestCase):
 
     def test_resolve_rejects_uncertain_writer_and_missing_job_without_false_success(self):
         # Application semantics are covered by control_cases.py (real durable state).
-        self.service.start_serving()
         self.service.writer_uncertain = True
         with self.assertRaisesRegex((ValueError, RuntimeError), "uncertain|writer"):
             self.service.handle_request({"command": "resolve", "request_id": "resolve-uncertain",
@@ -330,23 +329,37 @@ class LifecycleContract(unittest.TestCase):
                                         peer=object())
         self.service.writer_uncertain = False
         before = len(self.service.snapshot()["commands"])
+        revision = self.service.status()["revision"]
         with self.assertRaisesRegex(ValueError, "missing"):
             self.service.handle_request({"command": "resolve", "request_id": "resolve-missing",
-                                         "card": 17, "action": "retry", "reason": "reviewed"},
+                                         "expected_revision": revision, "card": 17,
+                                         "action": "retry", "reason": "reviewed"},
                                         peer=object())
         self.assertEqual(len(self.service.snapshot()["commands"]), before)
 
     def test_cli_resolve_reports_errors_and_rejects_unsupported_action(self):
-        self.service.start_serving()
+        requests = []
         def transport(request):
+            requests.append(request)
             return self.service.handle_request(request, peer=object())
         from io import StringIO
         out, err = StringIO(), StringIO()
         code = main(["resolve", "--card", "17", "--action", "retry"],
                     env={}, stdout=out, stderr=err, transport=transport)
         self.assertEqual(code, 1)
-        self.assertIn("missing", err.getvalue())
+        self.assertRegex(err.getvalue(), "(?:missing (?:job|attempt)|(?:job|attempt) missing)")
         self.assertEqual(out.getvalue(), "")
+        self.assertEqual(requests[0]["command"], "status")
+        self.assertEqual(requests[1]["command"], "resolve")
+        self.assertIsInstance(requests[1].get("expected_revision"), int)
+        self.assertRegex(requests[1].get("request_id", ""), r"^[0-9a-f]{32}$")
+        first_request_id = requests[1]["request_id"]
+        requests.clear()
+        code = main(["resolve", "--card", "17", "--action", "retry"],
+                    env={}, stdout=out, stderr=err, transport=transport)
+        self.assertEqual(code, 1)
+        self.assertNotEqual(requests[1]["request_id"], first_request_id)
+        self.assertRegex(requests[1]["request_id"], r"^[0-9a-f]{32}$")
         code, _, err = self.command(["resolve", "--card", "17", "--action", "bogus"])
         self.assertEqual(code, 2, err)
 

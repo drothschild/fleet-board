@@ -453,17 +453,6 @@ class Service:
                 "boot_registration": "missing", "last_error": None,
                 "read_only": not self.execution_enabled, "claims": {"count": len(claims)}}
 
-    def events(self, after=0, limit=100):
-        if type(after) is not int or type(limit) is not int or not 1 <= limit <= 500:
-            raise ValueError("invalid events cursor or limit")
-        state = self.snapshot()
-        rows = state["events"]
-        oldest = rows[0]["sequence"] if rows else 1
-        if after < oldest - 1:
-            return {"snapshot_required": True, "snapshot": state, "next_cursor": rows[-1]["sequence"] if rows else 0}
-        page = self._store().events_after(after, limit)
-        return {"events": page, "next_cursor": page[-1]["sequence"] if page else after}
-
     def card_execution(self, card):
         card = str(card)
         state = self.snapshot()
@@ -553,8 +542,11 @@ class Service:
             return dict(result, applied=False)
         if action == "retry":
             job = next((x for x in state["jobs"] if x["card"] == card), None)
+            if job is None:
+                raise ValueError("retry job missing")
             attempt = next((x for x in state["attempts"] if x["id"] == attempt_id), None) if attempt_id else None
-            if job is None or attempt is None: raise ValueError("retry requires explicit attempt identity and writer containment proof")
+            if attempt is None:
+                raise ValueError("retry attempt missing; explicit attempt identity and writer containment proof required")
             if attempt["state"] != "quarantined":
                 raise ValueError("retry requires a quarantined attempt")
             if attempt["state"] == "quarantined":
@@ -672,12 +664,14 @@ class Service:
     def events(self, after=0, limit=100):
         if type(after) is not int or type(limit) is not int or not 1 <= limit <= 500:
             raise ValueError("invalid events cursor or limit")
-        state = self.snapshot(); rows = state["events"]
-        oldest = rows[0]["sequence"] if rows else 1
+        store = self._store()
+        oldest = store.oldest_event_sequence() or 1
         if after < oldest - 1:
+            state = self.snapshot()
+            rows = state["events"]
             return EventPage([], next_cursor=rows[-1]["sequence"] if rows else 0,
                              snapshot_required=True, snapshot=state)
-        page = self._store().events_after(after, limit)
+        page = store.events_after(after, limit)
         return EventPage(page, next_cursor=page[-1]["sequence"] if page else after)
 
     def worker_request(self, request):
