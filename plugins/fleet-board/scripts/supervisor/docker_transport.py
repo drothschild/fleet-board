@@ -32,6 +32,8 @@ _STDOUT_LIMIT = 1048576
 _STDERR_LIMIT = 65536
 _LABEL_RECONCILE_GRACE_SECONDS = 2.0
 _LABEL_RECONCILE_POLL_SECONDS = .05
+_LABEL_RECONCILE_MIN_QUERY_BUDGET_SECONDS = .2
+_LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS = 3
 _ATTEMPT_ID = re.compile(r'^[A-Za-z0-9_-]{1,128}$')
 
 
@@ -311,12 +313,16 @@ class DockerWorkerTransport:
         label = 'org.fleet-board.supervisor.attempt-id=' + attempt_id
         deadline = time.monotonic() + _LABEL_RECONCILE_GRACE_SECONDS
         removed_any = False
+        empty_listings = 0
         def result(ok):
             return (ok, removed_any) if return_removed else ok
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return result(True)
+                return result(empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
+            if remaining <= _LABEL_RECONCILE_MIN_QUERY_BUDGET_SECONDS:
+                time.sleep(remaining)
+                return result(empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
             try:
                 completed = subprocess.run(
                     [docker, 'ps', '-aq', '--filter', 'label=' + label],
@@ -337,6 +343,10 @@ class DockerWorkerTransport:
             container_ids = [line.strip() for line in output.splitlines() if line.strip()]
             if any(not _CONTAINER_ID.fullmatch(container_id) for container_id in container_ids):
                 return result(False)
+            if container_ids:
+                empty_listings = 0
+            else:
+                empty_listings += 1
             removed_all = True
             for container_id in container_ids:
                 remaining = deadline - time.monotonic()
