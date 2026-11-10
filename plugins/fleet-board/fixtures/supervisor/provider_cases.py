@@ -1466,8 +1466,8 @@ raise SystemExit(2)
             if (self.root / 'docker-label-rm.log').exists() else ''
         self.assertIn('-f ' + 'e' * 64, removals,
                       'later matching container was missed after an empty first listing')
-        self.assertGreaterEqual(time.monotonic() - started, .45,
-                                'cleanup trusted transient empty label listings')
+        self.assertGreaterEqual(time.monotonic() - started, 1.95,
+                                'cleanup did not consume the full stabilization grace')
 
     def test_docker_pending_cleanup_is_recorded_before_launch_and_blocks_next_launch(self):
         from supervisor.docker_transport import DockerWorkerTransport
