@@ -1480,6 +1480,45 @@ raise SystemExit(2)
         self.assertGreaterEqual(time.monotonic() - started, 1.95,
                                 'cleanup did not consume the full stabilization grace')
 
+    def test_docker_label_reconciliation_skips_queries_without_minimum_budget(self):
+        from unittest.mock import patch
+        from supervisor import docker_transport
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls):
+                return cls.now
+
+            @classmethod
+            def sleep(cls, seconds):
+                cls.now += seconds
+
+        query_budgets = []
+
+        def empty_listing(command, **kwargs):
+            if command[1] == 'ps':
+                query_budgets.append(kwargs['timeout'])
+                if kwargs['timeout'] <= 0.2:
+                    raise docker_transport.subprocess.TimeoutExpired(command, kwargs['timeout'])
+                return docker_transport.subprocess.CompletedProcess(command, 0, b'', b'')
+            raise AssertionError('unexpected Docker command: ' + repr(command))
+
+        with patch.object(docker_transport.time, 'monotonic', Clock.monotonic), \
+                patch.object(docker_transport.time, 'sleep', Clock.sleep), \
+                patch.object(docker_transport.subprocess, 'run', side_effect=empty_listing):
+            ok, removed = docker_transport.DockerWorkerTransport._reconcile_labeled_containers(
+                'docker', 'attempt-1', return_removed=True)
+
+        self.assertTrue(ok, 'successful empty listings should remain a successful observation')
+        self.assertFalse(removed, 'empty listings must not report a container removal')
+        self.assertTrue(query_budgets, 'reconciliation did not observe Docker labels')
+        self.assertTrue(all(budget > 0.2 for budget in query_budgets),
+                        'reconciliation launched a Docker query in the final 0.2 seconds')
+        self.assertAlmostEqual(Clock.now, 2.0, places=6,
+                               msg='reconciliation did not consume the full grace window')
+
     def test_docker_pending_cleanup_is_recorded_and_allows_next_launch_after_empty_grace(self):
         from supervisor.docker_transport import DockerWorkerTransport
 
