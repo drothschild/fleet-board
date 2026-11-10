@@ -43,6 +43,14 @@ def domain(root, identity="fixture"):
 
 
 class LifecycleContract(unittest.TestCase):
+    def open_enabled(self, board_domain, **kwargs):
+        config = self.root / "enabled.yml"
+        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config),
+                                          "FLEET_BOARD_LOG_DIR": str(self.root / "logs"),
+                                          "TMPDIR": str(self.socket_tmp)}):
+            return Service.open(board_domain, **kwargs)
+
     def setUp(self):
         self.assertIsNotNone(Service, "persistent supervisor service is not implemented")
         self.assertIsNotNone(main, "persistent supervisor CLI is not implemented")
@@ -53,9 +61,9 @@ class LifecycleContract(unittest.TestCase):
         self.clock = FakeClock()
         with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "logs")}):
-            self.service = Service.open(domain(self.root), clock=self.clock,
-                                        host_boot_id="boot-1",
-                                        peer_resolver=lambda connection: "fixture-user")
+            self.service = self.open_enabled(domain(self.root), clock=self.clock,
+                                             host_boot_id="boot-1",
+                                             peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(self.service.close)
 
     def command(self, argv, transport=None):
@@ -89,7 +97,7 @@ class LifecycleContract(unittest.TestCase):
         barrier = threading.Barrier(3)
         def start(_index):
             # Each contender owns its connection: open and start on one thread.
-            service = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1")
+            service = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1")
             services.append(service)
             barrier.wait()
             outcomes.append(service.start_serving())
@@ -153,9 +161,12 @@ class LifecycleContract(unittest.TestCase):
             if "Operation not permitted: 'ps'" in (exc.stderr or ""):
                 self.skipTest("sandbox denies the real ps call required by legacy-lock fixture")
             raise
+        config = self.root / "configured.yml"
+        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FLEET_BOARD_LOG_DIR": str(log_dir),
-                                          "TMPDIR": str(self.socket_tmp)}):
-            service = Service.open(configured, clock=self.clock, host_boot_id="boot-1")
+                                          "TMPDIR": str(self.socket_tmp),
+                                          "FLEET_BOARD_CONFIG": str(config)}):
+            service = self.open_enabled(configured, clock=self.clock, host_boot_id="boot-1")
         self.addCleanup(service.close)
         self.assertEqual(service.run_lock_path, str(lock))
         with self.assertRaisesRegex(RuntimeError, "legacy"):
@@ -166,13 +177,13 @@ class LifecycleContract(unittest.TestCase):
         lock = self.root / "shared-run.lock"
         lock.write_text("99999999\nnot-a-real-start-time\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
-            first = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1",
-                                 run_lock_path=str(lock))
+            first = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1",
+                              run_lock_path=str(lock))
         second_root = self.root / "linked-worktree"
         second_root.mkdir()
         with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
-            second = Service.open(domain(second_root), clock=self.clock, host_boot_id="boot-1",
-                                  run_lock_path=str(lock))
+            second = self.open_enabled(domain(second_root), clock=self.clock, host_boot_id="boot-1",
+                               run_lock_path=str(lock))
         self.addCleanup(first.close)
         self.addCleanup(second.close)
         self.assertTrue(first.start_serving().get("owner"))
@@ -184,7 +195,7 @@ class LifecycleContract(unittest.TestCase):
         self.service.command("pause", request_id="pause-1", expected_revision=0,
                              actor="fixture-user")
         self.service.stop_serving()
-        reopened = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1")
+        reopened = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1")
         self.addCleanup(reopened.close)
         self.assertEqual(reopened.snapshot()["domain"]["desired_mode"], "paused")
 
@@ -239,8 +250,8 @@ class LifecycleContract(unittest.TestCase):
         self.service.start_serving()
         self.service.shutdown_observer = lambda: "unknown"
         self.assertEqual(self.service.stop_serving()["status"], "unresolved_shutdown")
-        contender = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1",
-                                 run_lock_path=self.service.run_lock_path)
+        contender = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1",
+                              run_lock_path=self.service.run_lock_path)
         self.addCleanup(contender.close)
         try:
             result = contender.start_serving()
@@ -295,7 +306,10 @@ class LifecycleContract(unittest.TestCase):
         log_dir = self.root / "durable-logs"
         log_dir.mkdir(mode=0o700)
         env = dict(os.environ)
+        config = self.root / ".fleet-board.yml"
+        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
         env.update({"FLEET_BOARD_DOMAIN": str(self.root),
+                    "FLEET_BOARD_CONFIG": str(config),
                     "FLEET_BOARD_LOG_DIR": str(log_dir),
                     "TMPDIR": str(self.socket_tmp),
                     "PYTHONPATH": str(plugin_dir / "scripts"),
@@ -451,7 +465,7 @@ class LifecycleContract(unittest.TestCase):
         self.service.command("resume", request_id="resume-1", expected_revision=revision,
                              actor="fixture-user")
         self.service.stop_serving()
-        reopened = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-2")
+        reopened = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-2")
         self.addCleanup(reopened.close)
         restored = next(item for item in reopened.snapshot()["sessions"]
                         if item["id"] == "session-1")
@@ -470,15 +484,90 @@ class LifecycleContract(unittest.TestCase):
         self.service.start_serving()
         self.service.register_runner_version("runner-1", "protocol-1")
         self.service.stop_serving()
-        reopened = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1")
+        reopened = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1")
         self.addCleanup(reopened.close)
         self.assertTrue(reopened.runner_compatible("runner-1", "protocol-1"))
         self.assertFalse(reopened.runner_compatible("runner-2", "protocol-1"))
+
+    def test_disabled_service_serves_read_only_and_rejects_execution_lifecycle(self):
+        disabled_root = self.root / "disabled-service"
+        config = disabled_root / ".fleet-board.yml"
+        disabled_root.mkdir(mode=0o700)
+        config.write_text("supervisor:\n  enabled: false\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
+                                          "FLEET_BOARD_CONFIG": str(config),
+                                          "FLEET_BOARD_LOG_DIR": str(self.root / "logs")}):
+            service = Service.open(domain(disabled_root), clock=self.clock,
+                                   host_boot_id="boot-1")
+        self.addCleanup(service.close)
+        ack = service.start_serving()
+        self.assertTrue(ack["ready"])
+        self.assertFalse(service.execution_available)
+        self.assertFalse(service.admissions_open)
+        status = service.handle_request({"command": "status"}, peer=object())
+        self.assertTrue(status["read_only"])
+        self.assertFalse(status["execution_available"])
+        for command, revision in (("start", 0), ("resume", 0)):
+            with self.subTest(command=command), self.assertRaisesRegex(
+                    (ValueError, RuntimeError), "supervisor.enabled"):
+                service.command(command, request_id=command + "-disabled",
+                                expected_revision=revision, actor="fixture-user")
+            self.assertFalse(service.admissions_open)
+        for command in ("pause", "stop", "status", "events", "reconcile"):
+            with self.subTest(command=command):
+                request = {"command": command, "request_id": command + "-disabled",
+                           "expected_revision": service.status()["revision"], "mode": "drain"}
+                result = service.handle_request(request, peer=object())
+                self.assertIsInstance(result, dict)
+                self.assertFalse(service.admissions_open)
+
+    def test_disabled_cli_start_is_distinct_and_detached_service_stays_queryable(self):
+        import subprocess
+        plugin_dir = Path(__file__).resolve().parents[2]
+        disabled_root = self.root / "cli-disabled"
+        disabled_root.mkdir(mode=0o700)
+        config = disabled_root / ".fleet-board.yml"
+        config.write_text("supervisor:\n  enabled: false\n", encoding="utf-8")
+        log_dir = self.root / "disabled-logs"
+        log_dir.mkdir(mode=0o700)
+        env = dict(os.environ)
+        env.update({"FLEET_BOARD_DOMAIN": str(disabled_root),
+                    "FLEET_BOARD_CONFIG": str(config),
+                    "FLEET_BOARD_LOG_DIR": str(log_dir),
+                    "TMPDIR": str(self.socket_tmp),
+                    "PYTHONPATH": str(plugin_dir / "scripts"),
+                    "PYTHONDONTWRITEBYTECODE": "1"})
+        start = subprocess.run([sys.executable, "-c",
+                                "from supervisor.cli import main; raise SystemExit(main(['start']))"],
+                               env=env, capture_output=True, text=True, timeout=10)
+        if "Operation not permitted: 'ps'" in (start.stderr or ""):
+            self.skipTest("sandbox denies the real ps call required by disabled service fixture")
+        if "socket" in (start.stderr or "").lower() and "unavailable" in (start.stderr or "").lower():
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        self.assertNotEqual(start.returncode, 0)
+        self.assertNotEqual(start.returncode, 2, start.stderr)
+        self.assertIn("supervisor.enabled: false", start.stderr)
+        status = subprocess.run([str(plugin_dir / "scripts" / "supervisor.sh"), "status"],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        result = json.loads(status.stdout)
+        self.assertTrue(result["read_only"])
+        self.assertFalse(result["execution_available"])
+        stop = subprocess.run([str(plugin_dir / "scripts" / "supervisor.sh"), "stop", "--mode", "drain"],
+                              env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
 
 
 class CLIContract(unittest.TestCase):
     def setUp(self):
         self.assertIsNotNone(main, "persistent supervisor CLI is not implemented")
+
+    def open_enabled(self, board_domain, root, **kwargs):
+        config = root / ".fleet-board.yml"
+        config.write_text("supervisor:\n  enabled: true\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config),
+                                          "FLEET_BOARD_LOG_DIR": str(root / "logs")}):
+            return Service.open(board_domain, **kwargs)
 
     def invoke(self, *argv):
         from io import StringIO
@@ -509,7 +598,7 @@ class CLIContract(unittest.TestCase):
         socket_tmp = Path("/private/tmp/fb-supervisor-tests")
         socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
         with mock.patch.dict(os.environ, {"TMPDIR": str(socket_tmp)}):
-            service = Service.open(domain(root), host_boot_id="boot-1",
+            service = self.open_enabled(domain(root), root, host_boot_id="boot-1",
                                    peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(service.close)
         seen = []
@@ -527,7 +616,7 @@ class CLIContract(unittest.TestCase):
     def test_events_uses_bounded_store_query(self):
         root = ROOT / "events-bounded"
         root.mkdir(mode=0o700)
-        service = Service.open(domain(root), host_boot_id="boot-1")
+        service = self.open_enabled(domain(root), root, host_boot_id="boot-1")
         self.addCleanup(service.close)
         service.store.events_after = mock.Mock(return_value=[])
         service.store.snapshot = mock.Mock(side_effect=AssertionError("full snapshot loaded"))
