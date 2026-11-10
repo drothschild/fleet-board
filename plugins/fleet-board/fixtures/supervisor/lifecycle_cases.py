@@ -48,10 +48,13 @@ class LifecycleContract(unittest.TestCase):
         self.assertIsNotNone(main, "persistent supervisor CLI is not implemented")
         self.root = ROOT / self.id().rsplit(".", 1)[-1]
         self.root.mkdir(mode=0o700)
+        self.socket_tmp = Path("/private/tmp/fb-supervisor-tests")
+        self.socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.clock = FakeClock()
-        self.service = Service.open(domain(self.root), clock=self.clock,
-                                    host_boot_id="boot-1",
-                                    peer_resolver=lambda connection: "fixture-user")
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
+            self.service = Service.open(domain(self.root), clock=self.clock,
+                                        host_boot_id="boot-1",
+                                        peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(self.service.close)
 
     def command(self, argv, transport=None):
@@ -71,7 +74,9 @@ class LifecycleContract(unittest.TestCase):
         self.assertTrue(ack["recovery_complete"])
 
     def test_socket_directory_and_socket_have_private_modes(self):
-        self.service.start_serving()
+        ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
         directory = Path(self.service.directory)
         endpoint = Path(self.service.socket_path)
         self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700)
@@ -99,9 +104,45 @@ class LifecycleContract(unittest.TestCase):
         self.assertTrue(all(item.get("ready") for item in outcomes))
 
     def test_legacy_wrapper_lock_refuses_service_start(self):
-        self.service.legacy_lock_live = True
+        # claim-run-lock.py uses pid + ps lstart as its legacy format. Exercise
+        # that on a real live child so the test covers the cross-process lock.
+        import subprocess
+        from pathlib import Path
+        lock = self.root / "legacy.lock"
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        def stop_child():
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+        self.addCleanup(stop_child)
+        script = Path(__file__).resolve().parents[2] / "scripts" / "claim-run-lock.py"
+        try:
+            subprocess.run([sys.executable, str(script), str(lock), str(process.pid)],
+                           check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            if "Operation not permitted: 'ps'" in (exc.stderr or ""):
+                self.skipTest("sandbox denies the real ps call required by legacy-lock fixture")
+            raise
+        self.service.run_lock_path = str(lock)
         with self.assertRaisesRegex(RuntimeError, "legacy"):
             self.service.start_serving()
+
+    def test_service_claims_stale_shared_lock_and_excludes_other_worktree(self):
+        lock = self.root / "shared-run.lock"
+        lock.write_text("99999999\nnot-a-real-start-time\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
+            first = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1",
+                                 run_lock_path=str(lock))
+        second_root = self.root / "linked-worktree"
+        second_root.mkdir()
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
+            second = Service.open(domain(second_root), clock=self.clock, host_boot_id="boot-1",
+                                  run_lock_path=str(lock))
+        self.addCleanup(first.close)
+        self.addCleanup(second.close)
+        self.assertTrue(first.start_serving().get("owner"))
+        with self.assertRaisesRegex(RuntimeError, "legacy"):
+            second.start_serving()
 
     def test_desired_state_survives_service_reopen(self):
         self.service.start_serving()
@@ -135,12 +176,36 @@ class LifecycleContract(unittest.TestCase):
         self.assertTrue(self.service.store.snapshot()["domain"]["desired_mode"] == "stopped")
         self.assertTrue(self.service.cancellation_requests)
 
+    def test_stop_cancel_targets_each_live_attempt(self):
+        self.service.start_serving()
+        self.service.cancel_live_attempts = mock.Mock()
+        self.service.stop(mode="cancel", request_id="stop-1", expected_revision=0,
+                          actor="fixture-user")
+        self.service.cancel_live_attempts.assert_called_once()
+
     def test_crash_during_shutdown_reports_uncertain_writer(self):
         self.service.start_serving()
         self.service.shutdown_observer = lambda: "unknown"
         result = self.service.stop_serving()
         self.assertEqual(result["status"], "unresolved_shutdown")
         self.assertFalse(result.get("terminated", False))
+        self.assertFalse(Path(self.service.socket_path).exists())
+        self.assertFalse(Path(self.service.worker_socket_path).exists())
+        self.service.shutdown_observer = lambda: "stopped"
+        self.assertEqual(self.service.start_serving().get("owner"), True)
+
+    def test_supported_resolve_is_audited_and_uncertain_writer_rejects_it(self):
+        self.service.start_serving()
+        with self.assertRaisesRegex((ValueError, RuntimeError), "uncertain|writer"):
+            self.service.handle_request({"command": "resolve", "request_id": "resolve-uncertain",
+                                         "card": 17, "action": "retry", "reason": "reviewed"},
+                                        peer=object())
+        self.service.shutdown_observer = lambda: "stopped"
+        self.service.handle_request({"command": "resolve", "request_id": "resolve-ok",
+                                     "card": 17, "action": "retry", "reason": "reviewed"},
+                                    peer=object())
+        self.assertTrue(any(item.get("command") == "resolve"
+                            for item in self.service.snapshot()["commands"]))
 
     def test_recovery_runs_while_stopped_without_opening_admissions(self):
         self.service.recovery = mock.Mock()
@@ -178,10 +243,13 @@ class LifecycleContract(unittest.TestCase):
 
     def test_actor_is_derived_from_peer_and_spoofed_body_is_rejected(self):
         self.service.start_serving()
+        result = self.service.handle_request({"command": "status"}, peer="admin")
+        self.assertIn("revision", result)
+        self.assertEqual(self.service.authenticated_actor("admin"), "fixture-user")
         with self.assertRaisesRegex(ValueError, "actor"):
             self.service.handle_request({"command": "pause", "actor": "admin"},
                                         peer="fixture-user")
-        self.assertEqual(self.service.authenticated_actor("fixture-user"), "fixture-user")
+        self.assertEqual(self.service.authenticated_actor(object()), "fixture-user")
 
     def test_worker_ipc_cannot_issue_lifecycle_or_resolution_commands(self):
         self.service.start_serving()
@@ -194,6 +262,59 @@ class LifecycleContract(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "size"):
             self.service.handle_request({"payload": "x" * (1024 * 1024 + 1)},
                                         peer="fixture-user")
+
+    def test_fragmented_and_maximum_request_and_large_cli_response(self):
+        ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(self.service.socket_path)
+        raw = json.dumps({"command": "status"}).encode()
+        for part in (raw[:3], raw[3:8], raw[8:]):
+            client.sendall(part)
+        response = b""
+        while True:
+            chunk = client.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+        client.close()
+        self.assertTrue(json.loads(response)["ok"])
+
+        empty_max_request = {"command": "status", "padding": ""}
+        max_request = {"command": "status", "padding": "x" *
+                       (1024 * 1024 - len(json.dumps(empty_max_request).encode("utf-8")))}
+        self.assertIn("revision", self.service.handle_request(max_request, peer=object()))
+
+        from supervisor.cli import _socket_transport
+        # A real socket-backed response exercises the CLI's recv loop.
+        self.service.large_response = "y" * (1024 * 1024 + 100)
+        self.service.handle_request = lambda request, *, peer: {"large": self.service.large_response}
+        transport = _socket_transport(self.service.socket_path)
+        self.assertGreater(len(json.dumps(transport({"command": "status"}))), 1024 * 1024)
+
+    def test_socket_directory_refuses_symlink_and_insecure_existing_directory(self):
+        target = self.root / "target-dir"
+        target.mkdir(mode=0o755)
+        socket_root = self.socket_tmp / ("fb-supervisor-" + self.service.store.domain_id[:12])
+        # Repoint the service's deterministic socket location through its path.
+        try:
+            self.service.directory = str(target)
+            if socket_root.is_symlink():
+                socket_root.unlink()
+            elif socket_root.exists():
+                import shutil
+                shutil.rmtree(socket_root)
+            socket_root.symlink_to(target, target_is_directory=True)
+            try:
+                self.service.start_serving()
+            except (ValueError, OSError):
+                pass
+            else:
+                self.fail("startup accepted a symlink socket directory")
+            self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o755)
+        finally:
+            socket_root.unlink(missing_ok=True)
 
     def test_session_accounting_survives_start_resume_restart_and_reboot(self):
         self.service.start_serving()
@@ -259,6 +380,37 @@ class CLIContract(unittest.TestCase):
         result = json.loads(output)
         self.assertIn("snapshot", result)
         self.assertIn("cursor", result)
+
+    def test_pause_resume_stop_send_current_revisions_over_real_service(self):
+        root = ROOT / "cli-real-service"
+        root.mkdir(mode=0o700)
+        socket_tmp = Path("/private/tmp/fb-supervisor-tests")
+        socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
+        with mock.patch.dict(os.environ, {"TMPDIR": str(socket_tmp)}):
+            service = Service.open(domain(root), host_boot_id="boot-1",
+                                   peer_resolver=lambda connection: "fixture-user")
+        self.addCleanup(service.close)
+        seen = []
+        def transport(request):
+            if request.get("command") in ("pause", "resume", "stop"):
+                seen.append(request["expected_revision"])
+            return service.handle_request(request, peer=object())
+        for args in (("pause",), ("resume",), ("stop", "--mode", "drain")):
+            err = __import__("io").StringIO()
+            code = main(list(args), env={}, stdout=__import__("io").StringIO(),
+                        stderr=err, transport=transport)
+            self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(seen, [0, 1, 2])
+
+    def test_events_uses_bounded_store_query(self):
+        root = ROOT / "events-bounded"
+        root.mkdir(mode=0o700)
+        service = Service.open(domain(root), host_boot_id="boot-1")
+        self.addCleanup(service.close)
+        service.store.events_after = mock.Mock(return_value=[])
+        service.store.snapshot = mock.Mock(side_effect=AssertionError("full snapshot loaded"))
+        self.assertEqual(service.events(after=10, limit=7), [])
+        service.store.events_after.assert_called_once_with(10, 7)
 
     def test_cli_rejects_contradictory_or_unsupported_arguments(self):
         cases = (("stop",), ("stop", "--mode", "invalid"),
