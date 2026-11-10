@@ -51,7 +51,8 @@ class LifecycleContract(unittest.TestCase):
         self.socket_tmp = Path("/private/tmp/fb-supervisor-tests")
         self.socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.clock = FakeClock()
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
+                                          "FLEET_BOARD_LOG_DIR": str(self.root / "logs")}):
             self.service = Service.open(domain(self.root), clock=self.clock,
                                         host_boot_id="boot-1",
                                         peer_resolver=lambda connection: "fixture-user")
@@ -127,6 +128,40 @@ class LifecycleContract(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "legacy"):
             self.service.start_serving()
 
+    def test_default_run_lock_uses_configured_repo_slug_and_never_git_name(self):
+        import subprocess
+        log_dir = self.root / "logs"
+        repo_root = self.root / "checkout"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        common = repo_root / ".git"
+        configured = domain(common, identity="configured-repo")
+        configured["board_repo"] = "owner/project-name"
+        lock = log_dir / "owner-project-name.lock"
+        log_dir.mkdir()
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        def stop_child():
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=5)
+        self.addCleanup(stop_child)
+        script = Path(__file__).resolve().parents[2] / "scripts" / "claim-run-lock.py"
+        try:
+            subprocess.run([sys.executable, str(script), str(lock), str(process.pid)],
+                           check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            if "Operation not permitted: 'ps'" in (exc.stderr or ""):
+                self.skipTest("sandbox denies the real ps call required by legacy-lock fixture")
+            raise
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_LOG_DIR": str(log_dir),
+                                          "TMPDIR": str(self.socket_tmp)}):
+            service = Service.open(configured, clock=self.clock, host_boot_id="boot-1")
+        self.addCleanup(service.close)
+        self.assertEqual(service.run_lock_path, str(lock))
+        with self.assertRaisesRegex(RuntimeError, "legacy"):
+            service.start_serving()
+        self.assertNotEqual(service.run_lock_path, str(log_dir / ".git.lock"))
+
     def test_service_claims_stale_shared_lock_and_excludes_other_worktree(self):
         lock = self.root / "shared-run.lock"
         lock.write_text("99999999\nnot-a-real-start-time\n", encoding="utf-8")
@@ -200,6 +235,21 @@ class LifecycleContract(unittest.TestCase):
         self.service.shutdown_observer = lambda: "stopped"
         self.assertEqual(self.service.start_serving().get("owner"), True)
 
+    def test_unresolved_shutdown_retains_run_lock_until_writer_is_stopped(self):
+        self.service.start_serving()
+        self.service.shutdown_observer = lambda: "unknown"
+        self.assertEqual(self.service.stop_serving()["status"], "unresolved_shutdown")
+        contender = Service.open(domain(self.root), clock=self.clock, host_boot_id="boot-1",
+                                 run_lock_path=self.service.run_lock_path)
+        self.addCleanup(contender.close)
+        try:
+            result = contender.start_serving()
+            self.assertFalse(result.get("owner"), "second service acquired unresolved writer lock")
+        except RuntimeError:
+            pass
+        self.service.shutdown_observer = lambda: "stopped"
+        self.assertTrue(self.service.start_serving().get("owner"))
+
     def test_supported_resolve_is_audited_and_uncertain_writer_rejects_it(self):
         self.service.start_serving()
         self.service.writer_uncertain = True
@@ -214,6 +264,61 @@ class LifecycleContract(unittest.TestCase):
         audited = [json.loads(item["request"]) for item in self.service.snapshot()["commands"]]
         self.assertTrue(any(item.get("command") == "resolve" and item.get("actor")
                             for item in audited))
+
+    def test_supported_resolve_reports_recorded_without_claiming_application(self):
+        self.service.start_serving()
+        result = self.service.handle_request({"command": "resolve", "request_id": "resolve-recorded",
+                                              "card": 17, "action": "retry", "reason": "reviewed"},
+                                             peer=object())
+        self.assertEqual(result, {"audited": True, "applied": False, "status": "recorded"})
+
+    def test_cli_resolve_prints_recorded_status_and_rejects_unsupported_action(self):
+        self.service.start_serving()
+        def transport(request):
+            if request.get("command") == "status":
+                return self.service.handle_request(request, peer=object())
+            return self.service.handle_request(request, peer=object())
+        from io import StringIO
+        out, err = StringIO(), StringIO()
+        code = main(["resolve", "--card", "17", "--action", "retry"],
+                    env={}, stdout=out, stderr=err, transport=transport)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(json.loads(out.getvalue()),
+                         {"audited": True, "applied": False, "status": "recorded"})
+        code, _, err = self.invoke("resolve", "--card", "17", "--action", "bogus")
+        self.assertEqual(code, 2)
+
+    def test_cli_start_launches_detached_durable_service(self):
+        import subprocess
+        import time
+        plugin_dir = Path(__file__).resolve().parents[2]
+        log_dir = self.root / "durable-logs"
+        log_dir.mkdir(mode=0o700)
+        env = dict(os.environ)
+        env.update({"FLEET_BOARD_DOMAIN": str(self.root),
+                    "FLEET_BOARD_LOG_DIR": str(log_dir),
+                    "TMPDIR": str(self.socket_tmp),
+                    "PYTHONPATH": str(plugin_dir / "scripts"),
+                    "PYTHONDONTWRITEBYTECODE": "1"})
+        command = [sys.executable, "-c",
+                   "from supervisor.cli import main; raise SystemExit(main(['start']))"]
+        try:
+            started = subprocess.run(command, env=env, capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            self.fail("supervisor start CLI did not return within 10 seconds")
+        if "Operation not permitted: 'ps'" in (started.stderr or ""):
+            self.skipTest("sandbox denies the real ps call required by durable service fixture")
+        if "socket" in (started.stderr or "").lower() and "unavailable" in (started.stderr or "").lower():
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        self.assertEqual(started.returncode, 0, started.stderr)
+        time.sleep(0.1)
+        status = subprocess.run([str(plugin_dir / "scripts" / "supervisor.sh"), "status"],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertIn('"ready": true', status.stdout)
+        stop = subprocess.run([str(plugin_dir / "scripts" / "supervisor.sh"), "stop", "--mode", "drain"],
+                              env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
 
     def test_recovery_runs_while_stopped_without_opening_admissions(self):
         self.service.recovery = mock.Mock()
