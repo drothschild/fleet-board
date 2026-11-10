@@ -28,6 +28,11 @@ from supervisor.runner import Runner, prepare_worker_bootstrap
 from supervisor.workers import request_scope_expansion
 
 
+def _provider_tempdir(prefix):
+    """Create a fixture directory using the current host's temporary root."""
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
+
+
 class ProviderCases(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="provider-case-")).resolve()
@@ -167,7 +172,7 @@ class ProviderCases(unittest.TestCase):
             attempts[request.attempt_id] = {key: getattr(request, key) for key in
                                             ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}}, attempts=attempts)
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-concurrent-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-concurrent-")
         try:
             with InferenceChannel(broker, channel_dir, tuple(attempts), request_timeout=3) as channel:
                 slow = InferenceClient(channel.socket_path, "attempt-slow",
@@ -198,7 +203,7 @@ class ProviderCases(unittest.TestCase):
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
                                  attempts={"attempt-1": binding})
         cancel = threading.Event()
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-attempt-cancel-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-attempt-cancel-")
         try:
             with InferenceChannel(
                     broker, channel_dir, ("attempt-1",), request_timeout=20,
@@ -225,7 +230,7 @@ class ProviderCases(unittest.TestCase):
         other_binding = dict(binding)
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
                                  attempts={"attempt-1": binding, "attempt-2": other_binding})
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-quota-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-quota-")
         try:
             with InferenceChannel(broker, channel_dir, ("attempt-1", "attempt-2")) as channel:
                 channel.MAX_REQUESTS_PER_ATTEMPT = 1
@@ -253,7 +258,7 @@ class ProviderCases(unittest.TestCase):
                                             ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
                                  attempts=bindings)
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-over-quota-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-over-quota-")
         try:
             with InferenceChannel(broker, channel_dir, tuple(bindings)) as channel:
                 channel.MAX_REQUESTS = 2
@@ -371,8 +376,8 @@ class ProviderCases(unittest.TestCase):
             release_slot=lambda: received.setdefault("scope_callbacks", []).append("release"),
             dispatcher=dispatcher)
         terminal_checker = build_attempt_terminal_checker(result_store, dispatcher)
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-worker-operations-", dir="/private/tmp"))
-        operation_state_dir = Path(tempfile.mkdtemp(prefix="fb-controller-operations-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-worker-operations-")
+        operation_state_dir = _provider_tempdir("fb-controller-operations-")
         try:
             with InferenceChannel(broker, channel_dir, (request.attempt_id,),
                                   operation_journal=operation_state_dir / "operations.json",
@@ -501,7 +506,7 @@ class ProviderCases(unittest.TestCase):
         }
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
                                  attempts=broker_bindings)
-        test_root = Path(tempfile.mkdtemp(prefix="fb-op-", dir="/private/tmp"))
+        test_root = _provider_tempdir("fb-op-")
         journal_dir = test_root / "controller-state"
         journal_dir.mkdir(mode=0o700)
         journal_path = journal_dir / "operations.json"
@@ -599,7 +604,7 @@ class ProviderCases(unittest.TestCase):
                           ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
                                  attempts={request.attempt_id: broker_binding})
-        test_root = Path(tempfile.mkdtemp(prefix="fb-recover-", dir="/private/tmp"))
+        test_root = _provider_tempdir("fb-recover-")
         state_dir = test_root / "state"
         state_dir.mkdir(mode=0o700)
         channel_dir = test_root / "channel"
@@ -663,7 +668,7 @@ class ProviderCases(unittest.TestCase):
                           ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
                                  attempts={request.attempt_id: broker_binding})
-        test_root = Path(tempfile.mkdtemp(prefix="fb-retire-", dir="/private/tmp"))
+        test_root = _provider_tempdir("fb-retire-")
         state_dir = test_root / "state"
         state_dir.mkdir(mode=0o700)
         channel_dir = test_root / "channel"
@@ -751,7 +756,7 @@ class ProviderCases(unittest.TestCase):
                           ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": ["unused"]}},
                                  attempts={request.attempt_id: broker_binding})
-        test_root = Path(tempfile.mkdtemp(prefix="fb-retire-race-", dir="/private/tmp"))
+        test_root = _provider_tempdir("fb-retire-race-")
         state_dir = test_root / "state"
         state_dir.mkdir(mode=0o700)
         store_dir = state_dir / "store"
@@ -955,7 +960,7 @@ class ProviderCases(unittest.TestCase):
             store, "22", binding=binding, scratch=self.workspace, dispatcher=dispatcher,
             heartbeat=lambda _value: {"accepted": True}, checkpoint=lambda: None,
             release_slot=lambda: None)
-        state_root = Path(tempfile.mkdtemp(prefix="fb-store-dispatch-", dir="/private/tmp"))
+        state_root = _provider_tempdir("fb-store-dispatch-")
         channel_dir = state_root / "channel"
         channel_dir.mkdir(mode=0o700)
         channel = InferenceChannel(
@@ -2266,7 +2271,7 @@ time.sleep(10)
             self.assertNotIn("credential", config.lower())
 
     def test_host_probe_reports_each_required_boundary_check(self):
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-probe-channel-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-probe-channel-")
         try:
             policy = build_policy(self.workspace, self.root / "private-git", channel_dir)
             capability = probe_capabilities(policy)
@@ -2280,7 +2285,7 @@ time.sleep(10)
         self.assertEqual(set(capability.get("checks", {})), expected)
 
     def test_host_probe_handles_an_existing_inference_socket(self):
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-existing-channel-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-existing-channel-")
         protected_sockets = []
         try:
             policy = build_policy(self.workspace, self.root / "private-git", channel_dir)
@@ -2338,7 +2343,7 @@ time.sleep(10)
                    ("generation", "role", "stage", "provider", "model", "input_sha")}
         broker = InferenceBroker({"fake": {"model": "fake-v1", "command": command}},
                                  attempts={"attempt-1": binding})
-        channel_dir = Path(tempfile.mkdtemp(prefix="fb-auth-quota-", dir="/private/tmp"))
+        channel_dir = _provider_tempdir("fb-auth-quota-")
         try:
             with InferenceChannel(broker, channel_dir, ("attempt-1",)) as channel:
                 for _ in range(channel.MAX_REQUESTS + 1):
