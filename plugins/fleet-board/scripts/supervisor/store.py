@@ -515,6 +515,15 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (command_id,)).fetchone()
+            if prior:
+                expected = canonical_json({'actor': actor, 'command': 'release_reservations',
+                    'payload': {'card': card, 'reason': reason}, 'expected_revision': expected_revision})
+                if prior['request'] != expected:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return result
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
                 raise ValueError('revision mismatch')
@@ -529,7 +538,10 @@ class Store:
                 raise ValueError('no reservation')
             if reservation['revision'] != reservation_revision:
                 raise ValueError('reservation revision mismatch')
-            if any(json.loads(row['data']).get('execution_released') is not True for row in c.execute("SELECT data FROM attempts WHERE job_id IN (SELECT id FROM jobs WHERE card=?)", (card,))):
+            attempts = list(c.execute("SELECT attempts.state,attempts.data FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE jobs.card=?", (card,)))
+            if not attempts:
+                raise ValueError('attempt writer proof required')
+            if any(json.loads(row['data']).get('execution_released') is not True for row in attempts):
                 raise ValueError('live or uncertain writer')
             if c.execute("SELECT 1 FROM effects WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (card,)).fetchone():
                 raise ValueError('pending effect')
@@ -1579,6 +1591,14 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request_id,)).fetchone()
+            request = {'actor':actor,'command':'abandon','payload':{'card':card,'reason':reason,'operation_key':operation_key},'expected_revision':expected_revision}
+            if prior:
+                if prior['request'] != canonical_json(request):
+                    raise ValueError('command ID already used')
+                outcome = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return outcome
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
                 raise ValueError('revision mismatch')
@@ -1596,7 +1616,7 @@ class Store:
             self._event('scope_released', payload)
             self._event('effect_abandoned', payload)
             outcome = {'released':True,'paths':reservation['paths'],'revision':revision+2}
-            c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id,canonical_json({'actor':actor,'command':'abandon','payload':payload,'expected_revision':expected_revision}),canonical_json(outcome)))
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id,canonical_json(request),canonical_json(outcome)))
             c.execute('COMMIT')
             return outcome
         except Exception:

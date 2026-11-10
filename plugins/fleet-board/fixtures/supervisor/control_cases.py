@@ -180,13 +180,13 @@ class ControlContracts(unittest.TestCase):
     def test_release_requires_reservation_attempt_proof_and_deduplicates_audited_request(self):
         release = self.require_api("release_reservations")
         store = self.service.store
+        job = self.make_attempt()  # admission requires an unpaused card: build it first
         reservation = store.reserve_scope("12", ["src/card-12"], store.snapshot()["domain"]["revision"])
         store.set_card_lifecycle("12", "paused", store.snapshot()["domain"]["revision"])
         before = store.snapshot()
         with self.assertRaisesRegex(Exception, "attempt|writer|proof|evidence"):
             release(12, reason="reconcile", expected_revision=before["domain"]["revision"],
                     expected_reservation_revision=reservation["reservation_revision"])
-        job = self.make_attempt()
         # Even a present attempt needs execution release evidence before its reservation is safe.
         before = store.snapshot()
         with self.assertRaisesRegex(Exception, "writer|evidence|release"):
@@ -210,7 +210,7 @@ class ControlContracts(unittest.TestCase):
         self.assertEqual(before["attempts"][0]["state"], "quarantined")
         self.assertEqual(len(before["claims"]), 1)
         with self.assertRaisesRegex(Exception, "writer|effect|uncertain"):
-            resolve(12, action="retry", request_id="manual-retry-1", reason="inspect",
+            resolve(12, action="retry", attempt_id="attempt-12", request_id="manual-retry-1", reason="inspect",
                     evidence=[], expected_revision=self.service.get_status()["revision"])
         from supervisor.models import StopEvidence
         # Trusted evidence is created in-process after the fixture has established
@@ -218,10 +218,10 @@ class ControlContracts(unittest.TestCase):
         evidence = StopEvidence(store.domain_id, job["id"], "attempt-12", 1, "boot-test", 42,
                                 "start", "attempt-12", "fixture_complete_tree", True)
         self.service.store.retry_evidence_verifier = lambda candidate: candidate == evidence
-        safe = resolve(12, action="retry", request_id="manual-retry-2", reason="verified safe",
+        safe = resolve(12, action="retry", attempt_id="attempt-12", request_id="manual-retry-2", reason="verified safe",
                        evidence=evidence, expected_revision=self.service.get_status()["revision"])
         self.assertTrue(safe.get("applied"), "retry reports applied only after durable state change")
-        replay = resolve(12, action="retry", request_id="manual-retry-2", reason="verified safe",
+        replay = resolve(12, action="retry", attempt_id="attempt-12", request_id="manual-retry-2", reason="verified safe",
                          evidence=evidence, expected_revision=before["domain"]["revision"])
         self.assertFalse(replay.get("applied", replay.get("replayed", False)),
                          "request replay must return the prior outcome without reapplying")
@@ -230,7 +230,7 @@ class ControlContracts(unittest.TestCase):
         self.assertEqual(after["jobs"][0]["retries_used"], before["jobs"][0]["retries_used"])
         self.assertEqual(next(x for x in after["sessions"] if x["id"] == "s1")["known_spend"], 0)
         with self.assertRaisesRegex(Exception, "request|command|audit|retry"):
-            resolve(12, action="retry", request_id="manual-retry-3", reason="again",
+            resolve(12, action="retry", attempt_id="attempt-12", request_id="manual-retry-3", reason="again",
                     evidence=evidence, expected_revision=self.service.get_status()["revision"])
 
     def test_retry_rejects_uncontained_attempt_states_and_requires_attempt_identity(self):
@@ -249,7 +249,7 @@ class ControlContracts(unittest.TestCase):
                     resolve(12, action="retry", request_id="retry-state-%d" % index, reason="retry",
                             attempt_id="attempt-12", expected_revision=revision)
         with self.assertRaisesRegex(Exception, "attempt|contain|writer|evidence|retry"):
-            resolve(12, action="retry", request_id="retry-no-attempt", reason="retry",
+            resolve(12, action="retry", attempt_id="attempt-12", request_id="retry-no-attempt", reason="retry",
                     expected_revision=self.service.get_status()["revision"])
 
     def test_usage_resolution_requires_evidence_retains_unknown_event_and_cannot_clear_budget_stop(self):
