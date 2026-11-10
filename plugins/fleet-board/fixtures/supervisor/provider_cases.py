@@ -30,7 +30,7 @@ from supervisor.workers import request_scope_expansion
 
 def _provider_tempdir(prefix):
     """Create a fixture directory using the current host's temporary root."""
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir()))
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir())).resolve(strict=True)
 
 
 class ProviderCases(unittest.TestCase):
@@ -47,13 +47,10 @@ class ProviderCases(unittest.TestCase):
         import shutil
         shutil.rmtree(self.root)
 
-    def test_provider_tempdir_uses_platform_temporary_directory(self):
-        from unittest.mock import patch
-
-        with patch('tempfile.gettempdir', return_value=str(self.root)):
-            path = _provider_tempdir('fb-portable-')
+    def test_provider_tempdir_uses_canonical_short_host_tmp_root(self):
+        path = _provider_tempdir('fb-portable-')
         self.assertTrue(path.is_dir())
-        self.assertEqual(path.parent, self.root)
+        self.assertEqual(path.parent, Path('/tmp').resolve(strict=True))
 
     def test_provider_tempdir_returns_canonical_path_for_symlinked_temp_root(self):
         from unittest.mock import patch
@@ -62,8 +59,7 @@ class ProviderCases(unittest.TestCase):
         canonical_root.mkdir()
         temp_alias = self.root / 'temp-alias'
         temp_alias.symlink_to(canonical_root)
-        with patch('tempfile.gettempdir', return_value=str(temp_alias)):
-            path = _provider_tempdir('fb-canonical-')
+        path = _provider_tempdir('fb-canonical-', root=temp_alias)
         self.assertEqual(path, path.resolve(strict=True))
         self.assertEqual(path.parent, canonical_root)
 
