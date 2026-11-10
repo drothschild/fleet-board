@@ -28,9 +28,9 @@ from supervisor.runner import Runner, prepare_worker_bootstrap
 from supervisor.workers import request_scope_expansion
 
 
-def _provider_tempdir(prefix):
-    """Create a fixture directory using the current host's temporary root."""
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=tempfile.gettempdir())).resolve(strict=True)
+def _provider_tempdir(prefix, *, root='/tmp'):
+    """Create a canonical fixture directory under the portable, short /tmp root."""
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=root)).resolve(strict=True)
 
 
 class ProviderCases(unittest.TestCase):
