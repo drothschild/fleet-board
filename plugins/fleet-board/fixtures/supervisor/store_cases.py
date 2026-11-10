@@ -95,6 +95,82 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(effect["status"],"applied")
         self.assertEqual(json.loads(effect["observation"]),{"status":"applied","external_id":"pr-14"})
 
+    def test_confirm_effect_already_resolved_is_an_idempotent_noop(self):
+        job = {"id":"effect-noop-job","card":"14","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"c"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"effect-noop-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/effect"]})
+        self.store.record_effect({"operation_key":"effect-noop-op","job_id":job["id"],"generation":1,
+                                  "preconditions":{},"intent":{"kind":"publish","card":"14"}})
+        self.store.confirm_effect("effect-noop-op",{"status":"applied"},self.store.snapshot()["domain"]["revision"])
+        before = self.store.snapshot()
+        result = self.store.confirm_effect("effect-noop-op",{"status":"applied"},before["domain"]["revision"])
+        self.assertFalse(result["changed"])
+        self.assertEqual(self.store.snapshot(),before)
+
+    def test_abandon_rejects_ambiguous_observation_and_requires_card_attempt_artifacts(self):
+        job = {"id":"ambiguous-job","card":"15","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"d"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"ambiguous-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/abandon"]})
+        self.store.record_effect({"operation_key":"ambiguous-op","job_id":job["id"],"generation":1,
+                                  "preconditions":{},"intent":{"kind":"publish","card":"15"}})
+        self.store.observe_effect("ambiguous-op",{"status":"unknown"},self.store.snapshot()["domain"]["revision"])
+        with self.assertRaisesRegex(ValueError,"unresolved|effect"):
+            self.store.abandon_prepared_claim("15","ambiguous-abandon","fixture","retain",
+                                              "ambiguous-op",self.store.snapshot()["domain"]["revision"])
+        self.assertTrue(self.store.snapshot()["claims"])
+
+    def test_release_scope_rejects_reservation_without_attempt_or_writer_proof(self):
+        self.store._Store__human_actor_verifier = lambda actor, capability: actor == "fixture" and capability == "fixture"
+        reservation = self.store.reserve_scope("21",["src/release"],self.store.snapshot()["domain"]["revision"])
+        self.store.set_card_lifecycle("21","paused",self.store.snapshot()["domain"]["revision"])
+        before = self.store.snapshot()
+        with self.assertRaisesRegex(ValueError,"attempt|writer|evidence|proof|authenticated"):
+            self.store.release_scope("21","release-empty","fixture","manual reconcile",
+                                     before["domain"]["revision"],
+                                     reservation_revision=reservation["reservation_revision"],
+                                     actor_capability="fixture")
+
+    def test_release_scope_audits_stopped_writer_and_replays_request(self):
+        self.store._Store__human_actor_verifier = lambda actor, capability: actor == "fixture" and capability == "fixture"
+        self.store._Store__stop_evidence_verifier = lambda evidence: True
+        job = {"id":"release-job","card":"22","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"e"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"release-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/release"]})
+        attempt_data = json.loads(self.store.snapshot()["attempts"][0]["data"])
+        identity = {"boot_id":"fixture-boot","pid":4321,"started_at":"42","nonce":"release-attempt"}
+        attempt_data.update({"boot_id":"fixture-boot","process_identity":identity})
+        self.store._Store__connection.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?",
+                                               (json.dumps(attempt_data,sort_keys=True,separators=(",",":")),"release-attempt"))
+        from supervisor.models import StopEvidence
+        evidence = StopEvidence(self.store.domain_id,"release-job","release-attempt",1,"fixture-boot",4321,
+                                "42","release-attempt","fixture_complete_tree",True)
+        self.store.record_execution_stopped("release-attempt",evidence,self.store.snapshot()["domain"]["revision"])
+        reservation = next(row for row in self.store.snapshot()["reservations"] if row["card"] == "22")
+        self.store.set_card_lifecycle("22","paused",self.store.snapshot()["domain"]["revision"])
+        revision = self.store.snapshot()["domain"]["revision"]
+        outcome = self.store.release_scope("22","release-request-22","fixture","verified stopped",
+                                           revision,reservation_revision=reservation["reservation_revision"],
+                                           actor_capability="fixture")
+        audit = next(row for row in reversed(self.store.snapshot()["events"]) if row["type"] == "scope_released")
+        self.assertEqual(audit["payload"]["actor"],"fixture")
+        self.assertEqual(audit["payload"]["reason"],"verified stopped")
+        self.assertEqual(audit["payload"]["released_paths"],["src/release"])
+        self.assertIsInstance(audit["timestamp"],(int,float))
+        try:
+            replay = self.store.release_scope("22","release-request-22","fixture","verified stopped",
+                                              revision,reservation_revision=reservation["reservation_revision"],
+                                              actor_capability="fixture")
+        except Exception as exc:
+            self.fail("request replay must return its original release outcome: %s" % exc)
+        self.assertEqual(replay,outcome)
+        self.assertEqual(sum(row["type"] == "scope_released" for row in self.store.snapshot()["events"]),1)
+
     def test_abandon_releases_only_prepared_claim_after_effect_resolution(self):
         method = getattr(self.store, "abandon_prepared_claim", None)
         self.assertTrue(callable(method), "safe prepared claim abandonment primitive is not implemented")
