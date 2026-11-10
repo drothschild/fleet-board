@@ -186,8 +186,8 @@ Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsuppor
 **Existing test slice:** `tests/test-run.sh` for legacy/new lock contention.
 
 - [x] Add legacy/new and linked-worktree singleton tests in `test-run.sh`; prove failure and implement shared lock compatibility before service integration.
-- [ ] Write lifecycle cases for concurrent/repeated Start, persisted desired state, pause/resume, drain/cancel stop, crash during shutdown, recovering while stopped, blocked controller RPC, stale command revision, and session accounting across Start/Resume/reboot.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-lifecycle.sh` to failure; commit tests.
+- [x] Write lifecycle cases for concurrent/repeated Start, persisted desired state, pause/resume, drain/cancel stop, crash during shutdown, recovering while stopped, blocked controller RPC, stale command revision, and session accounting across Start/Resume/reboot.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-lifecycle.sh` to failure; commit tests.
 - [ ] Implement private local socket, authenticated actor derivation (reject spoofed body actors), separate restricted worker IPC, bounded requests, durable command deduplication, service readiness acknowledgement, and offline Start ownership path. Expose read-only status when execution cannot start. Capture host boot identity and preserve compatible runner versions across process restart.
 - [ ] Implement CLI `start|pause|resume|stop --mode drain|cancel|status|reconcile|events|resolve --card <n> --action <action>`; `reconcile` returns a snapshot/cursor without waiting for jobs. Reject unsupported/contradictory arguments with exit 2.
 - [ ] Run focused suite and clean-room check; commit/push.
