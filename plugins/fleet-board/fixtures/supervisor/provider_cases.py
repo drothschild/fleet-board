@@ -1557,6 +1557,42 @@ raise SystemExit(2)
         self.assertFalse(ok, 'fewer than three post-removal empty listings must fail closed')
         self.assertTrue(removed, 'the successfully removed matching ID must remain observable')
 
+    def test_docker_label_reconciliation_fails_when_remove_uses_remaining_grace(self):
+        from unittest.mock import patch
+        from supervisor import docker_transport
+
+        class Clock:
+            now = 0.0
+
+            @classmethod
+            def monotonic(cls):
+                return cls.now
+
+            @classmethod
+            def sleep(cls, seconds):
+                cls.now += seconds
+
+        def slow_remove(command, **_kwargs):
+            if command[1] == 'ps':
+                return docker_transport.subprocess.CompletedProcess(
+                    command, 0, b'g' * 64 + b'\n', b'')
+            if command[1:3] == ['rm', '-f']:
+                Clock.now = 1.9
+                return docker_transport.subprocess.CompletedProcess(command, 0, b'', b'')
+            raise AssertionError('unexpected Docker command: ' + repr(command))
+
+        with patch.object(docker_transport.time, 'monotonic', Clock.monotonic), \
+                patch.object(docker_transport.time, 'sleep', Clock.sleep), \
+                patch.object(docker_transport.DockerWorkerTransport, '_remove_container',
+                            side_effect=lambda *_args, **_kwargs: (
+                                setattr(Clock, 'now', 2.0) or True)), \
+                patch.object(docker_transport.subprocess, 'run', side_effect=slow_remove):
+            ok, removed = docker_transport.DockerWorkerTransport._reconcile_labeled_containers(
+                'docker', 'attempt-1', return_removed=True)
+
+        self.assertFalse(ok, 'removal without post-removal empty listings must fail closed')
+        self.assertFalse(removed, 'the deadline path must not report confirmed cleanup')
+
     def test_docker_label_reconciliation_accepts_slow_initial_empty_listing(self):
         from unittest.mock import patch
         from supervisor import docker_transport
