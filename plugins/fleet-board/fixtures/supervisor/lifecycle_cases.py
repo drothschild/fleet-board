@@ -285,8 +285,8 @@ class LifecycleContract(unittest.TestCase):
         self.assertEqual(code, 0, err.getvalue())
         self.assertEqual(json.loads(out.getvalue()),
                          {"audited": True, "applied": False, "status": "recorded"})
-        code, _, err = self.invoke("resolve", "--card", "17", "--action", "bogus")
-        self.assertEqual(code, 2)
+        code, _, err = self.command(["resolve", "--card", "17", "--action", "bogus"])
+        self.assertEqual(code, 2, err)
 
     def test_cli_start_launches_detached_durable_service(self):
         import subprocess
@@ -319,6 +319,15 @@ class LifecycleContract(unittest.TestCase):
         stop = subprocess.run([str(plugin_dir / "scripts" / "supervisor.sh"), "stop", "--mode", "drain"],
                               env=env, capture_output=True, text=True, timeout=10)
         self.assertEqual(stop.returncode, 0, stop.stderr)
+        # A stopped detached service must exit, not linger holding its process.
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            alive = subprocess.run(["pgrep", "-f", "supervisor.cli serve --domain " + str(self.root)],
+                                   capture_output=True, text=True)
+            if alive.returncode != 0:
+                break
+            time.sleep(0.1)
+        self.assertNotEqual(alive.returncode, 0, "serve process still alive after stop: " + alive.stdout)
 
     def test_recovery_runs_while_stopped_without_opening_admissions(self):
         self.service.recovery = mock.Mock()

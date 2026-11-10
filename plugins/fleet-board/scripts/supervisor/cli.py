@@ -2,7 +2,10 @@
 import argparse
 import json
 import os
+import select
+import subprocess
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -56,6 +59,10 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     resolve.add_argument("--card", type=int)
     resolve.add_argument("--action", choices=("retry", "record_usage", "confirm_effect", "abandon"))
     resolve.add_argument("--reason")
+    serve = subs.add_parser("serve")
+    serve.add_argument("--domain", required=True)
+    serve.add_argument("--log-dir", required=True)
+    serve.add_argument("--socket-tmp", required=True)
     try:
         args = parser.parse_args(argv)
     except (ValueError, SystemExit) as exc:
@@ -70,6 +77,25 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     if args.command == "resolve":
         args.reason = args.reason or "manual resolution"
     try:
+        if args.command == "serve":
+            os.environ["FLEET_BOARD_LOG_DIR"] = args.log_dir
+            os.environ["TMPDIR"] = args.socket_tmp
+            board_root = Path(args.domain).resolve(strict=True)
+            git = board_root / ".git"
+            common = git.resolve(strict=True) if git.exists() else board_root
+            domain = {"common_dir": str(common), "board_backend": "local",
+                      "board_identity": str(board_root),
+                      "runtime_root": str(Path(args.log_dir) / "supervisor")}
+            service = Service.open(domain, board_repo=_repo_slug(board_root))
+            ack = service.start_serving()
+            print(json.dumps(ack), flush=True)
+            if not ack.get("owner") or ack.get("socket_unavailable"):
+                return 1
+            try:
+                while not service.stopped.wait(1):
+                    pass
+            finally:
+                service.close()
         domain_root = env.get("FLEET_BOARD_DOMAIN")
         if not domain_root and transport is None:
             raise ValueError("FLEET_BOARD_DOMAIN is required")
@@ -81,9 +107,37 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                       "board_identity": str(board_root),
                       "runtime_root": env.get("FLEET_BOARD_LOG_DIR", str(Path.home() / ".fleet-board")) + "/supervisor"}
             if args.command == "start":
-                service = Service.open(domain)
-                service.start_serving()
-                transport = _socket_transport(service.socket_path)
+                log_dir = env.get("FLEET_BOARD_LOG_DIR") or str(Path.home() / ".fleet-board" / "runs")
+                socket_tmp = env.get("TMPDIR", "/tmp")
+                plugin_scripts = Path(__file__).resolve().parents[1]
+                child_env = dict(os.environ)
+                child_env.update({"FLEET_BOARD_LOG_DIR": log_dir, "TMPDIR": socket_tmp,
+                                  "PYTHONPATH": str(plugin_scripts) +
+                                  (os.pathsep + child_env["PYTHONPATH"] if child_env.get("PYTHONPATH") else "")})
+                child = subprocess.Popen(
+                    [sys.executable, "-m", "supervisor.cli", "serve", "--domain", str(board_root),
+                     "--log-dir", str(Path(log_dir).absolute()), "--socket-tmp", str(Path(socket_tmp).absolute())],
+                    cwd=str(board_root), env=child_env, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    start_new_session=True)
+                ready, _, _ = select.select([child.stdout], [], [], 8.0)
+                if not ready:
+                    child.terminate()
+                    raise TimeoutError("supervisor service readiness timed out")
+                line = child.stdout.readline()
+                if not line:
+                    detail = child.stderr.read().strip()
+                    raise RuntimeError("supervisor service exited before readiness" +
+                                       (": " + detail if detail else ""))
+                try:
+                    ack = json.loads(line)
+                except ValueError as exc:
+                    child.terminate()
+                    raise RuntimeError("supervisor service returned an invalid readiness acknowledgement") from exc
+                if not ack.get("ready") or not ack.get("owner") or ack.get("socket_unavailable"):
+                    child.terminate()
+                    raise RuntimeError("supervisor service failed to become ready: " + json.dumps(ack))
+                return _print_result(ack, stdout)
             else:
                 from .store import Store
                 store = Store.open(domain)
@@ -112,6 +166,23 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     except Exception as exc:
         print("supervisor: " + str(exc), file=stderr)
         return 2 if "unsupported" in str(exc).lower() else 1
+
+
+def _print_result(result, stdout):
+    print(json.dumps(result), file=stdout)
+    return 0
+
+
+def _repo_slug(board_root):
+    config = Path(__file__).resolve().parents[1] / "config.sh"
+    try:
+        result = subprocess.run(["bash", str(config), "--dir", str(board_root), "board.repo"],
+                                capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return board_root.name
 
 
 if __name__ == "__main__":

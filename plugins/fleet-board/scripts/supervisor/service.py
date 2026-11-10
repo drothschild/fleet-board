@@ -21,11 +21,14 @@ WORKER_COMMANDS = {"heartbeat", "progress", "result", "scope_expansion"}
 
 class Service:
     @classmethod
-    def open(cls, domain, *, clock=None, host_boot_id=None, peer_resolver=None, run_lock_path=None):
+    def open(cls, domain, *, clock=None, host_boot_id=None, peer_resolver=None, run_lock_path=None,
+             board_repo=None):
         store = Store.open(domain)
-        return cls(store, clock or time.time, host_boot_id or _boot_id(), peer_resolver, run_lock_path)
+        return cls(store, clock or time.time, host_boot_id or _boot_id(), peer_resolver,
+                   run_lock_path, board_repo or domain.get("board_repo"))
 
-    def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None):
+    def __init__(self, store, clock, host_boot_id, peer_resolver=None, run_lock_path=None,
+                 board_repo=None):
         self.store = store
         self._owner_thread_id = threading.get_ident()
         self._thread_store = threading.local()
@@ -33,13 +36,16 @@ class Service:
         self.clock = clock
         self.host_boot_id = host_boot_id
         self.peer_resolver = peer_resolver or self._peer_actor
+        self.stopped = threading.Event()
         self.recovery = Recovery(store)
         self.directory = str(store.directory)
         socket_root = Path(os.environ.get("TMPDIR", "/tmp")) / ("fb-supervisor-" + store.domain_id[:12])
         self.socket_root = socket_root
         if run_lock_path is None:
             base = os.environ.get("FLEET_BOARD_LOG_DIR") or str(Path.home() / ".fleet-board" / "runs")
-            repo = Path(store.common_dir).name
+            repo = board_repo or (store.common_dir.parent.name
+                                  if store.common_dir.name == ".git"
+                                  else store.common_dir.name)
             run_lock_path = str(Path(base) / (repo.replace("/", "-") + ".lock"))
         self.run_lock_path = str(run_lock_path)
         self.socket_path = str(socket_root / "c.sock")
@@ -112,6 +118,19 @@ class Service:
             if uid != os.getuid():
                 raise PermissionError("peer uid does not own supervisor")
             return str(uid)
+        # macOS and BSD expose xucred through LOCAL_PEERCRED.  xucred is
+        # {u_int version; uid_t uid; short ngroups; gid_t groups[16];};
+        # the two-byte pad after ngroups aligns the gid_t array.
+        if hasattr(socket, "LOCAL_PEERCRED"):
+            import struct
+            xucred = connection.getsockopt(
+                getattr(socket, "SOL_LOCAL", 0), socket.LOCAL_PEERCRED, struct.calcsize("=IIh2x16I"))
+            version, uid, _ngroups, *_groups = struct.unpack("=IIh2x16I", xucred)
+            if version != 0:
+                raise PermissionError("unsupported peer credential version")
+            if uid != os.getuid():
+                raise PermissionError("peer uid does not own supervisor")
+            return str(uid)
         raise PermissionError("peer credentials unavailable")
 
     def _prepare_socket(self, path):
@@ -130,6 +149,11 @@ class Service:
 
     def start_serving(self):
         with self._lock:
+            if self.writer_uncertain:
+                if self.shutdown_observer() != "stopped":
+                    return {"ready": False, "owner": False, "status": "unresolved_shutdown"}
+                self._release_ownership()
+                self.writer_uncertain = False
             if self._server is not None:
                 return {"ready": True, "recovery_complete": True, "owner": False}
             self._prepare_socket_root()
@@ -214,8 +238,12 @@ class Service:
                         continue
                 raw = b"".join(chunks)
                 request = json.loads(raw.decode("utf-8"))
-                peer = self.peer_resolver(connection)
-                result = self.worker_request(request) if worker else self.handle_request(request, peer=peer)
+                # handle_request resolves the actor from the connection exactly once.
+                if worker:
+                    self.peer_resolver(connection)
+                    result = self.worker_request(request)
+                else:
+                    result = self.handle_request(request, peer=connection)
                 payload = {"ok": True, "result": result}
             except Exception as exc:
                 payload = {"ok": False, "error": str(exc)[:300]}
@@ -295,8 +323,7 @@ class Service:
                 "actor": actor, "command": "resolve", "payload": {
                     "card": request.get("card"), "action": action,
                     "reason": request.get("reason")}, "expected_revision": revision})
-            return {"command_id": request.get("request_id"), "state_revision": outcome["revision"],
-                    "action": action, "audited": True}
+            return {"audited": True, "applied": False, "status": "recorded"}
         return self.command(command, request_id=request.get("request_id"),
                             expected_revision=request.get("expected_revision"), actor=actor,
                             mode=request.get("mode"))
@@ -348,7 +375,7 @@ class Service:
 
     def status(self):
         state = self.snapshot()
-        return {"read_only": not self.execution_available,
+        return {"ready": self._server is not None, "read_only": not self.execution_available,
                 "desired_mode": state["domain"]["desired_mode"],
                 "phase": state["domain"]["phase"], "revision": state["domain"]["revision"],
                 "host_boot_id": self.host_boot_id, "execution_available": self.execution_available}
@@ -377,7 +404,6 @@ class Service:
         return bool(versions and versions[-1].get("protocol") == protocol)
 
     def stop_serving(self):
-        store = self._store()
         observer = self.shutdown_observer()
         for server in (self._server, self._worker_server):
             if server is not None:
@@ -388,20 +414,11 @@ class Service:
                 Path(path).unlink()
             except FileNotFoundError:
                 pass
-        if self._owner_fd is not None:
-            os.close(self._owner_fd)
-            self._owner_fd = None
-        self._owner = False
-        try:
-            lines = Path(self.run_lock_path).read_text(encoding="utf-8").splitlines()
-            if self._run_lock_claimed and len(lines) >= 3 and lines[0] == str(os.getpid()) and lines[2] == "service":
-                Path(self.run_lock_path).unlink()
-        except (OSError, IndexError):
-            pass
-        self._run_lock_claimed = False
         if observer != "stopped":
             self.writer_uncertain = True
             return {"status": "unresolved_shutdown", "terminated": False}
+        store = self._store()
+        self._release_ownership()
         self.writer_uncertain = False
         try:
             if store.snapshot()["domain"]["desired_mode"] == "running":
@@ -413,7 +430,22 @@ class Service:
                 Path(path).unlink()
             except FileNotFoundError:
                 pass
+        self.stopped.set()
         return {"status": "stopped", "terminated": True}
+
+    def _release_ownership(self):
+        if self._owner_fd is not None:
+            os.close(self._owner_fd)
+            self._owner_fd = None
+        self._owner = False
+        try:
+            lines = Path(self.run_lock_path).read_text(encoding="utf-8").splitlines()
+            if (self._run_lock_claimed and len(lines) >= 3
+                    and lines[0] == str(os.getpid()) and lines[2] == "service"):
+                Path(self.run_lock_path).unlink()
+        except (OSError, IndexError):
+            pass
+        self._run_lock_claimed = False
 
     def close(self):
         self.stop_serving()
