@@ -1360,7 +1360,7 @@ i=0
 while [ ! -e "$MARKER" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
 run_wrapper --repo "$WT"
 assert_exit "run-lock-worktree: second linked worktree is refused" 1
-assert_eq "run-lock-worktree: loser runs no tick" "$(count)" "1"
+assert_eq "run-lock-worktree: loser runs no tick" "$(count)" "absent"
 assert_stderr_contains "run-lock-worktree: loser reports active owner" "another run holds $LOGS/acme-toy.lock (pid $FIRST_PID)"
 kill -TERM "$FIRST_PID" 2>/dev/null || true
 wait "$FIRST_PID" 2>/dev/null || true
