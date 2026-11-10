@@ -361,7 +361,8 @@ class DockerWorkerTransport:
                 return result(False)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return result(True)
+                return result(not removed_any or
+                              empty_listings >= _LABEL_RECONCILE_REQUIRED_EMPTY_LISTINGS)
             time.sleep(min(_LABEL_RECONCILE_POLL_SECONDS, remaining))
 
     def run(self, argv, policy, *, bootstrap, channel, attempt_id, capability,
