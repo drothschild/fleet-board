@@ -366,9 +366,6 @@ def _read_store_file(db, cache=None):
         info["service_version"] = row[1] if row else None
         newest = info["newest"] = connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
         cursor = cache.get("cursor", 0)
-        if newest < cursor:
-            cache.clear()
-            cursor = 0
         if cursor:
             # The event the cursor points at must still be the one we saw (one row, not a scan).
             at = connection.execute("SELECT sequence,timestamp FROM events WHERE sequence >= ? "
@@ -892,7 +889,8 @@ def _config_value(root, key, env):
 def _launch(root, env):
     # The service environment (credentials read from credentials.env on this tick included) goes to
     # the child through its environment only: never argv, never a log line.
-    child, ack = launcher.launch_child(root, env=env, extra_env=env)
+    # env already holds credentials.env (read once on this tick), so the launcher need not re-read it.
+    child, ack = launcher.launch_child(root, env=env, extra_env=env, merge_registered=False)
     return types.SimpleNamespace(child=child, ack=ack)
 
 
@@ -923,6 +921,23 @@ def _same_state(old, new):
         doc["status"] = {k: v for k, v in (doc.get("status") or {}).items() if k != "at"}
         return doc
     return strip(old) == strip(new)
+
+
+OWNER_PING_WAIT = 2.0  # seconds to wait for a lock holder to answer after an `owner: false` ack
+
+
+def _owner_answers(root, entry, live_status):
+    """Whether the service that holds the lock answers on the socket within OWNER_PING_WAIT."""
+    deadline = time.monotonic() + OWNER_PING_WAIT
+    while True:
+        try:
+            if live_status(root, entry) is not None:
+                return True
+        except Exception:  # noqa: BLE001 - no answer
+            pass
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.1)
 
 
 def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clock=time.time,
@@ -1034,10 +1049,15 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
     try:
         handle = launch(root, child_env)
         if (getattr(handle, "ack", None) or {}).get("owner") is False:
-            # Another healthy owner holds the lock (a peer that is still starting, or a slow
-            # answer): it activates itself. Nothing failed, so record nothing but `serving`.
-            return done("serving", {"state": "ok", "reason": "serving", "mode": mode}, handle=handle,
-                        suppressed_seq=None)
+            # Another owner holds the lock (a peer that is still starting, or a slow answer): it
+            # activates itself. Ping once, bounded: an owner that never answers is wedged, and that
+            # must be visible rather than recorded as a healthy `serving`. Nothing is killed.
+            if _owner_answers(root, entry, live_status):
+                return done("serving", {"state": "ok", "reason": "serving", "mode": mode}, handle=handle,
+                            suppressed_seq=None)
+            outcome = waiting("owner_unresponsive", "another service holds the lock but does not answer on its socket")
+            outcome["handle"] = handle  # the watcher reaps the child when it exits
+            return outcome
         extra = activate(root, child_env) if mode == "running" else None
     except Exception as exc:  # noqa: BLE001 - recorded as a recoverable wait, never a crash loop of state edits
         if handle is not None:

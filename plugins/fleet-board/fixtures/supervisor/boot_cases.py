@@ -1149,7 +1149,7 @@ class CredentialReread(WatchCase):
     def test_launch_passes_the_values_to_the_service_environment_not_argv(self):
         seen = {}
 
-        def fake_launch_child(root, env=None, timeout=None, extra_env=None):
+        def fake_launch_child(root, env=None, timeout=None, extra_env=None, **_more):
             seen["extra_env"] = dict(extra_env or {})
             seen["env"] = dict(env or {})
             return FakeChild(), {"ready": True}

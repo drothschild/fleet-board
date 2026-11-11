@@ -49,7 +49,7 @@ def _log_tail(path, offset):
 
 
 def _registered_credentials(board_root, env):
-    """The registered domain's credentials.env values (registered names only) for any start. A
+    """The registered domain's credentials.env values (every parsed name) for any start. A
     missing or unsafe file never blocks an explicit Start: it prints the same hint the boot watcher
     shows, naming variables only. Values never reach argv or a log."""
     from . import boot  # deferred: boot imports this module
@@ -69,20 +69,22 @@ def _registered_credentials(board_root, env):
     return values
 
 
-def launch_child(board_root, env=None, timeout=READY_TIMEOUT, extra_env=None):
+def launch_child(board_root, env=None, timeout=READY_TIMEOUT, extra_env=None, merge_registered=True):
     """Start `supervisor.cli serve` detached for board_root; return (child, ack).
 
     The ack is returned as the service printed it. `owner: false` is a valid answer: another
     healthy owner won the lock, and the caller reconnects to it. Raises LaunchError when the
     child times out, exits first, or reports it cannot serve (the child is terminated).
     The caller owns the child (and its stdout pipe) afterwards; stderr is a log file. `extra_env`
-    is added to the child's environment (never to argv)."""
+    is added to the child's environment (never to argv) and wins over the registered values.
+    `merge_registered=False` skips reading credentials.env, for a caller that already did."""
     env = os.environ if env is None else env
     board_root = Path(board_root).resolve(strict=True)
     log_dir = str(paths.log_dir(env))
     scripts = str(Path(__file__).resolve().parents[1])
     child_env = dict(os.environ)
-    child_env.update(_registered_credentials(board_root, env))  # every caller gets a registered domain's credentials
+    if merge_registered:  # every caller gets a registered domain's credentials; the file beats the process env
+        child_env.update(_registered_credentials(board_root, env))
     child_env.update(extra_env or {})  # e.g. the service environment the boot watcher built on this tick
     child_env.update({"FLEET_BOARD_LOG_DIR": log_dir,
                       "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
