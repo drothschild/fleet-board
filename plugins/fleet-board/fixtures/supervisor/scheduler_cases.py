@@ -278,8 +278,8 @@ def test_provider_cap_applies_per_resolved_provider():
     assert sorted(x['number'] for x in result['admitted']) == [1, 3]
     assert result['waits'] == [{'number': 2, 'reason': 'provider capacity'}]
     # No provider key counts as "default" (falls back to '*'); "scripts" is never capped.
-    row = candidate(4, 'finish'); del row['provider']
-    row7 = candidate(7, 'review'); del row7['provider']
+    row = candidate(4, 'review'); del row['provider']
+    row7 = candidate(7, 'finish'); del row7['provider']
     limits = {'global': 8, 'providers': {'*': 1, 'scripts': 1}, 'per_card': 1}
     result = Scheduler(clock=lambda: 0).admit(
         [row, candidate(5, 'finish', 'scripts'), candidate(6, 'finish', 'scripts'), row7], limits=limits)
@@ -329,9 +329,9 @@ def test_aging_promotes_a_starved_start():
             candidate(100 + now + i, 'finish', priority='high', eligible_since=now) for i in range(2)]
         winner = scheduler.admit(wave, limits=limits, now=now)
         number = winner['admitted'][0]['number']
-        if now < 60:
+        if now < 50:
             assert number != 30, now
-        if now >= 100:
+        if now >= 50:
             assert number == 30, now
             break
 

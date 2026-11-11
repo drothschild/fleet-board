@@ -50,6 +50,8 @@ class State:
         self._bump()
 
     def begin(self, action):
+        if action.kind not in ('role', 'script', 'merge'):
+            raise ValueError('invalid action kind')
         if action.card in self.active:
             raise ValueError('card already active')
         if action.kind == 'merge' and self.lane is not None:
@@ -67,6 +69,7 @@ class State:
         return action
 
     def reserve(self, card, paths):
+        """Reserve `paths` for `card`; they must already be `scopes.normalize()` output."""
         for owner, held in self.reservations.items():
             if owner != card and scopes.overlap(paths, held):
                 return owner

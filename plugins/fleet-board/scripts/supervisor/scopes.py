@@ -14,6 +14,8 @@ def normalize(paths, root):
     normalized = set()
     for raw in paths:
         path = raw.replace('\\', '/')
+        if path.startswith('/'):
+            raise ValueError('invalid scope path')
         while path.startswith('./'):
             path = path[2:]
         path = path.rstrip('/')
