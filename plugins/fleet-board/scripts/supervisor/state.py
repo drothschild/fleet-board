@@ -70,7 +70,9 @@ class State:
         for owner, held in self.reservations.items():
             if owner != card and scopes.overlap(paths, held):
                 return owner
-        self.reservations[card] = list(paths)
+        held = set(self.reservations.get(card, ())) | set(paths)
+        # Union like the store did; '' (whole repo) absorbs everything.
+        self.reservations[card] = [''] if '' in held else sorted(held)
         self._bump()
         return None
 
