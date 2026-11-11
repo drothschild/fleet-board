@@ -9,6 +9,7 @@ import time
 import uuid
 from pathlib import Path
 
+from . import paths
 from .service import Service
 
 
@@ -150,7 +151,7 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                 from .store import Store
                 store = Store.open(domain)
                 try:
-                    path = str(Path(os.environ.get("TMPDIR", "/tmp")) / ("fb-supervisor-" + store.domain_id[:12]) / "c.sock")
+                    path = paths.controller_socket(store.domain_id, env.get("TMPDIR"))
                 finally:
                     store.close()
                 transport = _socket_transport(path)

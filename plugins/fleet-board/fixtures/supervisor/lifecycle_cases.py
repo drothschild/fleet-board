@@ -496,7 +496,7 @@ class LifecycleContract(unittest.TestCase):
     def test_socket_directory_refuses_symlink_and_insecure_existing_directory(self):
         target = self.root / "target-dir"
         target.mkdir(mode=0o755)
-        socket_root = self.socket_tmp / ("fb-supervisor-" + self.service.store.domain_id[:12])
+        socket_root = Path(os.path.dirname(self.service.socket_path))
         # Repoint the service's deterministic socket location through its path.
         try:
             self.service.directory = str(target)

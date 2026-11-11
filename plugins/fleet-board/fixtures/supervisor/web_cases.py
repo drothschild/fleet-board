@@ -304,6 +304,36 @@ class SupervisorWebContract(unittest.TestCase):
                 self.assertNotIn("request_id", payload)
                 self.assertNotIn("expected_revision", payload)
 
+    def test_default_socket_location_is_shared_by_service_cli_and_web(self):
+        # No FLEET_BOARD_SUPERVISOR_SOCKET override and no socket_path assignment: the three
+        # components must derive the same default location on their own.
+        self.env.pop("FLEET_BOARD_SUPERVISOR_SOCKET", None)
+        domain = {"common_dir": str(self.repo / ".git"),
+                  "board_backend": "local", "board_identity": str(self.repo),
+                  "runtime_root": str(self.case / "runtime")}
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.tmp_socket),
+                                          "FLEET_BOARD_LOG_DIR": str(self.case / "logs")}):
+            self.service = Service.open(domain, run_lock_path=str(self.case / "run.lock"),
+                                        board_repo=str(self.repo), execution_enabled=True,
+                                        host_boot_id="web-test-boot")
+            ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies local Unix socket service")
+        self.assertLess(len(self.service.socket_path), 100, "AF_UNIX path must stay short")
+        self.start_web()
+        code, payload = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200)
+        self.assertFalse(payload.get("unreachable"),
+                         "board-web could not find the service at its default socket: %r" % (payload,))
+        # The CLI resolves the same location.
+        from io import StringIO
+        from supervisor.cli import main
+        out, err = StringIO(), StringIO()
+        status = main(["status"], env={"FLEET_BOARD_DOMAIN": str(self.repo),
+                                       "FLEET_BOARD_LOG_DIR": str(self.case / "logs"),
+                                       "TMPDIR": str(self.tmp_socket)}, stdout=out, stderr=err)
+        self.assertEqual(status, 0, err.getvalue())
+
     def test_unreachable_supervisor_keeps_reachable_top_level_shape(self):
         self.start_service()
         self.start_web()

@@ -2,6 +2,8 @@
 import json
 import os
 from pathlib import Path
+
+from . import paths
 from collections import OrderedDict
 import socket
 import stat
@@ -21,8 +23,7 @@ def socket_path(domain_id):
     override = os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET")
     if override:
         return override
-    return str(Path(os.environ.get("TMPDIR", "/tmp")) /
-               ("fb-supervisor-" + domain_id) / "c.sock")
+    return paths.controller_socket(domain_id)
 
 
 def _validate_path(path):

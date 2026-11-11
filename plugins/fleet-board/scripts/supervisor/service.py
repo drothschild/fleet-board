@@ -11,6 +11,7 @@ import stat
 import threading
 import time
 
+from . import paths
 from .processes import _boot_id
 from .recovery import Recovery
 from .store import Store
@@ -89,7 +90,7 @@ class Service:
         self.stopped = threading.Event()
         self.recovery = Recovery(store)
         self.directory = str(store.directory)
-        socket_root = Path(os.environ.get("TMPDIR", "/tmp")) / ("fb-supervisor-" + store.domain_id[:12])
+        socket_root = paths.socket_dir(store.domain_id)
         self.socket_root = socket_root
         self.board_repo = board_repo
         if run_lock_path is None:
