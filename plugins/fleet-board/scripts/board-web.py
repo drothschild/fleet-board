@@ -31,7 +31,6 @@ import tempfile
 import threading
 import time
 import traceback
-import uuid
 from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1247,6 +1246,9 @@ def get_run(params, body):
 def start_run(params, body):
     cfg, dir = ctx()
     if supervisor_enabled(cfg):
+        if not body:
+            body = {"request_id": "compat-start-" + str(time.time_ns()),
+                    "expected_revision": proxy_call("status").get("revision", 0)}
         return proxy_control("start", body)
     sdir = state_dir(APP["root"], cfg)
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
@@ -1278,6 +1280,9 @@ def start_run(params, body):
 def stop_run(params, body):
     cfg, _ = ctx()
     if supervisor_enabled(cfg):
+        if not body:
+            body = {"request_id": "compat-stop-" + str(time.time_ns()),
+                    "expected_revision": proxy_call("status").get("revision", 0)}
         return proxy_control("stop", dict(body, mode="drain"))
     with _RUN_LOCK:
         if not run_alive():
@@ -1317,13 +1322,26 @@ def proxy_call(command, body=None, **extra):
     try:
         result = webproxy.request(webproxy.socket_path(domain_id), request)
     except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
-        msg = str(exc)
-        if "stale" in msg.lower() or "revision" in msg.lower():
-            try:
-                current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
-            except Exception:
-                current = None
+        try:
+            detail = json.loads(str(exc))
+        except (ValueError, TypeError):
+            detail = {}
+        code = detail.get("code")
+        msg = detail.get("message", str(exc))
+        if code == "stale_revision":
+            current = detail.get("current")
+            if current is None:
+                try:
+                    current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
+                except Exception:
+                    current = None
             raise ApiError(409, msg, {"current": current})
+        if code == "invalid":
+            raise ApiError(400, msg)
+        if code == "uncertain_writer":
+            raise ApiError(409, msg)
+        if code == "internal":
+            raise ApiError(500, msg)
         raise ApiError(503, "supervisor unavailable: " + msg)
     if command == "status":
         webproxy.remember(domain_id, result)
@@ -1333,10 +1351,8 @@ def proxy_call(command, body=None, **extra):
 def proxy_control(command, body):
     if "actor" in body:
         raise ApiError(400, "actor must come from authenticated peer")
-    if not body.get("request_id") or type(body.get("expected_revision")) is not int:
-        current = proxy_call("status")
-        body.setdefault("request_id", uuid.uuid4().hex)
-        body.setdefault("expected_revision", current.get("revision", 0))
+    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        raise ApiError(400, "request_id and integer expected_revision are required")
     if command == "stop":
         body.setdefault("mode", "drain")
     return 202, proxy_call(command, body)
@@ -1353,11 +1369,11 @@ def supervisor_snapshot():
             raise
         prior = webproxy.last(domain_id)
         known = prior[1] if prior else None
-        return {"state": known or {"phase": "unknown", "desired_mode": "unknown"},
-                "last_known": known,
-                "last_known_at": prior[0] if prior else None,
-                "occupancy": None,  # unknown, never zero
-                "unreachable": True}
+        return {"ready": None, "read_only": True, "desired_mode": None,
+                "phase": None, "revision": None, "host_boot_id": None,
+                "execution_available": False, "shutdown": None,
+                "unreachable": True, "last_known": known,
+                "last_known_at": prior[0] if prior else None, "occupancy": None}
 
 
 def supervisor_run_status(cfg):
@@ -1367,10 +1383,14 @@ def supervisor_run_status(cfg):
                 "tick": None, "stop_reason": None, "cost": None, "hours": None,
                 "log_path": None, "log_tail": [], "out_tail": None}
     phase = status.get("phase", "unknown")
+    ready = status.get("ready") is True
     desired = status.get("desired_mode")
-    state = "running" if phase in ("running", "ready") and desired == "running" else (
-        "stopping" if desired == "stopped" and phase not in ("stopped", "idle") else
-        "stopped" if desired == "stopped" or phase in ("stopped", "idle") else phase)
+    # Never infer running from intent: only the service's own ready acknowledgement
+    # plus an observed running phase counts. Intent without readiness is starting.
+    state = ("running" if ready and phase == "running" and desired == "running" else
+             "stopping" if phase == "stopping" else
+             "starting" if desired == "running" and not ready else
+             "stopped" if phase in ("stopped", "idle") else phase)
     return {"state": state, "pid": None, "tick": None, "stop_reason": None,
             "cost": None, "hours": None, "log_path": None, "log_tail": [],
             "out_tail": None, "supervisor": status}
@@ -1400,12 +1420,26 @@ def card_execution(params, body):
     return 200, proxy_call("card_execution", card=params["n"])
 
 
+def card_execution_log(params, body):
+    log_id = params.get("log_id", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", log_id) or ".." in log_id:
+        raise ApiError(400, "invalid log id")
+    try:
+        return 200, proxy_call("card_log", card=params["n"], log_id=log_id)
+    except ApiError as exc:
+        if exc.code in (400, 404, 409):
+            raise ApiError(404 if "not found" in str(exc) else 400, "log not found" if "not found" in str(exc) else "invalid log id")
+        raise
+
+
 def card_control(params, body):
     action = params["action"]
     if action == "pause": command = "card_pause"
     elif action == "resume": command = "card_resume"
     elif action == "release-reservations": command = "release_reservations"
     else: command = "resolve"
+    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        raise ApiError(400, "request_id and integer expected_revision are required")
     return 202, proxy_call(command, body, card=params["n"])
 
 
@@ -1466,6 +1500,7 @@ ROUTES = [
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
     ("GET", r"/api/supervisor/events", supervisor_events),
     ("GET", r"/api/cards/(?P<n>\d+)/execution", card_execution),
+    ("GET", r"/api/cards/(?P<n>\d+)/execution/log/(?P<log_id>[^/]+)", card_execution_log),
     ("POST", r"/api/cards/(?P<n>\d+)/execution/(?P<action>pause|release-reservations|resolve|resume)", card_control),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),

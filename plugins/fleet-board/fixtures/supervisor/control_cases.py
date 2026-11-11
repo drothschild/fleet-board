@@ -495,8 +495,8 @@ class ControlContracts(unittest.TestCase):
         """Web clients classify service failures by code, never by prose."""
         before = self.service.snapshot()
         self.service.writer_uncertain = True
-        reply = self.service.handle_request({"command": "pause", "request_id": "coded-error",
-                                             "expected_revision": before["domain"]["revision"]}, peer=None)
+        reply = self.service.handle_request_envelope({"command": "pause", "request_id": "coded-error",
+                                                      "expected_revision": before["domain"]["revision"]}, peer=None)
         self.assertFalse(reply.get("ok"), "invalid lifecycle command unexpectedly succeeded")
         error = reply.get("error")
         self.assertIsInstance(error, dict, "socket error must be a structured object")

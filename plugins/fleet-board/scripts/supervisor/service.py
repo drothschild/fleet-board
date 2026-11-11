@@ -1,5 +1,6 @@
 """Single-owner local control service for one supervisor domain."""
 import json
+import re
 import errno
 import fcntl
 import os
@@ -90,6 +91,7 @@ class Service:
         self.directory = str(store.directory)
         socket_root = Path(os.environ.get("TMPDIR", "/tmp")) / ("fb-supervisor-" + store.domain_id[:12])
         self.socket_root = socket_root
+        self.board_repo = board_repo
         if run_lock_path is None:
             base = os.environ.get("FLEET_BOARD_LOG_DIR") or str(Path.home() / ".fleet-board" / "runs")
             repo = board_repo or (store.common_dir.parent.name
@@ -313,10 +315,23 @@ class Service:
                     self.peer_resolver(connection)
                     result = self.worker_request(request)
                 else:
-                    result = self.handle_request(request, peer=connection)
-                payload = {"ok": True, "result": result}
+                    payload = self.handle_request_envelope(request, peer=connection)
+                if worker:
+                    payload = {"ok": True, "result": result}
             except Exception as exc:
-                payload = {"ok": False, "error": str(exc)[:300]}
+                message = str(exc)[:300]
+                code = ("stale_revision" if "revision mismatch" in message.lower() or "stale state revision" in message.lower()
+                        else "uncertain_writer" if "uncertain writer" in message.lower()
+                        else "unavailable" if "unavailable" in message.lower() or "timed out" in message.lower()
+                        else "invalid" if isinstance(exc, (ValueError, TypeError, PermissionError))
+                        else "internal")
+                error = {"code": code, "message": message}
+                if code == "stale_revision":
+                    try:
+                        error["current"] = self.status()
+                    except Exception:
+                        error["current"] = None
+                payload = {"ok": False, "error": error}
             finally:
                 self._close_thread_store()
             connection.sendall(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -367,6 +382,27 @@ class Service:
         return actor
 
     def handle_request(self, request, *, peer):
+        return self._handle_request(request, peer=peer)
+
+    def handle_request_envelope(self, request, *, peer):
+        try:
+            return {"ok": True, "result": self._handle_request(request, peer=peer)}
+        except Exception as exc:
+            message = str(exc)[:300]
+            code = ("stale_revision" if "revision mismatch" in message.lower() or "stale state revision" in message.lower()
+                    else "uncertain_writer" if "uncertain writer" in message.lower()
+                    else "unavailable" if "unavailable" in message.lower() or "timed out" in message.lower()
+                    else "invalid" if isinstance(exc, (ValueError, TypeError, PermissionError))
+                    else "internal")
+            error = {"code": code, "message": message}
+            if code == "stale_revision":
+                try:
+                    error["current"] = self.status()
+                except Exception:
+                    error["current"] = None
+            return {"ok": False, "error": error}
+
+    def _handle_request(self, request, *, peer):
         if not isinstance(request, dict) or len(json.dumps(request).encode("utf-8")) > MAX_REQUEST:
             raise ValueError("request size exceeds limit")
         if "actor" in request:
@@ -392,14 +428,19 @@ class Service:
             return {"snapshot": self.snapshot(), "cursor": len(self.snapshot()["events"])}
         if command == "card_execution":
             return self.card_execution(request.get("card"))
+        if command == "card_log":
+            return self.card_log(request.get("card"), request.get("log_id"))
         if command == "card_pause":
+            self._require_mutation_binding(request)
             return self.card_pause(request.get("card"), mode=request.get("mode", "drain"),
                 request_id=request.get("request_id"), expected_revision=request.get("expected_revision"), peer=peer)
         if command == "release_reservations":
+            self._require_mutation_binding(request)
             return self.release_reservations(request.get("card"), reason=request.get("reason"),
                 expected_revision=request.get("expected_revision"),
                 expected_reservation_revision=request.get("expected_reservation_revision"), peer=peer)
         if command == "card_resume":
+            self._require_mutation_binding(request)
             return self.card_resume(request.get("card"), request_id=request.get("request_id"),
                 expected_revision=request.get("expected_revision"), peer=peer)
         if command == "resolve":
@@ -414,9 +455,17 @@ class Service:
             params = dict(request)
             params.pop("command", None); params.pop("actor", None)
             return self.resolve(peer=peer, **params)
+        self._require_mutation_binding(request)
         return self.command(command, request_id=request.get("request_id"),
                             expected_revision=request.get("expected_revision"), actor=actor,
                             mode=request.get("mode"))
+
+    @staticmethod
+    def _require_mutation_binding(request):
+        if not isinstance(request.get("request_id"), str) or not request["request_id"]:
+            raise ValueError("request_id required")
+        if type(request.get("expected_revision")) is not int:
+            raise ValueError("expected_revision required")
 
     def get_status(self):
         state = self.snapshot()
@@ -453,6 +502,52 @@ class Service:
                 "boot_registration": "missing", "last_error": None,
                 "read_only": not self.execution_enabled, "claims": {"count": len(claims)}}
 
+    _LOG_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}")
+    _SECRET = re.compile(r"(?i)(token|secret|password|api[_-]?key)(\s*[:=]\s*)[^\s]+")
+
+    def _log_refs(self, attempts):
+        """Safe log references: opaque IDs only, never filesystem paths."""
+        artifacts = Path(self.store.directory) / "artifacts"
+        refs = []
+        for attempt in attempts:
+            attempt_id = attempt["id"]
+            if not self._LOG_ID.fullmatch(attempt_id):
+                continue
+            directory = artifacts / attempt_id
+            try:
+                names = sorted(x.name for x in directory.iterdir()
+                               if x.suffix == ".log" and x.is_file() and not x.is_symlink())
+            except OSError:
+                continue
+            for name in names:
+                log_id = attempt_id + "." + name
+                if self._LOG_ID.fullmatch(log_id):
+                    refs.append({"id": log_id, "attempt_id": attempt_id, "name": name})
+        return refs
+
+    def card_log(self, card, log_id):
+        if not isinstance(log_id, str) or not self._LOG_ID.fullmatch(log_id) or ".." in log_id:
+            raise ValueError("invalid log id")
+        state = self.snapshot()
+        card = str(card)
+        jobs = [x for x in state["jobs"] if x["card"] == card]
+        attempts = [x for x in state["attempts"] if any(j["id"] == x["job_id"] for j in jobs)]
+        ref = next((r for r in self._log_refs(attempts) if r["id"] == log_id), None)
+        if ref is None:
+            raise ValueError("log not found")
+        artifacts = (Path(self.store.directory) / "artifacts").resolve()
+        path = artifacts / ref["attempt_id"] / ref["name"]
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(artifacts):
+            raise ValueError("log not found")
+        with open(path, "rb") as handle:
+            text = handle.read(1024 * 1024).decode("utf-8", errors="replace")
+        text = self._SECRET.sub(r"\1\2[redacted]", text)
+        text = re.sub(r"\b(?:ghp|gho|ghs|github_pat|sk|xox[bap])[_-][A-Za-z0-9_-]{16,}", "[redacted]", text)
+        for private in {str(self.board_repo or ""), str(Path(self.store.common_dir)), str(Path(self.store.common_dir).parent)}:
+            if private and private != ".":
+                text = text.replace(private, "[repository]")
+        return {"id": log_id, "text": text}
+
     def card_execution(self, card):
         card = str(card)
         state = self.snapshot()
@@ -469,7 +564,8 @@ class Service:
                 "deadlines": [row.get("deadline") for row in times if row.get("deadline") is not None],
                 "retries": {"automatic": jobs[-1]["retries_used"] if jobs else 0},
                 "waiting_reason": None, "claims": claims,
-                "reservation_revision": max([x["reservation_revision"] for x in claims], default=0), "logs": []}
+                "reservation_revision": max([x["reservation_revision"] for x in claims], default=0),
+                "logs": self._log_refs(attempts)}
 
     def _control(self, card, command, mode, request_id, expected_revision, actor):
         store = self._store()
@@ -654,7 +750,7 @@ class Service:
         state = self.snapshot()
         return {"ready": self._server is not None, "read_only": not self.execution_available,
                 "desired_mode": state["domain"]["desired_mode"],
-                "phase": state["domain"]["phase"], "revision": state["domain"]["revision"],
+                "phase": ("unreachable" if self.writer_uncertain else state["domain"]["phase"]), "revision": state["domain"]["revision"],
                 "host_boot_id": self.host_boot_id, "execution_available": self.execution_available,
                 "shutdown": "unresolved" if self.writer_uncertain else "resolved"}
 

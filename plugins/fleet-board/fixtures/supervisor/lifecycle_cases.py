@@ -489,7 +489,7 @@ class LifecycleContract(unittest.TestCase):
         from supervisor.cli import _socket_transport
         # A real socket-backed response exercises the CLI's recv loop.
         self.service.large_response = "y" * (1024 * 1024 + 100)
-        self.service.handle_request = lambda request, *, peer: {"large": self.service.large_response}
+        self.service._handle_request = lambda request, *, peer: {"large": self.service.large_response}
         transport = _socket_transport(self.service.socket_path)
         self.assertGreater(len(json.dumps(transport({"command": "status"}))), 1024 * 1024)
 

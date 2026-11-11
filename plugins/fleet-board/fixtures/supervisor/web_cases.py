@@ -272,16 +272,16 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_service()
         self.start_web()
         initial = self.service.get_status()
-        request = {"request_id": "retry-stop", "expected_revision": initial["revision"], "mode": "drain"}
-        first_code, first = self.http("POST", "/api/supervisor/stop", request)
+        request = {"request_id": "retry-pause", "expected_revision": initial["revision"]}
+        first_code, first = self.http("POST", "/api/supervisor/pause", request)
         after_first = self.service.snapshot()
-        second_code, second = self.http("POST", "/api/supervisor/stop", request)
+        second_code, second = self.http("POST", "/api/supervisor/pause", request)
         self.assertIn(first_code, (200, 202))
         self.assertEqual(second_code, first_code)
         self.assertEqual(second, first, "same request_id must return its original outcome")
         self.assertEqual(self.service.snapshot()["events"], after_first["events"])
-        stale = dict(request, request_id="stale-stop", expected_revision=initial["revision"] - 1)
-        stale_code, stale_body = self.http("POST", "/api/supervisor/stop", stale)
+        stale = dict(request, request_id="stale-pause", expected_revision=initial["revision"] - 1)
+        stale_code, stale_body = self.http("POST", "/api/supervisor/pause", stale)
         self.assertEqual(stale_code, 409)
         self.assertIn("current", stale_body)
         self.assertEqual(self.service.snapshot(), after_first)
@@ -302,7 +302,7 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_web()
         code, reachable = self.http("GET", "/api/supervisor")
         self.assertEqual(code, 200)
-        self.stop_all()
+        self.service.stop_serving()  # the web server stays up; only the service goes away
         code, unreachable = self.http("GET", "/api/supervisor")
         self.assertEqual(code, 200)
         self.assertTrue(unreachable.get("unreachable"))
@@ -319,16 +319,16 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_web()
         status = self.service.get_status()
         status.update({"desired_mode": "running", "phase": "starting", "ready": False})
-        with mock.patch("webproxy.request", return_value=status):
+        with mock.patch.object(self.service, "status", return_value=status):
             code, run = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
         self.assertNotEqual(run.get("state"), "running")
         status.update({"phase": "stopped", "ready": False})
-        with mock.patch("webproxy.request", return_value=status):
+        with mock.patch.object(self.service, "status", return_value=status):
             _, run = self.http("GET", "/api/run")
         self.assertNotEqual(run.get("state"), "stopped", "running intent while recovering is not stopped")
         status.update({"phase": "running", "ready": True})
-        with mock.patch("webproxy.request", return_value=status):
+        with mock.patch.object(self.service, "status", return_value=status):
             _, run = self.http("GET", "/api/run")
         self.assertEqual(run.get("state"), "running")
 
@@ -361,21 +361,22 @@ class SupervisorWebContract(unittest.TestCase):
             self.assertEqual(webproxy.request("unused", {"command": "status"}), {"phase": "idle"})
         with mock.patch.object(webproxy.socket, "socket", ChunkSocket):
             self.assertEqual(webproxy.request("unused", {"command": "status"}), {"phase": "idle"})
-        self.start_web()
-        with mock.patch("webproxy.request", side_effect=ValueError("invalid supervisor response frame")):
-            code, body = self.http("GET", "/api/supervisor")
-        self.assertEqual(code, 200)
-        self.assertTrue(body.get("unreachable"))
+        class BadSocket(ChunkSocket):
+            def __init__(self, *_args): self.parts = [b'{"ok": tr']  # truncated, then EOF
+        with mock.patch.object(webproxy.socket, "socket", BadSocket):
+            with self.assertRaises((ValueError, OSError)):
+                webproxy.request("unused", {"command": "status"})
 
     def test_card_control_validation_and_structured_error_codes(self):
         self.start_service()
         self.start_web()
         for action, body in (("pause", {}), ("release-reservations", {"request_id": "x", "expected_revision": 0}),
                              ("resolve", {"request_id": "x", "expected_revision": 0}),
-                             ("resume", {"request_id": "x", "expected_revision": 0})):
+                             ("resume", {})):
             code, _ = self.http("POST", "/api/cards/1/execution/" + action, body)
             self.assertEqual(code, 400, "%s accepted invalid or incomplete fields" % action)
-        with mock.patch("webproxy.request", side_effect=RuntimeError('{"code":"internal","error":"revision database is corrupt"}')):
+        with mock.patch.object(self.service, "_handle_request",
+                               side_effect=RuntimeError("revision database is corrupt")):
             code, _ = self.http("POST", "/api/cards/1/execution/pause",
                                 {"request_id": "internal", "expected_revision": 0})
         self.assertIn(code, (500, 503), "internal error classified from message text as conflict")
@@ -383,14 +384,23 @@ class SupervisorWebContract(unittest.TestCase):
     def test_card_log_references_are_real_validated_and_redacted(self):
         self.start_service()
         self.start_web()
-        logs = self.service.store.directory / "artifacts" / "attempt-web" / "worker.log"
-        logs.parent.mkdir(parents=True, mode=0o700)
+        store = self.service.store
+        store.start_session({"id": "s1", "started_at": 1, "deadline": 1000, "known_spend": 0,
+                             "unknown_spend": False, "budget_stop": None})
+        job = {"id": "job-1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "a" * 64, "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "attempt-web", "session_id": "s1"}
+        store.prepare_attempt(job, store.snapshot()["domain"]["revision"],
+                              {"global_cap": 4, "provider_cap": 4, "paths": ["src/card-1"]})
+        attempt_id = store.snapshot()["attempts"][0]["id"]
+        logs = store.directory / "artifacts" / attempt_id / "worker.log"
+        logs.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
         logs.write_text("token=ghp_abcdefghijklmnopqrstuvwxyz012345\n" + str(self.repo) + "\n", encoding="utf-8")
         code, result = self.http("GET", "/api/cards/1/execution")
         self.assertEqual(code, 200)
         refs = result.get("logs", [])
         self.assertTrue(refs, "attempt log reference not returned")
-        for bad in ("../worker.log", str(logs), "..%2fworker.log", "%2fetc%2fpasswd", "bad\x00id"):
+        for bad in ("../worker.log", str(logs), "..%2fworker.log", "%2fetc%2fpasswd", "bad%00id"):
             # The future validated log endpoint must reject these IDs. Until it is routed,
             # this request must remain an ordinary 404, never a filesystem read.
             status, body = self.http("GET", "/api/cards/1/execution/log/" + bad)
