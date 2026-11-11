@@ -177,6 +177,23 @@ Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsuppor
 
 **Verifies:** S2-S5, S8, S11 transport subset. No paid calls occur in this task.
 
+### Task 4.4: Merging column and merger role (M2 to M10)
+
+**Scope:** the cards that implement the Merging state and merger role, in order (the M2 to M10 work items, cards #242 to #251; the card list does not map one-to-one onto M numbers). Spec section: "Merging state and the merger role".
+
+- [ ] `merging` board state (#242).
+- [ ] config keys `merge.persona` and `merge.persona_append` (#243).
+- [ ] default merger persona and how it is resolved (#244).
+- [ ] the integration lane moves a card to Merging before merging (#245).
+- [ ] `planner.persona_append` (#246).
+- [ ] a refused merge affects only its card (#247).
+- [ ] merger persona rules for the shipped default (#248).
+- [ ] merger role reports `retry`, `fix` and `attention` (#249).
+- [ ] the supervisor acts on the merger's decision (#250).
+- [ ] Merger agent spec and prepared clean-room authoring (#251).
+
+**Verifies:** S8 (no merge precondition is loosened); S1 (a refused merge does not delay other cards).
+
 ## Phase 5 — Persistent service, commands, and UI
 
 ### Task 5.1: Own the repository and serve lifecycle commands

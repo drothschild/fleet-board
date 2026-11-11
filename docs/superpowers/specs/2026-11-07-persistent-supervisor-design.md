@@ -149,6 +149,16 @@ Prefer continuations, fixes, and reviews over new starts. Within classes use exp
 
 Hold one merge lane per repository through merge and verification, using `merge-reviewed.sh` checks and lock semantics. Refactor its drain into a bounded candidate operation. Pending verification is recovered before another merge. A card can reach this lane while unrelated implementation runs. Refresh plans after integration; dependency and exact-head review checks remain authoritative.
 
+### Merging state and the merger role
+
+Board states run in this order: the review stages, `human_qa`, `merging`, `done`. A card moves to `merging` before the integration lane attempts its merge, and to `done` only after merge and main verification.
+
+A refused merge is one where `merge-reviewed.sh --inspect` shows the PR still open and unmerged at the same head. A refused merge affects only that card: the card stays in `merging`, the merger role decides what happens next, and unrelated cards keep progressing. This narrows today's rule, where every merge failure calls `store.close_admissions`.
+
+An unclear merge result (the PR state or head cannot be read, or the head changed) and a failed main check still stop new work on the whole board: they call `store.close_admissions`, preserve evidence, and need a human, as in the repository-wide verification rule above.
+
+The merger role reads the refusal and reports one status: `retry` (the refusal was transient; try the merge again), `fix` (the PR needs a fixer round before it can merge) or `attention` (a human must look). The supervisor acts on that status; the merger never merges, moves a card or posts for itself. The merger persona can't loosen any merge precondition: exact-head review, CI, review stages, dependency readiness, human-QA approval and merge policy stay enforced by `merge-reviewed.sh`, whatever the persona text says.
+
 Run-session time and known spend persist across restart. Check deadlines on timers, not only between cycles. At the time limit, stop admissions and cancel active execution under the normal grace protocol. At the cost limit, close admissions and request cancellation; in-flight/provider-delayed charges may overshoot, which must be reported. Unknown usage remains unknown, never fabricated as zero; stop new paid admissions pending explicit resolution. A Resume preserves session accounting. Starting after an explicitly stopped/finished session creates a new session only through an explicit Start command.
 
 ## Scope reservations and human release
