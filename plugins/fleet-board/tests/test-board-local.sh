@@ -325,6 +325,18 @@ assert_json "read returns the note id" '.manager_note_id' 2
 # concurrency: eight comments at once lose nothing
 for i in 1 2 3 4 5 6 7 8; do (cd "$REPO" && bash "$SCRIPTS/board-comment.sh" 1 "$c") & done; wait
 assert_card_json 1 '.comments|length' 10
+# a slow lock path (find reports every live lock as stale, as a skewed clock or
+# a loaded runner would) must not let two comment calls hold the lock at once
+seed_card 6 in_progress 'Slow lock' 'slow'
+SLOW_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$SLOW_DIR")
+printf '#!/bin/sh\ncase "$*" in *-mmin*) echo "$1" ;; *) exec /usr/bin/find "$@" ;; esac\n' > "$SLOW_DIR/find"
+chmod +x "$SLOW_DIR/find"
+slow_ok="$(mktemp -d)"; CLEANUP_DIRS+=("$slow_ok")
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  ( cd "$REPO" && PATH="$SLOW_DIR:$PATH" bash "$SCRIPTS/board-comment.sh" 6 "$c" >/dev/null 2>&1 && : > "$slow_ok/$i" ) &
+done; wait
+assert_card_json 6 '.comments|length' "$(ls "$slow_ok" | wc -l | tr -d ' ')"
+assert_card_json 6 '.comments|length' 10
 t="$(mktemp)"; CLEANUP_DIRS+=("$t"); echo 'Renamed' > "$t"; b="$(mktemp)"; CLEANUP_DIRS+=("$b"); echo 'new body' > "$b"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --title-file "$t" --body-file "$b" --labels-json '["x","y"]'
 assert_exit "edit exit 0" 0
