@@ -12,7 +12,8 @@ default.json, then {}:
   {"report": "<name of a fixtures/reports file, or literal text>",
    "usage": {"input_tokens": ..} | null, "exit": 0, "is_error": false, "subtype": "success",
    "stderr": "", "sleep": 0, "ignore_term": false, "spawn_child": false, "post": true,
-   "no_result": false, "permission_mode": "<overrides the init event's permissionMode>"}
+   "no_result": false, "permission_mode": "<overrides the init event's permissionMode>",
+   "pre_events": [<stream-json events printed before init>], "no_init": false, "child_ignore_term": false}
 
 It prints a stream-json init event, then (when `post`) runs `parse-report.sh --role <role> <file>` and, only if
 that exits 0, `board-comment.sh <N> <file>` as a real role would, appends one record
@@ -65,7 +66,10 @@ def main():
     scripts = Path(os.environ.get('FAKE_ROLE_SCRIPTS') or HERE.parents[1] / 'scripts')
 
     if plan.get('spawn_child'):
-        child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(300)'])
+        code = 'import time; time.sleep(300)'
+        if plan.get('child_ignore_term'):
+            code = 'import signal; signal.signal(signal.SIGTERM, signal.SIG_IGN); ' + code
+        child = subprocess.Popen([sys.executable, '-c', code])
         (d / ('%d.child' % n)).write_text('%d\n' % child.pid)
     if plan.get('ignore_term'):
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -74,8 +78,11 @@ def main():
         sys.stderr.flush()
 
     mode = plan.get('permission_mode') or arg_after('--permission-mode')
-    emit({'type': 'system', 'subtype': 'init', 'session_id': 'fake-%d' % n, 'model': arg_after('--model'),
-          'permissionMode': mode})
+    for ev in plan.get('pre_events', []):
+        emit(ev)
+    if not plan.get('no_init'):
+        emit({'type': 'system', 'subtype': 'init', 'session_id': 'fake-%d' % n, 'model': arg_after('--model'),
+              'permissionMode': mode})
 
     text = report_text(plan.get('report', ''))
     parse_rc = comment_rc = None

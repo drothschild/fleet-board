@@ -104,8 +104,11 @@ def parse_stream(path):
     return s['text'], s['usage'], s['is_error'], s['subtype'], s['session_id'], s['permission_mode']
 
 
-def classify(rc, stderr, is_error, result_text, stage=False):
-    """None, "provider" (the account or service, retry later) or "card" (this attempt failed)."""
+def classify(rc, stderr, is_error, result_text, stage=False, subtype=None):
+    """None, "provider" (the account or service, retry later) or "card" (this attempt failed).
+    A session that ended in error_max_turns is always a card failure, whatever its text says."""
+    if subtype == 'error_max_turns':
+        return 'card'
     if stage:
         if rc == 0:
             return None
@@ -160,11 +163,14 @@ class Session:
         self._stage = stage
         self._started = clock()
         self._last_growth = self._started
-        self._size = 0
+        self._size = (0, 0)
         self._pos = 0
         self._buf = b''
-        self._init_done = False
+        self._init_found = False
         self._init_mode = None
+        self._term_deadline = None   # set when SIGTERM has been sent: clock() after which SIGKILL follows
+        self._killed = False
+        self._give_up = None         # real-monotonic bound on waiting after SIGKILL
         self._why = None            # 'cancel' | 'attempt' | 'progress' | 'mode'
         self._result = None
 
@@ -184,37 +190,36 @@ class Session:
             return True
         return True
 
-    def _kill_group(self, grace):
-        """SIGTERM the group, then SIGKILL whatever is left after `grace` seconds; reaps the leader."""
+    def _advance_cleanup(self, grace):
+        """One non-blocking step towards an empty process group. True once the group is gone (or SIGKILL
+        was sent and a short bounded wait ran out)."""
         self.proc.poll()
         if not self._group_alive():
-            return
-        self._signal(signal.SIGTERM)
-        end = time.monotonic() + max(grace, 0)
-        while time.monotonic() < end:
-            self.proc.poll()
-            if not self._group_alive():
-                return
-            time.sleep(0.02)
-        self._signal(signal.SIGKILL)
-        end = time.monotonic() + 5
-        while time.monotonic() < end:
-            self.proc.poll()
-            if not self._group_alive():
-                return
-            time.sleep(0.02)
+            return True
+        if self._term_deadline is None:
+            self._signal(signal.SIGTERM)
+            self._term_deadline = self._clock() + max(grace, 0)
+        elif not self._killed and self._clock() >= self._term_deadline:
+            self._signal(signal.SIGKILL)
+            self._killed = True
+            self._give_up = time.monotonic() + 2
+        if self._killed and time.monotonic() >= self._give_up:
+            return True
+        return False
 
     def cancel(self, grace):
-        """SIGTERM the process group, SIGKILL after `grace`. Idempotent; a no-op once the result is built."""
+        """Start terminating the process group (SIGTERM now, SIGKILL once `grace` has passed on the session
+        clock) and return at once; poll() completes it. Idempotent; a no-op once the result is built."""
         if self._result is not None or self.proc is None:
             return
         if self._why is None:
             self._why = 'cancel'
-        self._kill_group(grace)
+        self._advance_cleanup(grace)
 
     # -- observation ---------------------------------------------------------------------------
     def _check_init(self):
-        if self._init_done or self._mode is None:
+        """Scan for the init event (the first system/init line, whatever precedes it)."""
+        if self._init_found or self._mode is None:
             return
         try:
             with open(self.log_path, 'rb') as f:
@@ -230,19 +235,18 @@ class Session:
                 ev = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(ev, dict):
-                self._init_done = True
-                if ev.get('type') == 'system' and ev.get('subtype') == 'init':
-                    self._init_mode = ev.get('permissionMode')
+            if isinstance(ev, dict) and ev.get('type') == 'system' and ev.get('subtype') == 'init':
+                self._init_found = True
+                self._init_mode = ev.get('permissionMode')
                 return
 
     def _breach(self):
         self._check_init()
-        if self._init_mode is not None and self._mode is not None and self._init_mode != self._mode:
+        if self._init_found and self._init_mode != self._mode:
             return 'mode'
         now = self._clock()
         try:
-            size = os.stat(self.log_path).st_size
+            size = (os.stat(self.log_path).st_size, os.stat(self.err_path).st_size)
         except OSError:
             size = self._size
         if size != self._size:
@@ -255,20 +259,22 @@ class Session:
         return None
 
     def poll(self):
-        """The RoleResult once the session is over (its group is gone by then), else None."""
+        """The RoleResult once the session is over and its group is gone, else None. Never blocks: each
+        call sends at most one signal and records the SIGKILL deadline."""
         if self._result is not None:
             return self._result
-        rc = self.proc.poll()
-        if rc is None:
-            if self._why is None:
-                self._why = self._breach()
+        if self.proc.poll() is None and self._why is None:
+            self._why = self._breach()
             if self._why is None:
                 return None
-        self._kill_group(self._grace)
+        if not self._advance_cleanup(self._grace):
+            return None
         return self._finalize()
 
     def _finalize(self):
-        rc = self.proc.wait()
+        rc = self.proc.poll()
+        if rc is None:
+            rc = -signal.SIGKILL
         try:
             stderr = Path(self.err_path).read_text(errors='replace')
         except OSError:
@@ -287,7 +293,8 @@ class Session:
             s = _scan(self.log_path)
             text, usage, sid = s['text'], s['usage'], s['session_id']
             if self._why is None:
-                failure = classify(rc, stderr, s['is_error'], text if s['has_result'] else None)
+                failure = classify(rc, stderr, s['is_error'], text if s['has_result'] else None,
+                                   subtype=s['subtype'])
                 if failure == 'provider':
                     reason = _first_line('%s\n%s' % (stderr, text), _PROVIDER_RE)
                 elif failure:
@@ -299,6 +306,9 @@ class Session:
             failure, reason = 'card', 'permission-mode-mismatch'
         elif self._why == 'cancel':
             reason = 'cancelled'
+        elif not self._stage and self._mode is not None and s['permission_mode'] != self._mode:
+            # fail closed: a requested mode that the init event did not confirm (wrong, or no init at all)
+            failure, reason = 'card', 'permission-mode-mismatch'
         self._result = RoleResult(rc, text, usage, failure, reason, sid, self.log_path, timed_out, cancelled)
         return self._result
 

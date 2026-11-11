@@ -213,13 +213,29 @@ def test_cancel_kills_the_group_after_grace(e):
     time.sleep(0.5)
     t0 = time.monotonic()
     s.cancel(0.6)
+    assert time.monotonic() - t0 < 0.2, 'cancel must not block'
+    r = e.wait(s, limit=10)
     dt = time.monotonic() - t0
-    assert 0.5 <= dt < 5, dt
+    assert dt >= 0.5, dt
     assert not alive(s.pid)
-    r = s.poll()
-    assert r is not None and r.cancelled and not r.timed_out, r
+    assert r.cancelled and not r.timed_out, r
     s.cancel(0.1)
     s.cancel(0.1)
+
+
+@with_plans({'report': 'r', 'spawn_child': True, 'child_ignore_term': True, 'post': False})
+def test_poll_never_blocks(e):
+    s = e.launch(kill_grace=1.0)
+    r, worst = None, 0.0
+    end = time.monotonic() + 15
+    while r is None and time.monotonic() < end:
+        t0 = time.monotonic()
+        r = s.poll()
+        worst = max(worst, time.monotonic() - t0)
+        time.sleep(0.05)
+    assert r is not None and r.exit_code == 0, r
+    assert worst < 0.2, worst
+    assert not alive(e.child_pids()[0])
 
 
 @with_plans({'report': 'r', 'post': False})
@@ -317,6 +333,54 @@ def test_cwd_is_the_repo_root(e):
     rec = json.loads((e.fake / 'log.jsonl').read_text().splitlines()[0])
     assert rec['cwd'] == str(e.root), rec
     assert rec['argv'][:2] == ['-p', 'do it'], rec
+
+
+@with_plans({'report': 'r', 'sleep': 60, 'permission_mode': 'bypassPermissions', 'post': False,
+             'pre_events': [{'type': 'system', 'subtype': 'hook_started', 'hook': 'SessionStart'}]})
+def test_mismatch_is_found_after_a_non_init_event(e):
+    s = e.launch(permission_mode='auto', kill_grace=0.5)
+    r = e.wait(s)
+    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch' and r.cancelled, r
+
+
+@with_plans({'report': 'fine', 'permission_mode': 'bypassPermissions', 'post': False})
+def test_fast_exiting_mismatch_is_not_success(e):
+    r = e.wait(e.launch(permission_mode='auto'))
+    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch', r
+
+
+@with_plans({'report': 'fine', 'no_init': True, 'post': False})
+def test_missing_init_fails_closed(e):
+    r = e.wait(e.launch(permission_mode='auto'))
+    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch', r
+    r = Env({'report': 'fine', 'no_init': True, 'post': False})
+    try:
+        ok = r.wait(r.launch('nomode'))      # no mode requested: nothing to verify
+        assert ok.failure is None, ok
+    finally:
+        r.close()
+
+
+STAGE_CODE = ('import sys, time\n'
+              'for i in range(4):\n'
+              '    sys.stderr.write("working %d\\n" % i); sys.stderr.flush(); time.sleep(0.6)\n'
+              'print(\'{"input_tokens": 3, "output_tokens": 4}\')\n')
+
+
+def test_progress_counts_stderr_growth_for_stage_scripts():
+    e = Env()
+    try:
+        s = e.launch(argv=[sys.executable, '-c', STAGE_CODE], stage=True, progress_timeout=1.2, kill_grace=0.5)
+        r = e.wait(s)
+        assert not r.timed_out and r.failure is None and r.exit_code == 0, r
+        assert r.usage.input == 3 and r.usage.output == 4, r
+    finally:
+        e.close()
+
+
+def test_max_turns_subtype_is_always_a_card_failure():
+    assert roles.classify(1, 'rate limit 429', True, 'rate limit 429', subtype='error_max_turns') == 'card'
+    assert roles.classify(1, 'rate limit 429', True, 'rate limit 429', subtype='success') == 'provider'
 
 
 def test_missing_binary_is_a_provider_failure():
