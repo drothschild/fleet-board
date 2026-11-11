@@ -105,6 +105,76 @@ def test_timeout_kills_the_group(base):
     raise AssertionError('grandchild survived the timeout')
 
 
+def _alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def test_interrupt_kills_the_group(base):
+    """Any exception out of communicate (KeyboardInterrupt included) must not leave the child running."""
+    fake = Path(base) / 'hang'
+    fake.mkdir()
+    pidfile = Path(base) / 'hang.pid'
+    (fake / 'deps.sh').write_text('#!/bin/bash\nsleep 300 &\necho $! > "%s"\nwait\n' % pidfile)
+    real = scripts.subprocess.Popen
+
+    class Interrupted(real):
+        def communicate(self, *args, **kw):
+            for _ in range(100):
+                if pidfile.exists() and pidfile.read_text().strip():
+                    break
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+    old = scripts.SCRIPTS_DIR
+    scripts.SCRIPTS_DIR = fake
+    scripts.subprocess.Popen = Interrupted
+    try:
+        try:
+            scripts.run(Path(base), 'deps.sh', timeout=30)
+        except KeyboardInterrupt:
+            pass
+        else:
+            raise AssertionError('the interrupt was swallowed')
+    finally:
+        scripts.subprocess.Popen = real
+        scripts.SCRIPTS_DIR = old
+    pid = int(pidfile.read_text())
+    for _ in range(50):
+        if not _alive(pid):
+            return
+        time.sleep(0.1)
+    os.kill(pid, 9)
+    raise AssertionError('the child survived the interrupt')
+
+
+def test_timeout_is_bounded_when_a_descendant_holds_the_pipes(base):
+    """A descendant that left the process group keeps stdout open; the post-kill read must not wait for it."""
+    fake = Path(base) / 'escape'
+    fake.mkdir()
+    pidfile = Path(base) / 'escape.pid'
+    holder = ('import os, time\nos.setsid()\nopen(%r, "w").write(str(os.getpid()))\ntime.sleep(25)\n' % str(pidfile))
+    (fake / 'deps.sh').write_text(
+        '#!/bin/bash\npython3 -c \'%s\' &\nsleep 1\nwait\n' % holder.replace("'", "'\\''"))
+    old = scripts.SCRIPTS_DIR
+    scripts.SCRIPTS_DIR = fake
+    try:
+        started = time.time()
+        r = scripts.run(Path(base), 'deps.sh', timeout=1)
+        elapsed = time.time() - started
+    finally:
+        scripts.SCRIPTS_DIR = old
+        try:
+            os.kill(int(pidfile.read_text()), 9)
+        except (OSError, ValueError):
+            pass
+    assert r.timed_out is True and r.rc == 124, r
+    assert elapsed < 15, elapsed
+
+
 def test_fetch_parses_fixture_candidates(base):
     root, env = fixture_board(base, 'ready-start')
     run = lambda r, name, *args, **kw: scripts.run(r, name, *args, env=env, **kw)  # noqa: E731
