@@ -1,0 +1,14 @@
+[Unit]
+Description=Fleet Board supervisor (@@DESCRIPTION@@)
+
+[Service]
+Type=simple
+ExecStart=@@EXEC_START@@
+Restart=on-failure
+RestartSec=30
+@@ENVIRONMENT@@
+StandardOutput=append:@@LOG@@
+StandardError=append:@@LOG@@
+
+[Install]
+WantedBy=default.target

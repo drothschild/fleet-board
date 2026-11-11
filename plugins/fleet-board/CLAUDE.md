@@ -183,6 +183,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   fails closed; a default shutdown check reports unresolved while any attempt is live. Status shape
   is the merged `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
   (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
+  Boot registration (`supervisor/boot.py`, `supervisor.sh service install|uninstall|status|rollback`,
+  `templates/`): a per-user registry (0700/0600, `FLEET_BOARD_REGISTRY_DIR` overrides
+  `~/.fleet-board/supervisor-registry`) holds the runtime paths, protocol and env-var NAMES (never
+  values); the stable launcher `bin/boot` lives there, outside the plugin cache. Rendering/status never
+  call sudo: a macOS LaunchDaemon install only prints the privileged commands. `boot_registration` is
+  `missing` until installed, `pending_activation` until a probe confirms it. Generated-file tests prove
+  nothing about real reboots (Task 6.2).
 
 ## Invariants
 

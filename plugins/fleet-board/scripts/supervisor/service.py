@@ -11,7 +11,7 @@ import stat
 import threading
 import time
 
-from . import errors, paths
+from . import boot, errors, paths
 from .processes import _boot_id
 from .recovery import Recovery
 from .store import Store
@@ -498,6 +498,7 @@ class Service:
                         and (item["type"] != "command" or item["payload"].get("command") in ("start", "resume"))]
         latest = acknowledged[-1] if acknowledged else None
         running = [item for item in attempts if item["state"] in ("launching", "running", "result_ready")]
+        registration = boot.registration_state(self._config_root())
         observed_phase = ("unreachable" if self.writer_uncertain else
                           "running" if state["domain"]["desired_mode"] == "running" else
                           "stopped" if state["domain"]["desired_mode"] in ("paused", "stopped") else
@@ -519,7 +520,8 @@ class Service:
                           "waiting": sum(1 for x in state["jobs"] if x["state"] in ("queued", "retry_wait")),
                           "attention": sum(1 for x in state["jobs"] if x["state"] == "needs_attention")},
                 "config": {"enabled": self.execution_enabled, "execution_available": self.execution_available},
-                "boot_registration": "missing", "last_error": None,
+                "boot_registration": registration["boot_registration"],
+                "last_error": registration["last_error"],
                 "read_only": not self.execution_enabled, "claims": {"count": len(claims)}}
 
     def _config_root(self):

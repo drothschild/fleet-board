@@ -27,12 +27,34 @@ def _argv(board_root, log_dir):
             "--log-dir", str(Path(log_dir).absolute())]
 
 
-def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
-    """Start `supervisor.cli serve` detached for board_root and return its readiness ack.
+def service_log_path(env=None):
+    """Where the detached service's stderr goes: a real file, never a pipe nobody drains."""
+    return paths.log_dir(env) / "supervisor-service.log"
+
+
+def _open_log(path):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def _log_tail(path, offset):
+    try:
+        with open(str(path), "rb") as stream:
+            stream.seek(offset)
+            return stream.read().decode("utf-8", "replace").strip()
+    except OSError:
+        return ""
+
+
+def launch_child(board_root, env=None, timeout=READY_TIMEOUT):
+    """Start `supervisor.cli serve` detached for board_root; return (child, ack).
 
     The ack is returned as the service printed it. `owner: false` is a valid answer: another
     healthy owner won the lock, and the caller reconnects to it. Raises LaunchError when the
-    child times out, exits first, or reports it cannot serve (the child is terminated)."""
+    child times out, exits first, or reports it cannot serve (the child is terminated).
+    The caller owns the child (and its stdout pipe) afterwards; stderr is a log file."""
     env = os.environ if env is None else env
     board_root = Path(board_root).resolve(strict=True)
     log_dir = str(paths.log_dir(env))
@@ -43,16 +65,22 @@ def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
                                                if child_env.get("PYTHONPATH") else "")})
     if env.get("FLEET_BOARD_SOCKET_DIR"):
         child_env["FLEET_BOARD_SOCKET_DIR"] = env["FLEET_BOARD_SOCKET_DIR"]
-    child = subprocess.Popen(_argv(board_root, log_dir), cwd=str(board_root), env=child_env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, start_new_session=True)
+    log_path = service_log_path(env)
+    log_fd = _open_log(log_path)
+    offset = os.fstat(log_fd).st_size
+    try:
+        child = subprocess.Popen(_argv(board_root, log_dir), cwd=str(board_root), env=child_env,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log_fd,
+                                 text=True, start_new_session=True)
+    finally:
+        os.close(log_fd)
     ready, _, _ = select.select([child.stdout], [], [], timeout)
     if not ready:
         _discard(child)
         raise LaunchError("supervisor service readiness timed out after %.0f seconds" % timeout)
     line = child.stdout.readline()
     if not line:
-        detail = child.stderr.read().strip()
+        detail = _log_tail(log_path, offset)
         _discard(child)
         raise LaunchError("supervisor service exited before readiness" + (": " + detail[-300:] if detail else ""))
     try:
@@ -63,13 +91,18 @@ def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
     if not isinstance(ack, dict) or not ack.get("ready") or ack.get("socket_unavailable"):
         _discard(child)
         raise LaunchError("supervisor service failed to become ready: " + json.dumps(ack))
-    # The child owns its own life from here; reap it when it exits so a long-lived caller
-    # (the board server) leaves no zombie after a Stop.
-    for pipe in (child.stdout, child.stderr):
-        try:
-            pipe.close()
-        except (OSError, ValueError):
-            pass
+    return child, ack
+
+
+def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
+    """launch_child() for a caller that does not supervise the child: it owns its own life
+    from here, and is reaped when it exits so a long-lived caller (the board server) leaves
+    no zombie after a Stop."""
+    child, ack = launch_child(board_root, env=env, timeout=timeout)
+    try:
+        child.stdout.close()
+    except (OSError, ValueError):
+        pass
     threading.Thread(target=_reap, args=(child,), daemon=True).start()
     return ack
 

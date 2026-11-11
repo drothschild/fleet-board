@@ -217,6 +217,28 @@ rm ~/Library/LaunchAgents/com.example.fleet-board.plist
 
 The plugin path changes when the plugin updates. After an update, run `/fleet-board:status` again and fix `<plugin-dir>` in the plist.
 
+### Persistent supervisor: boot registration (experimental)
+
+The persistent supervisor (`supervisor.enabled`, default `false`) can be registered with the OS so a domain is restored after a reboot. Registration is always an explicit action; a YAML value alone never installs a service.
+
+```bash
+FLEET_BOARD_DOMAIN=/path/to/repo supervisor.sh service install            # register + render, nothing is started
+FLEET_BOARD_DOMAIN=/path/to/repo supervisor.sh service install --apply    # also run the unprivileged activation commands
+FLEET_BOARD_DOMAIN=/path/to/repo supervisor.sh service status
+supervisor.sh service rollback                                            # restore the previous runtime after an upgrade
+FLEET_BOARD_DOMAIN=/path/to/repo supervisor.sh service uninstall --apply
+```
+
+- Install never calls `sudo`. On macOS the default `--kind boot` renders a LaunchDaemon that runs as your user (`UserName`), which is the only way to recover before anyone logs in. Installing it needs an administrator, so the command prints the exact `sudo` commands for you to run. `--kind login` is a LaunchAgent that starts at login only; status reports it as `login_fallback`, never as boot recovery.
+- On Linux the unit is a systemd user service. Pre-login recovery also needs lingering (`loginctl enable-linger <user>`); status reports `lingering_missing` and prints the command, but never runs it for you.
+- `boot_registration` in status is `missing` (nothing registered), `pending_activation` (registered but not confirmed active), `verified`, `login_fallback` or `lingering_missing`. Only a probe by `service status` can make it `verified`.
+- The registry (`~/.fleet-board/supervisor-registry`, or `FLEET_BOARD_REGISTRY_DIR`; 0700 directory, 0600 files) records executable paths, the protocol version and the names of credential variables (`--credential-env NAME`, repeatable). Secret values are never written. The service reads credentials from its own environment, or from `credentials.env` in the registry directory if you create it with mode 0600.
+- First install leaves the desired mode `stopped`. At boot, `supervisor.start_on_boot: true` restores `running` (recovery, then scheduling) and `paused` (recovery, then paused); `stopped` stays stopped. `false` skips boot activation, but an explicit Start still works and a crash restart in the same boot recovers an explicitly started domain. The boot entry re-reads the YAML and the host boot id every time.
+- Problems that need you (invalid YAML, repository missing, executable missing, credentials missing, protocol mismatch) are shown as `last_error` in status, launch nothing, and never touch stored state. The boot entry exits with code 75 so the service manager retries every 30 seconds until you fix it.
+- Service output goes to `supervisor-service.log` and `supervisor-boot.log` in the log directory. Upgrading re-runs `service install`; the previous runtime is backed up and `service rollback` restores it.
+
+These generated-file tests prove file contents and decisions only. They do not prove that a service starts after a real reboot; that is verified separately on a real host.
+
 ### Verified merge draining
 
 After settlement, auto-policy runs drain up to `FLEET_BOARD_MERGE_LIMIT` merge attempts (default 10) from the review-column snapshot. Each attempt uses a fresh plan and binds the merge to its planned head. Failed candidates are attempted once per drain; unrelated eligible cards can proceed. Previously merged cards needing verification are recovered first.

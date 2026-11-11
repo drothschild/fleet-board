@@ -8,7 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import launcher, paths
+from . import boot, launcher, paths
 from .service import Service
 
 
@@ -77,6 +77,21 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     serve.add_argument("--log-dir", required=True)
     # Accepted and ignored: the socket location no longer derives from TMPDIR (see paths.socket_base).
     serve.add_argument("--socket-tmp")
+    service = subs.add_parser("service")
+    service_subs = service.add_subparsers(dest="service_command", required=True, parser_class=UsageParser)
+    for name in ("install", "uninstall", "status", "rollback"):
+        sub = service_subs.add_parser(name)
+        sub.add_argument("--domain")
+        sub.add_argument("--platform", choices=("darwin", "linux"))
+        if name in ("install", "uninstall"):
+            sub.add_argument("--install-dir")
+            sub.add_argument("--apply", action="store_true")
+        if name == "install":
+            sub.add_argument("--kind", choices=("boot", "login"), default="boot")
+            sub.add_argument("--output-dir")
+            sub.add_argument("--credential-env", action="append", default=[])
+    boot_cmd = subs.add_parser("boot")
+    boot_cmd.add_argument("--domain", required=True)
     try:
         args = parser.parse_args(argv)
     except (ValueError, SystemExit) as exc:
@@ -91,6 +106,10 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     if args.command == "resolve":
         args.reason = args.reason or "manual resolution"
     try:
+        if args.command == "boot":
+            return boot.run_boot(args.domain, env=env)
+        if args.command == "service":
+            return _service(args, env, stdout)
         if args.command == "serve":
             os.environ["FLEET_BOARD_LOG_DIR"] = args.log_dir
             board_root = Path(args.domain).resolve(strict=True)
@@ -105,6 +124,7 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                     pass
             finally:
                 service.close()
+            return 0
         domain_root = env.get("FLEET_BOARD_DOMAIN")
         if not domain_root and transport is None:
             raise ValueError("FLEET_BOARD_DOMAIN is required")
@@ -147,6 +167,26 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     except Exception as exc:
         print("supervisor: " + str(exc), file=stderr)
         return 2 if "unsupported" in str(exc).lower() else 1
+
+
+def _service(args, env, stdout):
+    """`service install|uninstall|status|rollback`: boot registration. Nothing here runs sudo;
+    install prints the privileged commands a macOS LaunchDaemon needs for a person to run."""
+    if args.service_command == "rollback":
+        result = boot.rollback(env=env)
+    else:
+        root = args.domain or env.get("FLEET_BOARD_DOMAIN")
+        if not root:
+            raise ValueError("FLEET_BOARD_DOMAIN or --domain is required")
+        if args.service_command == "install":
+            result = boot.install(root, env=env, platform=args.platform, kind=args.kind, output_dir=args.output_dir,
+                                  install_dir=args.install_dir, apply=args.apply, credentials=args.credential_env)
+        elif args.service_command == "uninstall":
+            result = boot.uninstall(root, env=env, install_dir=args.install_dir, apply=args.apply)
+        else:
+            result = boot.probe(root, env=env)
+    print(json.dumps(result), file=stdout)
+    return 1 if result.get("failed") else 0
 
 
 def _try_status(transport):
