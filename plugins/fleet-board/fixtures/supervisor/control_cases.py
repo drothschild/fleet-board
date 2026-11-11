@@ -705,6 +705,24 @@ class ControlContracts(unittest.TestCase):
         store._Store__connection.execute("UPDATE attempts SET data=? WHERE id='attempt-12'", (json.dumps(data),))
         self.assertEqual(self.service.shutdown_observer(), "stopped")
 
+    def test_queue_ready_is_unknown_until_a_scheduler_knows_the_board(self):
+        # The service does not read board cards, so a 0 would be a false statement.
+        queue = self.service.get_status()["queue"]
+        self.assertIsNone(queue["ready"], "queue.ready must be unknown (null), never a made-up 0")
+        self.assertIsNone(self.service.status_view()["queue"]["ready"])
+
+    def test_cancel_requested_attempt_is_still_a_possible_writer_for_the_default_observer(self):
+        # `stop --mode cancel` puts every live attempt in cancel_requested BEFORE stop_serving():
+        # a requested cancellation is not a stopped writer until the runner confirms it.
+        store = self.service.store
+        self.make_attempt()
+        revision = lambda: store.snapshot()["domain"]["revision"]
+        store.update_attempt("attempt-12", {"state": "running"}, revision())
+        store.request_cancellation("attempt-12", "cancel-1", "supervisor stop requested", revision(), now=self.clock())
+        state = next(x for x in store.snapshot()["attempts"] if x["id"] == "attempt-12")["state"]
+        self.assertEqual(state, "cancel_requested")
+        self.assertEqual(self.service.shutdown_observer(), "unknown")
+
     def test_stop_with_a_live_attempt_and_no_injected_observer_is_unresolved_not_terminated(self):
         store = self.service.store
         self.make_attempt()

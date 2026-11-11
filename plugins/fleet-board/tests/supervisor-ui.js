@@ -269,9 +269,11 @@ async function main() {
       await card.fire("click"); await h.waitForRequests(); return h; };
     for(const scenario of ["paused","writer","quarantined"]) {
       const x=real[scenario].execution, h=await open(scenario), items=itemsOf(h), text=h.$("supervisor-status").textContent;
-      assert.doesNotMatch(text,/unknown/i,scenario+": status bar shows unknown for a value the service knows: "+text);
+      // queue.ready is null (the service does not read board cards): the ONLY allowed "unknown" here.
+      assert.equal(items.ready,"unknown",scenario+": a null queue.ready must read unknown, not a made-up count");
+      assert.doesNotMatch(text.replace(/ready\s+unknown/i,""),/unknown/i,scenario+": status bar shows unknown for a value the service knows: "+text);
       assert.match(items.slots||"",/^\d+ \/ 3$/,scenario+": slots not populated: "+JSON.stringify(items));
-      for(const k of ["ready","running","waiting","attention"]) assert.match(String(items[k]),/^\d+$/,scenario+": queue "+k+" not populated");
+      for(const k of ["running","waiting","attention"]) assert.match(String(items[k]),/^\d+$/,scenario+": queue "+k+" not populated");
       assert.match(items.budget||"",/\$1\.25 known/,scenario+": budget not populated");
       assert.match(items["boot registration"]||"",/^missing/,scenario+": boot registration not populated");
       assert.equal(items.desired,"stopped"); assert.equal(items.phase,"stopped");

@@ -792,8 +792,9 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertEqual(payload["capacity"]["global_cap"], 3, "global_cap must come from limits.concurrency")
         self.assertEqual(payload["capacity"]["per_provider"], {"fixture": 1})
         self.assertEqual(set(payload["queue"]), {"ready", "running", "waiting", "attention"})
-        for value in payload["queue"].values():
-            self.assertIsInstance(value, int)
+        self.assertIsNone(payload["queue"]["ready"], "the service does not read board cards: ready is unknown")
+        for key in ("running", "waiting", "attention"):
+            self.assertIsInstance(payload["queue"][key], int)
         self.assertEqual(payload["claims"], {"count": 1})
         self.assertEqual(payload["config"], {"enabled": True, "execution_available": True})
 

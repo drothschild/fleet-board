@@ -123,7 +123,7 @@ class Service:
         self.writer_uncertain = False
         self._run_lock_claimed = False
 
-    _WRITER_STATES = ("launching", "running", "result_ready", "quarantined")
+    _WRITER_STATES = ("launching", "running", "result_ready", "cancel_requested", "interrupted", "quarantined")
 
     def _observe_shutdown(self):
         """Default shutdown observer: fail closed. Runners outlive the supervisor by design, so
@@ -514,7 +514,7 @@ class Service:
                 "capacity": {"slots": len(running), "global_cap": self._global_cap(),
                              "per_provider": {provider: sum(1 for x in claims if x["provider"] == provider)
                                               for provider in sorted({x["provider"] for x in claims})}},
-                "queue": {"ready": 0, "running": len(running),
+                "queue": {"ready": None, "running": len(running),
                           "waiting": sum(1 for x in state["jobs"] if x["state"] in ("queued", "retry_wait")),
                           "attention": sum(1 for x in state["jobs"] if x["state"] == "needs_attention")},
                 "config": {"enabled": self.execution_enabled, "execution_available": self.execution_available},
