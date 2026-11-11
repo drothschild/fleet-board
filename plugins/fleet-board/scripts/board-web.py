@@ -1323,7 +1323,7 @@ def supervisor_domain_id():
 
 
 # One status per service error code (the service classifies by exception type, never by text).
-SUPERVISOR_ERROR_STATUS = {"invalid": 400, "uncertain_writer": 409, "disabled": 409,
+SUPERVISOR_ERROR_STATUS = {"invalid": 400,
                            "unauthenticated": 403, "unavailable": 503, "internal": 500}
 
 
@@ -1352,6 +1352,7 @@ def proxy_call(command, body=None, **extra):
                     current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
                 except Exception:
                     current = None
+            current = webproxy.ui_status(current)
             raise ApiError(409, msg, {"current": current, "code": code})
         if code in SUPERVISOR_ERROR_STATUS:
             # Internal detail never reaches the browser: the service already redacted it.
@@ -1359,6 +1360,7 @@ def proxy_call(command, body=None, **extra):
                            "internal error" if code == "internal" else msg, {"code": code})
         raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
     if command == "status":
+        result = webproxy.ui_status(result)
         webproxy.remember(domain_id, result)
     return result
 
@@ -1386,7 +1388,7 @@ def ensure_service():
         if answers():  # another request launched it while we waited for the lock
             return False
         try:
-            supervisor_launcher.launch_service(APP["root"])
+            supervisor_launcher.launch_detached(APP["root"], supervisor_paths.log_dir() / "supervisor.log")
         except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
             raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
         if not supervisor_launcher.wait_until(answers, timeout=5.0):
@@ -1414,16 +1416,18 @@ def proxy_control(command, body):
         raise ApiError(400, "request_id and integer expected_revision are required")
     if command == "stop":
         body.setdefault("mode", "drain")
-    launched = False
-    if command == "start" and ensure_service():
-        # The client could not have seen the revision of a service that was not running: bind
-        # the Start to the fresh one. The request id stays the caller's, so a retry dedupes.
-        launched = True
-        body = dict(body, expected_revision=proxy_call("status").get("revision", 0))
+    if command == "start":
+        # Start means "a supervisor is running": launch it when nothing answers. The running
+        # supervisor has no start command, so a Start never changes its state.
+        launched = ensure_service()
+        status = proxy_call("status")
+        result = {"command_id": body["request_id"], "state_revision": status.get("revision"),
+                  "desired_mode": status.get("desired_mode"), "phase": status.get("phase")}
+        return 202, (dict(result, launched=True) if launched else result)
     result = proxy_call(command, body)
-    if command == "stop" and isinstance(result, dict) and result.get("terminated") is True:
+    if command == "stop" and isinstance(result, dict) and result.get("stopping") is True:
         remember_stopped(result)
-    return 202, (dict(result, launched=True) if launched and isinstance(result, dict) else result)
+    return 202, result
 
 
 def supervisor_snapshot():
@@ -1436,11 +1440,10 @@ def supervisor_snapshot():
             raise
         prior = webproxy.last(domain_id)
         known = prior[1] if prior else None
-        return {"schema_version": None, "ready": None, "read_only": True, "desired_mode": None,
-                "phase": None, "revision": None, "host_boot_id": None,
-                "execution_available": False, "shutdown": None,
-                "heartbeat": None, "session": None, "capacity": None, "queue": None,
-                "config": None, "boot_registration": None, "last_error": None, "claims": None,
+        return {"schema_version": None, "ready": None, "revision": None, "desired_mode": None,
+                "phase": None, "run_id": None, "mode": None, "pause_reason": None, "active": None,
+                "lane": None, "provider_health": None, "run_tokens": None, "pid": None, "root": None,
+                "capacity": None, "queue": None,
                 "unreachable": True, "last_known": known,
                 "last_known_at": prior[0] if prior else None, "occupancy": None}
 

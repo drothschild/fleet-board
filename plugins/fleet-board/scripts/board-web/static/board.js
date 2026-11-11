@@ -2682,24 +2682,9 @@ function renderSupervisor() {
     frag.appendChild(supItem(warn ? "sup-warn" : "", k, isNum(n) ? n : "unknown"));
   }
 
-  const b = view.session && typeof view.session === "object" ? view.session : null;
-  if (b) {
-    const parts = [isNum(b.known_spend) ? "$" + b.known_spend.toFixed(2) + " known" : "spend unknown"];
-    if (b.unknown_spend === true) parts.push("plus unknown spend");
-    const ms = toMs(b.deadline);
-    frag.appendChild(supItem(b.unknown_spend === true ? "sup-warn" : "", "budget", parts.join(", ")));
-    if (b.deadline) frag.appendChild(supItem("", "deadline", ms !== null ? fmtUtc(ms) : clean(b.deadline, 64)));
-  } else {
-    frag.appendChild(supItem("sup-warn", "budget", "unknown"));
+  if (view.mode === "paused" && typeof view.pause_reason === "string" && view.pause_reason) {
+    frag.appendChild(supItem("sup-warn", "paused", clean(view.pause_reason, 200)));
   }
-
-  // boot registration: only a verified registration is reported as present
-  const boot = typeof view.boot_registration === "string" && view.boot_registration ? view.boot_registration : null;
-  const bootState = boot || "";
-  if (!boot) frag.appendChild(supItem("sup-warn", "boot registration", "unknown"));
-  else if (bootState === "missing") frag.appendChild(supItem("sup-warn", "boot registration", "missing (local session only; it will not restart after a reboot)"));
-  else if (bootState === "verified") frag.appendChild(supItem("", "boot registration", "registered and verified"));
-  else frag.appendChild(supItem("sup-warn", "boot registration", clean(bootState || "unknown", 60) + " (not verified)"));
 
   const hb = toMs(supHeartbeatAt(view));
   if (hb !== null && !sup.stale) frag.appendChild(supItem("", "heartbeat", ageText(hb)));

@@ -19,7 +19,28 @@ _LAST_LOCK = threading.Lock()
 _LAST_LIMIT = 128
 
 
+def ui_status(status):
+    """A v2 status plus the keys board.js reads (desired_mode, phase, ready, capacity, queue).
+
+    The supervisor reports only what it knows; anything it does not know stays null, which the
+    page renders as unknown. Anything that is not a v2 status is returned unchanged."""
+    if not isinstance(status, dict) or status.get("schema_version") != 2:
+        return status
+    active = status.get("active") if isinstance(status.get("active"), list) else []
+    providers = {}
+    for action in active:
+        name = action.get("provider") if isinstance(action, dict) else None
+        if isinstance(name, str):
+            providers[name] = providers.get(name, 0) + 1
+    return dict(status, desired_mode=status.get("mode"), phase=status.get("mode"), ready=True,
+                capacity={"slots": len(active), "global_cap": None, "per_provider": providers},
+                queue={"ready": None, "running": len(active), "waiting": None, "attention": None})
+
+
 def socket_path(domain_id):
+    """The control socket for a domain. FLEET_BOARD_SUPERVISOR_SOCKET overrides it; the override's
+    parent directory and that directory's parent (its grandparent) must both be private (0700),
+    owned by this user and not symlinks, or the request is refused."""
     override = os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET")
     if override:
         return override
