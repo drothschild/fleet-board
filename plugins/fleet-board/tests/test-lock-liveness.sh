@@ -44,6 +44,24 @@ for kind in fb fl; do
   kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null; rm -rf "$lock"
 done
 
+# Card 254: a pid-less lock (crash between mkdir and the pid write) is eventually taken over,
+# but not before a grace period, so a lock being created is not stolen.
+export FLEET_BOARD_LOCK_PIDLESS_GRACE=1 FLEET_BOARD_LOCK_WAIT=4
+for kind in fb fl; do
+  lock=$FB; [ $kind = fl ] && lock=$FL
+  mkdir -p "$lock"
+  out=$(run_$kind)
+  case "$out" in *acquired*) ok "$kind: an empty lock dir is eventually taken over" ;; *) bad "$kind: empty lock dir never taken over: $out" ;; esac
+  rm -rf "$lock"
+done
+export FLEET_BOARD_LOCK_PIDLESS_GRACE=60 FLEET_BOARD_LOCK_WAIT=1
+mkdir -p "$FB"
+out=$(run_fb)
+case "$out" in *acquired*) bad "fb: empty lock dir taken over inside the grace period" ;; *) ok "fb: empty lock dir is kept during the grace period" ;; esac
+rm -rf "$FB"
+unset FLEET_BOARD_LOCK_PIDLESS_GRACE
+export FLEET_BOARD_LOCK_WAIT=2
+
 # fl_lock_next records the owner pid
 ( . "$S/board-lib.sh"; . "$S/adapters/local/local-lib.sh"; fb_cfg() { case "$1" in board.dir) echo bd ;; esac; }
   fl_lock_next; [ -s "$FL/pid" ] ) && ok "fl_lock_next writes an owner pid file" || bad "fl_lock_next writes no pid file"
