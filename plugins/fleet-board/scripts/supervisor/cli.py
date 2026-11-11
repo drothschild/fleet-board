@@ -168,6 +168,15 @@ def _start(root, stdout, stderr):
     state = State(uuid.uuid4().hex, time.time)
     handler = StubHandler(state)
     service = Service(root, state, handler)
+    # Installed before readiness is announced (and before the socket exists): a signal at any
+    # point after this ends the run through close(), never leaving a socket or run lock behind.
+    # Ctrl-C and SIGTERM end the run now; draining arrives with the loop.
+    previous = {}
+    for number in (signal.SIGINT, signal.SIGTERM):
+        try:
+            previous[number] = signal.signal(number, lambda _signum, _frame: handler.request_stop("cancel"))
+        except ValueError:
+            pass  # not the main thread: the caller stops it through the socket
     try:
         ack = service.serve()
         if not ack.get("owner"):
@@ -178,17 +187,14 @@ def _start(root, stdout, stderr):
                 print("supervisor already running for %s (pid %s)" % (root, pid if pid else "unknown"), file=stderr)
             return 1
         print(json.dumps(ack), file=stdout, flush=True)
-        # Ctrl-C and SIGTERM end the run now; draining arrives with the loop.
-        for number in (signal.SIGINT, signal.SIGTERM):
-            try:
-                signal.signal(number, lambda _signum, _frame: handler.request_stop("cancel"))
-            except ValueError:
-                pass  # not the main thread: the caller stops it through the socket
         while not handler.stop_requested.wait(0.2):
             pass
         return 0
     finally:
         service.close()
+        for number, old in previous.items():
+            if old is not None:
+                signal.signal(number, old)
 
 
 def _human_status(status):

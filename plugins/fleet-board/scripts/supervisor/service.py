@@ -326,14 +326,17 @@ class Service:
 
     def _mutate(self, request):
         with self._lock:
+            canonical = paths.canonical_json(request)
             replay = self._replies.get(request["request_id"])
             if replay is not None:
-                return replay
+                if replay[0] != canonical:
+                    raise errors.Invalid("command ID already used for a different request")
+                return replay[1]
             if request["expected_revision"] != self.state.revision:
                 raise errors.StaleRevision("state revision is %d, not %d"
                                            % (self.state.revision, request["expected_revision"]))
             result = self.handler(dict(request))
-            self._replies[request["request_id"]] = result
+            self._replies[request["request_id"]] = (canonical, result)
             while len(self._replies) > _REPLAYS:
                 self._replies.popitem(last=False)
             return result
