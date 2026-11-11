@@ -610,7 +610,7 @@ class WatchCase(BootCase):
     def world_activate(self, root, launch_env):
         self.log.append("start")
 
-    def watch(self, ticks, script=None, interval=10.0, env=None, boot_id="boot-1"):
+    def watch(self, ticks, script=None, interval=10.0, env=None, boot_id="boot-1", **extra):
         tick = [0]
 
         def sleep(seconds):
@@ -623,7 +623,7 @@ class WatchCase(BootCase):
         return boot.watch(self.board, env=env or self.env(), boot_id=boot_id, interval=interval, sleep=sleep,
                           clock=lambda: self.now[0], launch=self.world_launch, activate=self.world_activate,
                           owner_alive=lambda root, entry: self.owner, live_status=lambda root, entry: self.live,
-                          max_ticks=ticks)
+                          max_ticks=ticks, **extra)
 
 
 class ResidentWatcher(WatchCase):
@@ -706,8 +706,11 @@ class ResidentWatcher(WatchCase):
             record["version"] = "9.9.9"
             record_path.write_text(json.dumps(record), encoding="utf-8")
 
-        self.assertEqual(self.watch(5, script), boot.EXIT_WAITING,
-                         "after an upgrade or rollback the resident process must restart to load the new runtime")
+        def no_exec(path, argv):
+            raise OSError("exec is not possible here")
+
+        self.assertEqual(self.watch(5, script, execv=no_exec), boot.EXIT_WAITING,
+                         "when the in-place re-exec is impossible the entry still asks the manager for a restart")
 
     def test_interval_defaults_and_env_override(self):
         self.assertEqual(boot.watch_interval({}), 15.0)
@@ -1069,6 +1072,440 @@ class CliSocketTrust(BootCase):
         trusted = self.cli("status", env=env)
         self.assertEqual(trusted.returncode, 0, trusted.stderr)
         self.assertIn("stub", trusted.stdout)
+
+
+class CredentialReread(WatchCase):
+    """I-A: the credentials file is evaluated on every tick, never frozen at process start."""
+
+    def setUp(self):
+        super().setUp()
+        self.install("--credential-env", "FB_TEST_TOKEN")
+        self.set_mode("running")
+        self.launched_env = []
+
+    def world_launch(self, root, launch_env):
+        self.launched_env.append(dict(launch_env))
+        return super().world_launch(root, launch_env)
+
+    def write_cred(self, text, mode=0o600):
+        path = self.registry() / "credentials.env"
+        path.write_text(text, encoding="utf-8")
+        os.chmod(str(path), mode)
+
+    def no_exec(self, path, argv):
+        self.fail("a credentials change must never re-exec or restart the watcher")
+
+    def reasons(self):
+        return (boot.registration_state(self.board, self.env()).get("last_error") or {}).get("code")
+
+    def test_a_file_created_after_start_is_picked_up_by_the_next_tick(self):
+        seen = []
+
+        def script(tick):
+            seen.append(self.reasons())
+            if tick == 1:
+                self.write_cred("FB_TEST_TOKEN=%s\n" % SECRET)
+
+        import contextlib
+        import io
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            result = self.watch(4, script, execv=self.no_exec)
+        self.assertIsNone(result, "the watcher must keep running; no restart is needed")
+        self.assertEqual(seen[0], "missing_credentials")
+        self.assertEqual(self.log, ["launch", "start"])
+        self.assertEqual(self.launched_env[0].get("FB_TEST_TOKEN"), SECRET,
+                         "the service must get the value read on that tick")
+        self.assertNotIn(SECRET, errors.getvalue())
+        for path in self.registry().rglob("*"):
+            if path.is_file() and path.name != "credentials.env":
+                self.assertNotIn(SECRET, path.read_text(encoding="utf-8", errors="replace"), str(path))
+
+    def test_a_file_with_a_loose_mode_waits_until_it_is_fixed(self):
+        self.write_cred("FB_TEST_TOKEN=%s\n" % SECRET, mode=0o644)
+        seen = []
+
+        def script(tick):
+            seen.append(boot.registration_state(self.board, self.env())["last_error"])
+            if tick == 2:
+                os.chmod(str(self.registry() / "credentials.env"), 0o600)
+
+        self.watch(5, script, execv=self.no_exec)
+        self.assertEqual(seen[0]["code"], "missing_credentials")
+        self.assertIn("0600", seen[0]["message"], "say how to fix it")
+        self.assertEqual(self.log, ["launch", "start"])
+        self.assertEqual(self.launched_env[0].get("FB_TEST_TOKEN"), SECRET)
+
+    def test_the_file_is_parsed_never_executed(self):
+        marker = self.work / "EXECUTED"
+        self.write_cred("# a comment\nexport FB_TEST_TOKEN=\"two words\"\nOTHER='x y'\nTRAP=$(touch %s)\n" % marker)
+        self.watch(3, execv=self.no_exec)
+        env = self.launched_env[0]
+        self.assertEqual(env.get("FB_TEST_TOKEN"), "two words")
+        self.assertEqual(env.get("OTHER"), "x y")
+        self.assertFalse(marker.exists(), "credentials.env must be parsed as data, not sourced by a shell")
+
+    def test_launch_passes_the_values_to_the_service_environment_not_argv(self):
+        seen = {}
+
+        def fake_launch_child(root, env=None, timeout=None, extra_env=None):
+            seen["extra_env"] = dict(extra_env or {})
+            seen["env"] = dict(env or {})
+            return FakeChild(), {"ready": True}
+
+        with mock.patch.object(boot.launcher, "launch_child", fake_launch_child):
+            boot._launch(self.board, {"FB_TEST_TOKEN": SECRET, "HOME": str(self.home)})
+        self.assertEqual(seen["extra_env"].get("FB_TEST_TOKEN"), SECRET)
+        self.assertNotIn(SECRET, " ".join(boot.launcher._argv(self.board, str(self.logs))))
+
+
+class LinuxAndMacKillSemantics(BootCase):
+    """I-B: ending or restarting the watcher must never take serve and its runners with it."""
+
+    def test_systemd_unit_kills_only_the_main_process(self):
+        text = Path(self.install()["rendered"]).read_text(encoding="utf-8")
+        self.assertIn("KillMode=process", text.splitlines())
+
+    def test_launchd_plist_abandons_the_process_group(self):
+        result = self.install("--kind", "boot", platform="darwin")
+        self.assertIs(plistlib.loads(Path(result["rendered"]).read_bytes()).get("AbandonProcessGroup"), True)
+
+    def test_a_runtime_change_re_execs_in_place_instead_of_exiting(self):
+        record_path = self.registry() / "registry.json"
+        calls = []
+
+        class Exec(Exception):
+            pass
+
+        def execv(path, argv):
+            calls.append((path, list(argv)))
+            raise Exec()
+
+        self.install()
+
+        def sleep(seconds):
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["version"] = "9.9.9"
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+
+        with self.assertRaises(Exec):
+            boot.watch(self.board, env=self.env(), boot_id="boot-1", interval=1.0, sleep=sleep, execv=execv,
+                       owner_alive=lambda *a: False, live_status=lambda *a: None, max_ticks=5)
+        self.assertEqual(calls, [("/bin/bash", ["/bin/bash", str(self.registry() / "bin" / "boot"),
+                                                "--domain", str(self.board)])])
+
+
+class ReexecProcess(BootCase):
+    """A real watcher process: the runtime changes, the pid stays and the served child survives."""
+
+    served_pids = ResidentProcess.served_pids
+    wait_for = ResidentProcess.wait_for
+    status_or_none = ResidentProcess.status_or_none
+
+    def start_watcher(self, env):
+        launcher = self.install(*self.install_args)["launcher"]
+        self.errfile = self.work / "watcher.err"
+        stream = open(str(self.errfile), "w")
+        self.addCleanup(stream.close)
+        watcher = subprocess.Popen(["bash", launcher, "--domain", str(self.board)], env=env,
+                                   stdout=subprocess.DEVNULL, stderr=stream, text=True)
+        self.addCleanup(EndToEnd.reap, watcher)
+        self.addCleanup(lambda: [os.kill(p, 9) for p in self.served_pids()])
+        return watcher
+
+    install_args = ()
+
+    def err(self):
+        return self.errfile.read_text(encoding="utf-8", errors="replace")
+
+    def skip_if_sandboxed(self, watcher):
+        if "Operation not permitted" in self.err():
+            self.skipTest("sandbox denies local Unix socket service")
+
+    def test_runtime_change_keeps_the_watcher_pid_and_the_served_child(self):
+        self.set_mode("running")
+        env = self.env(FLEET_BOARD_BOOT_INTERVAL="0.3")
+        watcher = self.start_watcher(env)
+        first = self.wait_for(self.served_pids)
+        if not first:
+            self.skip_if_sandboxed(watcher)
+            self.fail("the watcher never launched the domain: " + self.err())
+        pid = watcher.pid
+        record_path = self.registry() / "registry.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["version"] = "9.9.9"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.assertTrue(self.wait_for(lambda: "runtime reloaded" in self.err()),
+                        "the watcher never re-executed itself: " + self.err())
+        time.sleep(1.5)
+        self.assertIsNone(watcher.poll(), "the watcher must not exit on an upgrade (the unit would restart)")
+        self.assertEqual(watcher.pid, pid)
+        self.assertEqual(self.served_pids(), first, "the served child must survive a runtime change untouched")
+        watcher.terminate()
+        self.assertEqual(watcher.wait(timeout=30), 0)
+        self.assertEqual(self.served_pids(), first, "ending the watcher must not stop the service")
+
+    def test_credentials_file_created_later_launches_without_restarting_the_watcher(self):
+        self.install_args = ("--credential-env", "FB_TEST_TOKEN")
+        self.set_mode("running")
+        env = self.env(FLEET_BOARD_BOOT_INTERVAL="0.3")
+        watcher = self.start_watcher(env)
+        pid = watcher.pid
+        time.sleep(2)
+        self.assertEqual(self.served_pids(), [], "no credentials yet: nothing may launch")
+        self.assertIsNone(watcher.poll())
+        state = boot.registration_state(self.board, env)
+        self.assertEqual(state["last_error"]["code"], "missing_credentials")
+        path = self.registry() / "credentials.env"
+        path.write_text("FB_TEST_TOKEN=%s\n" % SECRET, encoding="utf-8")
+        os.chmod(str(path), 0o600)
+        found = self.wait_for(self.served_pids)
+        if not found:
+            self.skip_if_sandboxed(watcher)
+            self.fail("the watcher never noticed the credentials file: " + self.err())
+        self.assertIsNone(watcher.poll(), "no restart: the same watcher process launched it")
+        self.assertEqual(watcher.pid, pid)
+        self.assertNotIn(SECRET, self.err())
+
+
+class NonLockingProbe(WatchCase):
+    """m1: the watcher never takes any lock on service.lock, and checks intent before probing."""
+
+    def setUp(self):
+        super().setUp()
+        self.set_mode("running")
+        self.lock_path = self.logs / "supervisor" / paths.domain_id_for_root(self.board) / "service.lock"
+        fd = os.open(str(self.lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+        os.close(fd)
+
+    def run_watch(self, ticks, boot_id="boot-1", **kw):
+        return boot.watch(self.board, env=self.env(), boot_id=boot_id, interval=0.0, sleep=lambda s: None,
+                          clock=lambda: self.now[0], launch=self.world_launch, activate=self.world_activate,
+                          live_status=lambda root, entry: None, max_ticks=ticks, **kw)
+
+    def test_the_watcher_never_flocks_anything(self):
+        import fcntl
+        calls = []
+        real = fcntl.flock
+
+        def spy(fd, operation):
+            calls.append(operation)
+            return real(fd, operation)
+
+        with mock.patch("fcntl.flock", spy):
+            self.run_watch(5)
+        self.assertEqual(calls, [], "any flock by the watcher can make a concurrent serve report owner: false")
+
+    def test_a_real_serve_style_exclusive_lock_always_succeeds_while_the_watcher_ticks(self):
+        import fcntl
+        import threading
+        done = threading.Event()
+
+        def run():
+            try:
+                self.run_watch(120)
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        failures = 0
+        attempts = 0
+        while not done.is_set() and attempts < 3000:
+            fd = os.open(str(self.lock_path), os.O_RDWR)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                failures += 1
+            finally:
+                os.close(fd)
+            attempts += 1
+        thread.join(timeout=60)
+        self.assertGreater(attempts, 10)
+        self.assertEqual(failures, 0, "the watcher blocked an exclusive lock %d of %d times" % (failures, attempts))
+
+    def test_stopped_and_suppressed_intent_is_decided_before_any_owner_probe(self):
+        probes = []
+
+        def probe(root, entry):
+            probes.append(1)
+            return False
+
+        self.run_watch(3, owner_alive=probe)
+        self.assertEqual(len(probes), 3, "a running domain with no suppression is probed")
+        del probes[:]
+        self.set_yaml(YAML_FALSE)
+        state = self.registry() / "boot"
+        shutil.rmtree(str(state), True)
+        self.run_watch(3, boot_id="boot-9", owner_alive=probe)
+        self.assertEqual(probes, [], "while suppressed nothing may be probed")
+
+    def test_stopped_domain_is_never_probed(self):
+        self.store_command("stop")
+        probes = []
+        self.run_watch(3, owner_alive=lambda root, entry: probes.append(1))
+        self.assertEqual(probes, [])
+
+
+class _StoreCase(BootCase):
+    """setUp and helpers of UpgradeCompatibility without inheriting its test methods."""
+    sql = UpgradeCompatibility.sql
+    assert_refused = UpgradeCompatibility.assert_refused
+
+    def setUp(self):
+        super().setUp()
+        self.install()
+        self.set_mode("running")
+        self.db = self.logs / "supervisor" / paths.domain_id_for_root(self.board) / "store.sqlite3"
+
+
+class RestoreStoreLocking(_StoreCase):
+    def test_restore_store_holds_the_service_lock_for_the_whole_copy(self):
+        import fcntl
+        record_path = self.registry() / "registry.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["version"] = "0.19.1"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.install()
+        self.store_command("pause")
+        lock = self.db.parent / "service.lock"
+        real_connect = sqlite3.connect
+        probes = []
+
+        def connect(*args, **kwargs):
+            fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                probes.append("acquired")
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                probes.append("held")
+            finally:
+                os.close(fd)
+            return real_connect(*args, **kwargs)
+
+        with mock.patch.object(sqlite3, "connect", connect):
+            result = boot.rollback(env=self.env(), restore_store=True, root=self.board)
+        self.assertTrue(result["store_restored"])
+        self.assertTrue(probes)
+        self.assertEqual(set(probes), {"held"}, "the lock must be held during every step of the restore")
+        fd = os.open(str(lock), os.O_RDWR)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+
+class RunnerProtocolRecording(_StoreCase):
+    def prepare(self):
+        store = Store.open(self.domain())
+        try:
+            store.start_session({"id": "s1", "started_at": 1, "deadline": 10 ** 9, "known_spend": 0,
+                                 "unknown_spend": False, "budget_stop": None})
+            job = {"id": "job-1", "card": "17", "action": "implement", "role": "implementor", "stage": "build",
+                   "round": 1, "input_sha": "a" * 64, "input_version": "v1", "generation": 1,
+                   "provider": "fixture", "model": "fixture", "nonce": "attempt-1", "session_id": "s1"}
+            store.prepare_attempt(job, store.snapshot()["domain"]["revision"],
+                                  {"global_cap": 3, "provider_cap": 3, "paths": ["src/x"]})
+        finally:
+            store.close()
+
+    def attempt_data(self):
+        return json.loads(self.sql("SELECT data FROM attempts WHERE id='attempt-1'")[0][0])
+
+    def test_a_production_created_attempt_records_an_integer_runner_protocol(self):
+        self.prepare()
+        recorded = self.attempt_data().get("runner_protocol")
+        self.assertIs(type(recorded), int)
+        self.assertEqual(recorded, boot.RUNNER_PROTOCOL)
+
+    def test_a_production_created_attempt_with_a_mismatched_protocol_is_refused(self):
+        self.prepare()
+        data = self.attempt_data()
+        data["runner_protocol"] = boot.RUNNER_PROTOCOL + 1
+        self.sql("UPDATE attempts SET data=? WHERE id='attempt-1'", json.dumps(data))
+        self.assert_refused("incompatible_runner")
+
+    def test_a_matching_production_attempt_does_not_block_boot(self):
+        self.prepare()
+        outcome, calls = self.boot_once("boot-2")
+        self.assertEqual(outcome["action"], "restored")
+
+    def test_an_active_attempt_with_no_recorded_protocol_counts_as_protocol_1(self):
+        self.prepare()
+        data = self.attempt_data()
+        data.pop("runner_protocol", None)
+        self.sql("UPDATE attempts SET data=? WHERE id='attempt-1'", json.dumps(data))
+        self.assertEqual(boot._read_store_file(self.db)["runners"], [("attempt-1", 1)])
+
+
+class CheapTicks(WatchCase):
+    """m4: an idle tick costs no event-log scan and no state write."""
+
+    def count_writes(self, ticks=6, also=None):
+        writes = []
+        real = boot._write_json
+        counts = []
+
+        def counting(path, value):
+            writes.append(str(path))
+            return real(path, value)
+
+        def script(tick):
+            counts.append(len(writes))
+            if also:
+                also(tick)
+
+        with mock.patch.object(boot, "_write_json", counting):
+            self.watch(ticks, script)
+        return counts
+
+    def test_idle_stopped_ticks_do_not_rewrite_the_boot_state(self):
+        counts = self.count_writes()
+        self.assertEqual(counts[-1], counts[0], "repeated identical ticks must not write: %r" % counts)
+
+    def test_idle_serving_ticks_do_not_rewrite_the_boot_state(self):
+        self.set_mode("running")
+        self.owner = True
+        counts = self.count_writes()
+        self.assertEqual(counts[-1], counts[0], "repeated identical ticks must not write: %r" % counts)
+
+    def test_a_changed_decision_is_still_written(self):
+        self.set_mode("running")
+        self.owner = True
+
+        def lose_owner(tick):
+            if tick == 2:
+                self.owner = False
+
+        counts = self.count_writes(6, also=lose_owner)
+        self.assertEqual(counts[1], counts[0], "tick 2 was identical to tick 1")
+        self.assertGreater(counts[-1], counts[1], "the relaunch decision must be recorded: %r" % counts)
+
+    def test_ticks_after_the_first_never_scan_the_event_log(self):
+        for command in ("start", "pause", "resume"):
+            self.store_command(command)
+        statements = []
+        real_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            connection = real_connect(*args, **kwargs)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        per_tick = []
+
+        def script(tick):
+            per_tick.append(list(statements))
+            del statements[:]
+
+        with mock.patch.object(sqlite3, "connect", connect):
+            self.watch(5, script)
+        import re
+        for number, batch in enumerate(per_tick[1:], 2):
+            scans = [s for s in batch if re.search(r"from\s+events", s, re.I) and "max(" not in s.lower()
+                     and not re.search(r"sequence\s*>", s, re.I)]
+            self.assertEqual(scans, [], "tick %d scanned the event log: %r" % (number, scans))
 
 
 if __name__ == "__main__":

@@ -561,12 +561,12 @@ class LifecycleContract(unittest.TestCase):
 
     def test_runner_version_compatibility_survives_process_restart(self):
         self.service.start_serving()
-        self.service.register_runner_version("runner-1", "protocol-1")
+        self.service.register_runner_version("runner-1", 1)
         self.service.stop_serving()
         reopened = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1")
         self.addCleanup(reopened.close)
-        self.assertTrue(reopened.runner_compatible("runner-1", "protocol-1"))
-        self.assertFalse(reopened.runner_compatible("runner-2", "protocol-1"))
+        self.assertTrue(reopened.runner_compatible("runner-1", 1))
+        self.assertFalse(reopened.runner_compatible("runner-2", 1))
 
     def test_disabled_service_serves_read_only_and_rejects_execution_lifecycle(self):
         disabled_root = self.root / "disabled-service"
