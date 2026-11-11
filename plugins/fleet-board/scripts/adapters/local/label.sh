@@ -22,7 +22,7 @@ HAS="$(jq -r --arg l "$LABEL" '(.labels // []) | index($l) != null' <<<"$CARD")"
 if [ "$OP" = add ] && [ "$HAS" = true ]; then exit 0; fi
 if [ "$OP" = remove ] && [ "$HAS" != true ]; then exit 0; fi
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
-trap 'rm -f "$TMP"; rm -rf "$FB_LOCK"' EXIT
+trap 'rm -f "$TMP"; fb_unlock' EXIT
 jq --arg l "$LABEL" --arg op "$OP" --arg now "$(fl_now)" '
   .labels = (if $op == "add" then (.labels // []) + [$l] else [(.labels // [])[] | select(. != $l)] end)
   | .updated_at = $now' <<<"$CARD" > "$TMP" \

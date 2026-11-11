@@ -10,7 +10,7 @@ fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
 BODY="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 TMP="$(mktemp)" || { rm -f "$BODY"; fb_die 1 "cannot create a temporary file"; }
-trap 'rm -f "$BODY" "$TMP"; rm -rf "$FB_LOCK"' EXIT
+trap 'rm -f "$BODY" "$TMP"; fb_unlock' EXIT
 {
   printf '%s\n' "$FB_MARKER"
   cat "$2"

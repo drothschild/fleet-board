@@ -233,22 +233,50 @@ fb_valid_number() {
 }
 
 # fb_lock <card-number>; releases on EXIT
+# The lock is a symlink whose target is the owner's pid: ln -s is atomic, so
+# the lock never exists without an owner recorded in it.
+# Worst case: a waiter polls every 0.1s for FLEET_BOARD_LOCK_WAIT seconds
+# (default 30, counted in polls, so a loaded host waits longer, never shorter),
+# then fails with exit 1 and "could not take lock"; it never proceeds unlocked.
+# A lock is reclaimed only when its owner is gone: the recorded pid is dead, or
+# (a lock left by an older version, a directory with no readable pid) it is
+# older than stale_min minutes. A lock whose owner is alive is never taken,
+# however old it looks. A stale lock is moved aside with an atomic rename, so
+# only one waiter reclaims it.
 fb_lock() {
-  local dir wait stale_min=5 waited=0
+  local dir wait stale_min=5 waited=0 pid
   dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
   FB_LOCK="$dir/card-$1.lock"; wait="${FLEET_BOARD_LOCK_WAIT:-30}"
-  while ! mkdir "$FB_LOCK" 2>/dev/null; do
-    if [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
-      # Known race: waiters A and B both see the lock as stale. B removes it and
-      # takes a fresh lock; A's rm -rf then deletes B's live lock and A takes it
-      # too, so two holders run at once. Accepted for now (see rehearsal notes).
-      rm -rf "$FB_LOCK"; continue
+  while ! ln -sn "$$" "$FB_LOCK" 2>/dev/null; do
+    pid="$(readlink "$FB_LOCK" 2>/dev/null)"
+    if [ -n "$pid" ]; then
+      kill -0 "$pid" 2>/dev/null || fb_reclaim_lock "$pid"
+    elif [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
+      fb_reclaim_lock ""
     fi
     [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $FB_LOCK after ${wait}s"
     sleep 0.1; waited=$((waited + 1))
   done
-  echo $$ > "$FB_LOCK/pid"
-  trap 'rm -rf "$FB_LOCK"' EXIT
+  trap fb_unlock EXIT
+}
+
+# fb_reclaim_lock <pid-seen>: move a dead owner's lock aside. A rename that
+# caught a lock now owned by a live process is undone.
+fb_reclaim_lock() {
+  local aside="$FB_LOCK.stale.$$" now
+  mv "$FB_LOCK" "$aside" 2>/dev/null || return 0
+  now="$(readlink "$aside" 2>/dev/null)"
+  if [ -n "$now" ] && [ "$now" != "$1" ] && kill -0 "$now" 2>/dev/null; then
+    mv "$aside" "$FB_LOCK" 2>/dev/null || true
+    return 0
+  fi
+  rm -rf "$aside"
+}
+
+# fb_unlock: release the lock only if this process still owns it.
+fb_unlock() {
+  [ -n "${FB_LOCK:-}" ] && [ "$(readlink "$FB_LOCK" 2>/dev/null)" = "$$" ] && rm -f "$FB_LOCK"
+  return 0
 }
 
 # Adapter scripts are exec'd with FLEET_CFG exported and never call fb_load_config;

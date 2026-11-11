@@ -13,7 +13,7 @@ if [ "$TARGET" = ready ] && ! fb_card_has_acceptance "$CARD"; then
 fi
 [ "$(jq -r '.state // ""' <<<"$CARD")" = "$TARGET" ] && exit 0
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
-trap 'rm -f "$TMP"; rm -rf "$FB_LOCK"' EXIT
+trap 'rm -f "$TMP"; fb_unlock' EXIT
 jq --arg s "$TARGET" --arg now "$(fl_now)" '.state = $s | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1

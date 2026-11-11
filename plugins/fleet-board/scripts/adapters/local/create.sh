@@ -40,7 +40,7 @@ N="$(fl_next_number)" || exit 1
 fb_lock "$N"
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 BODYTMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
-trap 'rm -f "$TMP" "$BODYTMP"; rm -rf "$FB_LOCK"' EXIT
+trap 'rm -f "$TMP" "$BODYTMP"; fb_unlock' EXIT
 fl_check_blocked_by "$N" "$BLOCKED"
 fl_fold_outside "$SPLIT" "#$N" > "$BODYTMP" || exit 1
 LABELS_JSON="$(printf '%s\n' ${labels[@]+"${labels[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')"
