@@ -22,9 +22,9 @@ class LaunchError(RuntimeError):
     """The service did not become ready; the message says why."""
 
 
-def _argv(board_root, log_dir, socket_tmp):
+def _argv(board_root, log_dir):
     return [sys.executable, "-m", "supervisor.cli", "serve", "--domain", str(board_root),
-            "--log-dir", str(Path(log_dir).absolute()), "--socket-tmp", str(Path(socket_tmp).absolute())]
+            "--log-dir", str(Path(log_dir).absolute())]
 
 
 def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
@@ -36,13 +36,14 @@ def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
     env = os.environ if env is None else env
     board_root = Path(board_root).resolve(strict=True)
     log_dir = str(paths.log_dir(env))
-    socket_tmp = paths.socket_tmpdir(env)
     scripts = str(Path(__file__).resolve().parents[1])
     child_env = dict(os.environ)
-    child_env.update({"FLEET_BOARD_LOG_DIR": log_dir, "TMPDIR": socket_tmp,
+    child_env.update({"FLEET_BOARD_LOG_DIR": log_dir,
                       "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
                                                if child_env.get("PYTHONPATH") else "")})
-    child = subprocess.Popen(_argv(board_root, log_dir, socket_tmp), cwd=str(board_root), env=child_env,
+    if env.get("FLEET_BOARD_SOCKET_DIR"):
+        child_env["FLEET_BOARD_SOCKET_DIR"] = env["FLEET_BOARD_SOCKET_DIR"]
+    child = subprocess.Popen(_argv(board_root, log_dir), cwd=str(board_root), env=child_env,
                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                              text=True, start_new_session=True)
     ready, _, _ = select.select([child.stdout], [], [], timeout)

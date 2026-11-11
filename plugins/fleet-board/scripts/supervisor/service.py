@@ -175,6 +175,7 @@ class Service:
             store.close()
 
     def _prepare_socket_root(self):
+        paths.ensure_socket_base()
         root = self.socket_root.absolute()
         if root.is_symlink():
             raise ValueError("unsafe supervisor socket directory")

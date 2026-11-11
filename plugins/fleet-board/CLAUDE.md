@@ -167,7 +167,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - **Persistent supervisor** (`scripts/supervisor/`, `scripts/supervisor.sh`; **disabled**:
   `supervisor.enabled` defaults to false and nothing schedules work yet). The service owns one
   domain: private 0700 socket dir + 0600 controller socket (location from `supervisor/paths.py`,
-  the single definition shared by service, CLI and board server; domain ids are a pure hash, never
+  the single definition shared by service, CLI and board server; the socket base is
+  `/tmp/fleet-board-<uid>/` (0700, owner/mode/symlink-checked, typed `UnsafeSocketDir`) or the one
+  override `FLEET_BOARD_SOCKET_DIR`, **never derived from `TMPDIR`** (a launchd/systemd service and a
+  shell have different TMPDIRs; `--socket-tmp` is accepted and ignored); domain ids are a pure hash, never
   a DB open), a separate restricted worker socket, actor derived from peer credentials (never from
   a request body), explicit `request_id` + `expected_revision` on every mutation (stale => 409
   with current state; request-id replay returns the original outcome), typed error codes

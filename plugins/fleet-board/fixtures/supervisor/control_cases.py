@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 import hashlib
+import shutil
+import tempfile
 
 ROOT = Path(sys.argv.pop()).resolve()
 try:
@@ -29,14 +31,15 @@ class ControlContracts(unittest.TestCase):
         self.assertIsNotNone(Service, "persistent supervisor service is not implemented")
         self.root = ROOT / self.id().rsplit(".", 1)[-1]
         self.root.mkdir(mode=0o700)
-        self.socket_tmp = self.root / "sockets"
-        self.socket_tmp.mkdir(mode=0o700)
+        # Short real directory: AF_UNIX paths are length-limited and the base is never replaced.
+        self.socket_tmp = Path(tempfile.mkdtemp(prefix="fbc-", dir=os.path.realpath("/tmp")))
+        self.addCleanup(shutil.rmtree, str(self.socket_tmp), True)
         self.config = self.root / "enabled.yml"
         self.config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         self.domain = {"common_dir": str(self.root), "board_backend": "local",
                        "board_identity": "control-fixture", "runtime_root": str(self.root / "runtime")}
         self.clock = FakeClock()
-        env = {"TMPDIR": str(self.socket_tmp), "FLEET_BOARD_LOG_DIR": str(self.root / "logs"),
+        env = {"FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp), "FLEET_BOARD_LOG_DIR": str(self.root / "logs"),
                "FLEET_BOARD_CONFIG": str(self.config)}
         with mock.patch.dict(os.environ, env):
             self.service = Service.open(self.domain, clock=self.clock, host_boot_id="boot-test",

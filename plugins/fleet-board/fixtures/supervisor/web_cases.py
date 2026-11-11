@@ -53,7 +53,7 @@ class SupervisorWebContract(unittest.TestCase):
         self.env = dict(os.environ, FLEET_BOARD_CONFIG=str(self.config),
                         FLEET_BOARD_LOG_DIR=str(self.case / "logs"),
                         FLEET_BOARD_SUPERVISOR_SOCKET=str(self.socket_path),
-                        TMPDIR=str(self.tmp_socket), PYTHONDONTWRITEBYTECODE="1",
+                        FLEET_BOARD_SOCKET_DIR=str(self.tmp_socket), PYTHONDONTWRITEBYTECODE="1",
                         PYTHONPATH=str(SCRIPTS), FLEET_BOARD_USER="web-test")
         self.service = None
         self.server = None
@@ -64,7 +64,7 @@ class SupervisorWebContract(unittest.TestCase):
         domain = {"common_dir": str(self.repo / ".git"),
                   "board_backend": "local", "board_identity": str(self.repo),
                   "runtime_root": str(self.case / "runtime")}
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.tmp_socket),
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.tmp_socket),
                                           "FLEET_BOARD_LOG_DIR": str(self.case / "logs")}):
             self.service = Service.open(domain, run_lock_path=str(self.case / "run.lock"),
                                         board_repo=str(self.repo), execution_enabled=True,
@@ -355,7 +355,7 @@ class SupervisorWebContract(unittest.TestCase):
         domain = {"common_dir": str(self.repo / ".git"),
                   "board_backend": "local", "board_identity": str(self.repo),
                   "runtime_root": str(self.case / "runtime")}
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.tmp_socket),
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.tmp_socket),
                                           "FLEET_BOARD_LOG_DIR": str(self.case / "logs")}):
             self.service = Service.open(domain, run_lock_path=str(self.case / "run.lock"),
                                         board_repo=str(self.repo), execution_enabled=True,
@@ -375,7 +375,7 @@ class SupervisorWebContract(unittest.TestCase):
         out, err = StringIO(), StringIO()
         status = main(["status"], env={"FLEET_BOARD_DOMAIN": str(self.repo),
                                        "FLEET_BOARD_LOG_DIR": str(self.case / "logs"),
-                                       "TMPDIR": str(self.tmp_socket)}, stdout=out, stderr=err)
+                                       "FLEET_BOARD_SOCKET_DIR": str(self.tmp_socket)}, stdout=out, stderr=err)
         self.assertEqual(status, 0, err.getvalue())
 
     # --- R2: Start launches a missing service; Stop never strands the board --------------
@@ -530,7 +530,7 @@ class SupervisorWebContract(unittest.TestCase):
         # worktree path as board identity.
         domain = {"common_dir": str(self.repo.resolve() / ".git"), "board_backend": "local",
                   "board_identity": str(worktree), "runtime_root": str(self.case / "runtime")}
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.tmp_socket),
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.tmp_socket),
                                           "FLEET_BOARD_LOG_DIR": str(self.case / "logs")}):
             self.service = Service.open(domain, run_lock_path=str(self.case / "run.lock"),
                                         board_repo=str(worktree), execution_enabled=True,

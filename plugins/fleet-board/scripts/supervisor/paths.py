@@ -7,9 +7,11 @@ GET can compute an id without touching supervisor state.
 """
 import hashlib
 import os
+import stat
 import subprocess
 from pathlib import Path
 
+from . import errors
 from .models import canonical_json
 
 # AF_UNIX paths are length-limited (104 bytes on macOS, 108 on Linux).
@@ -28,9 +30,43 @@ def runtime_root(env=None):
     return log_dir(env) / "supervisor"
 
 
-def socket_tmpdir(env=None):
+def socket_base(env=None):
+    """The directory that holds every per-domain socket directory.
+
+    Never derived from TMPDIR: a launchd or systemd service and an interactive shell have
+    different TMPDIRs, and the service must be found from either. The default is
+    /tmp/fleet-board-<uid>; FLEET_BOARD_SOCKET_DIR is the one explicit override. Pure: it
+    creates nothing and touches no file."""
     env = os.environ if env is None else env
-    return env.get("TMPDIR") or "/tmp"
+    override = env.get("FLEET_BOARD_SOCKET_DIR")
+    if override:
+        return Path(override)
+    return Path("/tmp") / ("fleet-board-%d" % os.getuid())
+
+
+def check_socket_base(base):
+    """Raise UnsafeSocketDir unless base is a real directory owned by this user with no
+    group/other access."""
+    info = os.lstat(str(base))
+    if stat.S_ISLNK(info.st_mode):
+        raise errors.UnsafeSocketDir("supervisor socket base is a symlink: %s" % base)
+    if not stat.S_ISDIR(info.st_mode):
+        raise errors.UnsafeSocketDir("supervisor socket base is not a directory: %s" % base)
+    if info.st_uid != os.getuid():
+        raise errors.UnsafeSocketDir("supervisor socket base is not owned by this user: %s" % base)
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise errors.UnsafeSocketDir("supervisor socket base is group/other accessible: %s" % base)
+
+
+def ensure_socket_base(env=None):
+    """Create the socket base (0700) if missing, then verify it is safe. Service side only."""
+    base = socket_base(env)
+    try:
+        base.mkdir(mode=0o700, parents=True)
+    except FileExistsError:
+        pass
+    check_socket_base(base)
+    return base
 
 
 def git_common_dir(root):
@@ -91,24 +127,22 @@ def domain_id_for_root(root):
     return domain_id(board_domain(root))
 
 
-def socket_dir(domain_id, tmpdir=None):
+def socket_dir(domain_id, base=None, env=None):
     """Per-domain private directory for the controller and worker sockets.
 
-    Named from a hash of the full domain id (not a short prefix), under TMPDIR,
-    falling back to /tmp when TMPDIR would make the socket path too long.
-    """
+    Named from a hash of the full domain id (not a short prefix) inside the socket base.
+    A base that would push the socket path past the AF_UNIX limit is refused, not silently
+    replaced: every caller must compute the same path."""
     digest = hashlib.sha256(str(domain_id).encode("utf-8")).hexdigest()[:20]
-    name = "fbs-" + digest
-    base = Path(tmpdir if tmpdir is not None else socket_tmpdir())
-    candidate = base / name
+    candidate = Path(base if base is not None else socket_base(env)) / ("fbs-" + digest)
     if len(str(candidate / "c.sock")) >= _MAX_SOCKET_PATH:
-        candidate = Path("/tmp") / name
+        raise errors.UnsafeSocketDir("supervisor socket path is too long for a unix socket: %s" % candidate)
     return candidate
 
 
-def controller_socket(domain_id, tmpdir=None):
-    return str(socket_dir(domain_id, tmpdir) / "c.sock")
+def controller_socket(domain_id, base=None, env=None):
+    return str(socket_dir(domain_id, base, env) / "c.sock")
 
 
-def worker_socket(domain_id, tmpdir=None):
-    return str(socket_dir(domain_id, tmpdir) / "w.sock")
+def worker_socket(domain_id, base=None, env=None):
+    return str(socket_dir(domain_id, base, env) / "w.sock")

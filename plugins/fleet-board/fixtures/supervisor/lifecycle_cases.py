@@ -59,7 +59,7 @@ class LifecycleContract(unittest.TestCase):
         config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "logs"),
-                                          "TMPDIR": str(self.socket_tmp)}):
+                                          "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}):
             return Service.open(board_domain, **kwargs)
 
     def setUp(self):
@@ -70,7 +70,7 @@ class LifecycleContract(unittest.TestCase):
         self.socket_tmp = _short_socket_tmp()
         self.socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.clock = FakeClock()
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "logs")}):
             self.service = self.open_enabled(domain(self.root), clock=self.clock,
                                              host_boot_id="boot-1",
@@ -175,7 +175,7 @@ class LifecycleContract(unittest.TestCase):
         config = self.root / "configured.yml"
         config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"FLEET_BOARD_LOG_DIR": str(log_dir),
-                                          "TMPDIR": str(self.socket_tmp),
+                                          "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                                           "FLEET_BOARD_CONFIG": str(config)}):
             service = self.open_enabled(configured, clock=self.clock, host_boot_id="boot-1")
         self.addCleanup(service.close)
@@ -187,12 +187,12 @@ class LifecycleContract(unittest.TestCase):
     def test_service_claims_stale_shared_lock_and_excludes_other_worktree(self):
         lock = self.root / "shared-run.lock"
         lock.write_text("99999999\nnot-a-real-start-time\n", encoding="utf-8")
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}):
             first = self.open_enabled(domain(self.root), clock=self.clock, host_boot_id="boot-1",
                               run_lock_path=str(lock))
         second_root = self.root / "linked-worktree"
         second_root.mkdir()
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp)}):
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}):
             second = self.open_enabled(domain(second_root), clock=self.clock, host_boot_id="boot-1",
                                run_lock_path=str(lock))
         self.addCleanup(first.close)
@@ -390,7 +390,7 @@ class LifecycleContract(unittest.TestCase):
         env.update({"FLEET_BOARD_DOMAIN": str(self.root),
                     "FLEET_BOARD_CONFIG": str(config),
                     "FLEET_BOARD_LOG_DIR": str(log_dir),
-                    "TMPDIR": str(self.socket_tmp),
+                    "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                     "PYTHONPATH": str(plugin_dir / "scripts"),
                     "PYTHONDONTWRITEBYTECODE": "1"})
         command = [sys.executable, "-c",
@@ -573,7 +573,7 @@ class LifecycleContract(unittest.TestCase):
         config = disabled_root / ".fleet-board.yml"
         disabled_root.mkdir(mode=0o700)
         config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: false\n", encoding="utf-8")
-        with mock.patch.dict(os.environ, {"TMPDIR": str(self.socket_tmp),
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                                           "FLEET_BOARD_CONFIG": str(config),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "logs")}):
             service = Service.open(domain(disabled_root), clock=self.clock,
@@ -622,7 +622,7 @@ class LifecycleContract(unittest.TestCase):
         env.update({"FLEET_BOARD_DOMAIN": str(disabled_root),
                     "FLEET_BOARD_CONFIG": str(config),
                     "FLEET_BOARD_LOG_DIR": str(log_dir),
-                    "TMPDIR": str(self.socket_tmp),
+                    "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                     "PYTHONPATH": str(plugin_dir / "scripts"),
                     "PYTHONDONTWRITEBYTECODE": "1"})
         start = subprocess.run([sys.executable, "-c",
@@ -685,7 +685,7 @@ class CLIContract(unittest.TestCase):
         root.mkdir(mode=0o700)
         socket_tmp = _short_socket_tmp()
         socket_tmp.mkdir(mode=0o700, parents=True, exist_ok=True)
-        with mock.patch.dict(os.environ, {"TMPDIR": str(socket_tmp)}):
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(socket_tmp)}):
             service = self.open_enabled(domain(root), root, host_boot_id="boot-1",
                                    peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(service.close)
@@ -743,7 +743,7 @@ class StartSemantics(unittest.TestCase):
             "board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
         env = dict(os.environ)
         env.update({"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_CONFIG": str(board / ".fleet-board.yml"),
-                    "FLEET_BOARD_LOG_DIR": str(logs), "TMPDIR": str(self.socket_tmp),
+                    "FLEET_BOARD_LOG_DIR": str(logs), "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                     "PYTHONPATH": str(self.plugin_dir / "scripts"), "PYTHONDONTWRITEBYTECODE": "1"})
         self.addCleanup(self.reap, board, env)
         return board, env
@@ -817,7 +817,7 @@ class StartSemantics(unittest.TestCase):
         logs = self.root / "race-logs"
         logs.mkdir(mode=0o700)
         with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "FLEET_BOARD_LOG_DIR": str(logs),
-                                          "TMPDIR": str(self.socket_tmp)}):
+                                          "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}):
             owner = Service.open(paths.board_domain(board, logs / "supervisor"), execution_enabled=True,
                                  host_boot_id="boot-1", peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(owner.close)
@@ -827,7 +827,7 @@ class StartSemantics(unittest.TestCase):
                 raise unittest.SkipTest("sandbox denies binding the supervisor Unix socket")
             return {"ready": True, "recovery_complete": True, "owner": False, "execution_available": True}
         out, err = StringIO(), StringIO()
-        env = {"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_LOG_DIR": str(logs), "TMPDIR": str(self.socket_tmp)}
+        env = {"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_LOG_DIR": str(logs), "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}
         with mock.patch.object(launcher, "launch_service", side_effect=lose_the_race) as launch:
             code = main(["start"], env=env, stdout=out, stderr=err)
         self.assertEqual(code, 0, err.getvalue())
@@ -844,13 +844,13 @@ class StartSemantics(unittest.TestCase):
         logs = self.root / "healthy-logs"
         logs.mkdir(mode=0o700)
         with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "FLEET_BOARD_LOG_DIR": str(logs),
-                                          "TMPDIR": str(self.socket_tmp)}):
+                                          "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}):
             owner = Service.open(paths.board_domain(board, logs / "supervisor"), execution_enabled=True,
                                  host_boot_id="boot-1", peer_resolver=lambda connection: "fixture-user")
         self.addCleanup(owner.close)
         if owner.start_serving().get("socket_unavailable"):
             self.skipTest("sandbox denies binding the supervisor Unix socket")
-        env = {"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_LOG_DIR": str(logs), "TMPDIR": str(self.socket_tmp)}
+        env = {"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_LOG_DIR": str(logs), "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}
         ids = []
         for _ in range(2):
             out, err = StringIO(), StringIO()
@@ -874,7 +874,7 @@ class StartSemantics(unittest.TestCase):
         with mock.patch.object(launcher.subprocess, "Popen", return_value=child) as popen:
             with self.assertRaisesRegex(launcher.LaunchError, "timed out"):
                 launcher.launch_service(board, env={"FLEET_BOARD_LOG_DIR": str(self.root / "l"),
-                                                    "TMPDIR": str(self.socket_tmp)}, timeout=0.3)
+                                                    "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}, timeout=0.3)
         argv = popen.call_args.args[0]
         self.assertIsInstance(argv, list)
         self.assertIn("serve", argv)
@@ -887,7 +887,7 @@ class StartSemantics(unittest.TestCase):
         with mock.patch.object(launcher.subprocess, "Popen", return_value=child):
             with self.assertRaisesRegex(launcher.LaunchError, "failed to become ready"):
                 launcher.launch_service(board, env={"FLEET_BOARD_LOG_DIR": str(self.root / "l"),
-                                                    "TMPDIR": str(self.socket_tmp)}, timeout=2)
+                                                    "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp)}, timeout=2)
         child.terminate.assert_called()
 
     def test_cli_and_board_web_share_the_one_launcher(self):
@@ -904,7 +904,7 @@ class StartSemantics(unittest.TestCase):
         board.mkdir(mode=0o700)
         config = board / ".fleet-board.yml"
         config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
-        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "TMPDIR": str(self.socket_tmp),
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "FLEET_BOARD_SOCKET_DIR": str(self.socket_tmp),
                                           "FLEET_BOARD_LOG_DIR": str(self.root / "final-logs")}):
             service = Service.open(paths.board_domain(board, self.root / "final-logs" / "supervisor"),
                                    execution_enabled=True, host_boot_id="boot-1",
