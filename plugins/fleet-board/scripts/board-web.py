@@ -36,6 +36,16 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs
+
+# The module is also imported directly by offline board-web tests, where the
+# scripts directory is not necessarily already on sys.path.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from supervisor import launcher as supervisor_launcher
+from supervisor import paths as supervisor_paths
+from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
 NOTE_FIELDS = ("round", "pr", "models", "stage", "action_failures")
@@ -337,6 +347,10 @@ def run_alive() -> bool:
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
+    if supervisor_enabled(cfg):
+        status = supervisor_snapshot()
+        return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
+                and status.get("desired_mode") == "running")
     with _RUN_LOCK:
         pid, started = read_pid_file(state_dir(APP["root"], cfg))
         alive = pid is not None and pid_alive(pid, started)
@@ -396,6 +410,8 @@ def to_float(s: str):
 def run_status(alive=None) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
+    if supervisor_enabled(cfg):
+        return supervisor_run_status(cfg)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
         alive = run_alive()
@@ -1229,8 +1245,26 @@ def get_run(params, body):
     return 200, run_status()
 
 
+def compat_run_control(command, body):
+    """/api/run/start and /api/run/stop in supervisor mode.
+
+    A body with request_id and expected_revision is enforced exactly like the new routes
+    (replay dedupes, a stale revision is a 409 with the current state). With no body the
+    route derives its own binding (Start and drain-stop are idempotent by design) and the
+    answer says unbound: true."""
+    if not body:
+        launched = ensure_service() if command == "start" else False
+        body = {"request_id": "compat-%s-%d" % (command, time.time_ns()),
+                "expected_revision": proxy_call("status").get("revision", 0)}
+        code, result = proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+        return code, dict(result, unbound=True, **({"launched": True} if launched else {}))
+    return proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+
+
 def start_run(params, body):
     cfg, dir = ctx()
+    if supervisor_enabled(cfg):
+        return compat_run_control("start", body)
     sdir = state_dir(APP["root"], cfg)
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
     with _RUN_LOCK:
@@ -1259,11 +1293,238 @@ def start_run(params, body):
 
 
 def stop_run(params, body):
+    cfg, _ = ctx()
+    if supervisor_enabled(cfg):
+        return compat_run_control("stop", body)
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
         Path(APP["root"], STOP_FILE).touch()
     return 200, {"state": "stopping"}
+
+
+def supervisor_enabled(cfg):
+    return (cfg.get("supervisor") or {}).get("enabled") is True
+
+
+def supervisor_domain_id():
+    """The supervisor domain id for this board, derived from the same identity inputs the
+    store uses. Pure: no database is opened and no file is created, so a GET can never touch
+    supervisor state. None when it cannot be derived (the panel then reads unreachable)."""
+    cached = APP.get("supervisor_domain_id")
+    if cached:
+        return cached
+    try:
+        value = supervisor_paths.domain_id_for_root(APP["root"])
+    except (OSError, ValueError, KeyError):
+        return None
+    APP["supervisor_domain_id"] = value
+    return value
+
+
+# One status per service error code (the service classifies by exception type, never by text).
+SUPERVISOR_ERROR_STATUS = {"invalid": 400, "uncertain_writer": 409, "disabled": 409,
+                           "unauthenticated": 403, "unavailable": 503, "internal": 500}
+
+
+def proxy_call(command, body=None, **extra):
+    domain_id = supervisor_domain_id()
+    request = dict(body or {})
+    if "actor" in request:
+        raise ApiError(400, "actor must come from authenticated peer")
+    request.update(extra)
+    request["command"] = command
+    if domain_id is None and not os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET"):
+        raise ApiError(503, "supervisor unavailable: cannot derive the supervisor identity")
+    try:
+        result = webproxy.request(webproxy.socket_path(domain_id), request)
+    except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+        try:
+            detail = json.loads(str(exc))
+        except (ValueError, TypeError):
+            detail = {}
+        code = detail.get("code") if isinstance(detail, dict) else None
+        msg = detail.get("message", str(exc)) if isinstance(detail, dict) else str(exc)
+        if code == "stale_revision":
+            current = detail.get("current")
+            if current is None:
+                try:
+                    current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
+                except Exception:
+                    current = None
+            raise ApiError(409, msg, {"current": current, "code": code})
+        if code in SUPERVISOR_ERROR_STATUS:
+            # Internal detail never reaches the browser: the service already redacted it.
+            raise ApiError(SUPERVISOR_ERROR_STATUS[code],
+                           "internal error" if code == "internal" else msg, {"code": code})
+        raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
+    if command == "status":
+        webproxy.remember(domain_id, result)
+    return result
+
+
+_LAUNCH_LOCK = threading.Lock()
+
+
+def ensure_service():
+    """Make sure a service answers for this board; True when this call launched it.
+
+    This is the stopped-state lifecycle adapter path: a missing service is started through the
+    shared launcher (never by editing job tables) and we wait for its readiness before the
+    caller proxies the command. A failure is a 503 with a reason and leaves nothing running."""
+    def answers():
+        try:
+            proxy_call("status")
+            return True
+        except ApiError as exc:
+            if exc.code != 503:
+                raise
+            return False
+    if answers():
+        return False
+    with _LAUNCH_LOCK:
+        if answers():  # another request launched it while we waited for the lock
+            return False
+        try:
+            supervisor_launcher.launch_service(APP["root"])
+        except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
+            raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
+        if not supervisor_launcher.wait_until(answers, timeout=5.0):
+            raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
+                           {"code": "launch_failed"})
+    return True
+
+
+def remember_stopped(result):
+    """A Stop that ended the service leaves nothing listening: remember that it stopped, so the
+    next unreachable answer reads as a deliberate stop and not as an outage."""
+    domain_id = supervisor_domain_id()
+    prior = webproxy.last(domain_id)
+    known = dict(prior[1]) if prior and isinstance(prior[1], dict) else {}
+    known.update({"desired_mode": "stopped", "phase": "stopped", "ready": False, "shutdown": "resolved"})
+    if isinstance(result.get("state_revision"), int):
+        known["revision"] = result["state_revision"]
+    webproxy.remember(domain_id, known)
+
+
+def proxy_control(command, body):
+    if "actor" in body:
+        raise ApiError(400, "actor must come from authenticated peer")
+    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        raise ApiError(400, "request_id and integer expected_revision are required")
+    if command == "stop":
+        body.setdefault("mode", "drain")
+    launched = False
+    if command == "start" and ensure_service():
+        # The client could not have seen the revision of a service that was not running: bind
+        # the Start to the fresh one. The request id stays the caller's, so a retry dedupes.
+        launched = True
+        body = dict(body, expected_revision=proxy_call("status").get("revision", 0))
+    result = proxy_call(command, body)
+    if command == "stop" and isinstance(result, dict) and result.get("terminated") is True:
+        remember_stopped(result)
+    return 202, (dict(result, launched=True) if launched and isinstance(result, dict) else result)
+
+
+def supervisor_snapshot():
+    domain_id = supervisor_domain_id()
+    try:
+        state = proxy_call("status")
+        return dict(state, unreachable=False)
+    except ApiError as exc:
+        if exc.code != 503:
+            raise
+        prior = webproxy.last(domain_id)
+        known = prior[1] if prior else None
+        return {"schema_version": None, "ready": None, "read_only": True, "desired_mode": None,
+                "phase": None, "revision": None, "host_boot_id": None,
+                "execution_available": False, "shutdown": None,
+                "heartbeat": None, "session": None, "capacity": None, "queue": None,
+                "config": None, "boot_registration": None, "last_error": None, "claims": None,
+                "unreachable": True, "last_known": known,
+                "last_known_at": prior[0] if prior else None, "occupancy": None}
+
+
+def supervisor_run_status(cfg):
+    status = supervisor_snapshot()
+    if status.get("unreachable"):
+        known = status.get("last_known") if isinstance(status.get("last_known"), dict) else {}
+        stopped = known.get("phase") == "stopped" and known.get("ready") is False
+        return {"state": "stopped" if stopped else "unreachable", "supervisor": status, "pid": None,
+                "tick": None, "stop_reason": None, "cost": None, "hours": None,
+                "log_path": None, "log_tail": [], "out_tail": None}
+    phase = status.get("phase", "unknown")
+    ready = status.get("ready") is True
+    desired = status.get("desired_mode")
+    # Never infer running from intent: only the service's own ready acknowledgement
+    # plus an observed running phase counts. Intent without readiness is starting.
+    state = ("running" if ready and phase == "running" and desired == "running" else
+             "stopping" if phase in ("draining", "cancelling", "stopping") else
+             "starting" if desired == "running" and not ready else
+             "stopped" if phase in ("stopped", "idle") else phase)
+    return {"state": state, "pid": None, "tick": None, "stop_reason": None,
+            "cost": None, "hours": None, "log_path": None, "log_tail": [],
+            "out_tail": None, "supervisor": status}
+
+
+def require_supervisor_mode():
+    """The supervisor API exists only when supervisor.enabled is true; a legacy board answers 404."""
+    cfg, _ = ctx()
+    if not supervisor_enabled(cfg):
+        raise ApiError(404, "not found")
+
+
+def get_supervisor(params, body):
+    require_supervisor_mode()
+    return 200, supervisor_snapshot()
+
+
+def supervisor_command(params, body):
+    require_supervisor_mode()
+    return proxy_control(params["action"], body)
+
+
+def supervisor_events(params, body):
+    require_supervisor_mode()
+    query = params.get("query", {})
+    try:
+        after = int(query.get("after", ["0"])[0])
+        limit = int(query.get("limit", ["100"])[0])
+    except ValueError:
+        raise ApiError(400, "invalid event cursor or limit")
+    if after < 0 or not 1 <= limit <= 500:
+        raise ApiError(400, "invalid event cursor or limit")
+    return 200, proxy_call("events", extra={}, after=after, limit=limit)
+
+
+def card_execution(params, body):
+    require_supervisor_mode()
+    return 200, proxy_call("card_execution", card=params["n"])
+
+
+def card_execution_log(params, body):
+    require_supervisor_mode()
+    log_id = params.get("log_id", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", log_id) or ".." in log_id:
+        raise ApiError(400, "invalid log id")
+    try:
+        return 200, proxy_call("card_log", card=params["n"], log_id=log_id)
+    except ApiError as exc:
+        if exc.code in (400, 404, 409):
+            raise ApiError(404 if "not found" in str(exc) else 400, "log not found" if "not found" in str(exc) else "invalid log id")
+        raise
+
+
+def card_control(params, body):
+    require_supervisor_mode()
+    action = params["action"]
+    if action == "pause": command = "card_pause"
+    elif action == "resume": command = "card_resume"
+    elif action == "release-reservations": command = "release_reservations"
+    else: command = "resolve"
+    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        raise ApiError(400, "request_id and integer expected_revision are required")
+    return 202, proxy_call(command, body, card=params["n"])
 
 
 def post_planner(params, body):
@@ -1319,6 +1580,12 @@ ROUTES = [
     ("GET", r"/api/run", get_run),
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
+    ("GET", r"/api/supervisor", get_supervisor),
+    ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
+    ("GET", r"/api/supervisor/events", supervisor_events),
+    ("GET", r"/api/cards/(?P<n>\d+)/execution", card_execution),
+    ("GET", r"/api/cards/(?P<n>\d+)/execution/log/(?P<log_id>[^/]+)", card_execution_log),
+    ("POST", r"/api/cards/(?P<n>\d+)/execution/(?P<action>pause|release-reservations|resolve|resume)", card_control),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
@@ -1374,6 +1641,15 @@ def host_ok(handler) -> bool:
 
 MAX_BODY = 1024 * 1024
 REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
+
+
+def read_optional_json_body(handler) -> dict:
+    """The JSON object body, or {} when the request has none (the compatibility routes)."""
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        raise ApiError(400, "bad Content-Length")
+    return read_json_body(handler) if length > 0 else {}
 
 
 def read_json_body(handler) -> dict:
@@ -1451,7 +1727,13 @@ class Handler(BaseHTTPRequestHandler):
             route = match_route(method, path)
             if route is not None:
                 fn, params = route
-                body = read_json_body(self) if method in ("POST", "PATCH") and fn not in NO_BODY else {}
+                params["query"] = parse_qs(urlsplit(self.path).query)
+                if method in ("POST", "PATCH") and fn not in NO_BODY:
+                    body = read_json_body(self)
+                elif fn in NO_BODY and supervisor_enabled(ctx()[0]):
+                    body = read_optional_json_body(self)  # an optional {request_id, expected_revision}
+                else:
+                    body = {}
                 code, payload = fn(params, body)
                 send_json(self, code, payload)
                 return

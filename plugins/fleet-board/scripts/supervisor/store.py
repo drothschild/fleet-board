@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 
 from .models import NeverExecutedEvidence, RetryEvidence, StopEvidence, canonical_json
+from . import paths as _paths
+from .errors import StaleRevision
 from .processes import _boot_id
 
 SCHEMA_VERSION = 1
@@ -137,17 +139,21 @@ def _private_directory(path):
 
 
 class Store:
+    @property
+    def retry_evidence_verifier(self):
+        return self.__retry_evidence_verifier
+
+    @retry_evidence_verifier.setter
+    def retry_evidence_verifier(self, verifier):
+        if not callable(verifier):
+            raise ValueError('retry evidence verifier must be callable')
+        self.__retry_evidence_verifier = verifier
+
     @classmethod
     def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None, human_actor_verifier=None):
-        identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
-        if not all(isinstance(v, str) and v for v in identity.values()):
-            raise ValueError('invalid domain identity')
-        common = Path(identity['common_dir'])
-        if not common.is_absolute() or not common.is_dir():
-            raise ValueError('invalid git common directory')
-        identity['common_dir'] = str(common.resolve(strict=True))
-        domain_id = hashlib.sha256(canonical_json(identity).encode()).hexdigest()
-        root = domain.get('runtime_root') or os.path.join(os.environ.get('FLEET_BOARD_LOG_DIR', os.path.expanduser('~/.fleet-board')), 'supervisor')
+        identity = _paths.normalize_identity(domain)
+        domain_id = _paths.identity_digest(identity)
+        root = domain.get('runtime_root') or str(_paths.runtime_root())
         root = _private_directory(root)
         if (filesystem_inspector or _filesystem)(root) != 'local':
             raise ValueError('supervisor store requires a known local filesystem')
@@ -269,6 +275,8 @@ class Store:
                     if not item['enforceable']:
                         item['paths'] = ['']
                 item['revision'] = payload.get('reservation_revision', item['revision'] + 1)
+        for item in reservations.values():
+            item['reservation_revision'] = item['revision']
         return reservations
 
     def _normalize_scope(self, paths):
@@ -449,7 +457,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             self._event('card_lifecycle', {'card': card, 'state': state})
             c.execute('COMMIT')
         except Exception:
@@ -468,7 +476,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             owner = self.scope_conflict(card, paths)
             if owner is not None:
                 denied = owner
@@ -503,9 +511,18 @@ class Store:
         c = self.__connection
         c.execute('BEGIN IMMEDIATE')
         try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (command_id,)).fetchone()
+            if prior:
+                expected = canonical_json({'actor': actor, 'command': 'release_reservations',
+                    'payload': {'card': card, 'reason': reason}, 'expected_revision': expected_revision})
+                if prior['request'] != expected:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return result
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             if type(reservation_revision) is not int:
                 raise ValueError('reservation revision required')
             if self.__human_actor_verifier is None or self.__human_actor_verifier(actor, actor_capability) is not True:
@@ -516,8 +533,9 @@ class Store:
             if reservation is None:
                 raise ValueError('no reservation')
             if reservation['revision'] != reservation_revision:
-                raise ValueError('reservation revision mismatch')
-            if any(json.loads(row['data']).get('execution_released') is not True for row in c.execute("SELECT data FROM attempts WHERE job_id IN (SELECT id FROM jobs WHERE card=?)", (card,))):
+                raise StaleRevision('reservation revision mismatch')
+            attempts = list(c.execute("SELECT attempts.state,attempts.data FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE jobs.card=?", (card,)))
+            if any(json.loads(row['data']).get('execution_released') is not True for row in attempts):
                 raise ValueError('live or uncertain writer')
             if c.execute("SELECT 1 FROM effects WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (card,)).fetchone():
                 raise ValueError('pending effect')
@@ -540,7 +558,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             owner = self.scope_conflict(card, paths)
             if owner is not None:
                 self._event('scope_wait', {'card': card, 'waiting_on': owner})
@@ -673,7 +691,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             lifecycle = self._card_lifecycles().get(job['card'])
             if lifecycle == 'refresh_pending':
                 raise ValueError('refresh pending; worker admission blocked')
@@ -727,7 +745,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             c.execute('UPDATE domain SET config_hash=?,service_version=?', (config['config_hash'], config['service_version']))
             self._event('config_updated', config)
             c.execute('COMMIT')
@@ -747,7 +765,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             row = c.execute('SELECT state,data FROM attempts WHERE id=?', (attempt_id,)).fetchone()
             if row is None:
                 raise ValueError('unknown attempt')
@@ -785,7 +803,7 @@ class Store:
             if row is None:
                 raise ValueError('unknown attempt')
             if type(expected_revision) is not int or domain['revision'] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             if row['state'] not in ('prepared', 'launching', 'running', 'result_ready',
                                     'cancel_requested', 'quarantined'):
                 raise ValueError('attempt cannot adopt a launch receipt')
@@ -901,7 +919,7 @@ class Store:
                 result = {'attempt_id': data['retry_nonce'], 'retry_at': retry_at}
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 if (job['state'] != 'active' or job['retries_used'] != 0 or prior_data.get('execution_released') is not True
                         or prior_data.get('cancel_reason') != 'infrastructure' or job['generation'] != prior_data['generation'] + 1
                         or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
@@ -944,7 +962,7 @@ class Store:
                 raise ValueError('retry admission is blocked')
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             existing = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
             prior_data = json.loads(prior['data'])
             if (now < data['retry_at'] or job['generation'] != prior_data['generation'] + 1
@@ -1069,7 +1087,7 @@ class Store:
                     raise ValueError('conflicting stop evidence')
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 if type(evidence.free_fixture) is not bool:
                     raise ValueError('invalid usage evidence')
                 if not evidence.free_fixture and c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone() is None:
@@ -1103,7 +1121,7 @@ class Store:
                     raise ValueError('conflicting quarantine')
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 if row['state'] in ('reconciled', 'failed', 'interrupted'):
                     raise ValueError('attempt cannot be quarantined')
                 if row['current_generation'] == data['generation']:
@@ -1137,7 +1155,7 @@ class Store:
             else:
                 revision = c.execute('SELECT revision FROM domain').fetchone()[0]
                 if type(expected_revision) is not int or expected_revision != revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
                 if row is None or row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
                     raise ValueError('attempt cannot be cancelled')
@@ -1162,7 +1180,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             if c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (job_id,)).rowcount != 1:
                 raise ValueError('unknown job')
             self._event('generation_revoked', {'job_id': job_id})
@@ -1177,7 +1195,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             changed = c.execute('UPDATE jobs SET retries_used=retries_used+1 WHERE id=? AND retries_used=0', (job_id,)).rowcount
             if changed != 1:
                 raise ValueError('unknown job or retry exhausted')
@@ -1233,7 +1251,7 @@ class Store:
                     raise ValueError('conflicting effect observation')
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 event = {'operation_key': operation_key}
                 if intent.get('kind') == 'branch_refresh':
                     job = c.execute('SELECT * FROM jobs WHERE id=?', (row['job_id'],)).fetchone()
@@ -1474,12 +1492,16 @@ class Store:
             else:
                 revision = connection.execute('SELECT revision FROM domain').fetchone()[0]
                 if type(request.get('expected_revision')) is not int or request['expected_revision'] != revision:
-                    raise ValueError('revision mismatch')
-                modes = {'start': 'running', 'resume': 'running', 'pause': 'paused', 'stop': 'stopped'}
+                    raise StaleRevision('revision mismatch')
+                modes = {'start': 'running', 'resume': 'running', 'pause': 'paused', 'stop': 'stopped',
+                         'resolve': None, 'card_pause': None, 'card_resume': None}
                 if request['command'] not in modes:
                     raise ValueError('unsupported command')
                 mode = modes[request['command']]
-                connection.execute('UPDATE domain SET desired_mode=?', (mode,))
+                if mode is not None:
+                    connection.execute('UPDATE domain SET desired_mode=?', (mode,))
+                else:
+                    mode = connection.execute('SELECT desired_mode FROM domain').fetchone()[0]
                 result = {'desired_mode': mode, 'revision': revision + 1}
                 connection.execute('INSERT INTO commands VALUES(?,?,?)', (request['id'], encoded, canonical_json(result)))
                 self._event('command', {'id': request['id'], 'actor': request['actor'], 'command': request['command']})
@@ -1487,6 +1509,153 @@ class Store:
             return result
         except Exception:
             connection.execute('ROLLBACK')
+            raise
+
+    def authorize_manual_retry(self, request):
+        """Durably authorize a manual retry without changing execution or retry counters."""
+        required = ('request_id', 'card', 'job_id', 'attempt_id', 'actor', 'reason', 'expected_revision')
+        if any(not isinstance(request.get(k), str) or not request[k] for k in required[:-1]):
+            raise ValueError('invalid manual retry authorization')
+        if type(request.get('expected_revision')) is not int:
+            raise ValueError('invalid revision')
+        c = self.__connection
+        encoded = canonical_json(request)
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request['request_id'],)).fetchone()
+            if prior:
+                if prior['request'] != encoded:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return result
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if request['expected_revision'] != revision:
+                raise StaleRevision('revision mismatch')
+            attempt = c.execute('SELECT attempts.state, attempts.data, jobs.card, jobs.id AS job_id, jobs.generation, jobs.retries_used FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (request['attempt_id'],)).fetchone()
+            if (attempt is None or attempt['job_id'] != request['job_id'] or attempt['card'] != request['card']
+                    or attempt['state'] != 'quarantined'):
+                raise ValueError('manual retry requires matching quarantined attempt')
+            for event in c.execute("SELECT payload FROM events WHERE type='manual_retry_authorized'"):
+                if json.loads(event['payload']).get('attempt_id') == request['attempt_id']:
+                    raise ValueError('manual retry already authorized for this attempt')
+            if c.execute("SELECT 1 FROM effects WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (request['card'],)).fetchone():
+                raise ValueError('unresolved effect prevents retry')
+            result = {'authorized': True, 'card': request['card'], 'job_id': request['job_id'],
+                      'attempt_id': request['attempt_id'], 'revision': revision + 1}
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request['request_id'], encoded, canonical_json(result)))
+            self._event('manual_retry_authorized', {k: request[k] for k in ('request_id','card','job_id','attempt_id','actor','reason')})
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def confirm_effect(self, operation_key, observation, expected_revision):
+        """Replace an ambiguous observation only after the caller verifies external state."""
+        if not isinstance(operation_key, str) or not operation_key or not isinstance(observation, dict):
+            raise ValueError('invalid effect confirmation')
+        encoded = canonical_json(observation)
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or expected_revision != revision:
+                raise StaleRevision('revision mismatch')
+            row = c.execute('SELECT observation,status FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
+            if row is None:
+                raise ValueError('unknown effect')
+            if row['status'] in ('applied','complete','reconciled'):
+                if row['observation'] != encoded:
+                    raise ValueError('conflicting confirmed effect')
+                c.execute('COMMIT')
+                return {'confirmed': True, 'changed': False, 'revision': revision}
+            c.execute("UPDATE effects SET observation=?,status='applied' WHERE operation_key=?", (encoded,operation_key))
+            self._event('effect_confirmed', {'operation_key': operation_key, 'observation': observation})
+            c.execute('COMMIT')
+            return {'confirmed': True, 'changed': True, 'revision': revision + 1}
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def abandon_prepared_claim(self, card, request_id, actor, reason, operation_key, expected_revision):
+        """Release only a never-launched claim after its external effect is resolved."""
+        if any(not isinstance(v, str) or not v for v in (card,request_id,actor,reason,operation_key)):
+            raise ValueError('invalid prepared claim abandonment')
+        c = self.__connection
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request_id,)).fetchone()
+            request = {'actor':actor,'command':'abandon','payload':{'card':card,'reason':reason,'operation_key':operation_key},'expected_revision':expected_revision}
+            if prior:
+                if prior['request'] != canonical_json(request):
+                    raise ValueError('command ID already used')
+                outcome = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return outcome
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if type(expected_revision) is not int or revision != expected_revision:
+                raise StaleRevision('revision mismatch')
+            effect = c.execute('SELECT status FROM effects WHERE operation_key=? AND card=?', (operation_key,card)).fetchone()
+            if effect is None or effect['status'] not in ('applied','complete','reconciled'):
+                raise ValueError('unresolved effect prevents abandonment')
+            rows = list(c.execute('SELECT attempts.id,attempts.state,attempts.data FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE jobs.card=?', (card,)))
+            if not rows or any(row['state'] != 'prepared' and json.loads(row['data']).get('execution_released') is not True for row in rows):
+                raise ValueError('live or uncertain writer prevents abandonment')
+            reservation = self._reservations().get(card)
+            if reservation is None: raise ValueError('reservation missing')
+            c.execute('DELETE FROM claims WHERE card=?', (card,))
+            payload = {'card':card,'actor':actor,'reason':reason,'released_paths':reservation['paths'],
+                       'reservation_revision':reservation['revision'],'command_id':request_id,'effect_id':operation_key}
+            self._event('scope_released', payload)
+            self._event('effect_abandoned', payload)
+            outcome = {'released':True,'paths':reservation['paths'],'revision':revision+2}
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request_id,canonical_json(request),canonical_json(outcome)))
+            c.execute('COMMIT')
+            return outcome
+        except Exception:
+            c.execute('ROLLBACK')
+            raise
+
+    def reconcile_usage(self, request):
+        """Add verified usage to its original session without clearing uncertainty or stops."""
+        required = ('request_id', 'session_id', 'attempt_id', 'actor', 'reason', 'cost_usd', 'expected_revision')
+        if any(not isinstance(request.get(k), str) or not request[k] for k in required[:5]):
+            raise ValueError('invalid usage reconciliation')
+        cost = request.get('cost_usd')
+        if type(cost) not in (int, float) or not math.isfinite(cost) or cost < 0:
+            raise ValueError('invalid usage cost')
+        if type(request.get('expected_revision')) is not int:
+            raise ValueError('invalid revision')
+        c = self.__connection
+        encoded = canonical_json(request)
+        c.execute('BEGIN IMMEDIATE')
+        try:
+            prior = c.execute('SELECT request,outcome FROM commands WHERE id=?', (request['request_id'],)).fetchone()
+            if prior:
+                if prior['request'] != encoded:
+                    raise ValueError('command ID already used')
+                result = json.loads(prior['outcome'])
+                c.execute('COMMIT')
+                return result
+            revision = c.execute('SELECT revision FROM domain').fetchone()[0]
+            if request['expected_revision'] != revision:
+                raise StaleRevision('revision mismatch')
+            attempt = c.execute('SELECT data FROM attempts WHERE id=?', (request['attempt_id'],)).fetchone()
+            session = c.execute('SELECT * FROM sessions WHERE id=?', (request['session_id'],)).fetchone()
+            if attempt is None or session is None or json.loads(attempt['data']).get('session_id') != request['session_id']:
+                raise ValueError('usage attempt/session mismatch')
+            total = session['known_spend'] + cost
+            if not math.isfinite(total):
+                raise ValueError('usage total overflow')
+            c.execute('UPDATE sessions SET known_spend=? WHERE id=?', (total, request['session_id']))
+            result = {'recorded': True, 'session_id': request['session_id'], 'known_spend': total, 'revision': revision + 1}
+            c.execute('INSERT INTO commands VALUES(?,?,?)', (request['request_id'], encoded, canonical_json(result)))
+            self._event('usage_reconciled', {k: request[k] for k in ('request_id','session_id','attempt_id','actor','reason','cost_usd')})
+            c.execute('COMMIT')
+            return result
+        except Exception:
+            c.execute('ROLLBACK')
             raise
 
     def append_event(self, event):
@@ -1500,6 +1669,21 @@ class Store:
         except Exception:
             connection.execute('ROLLBACK')
             raise
+
+    def events_after(self, after, limit):
+        """Read one bounded event page without materializing the full store."""
+        rows = self.__connection.execute(
+            'SELECT * FROM events WHERE sequence>? ORDER BY sequence LIMIT ?',
+            (after, limit)).fetchall()
+        result = [dict(row) for row in rows]
+        for event in result:
+            event['payload'] = json.loads(event['payload'])
+        return result
+
+    def oldest_event_sequence(self):
+        """Return the first retained event sequence without loading event rows."""
+        row = self.__connection.execute('SELECT MIN(sequence) FROM events').fetchone()
+        return row[0]
 
     def snapshot(self):
         connection = self.__connection

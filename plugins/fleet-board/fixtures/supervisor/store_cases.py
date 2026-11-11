@@ -44,6 +44,14 @@ class StoreContract(unittest.TestCase):
         self.assertGreater(reopened["domain"]["revision"], before["domain"]["revision"])
         self.assertTrue(reopened["events"])
 
+    def test_oldest_event_sequence_is_a_bounded_store_read(self):
+        oldest = getattr(self.store, "oldest_event_sequence", None)
+        self.assertTrue(callable(oldest), "oldest event sequence query is missing")
+        self.assertEqual(oldest(), 1)
+        self.store.events_after = mock.Mock(side_effect=AssertionError("event page must not be read"))
+        self.store.snapshot = mock.Mock(side_effect=AssertionError("full snapshot must not be read"))
+        self.assertEqual(oldest(), 1)
+
     def test_command_replay_does_not_advance_revision(self):
         revision = self.store.snapshot()["domain"]["revision"]
         request = {"id": "pause-1", "expected_revision": revision,
@@ -54,6 +62,170 @@ class StoreContract(unittest.TestCase):
         self.assertEqual(self.store.snapshot()["domain"]["revision"], after["domain"]["revision"])
         with self.assertRaises(ValueError):
             self.store.record_command(dict(request, command="stop"))
+
+    def test_manual_retry_authorization_is_transactional_audited_and_deduplicated(self):
+        method = getattr(self.store, "authorize_manual_retry", None)
+        self.assertTrue(callable(method), "manual retry authorization primitive is not implemented")
+        job = {"id": "manual-job", "card": "12", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "a" * 64, "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "manual-attempt", "session_id": "default"}
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 2, "provider_cap": 2, "paths": ["src/manual"]})
+        self.store.quarantine_attempt("manual-attempt", "uncertain", self.store.snapshot()["domain"]["revision"])
+        before = self.store.snapshot()
+        request = {"request_id": "manual-retry", "card": "12", "job_id": "manual-job",
+                   "attempt_id": "manual-attempt", "actor": "fixture", "reason": "verified containment",
+                   "expected_revision": before["domain"]["revision"]}
+        first = method(request)
+        after = self.store.snapshot()
+        self.assertEqual(method(request), first)
+        self.assertEqual(self.store.snapshot(), after)
+        self.assertNotEqual(after, before)
+        self.assertEqual(after["attempts"][0]["state"], "quarantined")
+        self.assertEqual(after["jobs"][0]["retries_used"], before["jobs"][0]["retries_used"])
+        with self.assertRaisesRegex(ValueError, "already|authorized|retry"):
+            method(dict(request, request_id="manual-retry-again", expected_revision=after["domain"]["revision"]))
+
+    def test_confirm_effect_records_verified_observation_transactionally(self):
+        method = getattr(self.store, "confirm_effect", None)
+        self.assertTrue(callable(method), "verified effect confirmation primitive is not implemented")
+        job = {"id":"effect-job","card":"14","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"c"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"effect-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/effect"]})
+        self.store.record_effect({"operation_key":"effect-op","job_id":"effect-job","generation":1,
+                                  "preconditions":{"card":"14"},"intent":{"kind":"publish","card":"14"}})
+        self.store.observe_effect("effect-op",{"status":"unknown"},self.store.snapshot()["domain"]["revision"])
+        result = method("effect-op",{"status":"applied","external_id":"pr-14"},self.store.snapshot()["domain"]["revision"])
+        self.assertTrue(result["changed"])
+        effect = self.store.snapshot()["effects"][0]
+        self.assertEqual(effect["status"],"applied")
+        self.assertEqual(json.loads(effect["observation"]),{"status":"applied","external_id":"pr-14"})
+
+    def test_confirm_effect_already_resolved_is_an_idempotent_noop(self):
+        job = {"id":"effect-noop-job","card":"14","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"c"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"effect-noop-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/effect"]})
+        self.store.record_effect({"operation_key":"effect-noop-op","job_id":job["id"],"generation":1,
+                                  "preconditions":{},"intent":{"kind":"publish","card":"14"}})
+        self.store.confirm_effect("effect-noop-op",{"status":"applied"},self.store.snapshot()["domain"]["revision"])
+        before = self.store.snapshot()
+        result = self.store.confirm_effect("effect-noop-op",{"status":"applied"},before["domain"]["revision"])
+        self.assertFalse(result["changed"])
+        self.assertEqual(self.store.snapshot(),before)
+
+    def test_abandon_rejects_ambiguous_observation_and_requires_card_attempt_artifacts(self):
+        job = {"id":"ambiguous-job","card":"15","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"d"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"ambiguous-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/abandon"]})
+        self.store.record_effect({"operation_key":"ambiguous-op","job_id":job["id"],"generation":1,
+                                  "preconditions":{},"intent":{"kind":"publish","card":"15"}})
+        self.store.observe_effect("ambiguous-op",{"status":"unknown"},self.store.snapshot()["domain"]["revision"])
+        with self.assertRaisesRegex(ValueError,"unresolved|effect"):
+            self.store.abandon_prepared_claim("15","ambiguous-abandon","fixture","retain",
+                                              "ambiguous-op",self.store.snapshot()["domain"]["revision"])
+        self.assertTrue(self.store.snapshot()["claims"])
+
+    def test_release_scope_rejects_attempt_without_containment_proof(self):
+        # A reservation with no attempt has no possible writer (Phase 3 contract:
+        # release is allowed); an attempt WITHOUT stop evidence blocks release.
+        self.store._Store__human_actor_verifier = lambda actor, capability: actor == "fixture" and capability == "fixture"
+        job = {"id":"unproven-job","card":"21","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"d"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"unproven-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/release"]})
+        reservation = next(row for row in self.store.snapshot()["reservations"] if row["card"] == "21")
+        self.store.set_card_lifecycle("21","paused",self.store.snapshot()["domain"]["revision"])
+        before = self.store.snapshot()
+        with self.assertRaisesRegex(ValueError,"live or uncertain writer"):
+            self.store.release_scope("21","release-unproven","fixture","manual reconcile",
+                                     before["domain"]["revision"],
+                                     reservation_revision=reservation["reservation_revision"],
+                                     actor_capability="fixture")
+        self.assertEqual(sum(row["type"] == "scope_released" for row in self.store.snapshot()["events"]),0)
+
+    def test_release_scope_audits_stopped_writer_and_replays_request(self):
+        self.store._Store__human_actor_verifier = lambda actor, capability: actor == "fixture" and capability == "fixture"
+        self.store._Store__stop_evidence_verifier = lambda evidence: True
+        job = {"id":"release-job","card":"22","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"e"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"release-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/release"]})
+        attempt_data = json.loads(self.store.snapshot()["attempts"][0]["data"])
+        identity = {"boot_id":"fixture-boot","pid":4321,"started_at":"42","nonce":"release-attempt"}
+        attempt_data.update({"boot_id":"fixture-boot","process_identity":identity})
+        self.store._Store__connection.execute("UPDATE attempts SET state='quarantined',data=? WHERE id=?",
+                                               (json.dumps(attempt_data,sort_keys=True,separators=(",",":")),"release-attempt"))
+        from supervisor.models import StopEvidence
+        evidence = StopEvidence(self.store.domain_id,"release-job","release-attempt",1,"fixture-boot",4321,
+                                "42","release-attempt","fixture_complete_tree",True)
+        self.store.record_execution_stopped("release-attempt",evidence,self.store.snapshot()["domain"]["revision"])
+        reservation = next(row for row in self.store.snapshot()["reservations"] if row["card"] == "22")
+        self.store.set_card_lifecycle("22","paused",self.store.snapshot()["domain"]["revision"])
+        revision = self.store.snapshot()["domain"]["revision"]
+        outcome = self.store.release_scope("22","release-request-22","fixture","verified stopped",
+                                           revision,reservation_revision=reservation["reservation_revision"],
+                                           actor_capability="fixture")
+        audit = next(row for row in reversed(self.store.snapshot()["events"]) if row["type"] == "scope_released")
+        self.assertEqual(audit["payload"]["actor"],"fixture")
+        self.assertEqual(audit["payload"]["reason"],"verified stopped")
+        self.assertEqual(audit["payload"]["released_paths"],["src/release"])
+        self.assertIsInstance(audit["timestamp"],(int,float))
+        try:
+            replay = self.store.release_scope("22","release-request-22","fixture","verified stopped",
+                                              revision,reservation_revision=reservation["reservation_revision"],
+                                              actor_capability="fixture")
+        except Exception as exc:
+            self.fail("request replay must return its original release outcome: %s" % exc)
+        self.assertEqual(replay,outcome)
+        self.assertEqual(sum(row["type"] == "scope_released" for row in self.store.snapshot()["events"]),1)
+
+    def test_abandon_releases_only_prepared_claim_after_effect_resolution(self):
+        method = getattr(self.store, "abandon_prepared_claim", None)
+        self.assertTrue(callable(method), "safe prepared claim abandonment primitive is not implemented")
+        job = {"id":"abandon-job","card":"15","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"d"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"abandon-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/abandon"]})
+        self.store.record_effect({"operation_key":"abandon-op","job_id":"abandon-job","generation":1,
+                                  "preconditions":{"card":"15"},"intent":{"kind":"publish","card":"15"}})
+        self.store.confirm_effect("abandon-op",{"status":"applied"},self.store.snapshot()["domain"]["revision"])
+        result = method("15","abandon-1","fixture","retain evidence","abandon-op",self.store.snapshot()["domain"]["revision"])
+        self.assertTrue(result["released"])
+        after = self.store.snapshot()
+        self.assertFalse(after["claims"])
+        self.assertFalse(after["reservations"])
+        self.assertIn("effect_abandoned",[item["type"] for item in after["events"]])
+
+    def test_usage_reconciliation_adds_cost_once_without_clearing_unknown_or_stop(self):
+        method = getattr(self.store, "reconcile_usage", None)
+        self.assertTrue(callable(method), "usage reconciliation primitive is not implemented")
+        job = {"id": "usage-job", "card": "13", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "b" * 64, "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "usage-attempt", "session_id": "unknown-session"}
+        self.store.start_session({"id": "unknown-session", "started_at": 2, "deadline": 100,
+                                  "known_spend": 0.5, "unknown_spend": True, "budget_stop": "unknown usage"})
+        self.store.prepare_attempt(job, self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap": 2, "provider_cap": 2, "paths": ["src/usage"]})
+        request = {"request_id": "usage-record", "session_id": "unknown-session", "attempt_id": "usage-attempt",
+                   "actor": "fixture", "reason": "provider receipt", "cost_usd": 1.25,
+                   "expected_revision": self.store.snapshot()["domain"]["revision"]}
+        first = method(request)
+        after = self.store.snapshot()
+        self.assertEqual(method(request), first)
+        self.assertEqual(self.store.snapshot(), after)
+        session = next(item for item in after["sessions"] if item["id"] == "unknown-session")
+        self.assertEqual(session["known_spend"], 1.75)
+        self.assertTrue(session["unknown_spend"])
+        self.assertEqual(session["budget_stop"], "unknown usage")
 
     def test_default_inspector_accepts_real_local_scratch(self):
         other = Store.open(self.domain)
