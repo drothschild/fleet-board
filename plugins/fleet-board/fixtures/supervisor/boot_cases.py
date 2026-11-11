@@ -1661,11 +1661,41 @@ class DuplicateLaunchAck(WatchCase):
             started.append(1)
             raise RuntimeError("could not connect to the starting owner")
 
-        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=launch, activate=activate)
+        answers = iter([None])  # nothing answers before the launch; the lock holder answers after it
+        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=launch, activate=activate,
+                                   live_status=lambda root, entry: next(answers, {"state": "ok"}))
         self.assertEqual(outcome["action"], "serving")
         self.assertEqual(started, [], "the peer that won the lock activates itself")
         state = boot.registration_state(self.board, self.env())
         self.assertIsNone(state.get("last_error"), "no service_launch_failed for a healthy domain")
+
+    def owner_false_launch(self, root, launch_env):
+        return types.SimpleNamespace(child=FakeChild(), ack={"ready": True, "owner": False})
+
+    def test_m1_an_owner_false_ack_with_an_answering_owner_is_serving(self):
+        self.set_mode("running")
+        answers = iter([None])
+        with mock.patch.object(boot, "OWNER_PING_WAIT", 0.3, create=True):
+            outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=self.owner_false_launch,
+                                       activate=lambda *a: self.fail("must not activate"),
+                                       live_status=lambda root, entry: next(answers, {"state": "ok"}))
+        self.assertEqual(outcome["action"], "serving")
+        self.assertEqual(outcome["status"]["reason"], "serving")
+
+    def test_m1_an_owner_false_ack_with_no_answer_is_owner_unresponsive(self):
+        self.set_mode("running")
+        before = self.store_state()
+        child = FakeChild()
+        with mock.patch.object(boot, "OWNER_PING_WAIT", 0.3, create=True):
+            outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2",
+                                       launch=lambda r, e: types.SimpleNamespace(child=child, ack={"ready": True, "owner": False}),
+                                       activate=lambda *a: self.fail("must not activate"),
+                                       live_status=lambda root, entry: None)
+        self.assertEqual(outcome["action"], "waiting")
+        self.assertEqual(outcome["status"]["reason"], "owner_unresponsive")
+        self.assertEqual(outcome["status"]["state"], "waiting")
+        self.assertEqual(self.store_state(), before, "no state wiped or written")
+        self.assertFalse(child.terminated, "nothing is killed or signalled")
 
     def test_an_owner_true_ack_still_activates(self):
         self.set_mode("running")
@@ -1742,7 +1772,7 @@ class UninstallWithLiveService(CliSocketTrust):
 class CredentialsForEveryStart(BootCase):
     """m-g: launch_child merges the registered domain's credentials for every caller."""
 
-    def capture(self, env):
+    def capture(self, env, call=None):
         from supervisor import launcher
         import io
         import contextlib
@@ -1768,8 +1798,13 @@ class CredentialsForEveryStart(BootCase):
                 pass
 
         errors = io.StringIO()
-        with mock.patch.object(launcher.subprocess, "Popen", Fake), contextlib.redirect_stderr(errors):
-            ack = launcher.launch_service(self.board, env=env)
+        real_popen = subprocess.Popen
+
+        def popen(argv, **kwargs):  # only the service launch is faked; helper scripts run for real
+            return Fake(argv, **kwargs) if "supervisor.cli" in " ".join(map(str, argv)) else real_popen(argv, **kwargs)
+
+        with mock.patch.object(launcher.subprocess, "Popen", popen), contextlib.redirect_stderr(errors):
+            ack = (call or (lambda: launcher.launch_service(self.board, env=env)))()
         return captured, errors.getvalue(), ack
 
     def write_cred(self, text, mode=0o600):
@@ -1804,6 +1839,68 @@ class CredentialsForEveryStart(BootCase):
         self.assertNotEqual(captured["env"].get("FB_TEST_SECRET"), "x-loose")
         self.assertNotIn("x-loose", stderr)
         self.assertIn("0600", stderr)
+
+    def test_m2_credentials_env_overrides_the_process_environment_on_an_explicit_start(self):
+        self.install("--credential-env", "FB_TEST_SECRET")
+        self.write_cred("FB_TEST_SECRET=from-file\n")
+        with mock.patch.dict(os.environ, {"FB_TEST_SECRET": "stale-process"}):
+            captured, _, _ = self.capture(self.env(FB_TEST_SECRET="stale-process"))
+        self.assertEqual(captured["env"].get("FB_TEST_SECRET"), "from-file")
+
+    def test_m2_credentials_env_overrides_the_process_environment_on_the_watcher_path(self):
+        self.install("--credential-env", "FB_TEST_SECRET")
+        self.write_cred("FB_TEST_SECRET=from-file\n")
+        self.set_mode("running")
+        seen = {}
+
+        def launch(root, launch_env):
+            seen.update(launch_env)
+            return FakeChild()
+
+        boot.boot_domain(self.board, env=self.env(FB_TEST_SECRET="stale-process"), boot_id="boot-2", launch=launch,
+                         activate=lambda *a: None, live_status=lambda r, e: None)
+        self.assertEqual(seen.get("FB_TEST_SECRET"), "from-file")
+
+    def test_n4_the_watcher_path_reads_credentials_env_once_per_launch(self):
+        self.install("--credential-env", "FB_TEST_SECRET")
+        self.write_cred("FB_TEST_SECRET=from-file\n")
+        self.set_mode("running")
+        real = boot.read_credentials
+        reads = []
+
+        def spy(reg):
+            reads.append(1)
+            return real(reg)
+
+        def run():
+            with mock.patch.object(boot, "read_credentials", spy), \
+                    mock.patch.dict(os.environ, {"FB_TEST_SECRET": "stale-process"}):
+                return boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", activate=lambda *a: None,
+                                        live_status=lambda r, e: None)
+
+        captured, _, outcome = self.capture(self.env(), call=run)
+        self.assertEqual(outcome["action"], "restored")
+        self.assertEqual(captured["env"].get("FB_TEST_SECRET"), "from-file")
+        self.assertEqual(len(reads), 1, "credentials.env is read once per launch")
+
+    def test_n3_a_fifo_at_credentials_env_returns_the_hint_promptly(self):
+        import signal
+        self.install("--credential-env", "FB_TEST_SECRET")
+        reg = self.registry()
+        os.mkfifo(str(reg / "credentials.env"), 0o600)
+
+        def timed_out(_signum, _frame):
+            raise AssertionError("read_credentials hung on a FIFO")
+
+        previous = signal.signal(signal.SIGALRM, timed_out)
+        signal.alarm(5)
+        try:
+            values, problem = boot.read_credentials(reg)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertEqual(values, {})
+        self.assertIn("0600", problem)
 
     def test_an_unregistered_domain_is_launched_as_before(self):
         captured, stderr, ack = self.capture(self.env())
