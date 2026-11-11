@@ -31,11 +31,20 @@ import tempfile
 import threading
 import time
 import traceback
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs
+
+# The module is also imported directly by offline board-web tests, where the
+# scripts directory is not necessarily already on sys.path.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
 NOTE_FIELDS = ("round", "pr", "models", "stage", "action_failures")
@@ -337,6 +346,10 @@ def run_alive() -> bool:
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
+    if supervisor_enabled(cfg):
+        status = supervisor_snapshot()
+        return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
+                and status.get("desired_mode") == "running")
     with _RUN_LOCK:
         pid, started = read_pid_file(state_dir(APP["root"], cfg))
         alive = pid is not None and pid_alive(pid, started)
@@ -396,6 +409,8 @@ def to_float(s: str):
 def run_status(alive=None) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
+    if supervisor_enabled(cfg):
+        return supervisor_run_status(cfg)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
         alive = run_alive()
@@ -1231,6 +1246,8 @@ def get_run(params, body):
 
 def start_run(params, body):
     cfg, dir = ctx()
+    if supervisor_enabled(cfg):
+        return proxy_control("start", body)
     sdir = state_dir(APP["root"], cfg)
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
     with _RUN_LOCK:
@@ -1259,11 +1276,137 @@ def start_run(params, body):
 
 
 def stop_run(params, body):
+    cfg, _ = ctx()
+    if supervisor_enabled(cfg):
+        return proxy_control("stop", dict(body, mode="drain"))
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
         Path(APP["root"], STOP_FILE).touch()
     return 200, {"state": "stopping"}
+
+
+def supervisor_enabled(cfg):
+    return (cfg.get("supervisor") or {}).get("enabled") is True
+
+
+def supervisor_domain(cfg):
+    """Use the supervisor store's canonical domain identity for its socket name."""
+    from supervisor.store import Store
+    root = Path(APP["root"]).resolve()
+    git = root / ".git"
+    common = git.resolve() if git.exists() else root
+    domain = {"common_dir": str(common), "board_backend": "local",
+              "board_identity": str(root),
+              "runtime_root": str(Path(os.environ.get("FLEET_BOARD_LOG_DIR", str(Path.home() / ".fleet-board"))) / "supervisor")}
+    store = Store.open(domain)
+    try:
+        return store.domain_id
+    finally:
+        store.close()
+
+
+def proxy_call(command, body=None, **extra):
+    cfg, _ = ctx()
+    domain_id = supervisor_domain(cfg)
+    request = dict(body or {})
+    if "actor" in request:
+        raise ApiError(400, "actor must come from authenticated peer")
+    request.update(extra)
+    request["command"] = command
+    try:
+        result = webproxy.request(webproxy.socket_path(domain_id), request)
+    except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+        msg = str(exc)
+        if "stale" in msg.lower() or "revision" in msg.lower():
+            try:
+                current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
+            except Exception:
+                current = None
+            raise ApiError(409, msg, {"current": current})
+        raise ApiError(503, "supervisor unavailable: " + msg)
+    if command == "status":
+        webproxy.remember(domain_id, result)
+    return result
+
+
+def proxy_control(command, body):
+    if "actor" in body:
+        raise ApiError(400, "actor must come from authenticated peer")
+    if not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        current = proxy_call("status")
+        body.setdefault("request_id", uuid.uuid4().hex)
+        body.setdefault("expected_revision", current.get("revision", 0))
+    if command == "stop":
+        body.setdefault("mode", "drain")
+    return 202, proxy_call(command, body)
+
+
+def supervisor_snapshot():
+    cfg, _ = ctx()
+    domain_id = supervisor_domain(cfg)
+    try:
+        state = proxy_call("status")
+        return dict(state, unreachable=False)
+    except ApiError as exc:
+        if exc.code != 503:
+            raise
+        prior = webproxy.last(domain_id)
+        known = prior[1] if prior else None
+        return {"state": known or {"phase": "unknown", "desired_mode": "unknown"},
+                "last_known": known,
+                "last_known_at": prior[0] if prior else None,
+                "occupancy": None,  # unknown, never zero
+                "unreachable": True}
+
+
+def supervisor_run_status(cfg):
+    status = supervisor_snapshot()
+    if status.get("unreachable"):
+        return {"state": "unreachable", "supervisor": status, "pid": None,
+                "tick": None, "stop_reason": None, "cost": None, "hours": None,
+                "log_path": None, "log_tail": [], "out_tail": None}
+    phase = status.get("phase", "unknown")
+    desired = status.get("desired_mode")
+    state = "running" if phase in ("running", "ready") and desired == "running" else (
+        "stopping" if desired == "stopped" and phase not in ("stopped", "idle") else
+        "stopped" if desired == "stopped" or phase in ("stopped", "idle") else phase)
+    return {"state": state, "pid": None, "tick": None, "stop_reason": None,
+            "cost": None, "hours": None, "log_path": None, "log_tail": [],
+            "out_tail": None, "supervisor": status}
+
+
+def get_supervisor(params, body):
+    return 200, supervisor_snapshot()
+
+
+def supervisor_command(params, body):
+    return proxy_control(params["action"], body)
+
+
+def supervisor_events(params, body):
+    query = params.get("query", {})
+    try:
+        after = int(query.get("after", ["0"])[0])
+        limit = int(query.get("limit", ["100"])[0])
+    except ValueError:
+        raise ApiError(400, "invalid event cursor or limit")
+    if after < 0 or not 1 <= limit <= 500:
+        raise ApiError(400, "invalid event cursor or limit")
+    return 200, proxy_call("events", extra={}, after=after, limit=limit)
+
+
+def card_execution(params, body):
+    return 200, proxy_call("card_execution", card=params["n"])
+
+
+def card_control(params, body):
+    action = params["action"]
+    if action == "pause": command = "card_pause"
+    elif action == "resume": command = "card_resume"
+    elif action == "release-reservations": command = "release_reservations"
+    else: command = "resolve"
+    return 202, proxy_call(command, body, card=params["n"])
 
 
 def post_planner(params, body):
@@ -1319,6 +1462,11 @@ ROUTES = [
     ("GET", r"/api/run", get_run),
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
+    ("GET", r"/api/supervisor", get_supervisor),
+    ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
+    ("GET", r"/api/supervisor/events", supervisor_events),
+    ("GET", r"/api/cards/(?P<n>\d+)/execution", card_execution),
+    ("POST", r"/api/cards/(?P<n>\d+)/execution/(?P<action>pause|release-reservations|resolve|resume)", card_control),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
@@ -1451,6 +1599,7 @@ class Handler(BaseHTTPRequestHandler):
             route = match_route(method, path)
             if route is not None:
                 fn, params = route
+                params["query"] = parse_qs(urlsplit(self.path).query)
                 body = read_json_body(self) if method in ("POST", "PATCH") and fn not in NO_BODY else {}
                 code, payload = fn(params, body)
                 send_json(self, code, payload)
