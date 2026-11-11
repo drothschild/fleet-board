@@ -59,19 +59,12 @@ fl_write_card() {
 }
 
 # fl_lock_next / fl_unlock_next: <dir>/.next.lock, the lock every writer of
-# <dir>/next takes (a lock older than 5 minutes is stale and removed).
+# <dir>/next takes (a lock whose owner process is gone is stale and removed).
 fl_lock_next() {
-  local d lock wait stale_min=5 waited=0
-  d="$(fl_dir)"; lock="$d/.next.lock"
-  wait="${FLEET_BOARD_LOCK_WAIT:-30}"
+  local d
+  d="$(fl_dir)"
   mkdir -p "$d" || fb_die 1 "cannot create $d"
-  while ! mkdir "$lock" 2>/dev/null; do
-    if [ -n "$(find "$lock" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
-      rm -rf "$lock"; continue
-    fi
-    [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
-    sleep 0.1; waited=$((waited + 1))
-  done
+  fb_lock_acquire "$d/.next.lock" "${FLEET_BOARD_LOCK_WAIT:-30}"
 }
 fl_unlock_next() { rm -rf "$(fl_dir)/.next.lock"; }
 

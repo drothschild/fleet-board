@@ -232,22 +232,36 @@ fb_valid_number() {
   esac
 }
 
-# fb_lock <card-number>; releases on EXIT
-fb_lock() {
-  local dir wait stale_min=5 waited=0
-  dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
-  FB_LOCK="$dir/card-$1.lock"; wait="${FLEET_BOARD_LOCK_WAIT:-30}"
-  while ! mkdir "$FB_LOCK" 2>/dev/null; do
-    if [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
-      # Known race: waiters A and B both see the lock as stale. B removes it and
-      # takes a fresh lock; A's rm -rf then deletes B's live lock and A takes it
-      # too, so two holders run at once. Accepted for now (see rehearsal notes).
-      rm -rf "$FB_LOCK"; continue
+# fb_lock_acquire <lockdir> <wait-seconds>: takes the mkdir lock and records our
+# pid in <lockdir>/pid. A lock is stale only when its recorded owner is no longer
+# running (liveness, not age). A stale lock is first renamed away (atomic, so only
+# one waiter wins it), and the owner is re-checked on the renamed copy; if the
+# owner turns out to be alive, the lock is put back. A lock with no pid file yet
+# is being created and is never treated as stale.
+fb_lock_acquire() {
+  local lock="$1" wait="$2" waited=0 pid moved
+  while ! mkdir "$lock" 2>/dev/null; do
+    pid="$(cat "$lock/pid" 2>/dev/null)"
+    if [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; then
+      moved="$lock.stale.$$"
+      if mv "$lock" "$moved" 2>/dev/null; then
+        if [ "$(cat "$moved/pid" 2>/dev/null)" = "$pid" ]; then rm -rf "$moved"
+        else mv "$moved" "$lock" 2>/dev/null || rm -rf "$moved"; fi
+      fi
+      continue
     fi
-    [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $FB_LOCK after ${wait}s"
+    [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
     sleep 0.1; waited=$((waited + 1))
   done
-  echo $$ > "$FB_LOCK/pid"
+  echo $$ > "$lock/pid"
+}
+
+# fb_lock <card-number>; releases on EXIT
+fb_lock() {
+  local dir
+  dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
+  FB_LOCK="$dir/card-$1.lock"
+  fb_lock_acquire "$FB_LOCK" "${FLEET_BOARD_LOCK_WAIT:-30}"
   trap 'rm -rf "$FB_LOCK"' EXIT
 }
 
