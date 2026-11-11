@@ -25,11 +25,17 @@ class Scopes(unittest.TestCase):
 
     def test_normalize_empty_means_whole_repo(self):
         self.assertEqual(scopes.normalize([''], self.root), [''])
-        self.assertEqual(scopes.normalize(['./', '/'], self.root), [''])
+        self.assertEqual(scopes.normalize(['./'], self.root), [''])
         self.assertEqual(scopes.normalize([], self.root), [''])
 
     def test_normalize_rejects_dotdot(self):
         for bad in ('../x', 'a/../b', 'a//b', 'a/./b', '/abs/path'):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, 'invalid scope path'):
+                    scopes.normalize([bad], self.root)
+
+    def test_normalize_rejects_the_filesystem_root(self):
+        for bad in ('/', '//', '/src/'):
             with self.subTest(bad=bad):
                 with self.assertRaisesRegex(ValueError, 'invalid scope path'):
                     scopes.normalize([bad], self.root)
@@ -144,6 +150,14 @@ class Lifecycle(unittest.TestCase):
         s.reserve(3, ['a'])
         s.reserve(3, [''])
         self.assertEqual(s.reservations[3], [''])
+
+    def test_begin_rejects_an_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            self.state.begin(action(1, kind='bogus'))
+        self.assertEqual(self.state.active, {})
+        for kind in ('role', 'script', 'merge'):
+            self.state.begin(action(hash(kind) % 1000, kind=kind))
+            self.state.end(hash(kind) % 1000)
 
     def test_events_ring_keeps_the_last_500(self):
         seqs = [self.state.event('tick', n=i) for i in range(600)]
