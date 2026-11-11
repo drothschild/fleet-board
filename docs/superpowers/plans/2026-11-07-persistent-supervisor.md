@@ -218,12 +218,12 @@ Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsuppor
 **Create:** `scripts/supervisor/boot.py`; `scripts/supervisor/templates/launchd.plist`, `systemd.service`; `tests/test-supervisor-boot.sh`; `fixtures/supervisor/boot_cases.py`.
 **Modify:** `cli.py`, `service.py`; `plugins/fleet-board/docs/overnight.md`.
 
-- [ ] Test template generation and command invocation with fake launchctl/systemctl executables; explicit argv quoting for spaces; missing installation; false YAML after prior true installation; running/paused/stopped restore; same-boot crash versus reboot; invalid YAML, missing repo/executable/credentials; version/protocol incompatibility.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-boot.sh` to failure; commit tests.
-- [ ] Implement stable versioned launcher installation and domain registry with private permissions and no embedded secrets. Bootstrap reads current YAML and boot identity. Add `service install|uninstall|status` CLI; setup does not start new work on never-started domains.
-- [ ] Implement macOS boot LaunchDaemon under owning unprivileged user, separately labeled login-agent fallback, and Linux user service with lingering diagnostics. Never request administrator access merely to read or generate templates; actual install is an explicit later action.
-- [ ] Implement upgrade compatibility check, backup/migration and previous-version rollback path. Missing runtime or unreadable config leaves visible recoverable status; never wipes state.
-- [ ] Run focused suite and clean-room check; commit/push.
+- [x] Test template generation and command invocation with fake launchctl/systemctl executables; explicit argv quoting for spaces; missing installation; false YAML after prior true installation; running/paused/stopped restore; same-boot crash versus reboot; invalid YAML, missing repo/executable/credentials; version/protocol incompatibility.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-boot.sh` to failure; commit tests.
+- [x] Implement stable versioned launcher installation and domain registry with private permissions and no embedded secrets. Bootstrap reads current YAML and boot identity. Add `service install|uninstall|status` CLI; setup does not start new work on never-started domains.
+- [x] Implement macOS boot LaunchDaemon under owning unprivileged user, separately labeled login-agent fallback, and Linux user service with lingering diagnostics. Never request administrator access merely to read or generate templates; actual install is an explicit later action.
+- [x] Implement upgrade compatibility check, backup/migration and previous-version rollback path. Missing runtime or unreadable config leaves visible recoverable status; never wipes state.
+- [x] Run focused suite and clean-room check; commit/push.
 
 **Verifies:** S10-S12 service generation subset. Source references: Apple launchd and systemd loginctl links in the design; generated-file tests alone do not prove reboot behavior.
 
