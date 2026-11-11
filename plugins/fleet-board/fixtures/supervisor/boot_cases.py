@@ -1297,31 +1297,37 @@ class NonLockingProbe(WatchCase):
             self.run_watch(5)
         self.assertEqual(calls, [], "any flock by the watcher can make a concurrent serve report owner: false")
 
+    # The serve-style locker runs in its own process, as serve does in production. In-process, a fork by the
+    # watcher thread (its per-tick config read) could copy the locker's held fd and keep the lock until exec,
+    # failing an attempt that the watcher never caused.
+    LOCKER = (
+        "import fcntl, os, sys\n"
+        "path, stop = sys.argv[1], sys.argv[2]\n"
+        "attempts = failures = 0\n"
+        "print('ready', flush=True)\n"
+        "while not os.path.exists(stop) and attempts < 200000:\n"
+        "    fd = os.open(path, os.O_RDWR)\n"
+        "    try:\n"
+        "        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    except OSError:\n"
+        "        failures += 1\n"
+        "    finally:\n"
+        "        os.close(fd)\n"
+        "    attempts += 1\n"
+        "print(attempts, failures, flush=True)\n"
+    )
+
     def test_a_real_serve_style_exclusive_lock_always_succeeds_while_the_watcher_ticks(self):
-        import fcntl
-        import threading
-        done = threading.Event()
-
-        def run():
-            try:
-                self.run_watch(120)
-            finally:
-                done.set()
-
-        thread = threading.Thread(target=run, daemon=True)
-        thread.start()
-        failures = 0
-        attempts = 0
-        while not done.is_set() and attempts < 3000:
-            fd = os.open(str(self.lock_path), os.O_RDWR)
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                failures += 1
-            finally:
-                os.close(fd)
-            attempts += 1
-        thread.join(timeout=60)
+        stop = self.work / "locker.stop"
+        locker = subprocess.Popen([sys.executable, "-c", self.LOCKER, str(self.lock_path), str(stop)],
+                                  stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(locker.stdout.readline().strip(), "ready")
+            self.run_watch(120)
+        finally:
+            stop.touch()
+            out, _ = locker.communicate(timeout=60)
+        attempts, failures = (int(x) for x in out.split())
         self.assertGreater(attempts, 10)
         self.assertEqual(failures, 0, "the watcher blocked an exclusive lock %d of %d times" % (failures, attempts))
 
