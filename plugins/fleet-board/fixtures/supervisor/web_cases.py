@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -41,8 +42,7 @@ class SupervisorWebContract(unittest.TestCase):
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         (self.repo / ".fleet-board.yml").write_text(
-            "board:\n  repo: acme/toy\n"
-            "supervisor:\n  enabled: true\n", encoding="utf-8")
+            "board:\n  repo: acme/toy\n", encoding="utf-8")
         (self.repo / ".fleet-board").mkdir()
         (self.repo / ".fleet-board" / "cards").mkdir()
         (self.repo / ".fleet-board" / "next").write_text("1\n", encoding="utf-8")
@@ -133,21 +133,31 @@ class SupervisorWebContract(unittest.TestCase):
         except HTTPError as exc:
             return exc.code, json.loads(exc.read() or b"{}")
 
-    def test_disabled_mode_keeps_legacy_run_api(self):
-        self.config.write_text("board:\n  repo: acme/toy\n", encoding="utf-8")
+    def test_routes_404_when_no_supervisor_runs(self):
         self.start_web()
         code, payload = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
         self.assertIn("state", payload)
-        # A legacy-configured board must not look supervisor-capable to the UI.
-        for method, path in (("GET", "/api/supervisor"), ("GET", "/api/supervisor/events"),
-                             ("GET", "/api/cards/1/execution")):
-            code, _ = self.http(method, path)
-            self.assertEqual(code, 404, "%s %s must be 404 when supervisor.enabled is not true" % (method, path))
-        code, _ = self.http("POST", "/api/supervisor/pause", {"request_id": "r", "expected_revision": 0})
-        self.assertEqual(code, 404)
+        # With no supervisor socket answering, the board must not look supervisor-capable to the UI.
+        code, _ = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 404, "GET /api/supervisor must be 404 when no supervisor answers")
+        for action in ("start", "pause", "resume", "stop"):
+            code, _ = self.http("POST", "/api/supervisor/" + action, {"request_id": "r", "expected_revision": 0})
+            self.assertEqual(code, 404, action)
+        self.assertFalse(self.socket_exists(), "a request launched or created a supervisor")
+        self.assertEqual([x for x in self.logs_tree() if "supervisor" in x], [], "a request created supervisor state")
 
-    def test_enabled_mode_proxies_supervisor_and_never_mutates_legacy_markers(self):
+    def test_routes_of_removed_service_commands_are_gone(self):
+        self.start_service()
+        self.start_web()
+        for method, path in (("GET", "/api/supervisor/events"), ("GET", "/api/cards/1/execution"),
+                             ("GET", "/api/cards/1/execution/log/abc")):
+            self.assertEqual(self.http(method, path)[0], 404, "%s %s" % (method, path))
+        for action in ("pause", "resume", "resolve", "release-reservations"):
+            code, _ = self.http("POST", "/api/cards/1/execution/" + action, {"request_id": "r", "expected_revision": 0})
+            self.assertEqual(code, 404, action)
+
+    def test_supervisor_routes_answer_when_a_supervisor_socket_answers(self):
         self.start_service()
         active = self.repo / ".fleet-board" / "active"
         active.mkdir()
@@ -192,16 +202,6 @@ class SupervisorWebContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as caught:
             urlopen(request, timeout=3)
         self.assertEqual(caught.exception.code, 400)
-
-    def test_unreachable_returns_last_known_state_and_mutations_503(self):
-        self.start_web()
-        code, payload = self.http("GET", "/api/supervisor")
-        self.assertEqual(code, 200, "unreachable status must be readable")
-        self.assertTrue(payload.get("unreachable"), "missing unreachable flag")
-        self.assertIn("last_known", payload)
-        self.assertIsNone(payload.get("occupancy", "missing"), "occupancy must be unknown, not zero")
-        code, _ = self.http("POST", "/api/supervisor/stop", {"request_id": "offline-1", "expected_revision": 0})
-        self.assertEqual(code, 503)
 
     def test_compat_run_routes_enforce_a_supplied_binding_exactly_like_the_new_routes(self):
         self.start_service()
@@ -351,83 +351,48 @@ class SupervisorWebContract(unittest.TestCase):
             time.sleep(0.1)
         return probe()
 
-    def test_start_launches_a_missing_service_then_proxies_the_start_command(self):
-        self.launching_world()
+    def test_a_supervisor_that_exits_turns_the_board_back_to_the_run_api(self):
+        self.start_service()
         self.start_web()
-        code, payload = self.http("GET", "/api/supervisor")
-        self.assertTrue(payload.get("unreachable"))
-        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "launch-1", "expected_revision": 0})
-        self.skip_if_sandboxed(code, started)
-        self.assertEqual(code, 202, started)
-        self.assertEqual(started["desired_mode"], "running")
-        self.assertIs(started.get("launched"), True)
-        code, status = self.http("GET", "/api/supervisor")
-        self.assertFalse(status.get("unreachable"), status)
-        self.assertIs(status["ready"], True)
-        pid = status["pid"]
-        code, again = self.http("POST", "/api/supervisor/start",
-                                {"request_id": "launch-2", "expected_revision": status["revision"]})
-        self.assertEqual(code, 202, again)
-        self.assertNotIn("launched", again)
-        self.assertEqual(self.launched_pid(), pid, "a second Start must reconnect, not launch")
-        self.assertTrue((self.case / "logs" / "supervisor.log").exists(), "the detached supervisor must log to a file")
-
-    def test_compat_run_start_launches_a_missing_service_too(self):
-        self.launching_world()
-        self.start_web()
-        code, started = self.http("POST", "/api/run/start")
-        self.skip_if_sandboxed(code, started)
-        self.assertIn(code, (200, 202), started)
-        self.assertIsNotNone(self.launched_pid())
+        self.assertEqual(self.http("GET", "/api/supervisor")[0], 200)
+        self.service.close()
+        self.assertEqual(self.http("GET", "/api/supervisor")[0], 404)
         code, run = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
-        self.assertEqual(run["state"], "running")
+        self.assertNotIn("supervisor", run)
 
-    def test_disabled_config_never_launches_a_service(self):
+    def test_start_waits_for_a_stopping_supervisor_to_go_then_launches_a_new_one(self):
         self.launching_world()
-        self.config.write_text("board:\n  repo: acme/toy\n", encoding="utf-8")
+        self.start_service()
         self.start_web()
-        code, _ = self.http("POST", "/api/supervisor/start", {"request_id": "x", "expected_revision": 0})
-        self.assertEqual(code, 404)
-        self.assertFalse(self.socket_exists())
-
-    def test_launch_failure_is_a_503_with_a_reason_and_nothing_half_started(self):
-        self.launching_world()
-        (self.case / "logs").write_text("not a directory\n", encoding="utf-8")  # the log cannot be opened
-        self.start_web()
-        code, payload = self.http("POST", "/api/supervisor/start", {"request_id": "bad-1", "expected_revision": 0})
-        self.assertEqual(code, 503, payload)
-        self.assertRegex(payload["error"], r"(?i)could not be started")
-        self.assertFalse(self.socket_exists(), "a failed launch left a supervisor behind")
+        old = os.getpid()
+        self.state.mode = "stopping"
+        threading.Timer(0.6, self.service.close).start()
+        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "again-1", "expected_revision": 0})
+        self.skip_if_sandboxed(code, started)
+        self.assertEqual(code, 202, started)
+        self.assertIs(started.get("launched"), True, "Start reported a stopping supervisor as running")
         code, status = self.http("GET", "/api/supervisor")
-        self.assertTrue(status.get("unreachable"))
+        self.assertEqual(code, 200, status)
+        self.assertNotEqual(status["pid"], old, "Start must launch a new supervisor, not reuse the exiting one")
+        self.assertEqual(status["mode"], "running")
 
-    def test_stop_leaves_a_stopped_board_that_can_start_again(self):
+    def test_start_never_launches_beside_a_supervisor_that_stays_stopping(self):
         self.launching_world()
+        self.start_service()
+        self.start_web()
+        self.state.mode = "stopping"
+        code, refused = self.http("POST", "/api/supervisor/start", {"request_id": "again-2", "expected_revision": 0})
+        self.assertEqual(code, 503, refused)
+        self.assertRegex(refused["error"], r"(?i)stopping")
+        self.assertNotIn("launched", refused)
+
+    def test_start_on_a_running_supervisor_launches_nothing(self):
+        self.start_service()
         self.start_web()
         code, started = self.http("POST", "/api/supervisor/start", {"request_id": "run-1", "expected_revision": 0})
-        self.skip_if_sandboxed(code, started)
         self.assertEqual(code, 202, started)
-        code, status = self.http("GET", "/api/supervisor")
-        pid = status["pid"]
-        code, stopped = self.http("POST", "/api/supervisor/stop",
-                                  {"request_id": "stop-1", "expected_revision": status["revision"], "mode": "drain"})
-        self.assertEqual(code, 202, stopped)
-        self.assertEqual(stopped, {"stopping": True, "mode": "drain"})
-        self.assertEqual(self.wait_until(lambda: not self.pid_alive(pid)), True, "the supervisor did not exit after Stop")
-        code, after = self.http("GET", "/api/supervisor")
-        self.assertEqual(code, 200)
-        self.assertTrue(after["unreachable"])
-        self.assertEqual(after["last_known"]["phase"], "stopped",
-                         "an unreachable board after Stop must remember it stopped: %r" % (after,))
-        code, run = self.http("GET", "/api/run")
-        self.assertEqual(run["state"], "stopped", "the run projection must say stopped, not unreachable")
-        code, again = self.http("POST", "/api/supervisor/start", {"request_id": "run-2", "expected_revision": 0})
-        self.assertEqual(code, 202, again)
-        code, status = self.http("GET", "/api/supervisor")
-        self.assertFalse(status.get("unreachable"), status)
-        self.assertNotEqual(status["pid"], pid, "restart after Stop must launch a new supervisor")
-        self.assertIs(status["ready"], True)
+        self.assertNotIn("launched", started)
 
     def logs_tree(self):
         logs = self.case / "logs"
@@ -435,9 +400,10 @@ class SupervisorWebContract(unittest.TestCase):
 
     def test_reads_create_no_supervisor_state_when_no_service_ran(self):
         self.start_web()
-        for path in ("/api/board", "/api/supervisor", "/api/run", "/api/board", "/api/supervisor"):
+        for path, want in (("/api/board", 200), ("/api/supervisor", 404), ("/api/run", 200),
+                           ("/api/board", 200), ("/api/supervisor", 404)):
             code, _ = self.http("GET", path)
-            self.assertEqual(code, 200, path)
+            self.assertEqual(code, want, path)
         tree = self.logs_tree()
         self.assertFalse([x for x in tree if "supervisor" in x or x.endswith(".sqlite3")],
                          "a GET created supervisor state on disk: %r" % (tree,))
@@ -452,7 +418,8 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_web()
         for path in ("/api/board", "/api/supervisor", "/api/run"):
             code, _ = self.http("GET", path)
-            self.assertEqual(code, 200, "%s answered %s with a broken runtime location" % (path, code))
+            self.assertEqual(code, 404 if path == "/api/supervisor" else 200,
+                             "%s answered %s with a broken runtime location" % (path, code))
 
     def test_linked_worktree_board_finds_its_service_at_the_default_socket(self):
         git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(self.repo)]
@@ -511,21 +478,6 @@ class SupervisorWebContract(unittest.TestCase):
         code, snapshot = self.http("GET", "/api/supervisor")
         self.assertNotEqual(code, 503)
         self.assertFalse(snapshot.get("unreachable"), "a ValueError flipped the board to stale")
-
-    def test_unreachable_supervisor_keeps_reachable_top_level_shape(self):
-        self.start_service()
-        self.start_web()
-        code, reachable = self.http("GET", "/api/supervisor")
-        self.assertEqual(code, 200)
-        self.service.close()  # the web server stays up; only the service goes away
-        code, unreachable = self.http("GET", "/api/supervisor")
-        self.assertEqual(code, 200)
-        self.assertTrue(unreachable.get("unreachable"))
-        for key in reachable:
-            self.assertIn(key, unreachable, "missing stable status key %s" % key)
-        for key in ("phase", "desired_mode", "revision", "last_known_at"):
-            self.assertIn(key, unreachable)
-        self.assertIsNone(unreachable.get("occupancy"))
 
     def test_client_rejects_untrusted_socket_paths_and_peer_before_sending(self):
         from supervisor import webproxy
