@@ -18,12 +18,13 @@ const snapshot = {schema_version:1,revision:7,desired_mode:"running",phase:"runn
   capacity:{slots:2,global_cap:4,per_provider:{[hostile]:1}},
   queue:{ready:2,running:1,waiting:3,attention:1},
   config:{enabled:true,execution_available:true},
+  runtime:{protocol:1,version:"0.20.0",store_schema:1},
   boot_registration:"missing",last_error:hostile,claims:{count:2},cards:[baseCard]};
 // What board-web serves when the service does not answer: the same top-level keys as
 // null/unknown, the flag, and the last status it saw.
 const unreachableOf = (known, extra) => ({schema_version:null,revision:null,desired_mode:null,phase:null,ready:null,
   read_only:true,execution_available:false,host_boot_id:null,shutdown:null,heartbeat:null,session:null,capacity:null,
-  queue:null,config:null,boot_registration:null,last_error:null,claims:null,unreachable:true,last_known:json(known),
+  queue:null,config:null,runtime:null,boot_registration:null,last_error:null,claims:null,unreachable:true,last_known:json(known),
   last_known_at:Date.parse("2026-11-10T18:00:00Z")/1000,occupancy:null,cards:known.cards,...(extra||{})});
 const json = value => JSON.parse(JSON.stringify(value));
 function response(status, data) { return {ok:status>=200&&status<300,status,json:async()=>data}; }

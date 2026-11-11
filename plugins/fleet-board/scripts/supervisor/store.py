@@ -20,6 +20,9 @@ from . import paths as _paths
 from .errors import StaleRevision
 from .processes import _boot_id
 
+# The runner protocol this runtime speaks; recorded in every attempt it creates so an upgrade can
+# tell which protocol an in-flight attempt uses (an attempt with no value predates this: protocol 1).
+RUNNER_PROTOCOL = 1
 SCHEMA_VERSION = 1
 
 
@@ -723,7 +726,7 @@ class Store:
                            'reservation_revision': (prior_reservation or {}).get('revision', 0) + 1}
             logical = canonical_json([job[k] for k in ('card', 'action', 'role', 'stage', 'round', 'input_sha', 'input_version')])
             c.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?)', (job['id'], logical, job['card'], job['generation'], job['input_sha'], job['role'], job['stage'], 'active', 0, canonical_json(job)))
-            c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (job['nonce'], job['id'], job['nonce'], job['provider'], 'prepared', canonical_json(job)))
+            c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (job['nonce'], job['id'], job['nonce'], job['provider'], 'prepared', canonical_json(dict(job, runner_protocol=RUNNER_PROTOCOL))))
             if self.__fault_injector is not None:
                 self.__fault_injector('after_attempt')
             c.execute('INSERT INTO claims VALUES(?,?,?,?,?,?)', (job['nonce'], job['card'], job['provider'], canonical_json(paths), lane, expected_revision + 1))
@@ -987,7 +990,7 @@ class Store:
                 if job['state'] != 'retry_wait':
                     raise ValueError('retry is not waiting')
                 fresh = {key: value for key, value in data.items() if key not in ('retry_prior', 'retry_at', 'retry_nonce')}
-                fresh.update({'nonce': nonce, 'generation': job['generation']})
+                fresh.update({'nonce': nonce, 'generation': job['generation'], 'runner_protocol': RUNNER_PROTOCOL})
                 if 'worktree' in prior_data:
                     fresh['worktree'] = prior_data['worktree']
                 c.execute('INSERT INTO attempts VALUES(?,?,?,?,?,?)', (nonce, job_id, nonce, prior['provider'], 'prepared', canonical_json(fresh)))

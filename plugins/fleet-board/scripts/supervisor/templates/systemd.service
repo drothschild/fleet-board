@@ -5,6 +5,9 @@ Description=Fleet Board supervisor (@@DESCRIPTION@@)
 Type=simple
 ExecStart=@@EXEC_START@@
 Restart=on-failure
+# Ending or restarting this unit stops only the watcher; the service it launched keeps running.
+# Stop the domain with `supervisor stop`.
+KillMode=process
 RestartSec=30
 @@ENVIRONMENT@@
 StandardOutput=append:@@LOG@@

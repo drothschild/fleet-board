@@ -19,6 +19,7 @@ import re
 import shutil
 import signal
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,10 +29,11 @@ from pathlib import Path
 from urllib.parse import quote
 
 from . import errors, launcher, paths
+from .store import RUNNER_PROTOCOL
 
 PROTOCOL_VERSION = 1
-RUNNER_PROTOCOL = 1  # the runner protocol this runtime speaks (and the only one it can adopt)
 RUNNER_PROTOCOLS = (RUNNER_PROTOCOL,)
+REEXEC_MARK = "FLEET_BOARD_BOOT_REEXEC"  # set by an in-place re-exec so the new image reaps strays
 ACTIVE_ATTEMPT_STATES = ("prepared", "launching", "running", "result_ready")
 DEFAULT_INTERVAL = 15.0
 LABEL_PREFIX = "com.fleet-board.supervisor"
@@ -44,12 +46,8 @@ LAUNCHER = """#!/bin/bash
 # It lives outside the versioned plugin cache and reads the registry for the current runtime.
 unset CDPATH
 REG=$(cd "$(dirname "$0")/.." && pwd)
-CRED="$REG/credentials.env"
-if [ -f "$CRED" ] && [ -n "$(find "$CRED" -maxdepth 0 -perm 600 -user "$(id -un)" 2>/dev/null)" ]; then
-  set -a
-  . "$CRED"
-  set +a
-fi
+# credentials.env is read by the watcher on every tick (parsed, never sourced), so a fixed file
+# takes effect without restarting this process.
 PY=""
 SCRIPTS=""
 { IFS= read -r PY; IFS= read -r SCRIPTS; } < "$REG/current" 2>/dev/null
@@ -274,18 +272,68 @@ def _service_path(env, executables):
     return os.pathsep.join(result or ["/usr/bin", "/bin"])
 
 
+# -- credentials ---------------------------------------------------------------------------
+CREDENTIALS_HINT = "credentials.env must be a regular file you own with mode 0600"
+
+
+def _unquote(raw):
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == "'":
+        return raw[1:-1]
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        return re.sub(r'\\([\\"$`])', r"\1", raw[1:-1])
+    return raw.split()[0] if raw.split() else ""
+
+
+def parse_credentials(text):
+    """NAME=value lines (optional `export`, optional single or double quotes, `#` comments). Parsed
+    as data: nothing in the file is ever executed or expanded."""
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        name, sep, raw = line.partition("=")
+        if sep and _NAME.match(name.strip()):
+            values[name.strip()] = _unquote(raw)
+    return values
+
+
+def read_credentials(reg):
+    """(values, problem) from <registry>/credentials.env, evaluated afresh each call. A file that
+    is missing yields ({}, None); one that is not a private regular file yields ({}, why)."""
+    path = Path(reg) / "credentials.env"
+    try:
+        info = os.lstat(str(path))
+    except OSError:
+        return {}, None
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        return {}, "%s: %s" % (CREDENTIALS_HINT, path)
+    try:
+        return parse_credentials(path.read_text(encoding="utf-8")), None
+    except (OSError, UnicodeDecodeError) as exc:
+        return {}, "credentials.env cannot be read: %s" % str(exc)[:100]
+
+
 # -- store inspection and compatibility ----------------------------------------------------
 def _store_path(log_dir, root):
     return Path(log_dir) / "supervisor" / paths.domain_id_for_root(root) / "store.sqlite3"
 
 
-def _read_store_file(db):
+def _read_store_file(db, cache=None):
     """What a runtime needs to know about a store, read-only: desired mode, newest event, newest
     start/resume, schema version and the runner protocol of every active attempt. None when the
-    store does not exist yet. A newer schema is reported, not read further."""
+    store does not exist yet. A newer schema is reported, not read further.
+
+    A caller that reads repeatedly passes the same `cache` dict: only events after the cursor are
+    read, so a tick costs the new events, not the whole log. The cursor is checked against the
+    event it points at and restarts if the store was replaced or shrank."""
     db = Path(db)
     if not db.exists():
         return None
+    cache = {} if cache is None else cache
     connection = sqlite3.connect("file:%s?mode=ro" % quote(str(db)), uri=True, timeout=10)
     try:
         schema = connection.execute("PRAGMA user_version").fetchone()[0]
@@ -297,17 +345,34 @@ def _read_store_file(db):
         info["mode"] = row[0] if row else None
         info["service_version"] = row[1] if row else None
         info["newest"] = connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
-        reported = {}
-        for sequence, kind, payload in connection.execute(
-                "SELECT sequence,type,payload FROM events WHERE type IN ('command','runner_version') ORDER BY sequence"):
-            try:
-                body = json.loads(payload)
-            except ValueError:
-                continue
-            if kind == "command" and body.get("command") in ("start", "resume"):
-                info["last_start"] = sequence
-            elif kind == "runner_version":
-                reported[body.get("runner_id")] = body.get("protocol")
+        cursor = cache.get("cursor", 0)
+        if info["newest"] < cursor:
+            cache.clear()
+            cursor = 0
+        rows = connection.execute("SELECT sequence,timestamp,type,payload FROM events WHERE sequence >= ? "
+                                  "ORDER BY sequence", (max(cursor, 1),)).fetchall()
+        if cursor and (not rows or rows[0][0] != cursor or rows[0][1] != cache.get("anchor")):
+            cache.clear()  # the store was replaced under us: read it from the start
+            cursor = 0
+            rows = connection.execute("SELECT sequence,timestamp,type,payload FROM events ORDER BY sequence").fetchall()
+        last_start = cache.get("last_start", 0)
+        reported = cache.setdefault("reported", {})
+        for sequence, stamp, kind, payload in rows:
+            if sequence > cursor and kind in ("command", "runner_version"):
+                try:
+                    body = json.loads(payload)
+                except ValueError:
+                    body = None
+                if isinstance(body, dict):
+                    if kind == "command" and body.get("command") in ("start", "resume"):
+                        last_start = sequence
+                    elif kind == "runner_version":
+                        reported[body.get("runner_id")] = body.get("protocol")
+            cursor, anchor = max(cursor, sequence), stamp
+        if rows:
+            cache.update(cursor=cursor, anchor=anchor)
+        cache["last_start"] = last_start
+        info["last_start"] = last_start
         marks = ",".join("?" * len(ACTIVE_ATTEMPT_STATES))
         for attempt_id, nonce, data in connection.execute(
                 "SELECT id,nonce,data FROM attempts WHERE state IN (%s)" % marks, ACTIVE_ATTEMPT_STATES):
@@ -318,8 +383,9 @@ def _read_store_file(db):
             if recorded is None:
                 recorded = reported.get(attempt_id, reported.get(nonce))
             info["active"] += 1
-            if recorded is not None:
-                info["runners"].append((attempt_id, recorded))
+            # An attempt created before the protocol was recorded ran on protocol 1, the only one
+            # that has ever existed; it is never "unknown" (that would let a future runtime adopt it).
+            info["runners"].append((attempt_id, 1 if recorded is None else recorded))
         return info
     finally:
         connection.close()
@@ -363,22 +429,18 @@ def _live_status(root, entry):
     return status if isinstance(status, dict) else None
 
 
-def _owner_alive(root, entry):
-    """Whether a service holds this domain's service lock (the same lock `serve` takes)."""
-    lock = Path(entry["log_dir"]) / "supervisor" / paths.domain_id_for_root(root) / "service.lock"
+def _hold_service_lock(db):
+    """Take the domain's exclusive service lock (the one `serve` takes), or refuse. Returns the fd;
+    closing it releases the lock. Only a restore holds it; the boot watcher never locks anything."""
+    directory = Path(db).parent
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(str(directory / "service.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        fd = os.open(str(lock), os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        return False
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except OSError:
-            return True
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    finally:
         os.close(fd)
+        raise errors.Invalid("a service is running for this domain; stop it before restoring the store")
+    return fd
 
 
 def _backup_store(db, target):
@@ -682,8 +744,15 @@ def _restore_store(reg, source, root, env):
     entry, _error = _load_entry(reg, _key_for(root, reg))
     log_dir = Path(entry["log_dir"]) if entry else paths.log_dir(env).absolute()
     db = _store_path(log_dir, root)
-    if _owner_alive(root, {"log_dir": str(log_dir)}):
-        raise errors.Invalid("a service is running for this domain; stop it before restoring the store")
+    lock_fd = _hold_service_lock(db)  # held for the whole copy: a starting serve reports owner: false
+    try:
+        _copy_store(backup, db, source)
+    finally:
+        os.close(lock_fd)
+    return True
+
+
+def _copy_store(backup, db, source):
     if db.exists():
         n = 0
         while (source / ("store-before-restore-%d.sqlite3" % n)).exists():
@@ -696,7 +765,6 @@ def _restore_store(reg, source, root, env):
     finally:
         target.close()
         original.close()
-    return True
 
 
 def probe(root, *, env=None, runner=subprocess.run):
@@ -789,7 +857,9 @@ def _config_value(root, key, env):
 
 
 def _launch(root, env):
-    child, ack = launcher.launch_child(root, env=env)
+    # The service environment (credentials read from credentials.env on this tick included) goes to
+    # the child through its environment only: never argv, never a log line.
+    child, ack = launcher.launch_child(root, env=env, extra_env=env)
     return types.SimpleNamespace(child=child, ack=ack)
 
 
@@ -813,20 +883,28 @@ def _discard_handle(handle):
         pass
 
 
+def _same_state(old, new):
+    """Whether two boot-state documents say the same thing, ignoring when they were observed."""
+    def strip(doc):
+        doc = dict(doc or {})
+        doc["status"] = {k: v for k, v in (doc.get("status") or {}).items() if k != "at"}
+        return doc
+    return strip(old) == strip(new)
+
+
 def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clock=time.time,
-                owner_alive=None, live_status=None):
+                owner_alive=None, live_status=None, store_cache=None):
     """One boot-entry decision for the domain at root. Reads the current YAML, the registry and
     the host boot identity every time; never writes the store.
 
     Returns {"action", "reboot", "status", "handle"}. action is `restored` (service launched
     through the normal launcher; Start sent when desired mode is running), `serving` (a live
-    owner already runs it), `stayed_stopped`, `suppressed` (start_on_boot: false after a reboot
+    owner already answers on the socket), `stayed_stopped`, `suppressed` (start_on_boot: false after a reboot
     and no explicit Start since) or `waiting` (a recoverable problem is recorded and nothing is
     launched)."""
     env = os.environ if env is None else env
     launch = launch or _launch
     activate = activate or _activate
-    owner_alive = owner_alive or _owner_alive
     live_status = live_status or _live_status
     root = Path(root).resolve()
     reg = registry_dir(env)
@@ -838,9 +916,10 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
 
     def record(status, **fields):
         status = dict(status, at=clock())
-        if reg.is_dir():
-            _write_json(state_path, dict({"boot_id": state.get("boot_id"),
-                                          "suppressed_seq": state.get("suppressed_seq")}, status=status, **fields))
+        document = dict({"boot_id": state.get("boot_id"), "suppressed_seq": state.get("suppressed_seq")},
+                        status=status, **fields)
+        if reg.is_dir() and not _same_state(state, document):
+            _write_json(state_path, document)
         return status
 
     def waiting(reason, message):
@@ -852,7 +931,9 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
         base = {"boot_id": boot_id, "suppressed_seq": None if reboot else state.get("suppressed_seq")}
         base.update(fields)
         stored = dict(status, at=clock())
-        _write_json(state_path, dict(base, status=stored))
+        document = dict(base, status=stored)
+        if not _same_state(state, document):  # an idle tick that decides the same thing writes nothing
+            _write_json(state_path, document)
         return {"action": action, "reboot": reboot, "status": stored, "handle": handle}
 
     if not root.is_dir():
@@ -873,16 +954,23 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
     for name, path in sorted((record_json.get("executables") or {}).items()):
         if not (os.path.isfile(path) and os.access(path, os.X_OK)):
             return waiting("missing_executable", "recorded executable is missing or not executable: %s" % name)
-    absent = [name for name in entry.get("credentials", []) if not env.get(name)]
+    # The credentials precondition is evaluated on every tick: the file is read now, so creating or
+    # fixing it needs no restart, and the service is launched with the values read on this tick.
+    from_file, file_problem = read_credentials(reg)
+    service_env = dict(env)
+    service_env.update(from_file)
+    absent = [name for name in entry.get("credentials", []) if not service_env.get(name)]
     if absent:
-        return waiting("missing_credentials", "credentials not available in the service environment: " + ", ".join(absent))
+        hint = file_problem or "create %s with mode 0600" % (reg / "credentials.env")
+        return waiting("missing_credentials", "credentials not available in the service environment: %s (%s)"
+                       % (", ".join(absent), hint))
     code, value, error_text = _config_value(root, "supervisor.start_on_boot", env)
     if code != 0:
         reason = "config_missing" if code == 3 else "invalid_config"
         return waiting(reason, "cannot read .fleet-board.yml (exit %d): %s" % (code, error_text.splitlines()[-1][:200] if error_text else ""))
     start_on_boot = value == "true"
     try:
-        info = _read_store_file(_store_path(entry["log_dir"], root))
+        info = _read_store_file(_store_path(entry["log_dir"], root), store_cache)
     except (sqlite3.Error, OSError, ValueError) as exc:
         return waiting("state_unreadable", "supervisor state cannot be read: %s" % str(exc)[:200])
     try:
@@ -896,15 +984,18 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
 
     if mode in (None, "stopped"):
         return done("stayed_stopped", {"state": "ok", "reason": "stopped"})
-    if owner_alive(root, entry):
-        # Someone serves this domain this boot (a restore, or an explicit Start): that lifts any
-        # suppression, so if it later dies the watcher relaunches it.
+    if live is not None:
+        # A service answers on the socket (a restore, or an explicit Start): that lifts any
+        # suppression, so if it later dies the watcher relaunches it. This is a socket ping; the
+        # watcher takes no lock on service.lock, so it can never make a starting serve lose it.
         return done("serving", {"state": "ok", "reason": "serving", "mode": mode}, suppressed_seq=None)
     marker = state.get("suppressed_seq")
     if (reboot and not start_on_boot) or (not reboot and marker is not None and last_start <= marker):
         return done("suppressed", {"state": "suppressed", "reason": "start_on_boot_false"},
                     suppressed_seq=marker if (not reboot and marker is not None) else newest)
-    child_env = dict(env)
+    if owner_alive is not None and owner_alive(root, entry):  # an injected extra probe (tests)
+        return done("serving", {"state": "ok", "reason": "serving", "mode": mode}, suppressed_seq=None)
+    child_env = dict(service_env)
     child_env.update({"FLEET_BOARD_LOG_DIR": entry["log_dir"], "FLEET_BOARD_SOCKET_DIR": entry["socket_dir"]})
     handle = None
     try:
@@ -938,30 +1029,61 @@ def _runtime_stamp(reg):
     return stamp
 
 
+def _exec_launcher(path, argv):
+    os.environ[REEXEC_MARK] = "1"
+    os.execv(path, argv)
+
+
+def _reap_strays():
+    """After an in-place re-exec the services the previous image launched are children of this one
+    that nothing waits for: collect them when they finish instead of leaving zombies."""
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except OSError:
+            return
+        if pid == 0:
+            return
+
+
 def watch(root, env=None, *, boot_id=None, interval=None, sleep=time.sleep, clock=time.time, launch=None,
-          activate=None, owner_alive=None, live_status=None, max_ticks=None):
+          activate=None, owner_alive=None, live_status=None, max_ticks=None, execv=_exec_launcher):
     """The resident boot watcher. While the domain is registered the OS unit's process stays
     alive here whatever the desired mode, and each interval it asks boot_domain what to do: it
     never launches work for a stopped domain or while boot activation is suppressed, and it
     relaunches (through the normal launcher, which runs recovery) a running or paused domain
     that has no live owner, whether that owner was started at boot or by an explicit Start.
 
+    When the registered runtime changes (an install or rollback) the watcher re-executes the new
+    launcher in place with the same pid, so the service manager sees no exit and the unit is never
+    restarted for an upgrade; the service it launched is untouched.
+
     Returns an exit code when the entry should end: 0 for an unregistered or uninstalling
-    domain (the manager must not restart it), 75 when the registered runtime changed (restart
-    to load it). Returns None only when max_ticks (tests) is reached."""
+    domain (the manager must not restart it), 75 if the in-place re-exec is impossible (restart
+    to load the new runtime). Returns None only when max_ticks (tests) is reached."""
     env = os.environ if env is None else env
     interval = watch_interval(env) if interval is None else interval
     reg = registry_dir(env)
     stamp = _runtime_stamp(reg)
     boot_id = boot_id or current_boot_id()
     children, last, tick = [], None, 0
+    cache = {}
+    reexeced = bool(env.get(REEXEC_MARK))
     while True:
         tick += 1
         if _runtime_stamp(reg) != stamp:
-            print("supervisor boot: the registered runtime changed; restarting to load it", file=sys.stderr, flush=True)
-            return EXIT_WAITING
+            print("supervisor boot: the registered runtime changed; re-executing in place to load it",
+                  file=sys.stderr, flush=True)
+            try:
+                execv("/bin/bash", ["/bin/bash", str(reg / "bin" / "boot"), "--domain", str(root)])
+            except OSError as exc:
+                print("supervisor boot: cannot re-execute (%s); asking the service manager to restart" % exc,
+                      file=sys.stderr, flush=True)
+                return EXIT_WAITING
+        if reexeced:
+            _reap_strays()
         outcome = boot_domain(root, env=env, boot_id=boot_id, launch=launch, activate=activate, clock=clock,
-                              owner_alive=owner_alive, live_status=live_status)
+                              owner_alive=owner_alive, live_status=live_status, store_cache=cache)
         handle = outcome.get("handle")
         if handle is not None:
             children.append(getattr(handle, "child", handle))
@@ -1000,6 +1122,9 @@ def run_boot(root, env=None):
     """The service entry point (`supervisor boot --domain ROOT`): the resident watcher. SIGTERM
     ends it cleanly; a service it launched is detached and keeps running."""
     signal.signal(signal.SIGTERM, _terminate)
+    env = os.environ if env is None else env
+    if env.get(REEXEC_MARK):
+        print("supervisor boot: runtime reloaded", file=sys.stderr, flush=True)
     try:
         return watch(root, env=env)
     except KeyboardInterrupt:

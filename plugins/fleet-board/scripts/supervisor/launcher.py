@@ -48,18 +48,20 @@ def _log_tail(path, offset):
         return ""
 
 
-def launch_child(board_root, env=None, timeout=READY_TIMEOUT):
+def launch_child(board_root, env=None, timeout=READY_TIMEOUT, extra_env=None):
     """Start `supervisor.cli serve` detached for board_root; return (child, ack).
 
     The ack is returned as the service printed it. `owner: false` is a valid answer: another
     healthy owner won the lock, and the caller reconnects to it. Raises LaunchError when the
     child times out, exits first, or reports it cannot serve (the child is terminated).
-    The caller owns the child (and its stdout pipe) afterwards; stderr is a log file."""
+    The caller owns the child (and its stdout pipe) afterwards; stderr is a log file. `extra_env`
+    is added to the child's environment (never to argv)."""
     env = os.environ if env is None else env
     board_root = Path(board_root).resolve(strict=True)
     log_dir = str(paths.log_dir(env))
     scripts = str(Path(__file__).resolve().parents[1])
     child_env = dict(os.environ)
+    child_env.update(extra_env or {})  # e.g. credentials the boot watcher read on this tick
     child_env.update({"FLEET_BOARD_LOG_DIR": log_dir,
                       "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
                                                if child_env.get("PYTHONPATH") else "")})
