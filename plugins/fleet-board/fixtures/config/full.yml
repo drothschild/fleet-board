@@ -1,7 +1,5 @@
 board:
-  backend: github-labels          # or github-projects
   repo: owner/name
-  # project_number: 1               # github-projects only
   states: { human_qa: "Require Human Inteteraction" }   # optional overrides
 commands:
   test_one: "npm test -- --runTestsByPath {file}"

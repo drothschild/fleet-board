@@ -36,6 +36,16 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs
+
+# The module is also imported directly by offline board-web tests, where the
+# scripts directory is not necessarily already on sys.path.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+from supervisor import launcher as supervisor_launcher
+from supervisor import paths as supervisor_paths
+from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
 NOTE_FIELDS = ("round", "pr", "models", "stage", "action_failures")
@@ -337,6 +347,10 @@ def run_alive() -> bool:
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
+    if supervisor_enabled(cfg):
+        status = supervisor_snapshot()
+        return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
+                and status.get("desired_mode") == "running")
     with _RUN_LOCK:
         pid, started = read_pid_file(state_dir(APP["root"], cfg))
         alive = pid is not None and pid_alive(pid, started)
@@ -396,6 +410,8 @@ def to_float(s: str):
 def run_status(alive=None) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
+    if supervisor_enabled(cfg):
+        return supervisor_run_status(cfg)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
         alive = run_alive()
@@ -858,8 +874,44 @@ def ctx():
     return cfg, store_dir(APP["root"], cfg)
 
 
-def card_summary(dir: Path, card: dict, alive: bool, known_states=None) -> dict:
+def is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def card_blocked_by(card: dict) -> list:
+    return [b for b in (card.get("blocked_by") or []) if is_int(b)]
+
+
+def card_acceptance(card: dict) -> list:
+    return [a for a in (card.get("acceptance") or []) if isinstance(a, str)]
+
+
+def pr_url_ok(cfg: dict, v) -> bool:
+    """True for exactly https://github.com/<board.repo>/pull/<positive int>
+    (owner/name compared case-insensitively)."""
+    repo = (cfg.get("board") or {}).get("repo") or ""
+    m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9][0-9]*)", v) if isinstance(v, str) else None
+    return bool(m and repo and m.group(1).lower() == repo.lower())
+
+
+def card_pr_url(cfg: dict, card: dict, note):
+    """The card's pr_url field when it passes pr_url_ok (a hand-edited or
+    imported value that does not reads as None, so no unchecked URL leaves the
+    server); a card written before the field existed falls back to the note's
+    pr on board.repo."""
+    if "pr_url" in card:
+        v = card.get("pr_url")
+        return v if pr_url_ok(cfg, v) else None
+    pr = note.get("pr") if note else None
+    repo = (cfg.get("board") or {}).get("repo")
+    return "https://github.com/%s/pull/%d" % (repo, pr) if is_int(pr) and repo else None
+
+
+def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict, known_states=None) -> dict:
+    """state_of: number -> state for every card read in this request, so
+    `blocked` (any blocker missing or not done) costs no extra read."""
     note = parse_note(card)
+    blk = card_blocked_by(card)
     return {
         "number": card.get("number"),
         "title": card.get("title"),
@@ -869,6 +921,10 @@ def card_summary(dir: Path, card: dict, alive: bool, known_states=None) -> dict:
         "updated_at": card.get("updated_at"),
         "active": is_active(dir, card.get("number"), alive),
         "note": None if note is None else {k: note.get(k) for k in NOTE_FIELDS},
+        "pr_url": card_pr_url(cfg, card, note),
+        "acceptance_count": len(card_acceptance(card)),
+        "blocked_by": blk,
+        "blocked": any(state_of.get(b) != "done" for b in blk),
     }
 
 
@@ -876,13 +932,13 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     alive = run_alive()
     card = read_card(dir, n)
     note = parse_note(card)
-    pr = note.get("pr") if note else None
-    repo = (cfg.get("board") or {}).get("repo")
     out = dict(card)
+    out["body"] = card.get("body") if isinstance(card.get("body"), str) else ""
+    out["acceptance"] = card_acceptance(card)
+    out["blocked_by"] = card_blocked_by(card)
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
-    ok = isinstance(pr, int) and not isinstance(pr, bool) and repo
-    out["pr_url"] = "https://github.com/%s/pull/%d" % (repo, pr) if ok else None
+    out["pr_url"] = card_pr_url(cfg, card, note)
     return out
 
 
@@ -974,7 +1030,9 @@ def board_context(cache: dict = None) -> list:
             "title": card.get("title"),
             "state": card.get("state"),
             "labels": card.get("labels") or [],
-            "depends_on": depends_on(card.get("body")),
+            # the card's blocked_by field, then any "## Depends on" bullets a
+            # card written before the field still carries in its body
+            "depends_on": list(dict.fromkeys(card_blocked_by(card) + depends_on(card.get("body")))),
             "pr": {"number": pr, "state": pr_state if pr_state in PR_STATES else None} if has_pr else None,
             "round": note.get("round"),
         })
@@ -986,11 +1044,13 @@ def board_context(cache: dict = None) -> list:
 def get_board(params, body):
     cfg, dir = ctx()
     alive = run_alive()  # one liveness check per request
+    cards = read_cards(dir)
+    state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
     keys = [s["key"] for s in sts]
     return 200, {
         "states": sts,
-        "cards": [card_summary(dir, c, alive, keys) for c in read_cards(dir)],
+        "cards": [card_summary(cfg, dir, c, alive, state_of, keys) for c in cards],
         "run": board_run_status(alive),
         "repo": (cfg.get("board") or {}).get("repo"),
     }
@@ -1021,22 +1081,33 @@ def require_labels(body: dict):
 
 def create_card(params, body):
     title = require_str(body, "title")
-    text = require_str(body, "body")
+    # the body is prose and may be empty (the criteria travel as acceptance)
+    text = body.get("body")
+    if not isinstance(text, str):
+        raise ApiError(400, "body must be a string")
     labels = require_labels(body) or []
+    cfg, dir = ctx()
+    acceptance = require_acceptance(body)
+    blocked_by = require_blocked_by(dir, None, body)
     state = require_str(body, "state", required=False)
     if state is not None:
-        cfg, _ = ctx()
         if state not in [s["key"] for s in states(cfg)]:
             raise ApiError(400, "invalid state: %s" % state)
-    path = temp_text(text)
+    paths = [temp_text(text)]
     try:
-        argv = ["bash", script("board-create.sh"), title, path]
+        argv = ["bash", script("board-create.sh"), title, paths[0]]
         for label in labels:
             argv += ["--label", label]
+        if acceptance is not None:
+            paths.append(temp_text("".join(a + "\n" for a in acceptance)))
+            argv += ["--acceptance-file", paths[-1]]
+        for b in blocked_by or []:
+            argv += ["--blocked-by", str(b)]
         # always created in backlog, then moved: board-move.sh applies the Ready rule
         created = json.loads(board_write(argv))
     finally:
-        os.unlink(path)
+        for path in paths:
+            os.unlink(path)
     if state not in (None, "backlog"):
         try:
             board_write(["bash", script("board-move.sh"), str(created["number"]), state])
@@ -1046,27 +1117,105 @@ def create_card(params, body):
     return 200, created
 
 
+FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
+ACC_HEAD_RE = re.compile(r"^##[ \t]+Acceptance([ \t].*)?$")
+DEP_HEAD_RE = re.compile(r"^##[ \t]+depends[ \t]+on[ \t]*$", re.I)
+
+
+def body_sections(text: str) -> tuple:
+    """(has an Acceptance section, has a Depends on section) outside code
+    fences, by fl_split_body's heading rules."""
+    acc = dep = fence = False
+    for line in text.split("\n"):
+        if FENCE_RE.match(line):
+            fence = not fence
+        elif not fence:
+            acc = acc or bool(ACC_HEAD_RE.match(line))
+            dep = dep or bool(DEP_HEAD_RE.match(line))
+    return acc, dep
+
+
+def require_acceptance(body: dict):
+    v = body.get("acceptance")
+    if v is None:
+        return None
+    if not isinstance(v, list) or not all(isinstance(x, str) for x in v):
+        raise ApiError(400, "acceptance must be a list of strings")
+    if any("\n" in x or "\r" in x for x in v):
+        raise ApiError(400, "acceptance items must be single lines")
+    return v
+
+
+def require_blocked_by(dir: Path, n: int, body: dict, stored: list = ()):
+    """The blocked_by list, or None when absent. Refs already in <stored> are
+    kept unchecked (edit.sh's rule): a stale one never blocks a save."""
+    v = body.get("blocked_by")
+    if v is None:
+        return None
+    if not isinstance(v, list) or not all(is_int(x) and x > 0 for x in v):
+        raise ApiError(400, "blocked_by must be a list of card numbers")
+    for b in v:
+        if b in stored:
+            continue
+        if b == n:
+            raise ApiError(400, "blocked_by names #%d, the card itself" % b)
+        if not (Path(dir) / "cards" / ("%d.json" % b)).is_file():
+            raise ApiError(400, "blocked_by names #%d, which is not on this board" % b)
+    return v
+
+
+def require_pr_url(cfg: dict, body: dict):
+    """None when absent, "" to clear (null), else a pull URL on board.repo."""
+    if "pr_url" not in body:
+        return None
+    v = body["pr_url"]
+    if v is None:
+        return ""
+    if not pr_url_ok(cfg, v):
+        repo = (cfg.get("board") or {}).get("repo") or "<board.repo>"
+        raise ApiError(400, "pr_url must be https://github.com/%s/pull/<number>, or null" % repo)
+    return v
+
+
 def edit_card(params, body):
     cfg, dir = ctx()
     n = params["n"]
-    read_card(dir, n)
+    card = read_card(dir, n)
     title = require_str(body, "title", required=False)
     text = require_str(body, "body", required=False)
     labels = require_labels(body)
-    tpath = bpath = ""
+    acceptance = require_acceptance(body)
+    blocked_by = require_blocked_by(dir, n, body, card_blocked_by(card))
+    pr_url = require_pr_url(cfg, body)
+    if text is not None:
+        # edit.sh treats a body as the whole truth about its sections: a prose
+        # body would clear the fields. Keep them unless the body carries one.
+        has_acc, has_dep = body_sections(text)
+        if acceptance is None and not has_acc:
+            acceptance = card_acceptance(card)
+        if blocked_by is None and not has_dep:
+            blocked_by = card_blocked_by(card)
+    paths = []
     try:
-        if title is not None:
-            tpath = temp_text(title)
-        if text is not None:
-            bpath = temp_text(text)
-        board_write(["bash", script("adapters/local/edit.sh"), str(n), tpath, bpath, json.dumps(labels)])
+        args = ["bash", script("adapters/local/edit.sh"), str(n)]
+        for flag, value in (("--title-file", title), ("--body-file", text),
+                            ("--acceptance-file", None if acceptance is None else "".join(a + "\n" for a in acceptance))):
+            if value is not None:
+                paths.append(temp_text(value))
+                args += [flag, paths[-1]]
+        if labels is not None:
+            args += ["--labels-json", json.dumps(labels)]
+        if blocked_by is not None:
+            args += ["--blocked-by-json", json.dumps(blocked_by)]
+        if pr_url is not None:
+            args += ["--pr-url", pr_url]
+        board_write(args)
     finally:
-        for path in (tpath, bpath):
-            if path:
-                try:
-                    os.unlink(path)
-                except FileNotFoundError:
-                    pass
+        for path in paths:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
     return 200, card_detail(cfg, dir, n)
 
 
@@ -1096,8 +1245,26 @@ def get_run(params, body):
     return 200, run_status()
 
 
+def compat_run_control(command, body):
+    """/api/run/start and /api/run/stop in supervisor mode.
+
+    A body with request_id and expected_revision is enforced exactly like the new routes
+    (replay dedupes, a stale revision is a 409 with the current state). With no body the
+    route derives its own binding (Start and drain-stop are idempotent by design) and the
+    answer says unbound: true."""
+    if not body:
+        launched = ensure_service() if command == "start" else False
+        body = {"request_id": "compat-%s-%d" % (command, time.time_ns()),
+                "expected_revision": proxy_call("status").get("revision", 0)}
+        code, result = proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+        return code, dict(result, unbound=True, **({"launched": True} if launched else {}))
+    return proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+
+
 def start_run(params, body):
     cfg, dir = ctx()
+    if supervisor_enabled(cfg):
+        return compat_run_control("start", body)
     sdir = state_dir(APP["root"], cfg)
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
     with _RUN_LOCK:
@@ -1126,11 +1293,238 @@ def start_run(params, body):
 
 
 def stop_run(params, body):
+    cfg, _ = ctx()
+    if supervisor_enabled(cfg):
+        return compat_run_control("stop", body)
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
         Path(APP["root"], STOP_FILE).touch()
     return 200, {"state": "stopping"}
+
+
+def supervisor_enabled(cfg):
+    return (cfg.get("supervisor") or {}).get("enabled") is True
+
+
+def supervisor_domain_id():
+    """The supervisor domain id for this board, derived from the same identity inputs the
+    store uses. Pure: no database is opened and no file is created, so a GET can never touch
+    supervisor state. None when it cannot be derived (the panel then reads unreachable)."""
+    cached = APP.get("supervisor_domain_id")
+    if cached:
+        return cached
+    try:
+        value = supervisor_paths.domain_id_for_root(APP["root"])
+    except (OSError, ValueError, KeyError):
+        return None
+    APP["supervisor_domain_id"] = value
+    return value
+
+
+# One status per service error code (the service classifies by exception type, never by text).
+SUPERVISOR_ERROR_STATUS = {"invalid": 400, "uncertain_writer": 409, "disabled": 409,
+                           "unauthenticated": 403, "unavailable": 503, "internal": 500}
+
+
+def proxy_call(command, body=None, **extra):
+    domain_id = supervisor_domain_id()
+    request = dict(body or {})
+    if "actor" in request:
+        raise ApiError(400, "actor must come from authenticated peer")
+    request.update(extra)
+    request["command"] = command
+    if domain_id is None and not os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET"):
+        raise ApiError(503, "supervisor unavailable: cannot derive the supervisor identity")
+    try:
+        result = webproxy.request(webproxy.socket_path(domain_id), request)
+    except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
+        try:
+            detail = json.loads(str(exc))
+        except (ValueError, TypeError):
+            detail = {}
+        code = detail.get("code") if isinstance(detail, dict) else None
+        msg = detail.get("message", str(exc)) if isinstance(detail, dict) else str(exc)
+        if code == "stale_revision":
+            current = detail.get("current")
+            if current is None:
+                try:
+                    current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
+                except Exception:
+                    current = None
+            raise ApiError(409, msg, {"current": current, "code": code})
+        if code in SUPERVISOR_ERROR_STATUS:
+            # Internal detail never reaches the browser: the service already redacted it.
+            raise ApiError(SUPERVISOR_ERROR_STATUS[code],
+                           "internal error" if code == "internal" else msg, {"code": code})
+        raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
+    if command == "status":
+        webproxy.remember(domain_id, result)
+    return result
+
+
+_LAUNCH_LOCK = threading.Lock()
+
+
+def ensure_service():
+    """Make sure a service answers for this board; True when this call launched it.
+
+    This is the stopped-state lifecycle adapter path: a missing service is started through the
+    shared launcher (never by editing job tables) and we wait for its readiness before the
+    caller proxies the command. A failure is a 503 with a reason and leaves nothing running."""
+    def answers():
+        try:
+            proxy_call("status")
+            return True
+        except ApiError as exc:
+            if exc.code != 503:
+                raise
+            return False
+    if answers():
+        return False
+    with _LAUNCH_LOCK:
+        if answers():  # another request launched it while we waited for the lock
+            return False
+        try:
+            supervisor_launcher.launch_service(APP["root"])
+        except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
+            raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
+        if not supervisor_launcher.wait_until(answers, timeout=5.0):
+            raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
+                           {"code": "launch_failed"})
+    return True
+
+
+def remember_stopped(result):
+    """A Stop that ended the service leaves nothing listening: remember that it stopped, so the
+    next unreachable answer reads as a deliberate stop and not as an outage."""
+    domain_id = supervisor_domain_id()
+    prior = webproxy.last(domain_id)
+    known = dict(prior[1]) if prior and isinstance(prior[1], dict) else {}
+    known.update({"desired_mode": "stopped", "phase": "stopped", "ready": False, "shutdown": "resolved"})
+    if isinstance(result.get("state_revision"), int):
+        known["revision"] = result["state_revision"]
+    webproxy.remember(domain_id, known)
+
+
+def proxy_control(command, body):
+    if "actor" in body:
+        raise ApiError(400, "actor must come from authenticated peer")
+    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        raise ApiError(400, "request_id and integer expected_revision are required")
+    if command == "stop":
+        body.setdefault("mode", "drain")
+    launched = False
+    if command == "start" and ensure_service():
+        # The client could not have seen the revision of a service that was not running: bind
+        # the Start to the fresh one. The request id stays the caller's, so a retry dedupes.
+        launched = True
+        body = dict(body, expected_revision=proxy_call("status").get("revision", 0))
+    result = proxy_call(command, body)
+    if command == "stop" and isinstance(result, dict) and result.get("terminated") is True:
+        remember_stopped(result)
+    return 202, (dict(result, launched=True) if launched and isinstance(result, dict) else result)
+
+
+def supervisor_snapshot():
+    domain_id = supervisor_domain_id()
+    try:
+        state = proxy_call("status")
+        return dict(state, unreachable=False)
+    except ApiError as exc:
+        if exc.code != 503:
+            raise
+        prior = webproxy.last(domain_id)
+        known = prior[1] if prior else None
+        return {"schema_version": None, "ready": None, "read_only": True, "desired_mode": None,
+                "phase": None, "revision": None, "host_boot_id": None,
+                "execution_available": False, "shutdown": None,
+                "heartbeat": None, "session": None, "capacity": None, "queue": None,
+                "config": None, "boot_registration": None, "last_error": None, "claims": None,
+                "unreachable": True, "last_known": known,
+                "last_known_at": prior[0] if prior else None, "occupancy": None}
+
+
+def supervisor_run_status(cfg):
+    status = supervisor_snapshot()
+    if status.get("unreachable"):
+        known = status.get("last_known") if isinstance(status.get("last_known"), dict) else {}
+        stopped = known.get("phase") == "stopped" and known.get("ready") is False
+        return {"state": "stopped" if stopped else "unreachable", "supervisor": status, "pid": None,
+                "tick": None, "stop_reason": None, "cost": None, "hours": None,
+                "log_path": None, "log_tail": [], "out_tail": None}
+    phase = status.get("phase", "unknown")
+    ready = status.get("ready") is True
+    desired = status.get("desired_mode")
+    # Never infer running from intent: only the service's own ready acknowledgement
+    # plus an observed running phase counts. Intent without readiness is starting.
+    state = ("running" if ready and phase == "running" and desired == "running" else
+             "stopping" if phase in ("draining", "cancelling", "stopping") else
+             "starting" if desired == "running" and not ready else
+             "stopped" if phase in ("stopped", "idle") else phase)
+    return {"state": state, "pid": None, "tick": None, "stop_reason": None,
+            "cost": None, "hours": None, "log_path": None, "log_tail": [],
+            "out_tail": None, "supervisor": status}
+
+
+def require_supervisor_mode():
+    """The supervisor API exists only when supervisor.enabled is true; a legacy board answers 404."""
+    cfg, _ = ctx()
+    if not supervisor_enabled(cfg):
+        raise ApiError(404, "not found")
+
+
+def get_supervisor(params, body):
+    require_supervisor_mode()
+    return 200, supervisor_snapshot()
+
+
+def supervisor_command(params, body):
+    require_supervisor_mode()
+    return proxy_control(params["action"], body)
+
+
+def supervisor_events(params, body):
+    require_supervisor_mode()
+    query = params.get("query", {})
+    try:
+        after = int(query.get("after", ["0"])[0])
+        limit = int(query.get("limit", ["100"])[0])
+    except ValueError:
+        raise ApiError(400, "invalid event cursor or limit")
+    if after < 0 or not 1 <= limit <= 500:
+        raise ApiError(400, "invalid event cursor or limit")
+    return 200, proxy_call("events", extra={}, after=after, limit=limit)
+
+
+def card_execution(params, body):
+    require_supervisor_mode()
+    return 200, proxy_call("card_execution", card=params["n"])
+
+
+def card_execution_log(params, body):
+    require_supervisor_mode()
+    log_id = params.get("log_id", "")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", log_id) or ".." in log_id:
+        raise ApiError(400, "invalid log id")
+    try:
+        return 200, proxy_call("card_log", card=params["n"], log_id=log_id)
+    except ApiError as exc:
+        if exc.code in (400, 404, 409):
+            raise ApiError(404 if "not found" in str(exc) else 400, "log not found" if "not found" in str(exc) else "invalid log id")
+        raise
+
+
+def card_control(params, body):
+    require_supervisor_mode()
+    action = params["action"]
+    if action == "pause": command = "card_pause"
+    elif action == "resume": command = "card_resume"
+    elif action == "release-reservations": command = "release_reservations"
+    else: command = "resolve"
+    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
+        raise ApiError(400, "request_id and integer expected_revision are required")
+    return 202, proxy_call(command, body, card=params["n"])
 
 
 def post_planner(params, body):
@@ -1186,6 +1580,12 @@ ROUTES = [
     ("GET", r"/api/run", get_run),
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
+    ("GET", r"/api/supervisor", get_supervisor),
+    ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
+    ("GET", r"/api/supervisor/events", supervisor_events),
+    ("GET", r"/api/cards/(?P<n>\d+)/execution", card_execution),
+    ("GET", r"/api/cards/(?P<n>\d+)/execution/log/(?P<log_id>[^/]+)", card_execution_log),
+    ("POST", r"/api/cards/(?P<n>\d+)/execution/(?P<action>pause|release-reservations|resolve|resume)", card_control),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
@@ -1241,6 +1641,15 @@ def host_ok(handler) -> bool:
 
 MAX_BODY = 1024 * 1024
 REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
+
+
+def read_optional_json_body(handler) -> dict:
+    """The JSON object body, or {} when the request has none (the compatibility routes)."""
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        raise ApiError(400, "bad Content-Length")
+    return read_json_body(handler) if length > 0 else {}
 
 
 def read_json_body(handler) -> dict:
@@ -1318,7 +1727,13 @@ class Handler(BaseHTTPRequestHandler):
             route = match_route(method, path)
             if route is not None:
                 fn, params = route
-                body = read_json_body(self) if method in ("POST", "PATCH") and fn not in NO_BODY else {}
+                params["query"] = parse_qs(urlsplit(self.path).query)
+                if method in ("POST", "PATCH") and fn not in NO_BODY:
+                    body = read_json_body(self)
+                elif fn in NO_BODY and supervisor_enabled(ctx()[0]):
+                    body = read_optional_json_body(self)  # an optional {request_id, expected_revision}
+                else:
+                    body = {}
                 code, payload = fn(params, body)
                 send_json(self, code, payload)
                 return

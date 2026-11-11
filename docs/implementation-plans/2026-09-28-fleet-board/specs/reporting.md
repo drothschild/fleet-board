@@ -52,9 +52,9 @@ All example test commands in this spec assume `commands.test_one` is `node --tes
     - It names a real command the role ran, between single backticks. The arrow follows, `->` or `→`, then the integer that command's output showed, then what that integer counts. Example: ``VERIFIED: `node --test test/calc.test.js` -> 3 passing tests``.
     - The integer is never invented, estimated, rounded or summed across separate runs. Counts from overlapping runs are not added together. A run that failed to execute contributes nothing, so it is never counted as passing or as a killed mutant.
     - The integer ends at whitespace or the line end, so `3abc` and `3.5` are rejected.
-    - The command cannot contain a backtick. A command that would need one must be rewritten. For example, card text that holds backticks is read with `gh issue view <n> --json body --jq .body` rather than pasted.
+    - The command cannot contain a backtick. A command that would need one must be rewritten. For example, card text that holds backticks is read with `board-read.sh <n> | jq -r '.body'` rather than pasted.
 14. **`## PR`.** For the implementor and fixer, the first `#` followed by digits in `## PR` is read as the PR number. So `## PR` contains no other `#<digits>`: no card number and no example. It holds `#<number>` unless Status is `blocked`.
-15. **Blocked before any work.** An implementor that stopped before writing any test or opening a PR (for example, on a card with no Acceptance section) reports Status `blocked`. Its `## PR` states that no PR exists, with no `#<digits>` in it. Its `VERIFIED:` line counts something it actually checked, such as ``VERIFIED: `gh issue view 12 --json body --jq .body | grep -c '^## Acceptance'` -> 0 Acceptance sections``.
+15. **Blocked before any work.** An implementor that stopped before writing any test or opening a PR (for example, on a card with no acceptance items) reports Status `blocked`. Its `## PR` states that no PR exists, with no `#<digits>` in it. Its `VERIFIED:` line counts something it actually checked, such as ``VERIFIED: `board-read.sh 12 | jq '.acceptance | length'` -> 0 acceptance items``.
 16. **Blocked by.** A `Blocked by: #N` line in `## For the card` is read into `blocked_by` in the checker's JSON. The manager uses it as the card's blocker.
 17. **Line rules and With `--role` rules.** Every Line rule and every With `--role` rule in the Report section holds. `parse-report.sh --role <role>` rejects any violation, printing one `parse-report: ` stderr line per problem.
 
@@ -229,9 +229,9 @@ Usage errors exit 2 instead (`unknown flag: <flag>`, `unknown role: <role>`, `ca
 | stage-reviewer | `clean` (zero Critical and Important), `findings` (at least one Critical or Important) | none | none |
 
 - In `## PR`, the first `#<digits>` is the PR number. Any other `#<digits>` there (a card number, an example) would be read as the PR.
-- A blocked implementor that stopped before any test or PR (for example, on a card without an Acceptance section) has a `## PR` stating that no PR exists. Its `VERIFIED:` line counts something it checked, such as `-> 0` Acceptance sections.
+- A blocked implementor that stopped before any test or PR (for example, on a card without acceptance items) has a `## PR` stating that no PR exists. Its `VERIFIED:` line counts something it checked, such as `-> 0` acceptance items.
 - A `Blocked by: #N` line in `## For the card` gives `blocked_by`.
-- Findings are defects in this card's diff or Acceptance. Out of scope is uncovered work, which becomes a Backlog card. Bugs found are defects observed outside the diff, which become `bug`-labelled Backlog cards, deduplicated against open issues. Filing these cards is the manager's job in Phase 6, and it happens only from accepted reports.
+- Findings are defects in this card's diff or Acceptance. Out of scope is uncovered work, which becomes a Backlog card. Bugs found are defects observed outside the diff, which become `bug`-labelled Backlog cards, deduplicated against open cards on this board. Filing these cards is the manager's job in Phase 6, and it happens only from accepted reports.
 
 ### Example reports that pass
 
@@ -265,12 +265,12 @@ blocked
 - none
 
 ## For the card
-Stopped before writing a test: the card body has no Acceptance section.
+Stopped before writing a test: the card has no acceptance items.
 
 ## PR
 No PR exists; work stopped before the first commit.
 
-VERIFIED: `gh issue view 12 --json body --jq .body | grep -c '^## Acceptance'` -> 0 Acceptance sections
+VERIFIED: `board-read.sh 12 | jq '.acceptance | length'` -> 0 acceptance items
 ```
 
 Reviewer, `--role reviewer`:

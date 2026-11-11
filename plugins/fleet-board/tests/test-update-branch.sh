@@ -10,6 +10,8 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/update-branch.sh"
 TICK="$SCRIPT_DIR/../fixtures/gh/tick"
 REAL_GIT="$(command -v git)"
@@ -110,12 +112,15 @@ ROUTES
 }
 
 run_update() {
+  store_sync
+  store_snap
   local out err
   out="$(mktemp)"; err="$(mktemp)"
   bash "$SCRIPT" 12 34 fleet/12-add-subtract "$WT" > "$out" 2> "$err"
   LAST_EXIT=$?
   LAST_OUT="$(cat "$out")"; LAST_ERR="$(cat "$err")"
   rm -f "$out" "$err"
+  store_calls
 }
 
 # The note JSON written by the call, from the PATCH body (last input saved)

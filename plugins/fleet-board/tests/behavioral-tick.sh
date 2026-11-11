@@ -234,11 +234,23 @@ agent_calls() { # FILE: one JSON line per Agent tool_use, in stream order, dedup
     | jq -sc 'reduce .[] as $x ({seen: {}, out: []};
                 if .seen[$x.id] then . else .seen[$x.id] = true | .out += [$x] end) | .out[]'
 }
-# open_issues_titled TITLE OUT [STATE]: issues (default open) whose title is
-# exactly TITLE (no search API: its index lags behind freshly created issues)
+# open_issues_titled TITLE OUT [open|closed|all]: local cards (default open: not
+# done or wont_do) whose title is exactly TITLE, as board-read.sh cards
+# (number, title, state, labels as strings, body), written to OUT as a JSON list
 open_issues_titled() {
-  gh issue list --repo "$SANDBOX_REPO" --state "${3:-open}" --limit 300 --json number,title,labels,body 2>/dev/null \
-    | jq -c --arg t "$1" '[.[] | select(.title == $t)]' >"$2"
+  local states n s
+  case "${3:-open}" in
+    open) states="backlog ready in_progress in_review human_qa blocked" ;;
+    closed) states="done wont_do" ;;
+    *) states="backlog ready in_progress in_review human_qa blocked done wont_do" ;;
+  esac
+  : >"$WORK/titled.ndjson"
+  for s in $states; do
+    for n in $(in_clone bash "$S/board-list.sh" "$s" 2>/dev/null | jq -r --arg t "$1" '.[] | select(.title == $t) | .number'); do
+      card_json "$n" >>"$WORK/titled.ndjson"
+    done
+  done
+  jq -sc '.' "$WORK/titled.ndjson" >"$2"
 }
 result_text() { jq -rs '[.[] | select(.type=="result")] | last | .result // ""' "$1" 2>/dev/null; }
 pr_of_branch() { # BRANCH STATE -> json list
@@ -442,13 +454,14 @@ bl_log "DISPATCH_PATH=$DISPATCH_PATH SESSION_MODEL=$SESSION_MODEL TICK_PROMPT=$T
 setup_ab() {
   mk_card "$BL_FIX/card-subtract.md" ready; A="$CARD"
   if [ "$1" = qa ]; then
-    gh issue edit "$A" --repo "$SANDBOX_REPO" --add-label needs-human-qa >/dev/null || bl_die "cannot label #$A needs-human-qa"
+    in_clone bash "$S/adapters/local/label.sh" "$A" add needs-human-qa >/dev/null || bl_die "cannot label #$A needs-human-qa"
   fi
   mk_card "$BL_FIX/card-no-acceptance.md" backlog; B="$CARD"
-  # a human dragging B: two separate edits, so it carries exactly one state label
-  gh issue edit "$B" --repo "$SANDBOX_REPO" --remove-label fleet:backlog >/dev/null || bl_die "cannot unlabel #$B"
-  gh issue edit "$B" --repo "$SANDBOX_REPO" --add-label fleet:ready >/dev/null || bl_die "cannot label #$B ready"
-  [ "$(card_json "$B" | jq '[.labels[] | select(startswith("fleet:"))] | length')" = 1 ] || bl_die "#$B does not carry exactly one state label"
+  # a human dragging B to ready: board-move.sh refuses ready without acceptance, so the
+  # drag is a direct edit of the card file (the state field), as a person would make
+  local bf; bf="$CLONE/$(in_clone bash "$S/config.sh" board.dir)/cards/$B.json"
+  jq '.state = "ready"' "$bf" >"$bf.new" && mv "$bf.new" "$bf" || bl_die "cannot drag #$B to ready"
+  [ "$(card_state "$B")" = ready ] || bl_die "#$B is not in ready after the drag"
 }
 
 scenario_default() {
@@ -634,8 +647,8 @@ scenario_merge_red() {
   local t="[P0] main is red after #$PR"
   open_issues_titled "$t" "$RUN/p0-match.json"
   CARDS="$CARDS $(jq -r '.[].number' "$RUN/p0-match.json" | tr '\n' ' ')"
-  check_jq "AC4.8 one open '$t' issue, labelled fleet:backlog, body names #$PR" "$RUN/p0-match.json" \
-    "length == 1 and (.[0].labels | map(.name) | index(\"fleet:backlog\")) != null and (.[0].body | test(\"#$PR\\\\b\"))"
+  check_jq "AC4.8 one open '$t' issue, in backlog, body names #$PR" "$RUN/p0-match.json" \
+    "length == 1 and .[0].state == \"backlog\" and (.[0].body | test(\"#$PR\\\\b\"))"
   config_untouched
 }
 
@@ -657,8 +670,8 @@ scenario_out_of_scope() {
   open_issues_titled "$OOS_TITLE" "$RUN/oos-match.json"
   CARDS="$CARDS $(jq -r '.[].number' "$RUN/oos-match.json" | tr '\n' ' ')"
   # A role now writes a check command, so the card lands in followups.status (default ready); with no command it is Backlog.
-  check_jq "AC3.9 one open issue '$OOS_TITLE' with fleet:ready or fleet:backlog whose body names #$A" "$RUN/oos-match.json" \
-    "length == 1 and (.[0].labels | map(.name) | (index(\"fleet:ready\") != null or index(\"fleet:backlog\") != null)) and (.[0].body | test(\"#$A\\\\b\"))"
+  check_jq "AC3.9 one open issue '$OOS_TITLE' in ready or backlog whose body names #$A" "$RUN/oos-match.json" \
+    "length == 1 and (.[0].state == \"ready\" or .[0].state == \"backlog\") and (.[0].body | test(\"#$A\\\\b\"))"
   note_get "$A" >"$RUN/note-final.json"
   local pr; pr="$(jq -r '.pr // empty' "$RUN/note-final.json")"
   gh pr view "$pr" --repo "$SANDBOX_REPO" --json comments >"$RUN/pr-comments.json" 2>/dev/null
@@ -675,8 +688,8 @@ scenario_bug_found() {
   followup_ticks bugs_filed
   open_issues_titled "$BUG_TITLE" "$RUN/bug-match.json"
   CARDS="$CARDS $(jq -r '.[].number' "$RUN/bug-match.json" | tr '\n' ' ')"
-  check_jq "AC3.10 one open issue '$BUG_TITLE' labelled bug and fleet:backlog, body has ## Repro and #$A" "$RUN/bug-match.json" \
-    "length == 1 and (.[0].labels | map(.name) | (index(\"bug\") != null and index(\"fleet:backlog\") != null)) and (.[0].body | contains(\"## Repro\")) and (.[0].body | test(\"#$A\\\\b\"))"
+  check_jq "AC3.10 one open issue '$BUG_TITLE' labelled bug and in backlog, body has ## Repro and #$A" "$RUN/bug-match.json" \
+    "length == 1 and (.[0].labels | index(\"bug\") != null) and .[0].state == \"backlog\" and (.[0].body | contains(\"## Repro\")) and (.[0].body | test(\"#$A\\\\b\"))"
   note_get "$A" >"$RUN/note-pass1.json"
   local pr bugn; pr="$(jq -r '.pr // empty' "$RUN/note-pass1.json")"
   bugn="$(jq -r '.[0].number // empty' "$RUN/bug-match.json")"
@@ -693,7 +706,7 @@ scenario_bug_found() {
   CARDS="$CARDS $(jq -r '.[].number' "$RUN/bug-pass2.json" | tr '\n' ' ')"
   check_jq "AC3.10 pass 2: still exactly one issue (any state) titled '$BUG_TITLE'" "$RUN/bug-pass2.json" 'length == 1'
 
-  gh issue view "$bugn" --repo "$SANDBOX_REPO" --json comments >"$RUN/bug-comments.json" 2>/dev/null
+  card_json "$bugn" >"$RUN/bug-comments.json"
   check_jq "AC3.10 pass 2: #$bugn got an 'Also seen while working' comment naming #$A" "$RUN/bug-comments.json" \
     "any(.comments[]; (.body | contains(\"Also seen while working\")) and (.body | test(\"#$A\\\\b\")))"
   note_get "$A" >"$RUN/note-pass2.json"
@@ -734,7 +747,7 @@ scenario_waits_on_dependency() {
   if [ "$(implementor_dispatches 2)" = 0 ]; then pass "waits: tick 2 dispatched no implementor"
   else fail "waits: tick 2 dispatched no implementor" "$(implementor_dispatches 2) dispatch(es)"; fi
   # D closed as completed: the next tick starts A
-  gh issue close "$dep" --repo "$SANDBOX_REPO" --reason completed >/dev/null || bl_die "cannot close #$dep"
+  in_clone bash "$S/board-move.sh" "$dep" done >/dev/null || bl_die "cannot move #$dep to done"
   run_tick
   if [ "$(card_state "$A")" != ready ] && [ "$(implementor_dispatches 3)" -ge 1 ]; then
     pass "waits: once #$dep is closed as completed, tick 3 started #$A ($(card_state "$A"))"

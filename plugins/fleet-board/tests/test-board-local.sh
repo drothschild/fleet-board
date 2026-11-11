@@ -103,7 +103,6 @@ setup_case() {
   git -C "$REPO" config user.name "Test User"
   cat > "$REPO/.fleet-board.yml" <<'YML'
 board:
-  backend: local
   repo: acme/toy
 worktrees:
   dir: .fw
@@ -230,7 +229,8 @@ assert_stdout_exact "create prints number and url" '{"number":1,"url":"http://12
 run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
 assert_exit "read exit 0" 0
 assert_json "read title round-trips" '.title' 'Title with "quotes"'
-assert_json "read body round-trips" '.body' "$(cat "$body")"
+assert_json "read body is the prose of what was created (sections split off)" '.body+"|"' $'## Why\nx\n|'
+assert_json "read acceptance is the bullet of the created body" '.acceptance|join("|")' 'a "quoted" \ thing'
 assert_json "read state backlog" '.state' backlog
 assert_json "read labels" '.labels|join(",")' bug
 assert_json "read note null" '.manager_note' null
@@ -295,8 +295,13 @@ assert_exit "move exit 0" 0
 assert_card_state 1 in_progress
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 2 ready
 assert_exit "move to ready without Acceptance refused" 1
-assert_stderr_contains "refusal names Acceptance" "Acceptance"
+assert_stderr_contains "refusal says the card has no acceptance criteria" "no acceptance criteria"
 assert_card_state 2 backlog
+seed_card 5 backlog 'Empty field' $'## Acceptance\n- stale'
+jq '.acceptance = [] | .blocked_by = []' "$REPO/.fleet-board/cards/5.json" > "$REPO/five.tmp" && mv "$REPO/five.tmp" "$REPO/.fleet-board/cards/5.json"
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 5 ready
+assert_exit "move to ready refused when acceptance is [] whatever the body says" 1
+assert_card_state 5 backlog
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 1 review_security
 assert_exit "move to an unknown state exit 2" 2
 assert_card_state 1 in_progress
@@ -321,17 +326,17 @@ assert_json "read returns the note id" '.manager_note_id' 2
 for i in 1 2 3 4 5 6 7 8; do (cd "$REPO" && bash "$SCRIPTS/board-comment.sh" 1 "$c") & done; wait
 assert_card_json 1 '.comments|length' 10
 t="$(mktemp)"; CLEANUP_DIRS+=("$t"); echo 'Renamed' > "$t"; b="$(mktemp)"; CLEANUP_DIRS+=("$b"); echo 'new body' > "$b"
-run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "$b" '["x","y"]'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --title-file "$t" --body-file "$b" --labels-json '["x","y"]'
 assert_exit "edit exit 0" 0
 assert_card_json 1 '.title' Renamed
 assert_card_json 1 '.labels|join(",")' x,y
 assert_card_json 1 '.comments|length' 10
 assert_card_json 1 '.state' in_progress
-run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "$b" 'notjson'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --title-file "$t" --body-file "$b" --labels-json 'notjson'
 assert_exit "edit bad labels exit 2" 2
-run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 77 "$t" "$b" '[]'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 77 --title-file "$t" --body-file "$b" --labels-json '[]'
 assert_exit "edit missing card exit 1" 1
-run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$t" "" null
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --title-file "$t"
 assert_exit "title-only edit succeeds" 0
 [ "$(jq -c .labels "$REPO/.fleet-board/cards/1.json")" = '["x","y"]' ] && pass "title-only edit preserves labels" || fail "title-only edit preserves labels" "labels changed"
 # the manager writes the note between worktree.sh (which marks) and the
@@ -359,6 +364,230 @@ rm -f "$report"
 assert_exit "report comment exit 0" 0
 if [ ! -e "$REPO/.fleet-board/active/1" ]; then pass "comment removes the active marker"; else fail "comment removes the active marker" "still present"; fi
 if [ -e "$REPO/.fleet-board/active/2" ]; then pass "comment leaves another card's marker"; else fail "comment leaves another card's marker" "removed"; fi
+
+# --- card fields: split, render, create, edit, migrate ---
+split_of() { run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; fl_split_body "$1"' _ "$1"; }
+gone_of() { run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; declare -F "$1" >/dev/null && echo present || echo gone' _ "$1"; }
+setup_case
+S="$REPO/sample.md"
+printf 'Intro\n\nMore prose\n\n## Acceptance\n- one\n- two `code`\n\n## Depends on\n- #3\n- #7\n' > "$S"
+split_of "$S"
+assert_exit "split exit 0" 0
+assert_json "split body is the prose" '.body+"|"' $'Intro\n\nMore prose\n|'
+assert_json "split acceptance bullets" '.acceptance|join("|")' 'one|two `code`'
+assert_json "split blocked_by numbers" '.blocked_by|map(tostring)|join(",")' '3,7'
+assert_json "split outside empty" '.outside|length' 0
+gone_of fl_render_body
+assert_stdout_exact "fl_render_body is gone (nothing re-renders the sections)" "gone"
+gone_of fl_render_card_json
+assert_stdout_exact "fl_render_card_json is gone" "gone"
+printf 'Plain, no sections\nat all' > "$S"
+split_of "$S"
+assert_json "split body without sections is unchanged" '.body' $'Plain, no sections\nat all'
+printf '## Depends on\n- #4\n- acme/toy#5\n- other/repo#9\n- not a ref\n- #4\n\n## Why\nx\n' > "$S"
+split_of "$S"
+assert_json "split maps board.repo refs to numbers, dedupes" '.blocked_by|map(tostring)|join(",")' '4,5'
+assert_json "split sends other refs to outside" '.outside|join("|")' 'other/repo#9|not a ref'
+assert_json "split keeps the other sections" '.body+"|"' $'## Why\nx\n|'
+# review-focus 1: first real heading wins
+printf 'Top\n\n## Acceptance\n- first\n\n## Notes\nn\n\n## Acceptance\n- second\n' > "$S"
+split_of "$S"
+assert_json "two Acceptance headings: first one is split" '.acceptance|join("|")' first
+assert_json "two Acceptance headings: second stays in the body" '.body+"|"' $'Top\n\n## Notes\nn\n\n## Acceptance\n- second\n|'
+printf 'Top\n\n```\n## Acceptance\n- fenced\n```\n\n## Acceptance\n- real\n' > "$S"
+split_of "$S"
+assert_json "fenced Acceptance heading is not split" '.acceptance|join("|")' real
+assert_json "fenced Acceptance heading stays in the body" '.body+"|"' $'Top\n\n```\n## Acceptance\n- fenced\n```\n|'
+printf '```\n## Acceptance\n- fenced\n```\n' > "$S"
+split_of "$S"
+assert_json "only a fenced heading: nothing split" '.acceptance|length' 0
+# create with the fields; read returns them and the rendered body
+setup_case
+seed_card 1 backlog 'Dep card' 'dep'; echo 2 > "$REPO/.fleet-board/next"
+af="$REPO/acc.txt"; printf -- '- alpha\n- beta "q"\n' > "$af"
+bf="$REPO/body.md"; printf 'Prose only\n' > "$bf"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'With fields' "$bf" --acceptance-file "$af" --blocked-by 1 --label l1
+assert_exit "create with fields exit 0" 0
+assert_card_json 2 '.acceptance|join("|")' 'alpha|beta "q"'
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 2 '.pr_url' null
+assert_card_json 2 '.pr_url_source' null
+assert_card_json 2 '.body|rtrimstr("\n")' 'Prose only'
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_json "read returns acceptance" '.acceptance|join("|")' 'alpha|beta "q"'
+assert_json "read returns blocked_by" '.blocked_by|map(tostring)|join(",")' 1
+assert_json "read returns pr_url" '.pr_url' null
+assert_json "read body is the stored prose, without the sections" '.body+"|"' $'Prose only\n|'
+printf 'Why\n\n## Acceptance\n- from body\n\n## Depends on\n- #1\n' > "$bf"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Old style body' "$bf"
+assert_card_json 3 '.acceptance|join("|")' 'from body'
+assert_card_json 3 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 3 '.body|rtrimstr("\n")' 'Why'
+# review-focus 2: blocked_by must name another existing card
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Dangling' "$bf" --blocked-by 99
+assert_exit "create blocked-by a missing card exits 2" 2
+assert_stderr_contains "create names the missing ref" "#99"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Self' "$bf" --blocked-by 4
+assert_exit "create blocked by its own number exits 2" 2
+assert_stderr_contains "create names the self ref" "#4"
+[ ! -e "$REPO/.fleet-board/cards/4.json" ] && pass "refused create leaves no card" || fail "refused create leaves no card" "cards/4.json exists"
+printf 'x\n\n## Depends on\n- #98\n' > "$bf"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Dangling via body' "$bf"
+assert_exit "create with a dangling Depends on section exits 2" 2
+# edit: one field leaves the others
+tf="$REPO/t.txt"; echo 'New title' > "$tf"
+printf -- '- only\n' > "$REPO/acc2.txt"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --acceptance-file "$REPO/acc2.txt"
+assert_exit "edit acceptance exit 0" 0
+assert_card_json 2 '.acceptance|join("|")' only
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 2 '.title' 'With fields'
+assert_card_json 2 '.labels|join(",")' l1
+assert_card_json 2 '.body|rtrimstr("\n")' 'Prose only'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[]'
+assert_exit "edit blocked_by exit 0" 0
+assert_card_json 2 '.blocked_by|length' 0
+assert_card_json 2 '.acceptance|join("|")' only
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --pr-url 'https://github.com/acme/toy/pull/9'
+assert_exit "edit pr-url exit 0" 0
+assert_card_json 2 '.pr_url' 'https://github.com/acme/toy/pull/9'
+assert_card_json 2 '.pr_url_source' person
+assert_card_json 2 '.acceptance|join("|")' only
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --title-file "$tf"
+assert_card_json 2 '.title' 'New title'
+assert_card_json 2 '.pr_url' 'https://github.com/acme/toy/pull/9'
+printf 'Body\n\n## Acceptance\n- via body\n' > "$bf"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
+assert_card_json 2 '.acceptance|join("|")' 'via body'
+assert_card_json 2 '.body|rtrimstr("\n")' 'Body'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[99]'
+assert_exit "edit blocked by a missing card exits 2" 2
+assert_stderr_contains "edit names the missing ref" "#99"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[2]'
+assert_exit "edit blocked by itself exits 2" 2
+assert_card_json 2 '.blocked_by|length' 0
+# a ref already stored is kept even when its card is gone; only new refs are checked
+jq '.blocked_by = [99]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[99]'
+assert_exit "edit keeping a stored missing ref exits 0" 0
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 99
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[99,98]'
+assert_exit "edit adding a new missing ref exits 2" 2
+assert_stderr_contains "edit names the new missing ref" "#98"
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 99
+jq '.blocked_by = []' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+# a body edit is the whole truth about the sections: removing one clears its field
+jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+printf 'Why\n\n## Acceptance\n- a1\n\n## Depends on\n- #1\n' > "$bf"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
+assert_exit "body edit keeping the sections exit 0" 0
+assert_card_json 2 '.acceptance|join("|")' a1
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+printf 'Why\n' > "$bf"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
+assert_exit "body edit without sections exit 0" 0
+assert_card_json 2 '.acceptance|length' 0
+assert_card_json 2 '.blocked_by|length' 0
+assert_card_json 2 '.body|rtrimstr("\n")' Why
+jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+printf -- '- from flag\n' > "$REPO/acc3.txt"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf" --acceptance-file "$REPO/acc3.txt"
+assert_card_json 2 '.acceptance|join("|")' 'from flag'
+assert_card_json 2 '.blocked_by|length' 0
+jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf" --blocked-by-json '[1]'
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 2 '.acceptance|length' 0
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --title-file "$tf"
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+# migration
+setup_case
+seed_card 1 backlog 'Old one' $'Why\n\n## Acceptance\n- a1\n- a2\n\n## Depends on\n- #2\n- other/repo#3\n'
+seed_card 2 in_review 'Old two' 'Prose only'
+seed_card 3 in_review 'Old three' 'Prose only'
+seed_card 4 backlog 'Old four' $'Why\n\n## Depends on\n- #1\n- #4\n- #99\n'
+echo 5 > "$REPO/.fleet-board/next"
+jq --arg m '<!-- fleet-board:manager-note -->' '.comments = [{id:1, author:"mallory", body:($m + "\n### note\n\n```json\n{\"state\":\"in_review\",\"pr\":77}\n```\n"), created_at:"2026-01-01T00:00:00Z"}] | .next_comment_id = 2' "$REPO/.fleet-board/cards/3.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/3.json"
+jq --arg m '<!-- fleet-board:manager-note -->' '.comments = [{id:1, author:"robot", body:($m + "\n### note\n\n```json\n{\"state\":\"in_review\",\"pr\":12}\n```\n"), created_at:"2026-01-01T00:00:00Z"}] | .next_comment_id = 2' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
+cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.before"
+FLEET_BOARD_USER=robot run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh" --dry-run
+assert_exit "migrate --dry-run exit 0" 0
+assert_stdout_contains "dry run names card 1" "#1"
+assert_stdout_contains "dry run names card 2" "#2"
+assert_stderr_contains "dry run warns on the outside ref" "other/repo#3"
+cmp -s "$REPO/c1.before" "$REPO/.fleet-board/cards/1.json" && pass "dry run writes nothing" || fail "dry run writes nothing" "card 1 changed"
+FLEET_BOARD_USER=robot run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
+assert_exit "migrate exit 0" 0
+assert_card_json 3 '.pr_url' null
+assert_card_json 3 '.pr_url_source' null
+assert_card_json 4 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 4 '.body|contains("Depends on (outside this board): #4")' true
+assert_card_json 4 '.body|contains("Depends on (outside this board): #99")' true
+assert_stderr_contains "migrate warns on a missing blocker" "#99"
+assert_card_json 1 '.acceptance|join("|")' 'a1|a2'
+assert_card_json 1 '.blocked_by|map(tostring)|join(",")' 2
+assert_card_json 1 '.pr_url' null
+assert_card_json 1 '.body|startswith("Why\n")' true
+assert_card_json 1 '.body|contains("Depends on (outside this board): other/repo#3")' true
+assert_card_json 1 '.updated_at' null
+assert_card_json 2 '.acceptance|length' 0
+assert_card_json 2 '.pr_url' 'https://github.com/acme/toy/pull/12'
+assert_card_json 2 '.pr_url_source' note
+assert_card_json 2 '.comments|length' 1
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_json "migrated read body has no Acceptance section" '.body|contains("## Acceptance")' false
+assert_json "migrated read returns the acceptance field" '.acceptance|join("|")' 'a1|a2'
+cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.after"; cp "$REPO/.fleet-board/cards/2.json" "$REPO/c2.after"
+FLEET_BOARD_USER=robot run_check_in "$REPO" bash "$SCRIPTS/migrate-card-fields.sh"
+assert_exit "second migrate exit 0" 0
+assert_stdout_exact "second migrate changes nothing" ""
+cmp -s "$REPO/c1.after" "$REPO/.fleet-board/cards/1.json" && cmp -s "$REPO/c2.after" "$REPO/.fleet-board/cards/2.json" && pass "second migrate leaves the files identical" || fail "second migrate leaves the files identical" "a card changed"
+
+echo "Test: pr_url from the manager note"
+setup_case; seed_card 1 in_progress 'Note PR' 'body'
+npr="$(mktemp)"; CLEANUP_DIRS+=("$npr")
+note_with() { printf '```json\n%s\n```\n' "$1" > "$npr"; run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"; }
+note_with '{"round":1,"pr":41}'
+assert_exit "note with pr exit 0" 0
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/41'
+assert_card_json 1 '.pr_url_source' note
+assert_card_json 1 '.comments|length' 1
+note_with '{"round":2,"pr":42}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/42'
+assert_card_json 1 '.pr_url_source' note
+note_with '{"round":3}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/42'
+assert_card_json 1 '.pr_url_source' note
+note_with '{"round":4,"pr":null}'
+assert_card_json 1 '.pr_url' null
+assert_card_json 1 '.pr_url_source' null
+note_with '{"pr":43}'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --pr-url 'https://github.com/acme/toy/pull/50'
+note_with '{"pr":null}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/50'
+assert_card_json 1 '.pr_url_source' person
+note_with '{"pr":50}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/50'
+assert_card_json 1 '.pr_url_source' person
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --pr-url 'https://example.com/other/pr/7'
+note_with '{"pr":50}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/50'
+assert_card_json 1 '.pr_url_source' note
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --pr-url 'https://github.com/acme/toy/pull/9'
+note_with '{"pr":51}'
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
+assert_card_json 1 '.pr_url_source' note
+printf 'no fence at all\n' > "$npr"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
+assert_exit "unparsable note still written" 0
+assert_stderr_contains "unparsable note warns" "warning"
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
+assert_card_json 1 '.pr_url_source' note
+assert_card_json 1 '.comments[0].body|contains("no fence at all")' true
+printf '```json\n{bad json\n```\n' > "$npr"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
+assert_stderr_contains "bad json note warns" "warning"
+assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
 
 # --- atomic write ---
 atomic_write_case
@@ -403,7 +632,7 @@ assert_card_json 1 '[.comments[] | select(.body | startswith("<!-- fleet-board:m
 setup_case; seed_card 1 backlog 'No labels' 'x'
 jq 'del(.labels)' "$REPO/.fleet-board/cards/1.json" > "$REPO/card.tmp" && mv "$REPO/card.tmp" "$REPO/.fleet-board/cards/1.json"
 et="$(mktemp)"; CLEANUP_DIRS+=("$et"); echo T2 > "$et"
-run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 "$et" "" '["a","b"]'
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --title-file "$et" --labels-json '["a","b"]'
 assert_exit "edit on a card with no labels key exits 0" 0
 assert_card_json 1 '.labels|join(",")' a,b
 

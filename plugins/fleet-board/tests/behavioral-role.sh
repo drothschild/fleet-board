@@ -54,7 +54,7 @@ implementor_prompt() {
   local note="${2:-none. This is the first dispatch for this card; no PR exists yet.}"
   cat >"$1" <<EOF
 Card number: $CARD
-Card (JSON from board-read.sh $CARD; its body holds the Acceptance section):
+Card (JSON from board-read.sh $CARD; its acceptance field holds the Acceptance items):
 $(cd "$CLONE" && bash "$S/board-read.sh" "$CARD")
 
 Worktree path: $WT

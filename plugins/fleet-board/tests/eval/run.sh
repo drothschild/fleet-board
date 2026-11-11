@@ -123,7 +123,6 @@ write_prompt() {
 write_stage_config() {
   {
     echo "board:"
-    echo "  backend: github-labels"
     echo "  repo: eval/eval"
     echo "review:"
     echo "  stages:"

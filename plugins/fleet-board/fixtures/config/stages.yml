@@ -1,5 +1,4 @@
 board:
-  backend: github-labels
   repo: acme/toy
 worktrees:
   dir: "../.fleet-worktrees"

@@ -137,11 +137,11 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 
 **Interface:** `Effect.prepare(key, preconditions, intent)`, `Effect.observe()`, `Effect.apply()`, `Effect.reconcile()`. Supported adapters: worktree preparation, branch refresh, commit publication, PR create/update, report post, note update, card move, follow-up filing and cleanup. Each documents observation evidence and ambiguous-outcome behavior.
 
-- [ ] Add failure injection before/after every external mutation and before local observation commit. Cover changed/deleted cards, moved PR head, invalid note, human-QA arrival mid-flight, duplicate report/create response, and ambiguous publication.
-- [ ] Assert controller-generated operation IDs are separate from untrusted report text and all effect mutations revalidate current authority/generation and card state.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-effects.sh` to failure; commit tests.
-- [ ] Implement bounded subprocess effect adapters and safe observation/replay. No direct filesystem edits to board storage. Uncertain non-idempotent results enter attention. Resume refresh produces a new validated input revision and resets only invalidated review evidence, not infrastructure retry history for unchanged work.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Add failure injection before/after every external mutation and before local observation commit. Cover changed/deleted cards, moved PR head, invalid note, human-QA arrival mid-flight, duplicate report/create response, and ambiguous publication.
+- [x] Assert controller-generated operation IDs are separate from untrusted report text and all effect mutations revalidate current authority/generation and card state.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-effects.sh` to failure; commit tests.
+- [x] Implement bounded subprocess effect adapters and safe observation/replay. No direct filesystem edits to board storage. Uncertain non-idempotent results enter attention. Resume refresh produces a new validated input revision and resets only invalidated review evidence, not infrastructure retry history for unchanged work.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S3, S4, S7, S8. This phase does not claim exactly-once external delivery.
 
@@ -150,12 +150,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Modify:** `scripts/merge-reviewed.sh`, `scripts/settle.sh`, `scripts/verify-main.sh` only where a bounded entrypoint needs it; `effects.py`, `scheduler.py`.
 **Tests:** existing `tests/test-merge-reviewed.sh` and `tests/test-settle.sh`, separate TDD slices; new `tests/test-supervisor-integration.sh` with `fixtures/supervisor/integration_cases.py`.
 
-- [ ] Write failing existing-suite cases for a bounded per-card operation retaining fresh eligibility/head binding and pending verification recovery; commit tests before adapting helpers. Preserve their existing default invocation contracts.
-- [ ] Add integration cases: B completes review/merge/verification while unrelated A is still running; at most one repository merge/verification lane; crash after merge before journal update issues no second merge; failed main verification closes admissions; Human QA and human merge policy forbid mutation.
-- [ ] Cover head drift, configured review stages, dependency readiness, green CI requirement, post-merge refresh and deferred cleanup. `ok: "true"`, missing `ok`, and `ok: false` are all failure.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-integration.sh` to failure; commit tests.
-- [ ] Implement lane scheduling and effect recovery outside the event loop. Already-merged verification can proceed while paused/stopping; no new merge can. Cleanup cannot remove active/quarantined/pending-QA worktrees.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Write failing existing-suite cases for a bounded per-card operation retaining fresh eligibility/head binding and pending verification recovery; commit tests before adapting helpers. Preserve their existing default invocation contracts.
+- [x] Add integration cases: B completes review/merge/verification while unrelated A is still running; at most one repository merge/verification lane; crash after merge before journal update issues no second merge; failed main verification closes admissions; Human QA and human merge policy forbid mutation.
+- [x] Cover head drift, configured review stages, dependency readiness, green CI requirement, post-merge refresh and deferred cleanup. `ok: "true"`, missing `ok`, and `ok: false` are all failure.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-integration.sh` to failure; commit tests.
+- [x] Implement lane scheduling and effect recovery outside the event loop. Already-merged verification can proceed while paused/stopping; no new merge can. Cleanup cannot remove active/quarantined/pending-QA worktrees.
+- [x] Run the focused suite and clean-room check; commit/push.
 
 **Verifies:** S1, S3, S8, S11.
 
@@ -165,11 +165,15 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Create:** `scripts/supervisor/isolation.py`, `scripts/supervisor/inference_broker.py`, `scripts/supervisor/policies/worker.sb`; `tests/test-supervisor-providers.sh`; `fixtures/supervisor/provider_cases.py`.
 **Prepare specs:** `docs/implementation-plans/2026-09-28-fleet-board/specs/{implementor,reviewer,fixer,reporting,manager}.md` (existing spec sources verified at the baseline).
 
-- [ ] Write fake CLI/provider cases for explicit role/model selection, bounded stdout/stderr, missing executable, cancellation, unknown usage, retry accounting, exact input SHA, no board/merge credentials, and expansion requests. Add host-enforced negative access probes for controller DB/socket, board files, shared Git metadata, host credential stores/helpers/keychain/SSH agent, arbitrary network/publication, symlink escapes and forged human-control requests. Test that missing isolation support refuses production launch.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` to failure; commit tests.
-- [ ] Implement versioned provider adapter contracts, native macOS sandbox policy and Linux bubblewrap isolation with required capability probes, private Git metadata, and a minimal inference-only credential broker. Keep the trusted runner outside the worker boundary and pass only the attempt-scoped result/heartbeat/scope-request channel. Test real access denial on supported hosts separately from injected adapter tests. Unsupported sandbox hosts fail closed; no prompt-only or environment-only fallback. Pin/review external sandbox requirements at execution time using their official documentation linked in the design. Capture provider-level transport/report retries visibly under one attempt, with their existing bounds; never multiply them through an unclassified supervisor retry.
-- [ ] Keep production implementor/fixer activation blocked until re-authored role contracts pass Phase 7. A fake-provider success is not production qualification.
-- [ ] Run the focused suite and clean-room check; commit/push.
+- [x] Write fake CLI/provider cases for explicit role/model selection, bounded stdout/stderr, missing executable, cancellation, unknown usage, retry accounting, exact input SHA, no board/merge credentials, and expansion requests. Add host-enforced negative access probes for controller DB/socket, board files, shared Git metadata, host credential stores/helpers/keychain/SSH agent, arbitrary network/publication, symlink escapes and forged human-control requests. Test that missing isolation support refuses production launch.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` to failure; commit tests.
+- [x] Implement versioned provider adapter contracts, native macOS sandbox policy and Linux bubblewrap isolation with required capability probes, private Git metadata, and a minimal inference-only credential broker. Keep the trusted runner outside the worker boundary and pass only the attempt-scoped result/heartbeat/scope-request channel. Test real access denial on supported hosts separately from injected adapter tests. Unsupported sandbox hosts fail closed; no prompt-only or environment-only fallback. Pin/review external sandbox requirements at execution time using their official documentation linked in the design. Capture provider-level transport/report retries visibly under one attempt, with their existing bounds; never multiply them through an unclassified supervisor retry. On this Mac, the native `sandbox-exec` policy could not be applied; the approved Docker Desktop backend is the qualified supported-host path. Its immutable-image probe passed all 24 named checks without a pull.
+- [x] Keep production implementor/fixer activation blocked until re-authored role contracts pass Phase 7. A fake-provider success is not production qualification.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-providers.sh` (87 tests) and `bash plugins/fleet-board/tests/test-clean-room.sh` (118 checks); run version, AST/JSON, syntax, and diff checks; commit and push after fresh Luna reviews. Final Docker host probe passed all 24 checks. PR #237 remains draft at `3022b53`; final review summary is posted.
+
+Execution note (2026-11-08): Provider contract, attempt-bound inference socket, bootstrap, and fail-closed macOS/Linux policy code are implemented. The host is macOS 27.2, but `sandbox-exec` aborts or returns `Operation not permitted` even under the approved host probe, so supported-host denial behavior remains unqualified. The production supervisor remains disabled, and the implementation checkbox stays open until real host isolation probes and execution-time sandbox requirement review are complete. The focused runner suite passes only with host process metadata access; see the implementation report for commands and results.
+
+Execution note (2026-11-09): The host's macOS Unix-socket bind mount is unsupported inside Docker Desktop's Linux VM, so the approved Docker backend design uses an attempt-local guest socket and framed stdio relay to the trusted host controller. Its detailed spec and task-by-task TDD plan are `docs/superpowers/specs/2026-11-09-persistent-supervisor-docker-backend-design.md` and `docs/superpowers/plans/2026-11-09-persistent-supervisor-docker-backend.md`. The cached-image Docker host probe passes all 24 checks; after the first CI run exposed portable-temp-path and opt-in probe-discovery issues, the focused provider suite passes 89/89, the opt-in guard passes, and clean-room passes 118/118. Fresh Luna Docker reviews approved implementation head `fbb212e`; follow-up spec and quality reviews approved the CI portability corrections at `ae87cbf`. PR #237 received the reviewed fixes, and offline CI run `42767755929` passed on head `a4f43c4`. Native macOS `sandbox-exec` remains unsupported here; Docker is the qualified local isolation backend. Production remains disabled.
 
 **Verifies:** S2-S5, S8, S11 transport subset. No paid calls occur in this task.
 
@@ -181,12 +185,12 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Modify:** `scripts/claim-run-lock.py`, `fleet-board-run.sh` to use shared ownership exclusion.
 **Existing test slice:** `tests/test-run.sh` for legacy/new lock contention.
 
-- [ ] Add legacy/new and linked-worktree singleton tests in `test-run.sh`; prove failure and implement shared lock compatibility before service integration.
-- [ ] Write lifecycle cases for concurrent/repeated Start, persisted desired state, pause/resume, drain/cancel stop, crash during shutdown, recovering while stopped, blocked controller RPC, stale command revision, and session accounting across Start/Resume/reboot.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-lifecycle.sh` to failure; commit tests.
-- [ ] Implement private local socket, authenticated actor derivation (reject spoofed body actors), separate restricted worker IPC, bounded requests, durable command deduplication, service readiness acknowledgement, and offline Start ownership path. Expose read-only status when execution cannot start. Capture host boot identity and preserve compatible runner versions across process restart.
-- [ ] Implement CLI `start|pause|resume|stop --mode drain|cancel|status|reconcile|events|resolve --card <n> --action <action>`; `reconcile` returns a snapshot/cursor without waiting for jobs. Reject unsupported/contradictory arguments with exit 2.
-- [ ] Run focused suite and clean-room check; commit/push.
+- [x] Add legacy/new and linked-worktree singleton tests in `test-run.sh`; prove failure and implement shared lock compatibility before service integration.
+- [x] Write lifecycle cases for concurrent/repeated Start, persisted desired state, pause/resume, drain/cancel stop, crash during shutdown, recovering while stopped, blocked controller RPC, stale command revision, and session accounting across Start/Resume/reboot.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-lifecycle.sh` to failure; commit tests.
+- [x] Implement private local socket, authenticated actor derivation (reject spoofed body actors), separate restricted worker IPC, bounded requests, durable command deduplication, service readiness acknowledgement, and offline Start ownership path. Expose read-only status when execution cannot start. Capture host boot identity and preserve compatible runner versions across process restart.
+- [x] Implement CLI `start|pause|resume|stop --mode drain|cancel|status|reconcile|events|resolve --card <n> --action <action>`; `reconcile` returns a snapshot/cursor without waiting for jobs. Reject unsupported/contradictory arguments with exit 2.
+- [x] Run focused suite and clean-room check; commit/push.
 
 **Verifies:** S2, S9-S12 service subset. Stopping an uncertain writer reports unresolved shutdown, not successful termination.
 
@@ -196,14 +200,14 @@ New fixtures: `plugins/fleet-board/fixtures/supervisor/`. Python fixture drivers
 **Create:** `tests/test-supervisor-web.sh`; `fixtures/supervisor/web_cases.py`.
 **Reuse:** `tests/board-dom-harness.js`, `board-interaction-harness.js`, `board-unknown-interaction.js`; focused regressions `tests/test-board-unknown-interaction.sh` and `tests/test-board-web-atomic.sh` (already merged). Check Node availability for DOM tests; it is not a new production runtime requirement.
 
-- [ ] Preserve legacy-mode API cases in `test-board-web.sh`; add focused routing assertions where its handlers change. New-mode lifecycle cases belong to the new suite. Retain PR #207 request-size/time limits, corrupt-card errors, temp cleanup, per-import create locks/atomic metadata, `created` status, private run-file modes, actual-listen-port URLs, and legacy log-cache behavior.
-- [ ] Reuse the existing DOM harness to test `known: false`, the Unknown state group and drawer repair while supervisor status is active/unreachable. Never auto-normalize or dispatch an unknown-state card; retain existing reservations pending reconciliation. Run `bash plugins/fleet-board/tests/test-board-unknown-interaction.sh` only for this rendering slice, plus clean-room checks.
-- [ ] Preserve import independence while the supervisor is saturated or unreachable: separate imports can create concurrently, one import remains serialized, and metadata readers see a complete old or new value. For the import-metadata slice, run `bash plugins/fleet-board/tests/test-board-web-atomic.sh` plus clean-room; do not reuse its non-fsync helper as the durable runner publication implementation.
-- [ ] Add API cases for every design route, CSRF/Host enforcement, idempotency and stale revisions, acknowledgement versus ready status, unreachable versus stopped, bounded event replay/cursor expiration, safe log IDs, explicit reservation release audit, and QA-preserving resume. Include audited resolution cases for manual retry after exhaustion (automatic count/budget unchanged), evidence-backed usage recording, verified external-effect confirmation, and safe abandonment; reject resolution while a writer/effect remains uncertain.
-- [ ] Run `bash plugins/fleet-board/tests/test-supervisor-web.sh` to failure; commit tests.
-- [ ] Implement HTTP-to-socket proxy and compatibility `/api/run` projection. Remove marker clearing/PID inference in supervisor mode. Render health/slots/budgets/boot status, wait reasons, attempt history and reservation controls; show dates/ages from structured data rather than log parsing.
-- [ ] Implement bounded cursor polling with reconnect/full-snapshot behavior; disable unsafe controls while stale/unreachable and show the reason. Never use optimistic Running for spawn acknowledgement.
-- [ ] Run focused suite and clean-room check. Manually inspect desktop/narrow layouts, keyboard controls, Stop menu and error states with fake workers; record evidence before commit/push.
+- [x] Preserve legacy-mode API cases in `test-board-web.sh`; add focused routing assertions where its handlers change. New-mode lifecycle cases belong to the new suite. Retain PR #207 request-size/time limits, corrupt-card errors, temp cleanup, per-import create locks/atomic metadata, `created` status, private run-file modes, actual-listen-port URLs, and legacy log-cache behavior.
+- [x] Reuse the existing DOM harness to test `known: false`, the Unknown state group and drawer repair while supervisor status is active/unreachable. Never auto-normalize or dispatch an unknown-state card; retain existing reservations pending reconciliation. Run `bash plugins/fleet-board/tests/test-board-unknown-interaction.sh` only for this rendering slice, plus clean-room checks.
+- [x] Preserve import independence while the supervisor is saturated or unreachable: separate imports can create concurrently, one import remains serialized, and metadata readers see a complete old or new value. For the import-metadata slice, run `bash plugins/fleet-board/tests/test-board-web-atomic.sh` plus clean-room; do not reuse its non-fsync helper as the durable runner publication implementation.
+- [x] Add API cases for every design route, CSRF/Host enforcement, idempotency and stale revisions, acknowledgement versus ready status, unreachable versus stopped, bounded event replay/cursor expiration, safe log IDs, explicit reservation release audit, and QA-preserving resume. Include audited resolution cases for manual retry after exhaustion (automatic count/budget unchanged), evidence-backed usage recording, verified external-effect confirmation, and safe abandonment; reject resolution while a writer/effect remains uncertain.
+- [x] Run `bash plugins/fleet-board/tests/test-supervisor-web.sh` to failure; commit tests.
+- [x] Implement HTTP-to-socket proxy and compatibility `/api/run` projection. Remove marker clearing/PID inference in supervisor mode. Render health/slots/budgets/boot status, wait reasons, attempt history and reservation controls; show dates/ages from structured data rather than log parsing.
+- [x] Implement bounded cursor polling with reconnect/full-snapshot behavior; disable unsafe controls while stale/unreachable and show the reason. Never use optimistic Running for spawn acknowledgement.
+- [x] Run focused suite and clean-room check. Manually inspect desktop/narrow layouts, keyboard controls, Stop menu and error states with fake workers; record evidence before commit/push.
 
 **Verifies:** S2, S7, S9. Killing/restarting the board server must leave workers and durable active indicators intact.
 

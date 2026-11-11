@@ -2,14 +2,13 @@
 # fleet-board gate: PreToolUse(Bash). Exit 2 blocks. Inert without .fleet-board.yml.
 #
 # Gates (the phase 4 "Gate rules"):
-#   G1  no Bash command moves a card out of human_qa (board-move, gh issue edit,
-#       gh project item-edit/-archive/-delete, gh label edit/delete of a state
-#       label, raw label/Status API writes)
+#   G1  no Bash command moves a card out of human_qa (board-move, or an
+#       adapter's move.sh, on the local board)
 #   G2  gh pr merge: blocked under merge.policy human; under auto, never --admin,
 #       never without an explicit PR, never a draft, never with checks that are
 #       not green, never a fleet PR whose head holds commits after the last
 #       review other than clean merges of main; raw merges blocked
-#   G3  board-move N ready needs a '## Acceptance' section on the card
+#   G3  board-move N ready needs a non-empty acceptance field on the card
 #
 # A block is exit 2 with one line on stderr. Within the shapes it recognizes,
 # the hook never lets a real call through: when a gated command is present and
@@ -56,8 +55,8 @@ pattern_match() {
 # a word with $ in it, or a word that may expand to board-move or move.sh and
 # something that may be a card number (a digit, or a word of only # ? * { }
 # , . [ ] -; see card_like). A command without a gated keyword can only make a
-# shape through such words: a pattern that expands to gh still needs a gated
-# group and verb (pr merge, issue edit, ...), which are keywords.
+# shape through such words: a pattern that expands to gh still needs the gated
+# group and verb (pr merge), which are keywords.
 glob_hits() {
   local w hit=0 card=0 IFS=$' \t\n;&|()<>`'
   case "$1" in *[0-9]*) card=1 ;; esac
@@ -98,9 +97,7 @@ OUT="$(jq -r '
   | (if .tool_name == "Bash" then (.tool_input.command // "" | tostring) else "" end) as $c
   | ($c | split("\\\n") | join("") | split($q) | join("") | split("\"") | join("")
         | split("\\") | join("") | ascii_downcase) as $f
-  | if ($f | contains("board-move") or contains("gh") or contains("merge") or contains("move.sh")
-           or contains("graphql") or contains("label") or contains("edit") or contains("item-")
-           or contains("cards.sh"))
+  | if ($f | contains("board-move") or contains("gh") or contains("merge") or contains("move.sh"))
        or ($c | contains("$" + $q))
     then "K" + $c
     elif ($f | contains("?") or contains("*") or contains("[")
@@ -130,13 +127,8 @@ NL=$'\n'
 # gate-lex.awk turns the command into scoped segments of shell words (see its
 # header). SHAPES holds one line per recognized shape; fields are separated by $US:
 #   move    N STATE
-#   edit    NUMS NUM-UNKNOWN LABEL-UNKNOWN SEGMENT-TEXT
-#   item    ITEM-ID
 #   merge   ARG ADMIN REPO EXTRA-REFS XARGS (1 when xargs may supply words)
-#   label   NAME-UNKNOWN SEGMENT-TEXT
 #   opaque  REASON          (a gated command the hook cannot read)
-#   cards   SUB N STATE REPO     (cards.sh create|add|move; see parse_cards)
-#   rawstate
 #   rawmerge
 # SHAPE_DIRS[k] lists the directories shape k may run in (one per line), and
 # SHAPE_DYN[k] names the command that made its directory unknowable, if any.
@@ -150,8 +142,6 @@ OPEN=0     # an xargs earlier in the segment may append words to a command
 API=0      # a gh api or curl call is present
 API_DIRS=""
 API_DYN=""
-WRITE=0    # a word that makes a gh api or curl call a write is present
-PM=0       # the previous word was -X/--method/--request
 LOW=""     # the flattened command, from the lexer
 CUR_DIRS=""
 CUR_DYN=""
@@ -177,8 +167,8 @@ case "$CMD" in *'<<'*|*'[['*|'#'*|*[[:space:]\;\&\|\(\)]'#'*) NOPOP=1 ;; esac
 # a glob or a brace/tilde expansion), so the hook cannot know its value
 is_dyn() { case "$1" in *[\$\`\*\?\[\{\~]*) return 0 ;; esac; return 1; }
 
-# issue_ref TOKEN: sets REF to the issue number TOKEN names (14, #14, or an
-# issue URL), or to ""
+# issue_ref TOKEN: sets REF to the card number TOKEN names (14, #14, or a
+# URL ending in /issues/14), or to ""
 issue_ref() {
   REF="${1#\#}"
   case "$REF" in */issues/*) REF="${REF##*/}" ;; esac
@@ -227,82 +217,6 @@ parse_move() {
   add_shape "move$US$n$US$st"
 }
 
-# parse_cards I: cards.sh create|add|move ... [--repo R]
-# The helper refuses to move a card out of Human QA itself, so a card number
-# or state it cannot read here is allowed; a repo flag is always checked.
-# Positionals: create TITLE BODY-FILE, add N, move N STATE.
-parse_cards() {
-  local k=$(($1 + 1)) sub="${TOK[$1+1]:-}" t repo="" p1="" p2="" np=0
-  if [ "$OPEN" = 1 ]; then
-    add_shape "opaque${US}could not verify the cards.sh call under xargs; blocking to be safe"
-    return 0
-  fi
-  case "$sub" in
-    create|add|move) ;;
-    *)
-      is_dyn "$sub" && add_shape "opaque${US}could not verify the cards.sh subcommand (cards.sh $sub); blocking to be safe"
-      return 0 ;;
-  esac
-  words_ok "$k" "cards.sh" || return 0
-  k=$((k + 1))
-  while [ $k -lt $NTOK ]; do
-    t="${TOK[k]}"
-    case "$t" in
-      --repo|-R) repo="${TOK[k+1]:-}"; k=$((k + 1)) ;;
-      --repo=*) repo="${t#--repo=}" ;;
-      -R?*) repo="${t#-R}" ;;
-      --label) k=$((k + 1)) ;;
-      -*) ;;
-      *) np=$((np + 1)); [ $np = 1 ] && p1="$t"; [ $np = 2 ] && p2="$t" ;;
-    esac
-    k=$((k + 1))
-  done
-  add_shape "cards$US$sub$US$p1$US$p2$US$repo"
-}
-
-# parse_issue_edit K: gh issue edit N... [--add-label L,...] [--remove-label L,...]
-# Recorded only when a label flag is present: other edits never move a card.
-parse_issue_edit() {
-  local k=$1 t v nums="" numdyn=0 lf=0 labdyn=0
-  words_ok "$k" "gh issue edit" || return 0
-  [ "$OPEN" = 1 ] && { lf=1; labdyn=1; numdyn=1; }
-  while [ $k -lt $NTOK ]; do
-    t="${TOK[k]}"; v=""
-    case "$t" in
-      --add-label|--remove-label) lf=1; v="${TOK[k+1]:-}"; k=$((k + 1)) ;;
-      --add-label=*|--remove-label=*) lf=1; v="${t#*=}" ;;
-      -t|--title|-b|--body|-F|--body-file|-m|--milestone|-R|--repo|--add-assignee|--remove-assignee|--add-project|--remove-project)
-        k=$((k + 1)) ;;
-      -*) ;;
-      *)
-        if is_dyn "$t"; then numdyn=1
-        else issue_ref "$t"; [ -n "$REF" ] && nums="$nums $REF"
-        fi ;;
-    esac
-    [ -n "$v" ] && is_dyn "$v" && labdyn=1
-    k=$((k + 1))
-  done
-  [ "$lf" = 1 ] || return 0
-  [ -n "$nums" ] || numdyn=1
-  add_shape "edit$US$nums$US$numdyn$US$labdyn$US$JOINED"
-}
-
-# parse_item K: gh project item-edit|item-archive|item-delete ... --id ITEM ...
-# Without a readable --id the item is unknown (recorded empty).
-parse_item() {
-  local k=$1 t id=""
-  words_ok "$k" "gh project" || return 0
-  while [ $k -lt $NTOK ]; do
-    t="${TOK[k]}"
-    case "$t" in
-      --id) id="${TOK[k+1]:-}"; k=$((k + 1)) ;;
-      --id=*) id="${t#--id=}" ;;
-    esac
-    k=$((k + 1))
-  done
-  add_shape "item$US$id"
-}
-
 # parse_merge K GLOBAL-REPO: gh pr merge [ARG] [flags]
 # ARG is the first token that is neither a flag nor a flag's value. Later
 # tokens that name a PR by number or URL are kept as EXTRA refs and checked
@@ -334,19 +248,6 @@ parse_merge() {
   add_shape "merge$US$arg$US$admin$US$repo$US$extra$US$OPEN"
 }
 
-# parse_label K: gh label edit|delete NAME [--name NEW] ...
-# After xargs the name may come from stdin, so it is unknown.
-parse_label() {
-  local k=$1 dyn=0
-  words_ok "$k" "gh label" || return 0
-  [ "$OPEN" = 1 ] && dyn=1
-  while [ $k -lt $NTOK ]; do
-    is_dyn "${TOK[k]}" && dyn=1
-    k=$((k + 1))
-  done
-  add_shape "label$US$dyn$US$JOINED"
-}
-
 # skip_repo: advances J past gh's repo/host flags, recording the repo in RREPO
 skip_repo() {
   while [ $J -lt $NTOK ]; do
@@ -376,10 +277,7 @@ parse_gh() {
     api) API=1; API_DIRS="$API_DIRS$NL$CUR_DIRS"; [ -n "$CUR_DYN" ] && API_DYN="$CUR_DYN"; return 0 ;;
   esac
   case "$grp $verb" in
-    "issue edit") parse_issue_edit $((J + 1)) ;;
-    "project item-edit"|"project item-archive"|"project item-delete") parse_item $((J + 1)) ;;
     "pr merge") parse_merge $((J + 1)) "$RREPO" ;;
-    "label edit"|"label delete") parse_label $((J + 1)) ;;
     *)
       [ "$2" = 1 ] || return 0
       # a subcommand the hook cannot read: a variable or substitution
@@ -388,7 +286,7 @@ parse_gh() {
         add_shape "opaque${US}could not verify the gh subcommand (gh ${grp:-with words from xargs}); blocking to be safe"
       else
         case "$grp" in
-          pr|issue|project|label)
+          pr)
             if is_dyn "$verb" || { [ "$OPEN" = 1 ] && [ -z "$verb" ]; }; then
               add_shape "opaque${US}could not verify the gh subcommand (gh $grp ${verb:-with words from xargs}); blocking to be safe"
             fi ;;
@@ -426,21 +324,6 @@ pattern_word() {
     2) case "$LOW" in *adapters*) parse_move "$2" ;; esac ;;
   esac
   return 0
-}
-
-# note_write T: records whether word T makes a gh api or curl call a write
-note_write() {
-  if [ "$PM" = 1 ]; then
-    PM=0
-    case "$1" in [Gg][Ee][Tt]|[Hh][Ee][Aa][Dd]) ;; *) WRITE=1 ;; esac
-  fi
-  case "$1" in
-    -X|--method|--request) PM=1 ;;
-    --method=*|--request=*|-X?*)
-      case "${1#*=}" in [Gg][Ee][Tt]|[Hh][Ee][Aa][Dd]|-X[Gg][Ee][Tt]|-X[Hh][Ee][Aa][Dd]) ;; *) WRITE=1 ;; esac ;;
-    -f|-F|--field|--raw-field|--input|--field=*|--raw-field=*|--input=*|-f?*|-F?*) WRITE=1 ;;
-    -d|-d?*|--data|--data=*|--data-*|--json|--json=*|-T|--upload-file|--upload-file=*|--form|--form=*) WRITE=1 ;;
-  esac
 }
 
 # starts_compound WORD: WORD is a reserved word (or time) that track_cd acts
@@ -612,7 +495,7 @@ while IFS= read -r line; do
   NTOK=${#TOK[@]}
   [ "$NTOK" -gt 0 ] || continue
   JOINED="${TOK[*]}"
-  OPEN=0; PM=0; BR=0; ASG=0
+  OPEN=0; BR=0; ASG=0
   # Every word whose basename is a command word is a candidate; each one is
   # parsed, so a decoy (sudo -u gh gh ...) cannot hide the real call behind
   # it. Command words match in any case: macOS file systems are
@@ -624,7 +507,6 @@ while IFS= read -r line; do
       [Gg][Hh]) parse_gh $i 1 ;;
       [Bb][Oo][Aa][Rr][Dd]-[Mm][Oo][Vv][Ee]|[Bb][Oo][Aa][Rr][Dd]-[Mm][Oo][Vv][Ee].[Ss][Hh]) parse_move $i ;;
       [Mm][Oo][Vv][Ee].[Ss][Hh]) case "$LOW" in *adapters*) parse_move $i ;; esac ;;
-      [Cc][Aa][Rr][Dd][Ss].[Ss][Hh]) parse_cards $i ;;
       [Cc][Uu][Rr][Ll]) API=1; API_DIRS="$API_DIRS$NL$CUR_DIRS"; [ -n "$CUR_DYN" ] && API_DYN="$CUR_DYN" ;;
       [Xx][Aa][Rr][Gg][Ss]) OPEN=1 ;;
       '{') BR=$((BR + 1)) ;;
@@ -640,7 +522,6 @@ while IFS= read -r line; do
         case "$t" in *[\*\?\[]*|*'{'*[,.]*'}'*) pattern_word "$t" $i ;; esac ;;
       *) case "$t" in *[\*\?\[]*|*'{'*[,.]*'}'*) pattern_word "$t" $i ;; esac ;;
     esac
-    case "$t" in -*) note_write "$t" ;; *) [ "$PM" = 1 ] && note_write "$t" ;; esac
     # HOME, CDPATH and DIRSTACK decide where a cd goes: set by name, or by a
     # name the hook cannot read (export "${v}ME=...", printf -v "$v"); only
     # the part before = is a name
@@ -669,13 +550,6 @@ done <<<"$LEXED"
 # quoted newline nor a variable holding the query can split the call from
 # the mutation name or endpoint.
 if [ "$API" = 1 ]; then
-  case "$LOW" in
-    *updateprojectv2itemfieldvalue*|*clearprojectv2itemfieldvalue*|*addlabelstolabelable*|*removelabelsfromlabelable*|*deleteprojectv2item*|*archiveprojectv2item*)
-      add_shape "rawstate" "$API_DIRS" "$API_DYN" ;;
-    *updateissue*labelids*|*labelids*updateissue*)
-      add_shape "rawstate" "$API_DIRS" "$API_DYN" ;;
-    */issues/*labels*|*/labels*) [ "$WRITE" = 1 ] && add_shape "rawstate" "$API_DIRS" "$API_DYN" ;;
-  esac
   case "$LOW" in
     */pulls/*/merge*|*mergepullrequest*|*enablepullrequestautomerge*|*/merges*)
       add_shape "rawmerge" "$API_DIRS" "$API_DYN" ;;
@@ -720,14 +594,12 @@ done
 DIR_NAME=()
 DIR_OK=()
 DIR_POLICY=()
-DIR_BACKEND=()
 DIR_QA=()
-DIR_NAMES=()
 DIR_REPO=()
 
-# use_dir D: loads D's config (once) and sets CURDIR, POLICY, BACKEND,
-# QA_NAME and STATE_NAMES (lower case, one per line); returns 1 when D has no
-# config. Blocks when D is missing or its config is invalid or unreadable.
+# use_dir D: loads D's config (once) and sets CURDIR, POLICY, CFG_REPO and
+# QA_NAME; returns 1 when D has no config. Blocks when D is missing or its
+# config is invalid or unreadable.
 use_dir() {
   local d="$1" n=0 rc info
   while [ $n -lt ${#DIR_NAME[@]} ]; do
@@ -746,27 +618,25 @@ use_dir() {
       3) DIR_NAME[n]="$d"; DIR_OK[n]=0; return 1 ;;
       *) block "config .fleet-board.yml is invalid; fix it before running board or merge commands" ;;
     esac
-    # "policy", "backend", then one "state <canonical> <board name>" line per
+    # "policy", "repo", then one "state <canonical> <board name>" line per
     # state, tab-separated; any failure or unexpected value fails closed
     info="$(cd "$d" && . "$S/board-lib.sh" && fb_load_config >/dev/null 2>&1 \
-      && p="$(fb_cfg merge.policy)" && b="$(fb_cfg board.backend)" \
-      && printf 'policy\t%s\nbackend\t%s\nrepo\t%s\n' "$p" "$b" "$(fb_cfg board.repo)" \
+      && p="$(fb_cfg merge.policy)" \
+      && printf 'policy\t%s\nrepo\t%s\n' "$p" "$(fb_cfg board.repo)" \
       && for s in $FB_STATES; do printf 'state\t%s\t%s\n' "$s" "$(fb_state_name "$s")"; done)" || info=""
     DIR_POLICY[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "policy" { print $2; exit }')"
-    DIR_BACKEND[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "backend" { print $2; exit }')"
     DIR_REPO[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "repo" { print $2; exit }')"
     DIR_QA[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }')"
-    DIR_NAMES[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" { print $3 }' | tr '[:upper:]' '[:lower:]')"
-    case "${DIR_POLICY[n]} ${DIR_BACKEND[n]}" in
-      "human github-labels"|"human github-projects"|"human local"|"auto github-labels"|"auto github-projects"|"auto local") ;;
+    case "${DIR_POLICY[n]}" in
+      human|auto) ;;
       *) block "could not verify the board config; blocking to be safe" ;;
     esac
     [ -n "${DIR_QA[n]}" ] || block "could not verify the board config; blocking to be safe"
     DIR_NAME[n]="$d"; DIR_OK[n]=1
   fi
   [ "${DIR_OK[n]}" = 1 ] || return 1
-  CURDIR="$d"; POLICY="${DIR_POLICY[n]}"; BACKEND="${DIR_BACKEND[n]}"
-  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"; STATE_NAMES="${DIR_NAMES[n]}"
+  CURDIR="$d"; POLICY="${DIR_POLICY[n]}"
+  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"
   return 0
 }
 
@@ -815,28 +685,16 @@ lookup() {
   LOOKUP_OUT="$(cat "$LOOKUP_FILE")"
 }
 
-# read_card N: sets CARD_STATE and CARD_BODY from board-read.sh, or blocks
+# read_card N: sets CARD_STATE and CARD_JSON from board-read.sh, or blocks
 read_card() {
   lookup "card #$1" bash "$S/board-read.sh" "$1"
   CARD_STATE="$(jq -r '.state // ""' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify card #$1; blocking to be safe"
-  CARD_BODY="$(jq -r '.body // ""' <<<"$LOOKUP_OUT" 2>/dev/null)" \
-    || block "could not verify card #$1; blocking to be safe"
+  CARD_JSON="$LOOKUP_OUT"
 }
 
-has_acceptance() { (. "$S/board-lib.sh" && fb_has_acceptance "$1"); }
-
-# touches_state TEXT: a state's board name appears in TEXT (case-insensitive:
-# GitHub label names are)
-touches_state() {
-  local low name
-  low="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
-    case "$low" in *"$name"*) return 0 ;; esac
-  done <<<"$STATE_NAMES"
-  return 1
-}
+# has_acceptance: the card's acceptance field is non-empty (fb_card_has_acceptance)
+has_acceptance() { (. "$S/board-lib.sh" && fb_card_has_acceptance "$CARD_JSON"); }
 
 gate_move() {
   local n="$1" st="$2"
@@ -844,38 +702,11 @@ gate_move() {
   [ "$st" = human_qa ] && return 0
   read_card "$n"
   if [ "$CARD_STATE" = human_qa ] && [ "$st" != human_qa ]; then
-    block "card #$n is in Human QA; only a human may move it out (GitHub UI)"
+    block "card #$n is in Human QA; only a human may move it out (on the board page)"
   fi
-  if [ "$st" = ready ] && ! has_acceptance "$CARD_BODY"; then
-    block "card #$n has no '## Acceptance' section"
+  if [ "$st" = ready ] && ! has_acceptance; then
+    block "card #$n has no acceptance criteria (its acceptance field is empty)"
   fi
-}
-
-# gate_edit NUMS NUM-UNKNOWN LABEL-UNKNOWN SEGMENT-TEXT
-# A state label is touched when a label value cannot be read, or a state's
-# board name appears in the segment. The segment match covers every
-# --add-label/--remove-label value (split on commas) and any value written in
-# pieces.
-gate_edit() {
-  local nums="$1" numdyn="$2" labdyn="$3" text="$4" n
-  [ "$labdyn" = 1 ] || touches_state "$text" || return 0
-  [ "$numdyn" = 0 ] || block "could not verify the card gh issue edit changes; blocking to be safe"
-  for n in $nums; do
-    read_card "$n"
-    [ "$CARD_STATE" = human_qa ] \
-      && block "card #$n is in Human QA; only a human may move it out (GitHub UI)"
-  done
-  return 0
-}
-
-gate_item() {
-  local item="$1"
-  case "$BACKEND" in github-labels|local) return 0 ;; esac
-  [ -n "$item" ] && ! is_dyn "$item" \
-    || block "could not verify project item ${item:-(no --id)}; blocking to be safe"
-  lookup "project item $item" bash "$S/adapters/github-projects/item-status.sh" "$item"
-  [ "$LOOKUP_OUT" = "$QA_NAME" ] && block "project item $item is in Human QA; only a human may move it"
-  return 0
 }
 
 # check_pr REF REPO: blocks unless the PR is not a draft and its checks are green
@@ -938,8 +769,6 @@ while [ $k -lt ${#SHAPES[@]} ]; do
     [ "$GH_ENV" = 1 ] && block "GH_REPO/GH_HOST in the command; blocking to be safe"
     case "$kind" in
       opaque) block "$f1" ;;
-      rawstate)
-        block "raw label/Status writes bypass the board adapter; use board-move.sh" ;;
       rawmerge)
         [ "$POLICY" = auto ] || block "merge.policy is human; merges happen in the GitHub UI"
         block "use gh pr merge so the draft/checks gate can run" ;;
@@ -954,17 +783,6 @@ while [ $k -lt ${#SHAPES[@]} ]; do
       move)
         is_dyn "$f1" && block "could not verify card #$f1; blocking to be safe"
         is_dyn "$f2" && block "could not verify the state card #$f1 moves to ($f2); blocking to be safe" ;;
-      cards)
-        # f4 is the --repo flag: only the configured board repo is allowed
-        if [ -n "$f4" ]; then
-          is_dyn "$f4" && block "could not verify the repo of cards.sh ($f4); blocking to be safe"
-          [ "$(printf '%s' "$f4" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$CFG_REPO" | tr '[:upper:]' '[:lower:]')" ] \
-            || block "cards.sh works on the configured repo ($CFG_REPO) only, not $f4"
-        fi ;;
-      label)
-        if [ "$BACKEND" = github-labels ] && { [ "$f1" = 1 ] || touches_state "$f2"; }; then
-          block "editing or deleting a state label bypasses the board adapter; change state labels in the GitHub UI"
-        fi ;;
     esac
   done <<<"${SHAPE_DIRS[k]}"
   k=$((k + 1))
@@ -986,15 +804,6 @@ while [ $k -lt ${#SHAPES[@]} ]; do
     use_dir "$d" || continue
     case "$kind" in
       move) gate_move "$f1" "$f2" ;;
-      edit) gate_edit "$f1" "$f2" "$f3" "$f4" ;;
-      item) gate_item "$f1" ;;
-      cards)
-        # a card or state the hook cannot read is left to cards.sh, which
-        # refuses a move out of Human QA itself
-        case "$f1" in
-          add) is_dyn "$f2" || gate_move "$f2" backlog ;;
-          move) is_dyn "$f2" || gate_move "$f2" "$f3" ;;
-        esac ;;
       merge)
         check_pr "$f1" "$f3"
         check_reviewed "$f1" "$f3"

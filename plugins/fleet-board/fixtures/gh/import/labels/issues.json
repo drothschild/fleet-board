@@ -1,0 +1,6 @@
+[
+  {"number": 15, "title": "Not on the board", "state": "OPEN", "body": "A plain repo issue.", "labels": [{"name": "question"}], "createdAt": "2026-09-01T10:00:00Z", "updatedAt": "2026-09-01T10:00:00Z"},
+  {"number": 14, "title": "Check the screens", "state": "OPEN", "body": "Look at it.\n\n## Acceptance\n- the dialog opens\n\n## Depends on\n- other/repo#3\n", "labels": [{"name": "fleet:human_qa"}, {"name": "needs-human-qa"}], "createdAt": "2026-10-03T10:00:00Z", "updatedAt": "2026-10-04T10:00:00Z"},
+  {"number": 13, "title": "Base math", "state": "CLOSED", "body": "Body thirteen", "labels": [{"name": "fleet:done"}], "createdAt": "2026-09-20T10:00:00Z", "updatedAt": "2026-09-25T10:00:00Z"},
+  {"number": 12, "title": "Add subtract", "state": "OPEN", "body": "Do it.\n\n## Acceptance\n- subtract(2,5) returns -3\n- subtract(0,0) returns 0\n\n## Depends on\n- #13\n", "labels": [{"name": "fleet:in_review"}, {"name": "bug"}], "createdAt": "2026-10-01T10:00:00Z", "updatedAt": "2026-10-02T11:00:00Z"}
+]

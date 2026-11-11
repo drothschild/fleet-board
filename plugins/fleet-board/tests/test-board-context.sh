@@ -25,7 +25,7 @@ fail() { FAIL=$((FAIL + 1)); echo "not ok - $1: ${2:-}"; }
 REPO="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXX")"
 trap 'rm -rf "$REPO"' EXIT
 git init -q "$REPO"
-printf 'board:\n  backend: local\n  repo: acme/toy\n' > "$REPO/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards"
 echo 4 > "$REPO/.fleet-board/next"
 
@@ -46,6 +46,8 @@ seed 2 in_progress "Second" "Do more.
 - #3
 " '["b","c"]' "$NOTES"
 seed 3 ready "Third" "Do last." '[]' '[]'
+# card 3 also carries the blocked_by field (the local store's dependency field)
+jq '.blocked_by = [1]' "$REPO/.fleet-board/cards/3.json" > "$REPO/b.json" && mv "$REPO/b.json" "$REPO/.fleet-board/cards/3.json"
 
 OUT="$(REPO="$REPO" python3 -I - <<'PYEOF'
 import importlib.util, json, os
@@ -84,6 +86,11 @@ if [ "$(jq -c '[.snap[1].depends_on, .snap[0].depends_on]' <<<"$OUT" 2>/dev/null
   pass "a card with a Depends on section lists those numbers in depends_on"
 else
   fail "a card with a Depends on section lists those numbers in depends_on" "$OUT"
+fi
+if [ "$(jq -c '.snap[2].depends_on' <<<"$OUT" 2>/dev/null)" = "[1]" ]; then
+  pass "a card with a blocked_by field lists those numbers in depends_on"
+else
+  fail "a card with a blocked_by field lists those numbers in depends_on" "$OUT"
 fi
 if [ "$(jq -r '.list_calls' <<<"$OUT" 2>/dev/null)" = 1 ]; then
   pass "building one snapshot spawns at most one board-list subprocess"

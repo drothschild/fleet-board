@@ -8,6 +8,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 LINT="$SCRIPT_DIR/../scripts/card-lint.sh"
 PLAN="$SCRIPT_DIR/../scripts/tick-plan.sh"
 FIX="$SCRIPT_DIR/lint-fixtures"
@@ -39,6 +40,7 @@ assert_not_contains() {
 }
 
 run_check() {
+  store_sync
   local script="$1"; shift
   local o e
   o="$(mktemp)"; e="$(mktemp)"
@@ -49,7 +51,7 @@ run_check() {
 }
 
 # setup_card <body-file> [comments-json]: a temp repo whose fake gh serves
-# card 13 (Ready) with that body, on the labels backend
+# card 13 (Ready) with that body; store_sync turns it into a local card
 setup_card() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -97,7 +99,11 @@ lint "$FIX/ok-with-human-qa.md"
 echo "Test: card-lint marker compares with the latest posted result only"
 echo ""
 
-plan "$FIX/no-bullets.md"
+# lint result A: a manual-check item in the acceptance field (a body with no
+# bullets has no acceptance on the local board, so no lint result to compare)
+ALT="$(mktemp)"; CLEANUP_DIRS+=("$ALT")
+printf '## Acceptance\n- clamp returns 3\n- verify on the simulator\n' > "$ALT"
+plan "$ALT"
 MA="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
 plan "$FIX/manual-check.md"
 MB="$(jq -r "(.cards[] | select(.number == 13)).lint_marker" <<<"$LAST_OUT")"
@@ -106,7 +112,7 @@ assert_eq "markers A and B differ" "$([ "$MA" != "$MB" ] && echo yes)" yes
 HIST="$(jq -cn --arg a "$MA
 lint A" --arg b "$MB
 lint B" '[{"id":5,"user":{"login":"fleet-bot"},"body":$a,"created_at":"2026-01-01T00:00:00Z"},{"id":6,"user":{"login":"fleet-bot"},"body":$b,"created_at":"2026-01-02T00:00:00Z"}]')"
-plan "$FIX/no-bullets.md" "$HIST"
+plan "$ALT" "$HIST"
 assert_eq "A,B then A: comment needed" "$(card comment_needed)" true
 
 plan "$FIX/manual-check.md" "$HIST"
@@ -114,7 +120,7 @@ assert_eq "A,B then B: same as latest, no comment" "$(card comment_needed)" fals
 
 HIST_A="$(jq -cn --arg a "$MA
 lint A" '[{"id":5,"user":{"login":"fleet-bot"},"body":$a,"created_at":"2026-01-01T00:00:00Z"}]')"
-plan "$FIX/no-bullets.md" "$HIST_A"
+plan "$ALT" "$HIST_A"
 assert_eq "A then A: one comment only" "$(card comment_needed)" false
 
 # Existing card-lint comment suite still passes unchanged.

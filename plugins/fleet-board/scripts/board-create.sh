@@ -23,11 +23,23 @@ while [ $# -gt 0 ]; do
     [ $# -gt 0 ] || fb_die 2 "usage: board-create.sh <title> <body-file> [--label L]... [--state ready|backlog]"
     case "$1" in ready|backlog) FB_CREATE_STATE="$1" ;; *) fb_die 2 "--state must be ready or backlog, got: $1" ;; esac
     shift
+  elif [ "$1" = "--acceptance-file" ]; then
+    shift
+    [ $# -gt 0 ] || fb_die 2 "usage: board-create.sh <title> <body-file> [--acceptance-file F]"
+    [ -f "$1" ] || fb_die 2 "file not found: $1"
+    LABELS+=("--acceptance-file" "$1")
+    shift
+  elif [ "$1" = "--blocked-by" ]; then
+    shift
+    [ $# -gt 0 ] || fb_die 2 "usage: board-create.sh <title> <body-file> [--blocked-by N]..."
+    fb_valid_number "$1" || fb_die 2 "--blocked-by must be a card number, got: $1"
+    LABELS+=("--blocked-by" "$1")
+    shift
   else
-    fb_die 2 "usage: board-create.sh <title> <body-file> [--label L]..."
+    fb_die 2 "usage: board-create.sh <title> <body-file> [--label L]... [--state S] [--acceptance-file F] [--blocked-by N]..."
   fi
 done
 
 fb_load_config
 export FB_CREATE_STATE
-exec bash "$FLEET_SCRIPTS/adapters/$(fb_cfg board.backend)/create.sh" "$TITLE" "$BODY_FILE" "${LABELS[@]+"${LABELS[@]}"}"
+exec bash "$FLEET_SCRIPTS/adapters/local/create.sh" "$TITLE" "$BODY_FILE" "${LABELS[@]+"${LABELS[@]}"}"
