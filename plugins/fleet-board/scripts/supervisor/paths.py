@@ -6,11 +6,13 @@ unreachable. Nothing here opens a database or creates a file: a board server ans
 GET can compute an id without touching supervisor state.
 """
 import hashlib
+import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
-from .models import canonical_json
+from . import errors
 
 # AF_UNIX paths are length-limited (104 bytes on macOS, 108 on Linux).
 _MAX_SOCKET_PATH = 100
@@ -28,9 +30,8 @@ def runtime_root(env=None):
     return log_dir(env) / "supervisor"
 
 
-def socket_tmpdir(env=None):
-    env = os.environ if env is None else env
-    return env.get("TMPDIR") or "/tmp"
+def canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def git_common_dir(root):
@@ -91,24 +92,64 @@ def domain_id_for_root(root):
     return domain_id(board_domain(root))
 
 
-def socket_dir(domain_id, tmpdir=None):
-    """Per-domain private directory for the controller and worker sockets.
+def socket_base(env=None):
+    """The directory that holds every domain's socket directory.
 
-    Named from a hash of the full domain id (not a short prefix), under TMPDIR,
-    falling back to /tmp when TMPDIR would make the socket path too long.
-    """
+    Never derived from TMPDIR (a client and a service with different TMPDIRs must agree):
+    /tmp/fleet-board-<uid> by default, FLEET_BOARD_SOCKET_DIR as the one explicit override.
+    Pure: it creates nothing and touches no file."""
+    env = os.environ if env is None else env
+    override = env.get("FLEET_BOARD_SOCKET_DIR")
+    if override:
+        return Path(override)
+    return Path("/tmp") / ("fleet-board-%d" % os.getuid())
+
+
+def check_socket_base(base):
+    """Refuse a base that is a symlink, not a directory, foreign-owned or group/other accessible."""
+    info = os.lstat(str(base))
+    if stat.S_ISLNK(info.st_mode):
+        raise errors.UnsafeSocketDir("supervisor socket base is a symlink: %s" % base)
+    if not stat.S_ISDIR(info.st_mode):
+        raise errors.UnsafeSocketDir("supervisor socket base is not a directory: %s" % base)
+    if info.st_uid != os.getuid():
+        raise errors.UnsafeSocketDir("supervisor socket base is not owned by this user: %s" % base)
+    if stat.S_IMODE(info.st_mode) & 0o077:
+        raise errors.UnsafeSocketDir("supervisor socket base is group/other accessible: %s" % base)
+
+
+def check_socket_path(path):
+    """Refuse a socket whose directory, or that directory's parent (the base), is unsafe."""
+    directory = Path(path).parent
+    info = os.lstat(str(directory))
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise errors.UnsafeSocketDir("supervisor socket directory is not a real directory: %s" % directory)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise errors.UnsafeSocketDir("supervisor socket directory is not private to this user: %s" % directory)
+    check_socket_base(directory.parent)
+
+
+def ensure_socket_base(env=None):
+    """Create the base 0700 if missing and verify it; returns it."""
+    base = socket_base(env)
+    try:
+        base.mkdir(mode=0o700, parents=True)
+    except FileExistsError:
+        pass
+    check_socket_base(base)
+    return base
+
+
+def socket_dir(domain_id, base=None, env=None):
+    """Per-domain private directory for the controller socket, named from a hash of the
+    full domain id under the socket base. A path too long for AF_UNIX is refused, never
+    moved somewhere else."""
     digest = hashlib.sha256(str(domain_id).encode("utf-8")).hexdigest()[:20]
-    name = "fbs-" + digest
-    base = Path(tmpdir if tmpdir is not None else socket_tmpdir())
-    candidate = base / name
+    candidate = Path(base if base is not None else socket_base(env)) / ("fbs-" + digest)
     if len(str(candidate / "c.sock")) >= _MAX_SOCKET_PATH:
-        candidate = Path("/tmp") / name
+        raise errors.UnsafeSocketDir("supervisor socket path is too long for a unix socket: %s" % candidate)
     return candidate
 
 
-def controller_socket(domain_id, tmpdir=None):
-    return str(socket_dir(domain_id, tmpdir) / "c.sock")
-
-
-def worker_socket(domain_id, tmpdir=None):
-    return str(socket_dir(domain_id, tmpdir) / "w.sock")
+def controller_socket(domain_id, base=None, env=None):
+    return str(socket_dir(domain_id, base, env) / "c.sock")

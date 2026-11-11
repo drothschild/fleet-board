@@ -49,7 +49,16 @@ class SupervisorWebContract(unittest.TestCase):
         (self.repo / ".fleet-board" / "cards").mkdir()
         (self.repo / ".fleet-board" / "next").write_text("1\n", encoding="utf-8")
         self.config = self.repo / ".fleet-board.yml"
-        self.socket_path = self.tmp_socket / "control.sock"
+        # The socket base is private and the socket sits one private directory below it.
+        self.socket_base = self.tmp_socket / "base"
+        self.socket_dir = self.socket_base / "d"
+        self.socket_dir.mkdir(parents=True)
+        os.chmod(str(self.socket_base), 0o700)
+        os.chmod(str(self.socket_dir), 0o700)
+        patcher = mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(self.socket_base)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.socket_path = self.socket_dir / "control.sock"
         self.env = dict(os.environ, FLEET_BOARD_CONFIG=str(self.config),
                         FLEET_BOARD_LOG_DIR=str(self.case / "logs"),
                         FLEET_BOARD_SUPERVISOR_SOCKET=str(self.socket_path),
@@ -375,7 +384,7 @@ class SupervisorWebContract(unittest.TestCase):
         out, err = StringIO(), StringIO()
         status = main(["status"], env={"FLEET_BOARD_DOMAIN": str(self.repo),
                                        "FLEET_BOARD_LOG_DIR": str(self.case / "logs"),
-                                       "TMPDIR": str(self.tmp_socket)}, stdout=out, stderr=err)
+                                       "FLEET_BOARD_SOCKET_DIR": str(self.socket_base)}, stdout=out, stderr=err)
         self.assertEqual(status, 0, err.getvalue())
 
     # --- R2: Start launches a missing service; Stop never strands the board --------------

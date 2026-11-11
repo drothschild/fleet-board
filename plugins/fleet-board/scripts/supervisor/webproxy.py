@@ -3,7 +3,7 @@ import json
 import os
 from pathlib import Path
 
-from . import paths
+from . import errors, paths
 from collections import OrderedDict
 import socket
 import stat
@@ -28,15 +28,12 @@ def socket_path(domain_id):
 
 def _validate_path(path):
     target = Path(path)
-    parent = target.parent
-    if target.is_symlink() or parent.is_symlink():
-        raise ValueError("unsafe supervisor socket path")
+    if target.is_symlink():
+        raise errors.UnsafeSocketDir("unsafe supervisor socket path")
     info = target.lstat()
-    pinfo = parent.stat()
     if not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid():
         raise ValueError("untrusted supervisor socket")
-    if pinfo.st_uid != os.getuid() or pinfo.st_mode & 0o022:
-        raise ValueError("untrusted supervisor socket directory")
+    paths.check_socket_path(path)
 
 
 def _peer_uid(client):

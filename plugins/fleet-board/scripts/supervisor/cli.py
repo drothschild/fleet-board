@@ -27,6 +27,10 @@ def _socket_transport(path):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(5)
         try:
+            try:
+                paths.check_socket_path(path)
+            except FileNotFoundError:
+                pass  # no socket directory yet: connect() reports the service as unreachable
             client.connect(path)
             client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8"))
             chunks, size = [], 0
@@ -75,7 +79,7 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     serve = subs.add_parser("serve")
     serve.add_argument("--domain", required=True)
     serve.add_argument("--log-dir", required=True)
-    serve.add_argument("--socket-tmp", required=True)
+    serve.add_argument("--socket-tmp", default=None, help=argparse.SUPPRESS)
     try:
         args = parser.parse_args(argv)
     except (ValueError, SystemExit) as exc:
@@ -92,7 +96,6 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     try:
         if args.command == "serve":
             os.environ["FLEET_BOARD_LOG_DIR"] = args.log_dir
-            os.environ["TMPDIR"] = args.socket_tmp
             board_root = Path(args.domain).resolve(strict=True)
             domain = paths.board_domain(board_root, Path(args.log_dir) / "supervisor")
             service = Service.open(domain, board_repo=_repo_slug(board_root))
@@ -111,7 +114,7 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         if transport is None:
             board_root = Path(domain_root).resolve(strict=True)
             # Pure: the id comes from the identity inputs; no store is opened.
-            path = paths.controller_socket(paths.domain_id_for_root(board_root), paths.socket_tmpdir(env))
+            path = paths.controller_socket(paths.domain_id_for_root(board_root), env=env)
             transport = _socket_transport(path)
             if args.command == "start":
                 status = _ensure_service(board_root, env, transport)

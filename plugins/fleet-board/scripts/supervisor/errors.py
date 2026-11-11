@@ -49,6 +49,12 @@ class Unavailable(SupervisorError, RuntimeError):
     code = "unavailable"
 
 
+class UnsafeSocketDir(SupervisorError, ValueError):
+    """The socket directory is a symlink, not owned by this user, group/other accessible,
+    or would make the socket path too long. It is refused, never silently used."""
+    code = "unsafe_socket_dir"
+
+
 def classify(exc):
     """{"code", "message"} for an exception. Internal errors get a generic message and are
     logged server-side with their detail."""
