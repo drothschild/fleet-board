@@ -121,11 +121,29 @@ class Lifecycle(unittest.TestCase):
         self.assertNotIn(2, s.reservations)
         self.assertIsNone(s.reserve(2, ['src/core2']))
         self.assertIsNone(s.reserve(1, ['src/core', 'docs']))  # own card never conflicts
-        self.assertEqual(s.reservations[1], ['src/core', 'docs'])
+        self.assertEqual(s.reservations[1], ['docs', 'src/core'])
         s.release(1)
         self.assertNotIn(1, s.reservations)
         self.assertIsNone(s.reserve(3, ['src/core']))
         s.release(99)  # releasing an absent card is a no-op
+
+    def test_reserve_unions_with_the_held_scope(self):
+        s = self.state
+        self.assertIsNone(s.reserve(1, ['a']))
+        self.assertIsNone(s.reserve(1, ['b']))
+        self.assertEqual(s.reservations[1], ['a', 'b'])
+        self.assertEqual(s.reserve(2, ['a/x']), 1)
+
+    def test_held_whole_repo_scope_stays_whole_repo(self):
+        s = self.state
+        s.reserve(1, [''])
+        s.reserve(1, ['b'])
+        self.assertEqual(s.reservations[1], [''])
+        self.assertEqual(s.reserve(2, ['x']), 1)
+        s.release(1)
+        s.reserve(3, ['a'])
+        s.reserve(3, [''])
+        self.assertEqual(s.reservations[3], [''])
 
     def test_events_ring_keeps_the_last_500(self):
         seqs = [self.state.event('tick', n=i) for i in range(600)]
