@@ -98,6 +98,14 @@ def load_config(root: str, scripts: str) -> dict:
     return cfg
 
 
+def reviewer_info(cfg: dict) -> dict:
+    """{provider, model} for models.reviewer: a string is a Claude model (default opus)."""
+    r = (cfg.get("models") or {}).get("reviewer")
+    if isinstance(r, dict):
+        return {"provider": r.get("provider"), "model": r.get("model")}
+    return {"provider": "claude", "model": r if isinstance(r, str) and r else "opus"}
+
+
 def states(cfg: dict) -> list:
     """[{key, name}] in FB_STATES order, from one bash call into board-lib.sh."""
     cache_key = json.dumps(cfg, sort_keys=True)
@@ -115,7 +123,10 @@ def states(cfg: dict) -> list:
     for line in out.splitlines():
         if "\t" in line:
             k, name = line.split("\t", 1)
-            result.append({"key": k, "name": name})
+            entry = {"key": k, "name": name}
+            if k == "in_review":
+                entry["reviewer"] = reviewer_info(cfg)
+            result.append(entry)
     _STATES_CACHE[cache_key] = result
     return result
 
