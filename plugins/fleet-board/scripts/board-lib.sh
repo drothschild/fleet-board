@@ -254,7 +254,7 @@ fb_lock() {
       if kill -0 "$pid" 2>/dev/null; then dead=""
       elif [ "$dead" = "$pid" ]; then fb_reclaim_lock "$pid"; dead=""
       else dead="$pid"; fi   # a releasing owner is briefly dead-looking: wait one poll
-    elif [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
+    elif [ -d "$FB_LOCK" ] && [ ! -L "$FB_LOCK" ] && [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
       fb_reclaim_lock ""
     fi
     [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $FB_LOCK after ${wait}s"
