@@ -722,5 +722,205 @@ class CLIContract(unittest.TestCase):
                 self.assertIn("usage", err.lower())
 
 
+class StartSemantics(unittest.TestCase):
+    """R2: Start reconnects to a healthy owner, one launcher, the stop response says stopped."""
+
+    def setUp(self):
+        self.assertIsNotNone(Service, "persistent supervisor service is not implemented")
+        self.assertIsNotNone(main, "persistent supervisor CLI is not implemented")
+        self.root = ROOT / self.id().rsplit(".", 1)[-1]
+        self.root.mkdir(mode=0o700)
+        self.socket_tmp = _short_socket_tmp()
+        self.plugin_dir = Path(__file__).resolve().parents[2]
+
+    def world(self, name):
+        import subprocess
+        board = self.root / name
+        board.mkdir(mode=0o700)
+        logs = self.root / (name + "-logs")
+        logs.mkdir(mode=0o700)
+        (board / ".fleet-board.yml").write_text(
+            "board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
+        env = dict(os.environ)
+        env.update({"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_CONFIG": str(board / ".fleet-board.yml"),
+                    "FLEET_BOARD_LOG_DIR": str(logs), "TMPDIR": str(self.socket_tmp),
+                    "PYTHONPATH": str(self.plugin_dir / "scripts"), "PYTHONDONTWRITEBYTECODE": "1"})
+        self.addCleanup(self.reap, board, env)
+        return board, env
+
+    def serve_pids(self, board):
+        import subprocess
+        out = subprocess.run(["pgrep", "-f", "supervisor.cli serve --domain " + str(board) + " "],
+                             capture_output=True, text=True)
+        return sorted(out.stdout.split())
+
+    def reap(self, board, env):
+        import subprocess
+        try:
+            subprocess.run([str(self.plugin_dir / "scripts" / "supervisor.sh"), "stop", "--mode", "cancel"],
+                           env=env, capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        subprocess.run(["pkill", "-f", "supervisor.cli serve --domain " + str(board) + " "],
+                       capture_output=True)
+
+    def start_cli(self, env, **kwargs):
+        import subprocess
+        return subprocess.Popen([sys.executable, "-c",
+                                 "from supervisor.cli import main; raise SystemExit(main(['start']))"],
+                                env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, **kwargs)
+
+    def finish(self, proc):
+        import subprocess
+        try:
+            out, err = proc.communicate(timeout=25)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            self.fail("supervisor start did not return within 25 seconds")
+        for needle in ("Operation not permitted: 'ps'", ):
+            if needle in err:
+                self.skipTest("sandbox denies the real ps call required by the service")
+        if "socket" in err.lower() and "unavailable" in err.lower():
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        return proc.returncode, out, err
+
+    def test_repeated_cli_start_reconnects_to_the_healthy_owner(self):
+        board, env = self.world("repeat")
+        code, out, err = self.finish(self.start_cli(env))
+        self.assertEqual(code, 0, err)
+        first = self.serve_pids(board)
+        self.assertEqual(len(first), 1, "first start must leave exactly one serve process: %r" % first)
+        code, out, err = self.finish(self.start_cli(env))
+        self.assertEqual(code, 0, "a repeated start must reconnect, not fail: " + err)
+        self.assertEqual(self.serve_pids(board), first, "a repeated start created a second serve process")
+        result = json.loads(out)
+        self.assertEqual(result["desired_mode"], "running")
+        self.assertIs(result["status"]["ready"], True)
+
+    def test_two_concurrent_cli_starts_produce_one_owner_and_both_exit_zero(self):
+        board, env = self.world("concurrent")
+        procs = [self.start_cli(env), self.start_cli(env)]
+        results = [self.finish(proc) for proc in procs]
+        for code, out, err in results:
+            self.assertEqual(code, 0, "a concurrent start failed: " + err)
+        self.assertEqual(len(self.serve_pids(board)), 1, "concurrent starts must leave exactly one owner")
+
+    def test_start_treats_a_lost_lock_race_as_a_reconnect(self):
+        from io import StringIO
+        from supervisor import launcher, paths
+        board = self.root / "race"
+        board.mkdir(mode=0o700)
+        config = board / ".fleet-board.yml"
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
+        logs = self.root / "race-logs"
+        logs.mkdir(mode=0o700)
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "FLEET_BOARD_LOG_DIR": str(logs),
+                                          "TMPDIR": str(self.socket_tmp)}):
+            owner = Service.open(paths.board_domain(board, logs / "supervisor"), execution_enabled=True,
+                                 host_boot_id="boot-1", peer_resolver=lambda connection: "fixture-user")
+        self.addCleanup(owner.close)
+        def lose_the_race(*args, **kwargs):
+            ack = owner.start_serving()  # another contender won the lock while we launched
+            if ack.get("socket_unavailable"):
+                raise unittest.SkipTest("sandbox denies binding the supervisor Unix socket")
+            return {"ready": True, "recovery_complete": True, "owner": False, "execution_available": True}
+        out, err = StringIO(), StringIO()
+        env = {"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_LOG_DIR": str(logs), "TMPDIR": str(self.socket_tmp)}
+        with mock.patch.object(launcher, "launch_service", side_effect=lose_the_race) as launch:
+            code = main(["start"], env=env, stdout=out, stderr=err)
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertEqual(launch.call_count, 1)
+        self.assertEqual(json.loads(out.getvalue())["desired_mode"], "running")
+
+    def test_start_against_a_healthy_owner_never_launches(self):
+        from io import StringIO
+        from supervisor import launcher, paths
+        board = self.root / "healthy"
+        board.mkdir(mode=0o700)
+        config = board / ".fleet-board.yml"
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
+        logs = self.root / "healthy-logs"
+        logs.mkdir(mode=0o700)
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "FLEET_BOARD_LOG_DIR": str(logs),
+                                          "TMPDIR": str(self.socket_tmp)}):
+            owner = Service.open(paths.board_domain(board, logs / "supervisor"), execution_enabled=True,
+                                 host_boot_id="boot-1", peer_resolver=lambda connection: "fixture-user")
+        self.addCleanup(owner.close)
+        if owner.start_serving().get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        env = {"FLEET_BOARD_DOMAIN": str(board), "FLEET_BOARD_LOG_DIR": str(logs), "TMPDIR": str(self.socket_tmp)}
+        ids = []
+        for _ in range(2):
+            out, err = StringIO(), StringIO()
+            with mock.patch.object(launcher, "launch_service", side_effect=AssertionError("launched")) as launch:
+                code = main(["start"], env=env, stdout=out, stderr=err)
+            self.assertEqual(code, 0, err.getvalue())
+            launch.assert_not_called()
+            ids.append(json.loads(out.getvalue())["command_id"])
+        self.assertNotEqual(ids[0], ids[1], "each start carries a fresh request id")
+
+    def test_launcher_spawns_a_detached_argv_without_a_shell_and_bounds_readiness(self):
+        from supervisor import launcher
+        read_end, write_end = os.pipe()
+        self.addCleanup(lambda: [os.close(fd) for fd in (read_end, write_end) if fd >= 0])
+        child = mock.Mock()
+        child.stdout = os.fdopen(os.dup(read_end), "r")
+        child.stderr = mock.Mock(read=mock.Mock(return_value=""))
+        child.wait.return_value = 0
+        board = self.root / "launcher"
+        board.mkdir(mode=0o700)
+        with mock.patch.object(launcher.subprocess, "Popen", return_value=child) as popen:
+            with self.assertRaisesRegex(launcher.LaunchError, "timed out"):
+                launcher.launch_service(board, env={"FLEET_BOARD_LOG_DIR": str(self.root / "l"),
+                                                    "TMPDIR": str(self.socket_tmp)}, timeout=0.3)
+        argv = popen.call_args.args[0]
+        self.assertIsInstance(argv, list)
+        self.assertIn("serve", argv)
+        self.assertFalse(popen.call_args.kwargs.get("shell", False))
+        self.assertIs(popen.call_args.kwargs.get("start_new_session"), True)
+        child.terminate.assert_called()
+        # An ack that says the service is not ready is an honest failure, never a second owner.
+        os.write(write_end, b'{"ready": false, "owner": true}\n')
+        child.terminate.reset_mock()
+        with mock.patch.object(launcher.subprocess, "Popen", return_value=child):
+            with self.assertRaisesRegex(launcher.LaunchError, "failed to become ready"):
+                launcher.launch_service(board, env={"FLEET_BOARD_LOG_DIR": str(self.root / "l"),
+                                                    "TMPDIR": str(self.socket_tmp)}, timeout=2)
+        child.terminate.assert_called()
+
+    def test_cli_and_board_web_share_the_one_launcher(self):
+        scripts = self.plugin_dir / "scripts"
+        for name in ("supervisor/cli.py", "board-web.py"):
+            text = (scripts / name).read_text(encoding="utf-8")
+            self.assertNotIn("subprocess.Popen([sys.executable", text, name + " carries its own launcher")
+            self.assertNotIn('"supervisor.cli"', text, name + " spawns serve itself")
+        self.assertIn("launcher", (scripts / "board-web.py").read_text(encoding="utf-8"))
+
+    def test_stop_response_carries_the_final_stopped_state(self):
+        from supervisor import paths
+        board = self.root / "final"
+        board.mkdir(mode=0o700)
+        config = board / ".fleet-board.yml"
+        config.write_text("board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\n", encoding="utf-8")
+        with mock.patch.dict(os.environ, {"FLEET_BOARD_CONFIG": str(config), "TMPDIR": str(self.socket_tmp),
+                                          "FLEET_BOARD_LOG_DIR": str(self.root / "final-logs")}):
+            service = Service.open(paths.board_domain(board, self.root / "final-logs" / "supervisor"),
+                                   execution_enabled=True, host_boot_id="boot-1",
+                                   peer_resolver=lambda connection: "fixture-user")
+        self.addCleanup(service.close)
+        if service.start_serving().get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        revision = service.status()["revision"]
+        started = service.command("start", request_id="s1", expected_revision=revision, actor="fixture-user")
+        result = service.command("stop", request_id="s2", expected_revision=started["state_revision"],
+                                 actor="fixture-user", mode="drain")
+        self.assertIs(result["terminated"], True)
+        self.assertEqual(result["phase"], "stopped", "the stop reply must carry the final state: %r" % result)
+        self.assertEqual(result["desired_mode"], "stopped")
+        self.assertEqual(result["status"], "stopped")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

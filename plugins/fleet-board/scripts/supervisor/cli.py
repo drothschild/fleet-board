@@ -2,15 +2,23 @@
 import argparse
 import json
 import os
-import select
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
-from . import paths
+from . import launcher, paths
 from .service import Service
+
+
+class _Remote(ValueError):
+    """An error reply from the service; .code is its wire code (str(exc) is unchanged)."""
+
+    @property
+    def code(self):
+        error = self.args[0] if self.args else None
+        return error.get("code") if isinstance(error, dict) else None
 
 
 def _socket_transport(path):
@@ -34,7 +42,7 @@ def _socket_transport(path):
         finally:
             client.close()
         if not response.get("ok"):
-            raise ValueError(response.get("error", "supervisor request failed"))
+            raise _Remote(response.get("error", "supervisor request failed"))
         return response["result"]
     return send
 
@@ -102,46 +110,17 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
             raise ValueError("FLEET_BOARD_DOMAIN is required")
         if transport is None:
             board_root = Path(domain_root).resolve(strict=True)
+            # Pure: the id comes from the identity inputs; no store is opened.
+            path = paths.controller_socket(paths.domain_id_for_root(board_root), paths.socket_tmpdir(env))
+            transport = _socket_transport(path)
             if args.command == "start":
-                log_dir = str(paths.log_dir(env))
-                socket_tmp = paths.socket_tmpdir(env)
-                plugin_scripts = Path(__file__).resolve().parents[1]
-                child_env = dict(os.environ)
-                child_env.update({"FLEET_BOARD_LOG_DIR": log_dir, "TMPDIR": socket_tmp,
-                                  "PYTHONPATH": str(plugin_scripts) +
-                                  (os.pathsep + child_env["PYTHONPATH"] if child_env.get("PYTHONPATH") else "")})
-                child = subprocess.Popen(
-                    [sys.executable, "-m", "supervisor.cli", "serve", "--domain", str(board_root),
-                     "--log-dir", str(Path(log_dir).absolute()), "--socket-tmp", str(Path(socket_tmp).absolute())],
-                    cwd=str(board_root), env=child_env, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    start_new_session=True)
-                ready, _, _ = select.select([child.stdout], [], [], 8.0)
-                if not ready:
-                    child.terminate()
-                    raise TimeoutError("supervisor service readiness timed out")
-                line = child.stdout.readline()
-                if not line:
-                    detail = child.stderr.read().strip()
-                    raise RuntimeError("supervisor service exited before readiness" +
-                                       (": " + detail if detail else ""))
-                try:
-                    ack = json.loads(line)
-                except ValueError as exc:
-                    child.terminate()
-                    raise RuntimeError("supervisor service returned an invalid readiness acknowledgement") from exc
-                if not ack.get("ready") or not ack.get("owner") or ack.get("socket_unavailable"):
-                    child.terminate()
-                    raise RuntimeError("supervisor service failed to become ready: " + json.dumps(ack))
-                if not ack.get("execution_available", True):
+                status = _ensure_service(board_root, env, transport)
+                if status.get("execution_available") is False:
                     print("supervisor: supervisor.enabled: false; service is running read-only",
                           file=stderr)
                     return 3
-                return _print_result(ack, stdout)
-            else:
-                # Pure: the id comes from the identity inputs; no store is opened.
-                path = paths.controller_socket(paths.domain_id_for_root(board_root), paths.socket_tmpdir(env))
-                transport = _socket_transport(path)
+                result = _send_start(transport)
+                return _print_result(dict(result, status=transport({"command": "status"})), stdout)
         if args.command == "resolve":
             current = transport({"command": "status"})
             request = {"command": "resolve", "card": args.card, "action": args.action,
@@ -149,9 +128,13 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                        "expected_revision": current.get("revision", 0) if isinstance(current, dict) else 0}
         elif args.command == "events":
             request = {"command": "events", "after": args.after, "limit": args.limit}
+        elif args.command == "start":
+            result = _send_start(transport)
+            print(json.dumps(result), file=stdout)
+            return 0
         else:
             request = {"command": args.command, "request_id": str(uuid.uuid4())}
-            if args.command in ("start", "pause", "resume", "stop"):
+            if args.command in ("pause", "resume", "stop"):
                 current = transport({"command": "status"})
                 request["expected_revision"] = current.get("revision", 0) if isinstance(current, dict) else 0
             if args.command == "stop":
@@ -164,6 +147,42 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     except Exception as exc:
         print("supervisor: " + str(exc), file=stderr)
         return 2 if "unsupported" in str(exc).lower() else 1
+
+
+def _try_status(transport):
+    try:
+        return transport({"command": "status"})
+    except (OSError, TimeoutError):
+        return None
+
+
+def _ensure_service(board_root, env, transport):
+    """The status of a healthy owner for this domain, launching one only when none answers.
+
+    A child that loses the lock race (`owner: false`) means another healthy owner is ready:
+    reconnect to it instead of failing."""
+    status = _try_status(transport)
+    if status is not None:
+        return status
+    launcher.launch_service(board_root, env=env)
+    status = launcher.wait_until(lambda: _try_status(transport), timeout=5.0)
+    if status is None:
+        raise RuntimeError("supervisor service reported ready but did not answer on its socket")
+    return status
+
+
+def _send_start(transport, attempts=5):
+    """Start is idempotent, so a revision that moved between our status read and the command
+    (another Start, a recovery event) is re-read and retried with a fresh request id."""
+    for attempt in range(attempts):
+        current = transport({"command": "status"})
+        request = {"command": "start", "request_id": str(uuid.uuid4()),
+                   "expected_revision": current.get("revision", 0) if isinstance(current, dict) else 0}
+        try:
+            return transport(request)
+        except _Remote as exc:
+            if exc.code != "stale_revision" or attempt == attempts - 1:
+                raise
 
 
 def _print_result(result, stdout):

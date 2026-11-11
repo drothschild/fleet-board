@@ -2303,6 +2303,9 @@ S.sup = {
   timerSeq: 0,
   idSeq: 0,
   stale: false,     // unreachable, or the last poll failed
+  launchable: false, // stale because the board answered "unreachable": Start launches the service
+  stopped: false,   // a Stop reply said the service ended (terminated): its exit is expected
+  stoppedView: false, // the board is unreachable because of a deliberate stop, not an outage
   reason: "",
   okAt: null,       // ms of the last good status poll
   busy: false,      // a command is in flight
@@ -2505,6 +2508,8 @@ async function supervisorTick(first) {
 
 function markStale(reason) {
   S.sup.stale = true;
+  S.sup.launchable = false; // the board server itself did not answer: nothing can launch anything
+  S.sup.stoppedView = false;
   S.sup.reason = reason;
   renderSupervisor();
 }
@@ -2515,7 +2520,13 @@ function adoptSnapshot(data) {
   const was = sup.stale;
   S.supervisor = data;
   sup.hint = 0;
-  sup.stale = data.unreachable === true;
+  const known = data.last_known && typeof data.last_known === "object" ? data.last_known : null;
+  // The service exits by design after Stop: an unreachable answer then means stopped, not an outage.
+  sup.stoppedView = data.unreachable === true &&
+    (sup.stopped || (!!known && known.phase === "stopped" && known.ready === false));
+  sup.launchable = data.unreachable === true;
+  if (data.unreachable !== true) sup.stopped = false;
+  sup.stale = data.unreachable === true && !sup.stoppedView;
   sup.reason = sup.stale ? clean(data.reason || data.error || "the supervisor did not answer", 300) : "";
   if (!sup.stale) sup.okAt = Date.now();
   const ack = sup.ack;
@@ -2585,7 +2596,13 @@ async function pollEvents(seq) {
 function supView() {
   const s = S.supervisor;
   if (!s) return null;
-  return s.unreachable && s.last_known && typeof s.last_known === "object" ? s.last_known : s;
+  const known = s.unreachable && s.last_known && typeof s.last_known === "object" ? s.last_known : null;
+  if (S.sup.stoppedView) {
+    // Stopped on purpose: the runtime fields of the last answer no longer describe anything live.
+    return Object.assign({}, known || {}, { desired_mode: "stopped", phase: "stopped", ready: false,
+      heartbeat: null, capacity: null, queue: null });
+  }
+  return known || s;
 }
 
 function supPhase(v) {
@@ -2622,6 +2639,9 @@ function renderSupervisor() {
   head.appendChild(supItem(view.ready === true ? "" : "sup-warn", "", view.ready === true ? "ready" : view.ready === false ? "not ready" : "readiness unknown"));
   frag.appendChild(head);
 
+  if (sup.stoppedView) {
+    frag.appendChild(supItem("", "stopped", "the service exited after Stop; Start launches it again"));
+  }
   if (sup.stale) {
     const at = snap ? (snap.last_known_at !== undefined && snap.last_known_at !== null ? snap.last_known_at : supHeartbeatAt(view)) : null;
     const ms = toMs(at) !== null ? toMs(at) : sup.okAt;
@@ -2720,22 +2740,26 @@ function renderSupervisorControls(view) {
   const sup = S.sup;
   const desired = view.desired_mode;
   const phase = supPhase(view);
+  // Down: the board answered "unreachable". Start launches the service; the rest need it running.
+  const down = sup.stale && sup.launchable;
+  const stopped = sup.stoppedView;
   let gate = null;
-  if (sup.stale) gate = "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Retry the connection first.";
-  else if (!S.supervisor || !isNum(S.supervisor.revision)) gate = "No supervisor status yet.";
+  if (sup.stale && !sup.launchable) gate = "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Retry the connection first.";
+  else if (!down && !stopped && (!S.supervisor || !isNum(S.supervisor.revision))) gate = "No supervisor status yet.";
   else if (sup.busy) gate = "Another supervisor command is in flight.";
+  const rest = gate || (down ? "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Start launches it; this needs it running." : null);
   const start = $("supervisor-start-btn");
   const pause = $("supervisor-pause-btn");
   const resume = $("supervisor-resume-btn");
   const stop = $("supervisor-stop-btn");
-  setControl(start, !gate && desired !== "paused" && phase !== "draining" && phase !== "cancelling",
+  setControl(start, !gate && (down || stopped || (desired !== "paused" && phase !== "draining" && phase !== "cancelling")),
     gate || (desired === "paused" ? "The session is paused: use Resume." : "The supervisor is stopping."));
-  setControl(pause, !gate && desired === "running",
-    gate || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
-  setControl(resume, !gate && desired === "paused",
-    gate || "The session is not paused.");
-  setControl(stop, !gate && desired !== "stopped",
-    gate || "The supervisor is already stopped.");
+  setControl(pause, !rest && desired === "running",
+    rest || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
+  setControl(resume, !rest && desired === "paused",
+    rest || "The session is not paused.");
+  setControl(stop, !rest && desired !== "stopped",
+    rest || "The supervisor is already stopped.");
   if (stop.disabled && sup.menuOpen) setStopMenu(false);
   start.classList.toggle("primary", false);
   pause.classList.toggle("primary", !pause.disabled);
@@ -2798,7 +2822,8 @@ const ACK_PHASE = { start: "starting", resume: "starting", pause: "pausing", sto
 // acknowledgement only: the page shows it as such until a poll observes it.
 async function supCommand(kind, extra) {
   const sup = S.sup;
-  if (sup.busy || sup.stale || !S.supervisor) return;
+  const launching = kind === "start" && sup.stale && sup.launchable;
+  if (sup.busy || (sup.stale && !launching) || !S.supervisor) return;
   const key = kind + (extra && extra.mode ? ":" + extra.mode : "");
   hideNotice();
   sup.busy = true;
@@ -2822,6 +2847,8 @@ async function supCommand(kind, extra) {
     const d = r.data || {};
     ++sup.ackSeq;
     if (isNum(d.state_revision)) sup.hint = d.state_revision;
+    if (kind === "stop" && d.terminated === true) sup.stopped = true; // the service exited by design
+    if (kind === "start") sup.stopped = false;
     sup.ack = { kind: kind, phase: typeof d.phase === "string" && d.phase ? d.phase : ACK_PHASE[kind], state_revision: isNum(d.state_revision) ? d.state_revision : null };
   }
   renderSupervisor();

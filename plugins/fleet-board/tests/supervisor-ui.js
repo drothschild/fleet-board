@@ -139,9 +139,10 @@ async function main() {
     const stale=unreachableOf(snapshot,{reason:"controller offline"});
     const f=fakeFetch({snapshot:stale}), h=make(f); await h.flush(); await h.waitForRequests(); const s=h.$("supervisor-status");
     assert.match(s.textContent,/occupancy unknown/i); assert.ok(s.textContent.includes("2026-11-10 18:00:00")); assert.ok(s.textContent.includes("controller offline"));
-    for(const id of ["supervisor-start-btn","supervisor-pause-btn","supervisor-resume-btn","supervisor-stop-btn"]){
+    for(const id of ["supervisor-pause-btn","supervisor-resume-btn","supervisor-stop-btn"]){
       const b=h.$(id); assert.equal(b.disabled,true,id+" enabled stale"); assert.ok(b.title||b.getAttribute("aria-describedby"),id+" lacks disabled explanation");
     }
+    assert.equal(h.$("supervisor-start-btn").disabled,false,"Start must stay enabled when the supervisor is unreachable: it launches the service");
     assert.equal(h.$("supervisor-retry-btn").disabled,false,"retry connection not live");
     const prior=h.ctx.__test.S.supervisor; f.setSnapshot({...json(snapshot),unreachable:false,revision:8}); await h.fireTimers();
     assert.notEqual(h.ctx.__test.S.supervisor,prior,"recovery poll did not replace snapshot"); assert.equal(h.$("supervisor-pause-btn").disabled,false);
@@ -295,6 +296,63 @@ async function main() {
     x=real.quarantined.execution; h=await open("quarantined");
     assert.equal(x.writer,true,"a quarantined attempt is an uncertain writer"); assert.match(h.$("dr-activity").textContent,/quarantined/);
     assert.ok(h.$("dr-attempts").textContent.includes("attempt-quarantined")&&h.$("dr-attempts").textContent.includes("quarantined"),"quarantined attempt not rendered");
+  });
+  await check("11a. Unreachable supervisor: Start launches it, other controls stay gated with reasons",async()=>{
+    const f=fakeFetch({snapshot:unreachableOf(snapshot,{reason:"controller offline"})}), h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(h.$("supervisor-start-btn").disabled,false,"Start disabled while unreachable");
+    for(const id of ["supervisor-pause-btn","supervisor-resume-btn","supervisor-stop-btn"]){
+      const b=h.$(id); assert.equal(b.disabled,true,id+" enabled while unreachable"); assert.ok(b.title||b.getAttribute("aria-describedby"),id+" lacks a reason");
+    }
+    f.enqueue("/api/supervisor/start",response(202,{command_id:"c1",state_revision:8,desired_mode:"running",phase:"starting"}));
+    await h.$("supervisor-start-btn").fire("click"); await h.waitForRequests();
+    const call=f.calls.find(c=>c.url==="/api/supervisor/start"&&c.method==="POST");
+    assert.ok(call,"Start click did not POST while unreachable"); assert.ok(call.body.request_id,"request id missing"); assert.equal(typeof call.body.expected_revision,"number","revision binding missing");
+    f.setSnapshot({...json(snapshot),revision:8}); await h.fireTimers();
+    assert.match(h.$("supervisor-status").textContent,/running/i,"launched service not rendered once it answers");
+    assert.equal(h.$("supervisor-pause-btn").disabled,false,"Pause not available once running");
+    // A board server that does not answer at all is a different failure: nothing can launch anything.
+    const g=fakeFetch(), k=make(g); await k.flush(); await k.waitForRequests();
+    g.enqueue("/api/supervisor",new Error("network down")); await k.fireTimers();
+    assert.equal(k.$("supervisor-start-btn").disabled,true,"Start enabled although the board server does not answer");
+  });
+  await check("11b. Stop renders stopped (not a dead end), keeps Start enabled, and Start restarts",async()=>{
+    const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
+    f.enqueue("/api/supervisor/stop",response(202,{command_id:"s1",state_revision:9,desired_mode:"stopped",phase:"stopped",status:"stopped",terminated:true}));
+    await h.$("supervisor-stop-btn").fire("click"); await h.$("supervisor-drain-btn").fire("click"); await h.waitForRequests();
+    // The service exits by design: the next poll finds nothing listening.
+    f.setSnapshot(unreachableOf(snapshot,{reason:"connection refused"})); await h.fireTimers();
+    const text=h.$("supervisor-status").textContent;
+    assert.match(text,/stopped/i,"the board does not say stopped after Stop: "+text);
+    assert.doesNotMatch(text,/unreachable|connection refused/i,"a requested Stop is shown as an error: "+text);
+    assert.equal(h.$("supervisor-retry-btn").hidden,true,"Retry connection offered for a deliberate stop");
+    assert.equal(h.$("supervisor-start-btn").disabled,false,"Start disabled after Stop");
+    for(const id of ["supervisor-pause-btn","supervisor-resume-btn","supervisor-stop-btn"]) assert.equal(h.$(id).disabled,true,id+" enabled while stopped");
+    f.enqueue("/api/supervisor/start",response(202,{command_id:"s2",state_revision:10,desired_mode:"running",phase:"starting"}));
+    await h.$("supervisor-start-btn").fire("click"); await h.waitForRequests();
+    assert.equal(countCalls(f,"/api/supervisor/start","POST"),1,"Start after Stop did not POST");
+    f.setSnapshot({...json(snapshot),revision:10}); await h.fireTimers();
+    assert.match(h.$("supervisor-status").textContent,/running/i,"restart not rendered");
+    assert.doesNotMatch(h.$("supervisor-status").textContent,/unreachable/i);
+    assert.equal(h.$("supervisor-pause-btn").disabled,false,"Pause not available after restart");
+  });
+  await check("11c. A stop that did not terminate the service is not shown as stopped",async()=>{
+    const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
+    f.enqueue("/api/supervisor/stop",response(202,{command_id:"s1",state_revision:9,desired_mode:"stopped",phase:"draining",status:"unresolved_shutdown",terminated:false}));
+    await h.$("supervisor-stop-btn").fire("click"); await h.$("supervisor-drain-btn").fire("click"); await h.waitForRequests();
+    f.setSnapshot(unreachableOf(snapshot,{reason:"connection refused"})); await h.fireTimers();
+    assert.match(h.$("supervisor-status").textContent,/unreachable/i,"an unresolved shutdown was rendered as a clean stop");
+  });
+  await check("11d. A reloaded page whose board remembers the stop shows stopped with Start enabled",async()=>{
+    const known={...json(snapshot),desired_mode:"stopped",phase:"stopped",ready:false};
+    const f=fakeFetch({snapshot:unreachableOf(known,{reason:"connection refused"})}), h=make(f); await h.flush(); await h.waitForRequests();
+    const text=h.$("supervisor-status").textContent;
+    assert.doesNotMatch(text,/unreachable|connection refused/i,"remembered stop shown as an error: "+text);
+    assert.match(text,/stopped/i); assert.equal(h.$("supervisor-start-btn").disabled,false);
+  });
+  await check("11e. The page says Start launches the service but does not run work yet",async()=>{
+    const html=h0().pageHtml;
+    assert.match(html,/id="supervisor-note"/,"no deferral note in the page");
+    assert.match(html,/no scheduler is wired/i); assert.match(html,/execution is disabled by default/i); assert.match(html,/does not run (any )?work/i);
   });
   // The failure summary is printed, never written: the suite leaves no file behind.
   if(failures.length) {

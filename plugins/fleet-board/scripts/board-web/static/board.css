@@ -993,6 +993,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .sup-warn .sup-v, .sup-warn.sup-item > .sup-v:only-child { color: var(--warn); }
 .sup-phase.pending .sup-v { color: var(--amber); }
 .sup-err { flex-basis: 100%; }
+.sup-note { flex: 1 1 100%; margin: 0; color: var(--muted); }
 .sup-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .sup-menu-wrap { position: relative; }
 .sup-menu {

@@ -43,6 +43,7 @@ from urllib.parse import parse_qs
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
+from supervisor import launcher as supervisor_launcher
 from supervisor import paths as supervisor_paths
 from supervisor import webproxy
 
@@ -1252,10 +1253,11 @@ def compat_run_control(command, body):
     route derives its own binding (Start and drain-stop are idempotent by design) and the
     answer says unbound: true."""
     if not body:
+        launched = ensure_service() if command == "start" else False
         body = {"request_id": "compat-%s-%d" % (command, time.time_ns()),
                 "expected_revision": proxy_call("status").get("revision", 0)}
         code, result = proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
-        return code, dict(result, unbound=True)
+        return code, dict(result, unbound=True, **({"launched": True} if launched else {}))
     return proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
 
 
@@ -1361,6 +1363,50 @@ def proxy_call(command, body=None, **extra):
     return result
 
 
+_LAUNCH_LOCK = threading.Lock()
+
+
+def ensure_service():
+    """Make sure a service answers for this board; True when this call launched it.
+
+    This is the stopped-state lifecycle adapter path: a missing service is started through the
+    shared launcher (never by editing job tables) and we wait for its readiness before the
+    caller proxies the command. A failure is a 503 with a reason and leaves nothing running."""
+    def answers():
+        try:
+            proxy_call("status")
+            return True
+        except ApiError as exc:
+            if exc.code != 503:
+                raise
+            return False
+    if answers():
+        return False
+    with _LAUNCH_LOCK:
+        if answers():  # another request launched it while we waited for the lock
+            return False
+        try:
+            supervisor_launcher.launch_service(APP["root"])
+        except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
+            raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
+        if not supervisor_launcher.wait_until(answers, timeout=5.0):
+            raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
+                           {"code": "launch_failed"})
+    return True
+
+
+def remember_stopped(result):
+    """A Stop that ended the service leaves nothing listening: remember that it stopped, so the
+    next unreachable answer reads as a deliberate stop and not as an outage."""
+    domain_id = supervisor_domain_id()
+    prior = webproxy.last(domain_id)
+    known = dict(prior[1]) if prior and isinstance(prior[1], dict) else {}
+    known.update({"desired_mode": "stopped", "phase": "stopped", "ready": False, "shutdown": "resolved"})
+    if isinstance(result.get("state_revision"), int):
+        known["revision"] = result["state_revision"]
+    webproxy.remember(domain_id, known)
+
+
 def proxy_control(command, body):
     if "actor" in body:
         raise ApiError(400, "actor must come from authenticated peer")
@@ -1368,7 +1414,16 @@ def proxy_control(command, body):
         raise ApiError(400, "request_id and integer expected_revision are required")
     if command == "stop":
         body.setdefault("mode", "drain")
-    return 202, proxy_call(command, body)
+    launched = False
+    if command == "start" and ensure_service():
+        # The client could not have seen the revision of a service that was not running: bind
+        # the Start to the fresh one. The request id stays the caller's, so a retry dedupes.
+        launched = True
+        body = dict(body, expected_revision=proxy_call("status").get("revision", 0))
+    result = proxy_call(command, body)
+    if command == "stop" and isinstance(result, dict) and result.get("terminated") is True:
+        remember_stopped(result)
+    return 202, (dict(result, launched=True) if launched and isinstance(result, dict) else result)
 
 
 def supervisor_snapshot():
@@ -1393,7 +1448,9 @@ def supervisor_snapshot():
 def supervisor_run_status(cfg):
     status = supervisor_snapshot()
     if status.get("unreachable"):
-        return {"state": "unreachable", "supervisor": status, "pid": None,
+        known = status.get("last_known") if isinstance(status.get("last_known"), dict) else {}
+        stopped = known.get("phase") == "stopped" and known.get("ready") is False
+        return {"state": "stopped" if stopped else "unreachable", "supervisor": status, "pid": None,
                 "tick": None, "stop_reason": None, "cost": None, "hours": None,
                 "log_path": None, "log_tail": [], "out_tail": None}
     phase = status.get("phase", "unknown")

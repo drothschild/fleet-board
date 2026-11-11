@@ -378,6 +378,121 @@ class SupervisorWebContract(unittest.TestCase):
                                        "TMPDIR": str(self.tmp_socket)}, stdout=out, stderr=err)
         self.assertEqual(status, 0, err.getvalue())
 
+    # --- R2: Start launches a missing service; Stop never strands the board --------------
+
+    def launching_world(self):
+        """Board server with NO socket override: the launched service lives at the default
+        location every component derives on its own."""
+        self.env.pop("FLEET_BOARD_SUPERVISOR_SOCKET", None)
+        self.addCleanup(self.reap_launched)
+
+    def serve_pids(self):
+        out = subprocess.run(["pgrep", "-f", "supervisor.cli serve --domain " + str(self.repo) + " "],
+                             capture_output=True, text=True)
+        return sorted(out.stdout.split())
+
+    def reap_launched(self):
+        try:
+            subprocess.run([str(SCRIPTS / "supervisor.sh"), "stop", "--mode", "cancel"],
+                           env=dict(self.env, FLEET_BOARD_DOMAIN=str(self.repo)),
+                           capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            pass
+        subprocess.run(["pkill", "-f", "supervisor.cli serve --domain " + str(self.repo) + " "],
+                       capture_output=True)
+
+    def skip_if_sandboxed(self, code, payload):
+        text = json.dumps(payload).lower()
+        if code == 503 and ("operation not permitted" in text or "socket" in text):
+            self.skipTest("sandbox denies the real service: %s" % text[:200])
+
+    def wait_until(self, probe, seconds=8.0):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            value = probe()
+            if value:
+                return value
+            time.sleep(0.1)
+        return probe()
+
+    def test_start_launches_a_missing_service_then_proxies_the_start_command(self):
+        self.launching_world()
+        self.start_web()
+        code, payload = self.http("GET", "/api/supervisor")
+        self.assertTrue(payload.get("unreachable"))
+        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "launch-1", "expected_revision": 0})
+        self.skip_if_sandboxed(code, started)
+        self.assertEqual(code, 202, started)
+        self.assertEqual(started["desired_mode"], "running")
+        self.assertEqual(len(self.serve_pids()), 1, "Start must launch exactly one service")
+        code, status = self.http("GET", "/api/supervisor")
+        self.assertFalse(status.get("unreachable"), status)
+        self.assertIs(status["ready"], True)
+        pids = self.serve_pids()
+        code, again = self.http("POST", "/api/supervisor/start",
+                                {"request_id": "launch-2", "expected_revision": status["revision"]})
+        self.assertEqual(code, 202, again)
+        self.assertEqual(self.serve_pids(), pids, "a second Start must reconnect, not launch")
+
+    def test_compat_run_start_launches_a_missing_service_too(self):
+        self.launching_world()
+        self.start_web()
+        code, started = self.http("POST", "/api/run/start")
+        self.skip_if_sandboxed(code, started)
+        self.assertIn(code, (200, 202), started)
+        self.assertEqual(len(self.serve_pids()), 1)
+        code, run = self.http("GET", "/api/run")
+        self.assertEqual(code, 200)
+        self.assertNotEqual(run["state"], "unreachable")
+
+    def test_disabled_config_never_launches_a_service(self):
+        self.launching_world()
+        self.config.write_text("board:\n  repo: acme/toy\n", encoding="utf-8")
+        self.start_web()
+        code, _ = self.http("POST", "/api/supervisor/start", {"request_id": "x", "expected_revision": 0})
+        self.assertEqual(code, 404)
+        self.assertEqual(self.serve_pids(), [])
+
+    def test_launch_failure_is_a_503_with_a_reason_and_nothing_half_started(self):
+        self.launching_world()
+        logs = self.case / "logs"
+        logs.mkdir(mode=0o700)
+        (logs / "supervisor").write_text("not a directory\n", encoding="utf-8")  # the store cannot open
+        self.start_web()
+        code, payload = self.http("POST", "/api/supervisor/start", {"request_id": "bad-1", "expected_revision": 0})
+        self.assertEqual(code, 503, payload)
+        self.assertRegex(payload["error"], r"(?i)could not be started")
+        self.assertEqual(self.serve_pids(), [], "a failed launch left a process behind")
+        code, status = self.http("GET", "/api/supervisor")
+        self.assertTrue(status.get("unreachable"))
+
+    def test_stop_leaves_a_stopped_board_that_can_start_again(self):
+        self.launching_world()
+        self.start_web()
+        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "run-1", "expected_revision": 0})
+        self.skip_if_sandboxed(code, started)
+        self.assertEqual(code, 202, started)
+        code, status = self.http("GET", "/api/supervisor")
+        code, stopped = self.http("POST", "/api/supervisor/stop",
+                                  {"request_id": "stop-1", "expected_revision": status["revision"], "mode": "drain"})
+        self.assertEqual(code, 202, stopped)
+        self.assertIs(stopped["terminated"], True)
+        self.assertEqual(stopped["phase"], "stopped", "the stop reply must carry the final state")
+        self.assertEqual(self.wait_until(lambda: not self.serve_pids()), True, "the service did not exit after Stop")
+        code, after = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200)
+        self.assertTrue(after["unreachable"])
+        self.assertEqual(after["last_known"]["phase"], "stopped",
+                         "an unreachable board after Stop must remember it stopped: %r" % (after,))
+        code, run = self.http("GET", "/api/run")
+        self.assertEqual(run["state"], "stopped", "the run projection must say stopped, not unreachable")
+        code, again = self.http("POST", "/api/supervisor/start", {"request_id": "run-2", "expected_revision": stopped["state_revision"]})
+        self.assertEqual(code, 202, again)
+        self.assertEqual(len(self.serve_pids()), 1, "restart after Stop must launch exactly one service")
+        code, status = self.http("GET", "/api/supervisor")
+        self.assertFalse(status.get("unreachable"), status)
+        self.assertIs(status["ready"], True)
+
     def logs_tree(self):
         logs = self.case / "logs"
         return sorted(str(p.relative_to(logs)) for p in logs.rglob("*")) if logs.exists() else []
