@@ -449,6 +449,55 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertNotIn("ghp_", rendered)
         self.assertNotIn(str(self.repo), rendered)
 
+    def test_api_supervisor_returns_one_canonical_merged_status_shape(self):
+        (self.repo / ".fleet-board.yml").write_text(
+            "board:\n  repo: acme/toy\nsupervisor:\n  enabled: true\nlimits:\n  concurrency: 3\n",
+            encoding="utf-8")
+        self.start_service()
+        store = self.service.store
+        store.start_session({"id": "s1", "started_at": 1, "deadline": 4102444800, "known_spend": 1.25,
+                             "unknown_spend": True, "budget_stop": None})
+        job = {"id": "job-1", "card": "1", "action": "review", "role": "reviewer", "stage": "code",
+               "round": 1, "input_sha": "a" * 64, "input_version": "v1", "generation": 1,
+               "provider": "fixture", "model": "fixture", "nonce": "attempt-canon", "session_id": "s1"}
+        store.prepare_attempt(job, store.snapshot()["domain"]["revision"],
+                              {"global_cap": 4, "provider_cap": 4, "paths": ["src/card-1"]})
+        self.start_web()
+        code, payload = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200)
+        self.assertFalse(payload.get("unreachable"))
+        for key in ("schema_version", "revision", "desired_mode", "phase", "ready", "read_only",
+                    "execution_available", "host_boot_id", "shutdown", "heartbeat", "session",
+                    "capacity", "queue", "config", "boot_registration", "last_error", "claims"):
+            self.assertIn(key, payload, "canonical key %s missing from /api/supervisor" % key)
+        self.assertEqual(payload["schema_version"], 1)
+        self.assertIs(payload["ready"], True)
+        self.assertIn(payload["phase"], ("starting", "recovering", "running", "draining",
+                                         "cancelling", "stopped", "unreachable", "error"))
+        self.assertEqual(payload["shutdown"], "resolved")
+        self.assertEqual(payload["host_boot_id"], "web-test-boot")
+        self.assertEqual(payload["boot_registration"], "missing")
+        self.assertEqual(set(payload["heartbeat"]), {"at", "age", "fresh"})
+        self.assertEqual(payload["session"]["known_spend"], 1.25)
+        self.assertIs(payload["session"]["unknown_spend"], True)
+        self.assertEqual(payload["session"]["deadline"], 4102444800)
+        self.assertEqual(payload["session"]["active"]["id"], "s1")
+        self.assertIsInstance(payload["capacity"]["slots"], int)
+        self.assertEqual(payload["capacity"]["global_cap"], 3, "global_cap must come from limits.concurrency")
+        self.assertEqual(payload["capacity"]["per_provider"], {"fixture": 1})
+        self.assertEqual(set(payload["queue"]), {"ready", "running", "waiting", "attention"})
+        for value in payload["queue"].values():
+            self.assertIsInstance(value, int)
+        self.assertEqual(payload["claims"], {"count": 1})
+        self.assertEqual(payload["config"], {"enabled": True, "execution_available": True})
+
+    def test_status_global_cap_is_null_when_config_is_unreadable(self):
+        self.start_service()
+        self.start_web()
+        (self.repo / ".fleet-board.yml").write_text("board: [unterminated\n", encoding="utf-8")
+        status = self.service.get_status()
+        self.assertIsNone(status["capacity"]["global_cap"])
+
     def test_status_last_known_cache_is_thread_safe_and_bounded(self):
         from supervisor import webproxy
         webproxy._LAST.clear()

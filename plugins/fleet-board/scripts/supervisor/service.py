@@ -329,7 +329,7 @@ class Service:
                 error = {"code": code, "message": message}
                 if code == "stale_revision":
                     try:
-                        error["current"] = self.status()
+                        error["current"] = self.status_view()
                     except Exception:
                         error["current"] = None
                 payload = {"ok": False, "error": error}
@@ -398,7 +398,7 @@ class Service:
             error = {"code": code, "message": message}
             if code == "stale_revision":
                 try:
-                    error["current"] = self.status()
+                    error["current"] = self.status_view()
                 except Exception:
                     error["current"] = None
             return {"ok": False, "error": error}
@@ -416,7 +416,7 @@ class Service:
         if self.writer_uncertain and command in ("resolve", "start", "pause", "resume", "release_reservations"):
             raise RuntimeError("uncertain writer prevents lifecycle command")
         if command == "status":
-            return self.status()
+            return self.status_view()
         if command == "events":
             page = self.events(request.get("after", 0), request.get("limit", 100))
             return {"events": list(page), "next_cursor": page.next_cursor,
@@ -478,7 +478,6 @@ class Service:
                         and (item["type"] != "command" or item["payload"].get("command") in ("start", "resume"))]
         latest = acknowledged[-1] if acknowledged else None
         running = [item for item in attempts if item["state"] in ("launching", "running", "result_ready")]
-        phases = {"running": "running", "paused": "stopped", "stopped": "stopped"}
         observed_phase = ("unreachable" if self.writer_uncertain else
                           "running" if state["domain"]["desired_mode"] == "running" else
                           "stopped" if state["domain"]["desired_mode"] in ("paused", "stopped") else
@@ -493,7 +492,7 @@ class Service:
                             "known_spend": sum(x["known_spend"] for x in sessions),
                             "unknown_spend": any(bool(x["unknown_spend"]) for x in sessions),
                             "deadline": sessions[-1]["deadline"] if sessions else None},
-                "capacity": {"slots": len(running), "global_cap": None,
+                "capacity": {"slots": len(running), "global_cap": self._global_cap(),
                              "per_provider": {provider: sum(1 for x in claims if x["provider"] == provider)
                                               for provider in sorted({x["provider"] for x in claims})}},
                 "queue": {"ready": 0, "running": len(running),
@@ -502,6 +501,32 @@ class Service:
                 "config": {"enabled": self.execution_enabled, "execution_available": self.execution_available},
                 "boot_registration": "missing", "last_error": None,
                 "read_only": not self.execution_enabled, "claims": {"count": len(claims)}}
+
+    def _config_root(self):
+        repo = self.board_repo
+        if repo and os.path.isdir(str(repo)):
+            return str(repo)
+        common = Path(self.store.common_dir)
+        return str(common.parent if common.name == ".git" else common)
+
+    def _global_cap(self):
+        """limits.concurrency from the repo config; null when it cannot be read."""
+        config = Path(__file__).resolve().parents[1] / "config.sh"
+        try:
+            result = subprocess.run(["bash", str(config), "--dir", self._config_root(), "limits.concurrency"],
+                                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        text = result.stdout.strip()
+        if result.returncode != 0 or not re.fullmatch(r"[0-9]+", text):
+            return None
+        return int(text)
+
+    def status_view(self):
+        """The one canonical status object served by the status command."""
+        merged = self.get_status()
+        merged.update(self.status())
+        return merged
 
     _LOG_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}")
     _SECRET = re.compile(r"(?i)(token|secret|password|api[_-]?key)(\s*[:=]\s*)[^\s]+")

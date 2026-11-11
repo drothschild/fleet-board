@@ -1369,9 +1369,11 @@ def supervisor_snapshot():
             raise
         prior = webproxy.last(domain_id)
         known = prior[1] if prior else None
-        return {"ready": None, "read_only": True, "desired_mode": None,
+        return {"schema_version": None, "ready": None, "read_only": True, "desired_mode": None,
                 "phase": None, "revision": None, "host_boot_id": None,
                 "execution_available": False, "shutdown": None,
+                "heartbeat": None, "session": None, "capacity": None, "queue": None,
+                "config": None, "boot_registration": None, "last_error": None, "claims": None,
                 "unreachable": True, "last_known": known,
                 "last_known_at": prior[0] if prior else None, "occupancy": None}
 
@@ -1388,7 +1390,7 @@ def supervisor_run_status(cfg):
     # Never infer running from intent: only the service's own ready acknowledgement
     # plus an observed running phase counts. Intent without readiness is starting.
     state = ("running" if ready and phase == "running" and desired == "running" else
-             "stopping" if phase == "stopping" else
+             "stopping" if phase in ("draining", "cancelling", "stopping") else
              "starting" if desired == "running" and not ready else
              "stopped" if phase in ("stopped", "idle") else phase)
     return {"state": state, "pid": None, "tick": None, "stop_reason": None,

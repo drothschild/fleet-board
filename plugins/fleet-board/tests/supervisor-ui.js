@@ -12,11 +12,20 @@ const baseCard = {number:4,title:hostile,body:"repair me",labels:[],comments:[],
   activity:"launch",elapsed_seconds:61,heartbeat_age_seconds:8,progress_age_seconds:13,retry_count:2,
   wait_reason:hostile,blocking_card:9,blocking_path:"src/locked",reservation_state:"held",reservation_revision:5,
   logs:[{id:hostile,text:hostile}]};
-const snapshot = {schema_version:1,revision:7,desired_mode:"running",observed_phase:"running",ready:true,
-  heartbeat_at:"2026-11-10T18:00:00Z",global_capacity:4,occupancy:2,
-  providers:{[hostile]:{occupied:1,capacity:2}},counts:{ready:2,running:1,waiting:3,attention:1},
-  budget:{known_spend:1.25,unknown_spend:true,deadline:"2026-11-10T20:00:00Z"},
-  boot_registration:{state:"missing"},last_error:hostile,cards:[baseCard]};
+const snapshot = {schema_version:1,revision:7,desired_mode:"running",phase:"running",ready:true,read_only:false,
+  execution_available:true,host_boot_id:"boot-1",shutdown:"resolved",
+  heartbeat:{at:"2026-11-10T18:00:00Z",age:3,fresh:true},
+  session:{active:{id:"s1"},known_spend:1.25,unknown_spend:true,deadline:"2026-11-10T20:00:00Z"},
+  capacity:{slots:2,global_cap:4,per_provider:{[hostile]:1}},
+  queue:{ready:2,running:1,waiting:3,attention:1},
+  config:{enabled:true,execution_available:true},
+  boot_registration:"missing",last_error:hostile,claims:{count:2},cards:[baseCard]};
+// What board-web serves when the service does not answer: the same top-level keys as
+// null/unknown, the flag, and the last status it saw.
+const unreachableOf = (known, extra) => ({schema_version:null,revision:null,desired_mode:null,phase:null,ready:null,
+  read_only:true,execution_available:false,host_boot_id:null,shutdown:null,heartbeat:null,session:null,capacity:null,
+  queue:null,config:null,boot_registration:null,last_error:null,claims:null,unreachable:true,last_known:json(known),
+  last_known_at:Date.parse("2026-11-10T18:00:00Z")/1000,occupancy:null,cards:known.cards,...(extra||{})});
 const json = value => JSON.parse(JSON.stringify(value));
 function response(status, data) { return {ok:status>=200&&status<300,status,json:async()=>data}; }
 function fakeFetch(options={}) {
@@ -68,7 +77,7 @@ async function main() {
     for(const value of ["running","ready","4","local","2","3","attention","1.25","unknown","20:00","missing",hostile])
       assert.ok(t.includes(value),"status missing snapshot field "+value);
     assert.doesNotMatch(t,/recovered after reboot|boot recovery/i,"unverified reboot recovery claim");
-    const f=fakeFetch({snapshot:{...json(snapshot),occupancy:null}}), h=make(f); await h.flush(); await h.waitForRequests();
+    const f=fakeFetch({snapshot:{...json(snapshot),capacity:{...snapshot.capacity,slots:null}}}), h=make(f); await h.flush(); await h.waitForRequests();
     assert.match(h.$("supervisor-status").textContent,/occupancy unknown/i,"null occupancy rendered as zero/omitted");
   });
   await check("3a. Start click sends revision-bound command and waits for ready poll",async()=>{
@@ -79,7 +88,7 @@ async function main() {
     assert.ok(call,"Start click did not POST"); assert.ok(call.body.request_id,"request id missing"); assert.equal(call.body.expected_revision,7);
     assert.match(h.$("supervisor-status").textContent,/starting|acknowledged/i,"202 acknowledgement not shown");
     assert.doesNotMatch(h.$("supervisor-status").textContent,/\bRunning\b/,"202 treated as observed Running");
-    f.setSnapshot({...json(snapshot),ready:true,observed_phase:"running"}); await h.fireTimers();
+    f.setSnapshot({...json(snapshot),ready:true,phase:"running"}); await h.fireTimers();
     assert.match(h.$("supervisor-status").textContent,/running/i,"fresh ready poll did not render Running");
   });
   await check("3b. Pause, Stop menu Drain/Cancel and keyboard dismissal are real interactions",async()=>{
@@ -106,10 +115,10 @@ async function main() {
   });
   await check("3d. 409 refreshes body, 503 reason and 400 message are surfaced",async()=>{
     const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
-    f.enqueue("/api/supervisor/pause",response(409,{error:"revision conflict",snapshot:{...json(snapshot),revision:12,observed_phase:"paused"}}));
+    f.enqueue("/api/supervisor/pause",response(409,{error:"revision conflict",snapshot:{...json(snapshot),revision:12,phase:"recovering"}}));
     await h.$("supervisor-pause-btn").fire("click"); await h.flush();
     assert.equal(h.ctx.__test.S.supervisor.revision,12,"409 state body not adopted");
-    assert.match(h.$("supervisor-status").textContent,/paused/i,"409 state not rendered");
+    assert.match(h.$("supervisor-status").textContent,/recovering/i,"409 state not rendered");
     assert.equal(countCalls(f,"/api/supervisor/pause","POST"),1,"409 resent command");
     f.enqueue("/api/supervisor/start",response(503,{reason:"maintenance window"}));
     await h.$("supervisor-start-btn").fire("click"); assert.match(h.document.body.textContent,/maintenance window/i,"503 reason absent");
@@ -117,19 +126,19 @@ async function main() {
     await h.$("supervisor-start-btn").fire("click"); assert.match(h.document.body.textContent,/invalid request/i,"400 message absent");
   });
   await check("3e. Allowed mode matrix enables only valid controls",async()=>{
-    const paused={...json(snapshot),desired_mode:"paused",observed_phase:"paused",ready:true};
+    const paused={...json(snapshot),desired_mode:"paused",phase:"stopped",ready:true};
     const f=fakeFetch({snapshot:paused}), h=make(f); await h.flush(); await h.waitForRequests();
     assert.equal(h.$("supervisor-start-btn").disabled,true,"Start active while paused");
     assert.equal(h.$("supervisor-resume-btn").disabled,false,"Resume unavailable while paused");
     assert.equal(h.$("supervisor-pause-btn").disabled,true,"Pause available while paused");
-    f.setSnapshot({...paused,desired_mode:"running",observed_phase:"running"}); await h.fireTimers();
+    f.setSnapshot({...paused,desired_mode:"running",phase:"running"}); await h.fireTimers();
     assert.equal(h.$("supervisor-pause-btn").disabled,false,"Pause unavailable while running");
     assert.equal(h.$("supervisor-resume-btn").disabled,true,"Resume active while running");
   });
   await check("4. Unreachable and failed polls preserve last snapshot and gate mutations",async()=>{
-    const stale={...json(snapshot),unreachable:true,reason:"controller offline"};
+    const stale=unreachableOf(snapshot,{reason:"controller offline"});
     const f=fakeFetch({snapshot:stale}), h=make(f); await h.flush(); await h.waitForRequests(); const s=h.$("supervisor-status");
-    assert.match(s.textContent,/occupancy unknown/i); assert.ok(s.textContent.includes(snapshot.heartbeat_at)); assert.ok(s.textContent.includes("controller offline"));
+    assert.match(s.textContent,/occupancy unknown/i); assert.ok(s.textContent.includes("2026-11-10 18:00:00")); assert.ok(s.textContent.includes("controller offline"));
     for(const id of ["supervisor-start-btn","supervisor-pause-btn","supervisor-resume-btn","supervisor-stop-btn"]){
       const b=h.$(id); assert.equal(b.disabled,true,id+" enabled stale"); assert.ok(b.title||b.getAttribute("aria-describedby"),id+" lacks disabled explanation");
     }
@@ -206,7 +215,7 @@ async function main() {
   });
   await check("7. Hostile server values remain text throughout UI fields and event payloads",async()=>{
     const bad={...json(snapshot),last_error:hostile+control,cards:[{...baseCard,title:hostile+control,wait_reason:hostile,logs:[{id:hostile,text:hostile}]}],
-      providers:{[hostile]:{occupied:1,capacity:2}},reasons:[hostile],evidence:[hostile],events:[{sequence:1,type:"launch",timestamp:"2026-11-10T17:59:00Z",payload:{reason:hostile,evidence:hostile}}]};
+      capacity:{...snapshot.capacity,per_provider:{[hostile]:1}},reasons:[hostile],evidence:[hostile],events:[{sequence:1,type:"launch",timestamp:"2026-11-10T17:59:00Z",payload:{reason:hostile,evidence:hostile}}]};
     const f=fakeFetch({snapshot:bad}), h=make(f); await h.flush(); await h.waitForRequests();
     const text=descendants(h.document.body).map(n=>n.textContent).join(" "); assert.ok(text.includes("img"),"hostile text was dropped");
     for(const node of descendants(h.document.body)) {
@@ -225,7 +234,7 @@ async function main() {
     assert.equal(f.calls.filter(c=>c.url.includes("/supervisor/")&&c.method==="POST").length,0,"unknown card auto-dispatched");
   });
   await check("8b. Unknown card repair and reservations remain visible while unreachable",async()=>{
-    const f=fakeFetch({snapshot:{...json(snapshot),unreachable:true}}), h=make(f); await h.flush(); await h.waitForRequests();
+    const f=fakeFetch({snapshot:unreachableOf(snapshot)}), h=make(f); await h.flush(); await h.waitForRequests();
     const card=h.$("board").all().find(n=>n.classList.contains("card")&&n.dataset.n==="4"); assert.ok(card); assert.match(card.closest("section").textContent,/Unknown/i);
     assert.ok(h.$("board").textContent.includes("held"),"unknown card reservation hidden"); await card.fire("click");
     assert.equal(h.$("dr-save").disabled,true,"unknown state auto-normalized while stale"); assert.ok(h.$("dr-release-reservations"),"reservation detail absent");

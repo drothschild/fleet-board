@@ -2589,7 +2589,11 @@ function supView() {
 }
 
 function supPhase(v) {
-  return v.observed_phase || v.phase || null;
+  return typeof v.phase === "string" && v.phase ? v.phase : null;
+}
+
+function supHeartbeatAt(v) {
+  return v && v.heartbeat && typeof v.heartbeat === "object" ? v.heartbeat.at : null;
 }
 
 function supItem(cls, label, value) {
@@ -2619,7 +2623,7 @@ function renderSupervisor() {
   frag.appendChild(head);
 
   if (sup.stale) {
-    const at = snap ? (snap.last_known_at !== undefined && snap.last_known_at !== null ? snap.last_known_at : view.heartbeat_at) : null;
+    const at = snap ? (snap.last_known_at !== undefined && snap.last_known_at !== null ? snap.last_known_at : supHeartbeatAt(view)) : null;
     const ms = toMs(at) !== null ? toMs(at) : sup.okAt;
     const row = el("span", "sup-item sup-warn sup-stale");
     row.appendChild(el("span", "sup-k", "unreachable"));
@@ -2637,28 +2641,28 @@ function renderSupervisor() {
   }
 
   // slots: never shown as 0 when the supervisor cannot say
-  const cap = isNum(view.global_capacity) ? String(view.global_capacity) : "unknown";
-  if (sup.stale || !isNum(view.occupancy)) {
+  const capacity = view.capacity && typeof view.capacity === "object" ? view.capacity : {};
+  const cap = isNum(capacity.global_cap) ? String(capacity.global_cap) : "unknown";
+  if (sup.stale || !isNum(capacity.slots)) {
     frag.appendChild(supItem("sup-warn", "", "occupancy unknown"));
     frag.appendChild(supItem("", "global cap", cap));
   } else {
-    frag.appendChild(supItem("", "slots", view.occupancy + " / " + cap));
+    frag.appendChild(supItem("", "slots", capacity.slots + " / " + cap));
   }
-  const providers = view.providers && typeof view.providers === "object" ? view.providers : {};
+  const providers = capacity.per_provider && typeof capacity.per_provider === "object" ? capacity.per_provider : {};
   for (const name of Object.keys(providers).slice(0, 20)) {
-    const p = providers[name] || {};
-    const known = !sup.stale && isNum(p.occupied);
-    frag.appendChild(supItem("sup-prov", clean(name, 60), (known ? p.occupied : "unknown") + " / " + (isNum(p.capacity) ? p.capacity : "unknown")));
+    const known = !sup.stale && isNum(providers[name]);
+    frag.appendChild(supItem("sup-prov", clean(name, 60), known ? providers[name] : "unknown"));
   }
 
-  const counts = view.counts && typeof view.counts === "object" ? view.counts : {};
+  const counts = view.queue && typeof view.queue === "object" ? view.queue : {};
   for (const k of ["ready", "running", "waiting", "attention"]) {
     const n = counts[k];
     const warn = k === "attention" && isNum(n) && n > 0;
     frag.appendChild(supItem(warn ? "sup-warn" : "", k, isNum(n) ? n : "unknown"));
   }
 
-  const b = view.budget && typeof view.budget === "object" ? view.budget : null;
+  const b = view.session && typeof view.session === "object" ? view.session : null;
   if (b) {
     const parts = [isNum(b.known_spend) ? "$" + b.known_spend.toFixed(2) + " known" : "spend unknown"];
     if (b.unknown_spend === true) parts.push("plus unknown spend");
@@ -2670,14 +2674,14 @@ function renderSupervisor() {
   }
 
   // boot registration: only a verified registration is reported as present
-  const boot = view.boot_registration && typeof view.boot_registration === "object" ? view.boot_registration : null;
-  const bootState = boot ? String(boot.state || "") : "";
+  const boot = typeof view.boot_registration === "string" && view.boot_registration ? view.boot_registration : null;
+  const bootState = boot || "";
   if (!boot) frag.appendChild(supItem("sup-warn", "boot registration", "unknown"));
   else if (bootState === "missing") frag.appendChild(supItem("sup-warn", "boot registration", "missing (local session only; it will not restart after a reboot)"));
-  else if (boot.verified === true || bootState === "verified") frag.appendChild(supItem("", "boot registration", "registered and verified"));
+  else if (bootState === "verified") frag.appendChild(supItem("", "boot registration", "registered and verified"));
   else frag.appendChild(supItem("sup-warn", "boot registration", clean(bootState || "unknown", 60) + " (not verified)"));
 
-  const hb = toMs(view.heartbeat_at);
+  const hb = toMs(supHeartbeatAt(view));
   if (hb !== null && !sup.stale) frag.appendChild(supItem("", "heartbeat", ageText(hb)));
 
   const le = view.last_error;
@@ -2724,7 +2728,7 @@ function renderSupervisorControls(view) {
   const pause = $("supervisor-pause-btn");
   const resume = $("supervisor-resume-btn");
   const stop = $("supervisor-stop-btn");
-  setControl(start, !gate && desired !== "paused" && phase !== "stopping",
+  setControl(start, !gate && desired !== "paused" && phase !== "draining" && phase !== "cancelling",
     gate || (desired === "paused" ? "The session is paused: use Resume." : "The supervisor is stopping."));
   setControl(pause, !gate && desired === "running",
     gate || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
