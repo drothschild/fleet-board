@@ -41,6 +41,30 @@
     </div>
   </div>
 </header>
+<section id="supervisor" class="sup" aria-label="Supervisor" hidden>
+  <div id="supervisor-status" class="sup-status" role="status" aria-live="polite" aria-atomic="false" aria-label="Supervisor status" hidden></div>
+  <div class="sup-controls" role="group" aria-label="Supervisor controls">
+    <button type="button" id="supervisor-start-btn" class="btn" aria-describedby="supervisor-start-btn-why">Start</button>
+    <button type="button" id="supervisor-pause-btn" class="btn" aria-describedby="supervisor-pause-btn-why">Pause</button>
+    <button type="button" id="supervisor-resume-btn" class="btn" aria-describedby="supervisor-resume-btn-why">Resume</button>
+    <div class="sup-menu-wrap">
+      <button type="button" id="supervisor-stop-btn" class="btn" aria-haspopup="menu" aria-expanded="false" aria-controls="supervisor-stop-menu" aria-describedby="supervisor-stop-btn-why">Stop</button>
+      <div id="supervisor-stop-menu" class="sup-menu" role="menu" aria-label="Stop mode" hidden>
+        <button type="button" id="supervisor-drain-btn" class="sup-menu-item" role="menuitem">Drain: finish active work, then stop</button>
+        <button type="button" id="supervisor-cancel-btn" class="sup-menu-item" role="menuitem">Cancel: stop active work now</button>
+      </div>
+    </div>
+    <button type="button" id="supervisor-retry-btn" class="btn" hidden>Retry connection</button>
+    <span id="supervisor-start-btn-why" class="sr-only"></span>
+    <span id="supervisor-pause-btn-why" class="sr-only"></span>
+    <span id="supervisor-resume-btn-why" class="sr-only"></span>
+    <span id="supervisor-stop-btn-why" class="sr-only"></span>
+  </div>
+  <details class="sup-tl-wrap">
+    <summary class="sup-tl-sum">Timeline</summary>
+    <ol id="supervisor-timeline" class="sup-timeline" aria-label="Supervisor events"></ol>
+  </details>
+</section>
 <pre id="log" class="log" hidden></pre>
 <main id="board" aria-label="Board"></main>
 <section id="planner" class="pl" aria-labelledby="pl-h" hidden>
@@ -166,6 +190,37 @@
         <input id="dr-label-input" class="dr-label-input" type="text" placeholder="add label" aria-label="Add label" autocomplete="off">
         <button type="button" id="dr-save" class="btn dr-save">Save</button>
       </div>
+    </section>
+    <section id="dr-exec-sec" class="dr-section" aria-labelledby="dr-exec-h" hidden>
+      <h3 id="dr-exec-h" class="dr-h">Execution</h3>
+      <dl class="dr-exec">
+        <div class="dr-exec-row"><dt>Activity</dt><dd id="dr-activity"></dd></div>
+        <div class="dr-exec-row"><dt>Elapsed</dt><dd id="dr-elapsed"></dd></div>
+        <div class="dr-exec-row"><dt>Heartbeat age</dt><dd id="dr-heartbeat-age"></dd></div>
+        <div class="dr-exec-row"><dt>Progress age</dt><dd id="dr-progress-age"></dd></div>
+        <div class="dr-exec-row"><dt>Retries</dt><dd id="dr-retry-count"></dd></div>
+        <div class="dr-exec-row"><dt>Waiting</dt><dd id="dr-wait-reason"></dd></div>
+        <div class="dr-exec-row"><dt>Reservation</dt><dd id="dr-reservation-state"></dd></div>
+      </dl>
+      <div class="dr-exec-actions">
+        <button type="button" id="dr-exec-pause" class="btn" aria-describedby="dr-exec-why">Pause card</button>
+        <button type="button" id="dr-exec-resume" class="btn" aria-describedby="dr-exec-why">Resume card</button>
+        <button type="button" id="dr-release-reservations" class="btn" aria-describedby="dr-release-why">Release reservations</button>
+      </div>
+      <p id="dr-release-why" class="dr-hint"></p>
+      <h4 class="dr-h dr-h-sub">Logs</h4>
+      <ul id="dr-logs" class="dr-logs" aria-label="Log ids"></ul>
+      <h4 class="dr-h dr-h-sub">Resolve</h4>
+      <label class="dr-exec-field">Reason <input id="dr-resolve-reason" type="text" autocomplete="off" placeholder="Why this resolution is safe"></label>
+      <label class="dr-exec-field">Evidence (one reference per line) <textarea id="dr-resolve-evidence" rows="2" spellcheck="false" placeholder="Log ids, PR links, attempt ids"></textarea></label>
+      <div class="dr-exec-actions">
+        <button type="button" id="dr-resolve-retry" class="btn" aria-describedby="dr-resolve-why">Retry attempt</button>
+        <button type="button" id="dr-resolve-record_usage" class="btn" aria-describedby="dr-resolve-why">Record usage</button>
+        <button type="button" id="dr-resolve-confirm_effect" class="btn" aria-describedby="dr-resolve-why">Confirm effect</button>
+        <button type="button" id="dr-resolve-abandon" class="btn" aria-describedby="dr-resolve-why">Abandon</button>
+      </div>
+      <p id="dr-resolve-why" class="dr-hint"></p>
+      <p id="dr-exec-why" class="sr-only"></p>
     </section>
     <section id="dr-comments-sec" class="dr-section" aria-labelledby="dr-comments-h">
       <h3 id="dr-comments-h" class="dr-h">Comments</h3>

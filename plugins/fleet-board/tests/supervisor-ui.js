@@ -170,9 +170,9 @@ async function main() {
     const timeline=h.$("supervisor-timeline");
     for(const type of ["launch","completion","retry","cancellation","release_override","recovery","control_action"]) assert.ok(timeline.textContent.includes(type),"timeline omitted "+type);
     assert.match(timeline.textContent,/2026|59 seconds|1 minute/i,"structured event timestamp/age missing");
-    const intervalBefore=f.timers.length; await h.setHidden(true); assert.ok(f.timers.length>=intervalBefore,"hidden document stopped scheduling without backoff");
+    const intervalBefore=h.timers.length; await h.setHidden(true); assert.ok(h.timers.length>=intervalBefore,"hidden document stopped scheduling without backoff");
     const polls=countCalls(f,"/api/supervisor/events"); await h.fireTimers(); assert.ok(countCalls(f,"/api/supervisor/events")>=polls,"hidden polling stopped entirely");
-    await h.setHidden(false); assert.ok(f.timers.length>0,"visible document did not resume polling");
+    await h.setHidden(false); assert.ok(h.timers.length>0,"visible document did not resume polling");
   });
   await check("6. Drawer separates execution ages, reservation controls and audited resolutions",async()=>{
     const f=fakeFetch({execution:{...baseCard,paused:true,writer:false}}), h=make(f); await h.flush(); await h.waitForRequests();
@@ -180,12 +180,18 @@ async function main() {
     for(const id of ["dr-activity","dr-elapsed","dr-heartbeat-age","dr-progress-age","dr-retry-count","dr-wait-reason","dr-reservation-state"])
       assert.ok(h.$(id).children.length||h.$(id).textContent,id+" missing separate execution detail");
     assert.ok(h.$("dr-wait-reason").textContent.includes(hostile)); assert.ok(h.$("dr-wait-reason").textContent.includes("9")); assert.ok(h.$("dr-wait-reason").textContent.includes("src/locked"));
-    const release=h.$("dr-release-reservations"); assert.ok(release,"reservation release action missing"); assert.equal(release.disabled,false,"release disabled while paused with no writer"); await release.fire("click");
+    h.$("dr-resolve-reason").value="paused for reconciliation"; const release=h.$("dr-release-reservations"); assert.ok(release,"reservation release action missing"); assert.equal(release.disabled,false,"release disabled while paused with no writer"); await release.fire("click");
     const rc=f.calls.find(c=>c.url.includes("release-reservations")&&c.method==="POST"); assert.ok(rc); assert.equal(rc.body.expected_reservation_revision,5);
     for(const action of ["retry","record_usage","confirm_effect","abandon"]){
-      const button=h.$("dr-resolve-"+action); assert.ok(button,"missing resolve "+action); await button.fire("click");
+      const button=h.$("dr-resolve-"+action); assert.ok(button,"missing resolve "+action);
+      const before=f.calls.length; h.$("dr-resolve-reason").value=""; h.$("dr-resolve-evidence").value="";
+      await button.fire("click");
+      assert.equal(f.calls.slice(before).some(c=>c.url.includes("/resolve")),false,"resolve sent with an empty reason: the UI must not invent an audit reason");
+      assert.match(h.document.body.textContent,/reason/i,"empty reason gave no feedback");
+      h.$("dr-resolve-reason").value="verified by operator for "+action; h.$("dr-resolve-evidence").value="attempt-1\nlog-2";
+      await button.fire("click");
       const call=f.calls.find(c=>c.url.includes("/resolve")&&c.body&&c.body.action===action); assert.ok(call,"resolve POST missing "+action);
-      assert.ok(call.body.reason&&call.body.evidence,"reason/evidence missing "+action); assert.ok(call.body.request_id&&call.body.expected_revision!==undefined,"audit envelope missing "+action);
+      assert.equal(call.body.reason,"verified by operator for "+action); assert.deepEqual(call.body.evidence,["attempt-1","log-2"]); assert.ok(call.body.request_id&&call.body.expected_revision!==undefined,"audit envelope missing "+action);
     }
     f.enqueue("/api/cards/4/execution",response(400,{message:"resolution rejected"}));
     await h.$("dr-resolve-retry").fire("click"); assert.match(h.document.body.textContent,/resolution rejected/);
@@ -229,8 +235,9 @@ async function main() {
     assert.equal(status.getAttribute("role"),"status"); assert.ok(status.getAttribute("aria-label")); assert.ok(status.getAttribute("aria-live"));
     const controls=["supervisor-start-btn","supervisor-pause-btn","supervisor-stop-btn"];
     for(const id of controls) assert.equal(h.$(id).tagName,"BUTTON",id+" is not a button");
-    const ordered=controls.map(id=>h.$(id)).sort((a,b)=>(a.tabIndex||0)-(b.tabIndex||0));
-    assert.equal(new Set(ordered.map(n=>n.tabIndex)).size,ordered.length,"controls lack navigable tab order");
+    const positions=controls.map(id=>h.pageHtml.indexOf('id="'+id+'"'));
+    assert.ok(positions.every(x=>x>=0),"controls missing from the page"); assert.deepEqual([...positions].sort((a,b)=>a-b),positions,"controls are not in logical DOM order Start, Pause, Stop");
+    assert.doesNotMatch(h.pageHtml,/tabindex="[1-9]/i,"positive tabindex is an accessibility antipattern");
     const stop=h.$("supervisor-stop-btn"); await stop.fire("click"); const menu=h.$("supervisor-stop-menu");
     const first=menu.children[0]; const key=await h.key(first,"ArrowDown"); assert.ok(key.defaultPrevented,"arrow navigation not handled");
     const enter=await h.key(first,"Enter"); assert.ok(enter.defaultPrevented,"Enter not handled");

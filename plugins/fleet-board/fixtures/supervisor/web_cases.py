@@ -137,6 +137,13 @@ class SupervisorWebContract(unittest.TestCase):
         code, payload = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
         self.assertIn("state", payload)
+        # A legacy-configured board must not look supervisor-capable to the UI.
+        for method, path in (("GET", "/api/supervisor"), ("GET", "/api/supervisor/events"),
+                             ("GET", "/api/cards/1/execution")):
+            code, _ = self.http(method, path)
+            self.assertEqual(code, 404, "%s %s must be 404 when supervisor.enabled is not true" % (method, path))
+        code, _ = self.http("POST", "/api/supervisor/pause", {"request_id": "r", "expected_revision": 0})
+        self.assertEqual(code, 404)
 
     def test_enabled_mode_proxies_supervisor_and_never_mutates_legacy_markers(self):
         self.start_service()

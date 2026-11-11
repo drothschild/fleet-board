@@ -558,6 +558,9 @@ function renderCard(c, repo) {
     li.appendChild(el("div", "card-meta warn", fails + (fails === 1 ? " failed attempt" : " failed attempts")));
   }
 
+  const exec = cardExecLine(c);
+  if (exec) li.appendChild(el("div", "card-meta card-exec", exec));
+
   const labels = Array.isArray(c.labels) ? c.labels : [];
   if (labels.length) {
     const ul = el("ul", "labels");
@@ -654,6 +657,7 @@ async function moveCard(n, state) {
 // --- header and run ----------------------------------------------------------
 
 async function pollRun() {
+  if (S.supMode) return; // the supervisor status replaces the run poll
   clearTimeout(S.runTimer);
   const my = ++S.runSeq;
   let alive = isAlive(S.run);
@@ -828,6 +832,10 @@ async function openDrawer(n, opener) {
     opener: opener || (prev ? prev.opener : document.activeElement),
     seq: prev ? prev.seq + 1 : 1,
     busy: false,
+    exec: null,       // the last /api/cards/<n>/execution reply
+    execSeq: 0,
+    execBusy: false,
+    req: null,        // the execution command that may be retried
   };
   S.drawer = d;
   clearDrawer(n);
@@ -847,6 +855,7 @@ async function openDrawer(n, opener) {
   }
   renderDrawer(card);
   $("dr-title").focus();
+  loadExecution(d);
 }
 
 const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-acc-input", "dr-blk-input",
@@ -877,6 +886,7 @@ function clearDrawer(n) {
   $("dr-comments").replaceChildren();
   $("dr-meta").replaceChildren();
   setDrawerFields(false);
+  clearExecution();
   updateDirty();
 }
 
@@ -2271,6 +2281,783 @@ function bindPlanner() {
   });
 }
 
+// --- supervisor --------------------------------------------------------------
+// Supervisor mode starts when GET /api/supervisor answers 200. Nothing here
+// sends a mutating request on load or from a poll: commands run only from a
+// click or key press. Every server-provided value reaches the page through
+// textContent / createTextNode (clean() also drops control characters).
+
+const SUP_POLL_MS = 3000;
+const SUP_HIDDEN_MS = 30000;    // polling backs off while the document is hidden
+const SUP_EVENT_LIMIT = 100;    // events per page; the server allows at most 500
+const SUP_EVENT_PAGES = 5;      // pages fetched in one poll
+const SUP_EVENT_KEEP = 200;     // timeline rows kept
+const SUP_CONTROLS = ["start", "pause", "resume", "stop"];
+const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
+
+S.supMode = false;
+S.supervisor = null;  // the last /api/supervisor reply (or the body of a 409)
+S.sup = {
+  seq: 0,           // newest status poll; an older one is dropped
+  ackSeq: 0,        // bumped by a command reply: polls started before it are dropped
+  timerSeq: 0,
+  idSeq: 0,
+  stale: false,     // unreachable, or the last poll failed
+  reason: "",
+  okAt: null,       // ms of the last good status poll
+  busy: false,      // a command is in flight
+  req: null,        // {key, id, body}: the command a click may retry
+  ack: null,        // {kind, phase, state_revision}: acknowledged, not yet observed
+  hint: 0,          // the revision an acknowledgement reported
+  cursor: 0,        // last event sequence seen
+  seen: {},
+  events: [],
+  notice: null,
+  menuOpen: false,
+  statusText: null,
+  visBound: false,
+};
+
+function clean(v, max) {
+  let t = String(v === undefined || v === null ? "" : v).replace(CONTROL_RE, "").replace(/\s+/g, " ");
+  max = max || 300;
+  if (t.length > max) t = t.slice(0, max) + "…";
+  return t;
+}
+
+function isNum(v) {
+  return typeof v === "number" && isFinite(v);
+}
+
+// A timestamp from the server: an ISO string or epoch seconds. -> ms or null.
+function toMs(v) {
+  if (isNum(v)) return v * 1000;
+  const t = typeof v === "string" ? Date.parse(v) : NaN;
+  return isNaN(t) ? null : t;
+}
+
+function fmtUtc(ms) {
+  return new Date(ms).toISOString().replace("T", " ").replace(/(\.\d+)?Z$/, " UTC");
+}
+
+function ageText(ms) {
+  const secs = Math.floor((Date.now() - ms) / 1000);
+  if (secs < 0) return "in the future";
+  if (secs < 5) return "just now";
+  if (secs < 60) return secs + " seconds ago";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + (mins === 1 ? " minute ago" : " minutes ago");
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return hours + (hours === 1 ? " hour ago" : " hours ago");
+  const days = Math.floor(hours / 24);
+  return days + " days ago";
+}
+
+function fmtDuration(sec) {
+  if (!isNum(sec) || sec < 0) return "unknown";
+  sec = Math.floor(sec);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return h + "h " + m + "m " + s + "s";
+  if (m) return m + "m " + s + "s";
+  return s + "s";
+}
+
+// msgText(reply): the reason the server gave, whatever key it used.
+function msgText(r) {
+  const d = r.data || {};
+  for (const k of ["reason", "message", "error"]) {
+    if (typeof d[k] === "string" && d[k]) return clean(d[k], 400);
+  }
+  return "the server answered HTTP " + r.status;
+}
+
+function newRequestId() {
+  S.sup.idSeq++;
+  return "ui-" + Date.now().toString(36) + "-" + S.sup.idSeq + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+// runCommand(holder, key, path, build): POSTs one revision-bound command.
+// holder.req keeps {key, id, body} after a lost or 5xx reply, so the next click
+// of the SAME action resends the identical request id; any other answer clears
+// it. Returns the reply, or null when no reply arrived.
+async function runCommand(holder, key, path, build) {
+  if (!holder.req || holder.req.key !== key) holder.req = { key: key, id: newRequestId(), body: null };
+  const req = holder.req;
+  if (!req.body) req.body = Object.assign({ request_id: req.id }, build());
+  let r = null;
+  try {
+    r = await api("POST", path, req.body);
+  } catch (e) {
+    r = null;
+  }
+  if (r && r.status < 500) holder.req = null;
+  return r;
+}
+
+function showNotice(msg) {
+  const sup = S.sup;
+  if (!sup.notice) {
+    const box = el("div", "sup-notice");
+    box.setAttribute("role", "alert");
+    box.hidden = true;
+    const text = el("span", "sup-notice-text");
+    const close = el("button", "text-btn", "Dismiss");
+    close.type = "button";
+    close.addEventListener("click", hideNotice);
+    box.appendChild(text);
+    box.appendChild(close);
+    document.body.appendChild(box);
+    sup.notice = { box: box, text: text };
+  }
+  sup.notice.text.textContent = clean(msg, 500);
+  sup.notice.box.hidden = false;
+}
+
+function hideNotice() {
+  if (S.sup.notice) S.sup.notice.box.hidden = true;
+}
+
+// --- supervisor: mode, polling ------------------------------------------------
+
+function looksLikeSupervisor(d) {
+  return !!d && typeof d === "object" && !Array.isArray(d) &&
+    ("revision" in d || "desired_mode" in d || "unreachable" in d || "schema_version" in d);
+}
+
+async function detectSupervisor() {
+  let r;
+  try {
+    r = await api("GET", "/api/supervisor");
+  } catch (e) {
+    return; // fetchBoard reports an unreachable server; the legacy run controls stay
+  }
+  if (!r.ok || !looksLikeSupervisor(r.data)) return;
+  enterSupervisorMode();
+  await supervisorTick(r);
+}
+
+function enterSupervisorMode() {
+  if (S.supMode) return;
+  S.supMode = true;
+  const root = $("supervisor");
+  // index.html already places it; this only matters for a page built without it
+  if (!document.body.contains(root)) document.body.appendChild(root);
+  root.hidden = false;
+  const status = $("supervisor-status");
+  if (!root.contains(status)) root.appendChild(status);
+  if (!root.contains($("supervisor-timeline"))) root.appendChild($("supervisor-timeline"));
+  status.hidden = false;
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-label", "Supervisor status");
+  $("start-btn").hidden = true;
+  $("stop-btn").hidden = true;
+  $("run-pill").hidden = true;
+  $("run-cost").hidden = true;
+  $("supervisor-stop-menu").replaceChildren($("supervisor-drain-btn"), $("supervisor-cancel-btn"));
+  setStopMenu(false);
+  if (!S.sup.visBound) {
+    S.sup.visBound = true;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) scheduleSupervisor(SUP_HIDDEN_MS);
+      else supervisorTick();
+    });
+  }
+  if (S.drawer && S.drawer.n !== null && !S.drawer.exec) loadExecution(S.drawer);
+}
+
+function scheduleSupervisor(ms) {
+  const my = ++S.sup.timerSeq;
+  setTimeout(function () {
+    if (my === S.sup.timerSeq) return supervisorTick();
+  }, ms);
+}
+
+// supervisorTick(first): one status poll, then the event pages. first is an
+// already fetched /api/supervisor reply (the mode detection's).
+async function supervisorTick(first) {
+  const sup = S.sup;
+  const seq = ++sup.seq;
+  const ack0 = sup.ackSeq;
+  let r = first || null;
+  let failure = null;
+  if (!r) {
+    try {
+      r = await api("GET", "/api/supervisor");
+    } catch (e) {
+      failure = "no answer from the board server";
+    }
+  }
+  if (seq !== sup.seq) return; // a newer poll owns the schedule
+  if (r && !r.ok) failure = msgText(r);
+  if (r && r.ok && !looksLikeSupervisor(r.data)) failure = "unreadable supervisor status";
+  if (failure) {
+    markStale("supervisor status unavailable: " + failure);
+  } else if (ack0 === sup.ackSeq) {
+    adoptSnapshot(r.data);
+  }
+  if (!failure && !sup.stale && ack0 === sup.ackSeq) await pollEvents(seq);
+  if (seq !== sup.seq) return;
+  scheduleSupervisor(document.hidden ? SUP_HIDDEN_MS : SUP_POLL_MS);
+}
+
+function markStale(reason) {
+  S.sup.stale = true;
+  S.sup.reason = reason;
+  renderSupervisor();
+}
+
+// adoptSnapshot(data): replaces the last status with a fresh full snapshot.
+function adoptSnapshot(data) {
+  const sup = S.sup;
+  const was = sup.stale;
+  S.supervisor = data;
+  sup.hint = 0;
+  sup.stale = data.unreachable === true;
+  sup.reason = sup.stale ? clean(data.reason || data.error || "the supervisor did not answer", 300) : "";
+  if (!sup.stale) sup.okAt = Date.now();
+  const ack = sup.ack;
+  if (ack && !sup.stale) {
+    const view = supView() || {};
+    const phase = supPhase(view);
+    const reached = ack.kind === "pause" ? phase === "paused"
+      : ack.kind === "stop" ? phase === "stopped" || phase === "idle"
+      : view.ready === true && phase === "running";
+    const moved = isNum(ack.state_revision) && isNum(view.revision) && view.revision > ack.state_revision;
+    if (reached || moved) sup.ack = null;
+  }
+  if (was && !sup.stale) fetchBoard(true); // reconnected: a fresh board with the snapshot
+  renderSupervisor();
+}
+
+async function pollEvents(seq) {
+  const sup = S.sup;
+  for (let page = 0; page < SUP_EVENT_PAGES; page++) {
+    let r;
+    try {
+      r = await api("GET", "/api/supervisor/events?after=" + sup.cursor + "&limit=" + SUP_EVENT_LIMIT);
+    } catch (e) {
+      return;
+    }
+    if (seq !== sup.seq) return;
+    if (!r.ok) return;
+    const d = r.data || {};
+    if (d.snapshot_required === true) {
+      // the cursor was compacted away: start over from a full snapshot
+      sup.cursor = 0;
+      sup.seen = {};
+      sup.events = [];
+      renderTimeline();
+      fetchBoard(true);
+      try {
+        const s = await api("GET", "/api/supervisor");
+        if (seq === sup.seq && s.ok && looksLikeSupervisor(s.data)) adoptSnapshot(s.data);
+      } catch (e) {
+        markStale("supervisor status unavailable: no answer from the board server");
+      }
+      return;
+    }
+    const list = Array.isArray(d.events) ? d.events : [];
+    let top = sup.cursor;
+    for (const ev of list) {
+      if (!ev || typeof ev !== "object" || !isNum(ev.sequence)) continue;
+      if (ev.sequence > top) top = ev.sequence;
+      if (sup.seen[ev.sequence]) continue;
+      sup.seen[ev.sequence] = true;
+      sup.events.push(ev);
+    }
+    const next = isNum(d.next_cursor) ? d.next_cursor : top;
+    if (next > sup.cursor) sup.cursor = next; // the cursor never moves back
+    if (top > sup.cursor) sup.cursor = top;
+    sup.events.sort(function (a, b) { return a.sequence - b.sequence; });
+    if (sup.events.length > SUP_EVENT_KEEP) {
+      for (const old of sup.events.splice(0, sup.events.length - SUP_EVENT_KEEP)) delete sup.seen[old.sequence];
+    }
+    renderTimeline();
+    if (list.length < SUP_EVENT_LIMIT) return;
+  }
+}
+
+// --- supervisor: rendering ----------------------------------------------------
+
+function supView() {
+  const s = S.supervisor;
+  if (!s) return null;
+  return s.unreachable && s.last_known && typeof s.last_known === "object" ? s.last_known : s;
+}
+
+function supPhase(v) {
+  return v.observed_phase || v.phase || null;
+}
+
+function supItem(cls, label, value) {
+  const item = el("span", "sup-item" + (cls ? " " + cls : ""));
+  if (label) item.appendChild(el("span", "sup-k", label));
+  item.appendChild(el("span", "sup-v", value));
+  return item;
+}
+
+function renderSupervisor() {
+  if (!S.supMode) return;
+  const sup = S.sup;
+  const snap = S.supervisor;
+  const view = supView() || {};
+  const frag = document.createDocumentFragment();
+  const phase = supPhase(view);
+
+  // headline: desired mode, observed phase, readiness
+  const head = el("span", "sup-head");
+  head.appendChild(supItem("sup-mode", "desired", clean(view.desired_mode || "unknown", 40)));
+  if (sup.ack) {
+    head.appendChild(supItem("sup-phase pending", "phase", clean(sup.ack.phase, 40) + " (acknowledged, waiting for the supervisor to report it)"));
+  } else {
+    head.appendChild(supItem("sup-phase", "phase", clean(phase || "unknown", 40)));
+  }
+  head.appendChild(supItem(view.ready === true ? "" : "sup-warn", "", view.ready === true ? "ready" : view.ready === false ? "not ready" : "readiness unknown"));
+  frag.appendChild(head);
+
+  if (sup.stale) {
+    const at = snap ? (snap.last_known_at !== undefined && snap.last_known_at !== null ? snap.last_known_at : view.heartbeat_at) : null;
+    const ms = toMs(at) !== null ? toMs(at) : sup.okAt;
+    const row = el("span", "sup-item sup-warn sup-stale");
+    row.appendChild(el("span", "sup-k", "unreachable"));
+    row.appendChild(el("span", "sup-v", clean(sup.reason || "no connection", 300)));
+    frag.appendChild(row);
+    if (ms !== null) {
+      const when = el("span", "sup-item");
+      when.appendChild(el("span", "sup-k", "last known"));
+      const t = el("time", "sup-v", typeof at === "string" && toMs(at) !== null ? clean(at, 64) : fmtUtc(ms));
+      t.setAttribute("datetime", new Date(ms).toISOString());
+      when.appendChild(t);
+      when.appendChild(el("span", "sup-v", ageText(ms)));
+      frag.appendChild(when);
+    }
+  }
+
+  // slots: never shown as 0 when the supervisor cannot say
+  const cap = isNum(view.global_capacity) ? String(view.global_capacity) : "unknown";
+  if (sup.stale || !isNum(view.occupancy)) {
+    frag.appendChild(supItem("sup-warn", "", "occupancy unknown"));
+    frag.appendChild(supItem("", "global cap", cap));
+  } else {
+    frag.appendChild(supItem("", "slots", view.occupancy + " / " + cap));
+  }
+  const providers = view.providers && typeof view.providers === "object" ? view.providers : {};
+  for (const name of Object.keys(providers).slice(0, 20)) {
+    const p = providers[name] || {};
+    const known = !sup.stale && isNum(p.occupied);
+    frag.appendChild(supItem("sup-prov", clean(name, 60), (known ? p.occupied : "unknown") + " / " + (isNum(p.capacity) ? p.capacity : "unknown")));
+  }
+
+  const counts = view.counts && typeof view.counts === "object" ? view.counts : {};
+  for (const k of ["ready", "running", "waiting", "attention"]) {
+    const n = counts[k];
+    const warn = k === "attention" && isNum(n) && n > 0;
+    frag.appendChild(supItem(warn ? "sup-warn" : "", k, isNum(n) ? n : "unknown"));
+  }
+
+  const b = view.budget && typeof view.budget === "object" ? view.budget : null;
+  if (b) {
+    const parts = [isNum(b.known_spend) ? "$" + b.known_spend.toFixed(2) + " known" : "spend unknown"];
+    if (b.unknown_spend === true) parts.push("plus unknown spend");
+    const ms = toMs(b.deadline);
+    frag.appendChild(supItem(b.unknown_spend === true ? "sup-warn" : "", "budget", parts.join(", ")));
+    if (b.deadline) frag.appendChild(supItem("", "deadline", ms !== null ? fmtUtc(ms) : clean(b.deadline, 64)));
+  } else {
+    frag.appendChild(supItem("sup-warn", "budget", "unknown"));
+  }
+
+  // boot registration: only a verified registration is reported as present
+  const boot = view.boot_registration && typeof view.boot_registration === "object" ? view.boot_registration : null;
+  const bootState = boot ? String(boot.state || "") : "";
+  if (!boot) frag.appendChild(supItem("sup-warn", "boot registration", "unknown"));
+  else if (bootState === "missing") frag.appendChild(supItem("sup-warn", "boot registration", "missing (local session only; it will not restart after a reboot)"));
+  else if (boot.verified === true || bootState === "verified") frag.appendChild(supItem("", "boot registration", "registered and verified"));
+  else frag.appendChild(supItem("sup-warn", "boot registration", clean(bootState || "unknown", 60) + " (not verified)"));
+
+  const hb = toMs(view.heartbeat_at);
+  if (hb !== null && !sup.stale) frag.appendChild(supItem("", "heartbeat", ageText(hb)));
+
+  const le = view.last_error;
+  const leText = le && typeof le === "object" ? le.message || JSON.stringify(le) : le;
+  if (leText) frag.appendChild(supItem("sup-warn sup-err", "last error", clean(leText, 400)));
+
+  const text = frag.textContent;
+  if (text !== sup.statusText) {
+    sup.statusText = text;
+    $("supervisor-status").replaceChildren(frag);
+  }
+  $("supervisor-status").setAttribute("aria-label", "Supervisor status: desired " + clean(view.desired_mode || "unknown", 40) + ", phase " + clean(sup.ack ? sup.ack.phase : phase || "unknown", 40));
+
+  renderSupervisorControls(view);
+  $("supervisor-retry-btn").hidden = !sup.stale;
+  $("supervisor-retry-btn").disabled = false;
+}
+
+// setControl(btn, enabled, reason): a disabled control says why in its title and
+// in a description it points at.
+function setControl(btn, enabled, reason, whyId) {
+  btn.disabled = !enabled;
+  const why = $(whyId || btn.id + "-why");
+  if (enabled) {
+    btn.title = "";
+    btn.removeAttribute("aria-describedby");
+    why.textContent = "";
+  } else {
+    btn.title = reason;
+    btn.setAttribute("aria-describedby", why.id);
+    why.textContent = reason;
+  }
+}
+
+function renderSupervisorControls(view) {
+  const sup = S.sup;
+  const desired = view.desired_mode;
+  const phase = supPhase(view);
+  let gate = null;
+  if (sup.stale) gate = "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Retry the connection first.";
+  else if (!S.supervisor || !isNum(S.supervisor.revision)) gate = "No supervisor status yet.";
+  else if (sup.busy) gate = "Another supervisor command is in flight.";
+  const start = $("supervisor-start-btn");
+  const pause = $("supervisor-pause-btn");
+  const resume = $("supervisor-resume-btn");
+  const stop = $("supervisor-stop-btn");
+  setControl(start, !gate && desired !== "paused" && phase !== "stopping",
+    gate || (desired === "paused" ? "The session is paused: use Resume." : "The supervisor is stopping."));
+  setControl(pause, !gate && desired === "running",
+    gate || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
+  setControl(resume, !gate && desired === "paused",
+    gate || "The session is not paused.");
+  setControl(stop, !gate && desired !== "stopped",
+    gate || "The supervisor is already stopped.");
+  if (stop.disabled && sup.menuOpen) setStopMenu(false);
+  start.classList.toggle("primary", false);
+  pause.classList.toggle("primary", !pause.disabled);
+  resume.classList.toggle("primary", pause.disabled && !resume.disabled);
+  start.classList.toggle("primary", pause.disabled && resume.disabled && !start.disabled);
+  renderExecution(S.drawer); // the card controls follow the same stale/busy gate
+}
+
+function renderTimeline() {
+  const frag = document.createDocumentFragment();
+  for (const ev of S.sup.events) frag.appendChild(renderEvent(ev));
+  $("supervisor-timeline").replaceChildren(frag);
+}
+
+function eventDetail(ev) {
+  const parts = [];
+  if (ev.card !== undefined && ev.card !== null) parts.push("card #" + clean(ev.card, 20));
+  const p = ev.payload;
+  if (p && typeof p === "object" && !Array.isArray(p)) {
+    for (const k of Object.keys(p).slice(0, 8)) {
+      const v = p[k];
+      parts.push(clean(k, 40) + ": " + (v !== null && typeof v === "object" ? clean(JSON.stringify(v), 160) : clean(v, 160)));
+    }
+  } else if (typeof p === "string") {
+    parts.push(clean(p, 200));
+  }
+  if (typeof ev.message === "string") parts.push(clean(ev.message, 200));
+  return parts.join(" · ");
+}
+
+// One timeline row: the date and age come from the structured timestamp only.
+function renderEvent(ev) {
+  const li = el("li", "sup-ev");
+  li.dataset.seq = String(ev.sequence);
+  li.appendChild(el("span", "sup-ev-type", clean(ev.type || "event", 60)));
+  const ms = toMs(ev.timestamp);
+  if (ms !== null) {
+    const t = el("time", "sup-ev-time", fmtUtc(ms));
+    t.setAttribute("datetime", new Date(ms).toISOString());
+    li.appendChild(t);
+    li.appendChild(el("span", "sup-ev-age", ageText(ms)));
+  } else {
+    li.appendChild(el("span", "sup-ev-time", "time unknown"));
+  }
+  const detail = eventDetail(ev);
+  if (detail) li.appendChild(el("span", "sup-ev-detail", detail));
+  return li;
+}
+
+// --- supervisor: commands -----------------------------------------------------
+
+function expectedRevision() {
+  const rev = S.supervisor && isNum(S.supervisor.revision) ? S.supervisor.revision : 0;
+  return Math.max(rev, S.sup.hint);
+}
+
+const ACK_PHASE = { start: "starting", resume: "starting", pause: "pausing", stop: "stopping" };
+
+// supCommand(kind, extra): kind is start|pause|resume|stop. The reply is an
+// acknowledgement only: the page shows it as such until a poll observes it.
+async function supCommand(kind, extra) {
+  const sup = S.sup;
+  if (sup.busy || sup.stale || !S.supervisor) return;
+  const key = kind + (extra && extra.mode ? ":" + extra.mode : "");
+  hideNotice();
+  sup.busy = true;
+  renderSupervisor();
+  const r = await runCommand(sup, key, "/api/supervisor/" + kind, function () {
+    return Object.assign({ expected_revision: expectedRevision() }, extra || {});
+  });
+  sup.busy = false;
+  const verb = kind === "stop" && extra ? "Stop (" + extra.mode + ")" : kind.charAt(0).toUpperCase() + kind.slice(1);
+  if (!r) {
+    showNotice(verb + ": the board server did not answer. Click again to retry the same request.");
+  } else if (r.status === 409) {
+    const cur = r.data && (r.data.snapshot || r.data.current);
+    ++sup.ackSeq;
+    sup.ack = null;
+    if (looksLikeSupervisor(cur)) adoptSnapshot(cur);
+    showNotice(verb + " not applied, the supervisor state changed: " + msgText(r));
+  } else if (!r.ok) {
+    showNotice(verb + " failed: " + msgText(r));
+  } else {
+    const d = r.data || {};
+    ++sup.ackSeq;
+    if (isNum(d.state_revision)) sup.hint = d.state_revision;
+    sup.ack = { kind: kind, phase: typeof d.phase === "string" && d.phase ? d.phase : ACK_PHASE[kind], state_revision: isNum(d.state_revision) ? d.state_revision : null };
+  }
+  renderSupervisor();
+}
+
+function setStopMenu(open, focusFirst) {
+  const menu = $("supervisor-stop-menu");
+  S.sup.menuOpen = open;
+  menu.hidden = !open;
+  $("supervisor-stop-btn").setAttribute("aria-expanded", String(open));
+  if (open && focusFirst) $("supervisor-drain-btn").focus();
+}
+
+function closeStopMenu() {
+  setStopMenu(false);
+  $("supervisor-stop-btn").focus();
+}
+
+function runStop(mode) {
+  closeStopMenu();
+  if (mode === "cancel" && !confirm("Cancel stops the active work now. Stop in cancel mode?")) return;
+  return supCommand("stop", { mode: mode });
+}
+
+function menuItems() {
+  return [$("supervisor-drain-btn"), $("supervisor-cancel-btn")];
+}
+
+function menuKey(e, item) {
+  const items = menuItems();
+  const i = items.indexOf(item);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  } else if (e.key === "Home" || e.key === "End") {
+    e.preventDefault();
+    items[e.key === "Home" ? 0 : items.length - 1].focus();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeStopMenu();
+  } else if (e.key === "Tab") {
+    setStopMenu(false);
+  } else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    runStop(item === items[1] ? "cancel" : "drain");
+  }
+}
+
+function bindSupervisor() {
+  $("supervisor-start-btn").addEventListener("click", function () { supCommand("start"); });
+  $("supervisor-pause-btn").addEventListener("click", function () { supCommand("pause"); });
+  $("supervisor-resume-btn").addEventListener("click", function () { supCommand("resume"); });
+  $("supervisor-retry-btn").addEventListener("click", function () { supervisorTick(); });
+
+  const stop = $("supervisor-stop-btn");
+  const menu = $("supervisor-stop-menu");
+  stop.addEventListener("click", function () { setStopMenu(!S.sup.menuOpen); });
+  stop.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault(); // the click would toggle the menu a second time
+      if (e.key === " ") setStopMenu(!S.sup.menuOpen);
+      else setStopMenu(true, true);
+    } else if (e.key === "Escape" && S.sup.menuOpen) {
+      e.preventDefault();
+      closeStopMenu();
+    }
+  });
+  stop.addEventListener("keyup", function (e) {
+    if (e.key === " ") e.preventDefault();
+  });
+  menu.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeStopMenu();
+    }
+  });
+  menuItems().forEach(function (item) {
+    item.addEventListener("keydown", function (e) { menuKey(e, item); });
+  });
+  $("supervisor-drain-btn").addEventListener("click", function () { runStop("drain"); });
+  $("supervisor-cancel-btn").addEventListener("click", function () { runStop("cancel"); });
+  document.addEventListener("click", function (e) {
+    if (S.sup.menuOpen && !menu.contains(e.target) && !stop.contains(e.target)) setStopMenu(false);
+  });
+
+  $("dr-exec-pause").addEventListener("click", function () {
+    execAction("pause", "pause", "Pause card", function () { return { mode: "drain" }; });
+  });
+  $("dr-exec-resume").addEventListener("click", function () {
+    execAction("resume", "resume", "Resume card", function () { return {}; });
+  });
+  $("dr-release-reservations").addEventListener("click", function () {
+    execAction("release", "release-reservations", "Release reservations", function () {
+      const x = (S.drawer && S.drawer.exec) || {};
+      return { reason: resolveReason("release reservations"), expected_reservation_revision: x.reservation_revision };
+    });
+  });
+  for (const action of ["retry", "record_usage", "confirm_effect", "abandon"]) {
+    $("dr-resolve-" + action).addEventListener("click", function () {
+      if (action === "abandon" && !confirm("Abandon stops further work on this card. Continue?")) return;
+      execAction("resolve:" + action, "resolve", "Resolve (" + action + ")", function () {
+        return {
+          action: action,
+          reason: resolveReason(action),
+          evidence: lines($("dr-resolve-evidence").value),
+        };
+      });
+    });
+  }
+}
+
+// --- supervisor: card execution -----------------------------------------------
+
+function cardExecLine(c) {
+  const parts = [];
+  if (c.activity) parts.push("activity: " + clean(c.activity, 60));
+  if (c.wait_reason) parts.push("waiting: " + clean(c.wait_reason, 120));
+  if (c.reservation_state) parts.push("reservation: " + clean(c.reservation_state, 60));
+  return parts.join(" · ");
+}
+
+function resolveReason(what) {
+  const typed = $("dr-resolve-reason").value.trim();
+  if (!typed) throw new Error("A reason is required before you can " + what + ".");
+  return typed;
+}
+
+function execRevision(d) {
+  if (d.exec && isNum(d.exec.revision)) return d.exec.revision;
+  return S.supervisor && isNum(S.supervisor.revision) ? S.supervisor.revision : 0;
+}
+
+function clearExecution() {
+  $("dr-exec-sec").hidden = true;
+  for (const id of ["dr-activity", "dr-elapsed", "dr-heartbeat-age", "dr-progress-age", "dr-retry-count", "dr-wait-reason", "dr-reservation-state"]) {
+    $(id).textContent = "";
+  }
+  $("dr-logs").replaceChildren();
+  $("dr-resolve-reason").value = "";
+  $("dr-resolve-evidence").value = "";
+}
+
+async function loadExecution(d) {
+  if (!S.supMode || !d || d.n === null) return;
+  const seq = ++d.execSeq;
+  let r;
+  try {
+    r = await api("GET", "/api/cards/" + d.n + "/execution");
+  } catch (e) {
+    r = null;
+  }
+  if (S.drawer !== d || seq !== d.execSeq) return;
+  if (!r) {
+    showNotice("Could not refresh execution for #" + d.n + ": the board server did not answer.");
+  } else if (r.ok) {
+    d.exec = r.data;
+  } else {
+    if (r.data && r.data.execution && typeof r.data.execution === "object") d.exec = r.data.execution;
+    showNotice("Could not refresh execution for #" + d.n + ": " + msgText(r));
+  }
+  renderExecution(d);
+}
+
+// renderExecution(d): the drawer's Execution section. Activity, elapsed,
+// heartbeat age and progress age are separate fields; a field the supervisor did
+// not report reads "unknown", never zero.
+function renderExecution(d) {
+  const sec = $("dr-exec-sec");
+  if (!d || d.n === null || !S.supMode) {
+    sec.hidden = true;
+    return;
+  }
+  sec.hidden = false;
+  const x = d.exec || {};
+  $("dr-activity").textContent = x.activity ? clean(x.activity, 80) : "unknown";
+  $("dr-elapsed").textContent = fmtDuration(x.elapsed_seconds);
+  $("dr-heartbeat-age").textContent = fmtDuration(x.heartbeat_age_seconds);
+  $("dr-progress-age").textContent = fmtDuration(x.progress_age_seconds);
+  $("dr-retry-count").textContent = isNum(x.retry_count) ? String(x.retry_count) : "unknown";
+
+  let wait = x.wait_reason ? clean(x.wait_reason, 300) : d.exec ? "not waiting" : "unknown";
+  if (x.blocking_card !== undefined && x.blocking_card !== null) wait += " (blocked by card #" + clean(x.blocking_card, 20) + ")";
+  if (x.blocking_path) wait += " (path " + clean(x.blocking_path, 200) + ")";
+  $("dr-wait-reason").textContent = wait;
+  const rs = x.reservation_state ? clean(x.reservation_state, 80) : d.exec ? "none" : "unknown";
+  $("dr-reservation-state").textContent = rs + (isNum(x.reservation_revision) ? " (revision " + x.reservation_revision + ")" : "");
+
+  const logs = Array.isArray(x.logs) ? x.logs : [];
+  const ul = document.createDocumentFragment();
+  for (const l of logs.slice(0, 50)) {
+    const id = l && typeof l === "object" ? l.id : l;
+    ul.appendChild(el("li", "dr-log", clean(id, 200)));
+  }
+  if (!logs.length) ul.appendChild(el("li", "dr-log none", "no logs"));
+  $("dr-logs").replaceChildren(ul);
+
+  let gate = null;
+  if (S.sup.stale) gate = "The supervisor is unreachable. Retry the connection first.";
+  else if (!d.exec) gate = "Execution status is not loaded.";
+  else if (d.execBusy || S.sup.busy) gate = "A command is in flight.";
+  setControl($("dr-exec-pause"), !gate && x.paused !== true, gate || "The card is already paused.", "dr-exec-why");
+  setControl($("dr-exec-resume"), !gate && x.paused === true, gate || "The card is not paused.", "dr-exec-why");
+  let rel = gate;
+  if (!rel && x.paused !== true) rel = "Pause the card first: reservations are released only while it is paused.";
+  else if (!rel && x.writer !== false) rel = "A writer may still be active: reservations stay held until none is.";
+  else if (!rel && !isNum(x.reservation_revision)) rel = "No reservation revision to release.";
+  setControl($("dr-release-reservations"), !rel, rel, "dr-release-why");
+  for (const action of ["retry", "record_usage", "confirm_effect", "abandon"]) {
+    setControl($("dr-resolve-" + action), !gate, gate, "dr-resolve-why");
+  }
+}
+
+// execAction(key, suffix, verb, build): a card command, then a fresh read of the
+// card's execution whatever the answer was.
+async function execAction(key, suffix, verb, build) {
+  const d = S.drawer;
+  if (!d || d.n === null || d.execBusy || S.sup.stale || !d.exec) return;
+  hideNotice();
+  d.execBusy = true;
+  renderExecution(d);
+  let extra;
+  try { extra = build(); } catch (e) {
+    // e.g. a missing reason: say so and send nothing (never invent an audit reason).
+    d.execBusy = false;
+    renderExecution(d);
+    showNotice(verb + ": " + e.message);
+    return;
+  }
+  const r = await runCommand(d, key, "/api/cards/" + d.n + "/execution/" + suffix, function () {
+    return Object.assign({ expected_revision: execRevision(d) }, extra);
+  });
+  d.execBusy = false;
+  if (!r) showNotice(verb + ": the board server did not answer. Click again to retry the same request.");
+  else if (!r.ok) {
+    if (r.status === 409 && r.data && r.data.execution && typeof r.data.execution === "object") d.exec = r.data.execution;
+    showNotice(verb + " failed: " + msgText(r));
+  }
+  await loadExecution(d);
+}
+
 // --- start -------------------------------------------------------------------
 
 function init() {
@@ -2286,11 +3073,13 @@ function init() {
       pollRun();
     }
   });
+  bindSupervisor();
   bindDrawer();
   bindImport();
   bindPlanner();
   fetchBoard().then(drawerFromUrl);
   pollRun();
+  detectSupervisor();
 }
 
 init();

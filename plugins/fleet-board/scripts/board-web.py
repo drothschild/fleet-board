@@ -1396,15 +1396,25 @@ def supervisor_run_status(cfg):
             "out_tail": None, "supervisor": status}
 
 
+def require_supervisor_mode():
+    """The supervisor API exists only when supervisor.enabled is true; a legacy board answers 404."""
+    cfg, _ = ctx()
+    if not supervisor_enabled(cfg):
+        raise ApiError(404, "not found")
+
+
 def get_supervisor(params, body):
+    require_supervisor_mode()
     return 200, supervisor_snapshot()
 
 
 def supervisor_command(params, body):
+    require_supervisor_mode()
     return proxy_control(params["action"], body)
 
 
 def supervisor_events(params, body):
+    require_supervisor_mode()
     query = params.get("query", {})
     try:
         after = int(query.get("after", ["0"])[0])
@@ -1417,10 +1427,12 @@ def supervisor_events(params, body):
 
 
 def card_execution(params, body):
+    require_supervisor_mode()
     return 200, proxy_call("card_execution", card=params["n"])
 
 
 def card_execution_log(params, body):
+    require_supervisor_mode()
     log_id = params.get("log_id", "")
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", log_id) or ".." in log_id:
         raise ApiError(400, "invalid log id")
@@ -1433,6 +1445,7 @@ def card_execution_log(params, body):
 
 
 def card_control(params, body):
+    require_supervisor_mode()
     action = params["action"]
     if action == "pause": command = "card_pause"
     elif action == "resume": command = "card_resume"

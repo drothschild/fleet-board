@@ -13,6 +13,29 @@ module.exports = function loadSupervisorBoard(jsPath, fetch, options = {}) {
   class FakeDate extends Date { constructor(...args) { super(...(args.length ? args : [clock.now])); } static now() { return clock.now; } }
   h.ctx.Date = FakeDate;
   h.ctx.__advanceClock = milliseconds => { clock.now += milliseconds; };
+  // The shared harness fabricates a DIV for every id and never parses index.html. Teach this
+  // wrapper the real tag of each id declared in the page, and make focus() observable.
+  const fs = require("fs");
+  const path = require("path");
+  const html = fs.readFileSync(path.join(path.dirname(jsPath), "index.html"), "utf8");
+  const tags = {};
+  for (const m of html.matchAll(/<([a-zA-Z0-9]+)\b[^>]*?\sid="([^"]+)"/g)) tags[m[2]] = m[1].toUpperCase();
+  const originalGet = document.getElementById;
+  document.getElementById = function (id) {
+    const node = originalGet.call(document, id);
+    if (node && !node.__supervisorPatched) {
+      node.__supervisorPatched = true;
+      if (tags[id] && node.tagName === "DIV") node.tagName = tags[id];
+      if (!Object.prototype.hasOwnProperty.call(node, "focus") || node.focus.__fake !== true) {
+        const focus = function () { document.activeElement = node; };
+        focus.__fake = true;
+        node.focus = focus;
+      }
+    }
+    return node;
+  };
+  h.$ = id => document.getElementById(id);
+  h.pageHtml = html;
   const timers = h.timers;
   h.clock = clock;
   h.fireTimers = async function () {
