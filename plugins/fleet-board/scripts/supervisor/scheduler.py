@@ -73,7 +73,7 @@ def _has_work(row):
         return True
     if row.get('action') == 'wait':
         waiting = row.get('waiting_on') or []
-        return bool(waiting) and sorted(waiting) != sorted(row.get('deps_commented') or [])
+        return bool(waiting) and {str(x) for x in waiting} != {str(x) for x in row.get('deps_commented') or []}
     return False
 
 
@@ -316,9 +316,14 @@ class Scheduler:
             retry_at = limits.get('retry_at', {}).get(str(number))
             if retry_at is not None and now < retry_at:
                 waits.append({'number': number, 'reason': 'retry backoff', 'until': retry_at}); continue
+            # Script actions (except update_branch/merge) run synchronously in the driver and
+            # hold no claim: no rate wait, caps or scope checks, and they occupy nothing.
+            free = provider == _SCRIPTS and c.get('action') not in ('update_branch', 'merge')
             rate_wait = limits.get('rate_limit_wait', {})
             rate_until = rate_wait.get(provider) if isinstance(rate_wait, dict) else rate_wait
-            if rate_until is not None and now < rate_until:
+            if free:
+                pass
+            elif rate_until is not None and now < rate_until:
                 key = str(provider)
                 since = self.state['rate_limit_since'].setdefault(key, now)
                 cap_deadline = since + limits.get('max_rate_wait', float('inf'))
@@ -333,21 +338,21 @@ class Scheduler:
                 waits.append({'number': number, 'reason': 'launch spacing', 'until': last_launch + spacing}); continue
             if c.get('action') == 'merge' and not lane_free:
                 waits.append({'number': number, 'reason': 'merge lane busy'}); continue
-            if len(occupied) >= limits['global']:
+            if not free and len(occupied) >= limits['global']:
                 waits.append({'number': number, 'reason': 'global capacity'}); continue
             provider_cap = limits['providers'].get(provider, limits['providers'].get('*', limits['global']))
-            if provider != _SCRIPTS and provider_counts.get(provider, 0) >= provider_cap:
+            if not free and provider_counts.get(provider, 0) >= provider_cap:
                 waits.append({'number': number, 'reason': 'provider capacity'}); continue
             if sum(str(x.get('number', x.get('card'))) == str(number) for x in occupied) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
             paths = (c.get('declared_paths') or []) + (c.get('actual_paths') or [])
-            reserved = next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
+            reserved = None if free else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
                              and scopes.overlap(paths, x.get('paths') or [])), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
                 continue
             conflict = next((x for x in occupied if str(x.get('number', x.get('card'))) == str(number)
-                             or scopes.overlap(paths, x.get('paths') or [])), None)
+                             or (not free and scopes.overlap(paths, x.get('paths') or []))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue
             if validate is not None and not validate(dict(c)):
@@ -366,7 +371,10 @@ class Scheduler:
             else:
                 item = {'number': number, 'provider': provider, 'paths': paths}
             item.setdefault('number', number); item.setdefault('provider', provider); item.setdefault('paths', paths)
-            admitted.append(c); occupied.append(item)
+            admitted.append(c)
+            if free:
+                continue
+            occupied.append(item)
             provider_counts[provider] = provider_counts.get(provider, 0) + 1
             last_launch = now
             if c.get('action') == 'merge':
