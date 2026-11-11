@@ -130,5 +130,54 @@ reset_gh
 run_import "y\n" "$SB/cards.json" --dry-run
 check "dry run is unaffected by missing docs" "$RC" "0"
 
+echo "# embed failure on the last card creates nothing"
+cat > "$SB/cards-badlast.json" <<'EOF'
+{"cards":[
+ {"key":"A","title":"First ok","repo":"acme/api","labels":[],
+  "why":"See docs/y.md.","scope":["src/a.js"],"acceptance":["Works per docs/y.md"]},
+ {"key":"B","title":"Last bad","repo":"acme/api","labels":[],"depends_on":["A"],
+  "why":"See docs/x.md#no-such-section.","scope":["src/b.js"],"acceptance":["Works per docs/x.md#no-such-section"]}
+]}
+EOF
+reset_gh
+run_import "y\ne\n" "$SB/cards-badlast.json"
+check "an embed failure on the last card exits 1" "$RC" "1"
+check "an embed failure on the last card creates zero cards" "$(issues)" "0"
+case "$(cat "$SB/err")" in *"cannot embed docs/x.md#no-such-section"*) pass "the embed failure names the reference" ;; *) fail "the embed failure names the reference" "$(cat "$SB/err")" ;; esac
+
+echo "# a doc that exists nowhere is warned about, not fatal"
+cat > "$SB/cards-ghost.json" <<'EOF'
+{"cards":[
+ {"key":"A","title":"First ok","repo":"acme/api","labels":[],
+  "why":"See docs/y.md.","scope":["src/a.js"],"acceptance":["Works per docs/y.md"]},
+ {"key":"B","title":"Ghost ref","repo":"acme/api","labels":[],"depends_on":["A"],
+  "why":"Follow docs/ghost.md.","scope":["src/b.js"],"acceptance":["Matches docs/ghost.md"]}
+]}
+EOF
+reset_gh
+run_import "y\ne\n" "$SB/cards-ghost.json"
+check "a reference to a file that exists nowhere does not fail the embed run" "$RC" "0"
+check "a reference to a file that exists nowhere still creates every card" "$(issues)" "2"
+case "$(cat "$SB/err")" in *docs/ghost.md*) pass "the nonexistent reference is named in a warning" ;; *) fail "the nonexistent reference is named in a warning" "$(cat "$SB/err")" ;; esac
+case "$OUT" in *"docs/ghost.md"*"Choose:"*|*"  docs/ghost.md"*) fail "the nonexistent reference is not listed as missing on the default branch" "$OUT" ;; *) pass "the nonexistent reference is not listed as missing on the default branch" ;; esac
+
+echo "# a doc the card itself creates is not flagged"
+mkdir -p "$ROOT/plugins/fb/specs" "$ROOT/specs"
+printf '# Merger spec\n' > "$ROOT/plugins/fb/specs/merger.md"
+printf '# Root spec\n' > "$ROOT/specs/own.md"
+cat > "$SB/cards-own.json" <<'EOF'
+{"cards":[
+ {"key":"S","title":"Creates its spec","repo":"acme/api","labels":[],
+  "why":"Write the merger spec.","scope":["plugins/fb/specs/merger.md","specs/own.md"],
+  "acceptance":["specs/merger.md defines the merger role","specs/own.md lists the inputs"]}
+]}
+EOF
+reset_gh
+run_import "y\n" "$SB/cards-own.json"
+check "a card whose acceptance names a file in its own scope is created without a doc prompt" "$RC" "0"
+check "the self-scoped card is created" "$(issues)" "1"
+case "$OUT" in *"missing on the default branch"*) fail "a path in the card's own scope (exact or suffix) is not flagged as missing" "$OUT" ;; *) pass "a path in the card's own scope (exact or suffix) is not flagged as missing" ;; esac
+check "the self-scoped acceptance is kept verbatim" "$(grep -c 'specs/merger.md defines the merger role' "$D/bodies/101.md" 2>/dev/null)" "1"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
