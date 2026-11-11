@@ -491,6 +491,18 @@ class ControlContracts(unittest.TestCase):
                                                  "expected_revision": before["domain"]["revision"]}, peer=None)
                 self.assertEqual(self.service.snapshot(), before)
 
+    def test_socket_error_envelope_has_structured_code(self):
+        """Web clients classify service failures by code, never by prose."""
+        before = self.service.snapshot()
+        self.service.writer_uncertain = True
+        reply = self.service.handle_request({"command": "pause", "request_id": "coded-error",
+                                             "expected_revision": before["domain"]["revision"]}, peer=None)
+        self.assertFalse(reply.get("ok"), "invalid lifecycle command unexpectedly succeeded")
+        error = reply.get("error")
+        self.assertIsInstance(error, dict, "socket error must be a structured object")
+        self.assertIn(error.get("code"), ("stale_revision", "invalid", "unavailable", "uncertain_writer"))
+        self.assertEqual(self.service.snapshot(), before)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

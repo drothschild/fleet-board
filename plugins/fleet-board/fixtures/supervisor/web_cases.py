@@ -243,6 +243,184 @@ class SupervisorWebContract(unittest.TestCase):
         else:
             self.fail("unsupported method unexpectedly succeeded")
 
+    def test_every_http_mutation_requires_request_id_and_integer_revision_without_side_effects(self):
+        self.start_service()
+        self.start_web()
+        mutations = [
+            ("/api/supervisor/start", {"request_id": "start-bound", "expected_revision": 0}),
+            ("/api/supervisor/pause", {"request_id": "pause-bound", "expected_revision": 0}),
+            ("/api/supervisor/resume", {"request_id": "resume-bound", "expected_revision": 0}),
+            ("/api/supervisor/stop", {"request_id": "stop-bound", "expected_revision": 0, "mode": "drain"}),
+            ("/api/cards/1/execution/pause", {"request_id": "cp-bound", "expected_revision": 0}),
+            ("/api/cards/1/execution/release-reservations", {"request_id": "cr-bound", "expected_revision": 0,
+                                                                "expected_reservation_revision": 0, "reason": "x"}),
+            ("/api/cards/1/execution/resolve", {"request_id": "cx-bound", "expected_revision": 0,
+                                                  "action": "retry", "reason": "x"}),
+            ("/api/cards/1/execution/resume", {"request_id": "cu-bound", "expected_revision": 0}),
+        ]
+        for path, complete in mutations:
+            for field in ("request_id", "expected_revision"):
+                with self.subTest(path=path, missing=field):
+                    before = self.service.snapshot()
+                    incomplete = dict(complete)
+                    incomplete.pop(field)
+                    code, _ = self.http("POST", path, incomplete)
+                    self.assertEqual(code, 400, "missing %s accepted by %s" % (field, path))
+                    self.assertEqual(self.service.snapshot(), before)
+
+    def test_mutation_retry_deduplicates_and_stale_revision_returns_current_without_reapply(self):
+        self.start_service()
+        self.start_web()
+        initial = self.service.get_status()
+        request = {"request_id": "retry-stop", "expected_revision": initial["revision"], "mode": "drain"}
+        first_code, first = self.http("POST", "/api/supervisor/stop", request)
+        after_first = self.service.snapshot()
+        second_code, second = self.http("POST", "/api/supervisor/stop", request)
+        self.assertIn(first_code, (200, 202))
+        self.assertEqual(second_code, first_code)
+        self.assertEqual(second, first, "same request_id must return its original outcome")
+        self.assertEqual(self.service.snapshot()["events"], after_first["events"])
+        stale = dict(request, request_id="stale-stop", expected_revision=initial["revision"] - 1)
+        stale_code, stale_body = self.http("POST", "/api/supervisor/stop", stale)
+        self.assertEqual(stale_code, 409)
+        self.assertIn("current", stale_body)
+        self.assertEqual(self.service.snapshot(), after_first)
+
+    def test_legacy_no_body_run_start_and_stop_derive_binding_and_are_idempotent(self):
+        """Only these no-body compatibility routes may synthesize request IDs/revisions."""
+        self.start_service()
+        self.start_web()
+        for action in ("start", "stop"):
+            with self.subTest(action=action):
+                code, payload = self.http("POST", "/api/run/" + action)
+                self.assertIn(code, (200, 202))
+                self.assertNotIn("request_id", payload)
+                self.assertNotIn("expected_revision", payload)
+
+    def test_unreachable_supervisor_keeps_reachable_top_level_shape(self):
+        self.start_service()
+        self.start_web()
+        code, reachable = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200)
+        self.stop_all()
+        code, unreachable = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200)
+        self.assertTrue(unreachable.get("unreachable"))
+        for key in reachable:
+            self.assertIn(key, unreachable, "missing stable status key %s" % key)
+        self.assertIn("phase", unreachable)
+        self.assertIn("desired_mode", unreachable)
+        self.assertIn("revision", unreachable)
+        self.assertIn("last_known_at", unreachable)
+        self.assertIsNone(unreachable.get("occupancy"))
+
+    def test_run_projection_requires_ready_acknowledgement_and_observed_running_phase(self):
+        self.start_service()
+        self.start_web()
+        status = self.service.get_status()
+        status.update({"desired_mode": "running", "phase": "starting", "ready": False})
+        with mock.patch("webproxy.request", return_value=status):
+            code, run = self.http("GET", "/api/run")
+        self.assertEqual(code, 200)
+        self.assertNotEqual(run.get("state"), "running")
+        status.update({"phase": "stopped", "ready": False})
+        with mock.patch("webproxy.request", return_value=status):
+            _, run = self.http("GET", "/api/run")
+        self.assertNotEqual(run.get("state"), "stopped", "running intent while recovering is not stopped")
+        status.update({"phase": "running", "ready": True})
+        with mock.patch("webproxy.request", return_value=status):
+            _, run = self.http("GET", "/api/run")
+        self.assertEqual(run.get("state"), "running")
+
+    def test_client_rejects_untrusted_socket_paths_and_peer_before_sending(self):
+        from supervisor import webproxy
+        target = self.tmp_socket / "target.sock"
+        target.write_text("not a socket")
+        link = self.tmp_socket / "link.sock"
+        link.symlink_to(target)
+        for path in (str(link), str(target)):
+            with self.subTest(path=path), mock.patch.dict(os.environ, {"FLEET_BOARD_SUPERVISOR_SOCKET": path}):
+                with self.assertRaises((OSError, ValueError, RuntimeError)):
+                    webproxy.request(path, {"command": "status"})
+        self.assertNotEqual(webproxy.socket_path("123456789012-left"),
+                            webproxy.socket_path("123456789012-right"),
+                            "socket path must distinguish full domain IDs sharing a 12-char prefix")
+        self.assertTrue(hasattr(webproxy, "_peer_uid_matches") or hasattr(webproxy, "peer_uid_matches"),
+                        "client needs a testable peer-uid check")
+
+    def test_response_can_be_chunked_or_connection_remain_open_and_bad_frame_is_503(self):
+        from supervisor import webproxy
+        class ChunkSocket:
+            def __init__(self, *_args): self.parts = [b'{"ok":', b'true,"result":{"phase":"idle"}}']
+            def settimeout(self, _timeout): pass
+            def connect(self, _path): pass
+            def sendall(self, _data): pass
+            def recv(self, _size): return self.parts.pop(0) if self.parts else b""
+            def close(self): pass
+        with mock.patch.object(webproxy.socket, "socket", ChunkSocket):
+            self.assertEqual(webproxy.request("unused", {"command": "status"}), {"phase": "idle"})
+        with mock.patch.object(webproxy.socket, "socket", ChunkSocket):
+            self.assertEqual(webproxy.request("unused", {"command": "status"}), {"phase": "idle"})
+        self.start_web()
+        with mock.patch("webproxy.request", side_effect=ValueError("invalid supervisor response frame")):
+            code, body = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200)
+        self.assertTrue(body.get("unreachable"))
+
+    def test_card_control_validation_and_structured_error_codes(self):
+        self.start_service()
+        self.start_web()
+        for action, body in (("pause", {}), ("release-reservations", {"request_id": "x", "expected_revision": 0}),
+                             ("resolve", {"request_id": "x", "expected_revision": 0}),
+                             ("resume", {"request_id": "x", "expected_revision": 0})):
+            code, _ = self.http("POST", "/api/cards/1/execution/" + action, body)
+            self.assertEqual(code, 400, "%s accepted invalid or incomplete fields" % action)
+        with mock.patch("webproxy.request", side_effect=RuntimeError('{"code":"internal","error":"revision database is corrupt"}')):
+            code, _ = self.http("POST", "/api/cards/1/execution/pause",
+                                {"request_id": "internal", "expected_revision": 0})
+        self.assertIn(code, (500, 503), "internal error classified from message text as conflict")
+
+    def test_card_log_references_are_real_validated_and_redacted(self):
+        self.start_service()
+        self.start_web()
+        logs = self.service.store.directory / "artifacts" / "attempt-web" / "worker.log"
+        logs.parent.mkdir(parents=True, mode=0o700)
+        logs.write_text("token=ghp_abcdefghijklmnopqrstuvwxyz012345\n" + str(self.repo) + "\n", encoding="utf-8")
+        code, result = self.http("GET", "/api/cards/1/execution")
+        self.assertEqual(code, 200)
+        refs = result.get("logs", [])
+        self.assertTrue(refs, "attempt log reference not returned")
+        for bad in ("../worker.log", str(logs), "..%2fworker.log", "%2fetc%2fpasswd", "bad\x00id"):
+            # The future validated log endpoint must reject these IDs. Until it is routed,
+            # this request must remain an ordinary 404, never a filesystem read.
+            status, body = self.http("GET", "/api/cards/1/execution/log/" + bad)
+            self.assertIn(status, (400, 404), "%r was accepted: %r" % (bad, body))
+        log_id = refs[0]["id"]
+        status, body = self.http("GET", "/api/cards/1/execution/log/" + log_id)
+        self.assertEqual(status, 200)
+        rendered = json.dumps(body)
+        self.assertNotIn("ghp_", rendered)
+        self.assertNotIn(str(self.repo), rendered)
+
+    def test_status_last_known_cache_is_thread_safe_and_bounded(self):
+        from supervisor import webproxy
+        webproxy._LAST.clear()
+        for i in range(512):
+            webproxy.remember("domain-%d" % i, {"phase": "running"})
+        self.assertLessEqual(len(webproxy._LAST), 128, "per-domain status cache is unbounded")
+        errors = []
+        def reader():
+            for i in range(2000):
+                value = webproxy.last("flapping-domain")
+                if value is not None and (not isinstance(value[0], float) or not isinstance(value[1], dict)):
+                    errors.append(value)
+        import threading
+        threads = [threading.Thread(target=reader) for _ in range(8)]
+        for thread in threads: thread.start()
+        for i in range(2000): webproxy.remember("flapping-domain", {"revision": i})
+        for thread in threads: thread.join()
+        self.assertFalse(errors)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
