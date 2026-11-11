@@ -1,8 +1,6 @@
-# HMB Workout: existing Projects v2 board, column names unchanged
+# HMB Workout: local board keeping the column names of its old Projects v2 board
 board:
-  backend: github-projects
   repo: drothschild/HMBWorkout
-  project_number: 1
   states: { in_progress: "In progress", in_review: "In review", human_qa: "Require Human Inteteraction", wont_do: "Won't Do" }
 commands:
   test_one: "npm test -- --runTestsByPath {file}"

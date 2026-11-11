@@ -51,3 +51,6 @@ User stopped execution to continue in a new session. Do not resume until request
 - Task 3.2 Luna fix-round-2 review APPROVED (`task-3.2-rereview-2.md`). Remaining scope limit is intentional: production effect/controller wiring and real branch refresh are Task 4.1.
 - Phase 3 final Luna whole-branch review APPROVED at head `14d3a4d8886da4bc6bd37b09783d183e8204351a` against base `24c929acbc62dbe6c8080c336e6bdd988d559068`; report: `final-review.md`. No blocking defects. Accepted limits remain the narrower candidate-mode parity tests and no status/UI consumer for unknown-state attention; production controller/effect wiring is Phase 4.
 - PR #230 was updated with the final status, review summary comment posted, and marked ready for review; it remains open and unmerged. CI run `42453232557` was still in progress at the time. Supervisor execution stays disabled; no service/provider/board processing occurred, and #224 remains Backlog.
+
+## Phase 5 — 2026-11-10
+- PR #237 merged 257f243. Phase 5 worktree /private/tmp/fleet-board-supervisor-service, PR #245. Task 5.1 implemented; see phase-5-handoff.md. Task 5.2 not started.

@@ -3,11 +3,11 @@
 # Format: <sha256>  <path under plugins/fleet-board>  [# note]
 # A line whose note starts with "exception:" is a named exception, not a
 # clean-room output. Update this file whenever a revision is recorded in README.md.
-7d93223e9200e45e7ad65ff11a0141562f84efd6164ad274af9832ba634b1d80  agents/fixer.md  # merge: git merge of the Revision 16 and Revision 18 run outputs, then Revision 22 (card 70) run output on top; no single run produced the Revision 16/18 part
-913b1f6ad549f65b598464099454da6c621689253e5df618830bac68f1749b81  agents/implementor.md
-3dbd20185dc5570623969f7ade70e67e7f13fe327e21509ec77b62615367ca3d  agents/manager.md
-ec5dae354178e1f9ba215c049a8666453b0c12b60fa0f2105981772a4e45dcac  agents/reviewer.md  # exception: owner-approved direct contract edits for PR 215 integration repair
-86c3ada66c1bbb1bae2bcd2a82fd4b6103d814cb0dfe652b7291221cf20b5692  skills/reporting/SKILL.md
+d2ce59bee25add56401c997c92704e6678e87365830e60d60854cc47be6f871f  agents/fixer.md  # merge: git merge of the Revision 22 (card 70) run output with the Revision 24 (PR 202) run output; no single run produced this file
+116ad38ff083d6e68f8c25815029d142ebe977b46a0f04d8c5820948ab184427  agents/implementor.md
+4bce88e231a6658b74464ceb79b4fb7ba3c31e0aac7d44bd4a097a6ffef975f0  agents/manager.md  # exception: owner-approved direct contract edits for PR 215 integration repair, git-merged with the Revision 21 run output from main, the PR 218 conflict-dispatch edits (card 210), the Revision 23 (PR 222) completion-driven run output from main and the Revision 24 (PR 202) run output; no single run produced this file
+18ddbde0e67f8e18e3d0d2a6f4b1747bb441d813e6d683dcda7835aec32c8067  agents/reviewer.md  # exception: owner-approved direct contract edits for PR 215 integration repair, git-merged with the Revision 24 (PR 202) run output
+7fce8fe4cf333665e7e600c0ed0dc1533a9eb1ab2f05e41597a0e8946c4e1743  skills/reporting/SKILL.md
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
 6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md
 ca185e305e5782020ee7c17fe8a4b3b4024efe482d6ed92bf55356f98f8c6f68  skills/status/SKILL.md

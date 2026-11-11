@@ -107,6 +107,15 @@ case "$(printf '%s' "$PARSED" | jq -r 'type')" in
   *) echo "config.sh: $FILE: the top level must be a map" >&2; exit 4 ;;
 esac
 
+# The board is always local: the keys that chose a GitHub backend are gone.
+REMOVED="$(jq -r '(.board // {}) as $b | if ($b | type) == "object" then (["backend", "project_number", "project_owner"][] | select(. as $k | $b | has($k))) else empty end' <<<"$PARSED")"
+if [ -n "$REMOVED" ]; then
+  while IFS= read -r k; do
+    echo "config.sh: invalid config: board.$k is no longer a setting: the board is now always local. Delete it from $FILE; to move an existing GitHub board onto the local store, run scripts/import-github.sh" >&2
+  done <<<"$REMOVED"
+  exit 5
+fi
+
 # Merge with defaults
 MERGED="$(jq -c -n --slurpfile d "$HERE/config-defaults.json" '$d[0] * input' <(echo "$PARSED"))" || {
   echo "config.sh: invalid config: failed to merge with defaults" >&2
@@ -197,15 +206,6 @@ VALIDATION_SCRIPT='
       else empty end),
       (if (.board | type) == "object" then
         (if (.board.repo | type) != "string" or (.board.repo | test("^[^/ ]+/[^/ ]+$") | not) then "board.repo must match ^[^/ ]+/[^/ ]+$" else empty end)
-      else empty end),
-      (if (.board | type) == "object" then
-        (if (.board.backend | type) != "string" or (.board.backend as $b | ($b == "github-labels" or $b == "github-projects" or $b == "local") | not) then "board.backend must be github-labels, github-projects or local" else empty end)
-      else empty end),
-      (if (.board | type) == "object" and .board.backend == "github-projects" then
-        (if (.board.project_number | type) != "number" then "github-projects requires numeric board.project_number" else empty end)
-      else empty end),
-      (if (.board | type) == "object" then
-        (if (.board.project_owner | type) as $t | $t != "null" and $t != "string" then "board.project_owner must be null or a string" else empty end)
       else empty end),
       (if (.board | type) == "object" and (.board.states | type) == "object" then
         (stage_names as $names

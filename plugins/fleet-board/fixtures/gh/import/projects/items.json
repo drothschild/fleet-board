@@ -1,0 +1,69 @@
+{
+ "items": [
+  {
+   "id": "PVTI_21",
+   "status": "Review: security",
+   "content": {
+    "type": "Issue",
+    "number": 21,
+    "repository": "acme/toy",
+    "title": "Harden login",
+    "url": "https://github.com/acme/toy/issues/21"
+   }
+  },
+  {
+   "id": "PVTI_20",
+   "status": "Done",
+   "content": {
+    "type": "Issue",
+    "number": 20,
+    "repository": "acme/toy",
+    "title": "Old work",
+    "url": "https://github.com/acme/toy/issues/20"
+   }
+  },
+  {
+   "id": "PVTI_19",
+   "status": "In progress",
+   "content": {
+    "type": "Issue",
+    "number": 19,
+    "repository": "acme/toy",
+    "title": "Next up",
+    "url": "https://github.com/acme/toy/issues/19"
+   }
+  },
+  {
+   "id": "PVTI_pr",
+   "status": "In Review",
+   "content": {
+    "type": "PullRequest",
+    "number": 22,
+    "repository": "acme/toy",
+    "title": "A PR",
+    "url": "https://github.com/acme/toy/pull/22"
+   }
+  },
+  {
+   "id": "PVTI_other",
+   "status": "Ready",
+   "content": {
+    "type": "Issue",
+    "number": 22,
+    "repository": "other/repo",
+    "title": "Elsewhere",
+    "url": "https://github.com/other/repo/issues/22"
+   }
+  },
+  {
+   "id": "PVTI_18",
+   "content": {
+    "type": "Issue",
+    "number": 18,
+    "repository": "acme/toy",
+    "title": "No column yet",
+    "url": "https://github.com/acme/toy/issues/18"
+   }
+  }
+ ]
+}

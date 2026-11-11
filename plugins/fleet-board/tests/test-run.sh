@@ -754,7 +754,8 @@ C_CLEANUP=""
 run_wrapper --repo "$REPO"
 assert_exit "cleanup-default: exit 0" 0
 LOG="$(the_log "$LOGS")"
-assert_file_contains "cleanup-default: the shipped script listed the done column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:done"
+# (the case has no card store, so the shipped script's board read fails; its stderr is logged)
+assert_file_contains "cleanup-default: the shipped script read the board" "$LOG" "no local board at"
 assert_file_contains "cleanup-default: its failure (stub gh) is a logged warning" "$LOG" "warning: cleanup-done.sh exited 1"
 assert_eq "cleanup-default: the fake cleanup did not run" "$(lines "$T/cleanup-count")" "0"
 
@@ -802,7 +803,7 @@ C_SETTLE=""
 run_wrapper --repo "$REPO"
 assert_exit "settle-default: exit 0" 0
 LOG="$(the_log "$LOGS")"
-assert_file_contains "settle-default: the shipped script listed the in_progress column" "$T/gh-calls.log" "issue list --repo acme/toy --label fleet:in_progress"
+assert_file_contains "settle-default: the shipped script read the board" "$LOG" "no local board at"
 assert_file_contains "settle-default: its failure (stub gh) is a logged warning" "$LOG" "warning: settle.sh exited 1"
 assert_file_contains "settle-default: merge-reviewed.sh ran after settle" "$LOG" "--- merge-reviewed.sh ---"
 assert_eq "settle-default: the fake settle did not run" "$(lines "$T/settle-count")" "0"
@@ -1230,9 +1231,9 @@ assert_file_contains "unreadable_ledger_warns: the log has it" "$LOG" "provider 
 assert_stdout_contains "unreadable_ledger_warns: cost counts Claude only" "cost_estimate_usd 0.7 (estimate)"
 
 # ---------------------------------------------------------------------------
-echo "local board: the wrapper clears the active markers after each tick's session"
+echo "the wrapper clears the active markers after each tick's session"
 new_case "max_consecutive_failures: 1"
-printf 'board: { backend: local, repo: acme/toy }\nlimits: { tick_interval: 0, max_consecutive_failures: 1 }\n' > "$REPO/.fleet-board.yml"
+printf 'board: { repo: acme/toy }\nlimits: { tick_interval: 0, max_consecutive_failures: 1 }\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
 echo 1 > "$REPO/.fleet-board/next"
 : > "$REPO/.fleet-board/active/3"
@@ -1242,13 +1243,6 @@ assert_exit "active-cleared: a failed tick stops the run" 1
 assert_false "active-cleared: a role that crashed without a report is not left lit" test -e "$REPO/.fleet-board/active/3"
 assert_true "active-cleared: the directory stays" test -d "$REPO/.fleet-board/active"
 
-new_case
-seq_fixture 1 tick-idle
-mkdir -p "$REPO/.fleet-board/active"
-: > "$REPO/.fleet-board/active/3"
-run_wrapper --repo "$REPO"
-assert_exit "active-github: exit 0" 0
-assert_true "active-github: a GitHub backend leaves the directory alone" test -e "$REPO/.fleet-board/active/3"
 
 # ---------------------------------------------------------------------------
 echo "run lock: one wrapper per repo"
@@ -1310,6 +1304,75 @@ case "$(sed -n 2p "$FC_LOCKSEEN" 2>/dev/null)" in
   *) fail "run-lock: line 2 is a ps start time" "$(cat "$FC_LOCKSEEN" 2>/dev/null)" ;;
 esac
 assert_false "run-lock: removed after a normal stop" test -e "$LOGS/acme-toy.lock"
+
+echo "run lock: service compatibility and linked worktrees"
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\nservice\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock-service: legacy wrapper refuses a live service claim" 1
+assert_stderr_contains "run-lock-service: preserves contention message" "another run holds $LOGS/acme-toy.lock (pid $$)"
+assert_eq "run-lock-service: no tick ran" "$(count)" "absent"
+
+new_case
+mkdir -p "$LOGS"
+printf '%s\n%s\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+LOCK_CLAIM="$SCRIPT_DIR/../scripts/claim-run-lock.py"
+python3 "$LOCK_CLAIM" "$LOGS/acme-toy.lock" "$$" --kind service > "$T/service-claim.out" 2> "$T/service-claim.err"
+LAST_EXIT=$?
+assert_exit "run-lock-service-claim: refuses a live legacy lock" 1
+assert_file_contains "run-lock-service-claim: names live legacy owner" "$T/service-claim.err" "another run holds $LOGS/acme-toy.lock (pid $$)"
+assert_eq "run-lock-service-claim: legacy lock remains two lines" "$(lines "$LOGS/acme-toy.lock")" "2"
+printf '%s\n%s\n' "$$" "Thu Jan  1 00:00:00 1970" > "$LOGS/acme-toy.lock"
+python3 "$LOCK_CLAIM" "$LOGS/acme-toy.lock" "$$" --kind service > "$T/service-stale.out" 2> "$T/service-stale.err"
+LAST_EXIT=$?
+assert_exit "run-lock-service-claim: replaces stale reused-pid lock" 0
+assert_eq "run-lock-service-claim: writes pid first" "$(sed -n 1p "$LOGS/acme-toy.lock")" "$$"
+assert_eq "run-lock-service-claim: writes start time second" "$(sed -n 2p "$LOGS/acme-toy.lock")" "$(lstart_of $$)"
+assert_eq "run-lock-service-claim: writes service owner third" "$(sed -n 3p "$LOGS/acme-toy.lock")" "service"
+
+new_case
+seq_fixture 1 tick-busy
+seq_fixture 2 tick-idle
+WT="$T/linked"
+git -C "$REPO" worktree add -q -b linked-test "$WT"
+C_CLEANUP=""
+C_SETTLE=""
+MARKER="$T/first-tick-started"
+SAVED_FAKE_CLAUDE="$FAKE_CLAUDE"
+FAKE_CLAUDE="$T/claude-hold"
+printf '#!/bin/sh\nprintf started > "%s"\nsleep 30\n' "$MARKER" > "$FAKE_CLAUDE"
+chmod +x "$FAKE_CLAUDE"
+(
+  case_env
+  # The holder outlives this block's checks: keep its temp files out of RUN_TMP.
+  export TMPDIR="$T/holder-tmp"; mkdir -p "$TMPDIR"
+  export FLEET_BOARD_CLAUDE="$FAKE_CLAUDE"
+  exec "$BASH_EXE" "$SCRIPT" --repo "$REPO"
+) > "$T/linked-first.out" 2> "$T/linked-first.err" &
+FIRST_PID=$!
+i=0
+while [ ! -e "$MARKER" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+run_wrapper --repo "$WT"
+assert_exit "run-lock-worktree: second linked worktree is refused" 1
+assert_eq "run-lock-worktree: loser runs no tick" "$(count)" "absent"
+assert_stderr_contains "run-lock-worktree: loser reports active owner" "another run holds $LOGS/acme-toy.lock (pid $FIRST_PID)"
+kill -TERM "$FIRST_PID" 2>/dev/null || true
+wait "$FIRST_PID" 2>/dev/null || true
+pkill -f "$MARKER" 2>/dev/null || true
+FAKE_CLAUDE="$SAVED_FAKE_CLAUDE"
+
+new_case
+seq_fixture 1 tick-idle
+mkdir -p "$LOGS"
+printf '%s\n%s\nservice\n' "$$" "$(lstart_of $$)" > "$LOGS/acme-toy.lock"
+run_wrapper --repo "$REPO"
+assert_exit "run-lock-service-release: wrapper refuses foreign ownership" 1
+assert_true "run-lock-service-release: service lock survives wrapper exit" test -f "$LOGS/acme-toy.lock"
+assert_eq "run-lock-service-release: pid remains first line" "$(sed -n 1p "$LOGS/acme-toy.lock")" "$$"
+assert_eq "run-lock-service-release: lstart remains second line" "$(sed -n 2p "$LOGS/acme-toy.lock")" "$(lstart_of $$)"
+assert_eq "run-lock-service-release: service remains third line" "$(sed -n 3p "$LOGS/acme-toy.lock")" "service"
 
 
 echo ""

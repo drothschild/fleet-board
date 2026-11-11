@@ -104,6 +104,23 @@ function formatModels(models) {
   };
 }
 
+// prNumber(url): the pull number in a github.com pull URL, or null.
+const PR_URL_RE = /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/([1-9][0-9]*)$/;
+function prNumber(url) {
+  const m = typeof url === "string" ? PR_URL_RE.exec(url) : null;
+  return m ? Number(m[1]) : null;
+}
+
+function prLink(url, text) {
+  const a = el("a", null, text);
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.draggable = false;
+  a.title = url;
+  return a;
+}
+
 function formatHours(h) {
   return (h < 1 ? h.toFixed(2) : h.toFixed(1)) + " h";
 }
@@ -334,9 +351,16 @@ function renderBoard(board, force) {
   }
 
   const byState = {};
+  const stateOf = {};
   for (const s of board.states) byState[s.key] = [];
+  for (const c of board.cards) stateOf[c.number] = c.state;
   const unknown = [];
   for (const c of board.cards) {
+    // the open blockers depend on other cards: kept on the card so a column
+    // re-renders when only a blocker's state changed
+    c.open_blockers = (Array.isArray(c.blocked_by) ? c.blocked_by : []).filter(function (b) {
+      return stateOf[b] !== "done";
+    });
     if (byState[c.state] && c.known !== false) byState[c.state].push(c);
     else unknown.push(c);
   }
@@ -495,29 +519,32 @@ function renderCard(c, repo) {
   }
   id.appendChild(document.createTextNode("#" + n));
   if (c.active) id.appendChild(el("span", "sr-only", "an agent is working on it now"));
+  if (c.acceptance_count > 0) id.appendChild(el("span", "card-acc", c.acceptance_count + " acceptance"));
   li.appendChild(id);
 
   li.appendChild(el("div", "card-title", c.title || "(untitled)"));
   if (c.known === false) li.appendChild(el("div", "card-meta warn card-state", "state: " + c.state));
 
   const note = c.note || null;
-  if (note && (note.round != null || note.pr != null)) {
+  const open = c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : [];
+  if (open.length) {
+    li.classList.add("blocked");
+    li.appendChild(el("div", "card-meta blocked-by", "blocked by " + open.map(function (b) { return "#" + b; }).join(", ")));
+  }
+  const parts = [];
+  if (note && note.round != null) parts.push(document.createTextNode("round " + note.round));
+  const prNum = prNumber(c.pr_url);
+  if (prNum !== null) {
+    parts.push(prLink(c.pr_url, "PR #" + prNum));
+  } else if (note && note.pr != null && !c.pr_url) {
+    parts.push(document.createTextNode("PR #" + note.pr));
+  }
+  if (parts.length) {
     const meta = el("div", "card-meta");
-    if (note.round != null) meta.appendChild(document.createTextNode("round " + note.round));
-    if (note.pr != null) {
-      if (note.round != null) meta.appendChild(document.createTextNode(" · "));
-      const label = "PR #" + note.pr;
-      if (repo && Number.isInteger(note.pr)) {
-        const a = el("a", null, label);
-        a.href = "https://github.com/" + repo + "/pull/" + note.pr;
-        a.target = "_blank";
-        a.rel = "noopener noreferrer";
-        a.draggable = false;
-        meta.appendChild(a);
-      } else {
-        meta.appendChild(document.createTextNode(label));
-      }
-    }
+    parts.forEach(function (p, i) {
+      if (i) meta.appendChild(document.createTextNode(" · "));
+      meta.appendChild(p);
+    });
     li.appendChild(meta);
   }
   const models = note && formatModels(note.models);
@@ -530,6 +557,9 @@ function renderCard(c, repo) {
   if (fails > 0) {
     li.appendChild(el("div", "card-meta warn", fails + (fails === 1 ? " failed attempt" : " failed attempts")));
   }
+
+  const exec = cardExecLine(c);
+  if (exec) li.appendChild(el("div", "card-meta card-exec", exec));
 
   const labels = Array.isArray(c.labels) ? c.labels : [];
   if (labels.length) {
@@ -627,6 +657,7 @@ async function moveCard(n, state) {
 // --- header and run ----------------------------------------------------------
 
 async function pollRun() {
+  if (S.supMode) return; // the supervisor status replaces the run poll
   clearTimeout(S.runTimer);
   const my = ++S.runSeq;
   let alive = isAlive(S.run);
@@ -770,12 +801,13 @@ function hideToast() {
 // --- card drawer -------------------------------------------------------------
 
 const NOTE_MARKER = "<!-- fleet-board:manager-note -->";
-const NEW_CARD_BODY = "## Acceptance\n- ";
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 // S.drawer while open: {n (null = new card), card (the last GET reply),
-// base: {title, body, labels, state} as saved, labels: the edited label list,
-// opener: the element to refocus on close, seq, busy}.
+// base: {title, body, labels, state, acceptance, blocked_by, pr_url} as saved,
+// labels / acc / blk / pr: the edited labels, acceptance items, blocker
+// numbers and PR URL (null = none), opener: the element to refocus on close,
+// seq, busy}. The body is prose only; the fields travel as fields.
 S.drawer = null;
 
 function openCard(n) {
@@ -794,9 +826,16 @@ async function openDrawer(n, opener) {
     card: null,
     base: null,
     labels: [],
+    acc: [],
+    blk: [],
+    pr: null,
     opener: opener || (prev ? prev.opener : document.activeElement),
     seq: prev ? prev.seq + 1 : 1,
     busy: false,
+    exec: null,       // the last /api/cards/<n>/execution reply
+    execSeq: 0,
+    execBusy: false,
+    req: null,        // the execution command that may be retried
   };
   S.drawer = d;
   clearDrawer(n);
@@ -816,9 +855,11 @@ async function openDrawer(n, opener) {
   }
   renderDrawer(card);
   $("dr-title").focus();
+  loadExecution(d);
 }
 
-const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-comment", "dr-comment-btn"];
+const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-acc-input", "dr-blk-input",
+  "dr-pr-edit", "dr-pr-clear", "dr-pr-input", "dr-pr-done", "dr-comment", "dr-comment-btn"];
 
 // clearDrawer(n): empties every field, the comment box and the label input,
 // and disables them until renderDrawer fills them, so nothing typed or shown
@@ -828,13 +869,24 @@ function clearDrawer(n) {
   $("dr-title").value = "";
   $("dr-body").value = "";
   $("dr-label-input").value = "";
+  $("dr-acc-input").value = "";
+  $("dr-blk-input").value = "";
+  $("dr-pr-input").value = "";
   $("dr-comment").value = "";
   $("dr-state").replaceChildren();
   $("dr-preview").replaceChildren();
   $("dr-labels").replaceChildren();
+  $("dr-acc").replaceChildren();
+  $("dr-acc-count").textContent = "";
+  $("dr-blk").replaceChildren();
+  setFieldError("dr-blk-input", "dr-blk-err", "");
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  showPrForm(false);
+  $("dr-pr-view").replaceChildren();
   $("dr-comments").replaceChildren();
   $("dr-meta").replaceChildren();
   setDrawerFields(false);
+  clearExecution();
   updateDirty();
 }
 
@@ -897,9 +949,20 @@ function renderDrawer(card) {
   const isNew = card === null;
   d.card = card;
   d.base = isNew
-    ? { title: "", body: NEW_CARD_BODY, labels: [], state: "backlog" }
-    : { title: card.title || "", body: card.body || "", labels: (card.labels || []).slice(), state: card.state };
+    ? { title: "", body: "", labels: [], state: "backlog", acceptance: [], blocked_by: [], pr_url: null }
+    : {
+        title: card.title || "",
+        body: typeof card.body === "string" ? card.body : "",
+        labels: (card.labels || []).slice(),
+        state: card.state,
+        acceptance: (Array.isArray(card.acceptance) ? card.acceptance : []).slice(),
+        blocked_by: (Array.isArray(card.blocked_by) ? card.blocked_by : []).slice(),
+        pr_url: typeof card.pr_url === "string" && card.pr_url ? card.pr_url : null,
+      };
   d.labels = d.base.labels.slice();
+  d.acc = d.base.acceptance.slice();
+  d.blk = d.base.blocked_by.slice();
+  d.pr = d.base.pr_url;
   setDrawerFields(true);
 
   const drawer = $("drawer");
@@ -910,6 +973,12 @@ function renderDrawer(card) {
   $("dr-body").value = d.base.body;
   fillStateSelect(d.base.state);
   renderLabels();
+  renderAcceptance();
+  renderBlockers();
+  setFieldError("dr-blk-input", "dr-blk-err", "");
+  $("dr-pr-field").hidden = isNew; // a card has no PR before it exists
+  showPrForm(false);
+  renderPr();
   renderBodyPreview();
   renderDrawerMeta();
   $("dr-comments-sec").hidden = isNew;
@@ -976,6 +1045,278 @@ function addLabel() {
   updateDirty();
 }
 
+// --- acceptance, blocked by, pull request ------------------------------------
+
+// accItems(list): the items that would be saved: trimmed, empties dropped.
+function accItems(list) {
+  return list.map(function (a) { return String(a).trim(); }).filter(function (a) { return a !== ""; });
+}
+
+function iconButton(cls, label, child) {
+  const b = el("button", "acc-btn " + cls);
+  b.type = "button";
+  b.setAttribute("aria-label", label);
+  b.title = label;
+  if (child) b.appendChild(child); else b.textContent = "×";
+  return b;
+}
+
+// autosize(textarea): grows a one-line criterion to fit its text.
+function autosize(ta) {
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
+
+// renderAcceptance(focus): the editable list; focus = {i, end} puts the caret
+// in item i after the re-render (or in the add box when i is past the end).
+function renderAcceptance(focus) {
+  const d = S.drawer;
+  const ol = $("dr-acc");
+  const frag = document.createDocumentFragment();
+  const last = d.acc.length - 1;
+  d.acc.forEach(function (text, i) {
+    const li = el("li", "acc-item");
+    li.appendChild(el("span", "acc-box"));
+    li.firstChild.setAttribute("aria-hidden", "true");
+    const ta = el("textarea", "acc-text");
+    ta.rows = 1;
+    ta.value = text;
+    ta.spellcheck = true;
+    ta.setAttribute("aria-label", "Criterion " + (i + 1));
+    ta.addEventListener("input", function () {
+      d.acc[i] = ta.value.replace(/[\r\n]+/g, " ");
+      if (ta.value !== d.acc[i]) ta.value = d.acc[i];
+      autosize(ta);
+      updateAccCount();
+      updateDirty();
+    });
+    ta.addEventListener("keydown", function (e) { accKey(e, i, ta); });
+    li.appendChild(ta);
+    const tools = el("span", "acc-tools");
+    const up = iconButton("acc-up", "Move criterion " + (i + 1) + " up", chevron());
+    up.disabled = i === 0;
+    up.addEventListener("click", function () { moveAcc(i, -1); });
+    const down = iconButton("acc-down", "Move criterion " + (i + 1) + " down", chevron());
+    down.disabled = i === last;
+    down.addEventListener("click", function () { moveAcc(i, 1); });
+    const x = iconButton("acc-x", "Remove criterion " + (i + 1));
+    x.addEventListener("click", function () { removeAcc(i); });
+    tools.appendChild(up);
+    tools.appendChild(down);
+    tools.appendChild(x);
+    li.appendChild(tools);
+    frag.appendChild(li);
+  });
+  ol.replaceChildren(frag);
+  for (const ta of ol.querySelectorAll(".acc-text")) autosize(ta);
+  updateAccCount();
+  if (focus) focusAcc(focus.i, focus.end, focus.sel);
+}
+
+function focusAcc(i, end, sel) {
+  const items = $("dr-acc").querySelectorAll(".acc-text");
+  if (i >= items.length || i < 0) {
+    $("dr-acc-input").focus();
+    return;
+  }
+  const t = items[i];
+  if (sel) {
+    t.parentNode.querySelector(sel).focus();
+    return;
+  }
+  t.focus();
+  const at = end ? t.value.length : 0;
+  t.setSelectionRange(at, at);
+}
+
+function updateAccCount() {
+  const n = accItems(S.drawer.acc).length;
+  $("dr-acc-count").textContent = n ? String(n) : "";
+}
+
+// accKey: Enter goes to the next criterion (or the add box), Backspace in an
+// empty one removes it, Alt+Up/Down moves it.
+function accKey(e, i, ta) {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    focusAcc(i + 1, true);
+  } else if (e.key === "Backspace" && ta.value === "") {
+    e.preventDefault();
+    S.drawer.acc.splice(i, 1);
+    renderAcceptance({ i: i > 0 ? i - 1 : 0, end: true });
+    updateDirty();
+  } else if (e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+    e.preventDefault();
+    moveAcc(i, e.key === "ArrowUp" ? -1 : 1, true);
+  }
+}
+
+function moveAcc(i, by, keepCaret) {
+  const d = S.drawer;
+  const j = i + by;
+  if (j < 0 || j >= d.acc.length) return;
+  const item = d.acc.splice(i, 1)[0];
+  d.acc.splice(j, 0, item);
+  const sel = keepCaret ? null : (j === 0 ? ".acc-down" : j === d.acc.length - 1 ? ".acc-up" : by < 0 ? ".acc-up" : ".acc-down");
+  renderAcceptance({ i: j, end: true, sel: sel });
+  updateDirty();
+}
+
+function removeAcc(i) {
+  const d = S.drawer;
+  d.acc.splice(i, 1);
+  renderAcceptance({ i: d.acc.length ? Math.min(i, d.acc.length - 1) : 0, end: true, sel: d.acc.length ? ".acc-x" : null });
+  updateDirty();
+}
+
+function addAcc() {
+  const d = S.drawer;
+  const input = $("dr-acc-input");
+  const text = input.value.replace(/[\r\n]+/g, " ").trim();
+  if (!d || !text) return;
+  d.acc.push(text);
+  input.value = "";
+  renderAcceptance();
+  updateDirty();
+}
+
+// setFieldError(inputId, errId, msg): an inline error under a field; "" clears.
+function setFieldError(inputId, errId, msg) {
+  const input = $(inputId);
+  const err = $(errId);
+  err.textContent = msg;
+  err.hidden = !msg;
+  if (msg) input.setAttribute("aria-invalid", "true");
+  else input.removeAttribute("aria-invalid");
+}
+
+// renderBlockers(): one chip per blocker: amber while it is open (not done,
+// or not on the board), quiet once done.
+function renderBlockers() {
+  const d = S.drawer;
+  const frag = document.createDocumentFragment();
+  d.blk.forEach(function (n, i) {
+    const c = boardCard(n);
+    const done = !!c && c.state === "done";
+    const li = el("li", "label blk-chip" + (done ? " done" : " open"));
+    li.appendChild(el("span", "blk-num", "#" + n));
+    li.appendChild(el("span", "blk-title", c ? c.title || "(untitled)" : "not on this board"));
+    li.title = c ? "#" + n + " " + (c.title || "") + " · " + stateName(c.state) : "#" + n + " is not on this board";
+    const x = el("button", "label-x", "×");
+    x.type = "button";
+    x.setAttribute("aria-label", "Remove blocker #" + n);
+    x.addEventListener("click", function () {
+      d.blk.splice(i, 1);
+      renderBlockers();
+      updateDirty();
+      $("dr-blk-input").focus();
+    });
+    li.appendChild(x);
+    frag.appendChild(li);
+  });
+  $("dr-blk").replaceChildren(frag);
+  d.blkSig = JSON.stringify(d.blk.map(function (n) {
+    const c = boardCard(n);
+    return c ? [c.state, c.title] : null;
+  }));
+}
+
+// addBlocker() -> false when the typed text is refused inline: it must be a
+// card number, `#12` or `12`, and not this card. Whether the card exists is
+// the server's call, on Save.
+function addBlocker() {
+  const d = S.drawer;
+  const input = $("dr-blk-input");
+  const raw = input.value.trim();
+  if (!d || !raw) {
+    setFieldError("dr-blk-input", "dr-blk-err", "");
+    return true;
+  }
+  const m = /^#?\s*([1-9][0-9]*)$/.exec(raw);
+  if (!m) {
+    setFieldError("dr-blk-input", "dr-blk-err", "Type a card number, like #12. “" + raw + "” is not one.");
+    return false;
+  }
+  const n = Number(m[1]);
+  if (n === d.n) {
+    setFieldError("dr-blk-input", "dr-blk-err", "A card cannot block itself.");
+    return false;
+  }
+  setFieldError("dr-blk-input", "dr-blk-err", "");
+  if (d.blk.indexOf(n) === -1) d.blk.push(n);
+  input.value = "";
+  renderBlockers();
+  updateDirty();
+  return true;
+}
+
+// renderPr(): the PR link (or None) with Edit and Clear.
+function renderPr() {
+  const d = S.drawer;
+  const view = $("dr-pr-view");
+  const n = prNumber(d.pr);
+  if (d.pr && n !== null) {
+    view.replaceChildren(prLink(d.pr, prRepo(d.pr) + "#" + n));
+  } else if (d.pr) {
+    view.replaceChildren(el("span", null, d.pr)); // never a link to an unchecked URL
+  } else {
+    view.replaceChildren(el("span", "dr-pr-none", "None"));
+  }
+  $("dr-pr-edit").textContent = d.pr ? "Edit" : "Add";
+  $("dr-pr-clear").hidden = !d.pr;
+}
+
+function prRepo(url) {
+  const m = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\//.exec(url);
+  return m ? m[1] : "";
+}
+
+function showPrForm(on) {
+  $("dr-pr-form").hidden = !on;
+  $("dr-pr-show").hidden = on;
+}
+
+function editPr() {
+  const d = S.drawer;
+  const input = $("dr-pr-input");
+  input.value = d.pr || "";
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  showPrForm(true);
+  input.focus();
+  input.select();
+}
+
+// applyPr() -> false when the URL is refused inline. Empty clears the PR.
+function applyPr() {
+  const d = S.drawer;
+  const v = $("dr-pr-input").value.trim();
+  if (v && prNumber(v) === null) {
+    const repo = (S.board && S.board.repo) || "owner/repo";
+    setFieldError("dr-pr-input", "dr-pr-err", "Paste a pull request link, like https://github.com/" + repo + "/pull/12.");
+    return false;
+  }
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  d.pr = v || null;
+  showPrForm(false);
+  renderPr();
+  updateDirty();
+  $("dr-pr-edit").focus();
+  return true;
+}
+
+function cancelPr() {
+  setFieldError("dr-pr-input", "dr-pr-err", "");
+  showPrForm(false);
+  $("dr-pr-edit").focus();
+}
+
+function clearPr() {
+  S.drawer.pr = null;
+  renderPr();
+  updateDirty();
+  $("dr-pr-edit").focus();
+}
+
 // boardCard(n): the card's summary in the last board poll, or null.
 function boardCard(n) {
   return (S.board && S.board.cards.find(function (c) { return c.number === n; })) || null;
@@ -994,8 +1335,7 @@ function noteJson(text) {
   }
 }
 
-// renderDrawerMeta(): `round r · PR #p · models (escalated) · agent working
-// now`. Called on render and after every board poll (the active part is live).
+// renderDrawerMeta(): `round r · models (escalated) · agent working now`. Called on render and after every board poll (the active part is live).
 function renderDrawerMeta() {
   const d = S.drawer;
   const meta = $("dr-meta");
@@ -1006,18 +1346,7 @@ function renderDrawerMeta() {
   const note = noteJson(d.card.manager_note) || {};
   const parts = [];
   if (note.round != null) parts.push(document.createTextNode("round " + note.round));
-  if (note.pr != null) {
-    const label = "PR #" + note.pr;
-    if (d.card.pr_url) {
-      const a = el("a", null, label);
-      a.href = d.card.pr_url;
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      parts.push(a);
-    } else {
-      parts.push(document.createTextNode(label));
-    }
-  }
+  // the PR is its own field below
   const models = formatModels(note.models);
   if (models) {
     const span = el("span", null, models.text + (note.escalated ? " (escalated)" : ""));
@@ -1117,16 +1446,24 @@ function drawerEdits() {
     body: $("dr-body").value,
     labels: d.labels.slice(),
     state: $("dr-state").value,
+    acceptance: accItems(d.acc),
+    blocked_by: d.blk.slice(),
+    pr_url: d.pr,
   };
 }
+
+const same = function (a, b) { return JSON.stringify(a) === JSON.stringify(b); };
 
 function isDirty() {
   const d = S.drawer;
   if (!d || !d.base) return false;
   if (d.n === null) return true;
+  // text typed in an add box is saved with the rest
+  if ($("dr-acc-input").value.trim() || $("dr-blk-input").value.trim()) return true;
   const e = drawerEdits();
   return e.title !== d.base.title || e.body !== d.base.body || e.state !== d.base.state ||
-    JSON.stringify(e.labels) !== JSON.stringify(d.base.labels);
+    !same(e.labels, d.base.labels) || !same(e.acceptance, d.base.acceptance) ||
+    !same(e.blocked_by, d.base.blocked_by) || e.pr_url !== d.base.pr_url;
 }
 
 // updateDirty(): Save is the page's one filled button only while there is
@@ -1157,7 +1494,17 @@ async function writeApi(method, path, body) {
 async function saveDrawer() {
   const d = S.drawer;
   if (!d || d.busy) return;
-  if ($("dr-label-input").value.trim()) addLabel(); // a typed label counts
+  // what is typed in an add box counts
+  if ($("dr-label-input").value.trim()) addLabel();
+  if ($("dr-acc-input").value.trim()) addAcc();
+  if (!addBlocker()) {
+    $("dr-blk-input").focus();
+    return;
+  }
+  if (!$("dr-pr-form").hidden && !applyPr()) {
+    $("dr-pr-input").focus();
+    return;
+  }
   if (!isDirty()) return;
   const e = drawerEdits();
   if (!e.title.trim()) {
@@ -1167,7 +1514,10 @@ async function saveDrawer() {
   }
   setDrawerBusy(true);
   if (d.n === null) {
-    const r = await writeApi("POST", "/api/cards", { title: e.title, body: e.body, labels: e.labels, state: e.state });
+    const r = await writeApi("POST", "/api/cards", {
+      title: e.title, body: e.body, labels: e.labels, state: e.state,
+      acceptance: e.acceptance, blocked_by: e.blocked_by,
+    });
     if (S.drawer !== d) return;
     setDrawerBusy(false);
     fetchBoard(true);
@@ -1186,7 +1536,10 @@ async function saveDrawer() {
   const patch = {};
   if (e.title !== d.base.title) patch.title = e.title;
   if (e.body !== d.base.body) patch.body = e.body;
-  if (JSON.stringify(e.labels) !== JSON.stringify(d.base.labels)) patch.labels = e.labels;
+  if (!same(e.labels, d.base.labels)) patch.labels = e.labels;
+  if (!same(e.acceptance, d.base.acceptance)) patch.acceptance = e.acceptance;
+  if (!same(e.blocked_by, d.base.blocked_by)) patch.blocked_by = e.blocked_by;
+  if (e.pr_url !== d.base.pr_url) patch.pr_url = e.pr_url;
   if (Object.keys(patch).length) {
     const r = await writeApi("PATCH", "/api/cards/" + n, patch);
     if (S.drawer !== d) return;
@@ -1246,7 +1599,19 @@ async function submitComment() {
 
 // syncDrawer(): after a board poll, refresh the live parts of the drawer.
 function syncDrawer() {
-  if (S.drawer && S.drawer.card) renderDrawerMeta();
+  const d = S.drawer;
+  if (!d || !d.base) return;
+  if (d.card) renderDrawerMeta();
+  // a blocker that moved to done (or appeared) changes its chip
+  const sig = JSON.stringify(d.blk.map(function (n) {
+    const c = boardCard(n);
+    return c ? [c.state, c.title] : null;
+  }));
+  if (sig !== d.blkSig) {
+    const hadFocus = $("dr-blk").contains(document.activeElement);
+    renderBlockers();
+    if (hadFocus) $("dr-blk-input").focus();
+  }
 }
 
 function bindDrawer() {
@@ -1264,6 +1629,38 @@ function bindDrawer() {
     if (e.key === "Enter") {
       e.preventDefault();
       addLabel();
+    }
+  });
+  $("dr-acc-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addAcc();
+    } else if (e.key === "Backspace" && !e.target.value && S.drawer && S.drawer.acc.length) {
+      e.preventDefault();
+      focusAcc(S.drawer.acc.length - 1, true);
+    }
+  });
+  $("dr-acc-input").addEventListener("input", updateDirty);
+  $("dr-blk-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addBlocker();
+    }
+  });
+  $("dr-blk-input").addEventListener("input", function () {
+    if (!$("dr-blk-err").hidden) setFieldError("dr-blk-input", "dr-blk-err", "");
+    updateDirty();
+  });
+  $("dr-pr-edit").addEventListener("click", editPr);
+  $("dr-pr-clear").addEventListener("click", clearPr);
+  $("dr-pr-done").addEventListener("click", applyPr);
+  $("dr-pr-input").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      applyPr();
+    } else if (e.key === "Escape") {
+      e.preventDefault(); // closes the PR box, not the drawer
+      cancelPr();
     }
   });
   $("dr-title").addEventListener("keydown", function (e) {
@@ -1884,6 +2281,830 @@ function bindPlanner() {
   });
 }
 
+// --- supervisor --------------------------------------------------------------
+// Supervisor mode starts when GET /api/supervisor answers 200. Nothing here
+// sends a mutating request on load or from a poll: commands run only from a
+// click or key press. Every server-provided value reaches the page through
+// textContent / createTextNode (clean() also drops control characters).
+
+const SUP_POLL_MS = 3000;
+const SUP_HIDDEN_MS = 30000;    // polling backs off while the document is hidden
+const SUP_EVENT_LIMIT = 100;    // events per page; the server allows at most 500
+const SUP_EVENT_PAGES = 5;      // pages fetched in one poll
+const SUP_EVENT_KEEP = 200;     // timeline rows kept
+const SUP_CONTROLS = ["start", "pause", "resume", "stop"];
+const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
+
+S.supMode = false;
+S.supervisor = null;  // the last /api/supervisor reply (or the body of a 409)
+S.sup = {
+  seq: 0,           // newest status poll; an older one is dropped
+  ackSeq: 0,        // bumped by a command reply: polls started before it are dropped
+  timerSeq: 0,
+  idSeq: 0,
+  stale: false,     // unreachable, or the last poll failed
+  launchable: false, // stale because the board answered "unreachable": Start launches the service
+  stopped: false,   // a Stop reply said the service ended (terminated): its exit is expected
+  stoppedView: false, // the board is unreachable because of a deliberate stop, not an outage
+  reason: "",
+  okAt: null,       // ms of the last good status poll
+  busy: false,      // a command is in flight
+  req: null,        // {key, id, body}: the command a click may retry
+  ack: null,        // {kind, phase, state_revision}: acknowledged, not yet observed
+  hint: 0,          // the revision an acknowledgement reported
+  cursor: 0,        // last event sequence seen
+  seen: {},
+  events: [],
+  notice: null,
+  menuOpen: false,
+  statusText: null,
+  visBound: false,
+};
+
+function clean(v, max) {
+  let t = String(v === undefined || v === null ? "" : v).replace(CONTROL_RE, "").replace(/\s+/g, " ");
+  max = max || 300;
+  if (t.length > max) t = t.slice(0, max) + "…";
+  return t;
+}
+
+function isNum(v) {
+  return typeof v === "number" && isFinite(v);
+}
+
+// A timestamp from the server: an ISO string or epoch seconds. -> ms or null.
+function toMs(v) {
+  if (isNum(v)) return v * 1000;
+  const t = typeof v === "string" ? Date.parse(v) : NaN;
+  return isNaN(t) ? null : t;
+}
+
+function fmtUtc(ms) {
+  return new Date(ms).toISOString().replace("T", " ").replace(/(\.\d+)?Z$/, " UTC");
+}
+
+function ageText(ms) {
+  const secs = Math.floor((Date.now() - ms) / 1000);
+  if (secs < 0) return "in the future";
+  if (secs < 5) return "just now";
+  if (secs < 60) return secs + " seconds ago";
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return mins + (mins === 1 ? " minute ago" : " minutes ago");
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return hours + (hours === 1 ? " hour ago" : " hours ago");
+  const days = Math.floor(hours / 24);
+  return days + " days ago";
+}
+
+function fmtDuration(sec) {
+  if (!isNum(sec) || sec < 0) return "unknown";
+  sec = Math.floor(sec);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  if (h) return h + "h " + m + "m " + s + "s";
+  if (m) return m + "m " + s + "s";
+  return s + "s";
+}
+
+// msgText(reply): the reason the server gave, whatever key it used.
+function msgText(r) {
+  const d = r.data || {};
+  for (const k of ["reason", "message", "error"]) {
+    if (typeof d[k] === "string" && d[k]) return clean(d[k], 400);
+  }
+  return "the server answered HTTP " + r.status;
+}
+
+function newRequestId() {
+  S.sup.idSeq++;
+  return "ui-" + Date.now().toString(36) + "-" + S.sup.idSeq + "-" + Math.random().toString(36).slice(2, 10);
+}
+
+// runCommand(holder, key, path, build): POSTs one revision-bound command.
+// holder.req keeps {key, id, body} after a lost or 5xx reply, so the next click
+// of the SAME action resends the identical request id; any other answer clears
+// it. Returns the reply, or null when no reply arrived.
+async function runCommand(holder, key, path, build) {
+  if (!holder.req || holder.req.key !== key) holder.req = { key: key, id: newRequestId(), body: null };
+  const req = holder.req;
+  if (!req.body) req.body = Object.assign({ request_id: req.id }, build());
+  let r = null;
+  try {
+    r = await api("POST", path, req.body);
+  } catch (e) {
+    r = null;
+  }
+  if (r && r.status < 500) holder.req = null;
+  return r;
+}
+
+function showNotice(msg) {
+  const sup = S.sup;
+  if (!sup.notice) {
+    const box = el("div", "sup-notice");
+    box.setAttribute("role", "alert");
+    box.hidden = true;
+    const text = el("span", "sup-notice-text");
+    const close = el("button", "text-btn", "Dismiss");
+    close.type = "button";
+    close.addEventListener("click", hideNotice);
+    box.appendChild(text);
+    box.appendChild(close);
+    document.body.appendChild(box);
+    sup.notice = { box: box, text: text };
+  }
+  sup.notice.text.textContent = clean(msg, 500);
+  sup.notice.box.hidden = false;
+}
+
+function hideNotice() {
+  if (S.sup.notice) S.sup.notice.box.hidden = true;
+}
+
+// --- supervisor: mode, polling ------------------------------------------------
+
+function looksLikeSupervisor(d) {
+  return !!d && typeof d === "object" && !Array.isArray(d) &&
+    ("revision" in d || "desired_mode" in d || "unreachable" in d || "schema_version" in d);
+}
+
+async function detectSupervisor() {
+  let r;
+  try {
+    r = await api("GET", "/api/supervisor");
+  } catch (e) {
+    return; // fetchBoard reports an unreachable server; the legacy run controls stay
+  }
+  if (!r.ok || !looksLikeSupervisor(r.data)) return;
+  enterSupervisorMode();
+  await supervisorTick(r);
+}
+
+function enterSupervisorMode() {
+  if (S.supMode) return;
+  S.supMode = true;
+  const root = $("supervisor");
+  // index.html already places it; this only matters for a page built without it
+  if (!document.body.contains(root)) document.body.appendChild(root);
+  root.hidden = false;
+  const status = $("supervisor-status");
+  if (!root.contains(status)) root.appendChild(status);
+  if (!root.contains($("supervisor-timeline"))) root.appendChild($("supervisor-timeline"));
+  status.hidden = false;
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-label", "Supervisor status");
+  $("start-btn").hidden = true;
+  $("stop-btn").hidden = true;
+  $("run-pill").hidden = true;
+  $("run-cost").hidden = true;
+  $("supervisor-stop-menu").replaceChildren($("supervisor-drain-btn"), $("supervisor-cancel-btn"));
+  setStopMenu(false);
+  if (!S.sup.visBound) {
+    S.sup.visBound = true;
+    document.addEventListener("visibilitychange", function () {
+      if (document.hidden) scheduleSupervisor(SUP_HIDDEN_MS);
+      else supervisorTick();
+    });
+  }
+  if (S.drawer && S.drawer.n !== null && !S.drawer.exec) loadExecution(S.drawer);
+}
+
+function scheduleSupervisor(ms) {
+  const my = ++S.sup.timerSeq;
+  setTimeout(function () {
+    if (my === S.sup.timerSeq) return supervisorTick();
+  }, ms);
+}
+
+// supervisorTick(first): one status poll, then the event pages. first is an
+// already fetched /api/supervisor reply (the mode detection's).
+async function supervisorTick(first) {
+  const sup = S.sup;
+  const seq = ++sup.seq;
+  const ack0 = sup.ackSeq;
+  let r = first || null;
+  let failure = null;
+  if (!r) {
+    try {
+      r = await api("GET", "/api/supervisor");
+    } catch (e) {
+      failure = "no answer from the board server";
+    }
+  }
+  if (seq !== sup.seq) return; // a newer poll owns the schedule
+  if (r && !r.ok) failure = msgText(r);
+  if (r && r.ok && !looksLikeSupervisor(r.data)) failure = "unreadable supervisor status";
+  if (failure) {
+    markStale("supervisor status unavailable: " + failure);
+  } else if (ack0 === sup.ackSeq) {
+    adoptSnapshot(r.data);
+  }
+  if (!failure && !sup.stale && ack0 === sup.ackSeq) await pollEvents(seq);
+  if (seq !== sup.seq) return;
+  scheduleSupervisor(document.hidden ? SUP_HIDDEN_MS : SUP_POLL_MS);
+}
+
+function markStale(reason) {
+  S.sup.stale = true;
+  S.sup.launchable = false; // the board server itself did not answer: nothing can launch anything
+  S.sup.stoppedView = false;
+  S.sup.reason = reason;
+  renderSupervisor();
+}
+
+// adoptSnapshot(data): replaces the last status with a fresh full snapshot.
+function adoptSnapshot(data) {
+  const sup = S.sup;
+  const was = sup.stale;
+  S.supervisor = data;
+  sup.hint = 0;
+  const known = data.last_known && typeof data.last_known === "object" ? data.last_known : null;
+  // The service exits by design after Stop: an unreachable answer then means stopped, not an outage.
+  sup.stoppedView = data.unreachable === true &&
+    (sup.stopped || (!!known && known.phase === "stopped" && known.ready === false));
+  sup.launchable = data.unreachable === true;
+  if (data.unreachable !== true) sup.stopped = false;
+  sup.stale = data.unreachable === true && !sup.stoppedView;
+  sup.reason = sup.stale ? clean(data.reason || data.error || "the supervisor did not answer", 300) : "";
+  if (!sup.stale) sup.okAt = Date.now();
+  const ack = sup.ack;
+  if (ack && !sup.stale) {
+    const view = supView() || {};
+    const phase = supPhase(view);
+    const reached = ack.kind === "pause" ? phase === "paused"
+      : ack.kind === "stop" ? phase === "stopped" || phase === "idle"
+      : view.ready === true && phase === "running";
+    const moved = isNum(ack.state_revision) && isNum(view.revision) && view.revision > ack.state_revision;
+    if (reached || moved) sup.ack = null;
+  }
+  if (was && !sup.stale) fetchBoard(true); // reconnected: a fresh board with the snapshot
+  renderSupervisor();
+}
+
+async function pollEvents(seq) {
+  const sup = S.sup;
+  for (let page = 0; page < SUP_EVENT_PAGES; page++) {
+    let r;
+    try {
+      r = await api("GET", "/api/supervisor/events?after=" + sup.cursor + "&limit=" + SUP_EVENT_LIMIT);
+    } catch (e) {
+      return;
+    }
+    if (seq !== sup.seq) return;
+    if (!r.ok) return;
+    const d = r.data || {};
+    if (d.snapshot_required === true) {
+      // the cursor was compacted away: start over from a full snapshot
+      sup.cursor = 0;
+      sup.seen = {};
+      sup.events = [];
+      renderTimeline();
+      fetchBoard(true);
+      try {
+        const s = await api("GET", "/api/supervisor");
+        if (seq === sup.seq && s.ok && looksLikeSupervisor(s.data)) adoptSnapshot(s.data);
+      } catch (e) {
+        markStale("supervisor status unavailable: no answer from the board server");
+      }
+      return;
+    }
+    const list = Array.isArray(d.events) ? d.events : [];
+    let top = sup.cursor;
+    for (const ev of list) {
+      if (!ev || typeof ev !== "object" || !isNum(ev.sequence)) continue;
+      if (ev.sequence > top) top = ev.sequence;
+      if (sup.seen[ev.sequence]) continue;
+      sup.seen[ev.sequence] = true;
+      sup.events.push(ev);
+    }
+    const next = isNum(d.next_cursor) ? d.next_cursor : top;
+    if (next > sup.cursor) sup.cursor = next; // the cursor never moves back
+    if (top > sup.cursor) sup.cursor = top;
+    sup.events.sort(function (a, b) { return a.sequence - b.sequence; });
+    if (sup.events.length > SUP_EVENT_KEEP) {
+      for (const old of sup.events.splice(0, sup.events.length - SUP_EVENT_KEEP)) delete sup.seen[old.sequence];
+    }
+    renderTimeline();
+    if (list.length < SUP_EVENT_LIMIT) return;
+  }
+}
+
+// --- supervisor: rendering ----------------------------------------------------
+
+function supView() {
+  const s = S.supervisor;
+  if (!s) return null;
+  const known = s.unreachable && s.last_known && typeof s.last_known === "object" ? s.last_known : null;
+  if (S.sup.stoppedView) {
+    // Stopped on purpose: the runtime fields of the last answer no longer describe anything live.
+    return Object.assign({}, known || {}, { desired_mode: "stopped", phase: "stopped", ready: false,
+      heartbeat: null, capacity: null, queue: null });
+  }
+  return known || s;
+}
+
+function supPhase(v) {
+  return typeof v.phase === "string" && v.phase ? v.phase : null;
+}
+
+function supHeartbeatAt(v) {
+  return v && v.heartbeat && typeof v.heartbeat === "object" ? v.heartbeat.at : null;
+}
+
+function supItem(cls, label, value) {
+  const item = el("span", "sup-item" + (cls ? " " + cls : ""));
+  if (label) item.appendChild(el("span", "sup-k", label));
+  item.appendChild(el("span", "sup-v", value));
+  return item;
+}
+
+function renderSupervisor() {
+  if (!S.supMode) return;
+  const sup = S.sup;
+  const snap = S.supervisor;
+  const view = supView() || {};
+  const frag = document.createDocumentFragment();
+  const phase = supPhase(view);
+
+  // headline: desired mode, observed phase, readiness
+  const head = el("span", "sup-head");
+  head.appendChild(supItem("sup-mode", "desired", clean(view.desired_mode || "unknown", 40)));
+  if (sup.ack) {
+    head.appendChild(supItem("sup-phase pending", "phase", clean(sup.ack.phase, 40) + " (acknowledged, waiting for the supervisor to report it)"));
+  } else {
+    head.appendChild(supItem("sup-phase", "phase", clean(phase || "unknown", 40)));
+  }
+  head.appendChild(supItem(view.ready === true ? "" : "sup-warn", "", view.ready === true ? "ready" : view.ready === false ? "not ready" : "readiness unknown"));
+  frag.appendChild(head);
+
+  if (sup.stoppedView) {
+    frag.appendChild(supItem("", "stopped", "the service exited after Stop; Start launches it again"));
+  }
+  if (sup.stale) {
+    const at = snap ? (snap.last_known_at !== undefined && snap.last_known_at !== null ? snap.last_known_at : supHeartbeatAt(view)) : null;
+    const ms = toMs(at) !== null ? toMs(at) : sup.okAt;
+    const row = el("span", "sup-item sup-warn sup-stale");
+    row.appendChild(el("span", "sup-k", "unreachable"));
+    row.appendChild(el("span", "sup-v", clean(sup.reason || "no connection", 300)));
+    frag.appendChild(row);
+    if (ms !== null) {
+      const when = el("span", "sup-item");
+      when.appendChild(el("span", "sup-k", "last known"));
+      const t = el("time", "sup-v", typeof at === "string" && toMs(at) !== null ? clean(at, 64) : fmtUtc(ms));
+      t.setAttribute("datetime", new Date(ms).toISOString());
+      when.appendChild(t);
+      when.appendChild(el("span", "sup-v", ageText(ms)));
+      frag.appendChild(when);
+    }
+  }
+
+  // slots: never shown as 0 when the supervisor cannot say
+  const capacity = view.capacity && typeof view.capacity === "object" ? view.capacity : {};
+  const cap = isNum(capacity.global_cap) ? String(capacity.global_cap) : "unknown";
+  if (sup.stale || !isNum(capacity.slots)) {
+    frag.appendChild(supItem("sup-warn", "", "occupancy unknown"));
+    frag.appendChild(supItem("", "global cap", cap));
+  } else {
+    frag.appendChild(supItem("", "slots", capacity.slots + " / " + cap));
+  }
+  const providers = capacity.per_provider && typeof capacity.per_provider === "object" ? capacity.per_provider : {};
+  for (const name of Object.keys(providers).slice(0, 20)) {
+    const known = !sup.stale && isNum(providers[name]);
+    frag.appendChild(supItem("sup-prov", clean(name, 60), known ? providers[name] : "unknown"));
+  }
+
+  const counts = view.queue && typeof view.queue === "object" ? view.queue : {};
+  for (const k of ["ready", "running", "waiting", "attention"]) {
+    const n = counts[k];
+    const warn = k === "attention" && isNum(n) && n > 0;
+    frag.appendChild(supItem(warn ? "sup-warn" : "", k, isNum(n) ? n : "unknown"));
+  }
+
+  const b = view.session && typeof view.session === "object" ? view.session : null;
+  if (b) {
+    const parts = [isNum(b.known_spend) ? "$" + b.known_spend.toFixed(2) + " known" : "spend unknown"];
+    if (b.unknown_spend === true) parts.push("plus unknown spend");
+    const ms = toMs(b.deadline);
+    frag.appendChild(supItem(b.unknown_spend === true ? "sup-warn" : "", "budget", parts.join(", ")));
+    if (b.deadline) frag.appendChild(supItem("", "deadline", ms !== null ? fmtUtc(ms) : clean(b.deadline, 64)));
+  } else {
+    frag.appendChild(supItem("sup-warn", "budget", "unknown"));
+  }
+
+  // boot registration: only a verified registration is reported as present
+  const boot = typeof view.boot_registration === "string" && view.boot_registration ? view.boot_registration : null;
+  const bootState = boot || "";
+  if (!boot) frag.appendChild(supItem("sup-warn", "boot registration", "unknown"));
+  else if (bootState === "missing") frag.appendChild(supItem("sup-warn", "boot registration", "missing (local session only; it will not restart after a reboot)"));
+  else if (bootState === "verified") frag.appendChild(supItem("", "boot registration", "registered and verified"));
+  else frag.appendChild(supItem("sup-warn", "boot registration", clean(bootState || "unknown", 60) + " (not verified)"));
+
+  const hb = toMs(supHeartbeatAt(view));
+  if (hb !== null && !sup.stale) frag.appendChild(supItem("", "heartbeat", ageText(hb)));
+
+  const le = view.last_error;
+  const leText = le && typeof le === "object" ? le.message || JSON.stringify(le) : le;
+  if (leText) frag.appendChild(supItem("sup-warn sup-err", "last error", clean(leText, 400)));
+
+  const text = frag.textContent;
+  if (text !== sup.statusText) {
+    sup.statusText = text;
+    $("supervisor-status").replaceChildren(frag);
+  }
+  $("supervisor-status").setAttribute("aria-label", "Supervisor status: desired " + clean(view.desired_mode || "unknown", 40) + ", phase " + clean(sup.ack ? sup.ack.phase : phase || "unknown", 40));
+
+  renderSupervisorControls(view);
+  $("supervisor-retry-btn").hidden = !sup.stale;
+  $("supervisor-retry-btn").disabled = false;
+}
+
+// setControl(btn, enabled, reason): a disabled control says why in its title and
+// in a description it points at.
+function setControl(btn, enabled, reason, whyId) {
+  btn.disabled = !enabled;
+  const why = $(whyId || btn.id + "-why");
+  if (enabled) {
+    btn.title = "";
+    btn.removeAttribute("aria-describedby");
+    why.textContent = "";
+  } else {
+    btn.title = reason;
+    btn.setAttribute("aria-describedby", why.id);
+    why.textContent = reason;
+  }
+}
+
+function renderSupervisorControls(view) {
+  const sup = S.sup;
+  const desired = view.desired_mode;
+  const phase = supPhase(view);
+  // Down: the board answered "unreachable". Start launches the service; the rest need it running.
+  const down = sup.stale && sup.launchable;
+  const stopped = sup.stoppedView;
+  let gate = null;
+  if (sup.stale && !sup.launchable) gate = "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Retry the connection first.";
+  else if (!down && !stopped && (!S.supervisor || !isNum(S.supervisor.revision))) gate = "No supervisor status yet.";
+  else if (sup.busy) gate = "Another supervisor command is in flight.";
+  const rest = gate || (down ? "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Start launches it; this needs it running." : null);
+  const start = $("supervisor-start-btn");
+  const pause = $("supervisor-pause-btn");
+  const resume = $("supervisor-resume-btn");
+  const stop = $("supervisor-stop-btn");
+  setControl(start, !gate && (down || stopped || (desired !== "paused" && phase !== "draining" && phase !== "cancelling")),
+    gate || (desired === "paused" ? "The session is paused: use Resume." : "The supervisor is stopping."));
+  setControl(pause, !rest && desired === "running",
+    rest || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
+  setControl(resume, !rest && desired === "paused",
+    rest || "The session is not paused.");
+  setControl(stop, !rest && desired !== "stopped",
+    rest || "The supervisor is already stopped.");
+  if (stop.disabled && sup.menuOpen) setStopMenu(false);
+  start.classList.toggle("primary", false);
+  pause.classList.toggle("primary", !pause.disabled);
+  resume.classList.toggle("primary", pause.disabled && !resume.disabled);
+  start.classList.toggle("primary", pause.disabled && resume.disabled && !start.disabled);
+  renderExecution(S.drawer); // the card controls follow the same stale/busy gate
+}
+
+function renderTimeline() {
+  const frag = document.createDocumentFragment();
+  for (const ev of S.sup.events) frag.appendChild(renderEvent(ev));
+  $("supervisor-timeline").replaceChildren(frag);
+}
+
+function eventDetail(ev) {
+  const parts = [];
+  if (ev.card !== undefined && ev.card !== null) parts.push("card #" + clean(ev.card, 20));
+  const p = ev.payload;
+  if (p && typeof p === "object" && !Array.isArray(p)) {
+    for (const k of Object.keys(p).slice(0, 8)) {
+      const v = p[k];
+      parts.push(clean(k, 40) + ": " + (v !== null && typeof v === "object" ? clean(JSON.stringify(v), 160) : clean(v, 160)));
+    }
+  } else if (typeof p === "string") {
+    parts.push(clean(p, 200));
+  }
+  if (typeof ev.message === "string") parts.push(clean(ev.message, 200));
+  return parts.join(" · ");
+}
+
+// One timeline row: the date and age come from the structured timestamp only.
+function renderEvent(ev) {
+  const li = el("li", "sup-ev");
+  li.dataset.seq = String(ev.sequence);
+  li.appendChild(el("span", "sup-ev-type", clean(ev.type || "event", 60)));
+  const ms = toMs(ev.timestamp);
+  if (ms !== null) {
+    const t = el("time", "sup-ev-time", fmtUtc(ms));
+    t.setAttribute("datetime", new Date(ms).toISOString());
+    li.appendChild(t);
+    li.appendChild(el("span", "sup-ev-age", ageText(ms)));
+  } else {
+    li.appendChild(el("span", "sup-ev-time", "time unknown"));
+  }
+  const detail = eventDetail(ev);
+  if (detail) li.appendChild(el("span", "sup-ev-detail", detail));
+  return li;
+}
+
+// --- supervisor: commands -----------------------------------------------------
+
+function expectedRevision() {
+  const rev = S.supervisor && isNum(S.supervisor.revision) ? S.supervisor.revision : 0;
+  return Math.max(rev, S.sup.hint);
+}
+
+const ACK_PHASE = { start: "starting", resume: "starting", pause: "pausing", stop: "stopping" };
+
+// supCommand(kind, extra): kind is start|pause|resume|stop. The reply is an
+// acknowledgement only: the page shows it as such until a poll observes it.
+async function supCommand(kind, extra) {
+  const sup = S.sup;
+  const launching = kind === "start" && sup.stale && sup.launchable;
+  if (sup.busy || (sup.stale && !launching) || !S.supervisor) return;
+  const key = kind + (extra && extra.mode ? ":" + extra.mode : "");
+  hideNotice();
+  sup.busy = true;
+  renderSupervisor();
+  const r = await runCommand(sup, key, "/api/supervisor/" + kind, function () {
+    return Object.assign({ expected_revision: expectedRevision() }, extra || {});
+  });
+  sup.busy = false;
+  const verb = kind === "stop" && extra ? "Stop (" + extra.mode + ")" : kind.charAt(0).toUpperCase() + kind.slice(1);
+  if (!r) {
+    showNotice(verb + ": the board server did not answer. Click again to retry the same request.");
+  } else if (r.status === 409) {
+    const cur = r.data && (r.data.snapshot || r.data.current);
+    ++sup.ackSeq;
+    sup.ack = null;
+    if (looksLikeSupervisor(cur)) adoptSnapshot(cur);
+    showNotice(verb + " not applied, the supervisor state changed: " + msgText(r));
+  } else if (!r.ok) {
+    showNotice(verb + " failed: " + msgText(r));
+  } else {
+    const d = r.data || {};
+    ++sup.ackSeq;
+    if (isNum(d.state_revision)) sup.hint = d.state_revision;
+    if (kind === "stop" && d.terminated === true) sup.stopped = true; // the service exited by design
+    if (kind === "start") sup.stopped = false;
+    sup.ack = { kind: kind, phase: typeof d.phase === "string" && d.phase ? d.phase : ACK_PHASE[kind], state_revision: isNum(d.state_revision) ? d.state_revision : null };
+  }
+  renderSupervisor();
+}
+
+function setStopMenu(open, focusFirst) {
+  const menu = $("supervisor-stop-menu");
+  S.sup.menuOpen = open;
+  menu.hidden = !open;
+  $("supervisor-stop-btn").setAttribute("aria-expanded", String(open));
+  if (open && focusFirst) $("supervisor-drain-btn").focus();
+}
+
+function closeStopMenu() {
+  setStopMenu(false);
+  $("supervisor-stop-btn").focus();
+}
+
+function runStop(mode) {
+  closeStopMenu();
+  if (mode === "cancel" && !confirm("Cancel stops the active work now. Stop in cancel mode?")) return;
+  return supCommand("stop", { mode: mode });
+}
+
+function menuItems() {
+  return [$("supervisor-drain-btn"), $("supervisor-cancel-btn")];
+}
+
+function menuKey(e, item) {
+  const items = menuItems();
+  const i = items.indexOf(item);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+  } else if (e.key === "Home" || e.key === "End") {
+    e.preventDefault();
+    items[e.key === "Home" ? 0 : items.length - 1].focus();
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeStopMenu();
+  } else if (e.key === "Tab") {
+    setStopMenu(false);
+  } else if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    runStop(item === items[1] ? "cancel" : "drain");
+  }
+}
+
+function bindSupervisor() {
+  $("supervisor-start-btn").addEventListener("click", function () { supCommand("start"); });
+  $("supervisor-pause-btn").addEventListener("click", function () { supCommand("pause"); });
+  $("supervisor-resume-btn").addEventListener("click", function () { supCommand("resume"); });
+  $("supervisor-retry-btn").addEventListener("click", function () { supervisorTick(); });
+
+  const stop = $("supervisor-stop-btn");
+  const menu = $("supervisor-stop-menu");
+  stop.addEventListener("click", function () { setStopMenu(!S.sup.menuOpen); });
+  stop.addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault(); // the click would toggle the menu a second time
+      if (e.key === " ") setStopMenu(!S.sup.menuOpen);
+      else setStopMenu(true, true);
+    } else if (e.key === "Escape" && S.sup.menuOpen) {
+      e.preventDefault();
+      closeStopMenu();
+    }
+  });
+  stop.addEventListener("keyup", function (e) {
+    if (e.key === " ") e.preventDefault();
+  });
+  menu.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeStopMenu();
+    }
+  });
+  menuItems().forEach(function (item) {
+    item.addEventListener("keydown", function (e) { menuKey(e, item); });
+  });
+  $("supervisor-drain-btn").addEventListener("click", function () { runStop("drain"); });
+  $("supervisor-cancel-btn").addEventListener("click", function () { runStop("cancel"); });
+  document.addEventListener("click", function (e) {
+    if (S.sup.menuOpen && !menu.contains(e.target) && !stop.contains(e.target)) setStopMenu(false);
+  });
+
+  $("dr-exec-pause").addEventListener("click", function () {
+    execAction("pause", "pause", "Pause card", function () { return { mode: "drain" }; });
+  });
+  $("dr-exec-resume").addEventListener("click", function () {
+    execAction("resume", "resume", "Resume card", function () { return {}; });
+  });
+  $("dr-release-reservations").addEventListener("click", function () {
+    execAction("release", "release-reservations", "Release reservations", function () {
+      const x = (S.drawer && S.drawer.exec) || {};
+      return { reason: resolveReason("release reservations"), expected_reservation_revision: x.reservation_revision };
+    });
+  });
+  for (const action of ["retry", "record_usage", "confirm_effect", "abandon"]) {
+    $("dr-resolve-" + action).addEventListener("click", function () {
+      if (action === "abandon" && !confirm("Abandon stops further work on this card. Continue?")) return;
+      execAction("resolve:" + action, "resolve", "Resolve (" + action + ")", function () {
+        return {
+          action: action,
+          reason: resolveReason(action),
+          evidence: lines($("dr-resolve-evidence").value),
+        };
+      });
+    });
+  }
+}
+
+// --- supervisor: card execution -----------------------------------------------
+
+function cardExecLine(c) {
+  const parts = [];
+  if (c.activity) parts.push("activity: " + clean(c.activity, 60));
+  if (c.wait_reason) parts.push("waiting: " + clean(c.wait_reason, 120));
+  if (c.reservation_state) parts.push("reservation: " + clean(c.reservation_state, 60));
+  return parts.join(" · ");
+}
+
+function resolveReason(what) {
+  const typed = $("dr-resolve-reason").value.trim();
+  if (!typed) throw new Error("A reason is required before you can " + what + ".");
+  return typed;
+}
+
+function execRevision(d) {
+  if (d.exec && isNum(d.exec.revision)) return d.exec.revision;
+  return S.supervisor && isNum(S.supervisor.revision) ? S.supervisor.revision : 0;
+}
+
+function clearExecution() {
+  $("dr-exec-sec").hidden = true;
+  for (const id of ["dr-activity", "dr-elapsed", "dr-heartbeat-age", "dr-progress-age", "dr-retry-count", "dr-wait-reason", "dr-reservation-state"]) {
+    $(id).textContent = "";
+  }
+  $("dr-logs").replaceChildren();
+  $("dr-attempts").replaceChildren();
+  $("dr-resolve-reason").value = "";
+  $("dr-resolve-evidence").value = "";
+}
+
+async function loadExecution(d) {
+  if (!S.supMode || !d || d.n === null) return;
+  const seq = ++d.execSeq;
+  let r;
+  try {
+    r = await api("GET", "/api/cards/" + d.n + "/execution");
+  } catch (e) {
+    r = null;
+  }
+  if (S.drawer !== d || seq !== d.execSeq) return;
+  if (!r) {
+    showNotice("Could not refresh execution for #" + d.n + ": the board server did not answer.");
+  } else if (r.ok) {
+    d.exec = r.data;
+  } else {
+    if (r.data && r.data.execution && typeof r.data.execution === "object") d.exec = r.data.execution;
+    showNotice("Could not refresh execution for #" + d.n + ": " + msgText(r));
+  }
+  renderExecution(d);
+}
+
+// renderExecution(d): the drawer's Execution section. Activity, elapsed,
+// heartbeat age and progress age are separate fields; a field the supervisor did
+// not report reads "unknown", never zero.
+function renderExecution(d) {
+  const sec = $("dr-exec-sec");
+  if (!d || d.n === null || !S.supMode) {
+    sec.hidden = true;
+    return;
+  }
+  sec.hidden = false;
+  const x = d.exec || {};
+  $("dr-activity").textContent = x.activity ? clean(x.activity, 80) : "unknown";
+  $("dr-elapsed").textContent = fmtDuration(x.elapsed_seconds);
+  $("dr-heartbeat-age").textContent = fmtDuration(x.heartbeat_age_seconds);
+  $("dr-progress-age").textContent = fmtDuration(x.progress_age_seconds);
+  $("dr-retry-count").textContent = isNum(x.retry_count) ? String(x.retry_count) : "unknown";
+
+  let wait = x.wait_reason ? clean(x.wait_reason, 300) : d.exec ? "not waiting" : "unknown";
+  if (x.blocking_card !== undefined && x.blocking_card !== null) wait += " (blocked by card #" + clean(x.blocking_card, 20) + ")";
+  if (x.blocking_path) wait += " (path " + clean(x.blocking_path, 200) + ")";
+  $("dr-wait-reason").textContent = wait;
+  const rs = x.reservation_state ? clean(x.reservation_state, 80) : d.exec ? "none" : "unknown";
+  $("dr-reservation-state").textContent = rs + (isNum(x.reservation_revision) ? " (revision " + x.reservation_revision + ")" : "");
+
+  const logs = Array.isArray(x.logs) ? x.logs : [];
+  const ul = document.createDocumentFragment();
+  for (const l of logs.slice(0, 50)) {
+    const id = l && typeof l === "object" ? l.id : l;
+    ul.appendChild(el("li", "dr-log", clean(id, 200)));
+  }
+  if (!logs.length) ul.appendChild(el("li", "dr-log none", "no logs"));
+  $("dr-logs").replaceChildren(ul);
+
+  // Attempt history, oldest first: id, state and provider are text, never markup.
+  const history = Array.isArray(x.attempt_history) ? x.attempt_history : [];
+  const attempts = document.createDocumentFragment();
+  let shown = 0;
+  for (const a of history.slice(-50)) {
+    if (!a || typeof a !== "object") continue;
+    shown++;
+    let line = clean(a.id, 120) + " · " + clean(a.state, 40);
+    if (a.provider) line += " · " + clean(a.provider, 60);
+    if (a.quarantine_reason) line += " · " + clean(a.quarantine_reason, 160);
+    attempts.appendChild(el("li", "dr-log", line));
+  }
+  if (!shown) attempts.appendChild(el("li", "dr-log none", d.exec ? "no attempts" : "unknown"));
+  $("dr-attempts").replaceChildren(attempts);
+
+  let gate = null;
+  if (S.sup.stale) gate = "The supervisor is unreachable. Retry the connection first.";
+  else if (!d.exec) gate = "Execution status is not loaded.";
+  else if (d.execBusy || S.sup.busy) gate = "A command is in flight.";
+  setControl($("dr-exec-pause"), !gate && x.paused !== true, gate || "The card is already paused.", "dr-exec-why");
+  setControl($("dr-exec-resume"), !gate && x.paused === true, gate || "The card is not paused.", "dr-exec-why");
+  let rel = gate;
+  if (!rel && x.paused !== true) rel = "Pause the card first: reservations are released only while it is paused.";
+  else if (!rel && x.writer !== false) rel = "A writer may still be active: reservations stay held until none is.";
+  else if (!rel && !isNum(x.reservation_revision)) rel = "No reservation revision to release.";
+  setControl($("dr-release-reservations"), !rel, rel, "dr-release-why");
+  for (const action of ["retry", "record_usage", "confirm_effect", "abandon"]) {
+    setControl($("dr-resolve-" + action), !gate, gate, "dr-resolve-why");
+  }
+}
+
+// execAction(key, suffix, verb, build): a card command, then a fresh read of the
+// card's execution whatever the answer was.
+async function execAction(key, suffix, verb, build) {
+  const d = S.drawer;
+  if (!d || d.n === null || d.execBusy || S.sup.stale || !d.exec) return;
+  hideNotice();
+  d.execBusy = true;
+  renderExecution(d);
+  let extra;
+  try { extra = build(); } catch (e) {
+    // e.g. a missing reason: say so and send nothing (never invent an audit reason).
+    d.execBusy = false;
+    renderExecution(d);
+    showNotice(verb + ": " + e.message);
+    return;
+  }
+  const r = await runCommand(d, key, "/api/cards/" + d.n + "/execution/" + suffix, function () {
+    return Object.assign({ expected_revision: execRevision(d) }, extra);
+  });
+  d.execBusy = false;
+  if (!r) showNotice(verb + ": the board server did not answer. Click again to retry the same request.");
+  else if (!r.ok) {
+    if (r.status === 409 && r.data && r.data.execution && typeof r.data.execution === "object") d.exec = r.data.execution;
+    showNotice(verb + " failed: " + msgText(r));
+  }
+  await loadExecution(d);
+}
+
 // --- start -------------------------------------------------------------------
 
 function init() {
@@ -1899,11 +3120,13 @@ function init() {
       pollRun();
     }
   });
+  bindSupervisor();
   bindDrawer();
   bindImport();
   bindPlanner();
   fetchBoard().then(drawerFromUrl);
   pollRun();
+  detectSupervisor();
 }
 
 init();
