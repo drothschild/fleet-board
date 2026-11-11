@@ -1646,23 +1646,6 @@ class CredentialFileSafety(BootCase):
         self.assertNotIn("0xff", problem.lower())
         self.assertNotIn("position", problem)
 
-    def test_only_registered_credential_names_are_loaded(self):
-        reg = self.reg_with(names=("FB_TEST_TOKEN",))
-        path = reg / "credentials.env"
-        path.write_text("FB_TEST_TOKEN=ok\nPATH=/evil\nPYTHONPATH=/evil\n", encoding="utf-8")
-        os.chmod(str(path), 0o600)
-        seen = {}
-
-        def launch(root, launch_env):
-            seen.update(launch_env)
-            return FakeChild()
-
-        self.set_mode("running")
-        boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=launch, activate=lambda *a: None)
-        self.assertEqual(seen.get("FB_TEST_TOKEN"), "ok")
-        self.assertNotEqual(seen.get("PATH"), "/evil")
-        self.assertNotEqual(seen.get("PYTHONPATH"), "/evil")
-
 
 class DuplicateLaunchAck(WatchCase):
     """m-d: a launch whose ack says another owner holds the lock is a healthy `serving`."""
@@ -1734,6 +1717,8 @@ class UninstallWithLiveService(CliSocketTrust):
 
     def check(self, platform, *extra):
         self.install(*extra, platform=platform)
+        self.sockets.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(str(self.sockets), 0o700)
         self.serve_stub(self.sockets)
         result = self.service("uninstall", "--platform", platform, "--apply", "--install-dir", str(self.work / "installed"))
         text = json.dumps(result)

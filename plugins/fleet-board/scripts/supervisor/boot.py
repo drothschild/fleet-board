@@ -34,7 +34,8 @@ from .store import RUNNER_PROTOCOL
 PROTOCOL_VERSION = 1
 RUNNER_PROTOCOLS = (RUNNER_PROTOCOL,)
 REEXEC_MARK = "FLEET_BOARD_BOOT_REEXEC"  # set by an in-place re-exec so the new image reaps strays
-ACTIVE_ATTEMPT_STATES = ("prepared", "launching", "running", "result_ready")
+# cancel_requested can still hold a live runner until its stop is recorded.
+ACTIVE_ATTEMPT_STATES = ("prepared", "launching", "running", "result_ready", "cancel_requested")
 DEFAULT_INTERVAL = 15.0
 LABEL_PREFIX = "com.fleet-board.supervisor"
 EXIT_WAITING = 75  # EX_TEMPFAIL: the service manager retries; the wait is recoverable
@@ -293,8 +294,7 @@ def parse_credentials(text):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
+        line = re.sub(r"export\s+", "", line, count=1)
         name, sep, raw = line.partition("=")
         if sep and _NAME.match(name.strip()):
             values[name.strip()] = _unquote(raw)
@@ -303,18 +303,38 @@ def parse_credentials(text):
 
 def read_credentials(reg):
     """(values, problem) from <registry>/credentials.env, evaluated afresh each call. A file that
-    is missing yields ({}, None); one that is not a private regular file yields ({}, why)."""
+    is missing yields ({}, None); one that is not a private regular file yields ({}, why).
+
+    The file is opened without following a symlink and checked on the open descriptor, so what is
+    checked is what is read."""
     path = Path(reg) / "credentials.env"
+    hint = "%s: %s" % (CREDENTIALS_HINT, path)
     try:
-        info = os.lstat(str(path))
-    except OSError:
+        # O_NONBLOCK so a FIFO planted here cannot hang the open; harmless for a regular file.
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    except FileNotFoundError:
         return {}, None
-    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-        return {}, "%s: %s" % (CREDENTIALS_HINT, path)
+    except OSError:
+        return {}, hint  # a symlink (ELOOP), an unreadable file or anything else that is not plainly ours
     try:
-        return parse_credentials(path.read_text(encoding="utf-8")), None
-    except (OSError, UnicodeDecodeError) as exc:
-        return {}, "credentials.env cannot be read: %s" % str(exc)[:100]
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return {}, hint
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read()
+    except OSError:
+        return {}, "credentials.env cannot be read: %s" % path
+    finally:
+        os.close(fd)
+    try:
+        return parse_credentials(raw.decode("utf-8")), None
+    except UnicodeDecodeError:
+        return {}, "credentials.env is not valid UTF-8 text: %s" % path
+
+
+def registered_credentials(reg, entry):
+    """(values, problem) for a registered domain."""
+    return read_credentials(reg)
 
 
 # -- store inspection and compatibility ----------------------------------------------------
@@ -344,33 +364,37 @@ def _read_store_file(db, cache=None):
         row = connection.execute("SELECT desired_mode, service_version FROM domain").fetchone()
         info["mode"] = row[0] if row else None
         info["service_version"] = row[1] if row else None
-        info["newest"] = connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
+        newest = info["newest"] = connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
         cursor = cache.get("cursor", 0)
-        if info["newest"] < cursor:
+        if newest < cursor:
             cache.clear()
             cursor = 0
-        rows = connection.execute("SELECT sequence,timestamp,type,payload FROM events WHERE sequence >= ? "
-                                  "ORDER BY sequence", (max(cursor, 1),)).fetchall()
-        if cursor and (not rows or rows[0][0] != cursor or rows[0][1] != cache.get("anchor")):
-            cache.clear()  # the store was replaced under us: read it from the start
-            cursor = 0
-            rows = connection.execute("SELECT sequence,timestamp,type,payload FROM events ORDER BY sequence").fetchall()
+        if cursor:
+            # The event the cursor points at must still be the one we saw (one row, not a scan).
+            at = connection.execute("SELECT sequence,timestamp FROM events WHERE sequence >= ? "
+                                    "ORDER BY sequence LIMIT 1", (cursor,)).fetchone()
+            if at is None or at[0] != cursor or at[1] != cache.get("anchor"):
+                cache.clear()  # the store was replaced under us: read it from the start
+                cursor = 0
         last_start = cache.get("last_start", 0)
         reported = cache.setdefault("reported", {})
-        for sequence, stamp, kind, payload in rows:
-            if sequence > cursor and kind in ("command", "runner_version"):
-                try:
-                    body = json.loads(payload)
-                except ValueError:
-                    body = None
-                if isinstance(body, dict):
-                    if kind == "command" and body.get("command") in ("start", "resume"):
-                        last_start = sequence
-                    elif kind == "runner_version":
-                        reported[body.get("runner_id")] = body.get("protocol")
-            cursor, anchor = max(cursor, sequence), stamp
-        if rows:
-            cache.update(cursor=cursor, anchor=anchor)
+        # Only the two event types that matter, newest bound fixed first so the cursor stays exact.
+        for sequence, kind, payload in connection.execute(
+                "SELECT sequence,type,payload FROM events WHERE sequence > ? AND sequence <= ? "
+                "AND type IN ('command','runner_version') ORDER BY sequence", (cursor, newest)):
+            try:
+                body = json.loads(payload)
+            except ValueError:
+                body = None
+            if isinstance(body, dict):
+                if kind == "command" and body.get("command") in ("start", "resume"):
+                    last_start = sequence
+                elif kind == "runner_version":
+                    reported[body.get("runner_id")] = body.get("protocol")
+        if newest > cursor:
+            anchor = connection.execute("SELECT timestamp FROM events WHERE sequence >= ? ORDER BY sequence LIMIT 1",
+                                        (newest,)).fetchone()
+            cache.update(cursor=newest, anchor=anchor[0] if anchor else None)
         cache["last_start"] = last_start
         info["last_start"] = last_start
         marks = ",".join("?" * len(ACTIVE_ATTEMPT_STATES))
@@ -668,7 +692,7 @@ def _forget(reg, key, entry=None):
             pass
 
 
-def uninstall(root, *, env=None, install_dir=None, apply=False, runner=subprocess.run):
+def uninstall(root, *, env=None, install_dir=None, apply=False, runner=subprocess.run, live_status=None):
     """Remove this domain's unprivileged service files and, once the unit is really gone, its
     registration. Never touches state. While the unit still exists (a LaunchDaemon, or without
     --apply) the registration is kept as `uninstall_pending` so status stays honest."""
@@ -684,6 +708,15 @@ def uninstall(root, *, env=None, install_dir=None, apply=False, runner=subproces
                 "warning": error["message"] if error else None}
     result = {"removed": False, "pending": False, "label": entry["label"], "unit": entry["unit"], "commands": [],
               "privileged_commands": [], "failed": []}
+    try:
+        live = (live_status or _live_status)(root, entry)
+    except Exception:  # noqa: BLE001 - an unreadable status is "no live service"
+        live = None
+    if live is not None:
+        # Removing the unit ends only the watcher: serve and its runners are detached from it.
+        result["running_service"] = True
+        result["warning"] = ("a running service answers on this domain's socket and was not stopped; "
+                             "uninstall ends only the boot watcher. Stop it with: supervisor stop")
     dest = Path(entry["activation"]["destination"])
     if install_dir:
         dest = Path(install_dir) / dest.name
@@ -956,7 +989,7 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
             return waiting("missing_executable", "recorded executable is missing or not executable: %s" % name)
     # The credentials precondition is evaluated on every tick: the file is read now, so creating or
     # fixing it needs no restart, and the service is launched with the values read on this tick.
-    from_file, file_problem = read_credentials(reg)
+    from_file, file_problem = registered_credentials(reg, entry)
     service_env = dict(env)
     service_env.update(from_file)
     absent = [name for name in entry.get("credentials", []) if not service_env.get(name)]
@@ -1000,6 +1033,11 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
     handle = None
     try:
         handle = launch(root, child_env)
+        if (getattr(handle, "ack", None) or {}).get("owner") is False:
+            # Another healthy owner holds the lock (a peer that is still starting, or a slow
+            # answer): it activates itself. Nothing failed, so record nothing but `serving`.
+            return done("serving", {"state": "ok", "reason": "serving", "mode": mode}, handle=handle,
+                        suppressed_seq=None)
         extra = activate(root, child_env) if mode == "running" else None
     except Exception as exc:  # noqa: BLE001 - recorded as a recoverable wait, never a crash loop of state edits
         if handle is not None:

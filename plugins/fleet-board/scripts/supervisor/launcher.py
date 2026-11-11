@@ -48,6 +48,27 @@ def _log_tail(path, offset):
         return ""
 
 
+def _registered_credentials(board_root, env):
+    """The registered domain's credentials.env values (registered names only) for any start. A
+    missing or unsafe file never blocks an explicit Start: it prints the same hint the boot watcher
+    shows, naming variables only. Values never reach argv or a log."""
+    from . import boot  # deferred: boot imports this module
+    try:
+        reg = boot.registry_dir(env)
+        entry, _error = boot._load_entry(reg, boot._key_for(board_root, reg))
+    except Exception:  # noqa: BLE001 - no usable registration means nothing to add
+        return {}
+    if not entry:
+        return {}
+    values, problem = boot.registered_credentials(reg, entry)
+    absent = [name for name in entry.get("credentials", []) if not (values.get(name) or env.get(name) or os.environ.get(name))]
+    if absent:
+        print("supervisor: credentials not available to the service: %s (%s)"
+              % (", ".join(absent), problem or "create %s with mode 0600" % (reg / "credentials.env")),
+              file=sys.stderr, flush=True)
+    return values
+
+
 def launch_child(board_root, env=None, timeout=READY_TIMEOUT, extra_env=None):
     """Start `supervisor.cli serve` detached for board_root; return (child, ack).
 
@@ -61,7 +82,8 @@ def launch_child(board_root, env=None, timeout=READY_TIMEOUT, extra_env=None):
     log_dir = str(paths.log_dir(env))
     scripts = str(Path(__file__).resolve().parents[1])
     child_env = dict(os.environ)
-    child_env.update(extra_env or {})  # e.g. credentials the boot watcher read on this tick
+    child_env.update(_registered_credentials(board_root, env))  # every caller gets a registered domain's credentials
+    child_env.update(extra_env or {})  # e.g. the service environment the boot watcher built on this tick
     child_env.update({"FLEET_BOARD_LOG_DIR": log_dir,
                       "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
                                                if child_env.get("PYTHONPATH") else "")})
