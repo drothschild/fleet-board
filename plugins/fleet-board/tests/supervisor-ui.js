@@ -11,19 +11,16 @@ const baseCard = {number:4,title:hostile,body:"repair me",labels:[],comments:[],
   activity:"launch",elapsed_seconds:61,heartbeat_age_seconds:8,progress_age_seconds:13,retry_count:2,
   wait_reason:hostile,blocking_card:9,blocking_path:"src/locked",reservation_state:"held",reservation_revision:5,
   logs:[{id:hostile,text:hostile}]};
-const snapshot = {schema_version:1,revision:7,desired_mode:"running",phase:"running",ready:true,read_only:false,
-  execution_available:true,host_boot_id:"boot-1",shutdown:"resolved",
-  heartbeat:{at:"2026-11-10T18:00:00Z",age:3,fresh:true},
-  session:{active:{id:"s1"},known_spend:1.25,unknown_spend:true,deadline:"2026-11-10T20:00:00Z"},
+const snapshot = {schema_version:2,revision:7,run_id:"run-1",mode:"running",pause_reason:null,pid:4242,root:"/repo",
+  desired_mode:"running",phase:"running",ready:true,active:[],lane:null,provider_health:{},run_tokens:{},
   capacity:{slots:2,global_cap:4,per_provider:{[hostile]:1}},
   queue:{ready:2,running:1,waiting:3,attention:1},
-  config:{enabled:true,execution_available:true},
-  boot_registration:"missing",last_error:hostile,claims:{count:2},cards:[baseCard]};
+  last_error:hostile,cards:[baseCard]};
 // What board-web serves when the service does not answer: the same top-level keys as
 // null/unknown, the flag, and the last status it saw.
 const unreachableOf = (known, extra) => ({schema_version:null,revision:null,desired_mode:null,phase:null,ready:null,
-  read_only:true,execution_available:false,host_boot_id:null,shutdown:null,heartbeat:null,session:null,capacity:null,
-  queue:null,config:null,boot_registration:null,last_error:null,claims:null,unreachable:true,last_known:json(known),
+  run_id:null,mode:null,pause_reason:null,active:null,lane:null,provider_health:null,run_tokens:null,pid:null,root:null,
+  capacity:null,queue:null,last_error:null,unreachable:true,last_known:json(known),
   last_known_at:Date.parse("2026-11-10T18:00:00Z")/1000,occupancy:null,cards:known.cards,...(extra||{})});
 const json = value => JSON.parse(JSON.stringify(value));
 function response(status, data) { return {ok:status>=200&&status<300,status,json:async()=>data}; }
@@ -72,11 +69,14 @@ async function main() {
     assert.equal(h.$("start-btn").hidden,false,"legacy Start hidden"); assert.equal(h.$("stop-btn").hidden,false,"legacy Stop hidden");
     assert.equal(f.calls.filter(c=>c.method==="POST").length,0,"legacy mode issued mutation during poll");
   });
-  await check("2. Status exposes all snapshot fields and truthful boot/occupancy",async()=>{
+  await check("2. Status exposes the v2 snapshot fields and truthful occupancy, with no dollars or boot registration",async()=>{
     const s=ui.$("supervisor-status"), t=s.textContent;
-    for(const value of ["running","ready","4","local","2","3","attention","1.25","unknown","20:00","missing",hostile])
+    for(const value of ["running","ready","4","2","3","attention",hostile])
       assert.ok(t.includes(value),"status missing snapshot field "+value);
-    assert.doesNotMatch(t,/recovered after reboot|boot recovery/i,"unverified reboot recovery claim");
+    assert.doesNotMatch(t,/\$|budget|boot registration|reboot/i,"a removed field (dollars, budget, boot registration) is shown");
+    const paused=make(fakeFetch({snapshot:{...json(snapshot),mode:"paused",desired_mode:"paused",phase:"paused",pause_reason:"provider claude is unhealthy"}}));
+    await paused.flush(); await paused.waitForRequests();
+    assert.match(paused.$("supervisor-status").textContent,/paused.*provider claude is unhealthy/i,"pause reason not shown");
     const f=fakeFetch({snapshot:{...json(snapshot),capacity:{...snapshot.capacity,slots:null}}}), h=make(f); await h.flush(); await h.waitForRequests();
     assert.match(h.$("supervisor-status").textContent,/occupancy unknown/i,"null occupancy rendered as zero/omitted");
   });
@@ -258,46 +258,35 @@ async function main() {
     const file=process.env.SUPERVISOR_REAL_SHAPES;
     assert.ok(file,"SUPERVISOR_REAL_SHAPES is not set: run tests through test-supervisor-ui.sh");
     const real=JSON.parse(require("fs").readFileSync(file,"utf8"));
-    assert.deepEqual(Object.keys(real).sort(),["paused","quarantined","writer"]);
-    assert.ok(h0().pageHtml.includes('id="dr-attempts"'),"drawer has no attempt history list");
+    assert.deepEqual(Object.keys(real).sort(),["active","idle","paused"]);
     const plain={number:4,title:"Real card",body:"x",labels:[],comments:[],state:"in_progress",known:true};
     const itemsOf=h=>{ const m={}; for(const n of descendants(h.$("supervisor-status")).filter(x=>x.classList.contains("sup-item"))){
       const kids=n.children.map(c=>c.textContent); if(kids.length>=2) m[kids[0]]=kids.slice(1).join(" "); else m[""]=kids[0]||n.textContent; } return m; };
     const open=async scenario=>{ const r=real[scenario];
-      const f=fakeFetch({snapshot:{...json(r.status),cards:[plain]},execution:json(r.execution)}), h=make(f); await h.flush(); await h.waitForRequests();
-      const card=h.$("board").all().find(n=>n.classList.contains("card")&&n.dataset.n==="4"); assert.ok(card,"card 4 not on the board");
-      await card.fire("click"); await h.waitForRequests(); return h; };
-    for(const scenario of ["paused","writer","quarantined"]) {
-      const x=real[scenario].execution, h=await open(scenario), items=itemsOf(h), text=h.$("supervisor-status").textContent;
-      // queue.ready is null (the service does not read board cards): the ONLY allowed "unknown" here.
-      assert.equal(items.ready,"unknown",scenario+": a null queue.ready must read unknown, not a made-up count");
-      assert.doesNotMatch(text.replace(/ready\s+unknown/i,""),/unknown/i,scenario+": status bar shows unknown for a value the service knows: "+text);
-      assert.match(items.slots||"",/^\d+ \/ 3$/,scenario+": slots not populated: "+JSON.stringify(items));
-      for(const k of ["running","waiting","attention"]) assert.match(String(items[k]),/^\d+$/,scenario+": queue "+k+" not populated");
-      assert.match(items.budget||"",/\$1\.25 known/,scenario+": budget not populated");
-      assert.match(items["boot registration"]||"",/^missing/,scenario+": boot registration not populated");
-      assert.equal(items.desired,"stopped"); assert.equal(items.phase,"stopped");
-      for(const id of ["dr-activity","dr-elapsed","dr-heartbeat-age","dr-progress-age","dr-retry-count","dr-reservation-state"]) {
-        if(scenario==="writer"||id==="dr-retry-count"||id==="dr-activity"||id==="dr-reservation-state")
-          assert.notEqual(h.$(id).textContent,"unknown",scenario+": "+id+" unknown for a value the service knows");
-      }
-      const paused=x.paused===true, writerFree=x.writer===false;
-      assert.equal(h.$("dr-exec-resume").disabled,!paused,scenario+": Resume card must be enabled exactly when the real shape says paused");
-      assert.equal(h.$("dr-exec-pause").disabled,paused,scenario+": Pause card must be enabled exactly when not paused");
-      assert.equal(h.$("dr-release-reservations").disabled,!(paused&&writerFree),scenario+": Release reservations must be enabled exactly when paused with no writer");
+      const f=fakeFetch({snapshot:{...json(r.status),cards:[plain]}}), h=make(f); await h.flush(); await h.waitForRequests(); return h; };
+    for(const scenario of ["idle","paused","active"]) {
+      const status=real[scenario].status, h=await open(scenario), items=itemsOf(h), text=h.$("supervisor-status").textContent;
+      assert.equal(status.schema_version,2,scenario+": not a v2 status");
+      assert.equal(items.desired,status.mode,scenario+": desired mode not shown"); assert.equal(items.phase,status.mode,scenario+": phase not shown");
+      assert.match(text,/\bready\b/,scenario+": not ready"); assert.doesNotMatch(text,/not ready|readiness unknown/,scenario+": readiness not shown as ready");
+      // What the supervisor does not know yet (a global cap, the board queue) reads unknown, never zero.
+      assert.equal(items.ready,"unknown",scenario+": the queue the supervisor cannot see must read unknown");
+      assert.match(items.slots||"",/^\d+ \/ unknown$/,scenario+": slots not populated: "+JSON.stringify(items));
+      assert.match(String(items.running),/^\d+$/,scenario+": running not populated");
+      assert.doesNotMatch(text,/\$|budget|boot registration/i,scenario+": a removed field is shown: "+text);
     }
-    let x=real.paused.execution,h=await open("paused");
-    assert.equal(x.paused,true,"service does not report a paused card as paused"); assert.equal(x.writer,false,"service does not report writer=false"); assert.equal(x.reservation_state,"held");
-    assert.equal(h.$("dr-release-reservations").disabled,false,"paused with no writer must allow release");
-    assert.equal(h.$("dr-exec-resume").disabled,false,"paused card must allow resume");
-    assert.match(h.$("dr-attempts").textContent,/no attempts/i);
-    x=real.writer.execution; h=await open("writer");
-    assert.equal(x.writer,true,"service does not report a live writer"); assert.equal(x.paused,false);
-    assert.match(h.$("dr-activity").textContent,/running/);
-    assert.ok(h.$("dr-attempts").textContent.includes("attempt-live")&&h.$("dr-attempts").textContent.includes("running"),"attempt history not rendered: "+h.$("dr-attempts").textContent);
-    x=real.quarantined.execution; h=await open("quarantined");
-    assert.equal(x.writer,true,"a quarantined attempt is an uncertain writer"); assert.match(h.$("dr-activity").textContent,/quarantined/);
-    assert.ok(h.$("dr-attempts").textContent.includes("attempt-quarantined")&&h.$("dr-attempts").textContent.includes("quarantined"),"quarantined attempt not rendered");
+    let h=await open("paused");
+    assert.equal(real.paused.status.pause_reason,"provider claude is unhealthy");
+    assert.match(itemsOf(h).paused||"",/provider claude is unhealthy/,"the pause reason must show");
+    assert.equal(h.$("supervisor-resume-btn").disabled,false,"Resume must be available while paused");
+    assert.equal(h.$("supervisor-pause-btn").disabled,true,"Pause must be disabled while paused");
+    h=await open("active");
+    assert.equal(real.active.status.active.length,2,"two actions in flight");
+    assert.deepEqual(real.active.status.active.map(a=>a.card).sort(),[4,9],"active actions must carry their card");
+    assert.equal(itemsOf(h).slots,"2 / unknown"); assert.equal(itemsOf(h).running,"2");
+    assert.equal(itemsOf(h).claude,"1"); assert.equal(itemsOf(h).codex,"1");
+    h=await open("idle");
+    assert.equal(itemsOf(h).slots,"0 / unknown"); assert.equal(h.$("supervisor-pause-btn").disabled,false);
   });
   await check("11a. Unreachable supervisor: Start launches it, other controls stay gated with reasons",async()=>{
     const f=fakeFetch({snapshot:unreachableOf(snapshot,{reason:"controller offline"})}), h=make(f); await h.flush(); await h.waitForRequests();
