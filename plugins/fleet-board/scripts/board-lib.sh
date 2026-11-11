@@ -242,15 +242,18 @@ fb_valid_number() {
 # (a lock left by an older version, a directory with no readable pid) it is
 # older than stale_min minutes. A lock whose owner is alive is never taken,
 # however old it looks. A stale lock is moved aside with an atomic rename, so
-# only one waiter reclaims it.
+# only one waiter reclaims it. A dead pid must be seen on two consecutive
+# polls before it is reclaimed, so a lock being released is never taken for stale.
 fb_lock() {
-  local dir wait stale_min=5 waited=0 pid
+  local dir wait stale_min=5 waited=0 pid dead=""
   dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
   FB_LOCK="$dir/card-$1.lock"; wait="${FLEET_BOARD_LOCK_WAIT:-30}"
   while ! ln -sn "$$" "$FB_LOCK" 2>/dev/null; do
     pid="$(readlink "$FB_LOCK" 2>/dev/null)"
     if [ -n "$pid" ]; then
-      kill -0 "$pid" 2>/dev/null || fb_reclaim_lock "$pid"
+      if kill -0 "$pid" 2>/dev/null; then dead=""
+      elif [ "$dead" = "$pid" ]; then fb_reclaim_lock "$pid"; dead=""
+      else dead="$pid"; fi   # a releasing owner is briefly dead-looking: wait one poll
     elif [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
       fb_reclaim_lock ""
     fi
@@ -267,7 +270,7 @@ fb_reclaim_lock() {
   mv "$FB_LOCK" "$aside" 2>/dev/null || return 0
   now="$(readlink "$aside" 2>/dev/null)"
   if [ -n "$now" ] && [ "$now" != "$1" ] && kill -0 "$now" 2>/dev/null; then
-    mv "$aside" "$FB_LOCK" 2>/dev/null || true
+    ln -sn "$now" "$FB_LOCK" 2>/dev/null; rm -rf "$aside"
     return 0
   fi
   rm -rf "$aside"
