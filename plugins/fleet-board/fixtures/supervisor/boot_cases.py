@@ -15,6 +15,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -1506,6 +1507,337 @@ class CheapTicks(WatchCase):
             scans = [s for s in batch if re.search(r"from\s+events", s, re.I) and "max(" not in s.lower()
                      and not re.search(r"sequence\s*>", s, re.I)]
             self.assertEqual(scans, [], "tick %d scanned the event log: %r" % (number, scans))
+
+
+class CursorReset(BootCase):
+    """m-a: the incremental cursor restarts when the store is replaced or shrinks."""
+
+    def setUp(self):
+        super().setUp()
+        self.db = self.logs / "supervisor" / paths.domain_id_for_root(self.board) / "store.sqlite3"
+
+    def replace_store(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(str(self.db) + suffix)
+            except OSError:
+                pass
+
+    def test_a_different_store_with_a_longer_log_resets_last_start(self):
+        for command in ("start", "pause", "resume", "pause"):
+            self.store_command(command)
+        cache = {}
+        self.assertEqual(boot._read_store_file(self.db, cache)["last_start"], 3)
+        self.assertEqual(cache["last_start"], 3)
+        self.replace_store()
+        time.sleep(0.02)  # a restored store has different timestamps at the same sequences
+        for command in ("start", "pause", "pause", "pause", "pause"):
+            self.store_command(command)
+        info = boot._read_store_file(self.db, cache)
+        self.assertEqual(info["last_start"], 1, "the replaced store's own start, not the cached one")
+        self.assertEqual(cache["last_start"], 1, "the cached explicit-start state must reset too")
+        self.assertEqual(cache["cursor"], 5)
+
+    def test_a_log_that_shrinks_below_the_cursor_resets_last_start(self):
+        for command in ("start", "pause", "resume", "pause"):
+            self.store_command(command)
+        cache = {}
+        self.assertEqual(boot._read_store_file(self.db, cache)["last_start"], 3)
+        self.replace_store()
+        self.store_command("start")
+        info = boot._read_store_file(self.db, cache)
+        self.assertEqual(info["last_start"], 1)
+        self.assertEqual(cache["last_start"], 1)
+        self.assertEqual(cache["cursor"], 1)
+
+    def test_an_unchanged_store_keeps_the_cache_and_picks_up_new_starts(self):
+        for command in ("start", "pause"):
+            self.store_command(command)
+        cache = {}
+        self.assertEqual(boot._read_store_file(self.db, cache)["last_start"], 1)
+        self.store_command("resume")
+        self.assertEqual(boot._read_store_file(self.db, cache)["last_start"], 3)
+
+
+class RetryProtocolRecording(BootCase):
+    """m-b: the fresh attempt a retry creates records the integer runner protocol too."""
+
+    def test_the_fresh_retry_attempt_holds_the_integer_runner_protocol(self):
+        from supervisor import models
+        from supervisor.store import RUNNER_PROTOCOL
+        store = Store.open(self.domain(), filesystem_inspector=lambda _: "local",
+                           stop_evidence_verifier=lambda _: True, retry_evidence_verifier=lambda _: True)
+        self.addCleanup(store.close)
+        revision = lambda: store.snapshot()["domain"]["revision"]  # noqa: E731
+        store.start_session({"id": "s", "started_at": 1, "deadline": 100, "known_spend": 0,
+                             "unknown_spend": False, "budget_stop": None})
+        store.record_command({"id": "start", "actor": "fixture", "command": "start", "payload": {},
+                              "expected_revision": revision()})
+        job = {"id": "j", "card": "1", "action": "review", "role": "reviewer", "stage": "code", "round": 1,
+               "input_sha": "abc", "input_version": "v1", "generation": 1, "provider": "p", "model": "m",
+               "nonce": "n", "session_id": "s"}
+        store.prepare_attempt(job, revision(), {"global_cap": 2, "provider_cap": 2, "paths": ["src"]})
+        identity = {"boot_id": "boot", "pid": 42, "started_at": "start", "nonce": "n"}
+        store.update_attempt("n", {"state": "running", "boot_id": "boot", "process_identity": identity}, revision())
+        store.request_cancellation("n", "cancel", "infrastructure", revision(), now=10)
+        proof = models.StopEvidence(domain_id=store.domain_id, job_id="j", attempt_id="n", generation=1,
+                                    boot_id="boot", pid=42, started_at="start", nonce="n",
+                                    kind="fixture_complete_tree", free_fixture=True)
+        store.record_execution_stopped("n", proof, revision())
+        evidence = models.RetryEvidence(domain_id=store.domain_id, job_id="j", attempt_id="n", generation=1)
+        store.schedule_retry("j", "n", evidence, retry_at=20, expected_revision=revision())
+        retry = store.prepare_retry("j", evidence, now=20, expected_revision=revision(),
+                                    limits={"global_cap": 2, "provider_cap": 2, "max_cost_usd": 10})
+        fresh = next(a for a in store.snapshot()["attempts"] if a["id"] == retry["attempt_id"])
+        recorded = json.loads(fresh["data"]).get("runner_protocol")
+        self.assertIs(type(recorded), int)
+        self.assertEqual(recorded, RUNNER_PROTOCOL)
+
+
+class CredentialFileSafety(BootCase):
+    """m-c and the parser nits."""
+
+    def reg_with(self, *, names=("FB_TEST_TOKEN",)):
+        args = []
+        for name in names:
+            args += ["--credential-env", name]
+        self.install(*args)
+        return self.registry()
+
+    def test_a_symlink_to_a_private_user_owned_file_is_refused_with_the_hint(self):
+        reg = self.reg_with()
+        target = self.work / "elsewhere.env"
+        target.write_text("FB_TEST_TOKEN=%s\n" % SECRET, encoding="utf-8")
+        os.chmod(str(target), 0o600)
+        os.symlink(str(target), str(reg / "credentials.env"))
+        values, problem = boot.read_credentials(reg)
+        self.assertEqual(values, {})
+        self.assertIn("0600", problem)
+        outcome, calls = self.boot_once("boot-2")
+        self.assertEqual(outcome["status"]["reason"], "missing_credentials")
+        self.assertIn("0600", outcome["status"]["message"])
+        self.assertNotIn(SECRET, outcome["status"]["message"])
+
+    def test_a_symlink_swapped_in_after_the_stat_is_still_refused(self):
+        reg = self.reg_with()
+        target = self.work / "elsewhere.env"
+        target.write_text("FB_TEST_TOKEN=%s\n" % SECRET, encoding="utf-8")
+        os.chmod(str(target), 0o600)
+        os.symlink(str(target), str(reg / "credentials.env"))
+        real = os.lstat
+        # The path looked like a private regular file when it was checked (the race a swap wins).
+        with mock.patch.object(boot.os, "lstat", lambda p, *a, **k: os.stat(str(target)) if
+                               str(p).endswith("credentials.env") else real(p, *a, **k)):
+            values, problem = boot.read_credentials(reg)
+        self.assertEqual(values, {}, "the read itself must not follow a symlink")
+        self.assertIsNotNone(problem)
+
+    def test_export_followed_by_a_tab_is_stripped(self):
+        self.assertEqual(boot.parse_credentials("export\tFB_A=1\nexport   FB_B=2\n"), {"FB_A": "1", "FB_B": "2"})
+
+    def test_an_undecodable_file_gives_a_fixed_message_with_no_byte_value(self):
+        reg = self.reg_with()
+        path = reg / "credentials.env"
+        path.write_bytes(b"FB_TEST_TOKEN=\xff\xfe\n")
+        os.chmod(str(path), 0o600)
+        values, problem = boot.read_credentials(reg)
+        self.assertEqual(values, {})
+        self.assertIn("UTF-8", problem)
+        self.assertNotIn("0xff", problem.lower())
+        self.assertNotIn("position", problem)
+
+    def test_only_registered_credential_names_are_loaded(self):
+        reg = self.reg_with(names=("FB_TEST_TOKEN",))
+        path = reg / "credentials.env"
+        path.write_text("FB_TEST_TOKEN=ok\nPATH=/evil\nPYTHONPATH=/evil\n", encoding="utf-8")
+        os.chmod(str(path), 0o600)
+        seen = {}
+
+        def launch(root, launch_env):
+            seen.update(launch_env)
+            return FakeChild()
+
+        self.set_mode("running")
+        boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=launch, activate=lambda *a: None)
+        self.assertEqual(seen.get("FB_TEST_TOKEN"), "ok")
+        self.assertNotEqual(seen.get("PATH"), "/evil")
+        self.assertNotEqual(seen.get("PYTHONPATH"), "/evil")
+
+
+class DuplicateLaunchAck(WatchCase):
+    """m-d: a launch whose ack says another owner holds the lock is a healthy `serving`."""
+
+    def test_an_owner_false_ack_skips_activation_and_records_no_failure(self):
+        self.set_mode("running")
+        started = []
+
+        def launch(root, launch_env):
+            return types.SimpleNamespace(child=FakeChild(), ack={"ready": True, "owner": False})
+
+        def activate(root, launch_env):
+            started.append(1)
+            raise RuntimeError("could not connect to the starting owner")
+
+        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=launch, activate=activate)
+        self.assertEqual(outcome["action"], "serving")
+        self.assertEqual(started, [], "the peer that won the lock activates itself")
+        state = boot.registration_state(self.board, self.env())
+        self.assertIsNone(state.get("last_error"), "no service_launch_failed for a healthy domain")
+
+    def test_an_owner_true_ack_still_activates(self):
+        self.set_mode("running")
+        started = []
+        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", activate=lambda *a: started.append(1),
+                                   launch=lambda r, e: types.SimpleNamespace(child=FakeChild(),
+                                                                             ack={"ready": True, "owner": True}))
+        self.assertEqual(outcome["action"], "restored")
+        self.assertEqual(started, [1])
+
+
+class FirstTickQuery(BootCase):
+    """m-e: the first read filters by type in SQL; the anchor is a single-row query."""
+
+    def test_the_first_read_never_selects_other_event_types(self):
+        for command in ("start", "pause", "resume"):
+            self.store_command(command)
+        db = self.logs / "supervisor" / paths.domain_id_for_root(self.board) / "store.sqlite3"
+        connection = sqlite3.connect(str(db))
+        try:
+            connection.executemany("INSERT INTO events(timestamp,type,payload) VALUES(?,?,?)",
+                                   [(1.0 + n, "noise", "x" * 200) for n in range(60)])
+            connection.commit()
+        finally:
+            connection.close()
+        statements = []
+        real_connect = sqlite3.connect
+
+        def connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            conn.set_trace_callback(statements.append)
+            return conn
+
+        with mock.patch.object(sqlite3, "connect", connect):
+            info = boot._read_store_file(db, {})
+        self.assertEqual(info["last_start"], 3)
+        self.assertEqual(info["newest"], 63)
+        import re
+        reads = [s for s in statements if re.search(r"from\s+events", s, re.I) and "max(" not in s.lower()]
+        self.assertTrue(reads)
+        for statement in reads:
+            self.assertTrue(re.search(r"type\s+in\s*\(", statement, re.I) or re.search(r"limit\s+1\b", statement, re.I),
+                            "an unfiltered, unbounded events read: %r" % statement)
+        self.assertTrue(any(re.search(r"type\s+in\s*\(", s, re.I) for s in reads))
+
+
+class UninstallWithLiveService(CliSocketTrust):
+    """m-f: uninstall ends only the watcher; it must say a live service was not stopped."""
+
+    def check(self, platform, *extra):
+        self.install(*extra, platform=platform)
+        self.serve_stub(self.sockets)
+        result = self.service("uninstall", "--platform", platform, "--apply", "--install-dir", str(self.work / "installed"))
+        text = json.dumps(result)
+        self.assertTrue(result.get("running_service"), text)
+        self.assertIn("not stopped", result.get("warning", ""))
+        self.assertIn("supervisor stop", result.get("warning", ""))
+
+    def test_linux_uninstall_names_the_running_service(self):
+        self.check("linux")
+
+    def test_macos_uninstall_names_the_running_service(self):
+        self.check("darwin", "--kind", "login")
+
+    def test_no_warning_when_nothing_answers(self):
+        self.install()
+        result = self.service("uninstall", "--platform", "linux", "--apply", "--install-dir", str(self.work / "installed"))
+        self.assertFalse(result.get("running_service"))
+        self.assertNotIn("warning", result)
+
+
+class CredentialsForEveryStart(BootCase):
+    """m-g: launch_child merges the registered domain's credentials for every caller."""
+
+    def capture(self, env):
+        from supervisor import launcher
+        import io
+        import contextlib
+        captured = {}
+
+        class Fake:
+            def __init__(self, argv, **kwargs):
+                captured["env"] = dict(kwargs["env"])
+                captured["argv"] = list(argv)
+                read, write = os.pipe()
+                os.write(write, b'{"ready": true, "owner": true}\n')
+                os.close(write)
+                self.stdout = os.fdopen(read, "r")
+                self.pid = 1
+
+            def wait(self, timeout=None):
+                return 0
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+        errors = io.StringIO()
+        with mock.patch.object(launcher.subprocess, "Popen", Fake), contextlib.redirect_stderr(errors):
+            ack = launcher.launch_service(self.board, env=env)
+        return captured, errors.getvalue(), ack
+
+    def write_cred(self, text, mode=0o600):
+        path = self.registry() / "credentials.env"
+        path.write_text(text, encoding="utf-8")
+        os.chmod(str(path), mode)
+
+    def test_a_cli_start_gets_the_values_and_they_reach_no_argv_log_or_registry_file(self):
+        self.install("--credential-env", "FB_TEST_SECRET")
+        self.write_cred("FB_TEST_SECRET=x-cli-secret\n")
+        captured, stderr, _ = self.capture(self.env())
+        self.assertEqual(captured["env"].get("FB_TEST_SECRET"), "x-cli-secret")
+        self.assertNotIn("x-cli-secret", " ".join(captured["argv"]))
+        self.assertNotIn("x-cli-secret", stderr)
+        for root in (self.registry(), self.logs):
+            for path in root.rglob("*"):
+                if path.is_file() and path.name != "credentials.env":
+                    self.assertNotIn("x-cli-secret", path.read_text(encoding="utf-8", errors="replace"), str(path))
+
+    def test_a_missing_file_does_not_block_start_and_warns_by_name(self):
+        self.install("--credential-env", "FB_TEST_SECRET")
+        captured, stderr, ack = self.capture(self.env())
+        self.assertTrue(ack["ready"], "an explicit Start must not be blocked")
+        self.assertIn("FB_TEST_SECRET", stderr)
+        self.assertIn("0600", stderr)
+
+    def test_an_unsafe_file_does_not_block_start_and_its_values_are_not_used(self):
+        self.install("--credential-env", "FB_TEST_SECRET")
+        self.write_cred("FB_TEST_SECRET=x-loose\n", mode=0o644)
+        captured, stderr, ack = self.capture(self.env())
+        self.assertTrue(ack["ready"])
+        self.assertNotEqual(captured["env"].get("FB_TEST_SECRET"), "x-loose")
+        self.assertNotIn("x-loose", stderr)
+        self.assertIn("0600", stderr)
+
+    def test_an_unregistered_domain_is_launched_as_before(self):
+        captured, stderr, ack = self.capture(self.env())
+        self.assertTrue(ack["ready"])
+        self.assertEqual(stderr, "")
+
+
+class CancelRequestedBlocksUpgrade(_StoreCase):
+    """m-h: a cancel-requested attempt can still hold a live runner."""
+    prepare = RunnerProtocolRecording.prepare
+    attempt_data = RunnerProtocolRecording.attempt_data
+
+    def test_a_cancel_requested_attempt_with_an_incompatible_protocol_blocks_the_check(self):
+        self.prepare()
+        data = self.attempt_data()
+        data["runner_protocol"] = boot.RUNNER_PROTOCOL + 1
+        self.sql("UPDATE attempts SET state='cancel_requested', data=? WHERE id='attempt-1'", json.dumps(data))
+        self.assertIn("cancel_requested", boot.ACTIVE_ATTEMPT_STATES)
+        self.assert_refused("incompatible_runner")
 
 
 if __name__ == "__main__":
