@@ -275,6 +275,8 @@ else
 fi
 CODEX
 chmod +x "$TMP/bin/codex"
+# the mid-review push test above moved the PR head; reports must name the new one
+head="$(git --git-dir="$TMP/origin" rev-parse refs/pull/7/head)"
 export FAKE_CODEX_REPLY_CMD="$HERE/fake-reviewer-cmd.sh"
 codex_command="codex exec --ephemeral -C {dir} -m {model}"
 
