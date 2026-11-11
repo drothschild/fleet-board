@@ -1440,7 +1440,7 @@ def supervisor_snapshot():
                 "phase": None, "revision": None, "host_boot_id": None,
                 "execution_available": False, "shutdown": None,
                 "heartbeat": None, "session": None, "capacity": None, "queue": None,
-                "config": None, "boot_registration": None, "last_error": None, "claims": None,
+                "config": None, "runtime": None, "boot_registration": None, "last_error": None, "claims": None,
                 "unreachable": True, "last_known": known,
                 "last_known_at": prior[0] if prior else None, "occupancy": None}
 

@@ -188,7 +188,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `~/.fleet-board/supervisor-registry`) holds the runtime paths, protocol and env-var NAMES (never
   values); the stable launcher `bin/boot` lives there, outside the plugin cache. Rendering/status never
   call sudo: a macOS LaunchDaemon install only prints the privileged commands. `boot_registration` is
-  `missing` until installed, `pending_activation` until a probe confirms it. Generated-file tests prove
+  `missing` until installed, `pending_activation` until a probe confirms it. The boot entry is a resident
+  watcher (`boot.watch`): it never launches a stopped or suppressed domain and relaunches a running or
+  paused one with no live owner; upgrade checks compare the live service, store schema and active
+  attempts' runner protocol. Generated-file tests prove
   nothing about real reboots (Task 6.2).
 
 ## Invariants

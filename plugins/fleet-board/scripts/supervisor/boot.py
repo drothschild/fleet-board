@@ -9,6 +9,7 @@ variable NAMES only; secret values are never written anywhere.
 The boot entry goes through the same launcher/serve path as an explicit Start: there is no
 second way to launch a service.
 """
+import fcntl
 import getpass
 import hashlib
 import json
@@ -16,6 +17,7 @@ import os
 import pwd
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -28,6 +30,10 @@ from urllib.parse import quote
 from . import errors, launcher, paths
 
 PROTOCOL_VERSION = 1
+RUNNER_PROTOCOL = 1  # the runner protocol this runtime speaks (and the only one it can adopt)
+RUNNER_PROTOCOLS = (RUNNER_PROTOCOL,)
+ACTIVE_ATTEMPT_STATES = ("prepared", "launching", "running", "result_ready")
+DEFAULT_INTERVAL = 15.0
 LABEL_PREFIX = "com.fleet-board.supervisor"
 EXIT_WAITING = 75  # EX_TEMPFAIL: the service manager retries; the wait is recoverable
 _TEMPLATES = Path(__file__).resolve().parent / "templates"
@@ -50,7 +56,7 @@ SCRIPTS=""
 if [ -z "$PY" ] || [ ! -x "$PY" ] || [ ! -d "$SCRIPTS" ]; then
   echo "fleet-board boot: the recorded python or plugin scripts are missing; run: supervisor service install" >&2
   printf '{"state":"waiting","reason":"missing_executable","message":"recorded python or plugin scripts are missing; reinstall or roll back"}\\n' > "$REG/runtime-status.json"
-  exit 0
+  exit 75
 fi
 rm -f "$REG/runtime-status.json"
 PYTHONPATH="$SCRIPTS${PYTHONPATH:+:$PYTHONPATH}"
@@ -86,7 +92,43 @@ def registry_dir(env=None):
 
 
 def domain_key(root):
-    return hashlib.sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()[:12]
+    """The registration key: derived from the domain id (paths.registry_key), the same value the
+    service computes for its own domain, so a linked worktree is found by status."""
+    return paths.registry_key(paths.domain_id_for_root(root))
+
+
+def _key_for(root, reg):
+    """domain_key, tolerating a repository that is currently missing: then the key is found by
+    matching the recorded root, so a missing repo is reported, not lost."""
+    try:
+        return domain_key(root)
+    except (OSError, ValueError):
+        resolved = str(Path(root).resolve())
+        for candidate in sorted((reg / "domains").glob("*.json")):
+            found = _read_json(candidate)
+            if isinstance(found, dict) and found.get("root") == resolved:
+                return candidate.stem
+        return hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:12]
+
+
+_ENTRY_KEYS = ("root", "key", "label", "unit", "kind", "platform", "user", "log_dir", "socket_dir")
+
+
+def _load_entry(reg, key):
+    """(entry, error): the domain's registration, or why it cannot be trusted. A malformed
+    entry yields (None, error) and affects only itself."""
+    path = reg / "domains" / (key + ".json")
+    if not path.exists():
+        return None, None
+    entry = _read_json(path)
+    activation = entry.get("activation") if entry else None
+    if (entry is None or any(not isinstance(entry.get(k), str) for k in _ENTRY_KEYS)
+            or not isinstance(entry.get("credentials", []), list) or not isinstance(activation, dict)
+            or not isinstance(activation.get("destination"), str) or not isinstance(activation.get("rendered"), str)):
+        return None, {"code": "registry_entry_invalid",
+                      "message": "registry entry %s is malformed; run: supervisor service install" % path.name,
+                      "at": None}
+    return entry, None
 
 
 def _private_dir(path):
@@ -232,29 +274,176 @@ def _service_path(env, executables):
     return os.pathsep.join(result or ["/usr/bin", "/bin"])
 
 
+# -- store inspection and compatibility ----------------------------------------------------
+def _store_path(log_dir, root):
+    return Path(log_dir) / "supervisor" / paths.domain_id_for_root(root) / "store.sqlite3"
+
+
+def _read_store_file(db):
+    """What a runtime needs to know about a store, read-only: desired mode, newest event, newest
+    start/resume, schema version and the runner protocol of every active attempt. None when the
+    store does not exist yet. A newer schema is reported, not read further."""
+    db = Path(db)
+    if not db.exists():
+        return None
+    connection = sqlite3.connect("file:%s?mode=ro" % quote(str(db)), uri=True, timeout=10)
+    try:
+        schema = connection.execute("PRAGMA user_version").fetchone()[0]
+        info = {"schema": schema, "mode": None, "newest": 0, "last_start": 0, "service_version": None,
+                "active": 0, "runners": []}
+        if schema not in (0, _store_schema()):
+            return info
+        row = connection.execute("SELECT desired_mode, service_version FROM domain").fetchone()
+        info["mode"] = row[0] if row else None
+        info["service_version"] = row[1] if row else None
+        info["newest"] = connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
+        reported = {}
+        for sequence, kind, payload in connection.execute(
+                "SELECT sequence,type,payload FROM events WHERE type IN ('command','runner_version') ORDER BY sequence"):
+            try:
+                body = json.loads(payload)
+            except ValueError:
+                continue
+            if kind == "command" and body.get("command") in ("start", "resume"):
+                info["last_start"] = sequence
+            elif kind == "runner_version":
+                reported[body.get("runner_id")] = body.get("protocol")
+        marks = ",".join("?" * len(ACTIVE_ATTEMPT_STATES))
+        for attempt_id, nonce, data in connection.execute(
+                "SELECT id,nonce,data FROM attempts WHERE state IN (%s)" % marks, ACTIVE_ATTEMPT_STATES):
+            try:
+                recorded = json.loads(data).get("runner_protocol")
+            except (ValueError, AttributeError):
+                recorded = None
+            if recorded is None:
+                recorded = reported.get(attempt_id, reported.get(nonce))
+            info["active"] += 1
+            if recorded is not None:
+                info["runners"].append((attempt_id, recorded))
+        return info
+    finally:
+        connection.close()
+
+
+def _store_schema():
+    from .store import SCHEMA_VERSION
+    return SCHEMA_VERSION
+
+
+def compatibility(info, live):
+    """Every reason this runtime cannot safely serve the store and live service it finds, as
+    [(reason, message)]. Compares real things: the store's schema, each active attempt's
+    recorded runner protocol, and the protocol the live service reports."""
+    problems = []
+    hint = ("run `supervisor service rollback` to restore the previous runtime (add --restore-store only "
+            "to also restore the store backed up before the upgrade); state is never wiped")
+    if info is not None and info["schema"] not in (0, _store_schema()):
+        problems.append(("incompatible_store", "store schema %r is not supported by this runtime (schema %d); %s"
+                         % (info["schema"], _store_schema(), hint)))
+    if info is not None:
+        bad = sorted({str(p) for _id, p in info["runners"] if p not in RUNNER_PROTOCOLS})
+        if bad:
+            problems.append(("incompatible_runner", "active attempts use runner protocol %s but this runtime "
+                             "adopts %s; %s" % (", ".join(bad), ", ".join(map(str, RUNNER_PROTOCOLS)), hint)))
+    runtime = live.get("runtime") if isinstance(live, dict) else None
+    if isinstance(runtime, dict) and runtime.get("protocol") not in (None, PROTOCOL_VERSION):
+        problems.append(("incompatible_protocol", "the running service speaks protocol %r but this runtime "
+                         "speaks %d; %s" % (runtime.get("protocol"), PROTOCOL_VERSION, hint)))
+    return problems
+
+
+def _live_status(root, entry):
+    """The status of the service answering on this domain's socket, or None."""
+    from . import cli
+    try:
+        path = paths.controller_socket(paths.domain_id_for_root(root), base=Path(entry["socket_dir"]))
+        status = cli._socket_transport(path)({"command": "status"})
+    except Exception:  # noqa: BLE001 - no answer (or an untrusted socket) means no usable live service
+        return None
+    return status if isinstance(status, dict) else None
+
+
+def _owner_alive(root, entry):
+    """Whether a service holds this domain's service lock (the same lock `serve` takes)."""
+    lock = Path(entry["log_dir"]) / "supervisor" / paths.domain_id_for_root(root) / "service.lock"
+    try:
+        fd = os.open(str(lock), os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _backup_store(db, target):
+    """A consistent copy of the store (sqlite backup API) with private permissions."""
+    destination = Path(target)
+    fd = os.open(str(destination), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.close(fd)
+    os.chmod(str(destination), 0o600)
+    source = sqlite3.connect("file:%s?mode=ro" % quote(str(db)), uri=True, timeout=30)
+    copy = sqlite3.connect(str(destination))
+    try:
+        source.backup(copy)
+    finally:
+        copy.close()
+        source.close()
+    os.chmod(str(destination), 0o600)
+    return destination
+
+
 # -- install / uninstall / rollback / status ----------------------------------------------
-def _backup(reg, previous):
+def _backup(reg, previous, db=None, root=None):
     version = re.sub(r"[^A-Za-z0-9._-]", "_", str(previous.get("version", "unknown")))
-    root = _private_dir(reg / "backups")
+    root_dir = _private_dir(reg / "backups")
     n = 0
-    while (root / ("%s-%d" % (version, n))).exists():
+    while (root_dir / ("%s-%d" % (version, n))).exists():
         n += 1
-    target = _private_dir(root / ("%s-%d" % (version, n)))
+    target = _private_dir(root_dir / ("%s-%d" % (version, n)))
     for name, mode in (("registry.json", 0o600), ("current", 0o600), ("bin/boot", 0o700)):
         source = reg / name
         if source.is_file():
             _write(target / name, source.read_text(encoding="utf-8"), mode)
+    if db is not None and Path(db).exists():
+        _backup_store(db, target / "store.sqlite3")
+        _write_json(target / "meta.json", {"root": str(root), "domain_id": paths.domain_id_for_root(root),
+                                           "version": previous.get("version")})
     return target
 
 
+def _record_refusal(reg, key, reason, message):
+    """Make a refusal visible in status when the domain is already registered."""
+    entry, _error = _load_entry(reg, key)
+    if entry is None:
+        return
+    path = reg / "boot" / (key + ".json")
+    state = _read_json(path) or {}
+    state["status"] = {"state": "waiting", "reason": reason, "message": message, "at": time.time()}
+    _write_json(path, state)
+
+
+def _start_on_boot(root, env):
+    code, value, _error = _config_value(root, "supervisor.start_on_boot", env)
+    return code == 0 and value == "true"
+
+
 def install(root, *, env=None, platform=None, kind="boot", output_dir=None, install_dir=None, apply=False,
-            credentials=(), runner=subprocess.run):
+            credentials=(), runner=subprocess.run, live_status=None):
     """Register the domain at root and render its service file. Never starts work.
 
     Returns a result dict. Activation commands that need no administrator run only with
     apply=True; a macOS LaunchDaemon is never installed from here, its privileged commands are
-    returned for a person to run."""
+    returned for a person to run. An upgrade that this runtime cannot safely take over (a store
+    schema or an active attempt's runner protocol it does not speak, or a live service with
+    active attempts on another protocol) is refused before anything is changed."""
     env = os.environ if env is None else env
+    live_status = live_status or _live_status
     root = Path(root).resolve(strict=True)
     platform = _platform(platform)
     if kind not in ("boot", "login") or (platform == "linux" and kind == "login"):
@@ -271,12 +460,29 @@ def install(root, *, env=None, platform=None, kind="boot", output_dir=None, inst
     log_dir = paths.log_dir(env).absolute()
     socket_base = paths.socket_base(env).absolute()
     paths.socket_dir(paths.domain_id_for_root(root), base=socket_base)  # refuses a base that is too long
+    db = _store_path(log_dir, root)
+    try:
+        info = _read_store_file(db)
+    except sqlite3.Error as exc:
+        raise errors.Invalid("supervisor state cannot be read: %s" % str(exc)[:200])
+    live = live_status(root, {"socket_dir": str(socket_base)})
+    warnings = []
+    for reason, message in compatibility(info, live):
+        active = (info or {}).get("active", 0) or ((live or {}).get("queue") or {}).get("running", 0)
+        if reason == "incompatible_protocol" and not active:
+            warnings.append(message + " (no attempts are active; restart the service after the upgrade)")
+            continue
+        _record_refusal(reg, key, reason, message)
+        raise errors.Invalid("install refused (%s): %s" % (reason, message))
     executables = _executables(env)
     version = plugin_version()
     previous = _read_json(reg / "registry.json")
     backup = None
-    if previous and previous.get("version") != version:
-        backup = _backup(reg, previous)
+    old_launcher = reg / "bin" / "boot"
+    changed = bool(previous) and (previous.get("version") != version or
+                                  (old_launcher.is_file() and old_launcher.read_text(encoding="utf-8") != LAUNCHER))
+    if changed:
+        backup = _backup(reg, previous, db, root)
     scripts_dir = str(Path(__file__).resolve().parents[1])
     _write_json(reg / "registry.json", {"schema": 1, "version": version, "protocol": PROTOCOL_VERSION,
                                         "python": executables["python"], "scripts_dir": scripts_dir,
@@ -289,13 +495,14 @@ def install(root, *, env=None, platform=None, kind="boot", output_dir=None, inst
     from .store import Store
     Store.open(paths.board_domain(root, log_dir / "supervisor")).close()
     _private_dir(log_dir)
+    info = _read_store_file(db)
 
     environment = {"HOME": home, "PATH": _service_path(env, executables), "PYTHON": executables["python"],
                    "FLEET_BOARD_SOCKET_DIR": str(socket_base), "FLEET_BOARD_LOG_DIR": str(log_dir),
                    "FLEET_BOARD_REGISTRY_DIR": str(reg)}
     argv = ["/bin/bash", launcher_path, "--domain", str(root)]
     log_path = str(log_dir / "supervisor-boot.log")
-    out = Path(output_dir) if output_dir else reg / "rendered"
+    out = Path(output_dir) if output_dir else _private_dir(reg / "rendered")
     out.mkdir(parents=True, exist_ok=True)
     if platform == "darwin":
         text = render_launchd(label, argv, environment, log_path, home, user if kind == "boot" else None)
@@ -312,13 +519,17 @@ def install(root, *, env=None, platform=None, kind="boot", output_dir=None, inst
     rendered.write_text(text, encoding="utf-8")
     os.chmod(str(rendered), 0o644)
 
+    # RunAtLoad starts the boot entry as soon as the unit is bootstrapped. With start_on_boot true
+    # and a running or paused domain that entry restores it, so say so instead of claiming no work.
+    restores = _start_on_boot(root, env) and (info or {}).get("mode") in ("running", "paused")
     result = {"registry_dir": str(reg), "launcher": launcher_path, "label": label, "unit": unit,
               "platform": platform, "kind": kind, "rendered": str(rendered), "destination": str(dest),
               "version": version, "protocol": PROTOCOL_VERSION, "backup": str(backup) if backup else None,
               "boot_before_login": platform == "darwin" and kind == "boot",
               "login_fallback": platform == "darwin" and kind == "login",
               "commands": [], "privileged_commands": [], "diagnostics": {}, "failed": [], "applied": False,
-              "started_work": False}
+              "started_work": False, "will_start_work_on_load": bool(restores and platform == "darwin"),
+              "warnings": warnings}
     user_name = current_user()
     if platform == "darwin" and kind == "boot":
         result["privileged_commands"] = [
@@ -337,6 +548,7 @@ def install(root, *, env=None, platform=None, kind="boot", output_dir=None, inst
             result["applied"] = step.get("returncode") == 0
             if not result["applied"]:
                 result["failed"].append(_brief(step))
+            result["started_work"] = bool(result["applied"] and restores)
         else:
             result["commands"] = [["launchctl", "bootstrap", "gui/%d" % os.getuid(), str(dest)]]
     else:
@@ -371,16 +583,44 @@ def _private_dir_free(path):
     Path(path).mkdir(parents=True, exist_ok=True)
 
 
+def _unit_present(entry, dest, runner):
+    """Whether the service unit still exists on the host (read-only checks)."""
+    if Path(dest).exists():
+        return True
+    if entry["platform"] == "darwin":
+        target = ("system/" if entry["kind"] == "boot" else "gui/%d/" % os.getuid()) + entry["label"]
+        return _run(runner, ["launchctl", "print", target]).get("returncode") == 0
+    return False
+
+
+def _forget(reg, key, entry=None):
+    for path in (reg / "domains" / (key + ".json"), reg / "probe" / (key + ".json"), reg / "boot" / (key + ".json")):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+    if entry:
+        try:
+            Path(entry["activation"]["rendered"]).unlink()
+        except OSError:
+            pass
+
+
 def uninstall(root, *, env=None, install_dir=None, apply=False, runner=subprocess.run):
-    """Remove this domain's registration (and its unprivileged service files). Never touches state."""
+    """Remove this domain's unprivileged service files and, once the unit is really gone, its
+    registration. Never touches state. While the unit still exists (a LaunchDaemon, or without
+    --apply) the registration is kept as `uninstall_pending` so status stays honest."""
     env = os.environ if env is None else env
     root = Path(root).resolve()
     reg = registry_dir(env)
-    key = domain_key(root)
-    entry = _read_json(reg / "domains" / (key + ".json"))
+    key = _key_for(root, reg)
+    entry, error = _load_entry(reg, key)
     if entry is None:
-        return {"removed": False, "commands": [], "privileged_commands": [], "failed": []}
-    result = {"removed": True, "label": entry["label"], "unit": entry["unit"], "commands": [],
+        if error:
+            _forget(reg, key)
+        return {"removed": bool(error), "pending": False, "commands": [], "privileged_commands": [], "failed": [],
+                "warning": error["message"] if error else None}
+    result = {"removed": False, "pending": False, "label": entry["label"], "unit": entry["unit"], "commands": [],
               "privileged_commands": [], "failed": []}
     dest = Path(entry["activation"]["destination"])
     if install_dir:
@@ -401,20 +641,20 @@ def uninstall(root, *, env=None, install_dir=None, apply=False, runner=subproces
             pass
         if entry["platform"] == "linux":
             result["commands"].append(_brief(_run(runner, ["systemctl", "--user", "daemon-reload"])))
-    for path in (reg / "domains" / (key + ".json"), reg / "probe" / (key + ".json"), reg / "boot" / (key + ".json")):
-        try:
-            path.unlink()
-        except OSError:
-            pass
-    try:
-        Path(entry["activation"]["rendered"]).unlink()
-    except OSError:
-        pass
+    if _unit_present(entry, dest, runner):
+        entry["uninstall_pending"] = True
+        _write_json(reg / "domains" / (key + ".json"), entry)
+        result["pending"] = True
+        result["note"] = "the service unit still exists; the registration is kept as uninstall_pending until it is gone"
+        return result
+    _forget(reg, key, entry)
+    result["removed"] = True
     return result
 
 
-def rollback(*, env=None):
-    """Restore the runtime (registry record, current pointer, launcher) from the newest backup."""
+def rollback(*, env=None, restore_store=False, root=None):
+    """Restore the runtime (registry record, current pointer, launcher) from the newest backup.
+    The store is restored too only when asked, and only while no service holds it."""
     env = os.environ if env is None else env
     reg = registry_dir(env)
     backups = sorted((p for p in (reg / "backups").glob("*") if p.is_dir()), key=lambda p: p.stat().st_mtime)
@@ -422,22 +662,58 @@ def rollback(*, env=None):
         raise errors.Invalid("no previous version to roll back to")
     source = backups[-1]
     record = _read_json(source / "registry.json") or {}
+    restored = False
+    if restore_store:
+        restored = _restore_store(reg, source, root, env)
     for name, mode in (("registry.json", 0o600), ("current", 0o600), ("bin/boot", 0o700)):
         if (source / name).is_file():
             _write(reg / name, (source / name).read_text(encoding="utf-8"), mode)
-    return {"restored_version": record.get("version"), "backup": str(source)}
+    return {"restored_version": record.get("version"), "backup": str(source), "store_restored": restored}
+
+
+def _restore_store(reg, source, root, env):
+    if not root:
+        raise errors.Invalid("--restore-store needs the domain (--domain or FLEET_BOARD_DOMAIN)")
+    backup = source / "store.sqlite3"
+    meta = _read_json(source / "meta.json") or {}
+    root = Path(root).resolve(strict=True)
+    if not backup.is_file() or meta.get("domain_id") != paths.domain_id_for_root(root):
+        raise errors.Invalid("the newest backup holds no store for this domain")
+    entry, _error = _load_entry(reg, _key_for(root, reg))
+    log_dir = Path(entry["log_dir"]) if entry else paths.log_dir(env).absolute()
+    db = _store_path(log_dir, root)
+    if _owner_alive(root, {"log_dir": str(log_dir)}):
+        raise errors.Invalid("a service is running for this domain; stop it before restoring the store")
+    if db.exists():
+        n = 0
+        while (source / ("store-before-restore-%d.sqlite3" % n)).exists():
+            n += 1
+        _backup_store(db, source / ("store-before-restore-%d.sqlite3" % n))
+    original = sqlite3.connect("file:%s?mode=ro" % quote(str(backup)), uri=True, timeout=30)
+    target = sqlite3.connect(str(db), timeout=30)
+    try:
+        original.backup(target)
+    finally:
+        target.close()
+        original.close()
+    return True
 
 
 def probe(root, *, env=None, runner=subprocess.run):
     """Ask the service manager (read-only commands) whether the registration is really active."""
     env = os.environ if env is None else env
     reg = registry_dir(env)
-    key = domain_key(root)
-    entry = _read_json(reg / "domains" / (key + ".json"))
+    key = _key_for(root, reg)
+    entry, error = _load_entry(reg, key)
     if entry is None:
-        return {"boot_registration": "missing", "detail": {}, "diagnostics": {}, "last_error": _last_error(reg, key)}
+        return {"boot_registration": "missing", "detail": {}, "diagnostics": {},
+                "last_error": error or _last_error(reg, key)}
     activation = entry["activation"]
     dest = Path(activation["destination"])
+    if entry.get("uninstall_pending"):
+        if not _unit_present(entry, dest, runner):
+            _forget(reg, key, entry)
+        return registration_state(root, env)
     registration, diagnostics = "pending_activation", {}
     if entry["platform"] == "darwin":
         if entry["kind"] == "boot":
@@ -471,18 +747,21 @@ def _last_error(reg, key):
     return None
 
 
-def registration_state(root, env=None):
+def registration_state(root, env=None, *, key=None):
     """What the status view reports: read from the real registry, no subprocess. `missing`
-    until a registration exists; only a probed, active registration is ever `verified`."""
+    until a registration exists; only a probed, active registration is ever `verified`. A
+    malformed entry is `missing` with a `registry_entry_invalid` error, never an exception."""
     env = os.environ if env is None else env
     reg = registry_dir(env)
-    key = domain_key(root)
-    entry = _read_json(reg / "domains" / (key + ".json"))
-    last_error = _last_error(reg, key)
+    key = key or _key_for(root, reg)
+    entry, error = _load_entry(reg, key)
+    last_error = error or _last_error(reg, key)
     if entry is None:
         return {"boot_registration": "missing", "detail": {}, "last_error": last_error}
     found = _read_json(reg / "probe" / (key + ".json"))
     registration = found.get("registration", "pending_activation") if found else "pending_activation"
+    if entry.get("uninstall_pending"):
+        registration = "uninstall_pending"
     boot_state = _read_json(reg / "boot" / (key + ".json")) or {}
     detail = {"platform": entry["platform"], "kind": entry["kind"], "label": entry["label"], "unit": entry["unit"],
               "login_fallback": entry["platform"] == "darwin" and entry["kind"] == "login",
@@ -493,9 +772,8 @@ def registration_state(root, env=None):
 
 # -- boot entry ---------------------------------------------------------------------------
 def current_boot_id(env=None):
-    env = os.environ if env is None else env
-    if env.get("FLEET_BOARD_BOOT_ID"):
-        return env["FLEET_BOARD_BOOT_ID"]
+    """The host's boot identity. Never overridable from the environment: tests inject a boot id
+    through the `boot_id` argument of boot_domain / watch."""
     from .processes import _boot_id
     return _boot_id()
 
@@ -508,28 +786,6 @@ def _config_value(root, key, env):
     except (OSError, subprocess.SubprocessError) as exc:
         return 5, "", str(exc)
     return done.returncode, done.stdout.strip(), done.stderr.strip()
-
-
-def _read_store(entry, root):
-    """(desired_mode, newest event sequence, newest start/resume sequence) without writing.
-    desired_mode is None when the domain has never been created."""
-    db = Path(entry["log_dir"]) / "supervisor" / paths.domain_id_for_root(root) / "store.sqlite3"
-    if not db.exists():
-        return None, 0, 0
-    connection = sqlite3.connect("file:%s?mode=ro" % quote(str(db)), uri=True, timeout=10)
-    try:
-        row = connection.execute("SELECT desired_mode FROM domain").fetchone()
-        newest = connection.execute("SELECT COALESCE(MAX(sequence),0) FROM events").fetchone()[0]
-        starts = 0
-        for sequence, payload in connection.execute("SELECT sequence,payload FROM events WHERE type='command'"):
-            try:
-                if json.loads(payload).get("command") in ("start", "resume"):
-                    starts = sequence
-            except ValueError:
-                continue
-    finally:
-        connection.close()
-    return (row[0] if row else None), newest, starts
 
 
 def _launch(root, env):
@@ -549,23 +805,35 @@ def _activate(root, env):
     return {}
 
 
-def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clock=time.time):
+def _discard_handle(handle):
+    child = getattr(handle, "child", handle)
+    try:
+        launcher.discard(child)
+    except Exception:  # noqa: BLE001 - best effort: the child was asked to exit
+        pass
+
+
+def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clock=time.time,
+                owner_alive=None, live_status=None):
     """One boot-entry decision for the domain at root. Reads the current YAML, the registry and
     the host boot identity every time; never writes the store.
 
     Returns {"action", "reboot", "status", "handle"}. action is `restored` (service launched
-    through the normal launcher; Start sent when desired mode is running), `stayed_stopped`,
-    `suppressed` (start_on_boot: false after a reboot) or `waiting` (a recoverable problem is
-    recorded and nothing is launched)."""
+    through the normal launcher; Start sent when desired mode is running), `serving` (a live
+    owner already runs it), `stayed_stopped`, `suppressed` (start_on_boot: false after a reboot
+    and no explicit Start since) or `waiting` (a recoverable problem is recorded and nothing is
+    launched)."""
     env = os.environ if env is None else env
     launch = launch or _launch
     activate = activate or _activate
+    owner_alive = owner_alive or _owner_alive
+    live_status = live_status or _live_status
     root = Path(root).resolve()
     reg = registry_dir(env)
-    key = domain_key(root)
+    key = _key_for(root, reg)
     state_path = reg / "boot" / (key + ".json")
     state = _read_json(state_path) or {}
-    boot_id = boot_id or current_boot_id(env)
+    boot_id = boot_id or current_boot_id()
     reboot = state.get("boot_id") != boot_id
 
     def record(status, **fields):
@@ -589,10 +857,14 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
 
     if not root.is_dir():
         return waiting("repo_missing", "the repository for this domain is missing: %s" % root.name)
-    entry = _read_json(reg / "domains" / (key + ".json"))
+    entry, error = _load_entry(reg, key)
+    if error:
+        return waiting(error["code"], error["message"])
     record_json = _read_json(reg / "registry.json")
     if entry is None or record_json is None:
         return waiting("not_registered", "this domain has no boot registration; run: supervisor service install")
+    if entry.get("uninstall_pending"):
+        return waiting("uninstall_pending", "the service is being uninstalled; remove the unit and this entry goes away")
     if record_json.get("protocol") != PROTOCOL_VERSION:
         return waiting("incompatible_protocol",
                        "registered protocol %r does not match this runtime's protocol %d; "
@@ -604,46 +876,131 @@ def boot_domain(root, *, env=None, boot_id=None, launch=None, activate=None, clo
     absent = [name for name in entry.get("credentials", []) if not env.get(name)]
     if absent:
         return waiting("missing_credentials", "credentials not available in the service environment: " + ", ".join(absent))
-    code, value, error = _config_value(root, "supervisor.start_on_boot", env)
+    code, value, error_text = _config_value(root, "supervisor.start_on_boot", env)
     if code != 0:
         reason = "config_missing" if code == 3 else "invalid_config"
-        return waiting(reason, "cannot read .fleet-board.yml (exit %d): %s" % (code, error.splitlines()[-1][:200] if error else ""))
+        return waiting(reason, "cannot read .fleet-board.yml (exit %d): %s" % (code, error_text.splitlines()[-1][:200] if error_text else ""))
     start_on_boot = value == "true"
     try:
-        mode, newest, last_start = _read_store(entry, root)
+        info = _read_store_file(_store_path(entry["log_dir"], root))
     except (sqlite3.Error, OSError, ValueError) as exc:
         return waiting("state_unreadable", "supervisor state cannot be read: %s" % str(exc)[:200])
+    try:
+        live = live_status(root, entry)
+    except Exception:  # noqa: BLE001 - an unreadable live status is "no live service"
+        live = None
+    problems = compatibility(info, live)
+    if problems:
+        return waiting(*problems[0])
+    mode, newest, last_start = (info["mode"], info["newest"], info["last_start"]) if info else (None, 0, 0)
 
     if mode in (None, "stopped"):
         return done("stayed_stopped", {"state": "ok", "reason": "stopped"})
+    if owner_alive(root, entry):
+        # Someone serves this domain this boot (a restore, or an explicit Start): that lifts any
+        # suppression, so if it later dies the watcher relaunches it.
+        return done("serving", {"state": "ok", "reason": "serving", "mode": mode}, suppressed_seq=None)
     marker = state.get("suppressed_seq")
     if (reboot and not start_on_boot) or (not reboot and marker is not None and last_start <= marker):
         return done("suppressed", {"state": "suppressed", "reason": "start_on_boot_false"},
                     suppressed_seq=marker if (not reboot and marker is not None) else newest)
     child_env = dict(env)
     child_env.update({"FLEET_BOARD_LOG_DIR": entry["log_dir"], "FLEET_BOARD_SOCKET_DIR": entry["socket_dir"]})
+    handle = None
     try:
         handle = launch(root, child_env)
         extra = activate(root, child_env) if mode == "running" else None
     except Exception as exc:  # noqa: BLE001 - recorded as a recoverable wait, never a crash loop of state edits
+        if handle is not None:
+            _discard_handle(handle)  # a started-but-unsupervised service must not be left behind
         return waiting("service_launch_failed", "service could not be started: %s" % str(exc)[:200])
     note = "execution_disabled" if extra and extra.get("execution_disabled") else None
     return done("restored", {"state": "ok", "reason": note, "mode": mode}, handle=handle)
 
 
+def watch_interval(env=None):
+    """Seconds between watcher checks: FLEET_BOARD_BOOT_INTERVAL, else 15."""
+    env = os.environ if env is None else env
+    try:
+        value = float(env.get("FLEET_BOARD_BOOT_INTERVAL", DEFAULT_INTERVAL))
+    except (TypeError, ValueError):
+        return DEFAULT_INTERVAL
+    return value if 0.05 <= value <= 3600 else DEFAULT_INTERVAL
+
+
+def _runtime_stamp(reg):
+    stamp = []
+    for name in ("registry.json", "current", "bin/boot"):
+        try:
+            stamp.append((reg / name).read_bytes())
+        except OSError:
+            stamp.append(None)
+    return stamp
+
+
+def watch(root, env=None, *, boot_id=None, interval=None, sleep=time.sleep, clock=time.time, launch=None,
+          activate=None, owner_alive=None, live_status=None, max_ticks=None):
+    """The resident boot watcher. While the domain is registered the OS unit's process stays
+    alive here whatever the desired mode, and each interval it asks boot_domain what to do: it
+    never launches work for a stopped domain or while boot activation is suppressed, and it
+    relaunches (through the normal launcher, which runs recovery) a running or paused domain
+    that has no live owner, whether that owner was started at boot or by an explicit Start.
+
+    Returns an exit code when the entry should end: 0 for an unregistered or uninstalling
+    domain (the manager must not restart it), 75 when the registered runtime changed (restart
+    to load it). Returns None only when max_ticks (tests) is reached."""
+    env = os.environ if env is None else env
+    interval = watch_interval(env) if interval is None else interval
+    reg = registry_dir(env)
+    stamp = _runtime_stamp(reg)
+    boot_id = boot_id or current_boot_id()
+    children, last, tick = [], None, 0
+    while True:
+        tick += 1
+        if _runtime_stamp(reg) != stamp:
+            print("supervisor boot: the registered runtime changed; restarting to load it", file=sys.stderr, flush=True)
+            return EXIT_WAITING
+        outcome = boot_domain(root, env=env, boot_id=boot_id, launch=launch, activate=activate, clock=clock,
+                              owner_alive=owner_alive, live_status=live_status)
+        handle = outcome.get("handle")
+        if handle is not None:
+            children.append(getattr(handle, "child", handle))
+        children = [c for c in children if _still_running(c)]
+        status = outcome["status"]
+        mark = (outcome["action"], status.get("reason"))
+        if outcome["action"] == "waiting" and mark != last:
+            print("supervisor boot: waiting (%s): %s" % (status["reason"], status["message"]), file=sys.stderr, flush=True)
+        last = mark
+        if outcome["action"] == "waiting" and status["reason"] in ("not_registered", "uninstall_pending"):
+            return 0
+        if max_ticks is not None and tick >= max_ticks:
+            return None
+        sleep(interval)
+
+
+def _still_running(child):
+    """Reap a finished child (no zombie) and report whether it still runs."""
+    try:
+        if child.poll() is None:
+            return True
+    except Exception:  # noqa: BLE001 - treat an unpollable handle as finished
+        return False
+    try:
+        child.stdout.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _terminate(_signum, _frame):
+    raise SystemExit(0)
+
+
 def run_boot(root, env=None):
-    """The service entry point (`supervisor boot --domain ROOT`): restore the domain, then stay
-    alive as its parent so the service manager's keep-alive can restart it after a crash.
-    Exit 0 when the service stopped on purpose or nothing should run; 75 while a recoverable
-    problem is waiting; 1 when the service died."""
-    outcome = boot_domain(root, env=env)
-    if outcome["action"] == "waiting":
-        print("supervisor boot: waiting (%s): %s" % (outcome["status"]["reason"], outcome["status"]["message"]),
-              file=sys.stderr)
-        return EXIT_WAITING
-    if outcome["action"] != "restored":
+    """The service entry point (`supervisor boot --domain ROOT`): the resident watcher. SIGTERM
+    ends it cleanly; a service it launched is detached and keeps running."""
+    signal.signal(signal.SIGTERM, _terminate)
+    try:
+        return watch(root, env=env)
+    except KeyboardInterrupt:
         return 0
-    handle = outcome["handle"]
-    if not handle.ack.get("owner"):
-        return 0  # a healthy owner already serves this domain
-    return 0 if handle.child.wait() == 0 else 1

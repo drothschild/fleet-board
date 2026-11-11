@@ -76,20 +76,20 @@ def launch_child(board_root, env=None, timeout=READY_TIMEOUT):
         os.close(log_fd)
     ready, _, _ = select.select([child.stdout], [], [], timeout)
     if not ready:
-        _discard(child)
+        discard(child)
         raise LaunchError("supervisor service readiness timed out after %.0f seconds" % timeout)
     line = child.stdout.readline()
     if not line:
         detail = _log_tail(log_path, offset)
-        _discard(child)
+        discard(child)
         raise LaunchError("supervisor service exited before readiness" + (": " + detail[-300:] if detail else ""))
     try:
         ack = json.loads(line)
     except ValueError as exc:
-        _discard(child)
+        discard(child)
         raise LaunchError("supervisor service returned an invalid readiness acknowledgement") from exc
     if not isinstance(ack, dict) or not ack.get("ready") or ack.get("socket_unavailable"):
-        _discard(child)
+        discard(child)
         raise LaunchError("supervisor service failed to become ready: " + json.dumps(ack))
     return child, ack
 
@@ -107,7 +107,7 @@ def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
     return ack
 
 
-def _discard(child):
+def discard(child):
     """Terminate a child that never became ready and reap it."""
     child.terminate()
     try:

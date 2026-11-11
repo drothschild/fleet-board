@@ -27,6 +27,7 @@ def _socket_transport(path):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(5)
         try:
+            paths.check_socket_path(path)
             client.connect(path)
             client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8"))
             chunks, size = [], 0
@@ -82,6 +83,8 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     for name in ("install", "uninstall", "status", "rollback"):
         sub = service_subs.add_parser(name)
         sub.add_argument("--domain")
+        if name == "rollback":
+            sub.add_argument("--restore-store", action="store_true")
         sub.add_argument("--platform", choices=("darwin", "linux"))
         if name in ("install", "uninstall"):
             sub.add_argument("--install-dir")
@@ -173,7 +176,8 @@ def _service(args, env, stdout):
     """`service install|uninstall|status|rollback`: boot registration. Nothing here runs sudo;
     install prints the privileged commands a macOS LaunchDaemon needs for a person to run."""
     if args.service_command == "rollback":
-        result = boot.rollback(env=env)
+        result = boot.rollback(env=env, restore_store=args.restore_store,
+                               root=args.domain or env.get("FLEET_BOARD_DOMAIN"))
     else:
         root = args.domain or env.get("FLEET_BOARD_DOMAIN")
         if not root:

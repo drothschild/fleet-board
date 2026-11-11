@@ -58,6 +58,26 @@ def check_socket_base(base):
         raise errors.UnsafeSocketDir("supervisor socket base is group/other accessible: %s" % base)
 
 
+def check_socket_path(path):
+    """Raise UnsafeSocketDir unless the socket at path sits in a private directory under a safe
+    base, so a client never trusts a socket another user planted. A missing path raises the
+    OSError a connect would."""
+    target = Path(path)
+    directory = target.parent
+    info = os.lstat(str(directory))
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise errors.UnsafeSocketDir("supervisor socket directory is not a real directory: %s" % directory)
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise errors.UnsafeSocketDir("supervisor socket directory is not private to this user: %s" % directory)
+    check_socket_base(directory.parent)
+
+
+def registry_key(domain_id):
+    """The short key a domain's boot registration is stored under: one helper for the writer
+    (service install) and every reader (status)."""
+    return str(domain_id)[:12]
+
+
 def ensure_socket_base(env=None):
     """Create the socket base (0700) if missing, then verify it is safe. Service side only."""
     base = socket_base(env)
