@@ -113,6 +113,7 @@ grep -q 'The coach scores each set from 0 to 10' "$f" && pass "with embed, the c
 grep -q 'Unrelated text' "$f" && fail "embed only includes the referenced section" "other section leaked" || pass "embed only includes the referenced section"
 grep -q 'Whole file text' "$f" && pass "a reference without an anchor embeds the whole file" || fail "a reference without an anchor embeds the whole file" "$(cat "$f")"
 check "with embed, the card body has no remaining reference to the missing path" "$(grep -c 'docs/x.md\|docs/y.md' "$f")" "0"
+check "with embed, the section anchor of a stripped reference is removed too" "$(grep -c 'embedded below)#' "$f")" "0"
 
 echo "# existing doc untouched"
 check "A reference to a file that exists on the default branch is left unchanged" "$(grep -c 'docs/present.md' "$f")" "2"
@@ -178,6 +179,19 @@ check "a card whose acceptance names a file in its own scope is created without 
 check "the self-scoped card is created" "$(issues)" "1"
 case "$OUT" in *"missing on the default branch"*) fail "a path in the card's own scope (exact or suffix) is not flagged as missing" "$OUT" ;; *) pass "a path in the card's own scope (exact or suffix) is not flagged as missing" ;; esac
 check "the self-scoped acceptance is kept verbatim" "$(grep -c 'specs/merger.md defines the merger role' "$D/bodies/101.md" 2>/dev/null)" "1"
+
+echo "# a ./-prefixed reference is still checked and embedded"
+cat > "$SB/cards-dot.json" <<'EOF'
+{"cards":[
+ {"key":"D","title":"Dot ref","repo":"acme/api","labels":[],
+  "why":"Follow ./docs/y.md.","scope":["src/d.js"],"acceptance":["Matches ./docs/y.md"]}
+]}
+EOF
+reset_gh
+run_import "y\ne\n" "$SB/cards-dot.json"
+case "$OUT" in *"missing on the default branch"*"./docs/y.md"*) pass "a ./-prefixed missing doc is listed as missing" ;; *) fail "a ./-prefixed missing doc is listed as missing" "$OUT" ;; esac
+check "a ./-prefixed missing doc with embed creates the card" "$(issues)" "1"
+grep -q 'Whole file text' "$D/bodies/101.md" 2>/dev/null && pass "a ./-prefixed missing doc is embedded" || fail "a ./-prefixed missing doc is embedded" "$(cat "$D/bodies/101.md" 2>/dev/null)"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
