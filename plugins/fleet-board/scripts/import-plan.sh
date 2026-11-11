@@ -152,14 +152,15 @@ PLAN="$(jq -c --arg re "$DOCRE" '
   .cards |= map(
     ([(.scope // [])[] | scan($re) | sub("#.*$"; "") | sub("^(\\./)+"; "")]) as $own
     | .docrefs = ([([.why // ""] + (.acceptance // []))[] | scan($re)] | unique
-        | map(select(sub("#.*$"; "") as $p | $own | any(. == $p or endswith("/" + $p)) | not))))' <<<"$PLAN")" \
+        | map(select(sub("#.*$"; "") | sub("^(\\./)+"; "") as $p | $own | any(. == $p or endswith("/" + $p)) | not))))' <<<"$PLAN")" \
   || fb_die 1 "cannot scan the cards for doc references"
 MISSING=()
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  git -C "$GITTOP" cat-file -e "$DEFREF:$p" >/dev/null 2>&1 && continue
-  case "/$p/" in */./*|*/../*) echo "warning: $p is referenced but is not a plain repo path; left as written" >&2; continue ;; esac
-  if [ -f "$GITTOP/$p" ]; then MISSING+=("$p")
+  q="$p"; while [ "${q#./}" != "$q" ]; do q="${q#./}"; done  # ./docs/x.md is docs/x.md
+  case "/$q/" in */./*|*/../*) echo "warning: $p is referenced but is not a plain repo path; left as written" >&2; continue ;; esac
+  git -C "$GITTOP" cat-file -e "$DEFREF:$q" >/dev/null 2>&1 && continue
+  if [ -f "$GITTOP/$q" ]; then MISSING+=("$p")
   else echo "warning: $p is referenced but exists neither on $DEFREF nor in the working tree; left as written" >&2
   fi
 done < <(jq -r '[.cards[].docrefs[] | sub("#.*$"; "")] | unique[]' <<<"$PLAN")
