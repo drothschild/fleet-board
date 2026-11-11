@@ -54,7 +54,7 @@ The board (card columns, manager notes, PRs, worktrees) is the only durable reco
 | **Candidates** | Asks `tick-plan.sh --candidates` which cards can move and what each one's next action is. The script is unchanged apart from the `merging` rows (section 4). | board scripts |
 | **Scheduler** | Admits actions within caps: global `limits.concurrency`, per-provider `supervisor.provider_concurrency`, one action per card, no overlapping scope between cards, one merge at a time, aging so nothing starves. | Candidates |
 | **Card driver** | The manager's job, in code: turns one admitted action into script calls and at most one role session, reconciles the role's report, moves the card, writes the manager note. | Scheduler, Role runner, board scripts |
-| **Role runner** | Launches implementor, reviewer, fixer or merger as a headless `claude -p` session (or a provider command for provider review stages) in the card's worktree, in its own process group, with a log file, a deadline and cancellation. Returns exit status, report text and token usage. | provider/model resolver |
+| **Role runner** | Launches implementor, reviewer, fixer or merger as a headless `claude -p --agent fleet-board:<role>` session (or a provider command for provider review stages). The session's working directory is the repository root, as under ticks (roles address the card's worktree by path, and the gate reads the root's config). Each session runs in its own process group, with a log file, a deadline and cancellation. Returns exit status, report text and token usage. | provider/model resolver |
 | **Resolver** | One place that decides provider, model and escalation for a role and round (`models.*`, `review.stages`, `providers.*`). | config |
 | **Control surface** | Private socket; commands `status`, `pause`, `resume`, `stop`, `usage`, `stuck`. Used by the CLI and the board server. | — |
 | **Startup check** | Finds work a previous process left half done and reports it (section 7). | board scripts, git |
@@ -73,14 +73,19 @@ States: `backlog`, `ready`, `in_progress`, `in_review`, `review_<stage>` (one pe
 - Clean review under `merge.policy: auto` → `merging` → `done`.
 - Clean review under `merge.policy: human`, or a card that needs Human QA → `human_qa`; a person merges it.
   A `human_qa` card never enters `merging` (gate G1 unchanged).
-- `blocked` keeps today's meaning and limits (`limits.max_consecutive_failures` no-progress count).
+- `blocked` keeps today's meaning and limits: the per-card no-progress count (`note.action_failures`) is checked
+  against `review.max_rounds` by the planner, which plans `block` at that count, as today.
 
 Required changes outside the supervisor package:
-- `board-lib.sh`: add `merging` to the fixed states, after the review stages.
-- `tick-plan.sh`: `merging` rows. A card in `merging` whose PR is merged plans `verify_main` then `finish`; one whose
-  PR is open at the same head with no merge in flight plans `merge`; anything else is reported as stuck.
-- `merge-reviewed.sh`: accept `merging` wherever it accepts `in_review|review_*` today.
-- Gate hook: the auto-merge state check accepts `merging`.
+- `board-lib.sh`: add `merging` to the fixed states, after the review stages (and its display name "Merging").
+- `tick-plan.sh`: `merging` in its column lists and decision rows. A card in `merging` whose PR is merged plans
+  `verify_main` then `finish`; one whose PR is open at the same head with no merge in flight plans `merge`; anything
+  else is reported as stuck.
+- `merge-reviewed.sh`: accept `merging` wherever it accepts `in_review|review_*` today, and gain `--no-finish`, which
+  stops after main verification without moving the card to `done` (the supervisor moves it after the merger).
+- `note.sh` and `accept.sh` accept `merging` as a `blocked_from` value; `status.sh`, `config.sh` (`board.states` keys)
+  and `init.sh` list it.
+- The gate hook has no card-state check on merges, so `merging` needs no gate change.
 
 ## 5. The loop
 
@@ -88,7 +93,9 @@ The supervisor wakes on a timer (`supervisor.reconcile_interval_seconds`), when 
 command arrives. Each wake:
 
 1. Re-read `.fleet-board.yml`. An invalid file pauses admissions with the validation message; running sessions continue.
-2. Ask Candidates for the current actions.
+2. Ask Candidates for the current actions. A GitHub rate limit (the planner exits 1 with `resets at <time>`) holds
+   admissions until that time plus `limits.rate_limit_margin`, capped in total by `limits.rate_limit_max_wait`, as the
+   tick wrapper does today; past the cap, admissions pause with that reason.
 3. The Scheduler admits what fits.
 4. For each admitted action, the Card driver runs its script steps at once and, if the action needs a role, starts the
    session and returns. No step waits on another card.
@@ -104,6 +111,9 @@ same in code. The port keeps today's behavior except where this section says oth
 re-dispatch the same role once with the rejection message quoted verbatim; a second rejection counts as no progress.
 Exit 2: a driver bug; pause admissions and show the message.
 
+**Fixer "not reproducible".** A fixer report with status `not_reproducible` is recorded as
+`note.last_fix = {status: "not_reproducible", round}`, which the planner already reads to send the card back to review.
+
 **Failures.**
 - A role that crashes, exceeds `supervisor.attempt_timeout_seconds`, or shows no log growth for
   `supervisor.progress_timeout_seconds` is ended (process group) and counts toward the card's no-progress limit.
@@ -115,7 +125,8 @@ Exit 2: a driver bug; pause admissions and show the message.
 
 **Merging.** The merge lane runs one merge at a time per repository:
 1. Move the card to `merging` (if it is not already there).
-2. Run `merge-reviewed.sh`, which applies the gate and `merge.ignore_checks`.
+2. Run `merge-reviewed.sh --no-finish` in its keyed form (`--card N --operation-key K --pr P --head SHA`), so that
+   `--inspect` can later classify the outcome.
 3. **Merged:** run `verify-main.sh`. On success, start a merger session for after-merge work (below). On failure,
    pause admissions for the whole board and show the verification output.
 4. **Refused** (`merge-reviewed.sh --inspect` shows the PR open, unmerged, at the same head): only this card is
@@ -170,7 +181,7 @@ prerequisite of the end-to-end run, because cancelling roles with SIGKILL can le
 ## 8. Token accounting
 
 **Sources.**
-- Claude sessions (all four roles, and the board's Planner chat): the token usage in the final `result` event of
+- Claude sessions (all four roles, the board's Planner chat, and the board's import-preview session): the token usage in the final `result` event of
   `claude -p` stream-json output — input, output, cache-write and cache-read tokens, and the model.
 - Provider review stages (codex and others): the provider ledger, once card #240 / PR #255 records token counts there.
 - Usage that cannot be read is recorded as `unknown` and shown as unknown, never as zero.
@@ -181,7 +192,8 @@ supervisor path. (This absorbs PR #246 and card #215.)
 **Ledger.** `.fleet-board/usage.jsonl` in the repository (with the rest of `.fleet-board/`, kept out of git), one JSON
 line per completed action: `run_id`, `card` (or null for the planner), `kind` (`card` or `planner`), `column` the card
 was in, `action` (`start`, `review`, `review_<stage>`, `fix`, `update_branch`, `merge_refusal`, `after_merge`),
-`role`, `provider`, `model`, the four token counts (or `unknown`), `started_at`, `ended_at`, `log` path. Appends are
+`role`, `provider`, `model`, the four token counts (or `unknown`), `started_at`, `ended_at`, `log` path. Planner lines
+use `action` `planner` (a chat turn) or `import_preview`. Appends are
 single `write` calls of one line under an advisory lock. The supervisor never reads the ledger to decide anything.
 
 **Views.**
@@ -214,9 +226,14 @@ merge:
       reason: flaky e2e suite
 ```
 
-`merge-reviewed.sh` and the gate both accept a red check only when it matches an unexpired entry. Each use is recorded
-in the card's manager note with the check name and the entry's reason. `config.sh --check` rejects an entry with no
-`until` or no `reason`.
+The planner (`tick-plan.sh`, which decides whether a merge is planned) and the gate (`check_pr`) both treat a red check
+as green only when its name matches an unexpired entry; a pending check is never treated as green. Each use is
+recorded in the card's manager note with the check name and the entry's reason. `config.sh --check` rejects an entry
+with no `until` or no `reason`.
+
+Limit: GitHub branch protection still refuses a merge while a check it marks *required* is failing, and fleet-board
+never merges with `--admin`. So `ignore_checks` lets a merge through only for checks the repository does not mark
+required. `supervisor status` and the merger's refusal note say so when a refusal is caused by a required check.
 
 ## 10. Board page
 
@@ -247,10 +264,12 @@ the default merger persona, the `merging` state and its planner/merge-script/gat
 **Removed in the final phase:** the `tick` and `run` skills, `fleet-board-run.sh`, `agents/manager.md`, their
 clean-room specs and manifest lines; docs and remaining skills are rewritten to point at the supervisor.
 
-**Config.** Removed: `supervisor.enabled` (the supervisor is a command you run), `supervisor.start_on_boot`,
-`supervisor.heartbeat_*`, `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `models.manager`.
-Added: `limits.max_tokens`, `limits.max_tokens_per_card`, `merge.persona`, `merge.persona_append`,
-`merge.ignore_checks`. Unchanged: `limits.concurrency`, `limits.max_consecutive_failures`, `limits.max_hours`,
+**Config.** Removed in the strip phase: `supervisor.enabled` (the supervisor is a command you run; the board server
+detects a running supervisor by its socket), `supervisor.start_on_boot`, `supervisor.heartbeat_*`. Removed in the final
+phase, with the tick wrapper that reads them: `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`,
+`limits.max_consecutive_failures`, `models.manager`. Added: `limits.max_tokens`, `limits.max_tokens_per_card`,
+`models.merger` (default `sonnet`), `merge.persona`, `merge.persona_append`, `merge.ignore_checks`. Unchanged: `limits.concurrency`, `limits.max_hours`,
+`limits.max_turns`, `limits.rate_limit_max_wait`, `limits.rate_limit_margin`, `headless.permission_mode`,
 `supervisor.provider_concurrency`, `supervisor.*_timeout_seconds`, `supervisor.shutdown_grace_seconds`,
 `supervisor.retry_backoff_seconds`, `supervisor.aging_seconds`, `supervisor.reconcile_interval_seconds`.
 
