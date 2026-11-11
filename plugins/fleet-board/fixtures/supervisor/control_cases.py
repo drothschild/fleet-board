@@ -124,6 +124,18 @@ class ControlContracts(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(self.state.revision, revision, "a replay bumped the revision")
 
+    def test_a_reused_request_id_with_a_different_request_is_refused(self):
+        revision = self.revision()
+        self.call({"command": "pause", "request_id": "X", "expected_revision": revision})
+        after = self.state.revision
+        reply = self.envelope({"command": "stop", "mode": "drain", "request_id": "X", "expected_revision": revision})
+        self.assertEqual(reply["error"]["code"], "invalid")
+        self.assertIn("already used", reply["error"]["message"])
+        self.assertFalse(self.handler.stop_requested.is_set(), "the stop was applied or answered with the pause outcome")
+        self.assertEqual(self.state.revision, after)
+        again = self.envelope({"command": "pause", "request_id": "X", "expected_revision": revision})
+        self.assertTrue(again["ok"], "the identical request is still a replay")
+
     def test_stop_modes(self):
         for mode in ("drain", "cancel"):
             with self.subTest(mode=mode):

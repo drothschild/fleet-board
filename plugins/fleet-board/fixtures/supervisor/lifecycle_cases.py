@@ -256,6 +256,34 @@ class LifecycleContract(ServiceCase):
         service._handle_request = lambda request, *, peer: {"large": "y" * (1024 * 1024 + 100)}
         self.assertGreater(len(json.dumps(_socket_transport(service.socket_path)({"command": "status"}))), 1024 * 1024)
 
+    def test_a_request_of_exactly_the_limit_is_accepted(self):
+        service, _, _ = self.open()
+        empty = {"command": "status", "padding": ""}
+        exact = {"command": "status", "padding": "x" * (1024 * 1024 - len(json.dumps(empty).encode("utf-8")))}
+        self.assertEqual(len(json.dumps(exact).encode("utf-8")), 1024 * 1024)
+        self.assertIn("revision", service.handle_request(exact, peer=object()))
+        self.serve(service)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.settimeout(10)
+        client.connect(service.socket_path)
+        client.sendall(json.dumps(exact).encode("utf-8"))
+        raw = b""
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            raw += chunk
+        client.close()
+        self.assertTrue(json.loads(raw)["ok"], "a request of exactly 1 MiB must be accepted over the socket")
+        with self.assertRaisesRegex(ValueError, "size"):
+            service.handle_request(dict(exact, padding=exact["padding"] + "x"), peer=object())
+
+    def test_handlers_are_installed_before_readiness_is_announced(self):
+        text = (SCRIPTS / "supervisor" / "cli.py").read_text(encoding="utf-8")
+        body = text[text.index("def _start"):]
+        self.assertLess(body.index("signal.signal"), body.index("service.serve()"),
+                        "a signal before the ack would skip close() and strand the socket and run lock")
+
     def test_an_oversized_request_over_the_socket_is_an_error_reply(self):
         service, _, _ = self.open()
         self.serve(service)
@@ -276,8 +304,8 @@ class LifecycleContract(ServiceCase):
         except OSError:
             pass
         client.close()
-        if raw:
-            self.assertFalse(json.loads(raw)["ok"])
+        self.assertTrue(raw, "an oversized request must get an error reply, not silence")
+        self.assertFalse(json.loads(raw)["ok"])
 
     def test_finished_connection_threads_are_pruned(self):
         service, _, _ = self.open()
@@ -511,7 +539,7 @@ class ForegroundStart(unittest.TestCase):
             err = proc.stderr.read()
             if SANDBOX_PS in err:
                 self.skipTest("sandbox denies the real ps call")
-            if "unavailable" in err.lower() and "socket" in err.lower():
+            if "cannot bind the supervisor socket" in err.lower():
                 self.skipTest("sandbox denies binding the supervisor Unix socket")
             self.fail("start exited before acknowledging: " + err)
         return json.loads(line)
