@@ -1,77 +1,80 @@
-"""The one place that launches a detached supervisor service and waits for its readiness ack.
+"""The one place that starts the supervisor detached and waits until its socket answers.
 
-Both the CLI (`supervisor start`) and the board server (Start on an unreachable service) call
-launch_service(). It never creates a second owner: the child takes the service lock or reports
-`owner: false`, and the caller then reconnects to whoever owns it.
+Both `supervisor start --detach` (a later phase) and the board server's Start on an unreachable
+supervisor call launch_detached(). It never creates a second owner: the child takes the
+repository's owner lock or exits, and either way the caller talks to whoever owns it.
 """
-import json
 import os
-import select
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
-from . import paths
+from . import paths, webproxy
 
 READY_TIMEOUT = 8.0
+_LOG_TAIL = 300
 
 
 class LaunchError(RuntimeError):
-    """The service did not become ready; the message says why."""
+    """The supervisor did not become ready; the message says why."""
 
 
-def _argv(board_root, log_dir):
-    return [sys.executable, "-m", "supervisor.cli", "serve", "--domain", str(board_root),
-            "--log-dir", str(Path(log_dir).absolute())]
+def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT):
+    """Start `supervisor.cli start` in its own session for root; return once its socket answers.
 
-
-def launch_service(board_root, env=None, timeout=READY_TIMEOUT):
-    """Start `supervisor.cli serve` detached for board_root and return its readiness ack.
-
-    The ack is returned as the service printed it. `owner: false` is a valid answer: another
-    healthy owner won the lock, and the caller reconnects to it. Raises LaunchError when the
-    child times out, exits first, or reports it cannot serve (the child is terminated)."""
+    Output goes to log_path (private, appended). Returns {"ready": True, "pid": <supervisor pid>,
+    "log": log_path}. Raises LaunchError when the child exits first or does not answer in time
+    (a child that never became ready is terminated)."""
     env = os.environ if env is None else env
-    board_root = Path(board_root).resolve(strict=True)
-    log_dir = str(paths.log_dir(env))
+    root = Path(root).resolve(strict=True)
+    log_path = Path(log_path).absolute()
     scripts = str(Path(__file__).resolve().parents[1])
     child_env = dict(os.environ)
-    child_env.update({"FLEET_BOARD_LOG_DIR": log_dir,
-                      "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
-                                               if child_env.get("PYTHONPATH") else "")})
+    # The caller's environment decides the socket location, never ours: pop what it did not give.
+    child_env.pop("FLEET_BOARD_SOCKET_DIR", None)
     if env.get("FLEET_BOARD_SOCKET_DIR"):
         child_env["FLEET_BOARD_SOCKET_DIR"] = env["FLEET_BOARD_SOCKET_DIR"]
-    child = subprocess.Popen(_argv(board_root, log_dir), cwd=str(board_root), env=child_env,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                             text=True, start_new_session=True)
-    ready, _, _ = select.select([child.stdout], [], [], timeout)
-    if not ready:
-        _discard(child)
-        raise LaunchError("supervisor service readiness timed out after %.0f seconds" % timeout)
-    line = child.stdout.readline()
-    if not line:
-        detail = child.stderr.read().strip()
-        _discard(child)
-        raise LaunchError("supervisor service exited before readiness" + (": " + detail[-300:] if detail else ""))
-    try:
-        ack = json.loads(line)
-    except ValueError as exc:
-        _discard(child)
-        raise LaunchError("supervisor service returned an invalid readiness acknowledgement") from exc
-    if not isinstance(ack, dict) or not ack.get("ready") or ack.get("socket_unavailable"):
-        _discard(child)
-        raise LaunchError("supervisor service failed to become ready: " + json.dumps(ack))
-    # The child owns its own life from here; reap it when it exits so a long-lived caller
-    # (the board server) leaves no zombie after a Stop.
-    for pipe in (child.stdout, child.stderr):
+    for key in ("FLEET_BOARD_LOG_DIR", "FLEET_BOARD_CONFIG"):
+        if env.get(key):
+            child_env[key] = env[key]
+    child_env.update({"FLEET_BOARD_DOMAIN": str(root),
+                      "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
+                                               if child_env.get("PYTHONPATH") else "")})
+    log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a") as log:
+        child = subprocess.Popen([sys.executable, "-m", "supervisor.cli", "start"], cwd=str(root),
+                                 env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                 start_new_session=True)
+    socket_path = paths.controller_socket(paths.domain_id_for_root(root), env=child_env)
+
+    def probe():
         try:
-            pipe.close()
-        except (OSError, ValueError):
-            pass
-    threading.Thread(target=_reap, args=(child,), daemon=True).start()
-    return ack
+            return webproxy.request(socket_path, {"command": "status"})
+        except (OSError, ValueError, RuntimeError):
+            return None
+    deadline = time.time() + timeout
+    while True:
+        status = probe()
+        if status is not None:
+            threading.Thread(target=_reap, args=(child,), daemon=True).start()
+            return {"ready": True, "pid": status.get("pid"), "log": str(log_path)}
+        if child.poll() is not None:
+            raise LaunchError("supervisor exited before it answered" + _tail(log_path))
+        if time.time() >= deadline:
+            _discard(child)
+            raise LaunchError("supervisor readiness timed out after %.0f seconds" % timeout + _tail(log_path))
+        time.sleep(0.05)
+
+
+def _tail(log_path):
+    try:
+        text = Path(log_path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    return ": " + text[-_LOG_TAIL:] if text else ""
 
 
 def _discard(child):
@@ -84,6 +87,7 @@ def _discard(child):
 
 
 def _reap(child):
+    """Reap the child when it exits so a long-lived caller (the board server) leaves no zombie."""
     try:
         child.wait()
     except Exception:  # noqa: BLE001 - nothing to do if the child is already gone

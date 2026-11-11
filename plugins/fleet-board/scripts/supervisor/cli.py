@@ -1,15 +1,32 @@
-"""Command line client for the persistent supervisor."""
+"""Command line for the supervisor: `start` is the supervisor process, the rest talk to it."""
 import argparse
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import time
 import uuid
 from pathlib import Path
 
-from . import launcher, paths
-from .service import Service
+from . import errors, paths
+from .service import Service, StubHandler
+from .state import State
+
+USAGE = "usage: supervisor <start [--detach] [--ignore-stuck] | status [--json] | pause | resume | stop [--drain|--cancel]>"
+EPILOG = """\
+exit codes: 0 ok, 1 error or supervisor not running, 2 usage
+
+environment:
+  FLEET_BOARD_DOMAIN             the board root (default: the git toplevel of the current directory)
+  FLEET_BOARD_SOCKET_DIR         base directory for the supervisor socket (default /tmp/fleet-board-<uid>);
+                                 never derived from TMPDIR
+  FLEET_BOARD_SUPERVISOR_SOCKET  talk to this socket instead of the default one. The socket's parent
+                                 directory and that directory's parent (its grandparent) must both be
+                                 private (mode 0700) and owned by you, and neither may be a symlink;
+                                 anything else is refused.
+"""
 
 
 class _Remote(ValueError):
@@ -20,9 +37,12 @@ class _Remote(ValueError):
         error = self.args[0] if self.args else None
         return error.get("code") if isinstance(error, dict) else None
 
+    def describe(self):
+        error = self.args[0] if self.args else None
+        return error.get("message", str(error)) if isinstance(error, dict) else str(error)
+
 
 def _socket_transport(path):
-    import socket
     def send(request):
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.settimeout(5)
@@ -30,7 +50,7 @@ def _socket_transport(path):
             try:
                 paths.check_socket_path(path)
             except FileNotFoundError:
-                pass  # no socket directory yet: connect() reports the service as unreachable
+                pass  # no socket directory yet: connect() reports the supervisor as not running
             client.connect(path)
             client.sendall(json.dumps(request, separators=(",", ":")).encode("utf-8"))
             chunks, size = [], 0
@@ -51,158 +71,151 @@ def _socket_transport(path):
     return send
 
 
+def _board_root(env):
+    """FLEET_BOARD_DOMAIN, else the git toplevel of the current directory."""
+    domain = env.get("FLEET_BOARD_DOMAIN")
+    if not domain:
+        try:
+            out = subprocess.run(["git", "rev-parse", "--show-toplevel"], stdin=subprocess.DEVNULL,
+                                 capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            out = None
+        domain = out.stdout.strip() if out is not None and out.returncode == 0 else ""
+        if not domain:
+            raise ValueError("FLEET_BOARD_DOMAIN is not set and the current directory is not in a git checkout")
+    return Path(domain).resolve(strict=True)
+
+
+def _socket_for(root, env):
+    return env.get("FLEET_BOARD_SUPERVISOR_SOCKET") or paths.controller_socket(
+        paths.domain_id_for_root(root), env=env)
+
+
+class _UsageParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError(message)
+
+
+def _parser():
+    parser = _UsageParser(prog="supervisor", description="Run and control the Fleet Board supervisor",
+                          epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter, add_help=False)
+    subs = parser.add_subparsers(dest="command", required=True, parser_class=_UsageParser)
+    start = subs.add_parser("start")
+    start.add_argument("--detach", action="store_true")
+    start.add_argument("--ignore-stuck", action="store_true")
+    status = subs.add_parser("status")
+    status.add_argument("--json", action="store_true")
+    subs.add_parser("pause")
+    subs.add_parser("resume")
+    stop = subs.add_parser("stop")
+    group = stop.add_mutually_exclusive_group()
+    group.add_argument("--drain", action="store_true")
+    group.add_argument("--cancel", action="store_true")
+    return parser
+
+
 def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     env = os.environ if env is None else env
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
-    # Exit codes: 0 ok; 1 error or unreachable service; 2 usage error;
-    # 3 `start` launched/reached the service but supervisor.enabled is false
-    # (it stays queryable read-only; execution is not started).
-    class UsageParser(argparse.ArgumentParser):
-        def error(self, message):
-            raise ValueError(message)
-    parser = UsageParser(prog="supervisor", description="Control the Fleet Board supervisor",
-                          epilog="exit codes: 0 ok, 1 error, 2 usage, 3 start refused because supervisor.enabled is false")
-    subs = parser.add_subparsers(dest="command", required=True, parser_class=UsageParser)
-    for name in ("start", "pause", "resume", "status", "reconcile", "events"):
-        sub = subs.add_parser(name)
-        if name == "events":
-            sub.add_argument("--after", type=int, default=0)
-            sub.add_argument("--limit", type=int, default=100)
-    stop = subs.add_parser("stop")
-    stop.add_argument("--mode", choices=("drain", "cancel"))
-    resolve = subs.add_parser("resolve")
-    resolve.add_argument("--card", type=int)
-    resolve.add_argument("--action", choices=("retry", "record_usage", "confirm_effect", "abandon"))
-    resolve.add_argument("--reason")
-    serve = subs.add_parser("serve")
-    serve.add_argument("--domain", required=True)
-    serve.add_argument("--log-dir", required=True)
-    serve.add_argument("--socket-tmp", default=None, help=argparse.SUPPRESS)
-    try:
-        args = parser.parse_args(argv)
-    except (ValueError, SystemExit) as exc:
-        print("usage: supervisor <start|pause|resume|stop|status|reconcile|events|resolve>", file=stderr)
-        return 2
-    if args.command == "stop" and args.mode is None:
-        print("usage: supervisor stop --mode {drain,cancel}", file=stderr)
-        return 2
-    if args.command == "resolve" and (args.card is None or args.action is None):
-        print("usage: supervisor resolve --card N --action ACTION", file=stderr)
-        return 2
-    if args.command == "resolve":
-        args.reason = args.reason or "manual resolution"
-    try:
-        if args.command == "serve":
-            os.environ["FLEET_BOARD_LOG_DIR"] = args.log_dir
-            board_root = Path(args.domain).resolve(strict=True)
-            domain = paths.board_domain(board_root, Path(args.log_dir) / "supervisor")
-            service = Service.open(domain, board_repo=_repo_slug(board_root))
-            ack = service.start_serving()
-            print(json.dumps(ack), flush=True)
-            if not ack.get("owner") or ack.get("socket_unavailable"):
-                return 1
-            try:
-                while not service.stopped.wait(1):
-                    pass
-            finally:
-                service.close()
-        domain_root = env.get("FLEET_BOARD_DOMAIN")
-        if not domain_root and transport is None:
-            raise ValueError("FLEET_BOARD_DOMAIN is required")
-        if transport is None:
-            board_root = Path(domain_root).resolve(strict=True)
-            # Pure: the id comes from the identity inputs; no store is opened.
-            path = paths.controller_socket(paths.domain_id_for_root(board_root), env=env)
-            transport = _socket_transport(path)
-            if args.command == "start":
-                status = _ensure_service(board_root, env, transport)
-                if status.get("execution_available") is False:
-                    print("supervisor: supervisor.enabled: false; service is running read-only",
-                          file=stderr)
-                    return 3
-                result = _send_start(transport)
-                return _print_result(dict(result, status=transport({"command": "status"})), stdout)
-        if args.command == "resolve":
-            current = transport({"command": "status"})
-            request = {"command": "resolve", "card": args.card, "action": args.action,
-                       "reason": args.reason, "request_id": uuid.uuid4().hex,
-                       "expected_revision": current.get("revision", 0) if isinstance(current, dict) else 0}
-        elif args.command == "events":
-            request = {"command": "events", "after": args.after, "limit": args.limit}
-        elif args.command == "start":
-            result = _send_start(transport)
-            print(json.dumps(result), file=stdout)
-            return 0
-        else:
-            request = {"command": args.command, "request_id": str(uuid.uuid4())}
-            if args.command in ("pause", "resume", "stop"):
-                current = transport({"command": "status"})
-                request["expected_revision"] = current.get("revision", 0) if isinstance(current, dict) else 0
-            if args.command == "stop":
-                request["mode"] = args.mode
-        result = transport(request)
-        if args.command == "reconcile":
-            result = {"snapshot": result, "cursor": len(result.get("events", []))}
-        print(json.dumps(result), file=stdout)
+    if argv and argv[0] in ("-h", "--help", "help"):
+        print(USAGE + "\n\n" + EPILOG, file=stdout, end="")
         return 0
-    except Exception as exc:
-        print("supervisor: " + str(exc), file=stderr)
-        return 2 if "unsupported" in str(exc).lower() else 1
-
-
-def _try_status(transport):
     try:
-        return transport({"command": "status"})
-    except (OSError, TimeoutError):
-        return None
+        args = _parser().parse_args(argv)
+    except (ValueError, SystemExit):
+        print(USAGE, file=stderr)
+        return 2
+    if args.command == "start" and args.detach:
+        print("supervisor: --detach arrives in a later phase", file=stderr)
+        return 2
+    root = None
+    try:
+        if args.command == "start":
+            return _start(_board_root(env), stdout, stderr)
+        if transport is None:
+            root = _board_root(env)
+            transport = _socket_transport(_socket_for(root, env))
+        if args.command == "status":
+            status = transport({"command": "status"})
+            print(json.dumps(status) if args.json else _human_status(status), file=stdout)
+            return 0
+        extra = {}
+        if args.command == "stop":
+            extra["mode"] = "cancel" if args.cancel else "drain"
+        print(json.dumps(_send_mutation(transport, args.command, extra)), file=stdout)
+        return 0
+    except (_Remote, errors.SupervisorError) as exc:
+        print("supervisor: " + (exc.describe() if isinstance(exc, _Remote) else str(exc)), file=stderr)
+        return 1
+    except socket.timeout:
+        print("supervisor: the supervisor did not answer in time", file=stderr)
+        return 1
+    except OSError as exc:
+        if isinstance(exc, (FileNotFoundError, ConnectionRefusedError)):
+            print("supervisor not running%s" % (" for " + str(root) if root is not None else ""), file=stderr)
+        else:
+            print("supervisor: " + str(exc), file=stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - the CLI reports, it never traces
+        print("supervisor: " + str(exc), file=stderr)
+        return 1
 
 
-def _ensure_service(board_root, env, transport):
-    """The status of a healthy owner for this domain, launching one only when none answers.
+def _start(root, stdout, stderr):
+    """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop."""
+    state = State(uuid.uuid4().hex, time.time)
+    handler = StubHandler(state)
+    service = Service(root, state, handler)
+    try:
+        ack = service.serve()
+        if not ack.get("owner"):
+            if ack.get("socket_unavailable"):
+                print("supervisor: cannot bind the supervisor socket here", file=stderr)
+            else:
+                pid = service.owner_pid()
+                print("supervisor already running for %s (pid %s)" % (root, pid if pid else "unknown"), file=stderr)
+            return 1
+        print(json.dumps(ack), file=stdout, flush=True)
+        # Ctrl-C and SIGTERM end the run now; draining arrives with the loop.
+        for number in (signal.SIGINT, signal.SIGTERM):
+            try:
+                signal.signal(number, lambda _signum, _frame: handler.request_stop("cancel"))
+            except ValueError:
+                pass  # not the main thread: the caller stops it through the socket
+        while not handler.stop_requested.wait(0.2):
+            pass
+        return 0
+    finally:
+        service.close()
 
-    A child that loses the lock race (`owner: false`) means another healthy owner is ready:
-    reconnect to it instead of failing."""
-    status = _try_status(transport)
-    if status is not None:
-        return status
-    launcher.launch_service(board_root, env=env)
-    status = launcher.wait_until(lambda: _try_status(transport), timeout=5.0)
-    if status is None:
-        raise RuntimeError("supervisor service reported ready but did not answer on its socket")
-    return status
+
+def _human_status(status):
+    mode = status.get("mode", "unknown")
+    if mode == "paused" and status.get("pause_reason"):
+        mode = "paused (%s)" % status["pause_reason"]
+    lines = ["supervisor running for %s (pid %s)" % (status.get("root", "?"), status.get("pid", "?")),
+             "mode: " + mode]
+    active = status.get("active") or []
+    lines.append("active: %d" % len(active))
+    for action in active:
+        lines.append("  card %s: %s (%s)" % (action.get("card"), action.get("action"), action.get("provider")))
+    return "\n".join(lines)
 
 
-def _send_start(transport, attempts=5):
-    """Start is idempotent, so a revision that moved between our status read and the command
-    (another Start, a recovery event) is re-read and retried with a fresh request id."""
+def _send_mutation(transport, command, extra, attempts=5):
+    """Bind the command to the revision just read. A revision that moved in between is re-read
+    and retried with a fresh request id (pause, resume and stop are idempotent)."""
     for attempt in range(attempts):
         current = transport({"command": "status"})
-        request = {"command": "start", "request_id": str(uuid.uuid4()),
-                   "expected_revision": current.get("revision", 0) if isinstance(current, dict) else 0}
+        request = dict(extra, command=command, request_id=str(uuid.uuid4()),
+                       expected_revision=current.get("revision", 0) if isinstance(current, dict) else 0)
         try:
             return transport(request)
-        except _Remote as exc:
-            if exc.code != "stale_revision" or attempt == attempts - 1:
+        except (_Remote, errors.StaleRevision) as exc:
+            if getattr(exc, "code", None) != "stale_revision" or attempt == attempts - 1:
                 raise
-
-
-def _print_result(result, stdout):
-    print(json.dumps(result), file=stdout)
-    return 0
-
-
-def _repo_slug(board_root):
-    config = Path(__file__).resolve().parents[1] / "config.sh"
-    try:
-        result = subprocess.run(["bash", str(config), "--dir", str(board_root), "board.repo"],
-                                capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return board_root.name
 
 
 if __name__ == "__main__":

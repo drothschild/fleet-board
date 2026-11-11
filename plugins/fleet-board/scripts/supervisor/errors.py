@@ -24,16 +24,6 @@ class StaleRevision(SupervisorError, ValueError):
     code = "stale_revision"
 
 
-class UncertainWriter(SupervisorError, RuntimeError):
-    """An unresolved shutdown leaves a writer that may still be active."""
-    code = "uncertain_writer"
-
-
-class Disabled(SupervisorError, RuntimeError):
-    """supervisor.enabled is false: the control API is read-only."""
-    code = "disabled"
-
-
 class Unauthenticated(SupervisorError, PermissionError):
     """The peer could not be authenticated as the owning user."""
     code = "unauthenticated"

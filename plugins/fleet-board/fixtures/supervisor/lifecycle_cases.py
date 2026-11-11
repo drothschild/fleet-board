@@ -5,8 +5,10 @@ import os
 import signal
 import socket
 import stat
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -44,6 +46,14 @@ def new_service(root, run_lock, **kwargs):
     handler = StubHandler(state)
     kwargs.setdefault("peer_resolver", lambda _peer: "fixture-user")
     return Service(root, state, handler, run_lock_path=str(run_lock), **kwargs), state, handler
+
+
+def short_base(test):
+    """A short private socket base: AF_UNIX paths are length-limited and ROOT is long."""
+    path = Path(tempfile.mkdtemp(prefix="fbt.", dir="/tmp"))
+    os.chmod(str(path), 0o700)
+    test.addCleanup(shutil.rmtree, str(path), True)
+    return path
 
 
 def short_logs(test):
@@ -300,10 +310,10 @@ class LifecycleContract(ServiceCase):
             service.serve()
 
     def test_a_symlinked_socket_base_is_refused(self):
-        real = ROOT / "real-base"
-        real.mkdir(mode=0o700)
-        link = ROOT / "link-base"
+        real = short_base(self)
+        link = Path(str(real) + "-link")
         link.symlink_to(real, target_is_directory=True)
+        self.addCleanup(link.unlink)
         with mock.patch.dict(os.environ, {"FLEET_BOARD_SOCKET_DIR": str(link)}):
             service, _, _ = self.open("linked")
             with self.assertRaises(errors.UnsafeSocketDir):
@@ -408,8 +418,7 @@ class CLIContract(unittest.TestCase):
         self.assertIn("FLEET_BOARD_SOCKET_DIR", text)
 
     def test_an_unreachable_service_is_exit_1_naming_the_root(self):
-        base = ROOT / "unreachable-base"
-        base.mkdir(mode=0o700)
+        base = short_base(self)
         root = make_root(ROOT, "unreachable-root")
         out, err = io.StringIO(), io.StringIO()
         code = main(["status"], env={"FLEET_BOARD_DOMAIN": str(root), "FLEET_BOARD_SOCKET_DIR": str(base)},
@@ -422,8 +431,7 @@ class CLIContract(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
         deep = repo / "a" / "b"
         deep.mkdir(parents=True)
-        base = ROOT / "default-root-base"
-        base.mkdir(mode=0o700)
+        base = short_base(self)
         env = dict(os.environ, FLEET_BOARD_SOCKET_DIR=str(base), PYTHONPATH=str(SCRIPTS), PYTHONDONTWRITEBYTECODE="1")
         env.pop("FLEET_BOARD_DOMAIN", None)
         run = subprocess.run([str(SCRIPTS / "supervisor.sh"), "status"], cwd=str(deep), env=env,
@@ -433,8 +441,7 @@ class CLIContract(unittest.TestCase):
 
     def test_the_supervisor_socket_override_is_honoured(self):
         seen = []
-        base = ROOT / "override-base"
-        base.mkdir(mode=0o700)
+        base = short_base(self)
         directory = base / "d"
         directory.mkdir(mode=0o700)
         out, err = io.StringIO(), io.StringIO()
@@ -470,8 +477,7 @@ class ForegroundStart(unittest.TestCase):
 
     def setUp(self):
         self.case = make_root(ROOT, self.id().rsplit(".", 1)[-1])
-        self.base = ROOT / (self.id().rsplit(".", 1)[-1] + "-base")
-        self.base.mkdir(mode=0o700)
+        self.base = short_base(self)
         self.logs = ROOT / (self.id().rsplit(".", 1)[-1] + "-logs")
         self.logs.mkdir(mode=0o700)
         self.env = dict(os.environ, FLEET_BOARD_DOMAIN=str(self.case), FLEET_BOARD_SOCKET_DIR=str(self.base),
@@ -594,8 +600,7 @@ class DetachedLauncher(unittest.TestCase):
     def setUp(self):
         name = self.id().rsplit(".", 1)[-1]
         self.case = make_root(ROOT, name)
-        self.base = ROOT / (name + "-base")
-        self.base.mkdir(mode=0o700)
+        self.base = short_base(self)
         self.logs = ROOT / (name + "-logs")
         self.logs.mkdir(mode=0o700)
 
