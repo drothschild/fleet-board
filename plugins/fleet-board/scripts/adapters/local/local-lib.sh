@@ -85,6 +85,11 @@ fl_next_number() {
   case "$n" in
     ''|*[!0-9]*|0|0[0-9]*) rm -rf "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
   esac
+  # Belt and braces: the lock alone is not trusted (a stale-lock takeover can let
+  # two holders in). A number is only issued once mkdir of its claim succeeds, and
+  # never when its card file already exists, so a stale counter skips ahead.
+  mkdir -p "$d/.claims" || { rm -rf "$lock"; fb_die 1 "cannot create $d/.claims"; }
+  while [ -e "$(fl_card_file "$n")" ] || ! mkdir "$d/.claims/$n" 2>/dev/null; do n=$((n + 1)); done
   if ! printf '%s\n' $((n + 1)) > "$f.tmp.$$" || ! mv -f "$f.tmp.$$" "$f"; then
     rm -f "$f.tmp.$$"; rm -rf "$lock"; fb_die 1 "cannot update $f"
   fi
