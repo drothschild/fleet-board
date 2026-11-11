@@ -293,11 +293,8 @@ VALIDATION_SCRIPT='
        end),
       (if (.supervisor | type) == "object" then
         . as $root | .supervisor as $sup |
-        (("enabled", "start_on_boot") as $k
-          | if ($sup[$k] | type) != "boolean" then "supervisor.\($k) must be boolean" else empty end),
-        (("reconcile_interval_seconds", "heartbeat_interval_seconds", "heartbeat_timeout_seconds", "progress_timeout_seconds", "attempt_timeout_seconds", "shutdown_grace_seconds", "retry_backoff_seconds", "aging_seconds") as $k
+        (("reconcile_interval_seconds", "progress_timeout_seconds", "attempt_timeout_seconds", "shutdown_grace_seconds", "retry_backoff_seconds", "aging_seconds") as $k
           | $sup[$k] as $v | if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.\($k) must be a positive integer" else empty end),
-        (if ($sup.heartbeat_timeout_seconds | type) == "number" and ($sup.heartbeat_interval_seconds | type) == "number" and $sup.heartbeat_timeout_seconds <= $sup.heartbeat_interval_seconds then "supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds" else empty end),
         (if ($sup.attempt_timeout_seconds | type) == "number" and ($sup.shutdown_grace_seconds | type) == "number" and $sup.attempt_timeout_seconds <= $sup.shutdown_grace_seconds then "supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds" else empty end),
         (if ($sup.provider_concurrency | type) != "object" then "supervisor.provider_concurrency must be an object"
          else $sup.provider_concurrency | to_entries[] | .key as $k | .value as $v |

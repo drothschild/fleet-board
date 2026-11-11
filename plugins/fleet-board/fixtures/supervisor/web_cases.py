@@ -117,7 +117,7 @@ class SupervisorWebContract(unittest.TestCase):
         if self.service is not None:
             self.service.close()
 
-    def http(self, method, path, body=None, *, token=True, host=None):
+    def http(self, method, path, body=None, *, token=True, host=None, timeout=3):
         headers = {"Host": host or "127.0.0.1:%d" % self.port}
         if token:
             headers["X-Fleet-Board"] = "1"
@@ -128,7 +128,7 @@ class SupervisorWebContract(unittest.TestCase):
         request = Request("http://127.0.0.1:%d%s" % (self.port, path),
                           data=data, headers=headers, method=method)
         try:
-            with urlopen(request, timeout=3) as response:
+            with urlopen(request, timeout=timeout) as response:
                 return response.status, json.loads(response.read() or b"{}")
         except HTTPError as exc:
             return exc.code, json.loads(exc.read() or b"{}")
@@ -368,7 +368,7 @@ class SupervisorWebContract(unittest.TestCase):
         old = os.getpid()
         self.state.mode = "stopping"
         threading.Timer(0.6, self.service.close).start()
-        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "again-1", "expected_revision": 0})
+        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "again-1", "expected_revision": 0}, timeout=20)
         self.skip_if_sandboxed(code, started)
         self.assertEqual(code, 202, started)
         self.assertIs(started.get("launched"), True, "Start reported a stopping supervisor as running")
@@ -382,7 +382,7 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_service()
         self.start_web()
         self.state.mode = "stopping"
-        code, refused = self.http("POST", "/api/supervisor/start", {"request_id": "again-2", "expected_revision": 0})
+        code, refused = self.http("POST", "/api/supervisor/start", {"request_id": "again-2", "expected_revision": 0}, timeout=20)
         self.assertEqual(code, 503, refused)
         self.assertRegex(refused["error"], r"(?i)stopping")
         self.assertNotIn("launched", refused)

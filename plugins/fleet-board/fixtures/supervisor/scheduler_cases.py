@@ -185,32 +185,16 @@ def run():
     assert running_plan.result(timeout=2) is True and queued_plan.result(timeout=2) == 'queued'
     running_control.result(timeout=2); assert queued_control.result(timeout=2) == 'queued'
     saturated.close()
-    # Session accounting survives a scheduler restart and keeps unknown spend unknown.
-    persisted = {}
-    account = Scheduler(state_writer=lambda state: persisted.update(state))
-    account.begin_session('session-3', started_at=1, deadline=50, max_cost=2)
-    account.record_spend(0.75)
-    restarted_account = Scheduler(clock=lambda: 10, state=persisted,
-                                  state_writer=lambda state: persisted.update(state))
-    assert restarted_account.session_snapshot() == {'id': 'session-3', 'started_at': 1, 'deadline': 50,
-        'max_cost': 2, 'known_spend': 0.75, 'unknown_spend': False}
-    restarted_account.record_spend(None)
-    restored_unknown = Scheduler(clock=lambda: 10, state=persisted)
-    held = restored_unknown.admit([candidate(27)], limits={'global': 1, 'providers': {'claude': 1}, 'per_card': 1})
-    assert held['stop_reason'] == 'provider spend is unknown'
-    expiring = Scheduler(clock=lambda: 50, state={'session': {'id': 'session-4', 'started_at': 1,
-        'deadline': 50, 'max_cost': 2, 'known_spend': 1, 'unknown_spend': False}})
-    assert expiring.admit([candidate(28)], limits={'global': 1, 'providers': {'claude': 1}, 'per_card': 1})['stop_reason'] == 'session deadline reached'
     # Unknown workflow state never normalizes or admits and reports attention; active claims remain.
     unknown = scheduler.admit([candidate(12, action='unknown_state')], active=[{'number':12,'provider':'claude','paths':[]}],
         limits={'global':2,'providers':{'claude':2},'per_card':1})
     assert not unknown['admitted'] and unknown['attention'][0]['number'] == 12 and unknown['active'][0]['number'] == 12
-    # Fake-time guards: retry/backoff, launch spacing, rate wait, deadline/cost, unknown spend, invalid reload.
+    # Fake-time guards: retry/backoff, launch spacing, rate wait, deadline, invalid reload.
     clock = {'now': 10}
     timed = Scheduler(clock=lambda: clock['now'])
     wait = timed.admit([candidate(20)], limits={'global':2,'providers':{'claude':2},'per_card':1,
         'retry_at':{'20':15},'min_launch_gap':3,'last_launch_at':9,'rate_limit_wait':100,'max_rate_wait':8,
-        'session_deadline':20,'max_cost':1,'known_spend':0.5,'unknown_spend':False})
+        'session_deadline':20})
     assert not wait['admitted'] and wait['waits']
     assert wait['waits'][0]['reason'] == 'retry backoff' and wait['waits'][0]['until'] == 15
     rate = timed.admit([candidate(22)], limits={'global':2,'providers':{'claude':2},'per_card':1,
@@ -220,15 +204,9 @@ def run():
         'rate_limit_wait':{'claude':100},'max_rate_wait':8,'session_deadline':20}, now=18)
     assert not capped['admitted'] and (capped['stop_reason'] == 'provider rate-limit wait cap reached'
         or any(item['reason'] == 'provider rate-limit wait cap reached' for item in capped['attention']))
-    blocked = timed.admit([candidate(21)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'session_deadline':9,'max_cost':2,'known_spend':0,'unknown_spend':True})
-    assert not blocked['admitted'] and blocked['stop_reason']
     deadline = timed.admit([candidate(24)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'session_deadline':10,'known_spend':0,'unknown_spend':False}, now=10)
+        'session_deadline':10}, now=10)
     assert deadline['stop_reason'] == 'session deadline reached'
-    cost = timed.admit([candidate(25)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'session_deadline':20,'max_cost':1,'known_spend':1,'unknown_spend':False}, now=10)
-    assert cost['stop_reason'] == 'session cost limit reached'
     assert timed.reload({'global':0}) is False
     assert timed.admit([candidate(26)])['stop_reason'] == 'invalid limits'
     print('scheduler cases passed')

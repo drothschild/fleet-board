@@ -2,16 +2,12 @@
 
 The scheduler owns policy only. Callers provide an immutable planner snapshot,
 current claims, validated limits, and an atomic attempt-preparation callback.
-Clock, planning and persistence are injectable so tests never wait on wall time.
+Clock and planning are injectable so tests never wait on wall time.
 """
 from concurrent.futures import ThreadPoolExecutor
 import copy
-import json
 import math
 import threading
-
-from .effects import Effect
-
 
 _ACTION_CLASS = {
     'continue_implementor': 0, 'fix': 0, 'review': 0, 'review_stage': 0,
@@ -42,186 +38,6 @@ class _BoundedExecutor:
 
     def shutdown(self, wait=False, cancel_futures=True):
         self._pool.shutdown(wait=wait, cancel_futures=cancel_futures)
-
-
-class IntegrationLane:
-    """Run journaled merge/verification effects in one durable repository lane.
-
-    External helpers run on a dedicated bounded worker, never in the scheduler
-    event loop. Store leases serialize independent supervisors and remain held
-    across uncertain outcomes until the same effect is reconciled.
-    """
-    def __init__(self, store, *, owner_id, close_admissions=None, queue_limit=8):
-        if store is None or not isinstance(owner_id, str) or not owner_id:
-            raise ValueError('integration lane requires a store and owner identity')
-        if close_admissions is not None and not callable(close_admissions):
-            raise ValueError('invalid admission close callback')
-        self.store = store
-        self.owner_id = owner_id
-        self.close_admissions = close_admissions
-        self._executor = _BoundedExecutor(1, queue_limit, 'repository integration')
-
-    def close(self):
-        self._executor.shutdown(wait=False, cancel_futures=True)
-
-    @staticmethod
-    def _details(effect):
-        record, preconditions, intent = effect._record()
-        return record, preconditions, intent
-
-    @staticmethod
-    def _validate_merge(intent, mode):
-        if mode != 'running':
-            raise ValueError('new merge admission is closed')
-        if intent.get('merge_policy') != 'auto':
-            raise ValueError('human merge policy forbids mutation')
-        if intent.get('card_state') == 'human_qa' or intent.get('needs_human_qa') is not False:
-            raise ValueError('Human QA forbids mutation')
-        for field in ('head_current', 'review_clean', 'review_stages_complete',
-                      'dependencies_ready', 'ci_green'):
-            if intent.get(field) is not True:
-                raise ValueError('merge precondition is not satisfied: ' + field)
-
-    @staticmethod
-    def main_check_ok(observation):
-        """Only a literal JSON boolean true proves main verification succeeded."""
-        return isinstance(observation, dict) and type(observation.get('ok')) is bool and observation.get('ok') is True
-
-    def submit(self, effect, *, mode=None):
-        """Queue new merges; verification must use a merged-operation recovery."""
-        record, preconditions, intent = self._details(effect)
-        kind = intent.get('kind')
-        if kind not in ('integration_merge', 'main_verification'):
-            raise ValueError('unsupported integration operation')
-        actual_mode = self.store.snapshot()['domain']['desired_mode']
-        if mode is not None and mode != actual_mode:
-            raise ValueError('requested mode is stale')
-        if kind == 'integration_merge':
-            self._validate_merge(intent, actual_mode)
-        else:
-            raise ValueError('main verification requires an already merged operation; use recovery')
-        return self._executor.submit(self._execute, effect, record, preconditions, intent, False)
-
-    def recover(self, effect, *, mode=None):
-        """Queue reconciliation of one persisted lease without a new mutation."""
-        record, preconditions, intent = self._details(effect)
-        kind = intent.get('kind')
-        if kind not in ('integration_merge', 'main_verification'):
-            raise ValueError('unsupported integration recovery')
-        actual_mode = self.store.snapshot()['domain']['desired_mode']
-        if mode is not None and mode != actual_mode:
-            raise ValueError('requested mode is stale')
-        return self._executor.submit(self._execute, effect, record, preconditions, intent, True)
-
-    def _execute(self, effect, record, preconditions, intent, recover):
-        store = self.store.fork_connection()
-        acquired = False
-        try:
-            worker_effect = effect.rebind(store, record=record,
-                                          preconditions=preconditions, intent=intent)
-            key, card, kind = record['operation_key'], record['card'], intent['kind']
-            store.acquire_integration_lane(key, card, kind, self.owner_id, recover=recover)
-            acquired = True
-            mode = store.snapshot()['domain']['desired_mode']
-            if kind == 'main_verification':
-                result = self._recover_main_verification(worker_effect, store, record, intent, key, card)
-            elif recover and mode != 'running':
-                try:
-                    observed = worker_effect.observe()
-                except Exception as exc:
-                    observed = None
-                    unavailable = str(exc)[:200]
-                else:
-                    unavailable = 'PR merge is not proven complete'
-                if not Effect.merge_recovery_matches(observed, intent, key):
-                    result = {'status': 'pending', 'operation_key': key,
-                              'reason': 'paused/stopped recovery requires matching merged PR evidence: ' + unavailable}
-                else:
-                    result = worker_effect.apply()
-            else:
-                result = worker_effect.reconcile() if recover else worker_effect.apply()
-            if result.get('status') == 'observed':
-                observation = result.get('main_check') if kind == 'integration_merge' else result
-                verified = kind not in ('integration_merge', 'main_verification') or self.main_check_ok(observation)
-                if not verified:
-                    reason = 'main verification failed or was unproven for #' + card
-                    store.close_admissions(reason)
-                    if self.close_admissions is not None:
-                        self.close_admissions(reason)
-                else:
-                    store.release_integration_lane(key, self.owner_id)
-            else:
-                reason = 'merge or main verification outcome is unresolved for #' + card
-                store.close_admissions(reason)
-                if self.close_admissions is not None:
-                    self.close_admissions(reason)
-            return result
-        except Exception as exc:
-            if not acquired:
-                raise
-            reason = 'integration effect outcome is unresolved: ' + str(exc)[:200]
-            store.close_admissions(reason)
-            if self.close_admissions is not None:
-                self.close_admissions(reason)
-            return {'status': 'pending', 'operation_key': record['operation_key'], 'reason': reason}
-        finally:
-            store.close()
-
-    @staticmethod
-    def _recover_main_verification(effect, store, record, intent, key, card):
-        """Run verification only after fresh evidence matches a durable merge operation."""
-        if intent.get('merge_operation_key') in (None, key):
-            return {'status': 'pending', 'operation_key': key,
-                    'reason': 'main verification is not paired with a durable merge operation'}
-        matches = []
-        for row in store.snapshot()['effects']:
-            if row['operation_key'] != intent.get('merge_operation_key') or row['card'] != card:
-                continue
-            try:
-                merge_intent = json.loads(row['intent'])
-            except (TypeError, ValueError):
-                continue
-            if (merge_intent.get('kind') == 'integration_merge'
-                    and merge_intent.get('pr') == intent.get('pr')
-                    and merge_intent.get('head_sha') == intent.get('head_sha')):
-                matches.append(merge_intent)
-        if len(matches) != 1:
-            return {'status': 'pending', 'operation_key': key,
-                    'reason': 'main verification has no matching durable merge operation'}
-        try:
-            evidence = effect.adapter.inspect(dict(matches[0], operation_key=intent['merge_operation_key']))
-        except Exception as exc:
-            return {'status': 'pending', 'operation_key': key,
-                    'reason': 'fresh merged evidence unavailable: ' + str(exc)[:200]}
-        if not Effect.merge_recovery_matches(evidence, matches[0], intent['merge_operation_key']):
-            return {'status': 'pending', 'operation_key': key,
-                    'reason': 'fresh merged evidence does not match the durable merge operation'}
-        return effect.apply()
-
-    @staticmethod
-    def cleanup_allowed(snapshot, card):
-        """Permit removal only for complete cards without retained recovery work."""
-        lifecycle = (snapshot.get('card_lifecycle') or {}).get(str(card))
-        if lifecycle != 'complete':
-            return False
-        jobs = {job['id']: job.get('card') for job in snapshot.get('jobs', [])}
-        for attempt in snapshot.get('attempts', []):
-            data = attempt.get('data') or '{}'
-            if isinstance(data, str):
-                try:
-                    data = json.loads(data)
-                except (TypeError, ValueError):
-                    return False
-            if (jobs.get(attempt.get('job_id')) == str(card)
-                    and (attempt.get('state') == 'quarantined'
-                         or attempt.get('state') in ('prepared', 'running', 'result_ready', 'cancel_requested')
-                         or data.get('execution_released') is not True)):
-                return False
-        for effect in snapshot.get('effects', []):
-            if (effect.get('card') == str(card)
-                    and effect.get('status') not in ('applied', 'complete', 'reconciled', 'observed')):
-                return False
-        return True
 
 
 class _SystemTimerDriver:
@@ -260,12 +76,11 @@ class Scheduler:
     """Bounded, thread-safe admissions with fake-clock friendly timing."""
     def __init__(self, clock=None, state=None, max_workers=4, max_control_workers=2,
                  plan_queue_limit=16, control_queue_limit=16, priority_workers=2,
-                 priority_queue_limit=32, timer_scheduler=None, state_writer=None):
+                 priority_queue_limit=32, timer_scheduler=None):
         self.clock = clock or __import__('time').time
         self.state = copy.deepcopy(state or {})
         self.state.setdefault('eligible_since', {})
         self.state.setdefault('rate_limit_since', {})
-        self.state.setdefault('session', None)
         self._lock = threading.RLock()
         self._cycles = threading.Semaphore(1)
         self._planning = _BoundedExecutor(max(1, int(max_workers)), plan_queue_limit, 'planning')
@@ -279,7 +94,6 @@ class Scheduler:
         self._last_launch = self.state.get('last_launch_at')
         self._timer_scheduler = timer_scheduler or _SystemTimerDriver(self.clock)
         self._attempt_timers = {}
-        self._state_writer = state_writer
 
     def close(self):
         with self._lock:
@@ -405,50 +219,8 @@ class Scheduler:
             _cancel_timer(handle)
         return len(handles)
 
-    def begin_session(self, session_id, started_at, deadline, max_cost, known_spend=0, unknown_spend=False):
-        """Persist a new run-session accounting record before admissions."""
-        if not isinstance(session_id, str) or not session_id:
-            raise ValueError('invalid session identity')
-        for value in (started_at, deadline, known_spend):
-            if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
-                raise ValueError('invalid session accounting number')
-        if deadline < started_at or (max_cost is not None and
-                (type(max_cost) not in (int, float) or not math.isfinite(max_cost) or max_cost < 0)):
-            raise ValueError('invalid session limits')
-        if type(unknown_spend) is not bool:
-            raise ValueError('invalid unknown-spend flag')
-        proposed = self.export_state()
-        proposed['session'] = {'id': session_id, 'started_at': started_at, 'deadline': deadline,
-                               'max_cost': max_cost, 'known_spend': known_spend,
-                               'unknown_spend': unknown_spend}
-        self._write_state(proposed)
-
-    def record_spend(self, amount):
-        """Durably add known spend, or permanently mark this session unknown."""
-        proposed = self.export_state()
-        session = proposed.get('session')
-        if not isinstance(session, dict):
-            raise ValueError('no active session')
-        if amount is None:
-            session['unknown_spend'] = True
-        elif type(amount) in (int, float) and math.isfinite(amount) and amount >= 0:
-            session['known_spend'] += amount
-        else:
-            raise ValueError('invalid spend amount')
-        self._write_state(proposed)
-
-    def session_snapshot(self):
-        return copy.deepcopy(self.state.get('session'))
-
     def export_state(self):
         return copy.deepcopy(self.state)
-
-    def _write_state(self, proposed):
-        if self._state_writer is None:
-            raise RuntimeError('durable state writer is required for session accounting')
-        with self._lock:
-            self._state_writer(copy.deepcopy(proposed))
-            self.state = proposed
 
     def due_timers(self, attempts, now=None):
         """Return expired attempt deadlines and cancellation grace timers."""
@@ -478,42 +250,15 @@ class Scheduler:
             _validate_limits(limits)
         except (TypeError, ValueError):
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
-        limits = self._limits_with_session(limits)
-        try:
-            _validate_limits(limits)
-        except (TypeError, ValueError):
-            return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
         with self._cycles, self._lock:
             return self._admit_locked(candidates, active, limits, validate, prepare, now, reservations)
-
-    def _limits_with_session(self, limits):
-        if not isinstance(limits, dict):
-            return limits
-        session = self.state.get('session')
-        if not isinstance(session, dict):
-            return limits
-        effective = dict(limits)
-        supplied_deadline = effective.get('session_deadline', session['deadline'])
-        effective['session_deadline'] = min(supplied_deadline, session['deadline'])
-        supplied_cost = effective.get('max_cost')
-        effective['max_cost'] = session['max_cost'] if supplied_cost is None else (
-            supplied_cost if session['max_cost'] is None else min(supplied_cost, session['max_cost']))
-        effective['known_spend'] = max(effective.get('known_spend', 0), session['known_spend'])
-        effective['unknown_spend'] = bool(effective.get('unknown_spend', False) or session['unknown_spend'])
-        return effective
 
     def _admit_locked(self, candidates, active, limits, validate, prepare, now, reservations=None):
         reservations = reservations or []
         eligible, attention, waits = [], [], []
-        if limits.get('unknown_spend'):
-            return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
-                    'stop_reason': 'provider spend is unknown', 'state': self.export_state()}
         if now >= limits.get('session_deadline', float('inf')):
             return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
                     'stop_reason': 'session deadline reached', 'state': self.export_state()}
-        if limits.get('max_cost') is not None and limits.get('known_spend', 0) >= limits['max_cost']:
-            return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
-                    'stop_reason': 'session cost limit reached', 'state': self.export_state()}
         seen = set(self.state['eligible_since'])
         for original in candidates:
             c = dict(original)
@@ -556,14 +301,9 @@ class Scheduler:
             provider = c.get('provider') or c.get('model_provider') or 'default'
             if str(number) in active_numbers:
                 waits.append({'number': number, 'reason': 'card already has an active claim'}); continue
-            if limits.get('unknown_spend'):
-                waits.append({'number': number, 'reason': 'provider spend is unknown'}); continue
             if now >= limits.get('session_deadline', float('inf')):
                 return {'admitted': admitted, 'active': occupied, 'attention': attention, 'waits': waits,
                         'stop_reason': 'session deadline reached', 'state': self.export_state()}
-            if limits.get('max_cost') is not None and limits.get('known_spend', 0) >= limits['max_cost']:
-                return {'admitted': admitted, 'active': occupied, 'attention': attention, 'waits': waits,
-                        'stop_reason': 'session cost limit reached', 'state': self.export_state()}
             retry_at = limits.get('retry_at', {}).get(str(number))
             if retry_at is not None and now < retry_at:
                 waits.append({'number': number, 'reason': 'retry backoff', 'until': retry_at}); continue
@@ -649,11 +389,9 @@ def _validate_limits(limits):
     for key in ('aging_seconds', 'min_launch_gap', 'max_rate_wait'):
         if key in limits and (type(limits[key]) not in (int, float) or limits[key] < 0):
             raise ValueError('invalid ' + key)
-    for key in ('session_deadline', 'max_cost', 'known_spend'):
+    for key in ('session_deadline',):
         if key in limits and limits[key] is not None and (type(limits[key]) not in (int, float) or limits[key] < 0):
             raise ValueError('invalid ' + key)
-    if 'unknown_spend' in limits and type(limits['unknown_spend']) is not bool:
-        raise ValueError('invalid unknown spend state')
     if 'retry_at' in limits and not isinstance(limits['retry_at'], dict):
         raise ValueError('invalid retry schedule')
     rate_wait = limits.get('rate_limit_wait', {})

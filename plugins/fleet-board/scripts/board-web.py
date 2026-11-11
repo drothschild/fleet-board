@@ -347,7 +347,7 @@ def run_alive() -> bool:
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
-    if supervisor_enabled(cfg):
+    if supervisor_running():
         status = supervisor_snapshot()
         return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
                 and status.get("desired_mode") == "running")
@@ -410,7 +410,7 @@ def to_float(s: str):
 def run_status(alive=None) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
-    if supervisor_enabled(cfg):
+    if supervisor_running():
         return supervisor_run_status(cfg)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
@@ -1263,7 +1263,7 @@ def compat_run_control(command, body):
 
 def start_run(params, body):
     cfg, dir = ctx()
-    if supervisor_enabled(cfg):
+    if supervisor_running():
         return compat_run_control("start", body)
     sdir = state_dir(APP["root"], cfg)
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
@@ -1294,7 +1294,7 @@ def start_run(params, body):
 
 def stop_run(params, body):
     cfg, _ = ctx()
-    if supervisor_enabled(cfg):
+    if supervisor_running():
         return compat_run_control("stop", body)
     with _RUN_LOCK:
         if not run_alive():
@@ -1303,8 +1303,41 @@ def stop_run(params, body):
     return 200, {"state": "stopping"}
 
 
-def supervisor_enabled(cfg):
-    return (cfg.get("supervisor") or {}).get("enabled") is True
+SUPERVISOR_PROBE_TIMEOUT = 1.0
+
+
+def supervisor_running():
+    """True when this board's supervisor socket answers `status` within a second (an error reply
+    from the service counts: it is alive).
+
+    There is no configuration switch: a supervisor someone started (`supervisor start`) is the
+    only thing that makes the board supervisor-capable. Nothing is created or launched here."""
+    domain_id = supervisor_domain_id()
+    if domain_id is None and not os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET"):
+        return False
+    try:
+        path = webproxy.socket_path(domain_id)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    box = {}
+
+    def ask():
+        try:
+            box["answered"] = isinstance(webproxy.request(path, {"command": "status"}), dict)
+        except RuntimeError:
+            box["answered"] = True  # the service replied with an error envelope: it is alive
+        except Exception:
+            box["answered"] = False
+
+    thread = threading.Thread(target=ask, daemon=True)
+    thread.start()
+    thread.join(SUPERVISOR_PROBE_TIMEOUT)
+    return box.get("answered") is True
+
+
+def supervisor_stopping(status):
+    """True when a status reply says the supervisor is on its way out."""
+    return isinstance(status, dict) and (status.get("mode") == "stopping" or status.get("phase") == "stopping")
 
 
 def supervisor_domain_id():
@@ -1368,30 +1401,43 @@ def proxy_call(command, body=None, **extra):
 _LAUNCH_LOCK = threading.Lock()
 
 
-def ensure_service():
-    """Make sure a service answers for this board; True when this call launched it.
+START_STOP_WAIT = 5.0  # how long Start waits for a stopping supervisor to go away
 
-    This is the stopped-state lifecycle adapter path: a missing service is started through the
-    shared launcher (never by editing job tables) and we wait for its readiness before the
-    caller proxies the command. A failure is a 503 with a reason and leaves nothing running."""
-    def answers():
+
+def ensure_service():
+    """Make sure a live, not-stopping supervisor answers for this board; True when this call
+    launched one.
+
+    A supervisor whose status says it is stopping counts as not running: Start waits (bounded)
+    for it to go away and then launches a new one through the shared launcher, so a Start right
+    after a Stop never reports an exiting supervisor as running. A failure is a 503 with a
+    reason and leaves nothing half-started."""
+    def read():
         try:
-            proxy_call("status")
-            return True
+            return proxy_call("status")
         except ApiError as exc:
             if exc.code != 503:
                 raise
-            return False
-    if answers():
+            return None
+
+    def live():
+        status = read()
+        return status is not None and not supervisor_stopping(status)
+
+    if live():
         return False
     with _LAUNCH_LOCK:
-        if answers():  # another request launched it while we waited for the lock
+        if live():  # another request launched it while we waited for the lock
             return False
+        if supervisor_stopping(read()) and not supervisor_launcher.wait_until(
+                lambda: read() is None, timeout=START_STOP_WAIT):
+            raise ApiError(503, "supervisor is still stopping; try Start again in a moment",
+                           {"code": "unavailable"})
         try:
             supervisor_launcher.launch_detached(APP["root"], supervisor_paths.log_dir() / "supervisor.log")
         except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
             raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
-        if not supervisor_launcher.wait_until(answers, timeout=5.0):
+        if not supervisor_launcher.wait_until(live, timeout=5.0):
             raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
                            {"code": "launch_failed"})
     return True
@@ -1471,9 +1517,8 @@ def supervisor_run_status(cfg):
 
 
 def require_supervisor_mode():
-    """The supervisor API exists only when supervisor.enabled is true; a legacy board answers 404."""
-    cfg, _ = ctx()
-    if not supervisor_enabled(cfg):
+    """The supervisor API exists only while a supervisor answers; otherwise the board answers 404."""
+    if not supervisor_running():
         raise ApiError(404, "not found")
 
 
@@ -1485,49 +1530,6 @@ def get_supervisor(params, body):
 def supervisor_command(params, body):
     require_supervisor_mode()
     return proxy_control(params["action"], body)
-
-
-def supervisor_events(params, body):
-    require_supervisor_mode()
-    query = params.get("query", {})
-    try:
-        after = int(query.get("after", ["0"])[0])
-        limit = int(query.get("limit", ["100"])[0])
-    except ValueError:
-        raise ApiError(400, "invalid event cursor or limit")
-    if after < 0 or not 1 <= limit <= 500:
-        raise ApiError(400, "invalid event cursor or limit")
-    return 200, proxy_call("events", extra={}, after=after, limit=limit)
-
-
-def card_execution(params, body):
-    require_supervisor_mode()
-    return 200, proxy_call("card_execution", card=params["n"])
-
-
-def card_execution_log(params, body):
-    require_supervisor_mode()
-    log_id = params.get("log_id", "")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", log_id) or ".." in log_id:
-        raise ApiError(400, "invalid log id")
-    try:
-        return 200, proxy_call("card_log", card=params["n"], log_id=log_id)
-    except ApiError as exc:
-        if exc.code in (400, 404, 409):
-            raise ApiError(404 if "not found" in str(exc) else 400, "log not found" if "not found" in str(exc) else "invalid log id")
-        raise
-
-
-def card_control(params, body):
-    require_supervisor_mode()
-    action = params["action"]
-    if action == "pause": command = "card_pause"
-    elif action == "resume": command = "card_resume"
-    elif action == "release-reservations": command = "release_reservations"
-    else: command = "resolve"
-    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
-        raise ApiError(400, "request_id and integer expected_revision are required")
-    return 202, proxy_call(command, body, card=params["n"])
 
 
 def post_planner(params, body):
@@ -1585,10 +1587,6 @@ ROUTES = [
     ("POST", r"/api/run/stop", stop_run),
     ("GET", r"/api/supervisor", get_supervisor),
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
-    ("GET", r"/api/supervisor/events", supervisor_events),
-    ("GET", r"/api/cards/(?P<n>\d+)/execution", card_execution),
-    ("GET", r"/api/cards/(?P<n>\d+)/execution/log/(?P<log_id>[^/]+)", card_execution_log),
-    ("POST", r"/api/cards/(?P<n>\d+)/execution/(?P<action>pause|release-reservations|resolve|resume)", card_control),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
@@ -1733,7 +1731,7 @@ class Handler(BaseHTTPRequestHandler):
                 params["query"] = parse_qs(urlsplit(self.path).query)
                 if method in ("POST", "PATCH") and fn not in NO_BODY:
                     body = read_json_body(self)
-                elif fn in NO_BODY and supervisor_enabled(ctx()[0]):
+                elif fn in NO_BODY and supervisor_running():
                     body = read_optional_json_body(self)  # an optional {request_id, expected_revision}
                 else:
                     body = {}
