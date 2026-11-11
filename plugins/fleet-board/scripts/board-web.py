@@ -43,6 +43,7 @@ from urllib.parse import parse_qs
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
+from supervisor import paths as supervisor_paths
 from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
@@ -1243,13 +1244,25 @@ def get_run(params, body):
     return 200, run_status()
 
 
+def compat_run_control(command, body):
+    """/api/run/start and /api/run/stop in supervisor mode.
+
+    A body with request_id and expected_revision is enforced exactly like the new routes
+    (replay dedupes, a stale revision is a 409 with the current state). With no body the
+    route derives its own binding (Start and drain-stop are idempotent by design) and the
+    answer says unbound: true."""
+    if not body:
+        body = {"request_id": "compat-%s-%d" % (command, time.time_ns()),
+                "expected_revision": proxy_call("status").get("revision", 0)}
+        code, result = proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+        return code, dict(result, unbound=True)
+    return proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+
+
 def start_run(params, body):
     cfg, dir = ctx()
     if supervisor_enabled(cfg):
-        if not body:
-            body = {"request_id": "compat-start-" + str(time.time_ns()),
-                    "expected_revision": proxy_call("status").get("revision", 0)}
-        return proxy_control("start", body)
+        return compat_run_control("start", body)
     sdir = state_dir(APP["root"], cfg)
     wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
     with _RUN_LOCK:
@@ -1280,10 +1293,7 @@ def start_run(params, body):
 def stop_run(params, body):
     cfg, _ = ctx()
     if supervisor_enabled(cfg):
-        if not body:
-            body = {"request_id": "compat-stop-" + str(time.time_ns()),
-                    "expected_revision": proxy_call("status").get("revision", 0)}
-        return proxy_control("stop", dict(body, mode="drain"))
+        return compat_run_control("stop", body)
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
@@ -1295,30 +1305,35 @@ def supervisor_enabled(cfg):
     return (cfg.get("supervisor") or {}).get("enabled") is True
 
 
-def supervisor_domain(cfg):
-    """Use the supervisor store's canonical domain identity for its socket name."""
-    from supervisor.store import Store
-    root = Path(APP["root"]).resolve()
-    git = root / ".git"
-    common = git.resolve() if git.exists() else root
-    domain = {"common_dir": str(common), "board_backend": "local",
-              "board_identity": str(root),
-              "runtime_root": str(Path(os.environ.get("FLEET_BOARD_LOG_DIR", str(Path.home() / ".fleet-board"))) / "supervisor")}
-    store = Store.open(domain)
+def supervisor_domain_id():
+    """The supervisor domain id for this board, derived from the same identity inputs the
+    store uses. Pure: no database is opened and no file is created, so a GET can never touch
+    supervisor state. None when it cannot be derived (the panel then reads unreachable)."""
+    cached = APP.get("supervisor_domain_id")
+    if cached:
+        return cached
     try:
-        return store.domain_id
-    finally:
-        store.close()
+        value = supervisor_paths.domain_id_for_root(APP["root"])
+    except (OSError, ValueError, KeyError):
+        return None
+    APP["supervisor_domain_id"] = value
+    return value
+
+
+# One status per service error code (the service classifies by exception type, never by text).
+SUPERVISOR_ERROR_STATUS = {"invalid": 400, "uncertain_writer": 409, "disabled": 409,
+                           "unauthenticated": 403, "unavailable": 503, "internal": 500}
 
 
 def proxy_call(command, body=None, **extra):
-    cfg, _ = ctx()
-    domain_id = supervisor_domain(cfg)
+    domain_id = supervisor_domain_id()
     request = dict(body or {})
     if "actor" in request:
         raise ApiError(400, "actor must come from authenticated peer")
     request.update(extra)
     request["command"] = command
+    if domain_id is None and not os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET"):
+        raise ApiError(503, "supervisor unavailable: cannot derive the supervisor identity")
     try:
         result = webproxy.request(webproxy.socket_path(domain_id), request)
     except (OSError, TimeoutError, ValueError, RuntimeError) as exc:
@@ -1326,8 +1341,8 @@ def proxy_call(command, body=None, **extra):
             detail = json.loads(str(exc))
         except (ValueError, TypeError):
             detail = {}
-        code = detail.get("code")
-        msg = detail.get("message", str(exc))
+        code = detail.get("code") if isinstance(detail, dict) else None
+        msg = detail.get("message", str(exc)) if isinstance(detail, dict) else str(exc)
         if code == "stale_revision":
             current = detail.get("current")
             if current is None:
@@ -1335,14 +1350,12 @@ def proxy_call(command, body=None, **extra):
                     current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
                 except Exception:
                     current = None
-            raise ApiError(409, msg, {"current": current})
-        if code == "invalid":
-            raise ApiError(400, msg)
-        if code == "uncertain_writer":
-            raise ApiError(409, msg)
-        if code == "internal":
-            raise ApiError(500, msg)
-        raise ApiError(503, "supervisor unavailable: " + msg)
+            raise ApiError(409, msg, {"current": current, "code": code})
+        if code in SUPERVISOR_ERROR_STATUS:
+            # Internal detail never reaches the browser: the service already redacted it.
+            raise ApiError(SUPERVISOR_ERROR_STATUS[code],
+                           "internal error" if code == "internal" else msg, {"code": code})
+        raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
     if command == "status":
         webproxy.remember(domain_id, result)
     return result
@@ -1359,8 +1372,7 @@ def proxy_control(command, body):
 
 
 def supervisor_snapshot():
-    cfg, _ = ctx()
-    domain_id = supervisor_domain(cfg)
+    domain_id = supervisor_domain_id()
     try:
         state = proxy_call("status")
         return dict(state, unreachable=False)
@@ -1574,6 +1586,15 @@ MAX_BODY = 1024 * 1024
 REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
 
 
+def read_optional_json_body(handler) -> dict:
+    """The JSON object body, or {} when the request has none (the compatibility routes)."""
+    try:
+        length = int(handler.headers.get("Content-Length") or 0)
+    except ValueError:
+        raise ApiError(400, "bad Content-Length")
+    return read_json_body(handler) if length > 0 else {}
+
+
 def read_json_body(handler) -> dict:
     try:
         length = int(handler.headers.get("Content-Length") or 0)
@@ -1650,7 +1671,12 @@ class Handler(BaseHTTPRequestHandler):
             if route is not None:
                 fn, params = route
                 params["query"] = parse_qs(urlsplit(self.path).query)
-                body = read_json_body(self) if method in ("POST", "PATCH") and fn not in NO_BODY else {}
+                if method in ("POST", "PATCH") and fn not in NO_BODY:
+                    body = read_json_body(self)
+                elif fn in NO_BODY and supervisor_enabled(ctx()[0]):
+                    body = read_optional_json_body(self)  # an optional {request_id, expected_revision}
+                else:
+                    body = {}
                 code, payload = fn(params, body)
                 send_json(self, code, payload)
                 return

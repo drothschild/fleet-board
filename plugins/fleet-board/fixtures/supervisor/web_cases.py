@@ -213,9 +213,53 @@ class SupervisorWebContract(unittest.TestCase):
         code, payload = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
         self.assertNotEqual(payload.get("state"), "running", "spawn/acknowledgement must not imply ready")
-        code, response = self.http("POST", "/api/run/start", {"request_id": "compat-start", "expected_revision": 0})
+        code, response = self.http("POST", "/api/run/start")
         self.assertIn(code, (200, 202), "compatibility Start did not delegate")
         self.assertNotIn("pid", response, "supervisor projection leaked legacy PID semantics")
+
+    def command_ids(self):
+        return [x["id"] for x in self.service.snapshot()["commands"]]
+
+    def test_compat_run_routes_enforce_a_supplied_binding_exactly_like_the_new_routes(self):
+        self.start_service()
+        self.start_web()
+        revision = self.service.get_status()["revision"]
+        body = {"request_id": "compat-bound-start", "expected_revision": revision}
+        code, first = self.http("POST", "/api/run/start", body)
+        self.assertIn(code, (200, 202))
+        self.assertNotIn("unbound", first, "a bound request must not be labelled unbound")
+        self.assertIn("compat-bound-start", self.command_ids(), "the caller's request_id was discarded")
+        events = self.service.snapshot()["events"]
+        code, again = self.http("POST", "/api/run/start", body)
+        self.assertEqual((code, again), (202, first), "replay must return the original outcome")
+        self.assertEqual(self.service.snapshot()["events"], events, "replay must not reapply")
+        # A stale binding conflicts and carries the current state; nothing is applied.
+        after = self.service.snapshot()
+        code, stale = self.http("POST", "/api/run/stop", {"request_id": "compat-stale-stop", "expected_revision": revision})
+        self.assertEqual(code, 409, stale)
+        self.assertIn("current", stale)
+        self.assertEqual(self.service.snapshot(), after)
+        self.assertFalse(self.service.stopped.is_set(), "a stale compat stop terminated the service")
+        # Half a binding, or a forged actor, is refused like on the new routes.
+        for bad in ({"request_id": "only-id"}, {"expected_revision": revision}, {"request_id": "x", "expected_revision": "7"},
+                    {"request_id": "a", "expected_revision": revision, "actor": "forged"}):
+            with self.subTest(bad=bad):
+                code, _ = self.http("POST", "/api/run/stop", bad)
+                self.assertEqual(code, 400)
+        self.assertEqual(self.service.snapshot(), after)
+
+    def test_compat_run_routes_without_a_body_derive_their_own_binding_and_say_unbound(self):
+        self.start_service()
+        self.start_web()
+        code, payload = self.http("POST", "/api/run/start")
+        self.assertIn(code, (200, 202))
+        self.assertIs(payload.get("unbound"), True)
+        code, payload = self.http("POST", "/api/run/start")  # idempotent by design
+        self.assertIn(code, (200, 202))
+        self.assertIs(payload.get("unbound"), True)
+        code, payload = self.http("POST", "/api/run/stop")
+        self.assertIn(code, (200, 202))
+        self.assertIs(payload.get("unbound"), True)
 
     def test_event_paging_and_log_references_are_bounded_and_safe(self):
         self.start_service()
@@ -333,6 +377,153 @@ class SupervisorWebContract(unittest.TestCase):
                                        "FLEET_BOARD_LOG_DIR": str(self.case / "logs"),
                                        "TMPDIR": str(self.tmp_socket)}, stdout=out, stderr=err)
         self.assertEqual(status, 0, err.getvalue())
+
+    def logs_tree(self):
+        logs = self.case / "logs"
+        return sorted(str(p.relative_to(logs)) for p in logs.rglob("*")) if logs.exists() else []
+
+    def test_reads_create_no_supervisor_state_when_no_service_ran(self):
+        self.start_web()
+        for path in ("/api/board", "/api/supervisor", "/api/run", "/api/board", "/api/supervisor"):
+            code, _ = self.http("GET", path)
+            self.assertEqual(code, 200, path)
+        tree = self.logs_tree()
+        self.assertFalse([x for x in tree if "supervisor" in x or x.endswith(".sqlite3")],
+                         "a GET created supervisor state on disk: %r" % (tree,))
+
+    def test_a_broken_runtime_location_can_never_turn_api_board_into_a_500(self):
+        # A symlink in the log directory path made the old per-request store open raise.
+        real = self.case / "real-logs"
+        real.mkdir(mode=0o700)
+        link = self.case / "link-logs"
+        link.symlink_to(real)
+        self.env["FLEET_BOARD_LOG_DIR"] = str(link)
+        self.start_web()
+        for path in ("/api/board", "/api/supervisor", "/api/run"):
+            code, _ = self.http("GET", path)
+            self.assertEqual(code, 200, "%s answered %s with a broken runtime location" % (path, code))
+
+    def test_linked_worktree_board_finds_its_service_at_the_default_socket(self):
+        self.env.pop("FLEET_BOARD_SUPERVISOR_SOCKET", None)
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-C", str(self.repo)]
+        subprocess.run(git + ["commit", "-q", "--allow-empty", "-m", "init"], check=True)
+        worktree = self.case / "linked"
+        subprocess.run(git + ["worktree", "add", "-q", "-b", "wt", str(worktree)], check=True)
+        worktree = worktree.resolve()
+        self.assertTrue((worktree / ".git").is_file(), "fixture must be a linked worktree")
+        # What the CLI service derives for a board root: the repository's common dir plus the
+        # worktree path as board identity.
+        domain = {"common_dir": str(self.repo.resolve() / ".git"), "board_backend": "local",
+                  "board_identity": str(worktree), "runtime_root": str(self.case / "runtime")}
+        with mock.patch.dict(os.environ, {"TMPDIR": str(self.tmp_socket),
+                                          "FLEET_BOARD_LOG_DIR": str(self.case / "logs")}):
+            self.service = Service.open(domain, run_lock_path=str(self.case / "run.lock"),
+                                        board_repo=str(worktree), execution_enabled=True,
+                                        host_boot_id="web-test-boot")
+            ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies local Unix socket service")
+        (worktree / ".fleet-board").mkdir()
+        (worktree / ".fleet-board" / "cards").mkdir()
+        (worktree / ".fleet-board" / "next").write_text("1\n", encoding="utf-8")
+        self.repo = worktree
+        self.start_web()
+        code, _ = self.http("GET", "/api/board")
+        self.assertEqual(code, 200)
+        code, payload = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200, payload)
+        self.assertFalse(payload.get("unreachable"), "linked worktree board cannot find its service: %r" % (payload,))
+
+    def test_domain_id_is_a_pure_function_the_store_uses_too(self):
+        from supervisor import paths
+        from supervisor.store import Store
+        source = (SCRIPTS / "board-web.py").read_text(encoding="utf-8")
+        self.assertNotIn("supervisor.store", source, "board-web must never open the supervisor store")
+        self.assertNotIn("from .store import Store", (SCRIPTS / "supervisor" / "cli.py").read_text(encoding="utf-8"),
+                         "client CLI commands must not open the supervisor store for an id")
+        runtime = self.case / "pure-runtime"
+        domain = {"common_dir": str(self.repo / ".git"), "board_backend": "local",
+                  "board_identity": str(self.repo.resolve()), "runtime_root": str(runtime)}
+        digest = paths.domain_id(domain)
+        self.assertEqual(len(digest), 64)
+        self.assertFalse(runtime.exists(), "computing a domain id created files")
+        self.assertEqual(paths.domain_id_for_root(self.repo), digest)
+        self.assertFalse(runtime.exists())
+        store = Store.open(domain)
+        self.addCleanup(store.close)
+        self.assertEqual(store.domain_id, digest, "Store and the pure function disagree on the domain id")
+
+    def test_one_default_runtime_root_for_start_other_commands_web_and_store(self):
+        from supervisor import paths
+        from supervisor.store import Store
+        home = self.case / "home"
+        home.mkdir(mode=0o700)
+        with mock.patch.dict(os.environ, {"HOME": str(home)}):
+            os.environ.pop("FLEET_BOARD_LOG_DIR", None)
+            expected = Path(os.path.expanduser("~")) / ".fleet-board" / "runs" / "supervisor"
+            self.assertEqual(paths.runtime_root(), expected)
+            self.assertEqual(paths.runtime_root({}), expected)
+            self.assertEqual(paths.runtime_root({"FLEET_BOARD_LOG_DIR": "/x/logs"}), Path("/x/logs/supervisor"))
+            domain = {"common_dir": str(self.repo / ".git"), "board_backend": "local",
+                      "board_identity": str(self.repo.resolve())}
+            store = Store.open(domain)  # no runtime_root: the default must be the shared one
+            self.addCleanup(store.close)
+            self.assertEqual(store.directory.parent, expected.resolve())
+
+    def test_every_error_code_survives_the_socket_and_maps_to_its_own_http_status(self):
+        from supervisor import webproxy
+        self.start_service()
+        self.start_web()
+        revision = self.service.get_status()["revision"]
+        def http_error(path, body=None, method="POST"):
+            code, payload = self.http(method, path, body)
+            return code, payload
+        # stale revision: 409 with the current state
+        code, body = http_error("/api/supervisor/pause", {"request_id": "e-stale", "expected_revision": revision - 1})
+        self.assertEqual((code, body.get("code")), (409, "stale_revision")); self.assertIn("current", body)
+        # invalid: 400
+        code, body = http_error("/api/supervisor/stop", {"request_id": "e-invalid", "expected_revision": revision, "mode": "bogus"})
+        self.assertEqual((code, body.get("code")), (400, "invalid"))
+        # uncertain writer: 409
+        self.service.writer_uncertain = True
+        code, body = http_error("/api/supervisor/pause", {"request_id": "e-uncertain", "expected_revision": revision})
+        self.assertEqual((code, body.get("code")), (409, "uncertain_writer"))
+        self.service.writer_uncertain = False
+        # disabled: its own code and a 4xx, never a 500; the raw socket carries the same code
+        self.service.execution_enabled = False
+        code, body = http_error("/api/supervisor/start", {"request_id": "e-disabled", "expected_revision": revision})
+        self.assertEqual((code, body.get("code")), (409, "disabled"), body)
+        with self.assertRaises(RuntimeError) as caught:
+            webproxy.request(str(self.socket_path), {"command": "start", "request_id": "e-disabled-2", "expected_revision": revision})
+        self.assertEqual(json.loads(str(caught.exception))["code"], "disabled")
+        self.service.execution_enabled = True
+        # unauthenticated: a refused peer is not an outage
+        self.service.peer_resolver = lambda _peer: (_ for _ in ()).throw(PermissionError("peer credentials unavailable"))
+        code, body = http_error("/api/supervisor", method="GET")
+        self.assertEqual((code, body.get("code")), (403, "unauthenticated"), body)
+        self.service.peer_resolver = lambda _peer: "fixture-human"
+        # unavailable: 503
+        with mock.patch.object(self.service, "_handle_request", side_effect=TimeoutError("controller request timed out")):
+            code, body = http_error("/api/supervisor/pause", {"request_id": "e-unavail", "expected_revision": revision})
+        self.assertEqual((code, body.get("code")), (503, "unavailable"))
+        # internal: 500 with a redacted message
+        with mock.patch.object(self.service, "_handle_request", side_effect=RuntimeError("sqlite at /secret/runtime/store.sqlite3 failed")):
+            code, body = http_error("/api/supervisor/pause", {"request_id": "e-internal", "expected_revision": revision})
+        self.assertEqual(code, 500)
+        self.assertNotIn("/secret", json.dumps(body)); self.assertNotIn("sqlite", json.dumps(body))
+        self.assertEqual(body.get("code"), "internal")
+
+    def test_a_value_error_mentioning_unavailable_or_revision_is_not_misclassified(self):
+        self.start_service()
+        self.start_web()
+        revision = self.service.get_status()["revision"]
+        for text in ("evidence unavailable", "revision mismatch in the evidence", "uncertain writer notes"):
+            with self.subTest(text=text), mock.patch.object(self.service, "_handle_request", side_effect=ValueError(text)):
+                code, body = self.http("POST", "/api/supervisor/pause", {"request_id": "m-" + text[:4], "expected_revision": revision})
+                self.assertEqual((code, body.get("code")), (400, "invalid"))
+                code, snapshot = self.http("GET", "/api/supervisor")
+                self.assertNotEqual(code, 503)
+                self.assertFalse(snapshot.get("unreachable"), "a ValueError flipped the board to stale")
 
     def test_unreachable_supervisor_keeps_reachable_top_level_shape(self):
         self.start_service()

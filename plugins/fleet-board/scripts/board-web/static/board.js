@@ -2960,6 +2960,7 @@ function clearExecution() {
     $(id).textContent = "";
   }
   $("dr-logs").replaceChildren();
+  $("dr-attempts").replaceChildren();
   $("dr-resolve-reason").value = "";
   $("dr-resolve-evidence").value = "";
 }
@@ -3017,6 +3018,21 @@ function renderExecution(d) {
   }
   if (!logs.length) ul.appendChild(el("li", "dr-log none", "no logs"));
   $("dr-logs").replaceChildren(ul);
+
+  // Attempt history, oldest first: id, state and provider are text, never markup.
+  const history = Array.isArray(x.attempt_history) ? x.attempt_history : [];
+  const attempts = document.createDocumentFragment();
+  let shown = 0;
+  for (const a of history.slice(-50)) {
+    if (!a || typeof a !== "object") continue;
+    shown++;
+    let line = clean(a.id, 120) + " · " + clean(a.state, 40);
+    if (a.provider) line += " · " + clean(a.provider, 60);
+    if (a.quarantine_reason) line += " · " + clean(a.quarantine_reason, 160);
+    attempts.appendChild(el("li", "dr-log", line));
+  }
+  if (!shown) attempts.appendChild(el("li", "dr-log none", d.exec ? "no attempts" : "unknown"));
+  $("dr-attempts").replaceChildren(attempts);
 
   let gate = null;
   if (S.sup.stale) gate = "The supervisor is unreachable. Retry the connection first.";

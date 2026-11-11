@@ -86,11 +86,7 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
             os.environ["FLEET_BOARD_LOG_DIR"] = args.log_dir
             os.environ["TMPDIR"] = args.socket_tmp
             board_root = Path(args.domain).resolve(strict=True)
-            git = board_root / ".git"
-            common = git.resolve(strict=True) if git.exists() else board_root
-            domain = {"common_dir": str(common), "board_backend": "local",
-                      "board_identity": str(board_root),
-                      "runtime_root": str(Path(args.log_dir) / "supervisor")}
+            domain = paths.board_domain(board_root, Path(args.log_dir) / "supervisor")
             service = Service.open(domain, board_repo=_repo_slug(board_root))
             ack = service.start_serving()
             print(json.dumps(ack), flush=True)
@@ -106,14 +102,9 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
             raise ValueError("FLEET_BOARD_DOMAIN is required")
         if transport is None:
             board_root = Path(domain_root).resolve(strict=True)
-            git = board_root / ".git"
-            common = git.resolve(strict=True) if git.exists() else board_root
-            domain = {"common_dir": str(common), "board_backend": "local",
-                      "board_identity": str(board_root),
-                      "runtime_root": env.get("FLEET_BOARD_LOG_DIR", str(Path.home() / ".fleet-board")) + "/supervisor"}
             if args.command == "start":
-                log_dir = env.get("FLEET_BOARD_LOG_DIR") or str(Path.home() / ".fleet-board" / "runs")
-                socket_tmp = env.get("TMPDIR", "/tmp")
+                log_dir = str(paths.log_dir(env))
+                socket_tmp = paths.socket_tmpdir(env)
                 plugin_scripts = Path(__file__).resolve().parents[1]
                 child_env = dict(os.environ)
                 child_env.update({"FLEET_BOARD_LOG_DIR": log_dir, "TMPDIR": socket_tmp,
@@ -148,12 +139,8 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
                     return 3
                 return _print_result(ack, stdout)
             else:
-                from .store import Store
-                store = Store.open(domain)
-                try:
-                    path = paths.controller_socket(store.domain_id, env.get("TMPDIR"))
-                finally:
-                    store.close()
+                # Pure: the id comes from the identity inputs; no store is opened.
+                path = paths.controller_socket(paths.domain_id_for_root(board_root), paths.socket_tmpdir(env))
                 transport = _socket_transport(path)
         if args.command == "resolve":
             current = transport({"command": "status"})

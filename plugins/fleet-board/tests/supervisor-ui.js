@@ -4,7 +4,6 @@ const path = require("node:path");
 const loadBoard = require("./supervisor-ui-harness");
 
 const boardPath = path.join(__dirname, "../scripts/board-web/static/board.js");
-const reportPath = path.join(__dirname, "../../../.superpowers/sdd/2026-11-07-persistent-supervisor/task-5.2-s3-tests-report.md");
 const hostile = '<img src=x onerror="alert(1)">';
 const control = "\u0001\u202e";
 const states = [{key:"backlog",name:"Backlog"},{key:"ready",name:"Ready"},{key:"in_progress",name:"In Progress"}];
@@ -56,6 +55,7 @@ async function check(name, fn) {
 function countCalls(fake, url, method) { return fake.calls.filter(c=>c.url===url&&(!method||c.method===method)).length; }
 function make(fake, options) { return loadBoard(boardPath,fake.fetch,options); }
 function descendants(root) { return [root,...root.all()]; }
+function h0(){ return {pageHtml:require("fs").readFileSync(path.join(path.dirname(boardPath),"index.html"),"utf8")}; }
 async function main() {
   let fake,ui;
   await check("1a. Supervisor mode detects 200 and performs read-only initial load",async()=>{
@@ -253,12 +253,53 @@ async function main() {
     await stop.fire("click"); const space=await h.key(stop," "); assert.ok(space.defaultPrevented,"Space not handled");
     for(const b of [h.$("supervisor-pause-btn"),h.$("supervisor-resume-btn")]) if(b.disabled) assert.ok(b.title||b.getAttribute("aria-describedby"),"disabled explanation inaccessible");
   });
+  await check("10. Real service payloads (dump_real_shapes.py) drive the status bar and card controls",async()=>{
+    const file=process.env.SUPERVISOR_REAL_SHAPES;
+    assert.ok(file,"SUPERVISOR_REAL_SHAPES is not set: run tests through test-supervisor-ui.sh");
+    const real=JSON.parse(require("fs").readFileSync(file,"utf8"));
+    assert.deepEqual(Object.keys(real).sort(),["paused","quarantined","writer"]);
+    assert.ok(h0().pageHtml.includes('id="dr-attempts"'),"drawer has no attempt history list");
+    const plain={number:4,title:"Real card",body:"x",labels:[],comments:[],state:"in_progress",known:true};
+    const itemsOf=h=>{ const m={}; for(const n of descendants(h.$("supervisor-status")).filter(x=>x.classList.contains("sup-item"))){
+      const kids=n.children.map(c=>c.textContent); if(kids.length>=2) m[kids[0]]=kids.slice(1).join(" "); else m[""]=kids[0]||n.textContent; } return m; };
+    const open=async scenario=>{ const r=real[scenario];
+      const f=fakeFetch({snapshot:{...json(r.status),cards:[plain]},execution:json(r.execution)}), h=make(f); await h.flush(); await h.waitForRequests();
+      const card=h.$("board").all().find(n=>n.classList.contains("card")&&n.dataset.n==="4"); assert.ok(card,"card 4 not on the board");
+      await card.fire("click"); await h.waitForRequests(); return h; };
+    for(const scenario of ["paused","writer","quarantined"]) {
+      const x=real[scenario].execution, h=await open(scenario), items=itemsOf(h), text=h.$("supervisor-status").textContent;
+      assert.doesNotMatch(text,/unknown/i,scenario+": status bar shows unknown for a value the service knows: "+text);
+      assert.match(items.slots||"",/^\d+ \/ 3$/,scenario+": slots not populated: "+JSON.stringify(items));
+      for(const k of ["ready","running","waiting","attention"]) assert.match(String(items[k]),/^\d+$/,scenario+": queue "+k+" not populated");
+      assert.match(items.budget||"",/\$1\.25 known/,scenario+": budget not populated");
+      assert.match(items["boot registration"]||"",/^missing/,scenario+": boot registration not populated");
+      assert.equal(items.desired,"stopped"); assert.equal(items.phase,"stopped");
+      for(const id of ["dr-activity","dr-elapsed","dr-heartbeat-age","dr-progress-age","dr-retry-count","dr-reservation-state"]) {
+        if(scenario==="writer"||id==="dr-retry-count"||id==="dr-activity"||id==="dr-reservation-state")
+          assert.notEqual(h.$(id).textContent,"unknown",scenario+": "+id+" unknown for a value the service knows");
+      }
+      const paused=x.paused===true, writerFree=x.writer===false;
+      assert.equal(h.$("dr-exec-resume").disabled,!paused,scenario+": Resume card must be enabled exactly when the real shape says paused");
+      assert.equal(h.$("dr-exec-pause").disabled,paused,scenario+": Pause card must be enabled exactly when not paused");
+      assert.equal(h.$("dr-release-reservations").disabled,!(paused&&writerFree),scenario+": Release reservations must be enabled exactly when paused with no writer");
+    }
+    let x=real.paused.execution,h=await open("paused");
+    assert.equal(x.paused,true,"service does not report a paused card as paused"); assert.equal(x.writer,false,"service does not report writer=false"); assert.equal(x.reservation_state,"held");
+    assert.equal(h.$("dr-release-reservations").disabled,false,"paused with no writer must allow release");
+    assert.equal(h.$("dr-exec-resume").disabled,false,"paused card must allow resume");
+    assert.match(h.$("dr-attempts").textContent,/no attempts/i);
+    x=real.writer.execution; h=await open("writer");
+    assert.equal(x.writer,true,"service does not report a live writer"); assert.equal(x.paused,false);
+    assert.match(h.$("dr-activity").textContent,/running/);
+    assert.ok(h.$("dr-attempts").textContent.includes("attempt-live")&&h.$("dr-attempts").textContent.includes("running"),"attempt history not rendered: "+h.$("dr-attempts").textContent);
+    x=real.quarantined.execution; h=await open("quarantined");
+    assert.equal(x.writer,true,"a quarantined attempt is an uncertain writer"); assert.match(h.$("dr-activity").textContent,/quarantined/);
+    assert.ok(h.$("dr-attempts").textContent.includes("attempt-quarantined")&&h.$("dr-attempts").textContent.includes("quarantined"),"quarantined attempt not rendered");
+  });
+  // The failure summary is printed, never written: the suite leaves no file behind.
   if(failures.length) {
-    const report=failures.map(x=>"- "+x.name+": "+x.reason.split("\n")[0]).join("\n");
-    require("fs").writeFileSync(reportPath,"# Task 5.2 S3 failing checks\n\n"+report+"\n");
+    console.log(failures.map(x=>"- "+x.name+": "+x.reason.split("\n")[0]).join("\n"));
     console.log("RED summary: "+failures.length+" supervisor UI checks fail"); process.exitCode=1;
-  } else {
-    require("fs").writeFileSync(reportPath,"# Task 5.2 S3 failing checks\n\nNo failing checks.\n");
   }
 }
 main().catch(error=>{console.error("not ok - supervisor UI harness setup: "+error.stack);process.exitCode=1;});

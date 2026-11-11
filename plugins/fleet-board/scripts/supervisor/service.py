@@ -11,7 +11,7 @@ import stat
 import threading
 import time
 
-from . import paths
+from . import errors, paths
 from .processes import _boot_id
 from .recovery import Recovery
 from .store import Store
@@ -94,7 +94,7 @@ class Service:
         self.socket_root = socket_root
         self.board_repo = board_repo
         if run_lock_path is None:
-            base = os.environ.get("FLEET_BOARD_LOG_DIR") or str(Path.home() / ".fleet-board" / "runs")
+            base = str(paths.log_dir())
             repo = board_repo or (store.common_dir.parent.name
                                   if store.common_dir.name == ".git"
                                   else store.common_dir.name)
@@ -111,15 +111,41 @@ class Service:
         self.usage_evidence_verifier = usage_evidence_verifier or self._reject_evidence
         self.admissions_open = False
         self.cancellation_requests = []
-        self.shutdown_observer = lambda: "stopped"
+        self.shutdown_observer = self._observe_shutdown
         self._lock = threading.Lock()
         self._server = None
         self._worker_server = None
         self._threads = []
+        self._threads_lock = threading.Lock()
+        self._recovery_lock = threading.Lock()
         self._accept_threads = []  # (thread, is_worker)
         self._owner = False
         self.writer_uncertain = False
         self._run_lock_claimed = False
+
+    _WRITER_STATES = ("launching", "running", "result_ready", "quarantined")
+
+    def _observe_shutdown(self):
+        """Default shutdown observer: fail closed. Runners outlive the supervisor by design, so
+        any attempt still launching, running, result_ready or quarantined (and not released)
+        may be a live writer: report unresolved, never a clean stop, until the store says
+        otherwise. An injected observer replaces this."""
+        # A private short-lived connection off the owner thread: this runs under self._lock
+        # in start_serving and must not take that lock again through _store().
+        try:
+            store = (self.store if threading.get_ident() == self._owner_thread_id
+                     else self.store.fork_connection())
+            try:
+                for attempt in store.snapshot()["attempts"]:
+                    if (attempt["state"] in self._WRITER_STATES
+                            and json.loads(attempt["data"]).get("execution_released") is not True):
+                        return "unknown"
+            finally:
+                if store is not self.store:
+                    store.close()
+        except Exception:  # noqa: BLE001 - an unreadable store is not proof of a stopped writer
+            return "unknown"
+        return "stopped"
 
     def _store(self):
         """Return the Store connection owned by the current thread."""
@@ -167,12 +193,12 @@ class Service:
             import struct
             _, uid, _ = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             if uid != os.getuid():
-                raise PermissionError("peer uid does not own supervisor")
+                raise errors.Unauthenticated("peer uid does not own supervisor")
             return str(uid)
         if hasattr(connection, "getpeereid"):
             uid, _ = connection.getpeereid()
             if uid != os.getuid():
-                raise PermissionError("peer uid does not own supervisor")
+                raise errors.Unauthenticated("peer uid does not own supervisor")
             return str(uid)
         # macOS and BSD expose xucred through LOCAL_PEERCRED.  xucred is
         # {u_int version; uid_t uid; short ngroups; gid_t groups[16];};
@@ -183,11 +209,11 @@ class Service:
                 getattr(socket, "SOL_LOCAL", 0), socket.LOCAL_PEERCRED, struct.calcsize("=IIh2x16I"))
             version, uid, _ngroups, *_groups = struct.unpack("=IIh2x16I", xucred)
             if version != 0:
-                raise PermissionError("unsupported peer credential version")
+                raise errors.Unauthenticated("unsupported peer credential version")
             if uid != os.getuid():
-                raise PermissionError("peer uid does not own supervisor")
+                raise errors.Unauthenticated("peer uid does not own supervisor")
             return str(uid)
-        raise PermissionError("peer credentials unavailable")
+        raise errors.Unauthenticated("peer credentials unavailable")
 
     def _prepare_socket(self, path):
         target = Path(path)
@@ -245,8 +271,7 @@ class Service:
                 self._owner_fd = None
                 raise RuntimeError("legacy run lock: " + (claim.stderr.strip() or "claim failed"))
             self._run_lock_claimed = True
-            self.recovery.store = self._store()
-            self.recovery.reconcile(self.clock())
+            self._reconcile_now()
             try:
                 self._server = self._prepare_socket(self.socket_path)
                 self._worker_server = self._prepare_socket(self.worker_socket_path)
@@ -273,7 +298,7 @@ class Service:
             for server, worker in ((self._server, False), (self._worker_server, True)):
                 thread = threading.Thread(target=self._serve, args=(server, worker), daemon=True)
                 thread.start()
-                self._threads.append(thread)
+                self._track_thread(thread)
                 self._accept_threads.append((thread, worker))
             return {"ready": True, "recovery_complete": True, "owner": True,
                     "host_boot_id": self.host_boot_id,
@@ -289,7 +314,25 @@ class Service:
                 break
             thread = threading.Thread(target=self._serve_connection, args=(connection, worker), daemon=True)
             thread.start()
+            self._track_thread(thread)
+
+    def _track_thread(self, thread):
+        """Keep only live threads: a long-lived service sees one connection per poll."""
+        with self._threads_lock:
+            self._threads[:] = [item for item in self._threads if item.is_alive()]
             self._threads.append(thread)
+
+    def _reconcile_now(self):
+        """One recovery pass on this thread's store handle. Recovery keeps batch cursors, so
+        the handle is shared; passes are serialized and it goes back to the owner's handle
+        (never left pointing at a finished thread's connection)."""
+        store = self._store()  # before the lock: _store() takes self._lock to register a fork
+        with self._recovery_lock:
+            self.recovery.store = store
+            try:
+                self.recovery.reconcile(self.clock())
+            finally:
+                self.recovery.store = self.store
 
     def _serve_connection(self, connection, worker):
         with connection:
@@ -320,19 +363,7 @@ class Service:
                 if worker:
                     payload = {"ok": True, "result": result}
             except Exception as exc:
-                message = str(exc)[:300]
-                code = ("stale_revision" if "revision mismatch" in message.lower() or "stale state revision" in message.lower()
-                        else "uncertain_writer" if "uncertain writer" in message.lower()
-                        else "unavailable" if "unavailable" in message.lower() or "timed out" in message.lower()
-                        else "invalid" if isinstance(exc, (ValueError, TypeError, PermissionError))
-                        else "internal")
-                error = {"code": code, "message": message}
-                if code == "stale_revision":
-                    try:
-                        error["current"] = self.status_view()
-                    except Exception:
-                        error["current"] = None
-                payload = {"ok": False, "error": error}
+                payload = errors.error_envelope(exc, self.status_view)
             finally:
                 self._close_thread_store()
             connection.sendall(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
@@ -379,7 +410,7 @@ class Service:
     def authenticated_actor(self, peer):
         actor = self.peer_resolver(peer)
         if not actor:
-            raise PermissionError("actor authentication failed")
+            raise errors.Unauthenticated("actor authentication failed")
         return actor
 
     def handle_request(self, request, *, peer):
@@ -389,19 +420,7 @@ class Service:
         try:
             return {"ok": True, "result": self._handle_request(request, peer=peer)}
         except Exception as exc:
-            message = str(exc)[:300]
-            code = ("stale_revision" if "revision mismatch" in message.lower() or "stale state revision" in message.lower()
-                    else "uncertain_writer" if "uncertain writer" in message.lower()
-                    else "unavailable" if "unavailable" in message.lower() or "timed out" in message.lower()
-                    else "invalid" if isinstance(exc, (ValueError, TypeError, PermissionError))
-                    else "internal")
-            error = {"code": code, "message": message}
-            if code == "stale_revision":
-                try:
-                    error["current"] = self.status_view()
-                except Exception:
-                    error["current"] = None
-            return {"ok": False, "error": error}
+            return errors.error_envelope(exc, self.status_view)
 
     def _handle_request(self, request, *, peer):
         if not isinstance(request, dict) or len(json.dumps(request).encode("utf-8")) > MAX_REQUEST:
@@ -411,10 +430,11 @@ class Service:
         actor = self.authenticated_actor(peer)
         if not self.execution_enabled and request.get("command") not in (
                 "status", "events", "reconcile", "pause", "stop", "card_execution", "card_pause"):
-            raise RuntimeError("supervisor.enabled: false; control API is read-only")
+            raise errors.Disabled("supervisor.enabled: false; control API is read-only")
         command = request.get("command")
-        if self.writer_uncertain and command in ("resolve", "start", "pause", "resume", "release_reservations"):
-            raise RuntimeError("uncertain writer prevents lifecycle command")
+        if self.writer_uncertain and command in ("resolve", "start", "pause", "resume", "release_reservations",
+                                                 "card_resume", "reconcile_card"):
+            raise errors.UncertainWriter("uncertain writer prevents lifecycle command")
         if command == "status":
             return self.status_view()
         if command == "events":
@@ -423,9 +443,8 @@ class Service:
                     "snapshot_required": page.snapshot_required, "snapshot": page.snapshot}
         if command == "reconcile":
             if self.writer_uncertain:
-                raise RuntimeError("uncertain writer prevents reconcile")
-            self.recovery.store = self._store()
-            self.recovery.reconcile(self.clock())
+                raise errors.UncertainWriter("uncertain writer prevents reconcile")
+            self._reconcile_now()
             return {"snapshot": self.snapshot(), "cursor": len(self.snapshot()["events"])}
         if command == "card_execution":
             return self.card_execution(request.get("card"))
@@ -464,9 +483,9 @@ class Service:
     @staticmethod
     def _require_mutation_binding(request):
         if not isinstance(request.get("request_id"), str) or not request["request_id"]:
-            raise ValueError("request_id required")
+            raise errors.Invalid("request_id required")
         if type(request.get("expected_revision")) is not int:
-            raise ValueError("expected_revision required")
+            raise errors.Invalid("expected_revision required")
 
     def get_status(self):
         state = self.snapshot()
@@ -574,23 +593,90 @@ class Service:
                 text = text.replace(private, "[repository]")
         return {"id": log_id, "text": text}
 
+    _TERMINAL_ATTEMPT = ("reconciled", "failed", "interrupted")
+
     def card_execution(self, card):
+        """The one canonical card-execution object the UI and the CLI read.
+
+        Every UI-facing field is computed from stored state; nothing is asserted that the
+        store does not hold. The older keys (job, attempts, progress_age, heartbeat_age,
+        retries, waiting_reason, claims) keep their names and now carry the same values.
+        """
         card = str(card)
         state = self.snapshot()
         jobs = [x for x in state["jobs"] if x["card"] == card]
         attempts = [x for x in state["attempts"] if any(j["id"] == x["job_id"] for j in jobs)]
         claims = [x for x in state["claims"] if x["card"] == card]
-        times = [json.loads(x["data"]) for x in attempts]
+        data = [json.loads(x["data"]) for x in attempts]
         now = self.clock()
-        def age(key):
-            vals = [row.get(key) for row in times if isinstance(row.get(key), (int,float))]
-            return max(0, now-max(vals)) if vals else None
-        return {"job": jobs[-1] if jobs else None, "attempts": attempts,
-                "progress_age": age("progress_at"), "heartbeat_age": age("heartbeat_at"),
-                "deadlines": [row.get("deadline") for row in times if row.get("deadline") is not None],
-                "retries": {"automatic": jobs[-1]["retries_used"] if jobs else 0},
-                "waiting_reason": None, "claims": claims,
-                "reservation_revision": max([x["reservation_revision"] for x in claims], default=0),
+
+        def number(value):
+            return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+        def age(at):
+            return max(0, now - at) if at is not None else None
+
+        def newest(values):
+            values = [v for v in values if v is not None]
+            return max(values) if values else None
+
+        def progress_at(row):
+            progress = row.get("progress")
+            return number(progress.get("at") if isinstance(progress, dict) else progress)
+
+        pairs = list(zip(attempts, data))
+        live = [(a, d) for a, d in pairs if a["state"] not in self._TERMINAL_ATTEMPT]
+        latest = live[-1] if live else None
+        job = jobs[-1] if jobs else None
+        lifecycle = state["card_lifecycle"].get(card)
+        reservation = next((x for x in state["reservations"] if x["card"] == card), None)
+        if reservation is not None:
+            reservation_state, reservation_revision = "held", reservation["reservation_revision"]
+        else:
+            released = any(e["type"] == "scope_released" and e["payload"].get("card") == card for e in state["events"])
+            reservation_state = "released" if released else "none"
+            reservation_revision = max([x["reservation_revision"] for x in claims], default=0)
+        waiting_on = None
+        for event in state["events"]:
+            if event["type"] == "scope_wait" and event["payload"].get("card") == card:
+                waiting_on = event["payload"].get("waiting_on")
+            elif event["type"] == "scope_wait_cleared" and event["payload"].get("card") == card:
+                waiting_on = None
+        blocking_card = None
+        if lifecycle == "paused":
+            reason = "paused by an operator"
+        elif lifecycle in ("refresh_pending", "needs_attention", "blocked"):
+            reason = "card is " + lifecycle.replace("_", " ")
+        elif waiting_on is not None:
+            blocking_card, reason = str(waiting_on), "waiting for scope held by card #" + str(waiting_on)
+        elif job is not None and job["state"] in ("queued", "retry_wait"):
+            reason = "job is " + job["state"].replace("_", " ")
+        else:
+            reason = None
+        heartbeat = newest([number(d.get("heartbeat", d.get("heartbeat_at"))) for d in data])
+        progress = newest([progress_at(d) if "progress" in d else number(d.get("progress_at")) for d in data])
+        history = [{"id": a["id"], "job_id": a["job_id"], "state": a["state"], "provider": a["provider"],
+                    "started_at": number(d.get("started_at")), "deadline": number(d.get("deadline")),
+                    "heartbeat_at": number(d.get("heartbeat", d.get("heartbeat_at"))),
+                    "progress_at": progress_at(d) if "progress" in d else number(d.get("progress_at")),
+                    "quarantine_reason": d.get("quarantine_reason"),
+                    "execution_released": d.get("execution_released") is True}
+                   for a, d in pairs]
+        return {"job": job, "attempts": attempts, "claims": claims,
+                "activity": latest[0]["state"] if latest else (job["state"] if job else "idle"),
+                "elapsed_seconds": age(number(latest[1].get("started_at"))) if latest else None,
+                "progress_age": age(progress), "progress_age_seconds": age(progress),
+                "heartbeat_age": age(heartbeat), "heartbeat_age_seconds": age(heartbeat),
+                "deadlines": [row.get("deadline") for row in data if row.get("deadline") is not None],
+                "retries": {"automatic": job["retries_used"] if job else 0},
+                "retry_count": job["retries_used"] if job else 0,
+                "waiting_reason": reason, "wait_reason": reason,
+                "blocking_card": blocking_card, "blocking_path": None,
+                "paused": lifecycle == "paused",
+                # The store's own rule for "a writer may still be active" (release_scope).
+                "writer": any(d.get("execution_released") is not True for d in data),
+                "reservation_state": reservation_state, "reservation_revision": reservation_revision,
+                "attempt_history": history,
                 "logs": self._log_refs(attempts)}
 
     def _control(self, card, command, mode, request_id, expected_revision, actor):
@@ -610,7 +696,7 @@ class Service:
 
     def card_pause(self, card, *, mode="drain", request_id, expected_revision, peer=None):
         if mode not in ("drain", "cancel"): raise ValueError("pause mode must be drain or cancel")
-        if self.writer_uncertain: raise RuntimeError("uncertain writer prevents card pause")
+        if self.writer_uncertain: raise errors.UncertainWriter("uncertain writer prevents card pause")
         actor = self.authenticated_actor(peer)
         self.admissions_open = False
         result = self._control(card, "card_pause", mode, request_id, expected_revision, actor)
@@ -618,11 +704,11 @@ class Service:
         return result
 
     def release_reservations(self, card, *, reason, expected_revision, expected_reservation_revision, peer=None):
-        if self.writer_uncertain: raise RuntimeError("uncertain writer prevents reservation release")
+        if self.writer_uncertain: raise errors.UncertainWriter("uncertain writer prevents reservation release")
         actor = self.authenticated_actor(peer)
         snap = self.snapshot(); card = str(card)
         if type(expected_revision) is not int or expected_revision != snap["domain"]["revision"]:
-            raise ValueError("reservation revision mismatch: stale state revision")
+            raise errors.StaleRevision("reservation revision mismatch: stale state revision")
         if self._store()._card_lifecycles().get(card) != "paused": raise ValueError("card must be paused")
         self._store().release_scope(card, "release:" + str(expected_revision) + ":" + card, actor, reason,
             expected_revision, reservation_revision=expected_reservation_revision,
@@ -630,15 +716,29 @@ class Service:
         return {"released": True, "actor": actor, "paths": next((x["paths"] for x in snap["reservations"] if x["card"] == card), [])}
 
     def card_resume(self, card, *, request_id, expected_revision, peer=None):
+        """Return a paused card to the queue.
+
+        Scope reacquisition, eligibility refresh and the budget-stop check do not exist yet,
+        so this never claims them: refreshed is always false and applied is true only when
+        the card's lifecycle really left paused. A Human QA card is left exactly as it is.
+        """
+        if self.writer_uncertain: raise errors.UncertainWriter("uncertain writer prevents card resume")
+        self._require_mutation_binding({"request_id": request_id, "expected_revision": expected_revision})
         actor = self.authenticated_actor(peer)
-        before = self.snapshot(); lifecycle = self._store()._card_lifecycles().get(str(card))
-        if lifecycle == "human_qa": return {"refreshed": True, "preserved_human_qa": True, "preserved_budget_stop": True}
+        store = self._store()
+        lifecycle = store._card_lifecycles().get(str(card))
+        if lifecycle == "human_qa":
+            if expected_revision != store.snapshot()["domain"]["revision"]:
+                raise errors.StaleRevision("revision mismatch: stale state revision")
+            return {"applied": False, "refreshed": False, "preserved_human_qa": True}
         result = self._control(card, "card_resume", None, request_id, expected_revision, actor)
-        return dict(result, refreshed=True, preserved_human_qa=True, preserved_budget_stop=True)
+        after = store._card_lifecycles().get(str(card))
+        return dict(result, applied=lifecycle == "paused" and after != "paused", refreshed=False,
+                    preserved_human_qa=False)
 
     def reconcile_card(self, card, *, known):
         if type(known) is not bool: raise ValueError("known must be boolean")
-        if self.writer_uncertain: raise RuntimeError("uncertain writer prevents reconcile")
+        if self.writer_uncertain: raise errors.UncertainWriter("uncertain writer prevents reconcile")
         card = str(card); store = self._store(); state = self.snapshot()
         reservation = next((x for x in state["reservations"] if x["card"] == card), None)
         if not known:
@@ -648,8 +748,8 @@ class Service:
 
     def resolve(self, card, *, action, request_id, reason, expected_revision, evidence=None,
                 attempt_id=None, usage=None, effect_id=None, artifact_paths=None, peer=None):
-        if self.writer_uncertain: raise RuntimeError("uncertain writer prevents resolution")
-        if not self.execution_enabled: raise RuntimeError("supervisor.enabled: false; control API is read-only")
+        if self.writer_uncertain: raise errors.UncertainWriter("uncertain writer prevents resolution")
+        if not self.execution_enabled: raise errors.Disabled("supervisor.enabled: false; control API is read-only")
         if not isinstance(request_id, str) or not request_id:
             raise ValueError("request_id required")
         if type(expected_revision) is not int:
@@ -733,7 +833,7 @@ class Service:
         if command == "stop" and mode not in ("drain", "cancel"):
             raise ValueError("stop mode must be drain or cancel")
         if command in ("start", "resume") and not self.execution_enabled:
-            raise RuntimeError("supervisor.enabled: false; execution lifecycle is disabled")
+            raise errors.Disabled("supervisor.enabled: false; execution lifecycle is disabled")
         payload = {"mode": mode} if command == "stop" else {}
         store = self._store()
         outcome = store.record_command({"id": request_id, "actor": actor,

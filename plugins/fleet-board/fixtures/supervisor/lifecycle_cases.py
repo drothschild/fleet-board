@@ -320,6 +320,21 @@ class LifecycleContract(unittest.TestCase):
         self.assertFalse(Path(self.service.worker_socket_path).exists())
         self.assertFalse(Path(self.service.run_lock_path).exists())
 
+    def test_finished_connection_threads_are_pruned(self):
+        ack = self.service.start_serving()
+        if ack.get("socket_unavailable"):
+            self.skipTest("sandbox denies binding the supervisor Unix socket")
+        from supervisor.cli import _socket_transport
+        transport = _socket_transport(self.service.socket_path)
+        for _ in range(40):
+            transport({"command": "status"})
+        transport({"command": "status"})
+        deadline = time.time() + 5
+        while time.time() < deadline and sum(t.is_alive() for t in self.service._threads) > 2:
+            time.sleep(0.05)
+        self.assertLess(len(self.service._threads), 12,
+                        "one Thread object per accepted connection is kept for the life of the service")
+
     def test_resolve_rejects_uncertain_writer_and_missing_job_without_false_success(self):
         # Application semantics are covered by control_cases.py (real durable state).
         self.service.writer_uncertain = True

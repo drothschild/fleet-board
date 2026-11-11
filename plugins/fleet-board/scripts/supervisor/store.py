@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 
 from .models import NeverExecutedEvidence, RetryEvidence, StopEvidence, canonical_json
+from . import paths as _paths
+from .errors import StaleRevision
 from .processes import _boot_id
 
 SCHEMA_VERSION = 1
@@ -149,15 +151,9 @@ class Store:
 
     @classmethod
     def open(cls, domain, filesystem_inspector=None, fault_injector=None, stop_evidence_verifier=None, retry_evidence_verifier=None, launch_evidence_verifier=None, human_actor_verifier=None):
-        identity = {key: domain[key] for key in ('common_dir', 'board_backend', 'board_identity')}
-        if not all(isinstance(v, str) and v for v in identity.values()):
-            raise ValueError('invalid domain identity')
-        common = Path(identity['common_dir'])
-        if not common.is_absolute() or not common.is_dir():
-            raise ValueError('invalid git common directory')
-        identity['common_dir'] = str(common.resolve(strict=True))
-        domain_id = hashlib.sha256(canonical_json(identity).encode()).hexdigest()
-        root = domain.get('runtime_root') or os.path.join(os.environ.get('FLEET_BOARD_LOG_DIR', os.path.expanduser('~/.fleet-board')), 'supervisor')
+        identity = _paths.normalize_identity(domain)
+        domain_id = _paths.identity_digest(identity)
+        root = domain.get('runtime_root') or str(_paths.runtime_root())
         root = _private_directory(root)
         if (filesystem_inspector or _filesystem)(root) != 'local':
             raise ValueError('supervisor store requires a known local filesystem')
@@ -461,7 +457,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             self._event('card_lifecycle', {'card': card, 'state': state})
             c.execute('COMMIT')
         except Exception:
@@ -480,7 +476,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             owner = self.scope_conflict(card, paths)
             if owner is not None:
                 denied = owner
@@ -526,7 +522,7 @@ class Store:
                 return result
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             if type(reservation_revision) is not int:
                 raise ValueError('reservation revision required')
             if self.__human_actor_verifier is None or self.__human_actor_verifier(actor, actor_capability) is not True:
@@ -537,7 +533,7 @@ class Store:
             if reservation is None:
                 raise ValueError('no reservation')
             if reservation['revision'] != reservation_revision:
-                raise ValueError('reservation revision mismatch')
+                raise StaleRevision('reservation revision mismatch')
             attempts = list(c.execute("SELECT attempts.state,attempts.data FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE jobs.card=?", (card,)))
             if any(json.loads(row['data']).get('execution_released') is not True for row in attempts):
                 raise ValueError('live or uncertain writer')
@@ -562,7 +558,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             owner = self.scope_conflict(card, paths)
             if owner is not None:
                 self._event('scope_wait', {'card': card, 'waiting_on': owner})
@@ -695,7 +691,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             lifecycle = self._card_lifecycles().get(job['card'])
             if lifecycle == 'refresh_pending':
                 raise ValueError('refresh pending; worker admission blocked')
@@ -749,7 +745,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             c.execute('UPDATE domain SET config_hash=?,service_version=?', (config['config_hash'], config['service_version']))
             self._event('config_updated', config)
             c.execute('COMMIT')
@@ -769,7 +765,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             row = c.execute('SELECT state,data FROM attempts WHERE id=?', (attempt_id,)).fetchone()
             if row is None:
                 raise ValueError('unknown attempt')
@@ -807,7 +803,7 @@ class Store:
             if row is None:
                 raise ValueError('unknown attempt')
             if type(expected_revision) is not int or domain['revision'] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             if row['state'] not in ('prepared', 'launching', 'running', 'result_ready',
                                     'cancel_requested', 'quarantined'):
                 raise ValueError('attempt cannot adopt a launch receipt')
@@ -923,7 +919,7 @@ class Store:
                 result = {'attempt_id': data['retry_nonce'], 'retry_at': retry_at}
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 if (job['state'] != 'active' or job['retries_used'] != 0 or prior_data.get('execution_released') is not True
                         or prior_data.get('cancel_reason') != 'infrastructure' or job['generation'] != prior_data['generation'] + 1
                         or c.execute('SELECT 1 FROM effects WHERE job_id=?', (job_id,)).fetchone()
@@ -966,7 +962,7 @@ class Store:
                 raise ValueError('retry admission is blocked')
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             existing = c.execute('SELECT * FROM attempts WHERE id=? AND job_id=?', (nonce, job_id)).fetchone()
             prior_data = json.loads(prior['data'])
             if (now < data['retry_at'] or job['generation'] != prior_data['generation'] + 1
@@ -1091,7 +1087,7 @@ class Store:
                     raise ValueError('conflicting stop evidence')
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 if type(evidence.free_fixture) is not bool:
                     raise ValueError('invalid usage evidence')
                 if not evidence.free_fixture and c.execute('SELECT 1 FROM results WHERE attempt_id=?', (attempt_id,)).fetchone() is None:
@@ -1125,7 +1121,7 @@ class Store:
                     raise ValueError('conflicting quarantine')
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 if row['state'] in ('reconciled', 'failed', 'interrupted'):
                     raise ValueError('attempt cannot be quarantined')
                 if row['current_generation'] == data['generation']:
@@ -1159,7 +1155,7 @@ class Store:
             else:
                 revision = c.execute('SELECT revision FROM domain').fetchone()[0]
                 if type(expected_revision) is not int or expected_revision != revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 row = c.execute('SELECT * FROM attempts WHERE id=?', (attempt_id,)).fetchone()
                 if row is None or row['state'] in ('cancel_requested', 'interrupted', 'failed', 'quarantined', 'reconciled'):
                     raise ValueError('attempt cannot be cancelled')
@@ -1184,7 +1180,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             if c.execute('UPDATE jobs SET generation=generation+1 WHERE id=?', (job_id,)).rowcount != 1:
                 raise ValueError('unknown job')
             self._event('generation_revoked', {'job_id': job_id})
@@ -1199,7 +1195,7 @@ class Store:
         c.execute('BEGIN IMMEDIATE')
         try:
             if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             changed = c.execute('UPDATE jobs SET retries_used=retries_used+1 WHERE id=? AND retries_used=0', (job_id,)).rowcount
             if changed != 1:
                 raise ValueError('unknown job or retry exhausted')
@@ -1255,7 +1251,7 @@ class Store:
                     raise ValueError('conflicting effect observation')
             else:
                 if type(expected_revision) is not int or c.execute('SELECT revision FROM domain').fetchone()[0] != expected_revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 event = {'operation_key': operation_key}
                 if intent.get('kind') == 'branch_refresh':
                     job = c.execute('SELECT * FROM jobs WHERE id=?', (row['job_id'],)).fetchone()
@@ -1496,7 +1492,7 @@ class Store:
             else:
                 revision = connection.execute('SELECT revision FROM domain').fetchone()[0]
                 if type(request.get('expected_revision')) is not int or request['expected_revision'] != revision:
-                    raise ValueError('revision mismatch')
+                    raise StaleRevision('revision mismatch')
                 modes = {'start': 'running', 'resume': 'running', 'pause': 'paused', 'stop': 'stopped',
                          'resolve': None, 'card_pause': None, 'card_resume': None}
                 if request['command'] not in modes:
@@ -1535,7 +1531,7 @@ class Store:
                 return result
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if request['expected_revision'] != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             attempt = c.execute('SELECT attempts.state, attempts.data, jobs.card, jobs.id AS job_id, jobs.generation, jobs.retries_used FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE attempts.id=?', (request['attempt_id'],)).fetchone()
             if (attempt is None or attempt['job_id'] != request['job_id'] or attempt['card'] != request['card']
                     or attempt['state'] != 'quarantined'):
@@ -1565,7 +1561,7 @@ class Store:
         try:
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or expected_revision != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             row = c.execute('SELECT observation,status FROM effects WHERE operation_key=?', (operation_key,)).fetchone()
             if row is None:
                 raise ValueError('unknown effect')
@@ -1599,7 +1595,7 @@ class Store:
                 return outcome
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if type(expected_revision) is not int or revision != expected_revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             effect = c.execute('SELECT status FROM effects WHERE operation_key=? AND card=?', (operation_key,card)).fetchone()
             if effect is None or effect['status'] not in ('applied','complete','reconciled'):
                 raise ValueError('unresolved effect prevents abandonment')
@@ -1644,7 +1640,7 @@ class Store:
                 return result
             revision = c.execute('SELECT revision FROM domain').fetchone()[0]
             if request['expected_revision'] != revision:
-                raise ValueError('revision mismatch')
+                raise StaleRevision('revision mismatch')
             attempt = c.execute('SELECT data FROM attempts WHERE id=?', (request['attempt_id'],)).fetchone()
             session = c.execute('SELECT * FROM sessions WHERE id=?', (request['session_id'],)).fetchone()
             if attempt is None or session is None or json.loads(attempt['data']).get('session_id') != request['session_id']:
