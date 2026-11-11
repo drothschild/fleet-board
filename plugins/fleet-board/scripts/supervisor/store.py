@@ -539,8 +539,6 @@ class Store:
             if reservation['revision'] != reservation_revision:
                 raise ValueError('reservation revision mismatch')
             attempts = list(c.execute("SELECT attempts.state,attempts.data FROM attempts JOIN jobs ON jobs.id=attempts.job_id WHERE jobs.card=?", (card,)))
-            if not attempts:
-                raise ValueError('attempt writer proof required')
             if any(json.loads(row['data']).get('execution_released') is not True for row in attempts):
                 raise ValueError('live or uncertain writer')
             if c.execute("SELECT 1 FROM effects WHERE card=? AND status NOT IN ('applied','complete','reconciled')", (card,)).fetchone():

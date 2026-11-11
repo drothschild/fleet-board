@@ -131,16 +131,24 @@ class StoreContract(unittest.TestCase):
                                               "ambiguous-op",self.store.snapshot()["domain"]["revision"])
         self.assertTrue(self.store.snapshot()["claims"])
 
-    def test_release_scope_rejects_reservation_without_attempt_or_writer_proof(self):
+    def test_release_scope_rejects_attempt_without_containment_proof(self):
+        # A reservation with no attempt has no possible writer (Phase 3 contract:
+        # release is allowed); an attempt WITHOUT stop evidence blocks release.
         self.store._Store__human_actor_verifier = lambda actor, capability: actor == "fixture" and capability == "fixture"
-        reservation = self.store.reserve_scope("21",["src/release"],self.store.snapshot()["domain"]["revision"])
+        job = {"id":"unproven-job","card":"21","action":"review","role":"reviewer","stage":"code",
+               "round":1,"input_sha":"d"*64,"input_version":"v1","generation":1,
+               "provider":"fixture","model":"fixture","nonce":"unproven-attempt","session_id":"default"}
+        self.store.prepare_attempt(job,self.store.snapshot()["domain"]["revision"],
+                                   {"global_cap":2,"provider_cap":2,"paths":["src/release"]})
+        reservation = next(row for row in self.store.snapshot()["reservations"] if row["card"] == "21")
         self.store.set_card_lifecycle("21","paused",self.store.snapshot()["domain"]["revision"])
         before = self.store.snapshot()
-        with self.assertRaisesRegex(ValueError,"attempt|writer|evidence|proof|authenticated"):
-            self.store.release_scope("21","release-empty","fixture","manual reconcile",
+        with self.assertRaisesRegex(ValueError,"live or uncertain writer"):
+            self.store.release_scope("21","release-unproven","fixture","manual reconcile",
                                      before["domain"]["revision"],
                                      reservation_revision=reservation["reservation_revision"],
                                      actor_capability="fixture")
+        self.assertEqual(sum(row["type"] == "scope_released" for row in self.store.snapshot()["events"]),0)
 
     def test_release_scope_audits_stopped_writer_and_replays_request(self):
         self.store._Store__human_actor_verifier = lambda actor, capability: actor == "fixture" and capability == "fixture"
