@@ -236,18 +236,23 @@ fb_valid_number() {
 # pid in <lockdir>/pid. A lock is stale only when its recorded owner is no longer
 # running (liveness, not age). A stale lock is first renamed away (atomic, so only
 # one waiter wins it), and the owner is re-checked on the renamed copy; if the
-# owner turns out to be alive, the lock is put back. A lock with no pid file yet
-# is being created and is never treated as stale.
+# owner turns out to be alive, the lock is put back. A lock with no pid file may
+# still be being created, so it is left alone until it has stayed pid-less for
+# FLEET_BOARD_LOCK_PIDLESS_GRACE seconds (default 5); after that its creator is
+# assumed to have crashed between mkdir and the pid write, and it is taken over.
 fb_lock_acquire() {
-  local lock="$1" wait="$2" waited=0 pid moved
+  local lock="$1" wait="$2" waited=0 pid moved pidless=0 grace
+  grace="${FLEET_BOARD_LOCK_PIDLESS_GRACE:-5}"
   while ! mkdir "$lock" 2>/dev/null; do
     pid="$(cat "$lock/pid" 2>/dev/null)"
-    if [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; then
+    if [ -n "$pid" ]; then pidless=0; else pidless=$((pidless + 1)); fi
+    if { [ -n "$pid" ] && ! ps -p "$pid" >/dev/null 2>&1; } || [ "$pidless" -gt $((grace * 10)) ]; then
       moved="$lock.stale.$$"
       if mv "$lock" "$moved" 2>/dev/null; then
         if [ "$(cat "$moved/pid" 2>/dev/null)" = "$pid" ]; then rm -rf "$moved"
         else mv "$moved" "$lock" 2>/dev/null || rm -rf "$moved"; fi
       fi
+      pidless=0
       continue
     fi
     [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
