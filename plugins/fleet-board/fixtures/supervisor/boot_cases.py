@@ -9,6 +9,7 @@ import os
 import plistlib
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -58,10 +59,21 @@ def short_dir(prefix):
 
 
 class FakeChild:
+    def __init__(self):
+        self.terminated = False
+        self.reaped = False
+
     def poll(self):
         return None
 
+    def terminate(self):
+        self.terminated = True
+
+    def kill(self):
+        self.terminated = True
+
     def wait(self, timeout=None):
+        self.reaped = True
         return 0
 
 
@@ -525,7 +537,7 @@ class EndToEnd(BootCase):
         finally:
             store.close()
         launcher = self.home / ".fleet-board" / "supervisor-registry" / "bin" / "boot"
-        service_env = {"HOME": str(self.home), "PATH": os.environ["PATH"], "FLEET_BOARD_BOOT_ID": "e2e-boot"}
+        service_env = {"HOME": str(self.home), "PATH": os.environ["PATH"]}
         child = subprocess.Popen(["bash", str(launcher), "--domain", str(self.board)], env=service_env,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.reap, child)
@@ -546,10 +558,15 @@ class EndToEnd(BootCase):
         self.assertIsNotNone(status, "a plain client never reached the rendered service")
         self.assertEqual(status["desired_mode"], "running")
         self.assertEqual(status["boot_registration"], "pending_activation")
+        self.assertEqual(status["runtime"]["protocol"], boot.PROTOCOL_VERSION,
+                         "status must report the live service's protocol so an upgrade can compare it")
         stop = subprocess.run([sys.executable, "-m", "supervisor.cli", "stop", "--mode", "drain"], env=env,
                               cwd=str(self.board), capture_output=True, text=True, timeout=30)
         self.assertEqual(stop.returncode, 0, stop.stderr)
-        self.assertEqual(child.wait(timeout=30), 0, "a stopped service must let the boot entry exit cleanly")
+        time.sleep(1)
+        self.assertIsNone(child.poll(), "the resident boot entry stays alive after a Stop (it never relaunches)")
+        child.terminate()
+        self.assertEqual(child.wait(timeout=30), 0, "SIGTERM must end the resident boot entry cleanly")
         log = self.home / ".fleet-board" / "runs" / "supervisor-service.log"
         self.assertTrue(log.exists(), "service stderr must go to a real log file")
         self.assertEqual(stat.S_IMODE(log.stat().st_mode), 0o600)
@@ -571,6 +588,487 @@ class EndToEnd(BootCase):
                 base.rmdir()
             except OSError:
                 pass
+
+
+class WatchCase(BootCase):
+    """The resident boot watcher, driven by a fake clock and a scripted world."""
+
+    def setUp(self):
+        super().setUp()
+        self.install()
+        self.owner = False
+        self.log = []
+        self.now = [1000.0]
+        self.sleeps = []
+        self.live = None
+
+    def world_launch(self, root, launch_env):
+        self.log.append("launch")
+        self.owner = True
+        return FakeChild()
+
+    def world_activate(self, root, launch_env):
+        self.log.append("start")
+
+    def watch(self, ticks, script=None, interval=10.0, env=None, boot_id="boot-1"):
+        tick = [0]
+
+        def sleep(seconds):
+            tick[0] += 1
+            self.sleeps.append(seconds)
+            self.now[0] += seconds
+            if script:
+                script(tick[0])
+
+        return boot.watch(self.board, env=env or self.env(), boot_id=boot_id, interval=interval, sleep=sleep,
+                          clock=lambda: self.now[0], launch=self.world_launch, activate=self.world_activate,
+                          owner_alive=lambda root, entry: self.owner, live_status=lambda root, entry: self.live,
+                          max_ticks=ticks)
+
+
+class ResidentWatcher(WatchCase):
+    def test_stopped_domain_stays_resident_and_launches_nothing(self):
+        result = self.watch(5)
+        self.assertIsNone(result, "the watcher must stay alive while the domain is stopped")
+        self.assertEqual(self.log, [])
+        self.assertEqual(self.sleeps, [10.0] * 4, "the interval is injectable and the clock is fake")
+
+    def test_explicit_start_after_suppression_is_launched_by_the_watcher(self):
+        self.set_mode("paused")
+        self.set_yaml(YAML_FALSE)
+        launched_at = []
+
+        def script(tick):
+            if tick == 2:
+                self.store_command("resume")  # the explicit Start of this boot
+            launched_at.append((tick, list(self.log)))
+
+        self.watch(5, script)
+        self.assertEqual(launched_at[0][1], [], "start_on_boot false: boot activation stays suppressed")
+        self.assertEqual(launched_at[1][1], [])
+        self.assertEqual(self.log, ["launch", "start"], "an explicit Start with no live owner is relaunched")
+
+    def test_owner_crash_is_relaunched_through_the_launcher(self):
+        self.set_mode("running")
+
+        def script(tick):
+            if tick == 2:
+                self.owner = False  # the served child died
+
+        self.watch(5, script)
+        self.assertEqual(self.log, ["launch", "start", "launch", "start"])
+
+    def test_stop_is_never_overridden_by_keep_alive(self):
+        self.set_mode("running")
+
+        def script(tick):
+            if tick == 1:
+                self.store_command("stop")
+                self.owner = False
+
+        self.watch(6, script)
+        self.assertEqual(self.log, ["launch", "start"], "after Stop the dead owner must not be relaunched")
+
+    def test_another_owner_serving_keeps_the_watcher_resident(self):
+        self.set_mode("running")
+        self.owner = True
+
+        def script(tick):
+            if tick == 2:
+                self.owner = False
+
+        result = self.watch(5, script)
+        self.assertIsNone(result, "a healthy foreign owner must not end the watcher")
+        self.assertEqual(self.log, ["launch", "start"], "launched only once the foreign owner was gone")
+
+    def test_recoverable_wait_keeps_watching_and_recovers(self):
+        self.set_mode("running")
+        self.set_yaml("board: [\n")
+
+        def script(tick):
+            if tick == 2:
+                self.set_yaml(YAML_TRUE)
+
+        result = self.watch(5, script)
+        self.assertIsNone(result)
+        self.assertEqual(self.log, ["launch", "start"])
+
+    def test_not_registered_ends_with_success_so_the_manager_does_not_loop(self):
+        shutil.rmtree(str(self.registry() / "domains"))
+        self.assertEqual(self.watch(5), 0)
+        self.assertEqual(self.log, [])
+
+    def test_a_changed_runtime_asks_the_manager_for_a_restart(self):
+        record_path = self.registry() / "registry.json"
+
+        def script(tick):
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            record["version"] = "9.9.9"
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+
+        self.assertEqual(self.watch(5, script), boot.EXIT_WAITING,
+                         "after an upgrade or rollback the resident process must restart to load the new runtime")
+
+    def test_interval_defaults_and_env_override(self):
+        self.assertEqual(boot.watch_interval({}), 15.0)
+        self.assertEqual(boot.watch_interval({"FLEET_BOARD_BOOT_INTERVAL": "0.25"}), 0.25)
+        self.assertEqual(boot.watch_interval({"FLEET_BOARD_BOOT_INTERVAL": "junk"}), 15.0)
+
+
+class ResidentProcess(BootCase):
+    """A real boot entry process: a crash is relaunched, a Stop is not."""
+
+    def served_pids(self):
+        done = subprocess.run(["pgrep", "-f", "supervisor.cli serve --domain " + str(self.board)],
+                              capture_output=True, text=True)
+        return sorted(int(p) for p in done.stdout.split() if p.isdigit())
+
+    def wait_for(self, check, seconds=40):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            value = check()
+            if value:
+                return value
+            time.sleep(0.15)
+        return check()
+
+    def test_crash_of_the_served_child_is_relaunched_and_stop_is_not(self):
+        launcher = self.install()["launcher"]
+        self.set_yaml(YAML_FALSE)
+        self.set_mode("paused")
+        env = self.env(FLEET_BOARD_BOOT_INTERVAL="0.3")
+        watcher = subprocess.Popen(["bash", launcher, "--domain", str(self.board)], env=env,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(EndToEnd.reap, watcher)
+        self.addCleanup(lambda: [os.kill(p, 9) for p in self.served_pids()])
+        time.sleep(2)
+        self.assertEqual(self.served_pids(), [], "start_on_boot false: nothing is launched before an explicit Start")
+        self.assertIsNone(watcher.poll(), "the entry stays resident while suppressed")
+        self.store_command("resume")
+        first = self.wait_for(self.served_pids)
+        if not first:
+            watcher.kill()
+            _out, err = watcher.communicate()
+            if "Operation not permitted" in err:
+                self.skipTest("sandbox denies local Unix socket service")
+            self.fail("the watcher never launched the explicitly started domain: " + err)
+        os.kill(first[0], 9)
+        second = self.wait_for(lambda: [p for p in self.served_pids() if p != first[0]])
+        self.assertTrue(second, "the crashed service was not relaunched by the resident watcher")
+        status = self.wait_for(lambda: self.status_or_none(env))
+        self.assertEqual(status["desired_mode"], "running")
+        stop = self.cli("stop", "--mode", "drain", env=env)
+        self.assertEqual(stop.returncode, 0, stop.stderr)
+        self.assertEqual(self.wait_for(lambda: not self.served_pids()), True)
+        time.sleep(2)
+        self.assertEqual(self.served_pids(), [], "a Stop must never be undone by keep-alive")
+        self.assertIsNone(watcher.poll())
+
+    def status_or_none(self, env):
+        done = self.cli("status", env=env)
+        return json.loads(done.stdout) if done.returncode == 0 else None
+
+
+class UpgradeCompatibility(BootCase):
+    def setUp(self):
+        super().setUp()
+        self.install()
+        self.set_mode("running")
+        self.db = self.logs / "supervisor" / paths.domain_id_for_root(self.board) / "store.sqlite3"
+
+    def sql(self, statement, *args):
+        connection = sqlite3.connect(str(self.db))
+        try:
+            rows = connection.execute(statement, args).fetchall()
+            connection.commit()
+            return rows
+        finally:
+            connection.close()
+
+    def assert_refused(self, reason, **kw):
+        before = self.sql("SELECT desired_mode, (SELECT COUNT(*) FROM events) FROM domain")
+        outcome, calls = self.boot_once("boot-2", **kw)
+        self.assertEqual(calls, [], "nothing may launch on %s" % reason)
+        self.assertEqual(outcome["action"], "waiting")
+        self.assertEqual(outcome["status"]["reason"], reason)
+        self.assertIn("rollback", outcome["status"]["message"])
+        self.assertEqual(self.sql("SELECT desired_mode, (SELECT COUNT(*) FROM events) FROM domain"), before,
+                         "state must never be wiped or rewritten")
+        state = boot.registration_state(self.board, self.env())
+        self.assertEqual(state["last_error"]["code"], reason, "the refusal must be visible in status")
+
+    def test_store_schema_newer_than_this_runtime_is_refused(self):
+        self.sql("PRAGMA user_version=2")
+        self.assert_refused("incompatible_store")
+        self.assertEqual(self.sql("PRAGMA user_version"), [(2,)])
+
+    def test_active_attempt_with_unsupported_runner_protocol_event_is_refused(self):
+        self.sql("INSERT INTO attempts VALUES('a1','j1','n1','claude','running','{}')")
+        self.sql("INSERT INTO events(timestamp,type,payload) VALUES(1,'runner_version','{\"runner_id\":\"a1\",\"protocol\":99}')")
+        self.assert_refused("incompatible_runner")
+
+    def test_active_attempt_with_unsupported_recorded_protocol_in_its_data_is_refused(self):
+        self.sql("INSERT INTO attempts VALUES('a1','j1','n1','claude','launching',?)", json.dumps({"runner_protocol": 99}))
+        self.assert_refused("incompatible_runner")
+
+    def test_supported_or_finished_attempts_do_not_block(self):
+        self.sql("INSERT INTO attempts VALUES('a1','j1','n1','claude','running','{}')")
+        self.sql("INSERT INTO events(timestamp,type,payload) VALUES(1,'runner_version','{\"runner_id\":\"a1\",\"protocol\":%d}')" % boot.RUNNER_PROTOCOL)
+        self.sql("INSERT INTO attempts VALUES('a2','j2','n2','claude','completed',?)", json.dumps({"runner_protocol": 99}))
+        outcome, calls = self.boot_once("boot-2")
+        self.assertEqual(outcome["action"], "restored")
+        self.assertEqual(calls, ["launch", "start"])
+
+    def test_live_service_with_a_different_protocol_is_refused(self):
+        calls = []
+        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=lambda *a: calls.append("launch"),
+                                   activate=lambda *a: calls.append("start"),
+                                   live_status=lambda root, entry: {"runtime": {"protocol": boot.PROTOCOL_VERSION + 1}})
+        self.assertEqual(calls, [])
+        self.assertEqual(outcome["status"]["reason"], "incompatible_protocol")
+        self.assertIn("rollback", outcome["status"]["message"])
+
+    def test_install_refuses_a_store_this_runtime_cannot_read_and_changes_nothing(self):
+        current = (self.registry() / "current").read_text(encoding="utf-8")
+        self.sql("PRAGMA user_version=2")
+        done = self.cli("service", "install", "--platform", "linux", "--output-dir", str(self.work / "rendered"))
+        self.assertNotEqual(done.returncode, 0)
+        self.assertIn("rollback", done.stderr)
+        self.assertEqual((self.registry() / "current").read_text(encoding="utf-8"), current)
+        self.assertEqual(self.sql("PRAGMA user_version"), [(2,)])
+
+    def test_install_refuses_a_live_protocol_mismatch_only_with_active_attempts(self):
+        def live(running):
+            return lambda root, entry: {"runtime": {"protocol": boot.PROTOCOL_VERSION + 1}, "queue": {"running": running}}
+        kw = dict(env=self.env(), platform="linux", output_dir=self.work / "rendered", install_dir=self.work / "installed")
+        with self.assertRaises(Exception) as caught:
+            boot.install(self.board, live_status=live(2), **kw)
+        self.assertIn("rollback", str(caught.exception))
+        result = boot.install(self.board, live_status=live(0), **kw)
+        self.assertTrue(result["warnings"], "an idle mismatched service is warned about, not refused")
+
+    def test_upgrade_backs_up_the_store_privately_and_rollback_restores_runtime_not_store(self):
+        record_path = self.registry() / "registry.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["version"] = "0.19.1"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        events_then = self.sql("SELECT COUNT(*) FROM events")[0][0]
+        result = self.install()
+        backup = Path(result["backup"]) / "store.sqlite3"
+        self.assertTrue(backup.exists(), "the store must be backed up before an upgrade")
+        self.assertEqual(stat.S_IMODE(backup.stat().st_mode), 0o600)
+        self.assertEqual(stat.S_IMODE(backup.parent.stat().st_mode), 0o700)
+        copy = sqlite3.connect(str(backup))
+        try:
+            self.assertEqual(copy.execute("SELECT COUNT(*) FROM events").fetchone()[0], events_then)
+            self.assertEqual(copy.execute("SELECT desired_mode FROM domain").fetchone()[0], "running")
+        finally:
+            copy.close()
+        self.store_command("pause")
+        self.service("rollback")
+        self.assertEqual(self.store_state()["mode"], "paused", "rollback leaves the store alone unless asked")
+
+    def test_rollback_restores_the_store_only_when_asked_and_only_when_not_served(self):
+        record_path = self.registry() / "registry.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["version"] = "0.19.1"
+        record_path.write_text(json.dumps(record), encoding="utf-8")
+        self.install()
+        events_then = self.sql("SELECT COUNT(*) FROM events")[0][0]
+        self.store_command("pause")
+        lock_dir = self.db.parent
+        import fcntl
+        fd = os.open(str(lock_dir / "service.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            refused = self.cli("service", "rollback", "--restore-store")
+            self.assertNotEqual(refused.returncode, 0, "a served store must not be replaced underneath the service")
+            self.assertEqual(self.sql("SELECT desired_mode FROM domain"), [("paused",)])
+        finally:
+            os.close(fd)
+        done = self.service("rollback", "--restore-store")
+        self.assertTrue(done["store_restored"])
+        self.assertEqual(self.sql("SELECT desired_mode, (SELECT COUNT(*) FROM events) FROM domain"),
+                         [("running", events_then)])
+        saved = list(Path(done["backup"]).glob("store-before-restore*.sqlite3"))
+        self.assertEqual(len(saved), 1, "the replaced store is kept, not discarded")
+
+
+class ReviewMinors(BootCase):
+    def test_systemd_exec_start_escapes_dollar_percent_and_quote_exactly(self):
+        weird = self.work / 'we$ir%d "x"'
+        weird.mkdir()
+        subprocess.run(["git", "init", "-q", str(weird)], check=True)
+        (weird / ".fleet-board.yml").write_text(YAML_TRUE, encoding="utf-8")
+        env = self.env(FLEET_BOARD_DOMAIN=str(weird))
+        result = self.install(env=env)
+        text = Path(result["rendered"]).read_text(encoding="utf-8")
+        expected = '"' + str(self.work) + '/we$$ir%%d \\"x\\""'
+        self.assertIn(expected, text)
+        self.assertIn('"/bin/bash" "%s"' % (self.registry() / "bin" / "boot"), text)
+
+    def test_launcher_exits_75_when_the_recorded_python_is_missing(self):
+        result = self.install()
+        (self.registry() / "current").write_text(str(self.work / "gone" / "python3") + "\n" + str(SCRIPTS) + "\n", encoding="utf-8")
+        done = subprocess.run(["bash", result["launcher"], "--domain", str(self.board)], env=self.env(),
+                              capture_output=True, text=True, timeout=30)
+        self.assertEqual(done.returncode, boot.EXIT_WAITING, "the documented retry code")
+        status = json.loads((self.registry() / "runtime-status.json").read_text(encoding="utf-8"))
+        self.assertEqual(status["reason"], "missing_executable")
+
+    def test_uninstall_without_the_privileged_step_is_pending_not_missing(self):
+        self.install("--kind", "boot", platform="darwin")
+        result = self.service("uninstall", "--platform", "darwin")
+        self.assertFalse(result["removed"], "the LaunchDaemon still exists until an administrator removes it")
+        self.assertTrue(result["pending"])
+        self.assertTrue(result["privileged_commands"])
+        self.assertEqual(boot.registration_state(self.board, self.env())["boot_registration"], "uninstall_pending")
+        self.assertEqual(self.service("status")["boot_registration"], "uninstall_pending")
+        # The watcher must not loop on a unit that is being removed.
+        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="b", launch=lambda *a: self.fail("launched"))
+        self.assertEqual(outcome["status"]["reason"], "uninstall_pending")
+        self.assertEqual(boot.watch(self.board, env=self.env(), boot_id="b", sleep=lambda s: None, max_ticks=3), 0)
+        # Once the unit is really gone, status settles to missing.
+        (self.fake_log / "launchctl.rc").write_text("113\n", encoding="utf-8")
+        self.assertEqual(self.service("status")["boot_registration"], "missing")
+
+    def test_linux_uninstall_without_apply_keeps_the_entry_until_the_unit_is_gone(self):
+        self.install("--apply")
+        pending = self.service("uninstall", "--platform", "linux", "--install-dir", str(self.work / "installed"))
+        self.assertTrue(pending["pending"])
+        self.assertEqual(self.service("status")["boot_registration"], "uninstall_pending")
+        done = self.service("uninstall", "--platform", "linux", "--apply", "--install-dir", str(self.work / "installed"))
+        self.assertTrue(done["removed"])
+        self.assertEqual(self.service("status")["boot_registration"], "missing")
+
+    def test_started_work_is_truthful(self):
+        self.set_mode("running")
+        agent = self.install("--kind", "login", "--apply", platform="darwin")
+        self.assertTrue(agent["started_work"], "bootstrapping a RunAtLoad agent for a running domain starts work")
+        self.assertTrue(agent["will_start_work_on_load"])
+        linux = self.install("--apply")
+        self.assertFalse(linux["started_work"], "systemctl enable does not start the unit")
+        planned = self.install("--kind", "boot", platform="darwin")
+        self.assertFalse(planned["started_work"])
+        self.assertTrue(planned["will_start_work_on_load"], "the printed sudo bootstrap would start it")
+        self.set_yaml(YAML_FALSE)
+        self.assertFalse(self.install("--kind", "login", "--apply", platform="darwin")["started_work"])
+
+    def test_started_work_is_false_for_a_stopped_domain(self):
+        agent = self.install("--kind", "login", "--apply", platform="darwin")
+        self.assertFalse(agent["started_work"])
+        self.assertFalse(agent["will_start_work_on_load"])
+
+    def test_registration_from_a_linked_worktree_is_found_by_status(self):
+        from supervisor.service import Service
+        subprocess.run(["git", "-C", str(self.board), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q",
+                        "--allow-empty", "-m", "init"], check=True)
+        linked = self.work / "linked tree"
+        subprocess.run(["git", "-C", str(self.board), "worktree", "add", "-q", "--detach", str(linked)], check=True)
+        (linked / ".fleet-board.yml").write_text(YAML_TRUE, encoding="utf-8")
+        env = self.env(FLEET_BOARD_DOMAIN=str(linked))
+        self.install(env=env)
+        domain = paths.board_domain(linked, self.logs / "supervisor")
+        with mock.patch.dict(os.environ, {"HOME": str(self.home), "FLEET_BOARD_LOG_DIR": str(self.logs),
+                                          "FLEET_BOARD_SOCKET_DIR": str(self.sockets)}):
+            service = Service.open(domain, board_repo="acme/toy", execution_enabled=False)
+            try:
+                status = service.get_status()
+            finally:
+                service.close()
+        self.assertEqual(status["boot_registration"], "pending_activation")
+        self.assertNotEqual(boot.domain_key(linked), boot.domain_key(self.board), "two worktrees are two registrations")
+
+    def test_a_malformed_registry_entry_does_not_break_status(self):
+        self.install()
+        entry_path = next((self.registry() / "domains").glob("*.json"))
+        entry_path.write_text(json.dumps({"root": str(self.board)}), encoding="utf-8")
+        status = self.service("status")
+        self.assertEqual(status["boot_registration"], "missing")
+        self.assertEqual(status["last_error"]["code"], "registry_entry_invalid")
+        state = boot.registration_state(self.board, self.env())
+        self.assertEqual(state["last_error"]["code"], "registry_entry_invalid")
+        outcome, calls = self.boot_once("boot-2")
+        self.assertEqual(calls, [])
+        self.assertEqual(outcome["status"]["reason"], "registry_entry_invalid")
+
+    def test_rendered_directory_is_private_whatever_the_umask(self):
+        old = os.umask(0o022)
+        try:
+            result = boot.install(self.board, env=self.env(), platform="linux")
+        finally:
+            os.umask(old)
+        rendered = Path(result["rendered"]).parent
+        self.assertEqual(rendered, self.registry() / "rendered")
+        self.assertEqual(stat.S_IMODE(rendered.stat().st_mode), 0o700)
+
+    def test_boot_id_comes_from_the_host_not_from_an_environment_hook(self):
+        real = boot.current_boot_id({})
+        self.assertEqual(boot.current_boot_id({"FLEET_BOARD_BOOT_ID": "stale-export"}), real)
+
+    def test_an_over_long_socket_base_raises_unsafe_socket_dir(self):
+        from supervisor import errors
+        domain_id = paths.domain_id_for_root(self.board)
+        with self.assertRaises(errors.UnsafeSocketDir):
+            paths.socket_dir(domain_id, base=Path("/tmp") / ("x" * 100))
+        with self.assertRaises(errors.UnsafeSocketDir):
+            boot.install(self.board, env=self.env(FLEET_BOARD_SOCKET_DIR="/tmp/" + "y" * 100), platform="linux",
+                         output_dir=self.work / "rendered")
+
+    def test_a_start_failure_after_launch_does_not_orphan_the_child(self):
+        self.install()
+        self.set_mode("running")
+        child = FakeChild()
+
+        def activate(root, launch_env):
+            raise RuntimeError("start refused")
+
+        outcome = boot.boot_domain(self.board, env=self.env(), boot_id="boot-2", launch=lambda *a: child, activate=activate)
+        self.assertEqual(outcome["status"]["reason"], "service_launch_failed")
+        self.assertTrue(child.terminated, "the launched child must be terminated")
+        self.assertTrue(child.reaped, "and reaped")
+
+
+class CliSocketTrust(BootCase):
+    def serve_stub(self, base):
+        import socket as socketlib
+        domain_id = paths.domain_id_for_root(self.board)
+        directory = paths.socket_dir(domain_id, base=base)
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / "c.sock"
+        server = socketlib.socket(socketlib.AF_UNIX, socketlib.SOCK_STREAM)
+        try:
+            server.bind(str(path))
+        except PermissionError:
+            self.skipTest("sandbox denies local Unix socket service")
+        server.listen(4)
+        self.addCleanup(server.close)
+
+        def run():
+            while True:
+                try:
+                    client, _ = server.accept()
+                except OSError:
+                    return
+                client.recv(65536)
+                client.sendall(json.dumps({"ok": True, "result": {"revision": 1, "stub": True}}).encode())
+                client.close()
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+    def test_cli_refuses_a_socket_under_an_unsafe_base_and_trusts_a_private_one(self):
+        base = self.work / "planted"
+        base.mkdir(mode=0o700)
+        self.serve_stub(base)
+        env = self.env(FLEET_BOARD_SOCKET_DIR=str(base))
+        os.chmod(str(base), 0o755)
+        refused = self.cli("status", env=env)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertNotIn("stub", refused.stdout, "a socket under a group/other-accessible base must not be trusted")
+        os.chmod(str(base), 0o700)
+        trusted = self.cli("status", env=env)
+        self.assertEqual(trusted.returncode, 0, trusted.stderr)
+        self.assertIn("stub", trusted.stdout)
 
 
 if __name__ == "__main__":
