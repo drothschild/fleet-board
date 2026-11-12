@@ -81,6 +81,7 @@ class Supervisor:
         self._rate_since = None
         self._last_errors = {}
         self._last_attention = None
+        self._sched_pause = None   # the pause reason set because the scheduler reported a stop_reason
 
     # --- the service's side --------------------------------------------------------------------------
     def wake(self, reason='wake'):
@@ -333,6 +334,8 @@ class Supervisor:
     def _cycle(self):
         self._want_cycle = False
         config = self._load_config()
+        if config is not None and self._sched_pause is not None and self._probe_scheduler(config):
+            return
         if config is None or self.state.mode != 'running':
             return
         now = self.clock()
@@ -366,7 +369,7 @@ class Supervisor:
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
                                       now=now, lane_free=False)
         if result.get('stop_reason'):
-            self._config_error = result['stop_reason']
+            self._sched_pause = result['stop_reason']
             self.state.pause(result['stop_reason'])
             return
         self.last_cycle = {'admitted': [r.get('number') for r in result['admitted']],
@@ -378,9 +381,25 @@ class Supervisor:
             if attention:
                 self.state.event('attention', cards=[{'number': n, 'reason': r} for n, r in attention])
         for row in result['admitted']:
+            # A begin can be slow: apply a pause that arrived meanwhile before launching the next row.
+            self._drain_commands()
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _probe_scheduler(self, config):
+        """While paused by a scheduler stop_reason: True to skip this cycle, False once the scheduler no
+        longer reports one (the pause is lifted). Never flips the mode while the stop_reason persists."""
+        if self.state.mode != 'paused' or self.state.pause_reason != self._sched_pause:
+            self._sched_pause = None   # an operator or something else took over the pause
+            return False
+        probe = self.scheduler.admit([], active=[], limits=self._limits(config), reservations=[],
+                                     now=self.clock(), lane_free=False)
+        if probe.get('stop_reason'):
+            return True
+        self._sched_pause = None
+        self.state.resume()
+        return False
 
     def _rate_limited(self, until, now):
         if self._rate_since is None:
@@ -419,6 +438,7 @@ class Supervisor:
                 return
             reserved = True
             self.state.event('admitted', card=number, action=name, provider=row.get('provider'))
+        before = self.state.events[-1]['sequence'] if self.state.events else 0
         try:
             started = self.driver.begin(row)
         except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the others
@@ -427,4 +447,6 @@ class Supervisor:
         if started is None or started.kind != 'session':
             if reserved and number not in self.state.active:
                 self.state.release(number)
-            self._want_cycle = True
+            # Re-plan at once only when the action changed something; a failure waits for the timer.
+            if not any(e['sequence'] > before and e['type'] == 'action_failed' for e in list(self.state.events)):
+                self._want_cycle = True

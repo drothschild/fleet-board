@@ -272,6 +272,31 @@ class Controls(LoopCase):
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
 
+    def test_a_pause_during_a_slow_begin_launches_nothing_more(self):
+        self.add_card(13)
+        gate, entered, original = threading.Event(), threading.Event(), self.b.driver.begin
+        calls = []
+
+        def slow_begin(row):
+            calls.append(row['number'])
+            if len(calls) == 1:
+                entered.set()
+                gate.wait(20)
+            return original(row)
+
+        self.b.driver.begin = slow_begin
+        self.b.plans({'report': 'implementor-ok', 'sleep': 1})
+        self.start()
+        self.assertTrue(entered.wait(20), 'the first begin never started')
+        reply = self.sup.handle({'command': 'pause'})
+        self.assertTrue(reply.get('queued'), reply)
+        gate.set()
+        self.until(lambda: self.mode() == 'paused', what='the queued pause to apply')
+        time.sleep(1.0)
+        self.assertEqual(len(calls), 1, 'a row was begun after the pause was acknowledged')
+        self.assertEqual(self.count(), 1)
+        self.assertEqual(self.b.card(13)['state'], 'ready')
+
     def test_stop_drain_waits(self):
         self.add_card(13)
         self.b.plans({'report': 'implementor-ok', 'sleep': 3})
@@ -430,6 +455,36 @@ class Cycle(LoopCase):
         self.rate = None
         self.sup.wake('test')
         self.until(lambda: self.b.note().get('pr') == 12, what='the card to start after the reset')
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_a_failing_action_does_not_recycle_before_the_timer(self):
+        self.b.seed(12, 'in_review')
+        self.b.gh_result = dc.fail_with('boom')
+        self.rows = lambda: [dc.candidate('mark_ready', number=12, state='in_review', worktree=self.b.worktree,
+                                          declared_paths=['a'])]
+        self.start()
+        self.until(lambda: any(e['type'] == 'action_failed' for e in self.b.state.events), what='the failure')
+        time.sleep(0.6)
+        self.assertFalse(self.sup._want_cycle, 'a no-progress action asked for an immediate re-cycle')
+        self.assertLessEqual(self.fetches, 2, 'a no-progress action re-planned in a loop (%d fetches)' % self.fetches)
+        self.until(lambda: self.fetches >= 2, what='the timer cycle')
+
+    def test_a_scheduler_stop_reason_pauses_once_and_lifts_when_it_clears(self):
+        self.rows = lambda: []
+        self.b.config['limits']['concurrency'] = 0
+        self.start()
+        snap = self.until(lambda: self.b.state.snapshot() if self.mode() == 'paused' else None, what='the pause')
+        self.assertEqual(snap['pause_reason'], 'invalid limits')
+        self.cycles_done(2)
+        after = self.b.state.snapshot()
+        self.assertEqual((after['mode'], after['revision']), ('paused', snap['revision']),
+                         'consecutive stop_reason cycles must not flip the mode or the revision')
+        self.cycles_done(1)
+        self.assertEqual(self.b.state.revision, snap['revision'])
+        self.b.config['limits']['concurrency'] = 2
+        self.sup.wake('test')
+        self.until(lambda: self.mode() == 'running', what='the pause to lift once the scheduler is satisfied')
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
 
