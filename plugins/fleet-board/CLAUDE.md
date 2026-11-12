@@ -193,7 +193,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
     `dirty_worktree` (uncommitted changes to tracked files; `git --no-optional-locks status
     --porcelain --untracked-files=no`), `unreadable_worktree` (that status failed or timed out:
     never taken as clean), `dead_lock` (a card lock whose holder is gone, or pid-less past
-    `LOCK_GRACE`), `unreadable_note`. Every non-terminal state is checked (all but backlog, done,
+    `LOCK_GRACE`, the same grace as board-lib.sh's `FB_LOCK_PIDLESS_GRACE`), `unreadable_note`. Every non-terminal state is checked (all but backlog, done,
     wont_do; review stages included). A live process holding the repository run lock that did not
     answer `status` as the supervisor makes `--release` refuse ("a run is active (pid N)") and the
     plain list print a one-line notice.

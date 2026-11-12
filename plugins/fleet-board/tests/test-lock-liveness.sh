@@ -296,6 +296,7 @@ else bad "pid-less grace differs: board-lib.sh '${bg}', stuck.py '${pg}'"; fi
 #   ln, mv - while W is inside its takeover: just before W writes its pid into the
 #            pid-less lock (ln), or just before W renames that lock aside (mv).
 # Every case must end with exactly one live holder, named by the lock's pid.
+# (The holder must also be the expected one where the interleaving decides it.)
 cat > "$W/slow.sh" <<'SH'
 . "$W/common.sh"
 mkdir() {
@@ -347,7 +348,10 @@ slow_owner() {  # slow_owner <kind> <after|ln|mv>
     if command ps -p "$p" >/dev/null 2>&1; then live=$((live + 1)); holder="$holder $p"; fi
   done
   holder="${holder# }"
+  # after: W holds before P's write. ln: P's write wins the pid slot. mv: W deletes
+  # its fenced copy, then P and W race fairly for the fresh mkdir, so either may hold.
   want="$(cat "$R/W.pid")"; [ "$trig" = ln ] && want="$(cat "$R/P.pid")"
+  [ "$trig" = mv ] && want="$holder"
   case "$trig" in
     after) when="after the waiter's grace takeover" ;;
     ln) when="just before the waiter writes its pid into the pid-less lock" ;;
