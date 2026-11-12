@@ -1191,6 +1191,36 @@ def test_provider_stage_done_records_the_stage_review(base):
     assert review['model'] == 'gpt-5' and review['sha'] == 'abc1234' and review['important'] == 1, review
 
 
+def _stage_ledger_line(base, **tokens):
+    from supervisor import usage
+    out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
+           'cost_usd': 0, 'attempts': 1}
+    out.update(tokens)
+    b, stage = provider_stage_board(base, 0, '')
+    out['report_file'] = report_file(b, 'stage-reviewer-findings')
+    fake_plugin(b, 0, json.dumps(out))
+    run_role(b, begin(b, 'review_stage', state='review_security', stage=stage, round=1))
+    lines, skipped = usage.read(b.root)
+    assert len(lines) == 1 and skipped == 0, lines
+    return b, lines[0]
+
+
+def test_stage_review_tokens_reach_the_ledger(base):
+    b, line = _stage_ledger_line(base, input_tokens=1200, output_tokens=300)
+    assert (line['input'], line['output'], line['cache_write'], line['cache_read']) == (1200, 300, None, None), line
+    assert (line['provider'], line['model'], line['role']) == ('codex', 'gpt-5', 'stage-reviewer'), line
+    run = b.state.run_tokens
+    assert run['input'] == 1200 and run['output'] == 300, run
+
+
+def test_null_provider_tokens_are_unknown(base):
+    b, line = _stage_ledger_line(base, input_tokens=None, output_tokens=None)
+    assert [line[k] for k in ('input', 'output', 'cache_write', 'cache_read')] == [None] * 4, line
+    assert line['provider'] == 'codex' and line['model'] == 'gpt-5', line
+    run = b.state.run_tokens
+    assert run['partial'] is True and run['unknown'] == 1 and run['total'] == 0, run
+
+
 def test_provider_stage_exit_3_is_a_provider_failure(base):
     b, stage = provider_stage_board(base, 3, '', 'first line\nstage-review: KEY is not set\n')
     outcome = run_role(b, begin(b, 'review_stage', state='review_security', stage=stage, round=1))
