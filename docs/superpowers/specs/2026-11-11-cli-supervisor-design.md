@@ -204,6 +204,11 @@ single `write` calls of one line under an advisory lock. The supervisor never re
 
 **Limits.** `limits.max_tokens` (per supervisor run) and optional `limits.max_tokens_per_card` replace
 `limits.max_cost_usd`. Reaching one pauses admissions and states which limit was reached. Running sessions finish.
+Both count input, output and cache-write tokens only; cache reads are recorded in the ledger and shown on the board
+but excluded from the limits (owner decision, 0.27.0). The status carries `run_budget` (the counted tokens, labelled
+"counted toward limits.max_tokens", with the cap), which `supervisor status` and the board's token strip show as one
+line. A pause names the limit and says cache reads are not counted; "known tokens only" is added only when a counted
+key (input, output or cache write) was unknown.
 
 ## 9. Merge configuration
 

@@ -353,6 +353,18 @@ class Start(CliEnv):
         self.assertEqual(self.b.card(12)['state'], 'in_progress', 'the supervisor never repairs work itself')
         self.assertTrue((self.active / '12').exists())
 
+    def test_start_reports_every_config_error_not_only_the_last(self):
+        cfg = self.root / '.fleet-board.yml'
+        cfg.write_text(cfg.read_text() + 'limits:\n  max_cost_usd: 5\n  tick_interval: 30\n'
+                       'models:\n  manager: opus\n')
+        rc, out, err = self.invoke('start')
+        if rc == 1 and 'cannot bind' in err:
+            self.skipTest('sandbox denies the supervisor socket')
+        self.assertNotEqual(rc, 0, err)
+        self.assertEqual(out, '')
+        for key in ('limits.max_cost_usd', 'limits.tick_interval', 'models.manager'):
+            self.assertIn(key + ' is no longer a setting', err)
+
     def test_ignore_stuck_skips_them(self):
         self.b.seed(12, 'in_progress')
         captured = {}
@@ -748,7 +760,8 @@ class RunLock(CliEnv):
         rc = cli.main(['stuck', '--release', '12'], env=os.environ, stdout=out, stderr=err,
                       transport=self.no_supervisor)
         self.assertEqual(rc, 1, out.getvalue())
-        self.assertIn('a run is active (pid %d)' % os.getpid(), err.getvalue())
+        self.assertIn('a supervisor of another checkout holds the repository run lock (pid %d); stop it before '
+                      'releasing' % os.getpid(), err.getvalue())
         self.assertEqual(self.b.card(12)['state'], 'in_progress')
 
     def test_listing_warns_that_a_running_run_may_own_listed_cards(self):
@@ -759,6 +772,8 @@ class RunLock(CliEnv):
         self.assertEqual(rc, 0, err.getvalue())
         lines = out.getvalue().splitlines()
         self.assertIn('pid %d' % os.getpid(), lines[0])
+        self.assertTrue(lines[0].startswith('note: a supervisor of another checkout holds the repository run lock '
+                                            '(pid %d)' % os.getpid()), lines[0])
         self.assertIn('#12 in_flight: ', out.getvalue())
         out, err = io.StringIO(), io.StringIO()
         rc = cli.main(['stuck', '--json'], env=os.environ, stdout=out, stderr=err, transport=self.no_supervisor)

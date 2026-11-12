@@ -33,10 +33,15 @@ def _iso(seconds=None):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(time.time() if seconds is None else seconds))
 
 
-def _json(result, what):
+def _json(result, what, every_line=False):
+    """`every_line`: the error names every stderr line, not only the last (config.sh prints one per problem)."""
     if result.timed_out or result.rc != 0:
         lines = [x.strip() for x in (result.stderr or '').splitlines() if x.strip()]
-        raise ValueError('%s failed: %s' % (what, lines[-1] if lines else 'exit %d' % result.rc))
+        if not lines:
+            detail = 'exit %d' % result.rc
+        else:
+            detail = '\n'.join(lines) if every_line else lines[-1]
+        raise ValueError('%s failed: %s' % (what, detail))
     try:
         return json.loads(result.stdout)
     except ValueError:
@@ -44,7 +49,7 @@ def _json(result, what):
 
 
 def _config(root, run):
-    config = _json(run(root, 'config.sh', '--dir', str(root), timeout=30), 'config.sh')
+    config = _json(run(root, 'config.sh', '--dir', str(root), timeout=30), 'config.sh', every_line=True)
     if not isinstance(config, dict):
         raise ValueError('config.sh printed no configuration')
     return config

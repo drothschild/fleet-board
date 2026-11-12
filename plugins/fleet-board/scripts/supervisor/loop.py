@@ -568,19 +568,24 @@ class Supervisor:
             return None
 
     def _token_limit_reached(self):
-        """Pause admissions once this run's known tokens reach limits.max_tokens (running sessions finish).
-        Checked every cycle, so lowering the limit, or resuming without raising it, pauses again."""
+        """Pause admissions once this run's known input + output + cache_write tokens reach limits.max_tokens
+        (running sessions finish). Cache reads are shown but not counted. Checked every cycle, so lowering the
+        limit, or resuming without raising it, pauses again."""
         cap = self._limit('max_tokens', 0)
-        total = self.state.run_tokens.get('total', 0)
+        self.state.set_budget_cap(cap)
+        total = self.state.run_budget
         if cap <= 0 or total < cap:
             return False
         if self.state.mode == 'running':
-            partial = ' (known tokens only)' if self.state.run_tokens.get('partial') else ''
-            self.state.pause('token limit reached: %d of limits.max_tokens %d%s' % (total, cap, partial))
+            # partial over the counted keys only: an unknown cache read does not make the budget a lower bound
+            partial = ' (known tokens only)' if self.state.budget_unknown else ''
+            self.state.pause('token limit reached: %d of limits.max_tokens %d (cache reads not counted)%s'
+                             % (total, cap, partial))
         return True
 
     def _capped_cards(self):
-        """Cards whose known tokens in THIS run have reached limits.max_tokens_per_card (in-memory totals;
+        """Cards whose known input + output + cache_write tokens in THIS run (cache reads not counted) have
+        reached limits.max_tokens_per_card (in-memory totals;
         the ledger is never read to decide anything, and an earlier run's spend does not count)."""
         cap = self._limit('max_tokens_per_card', 0)
         if cap <= 0:

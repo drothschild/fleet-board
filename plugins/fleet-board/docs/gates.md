@@ -12,10 +12,6 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 `FLEET_BOARD_GATE_TIMEOUT` caps the lookups in one call, in seconds: 45 by default, at most 50. The hook's own timeout is 60 seconds, after which Claude Code lets the call through. Without `jq`, the hook exits 0 silently, but every fleet-board script needs `jq` too, so board commands fail anyway.
 
-## settle.sh runs outside the gate
-
-`scripts/settle.sh` is a plain shell script you can run by hand from the repo root, outside any Claude session, so no `PreToolUse` hook sees what it runs. The supervisor does not run it: it plans the same steps itself. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress, in_review and every review stage column; besides the move into human_qa after a clean review it moves cards between review columns, `advance_stage`, and adds routing labels with `review-stages.sh route`, before the move).
-
 ## A commit and a PR in one call
 
 A single call such as `cd sub && git commit -F- <<'EOF' ... EOF` followed by `gh pr create --draft ...` is allowed. None of its commands is gated (`git commit` and `gh pr create` are not, and the heredoc body is read as text), so the gate exits 0 without reading the config or the board, and does not need to know where the `cd` goes. This holds for the heredoc piped to `git commit -F-`, for `cat > msg.txt <<'EOF'` followed by `git commit -F msg.txt`, and for `git commit -m "$(cat <<'EOF' ... EOF)"`. The decision is per command, not per call: adding a gated command to the same call (`... && gh pr merge 3`) is judged as before, in the directory the `cd` leads to, and a `cd` the gate cannot resolve before a gated command still blocks it. `tests/test-gate.sh` (the `compound-commit-pr` cases) pins both. If a call like this was blocked, the gated word was in it (a commit message that quotes `gh pr merge`, say): see the false positives below.

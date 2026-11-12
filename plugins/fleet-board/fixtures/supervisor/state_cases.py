@@ -82,6 +82,21 @@ class Lifecycle(unittest.TestCase):
                          ({}, {}, {}, {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
                                         'unknown': 0, 'partial': False}))
 
+    def test_the_snapshot_carries_the_budget_without_cache_reads(self):
+        self.assertEqual(self.state.snapshot()['run_budget'],
+                         {'tokens': 0, 'partial': False, 'cap': None, 'label': 'counted toward limits.max_tokens'})
+        self.state.add_tokens({'input': 5, 'output': 4, 'cache_write': 3, 'cache_read': None}, 1)
+        budget = self.state.snapshot()['run_budget']
+        self.assertEqual((budget['tokens'], budget['partial']), (12, False), 'an unknown cache read is not partial')
+        self.state.add_tokens({'input': None, 'output': 1, 'cache_write': 0, 'cache_read': 0}, 1)
+        budget = self.state.snapshot()['run_budget']
+        self.assertEqual((budget['tokens'], budget['partial']), (13, True))
+        rev = self.state.revision
+        self.state.set_budget_cap(100)
+        self.assertEqual((self.state.snapshot()['run_budget']['cap'], self.state.revision), (100, rev + 1))
+        self.state.set_budget_cap(100)
+        self.assertEqual(self.state.revision, rev + 1, 'an unchanged cap does not bump the revision')
+
     def test_begin_refuses_a_second_action_for_a_card(self):
         self.state.begin(action(1))
         with self.assertRaises(ValueError):
@@ -199,7 +214,7 @@ class Lifecycle(unittest.TestCase):
         self.state.run_tokens['claude'] = {'in': 1}
         snap = self.state.snapshot()
         self.assertEqual(set(snap), {'run_id', 'mode', 'pause_reason', 'revision', 'active',
-                                     'lane', 'provider_health', 'run_tokens'})
+                                     'lane', 'provider_health', 'run_tokens', 'run_budget'})
         self.assertEqual(snap['run_id'], 'run1')
         self.assertEqual(snap['active'][1]['card'], 1)
         self.assertEqual(snap['lane']['card'], 1)

@@ -265,6 +265,20 @@ class CliUsage(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
+class StatusText(unittest.TestCase):
+    def test_supervisor_status_prints_the_budget_line(self):
+        base = {'mode': 'running', 'root': '/r', 'pid': 1, 'active': []}
+        text = cli._human_status(dict(base, run_budget={'tokens': 1234, 'partial': False, 'cap': 20000000,
+                                                        'label': 'counted toward limits.max_tokens'}))
+        self.assertIn('budget: 1234 of 20000000 tokens counted toward limits.max_tokens (cache reads not counted)',
+                      text.splitlines())
+        text = cli._human_status(dict(base, run_budget={'tokens': 5, 'partial': True, 'cap': None,
+                                                        'label': 'counted toward limits.max_tokens'}))
+        self.assertIn('budget: 5 tokens counted toward limits.max_tokens (no limit; cache reads not counted) '
+                      '[partial]', text.splitlines())
+        self.assertNotIn('budget', cli._human_status(base), 'an older supervisor without run_budget prints none')
+
+
 class DriverLine(unittest.TestCase):
     def board(self):
         d = BASE / self.id().rsplit('.', 1)[-1]
@@ -345,6 +359,91 @@ class Limits(lc.LoopCase):
         self.assertEqual(self.sup.handle({'command': 'resume'})['mode'], 'running')
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
+
+    def test_cache_reads_alone_never_reach_the_token_limit(self):
+        # Owner decision (0.27.0): cache reads are shown and recorded, but limits.max_tokens counts only
+        # input + output + cache_write.
+        self.b.config['limits']['max_tokens'] = 100
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=10, output_tokens=5,
+                                                                cache_read_input_tokens=5000)})
+        self.start()
+        self.until(lambda: self.b.note(12).get('pr') == 12, what="card 12's implementor")
+        self.until(lambda: not self.b.state.snapshot()['active'], what='the card to settle')
+        self.cycles_done(2)
+        self.assertEqual(self.mode(), 'running', 'cache reads alone paused the run')
+        run = self.b.state.snapshot()['run_tokens']
+        self.assertEqual((run['cache_read'], run['total']), (5000, 5015), 'cache reads stay on the board')
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_input_output_and_cache_write_reaching_the_limit_pause(self):
+        self.b.config['limits']['max_tokens'] = 100
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=50, output_tokens=30,
+                                                                cache_creation_input_tokens=20,
+                                                                cache_read_input_tokens=7)})
+        self.start()
+        self.until(lambda: self.mode() == 'paused', what='the token limit pause')
+        reason = self.b.state.snapshot()['pause_reason']
+        self.assertEqual(reason, 'token limit reached: 100 of limits.max_tokens 100 (cache reads not counted)')
+        self.assertEqual(self.b.state.snapshot()['run_tokens']['total'], 107)
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_cache_reads_alone_never_reach_the_per_card_limit(self):
+        self.b.config['limits']['max_tokens_per_card'] = 100
+        self.b.state.add_tokens({'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 5000}, 12)
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=10, output_tokens=5)})
+        self.start()
+        self.until(lambda: self.b.note(12).get('pr') == 12, what="card 12's implementor (not capped)")
+        self.assertEqual(self.count(), 1)
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_input_output_and_cache_write_reaching_the_per_card_limit_wait_the_card(self):
+        self.b.config['limits']['max_tokens_per_card'] = 100
+        self.b.state.add_tokens({'input': 50, 'output': 30, 'cache_write': 20, 'cache_read': 0}, 12)
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': FULL})
+        self.start()
+        self.cycles_done(2)
+        waits = {w['number']: w['reason'] for w in self.sup.last_cycle['waits']}
+        self.assertEqual(waits.get(12), 'card token limit reached')
+        self.assertEqual(self.count(), 0)
+        self.assertEqual(self.b.card(12)['state'], 'ready')
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def limit_reason(self, counts):
+        self.b.config['limits']['max_tokens'] = 100
+        self.sup.config = self.b.config
+        self.b.state.add_tokens(counts, 12)
+        self.assertTrue(self.sup._token_limit_reached())
+        return self.b.state.snapshot()['pause_reason']
+
+    def test_an_unknown_cache_read_alone_adds_no_known_tokens_only_suffix(self):
+        reason = self.limit_reason({'input': 60, 'output': 30, 'cache_write': 10, 'cache_read': None})
+        self.assertTrue(self.b.state.snapshot()['run_tokens']['partial'], 'the displayed totals stay partial')
+        self.assertEqual(reason, 'token limit reached: 100 of limits.max_tokens 100 (cache reads not counted)')
+
+    def test_an_unknown_counted_token_adds_the_known_tokens_only_suffix(self):
+        reason = self.limit_reason({'input': 60, 'output': 40, 'cache_write': None, 'cache_read': 0})
+        self.assertEqual(reason, 'token limit reached: 100 of limits.max_tokens 100 (cache reads not counted)'
+                                 ' (known tokens only)')
+
+    def test_the_status_snapshot_carries_the_budget_and_its_cap(self):
+        self.b.config['limits']['max_tokens'] = 500
+        self.sup.config = self.b.config
+        self.b.state.add_tokens({'input': 60, 'output': 30, 'cache_write': 10, 'cache_read': 900}, 12)
+        self.assertFalse(self.sup._token_limit_reached())
+        budget = self.sup.handle({'command': 'status'})['run_budget']
+        self.assertEqual(budget, {'tokens': 100, 'partial': False, 'cap': 500,
+                                  'label': 'counted toward limits.max_tokens'})
+        self.b.config['limits']['max_tokens'] = 0
+        self.sup._token_limit_reached()
+        self.assertIsNone(self.b.state.snapshot()['run_budget']['cap'], 'no limit is no cap')
 
     def test_a_running_session_finishes_when_the_limit_is_reached(self):
         self.add_card(13)

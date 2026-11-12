@@ -194,6 +194,24 @@ async function main() {
     const b=fakeFetch({notRunning:{all_time:null,planner:null,error:"usage ledger unreadable"},usage:{run:null,all_time:null,planner:null,error:"usage ledger unreadable"}}), c=make(b); await c.flush(); await c.waitForRequests();
     assert.match(c.$("supervisor-tokens").textContent,/All time: unknown/); assert.doesNotMatch(c.$("supervisor-tokens").textContent,/All time: 0/);
   });
+  await check("token strip shows the budget counted toward limits.max_tokens on one line",async()=>{
+    const snap={...snapshot,run_budget:{tokens:1234,partial:false,cap:20000000,label:"counted toward limits.max_tokens"}};
+    const f=fakeFetch({snapshot:snap}), h=make(f); await h.flush(); await h.waitForRequests();
+    const items=h.$("supervisor-tokens").all().filter(n=>/^Budget:/.test(n.textContent));
+    assert.equal(items.length,1,"no single Budget line");
+    assert.equal(items[0].textContent,"Budget: 1,234 of 20,000,000 (cache reads not counted)");
+    assert.equal(items[0].title,"counted toward limits.max_tokens");
+    assert.doesNotMatch(h.$("supervisor-tokens").textContent,/\$/,"a dollar sign in the token strip");
+    const t=h.$("supervisor-tokens").textContent;
+    assert.ok(t.indexOf("This run")<t.indexOf("Budget")&&t.indexOf("Budget")<t.indexOf("All time"),"Budget follows This run");
+    // no cap: no "of"; a partial budget is a lower bound
+    const g=fakeFetch({snapshot:{...snapshot,run_budget:{tokens:5,partial:true,cap:null,label:"counted toward limits.max_tokens"}}}), k=make(g);
+    await k.flush(); await k.waitForRequests();
+    assert.match(k.$("supervisor-tokens").textContent,/Budget: ≥ 5 \(no limit; cache reads not counted\)/);
+    // no supervisor: no budget line
+    const n=fakeFetch({notRunning:true}), m=make(n); await m.flush(); await m.waitForRequests();
+    assert.doesNotMatch(m.$("supervisor-tokens").textContent,/Budget/);
+  });
   await check("no dollar sign rendered",async()=>{
     const run={state:"stopped",stop_reason:"nothing-dispatchable",cost:1.5,cost_estimate_usd:2.5,hours:2};
     const f=fakeFetch({run,usage:{run:tok(15),all_time:tok(1234),planner:tok(7)}}), h=make(f); await h.flush(); await h.waitForRequests();
@@ -249,8 +267,8 @@ async function main() {
     h=await mk({...quiet,stuck_error:"config.sh failed: boom"},[stuck(4,"merge_pending"),fine]);
     assert.match(h.$("stuck-note").textContent,/stuck check failed: config\.sh failed: boom/); assert.equal(h.$("stuck-banner").hidden,false,"last good findings were hidden by an error");
     // suppressed: the suppression text replaces the banner
-    h=await mk({...quiet,stuck_suppressed:"a run is active (pid 77)"},[fine]);
-    assert.equal(h.$("stuck-banner").hidden,true,"banner shown while suppressed"); assert.match(h.$("stuck-note").textContent,/a run is active \(pid 77\)/);
+    h=await mk({...quiet,stuck_suppressed:"a supervisor of another checkout holds the repository run lock (pid 77)"},[fine]);
+    assert.equal(h.$("stuck-banner").hidden,true,"banner shown while suppressed"); assert.match(h.$("stuck-note").textContent,/a supervisor of another checkout holds the repository run lock \(pid 77\)/);
     // the red border is a hard requirement, in light and dark alike
     const css=require("fs").readFileSync(path.join(path.dirname(boardPath),"board.css"),"utf8");
     assert.match(css,/\.card\.card--stuck\s*\{[^}]*border:\s*4px solid #d00000/,"card--stuck lacks a 4px solid #d00000 border");
@@ -530,8 +548,13 @@ async function main() {
     assert.equal(b.disabled,false,"Start disabled while re-checking with a good result");
     b=await startOf({stuck_checking:false,stuck_known:true,stuck_checked_at:1794333510,stuck_error:"boom"});
     assert.equal(b.disabled,false,"a failed re-check hid the last good result");
-    b=await startOf({stuck_checking:false,stuck_known:false,stuck_suppressed:"a run is active (pid 77)"});
-    assert.equal(b.disabled,true,"Start enabled while a run holds the lock"); assert.equal(b.title,"a run is active (pid 77)");
+    const held="a supervisor of another checkout holds the repository run lock (pid 77)";
+    const f2=fakeFetch({notRunning:true,cards:[fine],run:{state:"idle",stuck_error:null,stuck_checking:false,stuck_known:false,stuck_suppressed:held}}), h2=make(f2);
+    await h2.flush(); await h2.waitForRequests(); b=h2.$("supervisor-start-btn");
+    assert.equal(b.disabled,true,"Start enabled while another checkout's supervisor holds the lock"); assert.equal(b.title,held);
+    assert.ok(b.getAttribute("aria-describedby"),"Start has no visible reason");
+    assert.equal(h2.$(b.getAttribute("aria-describedby")).textContent,held,"the visible reason is not the lock notice");
+    assert.match(h2.$("stuck-note").textContent,/another checkout holds the repository run lock \(pid 77\)/);
   });
   await check("the Start acknowledgement waits for ready",async()=>{
     const f=fakeFetch({notRunning:true}), h=make(f); await h.flush(); await h.waitForRequests();

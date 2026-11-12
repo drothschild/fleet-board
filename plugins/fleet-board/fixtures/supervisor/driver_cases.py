@@ -782,22 +782,34 @@ def test_redispatch_is_declined_when_the_caller_says_so(base):
     assert b.note()['action_failures'] == 1 and 'rejected' in b.note()['last_action_error']
 
 
-def test_rules_cover_every_rejection_message_of_the_reporting_skill(base):
-    # Retargeted from the retired manager agent's rule table (the manager agent is gone): the driver's own
-    # _RULES are the re-dispatch source now. Every rejection message the reporting skill lists has a rule,
-    # in the same order, so a re-dispatch can always quote one; the rule wording is the driver's.
+def test_rules_match_the_reporting_skill_table_cell_for_cell(base):
+    # The driver's _RULES are the re-dispatch source (the retired manager agent's rule table is gone). Each row
+    # of the reporting skill's rejection table is a (message, rule) pair in _RULES, in the same order, with the
+    # same text. Only the rows below differ on purpose: the driver words their rules more briefly, so for them
+    # only the message is compared.
     import re
+    briefer = {'role <role> requires ## <section>', 'out of scope entry needs <title> :: <detail>: <entry>'}
+    # A rule the driver adds after the table: parse-report.sh emits it, the skill's table does not list it.
+    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>']
     lines = (PLUGIN / 'skills' / 'reporting' / 'SKILL.md').read_text().splitlines()
     start = [i for i, l in enumerate(lines) if l.startswith('| Rejection message')][0]
-    messages = []
+    rows = []
     for line in lines[start + 2:]:
         if not line.startswith('|'):
             break
-        cells = [c.strip() for c in re.split(r'(?<!\\)\|', line)[1:-1]]
-        messages.append(cells[0].strip('`').replace('\\|', '|'))
-    ours = [r[0] for r in driver._RULES]
-    assert messages and ours[:len(messages)] == messages, 'row order or text drifted'
-    assert all(rule for _, rule in driver._RULES), 'a message has no rule text'
+        cells = [c.strip().replace('\\|', '|') for c in re.split(r'(?<!\\)\|', line)[1:-1]]
+        rows.append((cells[0][1:-1] if cells[0].startswith('`') and cells[0].endswith('`') else cells[0], cells[1]))
+    ours = list(driver._RULES)
+    assert [m for m, _ in ours[len(rows):]] == driver_only, 'driver-only rows drifted: %r' % ours[len(rows):]
+    ours = ours[:len(rows)]
+    assert rows and len(ours) == len(rows), 'row count drifted: skill %d, driver %d' % (len(rows), len(ours))
+    assert briefer <= {m for m, _ in rows}, 'an exception row is gone from the skill: %r' % briefer
+    for (message, rule), (our_message, our_rule) in zip(rows, ours):
+        assert our_message == message, 'message drifted: %r != %r' % (our_message, message)
+        if message in briefer:
+            assert our_rule and our_rule != rule, 'exception row now matches; drop it from the list: %r' % message
+        else:
+            assert our_rule == rule, 'rule text drifted for %r:\n driver %r\n skill  %r' % (message, our_rule, rule)
     text = driver.rejection_text(['parse-report: expected exactly one VERIFIED: line, found 2'])
     assert '..' not in text.replace('...', ''), text
     assert 'found 2\nThere is exactly one `VERIFIED:` line.\nThe rule: every report' in text, text
@@ -1154,7 +1166,7 @@ def test_evidence_reviewer_path(base):
                 'last_review': dict(LAST_REVIEW, sha='feed123')})
     fake_plugin(b, 0, json.dumps({'status': 'posted', 'report_file': report_file(b, 'reviewer-ok'),
                                   'parsed': {}, 'provider': 'codex', 'model': 'gpt-5', 'sha': 'deadbee',
-                                  'input_tokens': None, 'output_tokens': None, 'cost_usd': 0, 'attempts': 1}))
+                                  'input_tokens': None, 'output_tokens': None, 'attempts': 1}))
     started = begin(b, 'review', state='in_review', round=2)
     assert started.kind == 'session' and started.action.role == 'reviewer' and started.action.provider == 'codex'
     assert 'worktree.sh' not in b.scripts_called(), 'the evidence runner makes its own review worktree'
@@ -1214,7 +1226,7 @@ def test_provider_stage_exit_7_blocks(base):
 
 def test_provider_stage_done_records_the_stage_review(base):
     out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
-           'input_tokens': 5, 'output_tokens': 6, 'cost_usd': 0, 'attempts': 1}
+           'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
     b, stage = provider_stage_board(base, 0, '')
     out['report_file'] = report_file(b, 'stage-reviewer-findings')
     fake_plugin(b, 0, json.dumps(out))
@@ -1228,7 +1240,7 @@ def test_provider_stage_done_records_the_stage_review(base):
 def _stage_ledger_line(base, **tokens):
     from supervisor import usage
     out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
-           'cost_usd': 0, 'attempts': 1}
+           'attempts': 1}
     out.update(tokens)
     b, stage = provider_stage_board(base, 0, '')
     out['report_file'] = report_file(b, 'stage-reviewer-findings')

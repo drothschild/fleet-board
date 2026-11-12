@@ -2388,6 +2388,15 @@ function tokensText(t) {
   return partial ? "≥ " + fmtInt(t.total) + " (some usage unknown)" : fmtInt(t.total) + " tokens";
 }
 
+// budgetText(b): the one Budget line, the tokens counted toward limits.max_tokens (input, output and
+// cache write; cache reads are shown in "This run" but not counted). Null when the status has none.
+function budgetText(b) {
+  if (!b || typeof b !== "object" || !isNum(b.tokens)) return null;
+  const n = (b.partial === true ? "≥ " : "") + fmtInt(b.tokens);
+  return isNum(b.cap) && b.cap > 0 ? "Budget: " + n + " of " + fmtInt(b.cap) + " (cache reads not counted)"
+    : "Budget: " + n + " (no limit; cache reads not counted)";
+}
+
 // One count of a usage row: null (the ledger could not read it) is "unknown", never 0.
 function countText(v) {
   return isNum(v) ? fmtInt(v) : "unknown";
@@ -2744,6 +2753,12 @@ function renderTokens() {
   else if (!S.supervisor) run = "none (no supervisor running)";
   else run = tokensText(runTokens);
   frag.appendChild(el("span", "sup-item sup-tok", "This run: " + run));
+  const budget = budgetText(S.supervisor && S.supervisor.run_budget);
+  if (budget) {
+    const b = el("span", "sup-item sup-tok sup-tok-budget", budget);
+    b.title = clean(S.supervisor.run_budget.label || "counted toward limits.max_tokens", 80);
+    frag.appendChild(b);
+  }
   const allTime = el("span", "sup-item sup-tok", "All time: " + tokensText(u && u.all_time));
   const rest = shownUnknownTokens() ? null : tokenRemainder();   // else it is on the Unknown state header
   if (rest) allTime.title = rest.title;

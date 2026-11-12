@@ -3,7 +3,7 @@
 #
 # Usage: tick-plan.sh                 (run inside the repo)
 #        tick-plan.sh --candidates    (read-only eligibility snapshot for supervisor admission)
-#        tick-plan.sh --settle <n>... (settle mode, below)
+#        tick-plan.sh --settle-merge <n>... (settle mode for merge-reviewed.sh, below)
 #
 # Lists the ready, in_progress, in_review, review_<name> (one per configured
 # review stage, in config order) and blocked columns, reads each card
@@ -137,7 +137,7 @@
 #
 # The decision table itself is the single jq program below.
 #
-# Settle mode (--settle <n>...): the same plan JSON for only the named cards,
+# Settle mode (--settle-merge <n>..., merge-reviewed.sh's planner): the same plan JSON for only the named cards,
 # keeping only the steps that start no agent. Each card is read with
 # board-read.sh (its column comes from that read); no column is listed. The
 # table's result is filtered: to_human_qa, advance_stage, block and mark_ready stay;
@@ -145,11 +145,11 @@
 # round 1 and pr; no dispatch; the next tick's review action starts the
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
-# dispatchable false. A plan without --settle never emits move_to_review.
-# --settle-merge is --settle that also keeps merge and verify_main actions (merge-reviewed.sh
-# carries it out; settle.sh never asks for it).
+# dispatchable false. A plan without --settle-merge never emits move_to_review.
+# Settle mode also keeps merge and verify_main actions (merge-reviewed.sh carries them out and
+# ignores every other action). The by-hand --settle flag went with the by-hand settle script in 0.27.0.
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
-# Exit 2 when --settle has no card or a non-numeric card.
+# Exit 2 when --settle-merge has no card or a non-numeric card.
 #
 # Pending follow-ups (note.pending_followups) hold a card in file_pending only
 # when a PR is known to file them against: pending_followups.pr, else note.pr,
@@ -257,16 +257,15 @@ KEEP_MERGE=false
 CANDIDATES=false
 if [ $# -gt 0 ]; then
   case "$1" in
-    --settle) ;;
     --settle-merge) KEEP_MERGE=true ;; # merge-reviewed.sh: settle mode that also keeps merge
     --candidates) CANDIDATES=true ;;
-    *) fb_die 2 "usage: tick-plan.sh [--candidates|--settle|--settle-merge <n>...]" ;;
+    *) fb_die 2 "usage: tick-plan.sh [--candidates|--settle-merge <n>...]" ;;
   esac
   shift
   if [ "$CANDIDATES" = true ]; then
     [ $# -eq 0 ] || fb_die 2 "usage: tick-plan.sh --candidates (cannot combine with other modes)"
   else
-    [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle <n>... (at least one card)"
+    [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle-merge <n>... (at least one card)"
     for a in "$@"; do
       fb_valid_number "$a" || fb_die 2 "card number must be numeric, got: $a"
       case " $SETTLE_NUMS " in *" $a "*) ;; *) SETTLE_NUMS="$SETTLE_NUMS $a" ;; esac
