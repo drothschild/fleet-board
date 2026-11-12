@@ -823,7 +823,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         # starts the after-merge merger); a pending merge_refusal at this head plans merge_refusal
         # (the refusal merger) unless the merger asked for attention. A merge after a merger retry
         # carries retry_after (note.merge_retry.after), the time before which the supervisor holds it.
-        # Attention is a person's: clear it with `note.sh merge <n>` setting merger: null (and merge_refusal: null,
+        # Attention waits for a person, who clears it with `note.sh merge <n>` setting merger: null (and merge_refusal: null,
         # merge_retry: null to let the card merge again), or move the card by hand.
         elif is_merging($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in merging, but no PR is known")
