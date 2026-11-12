@@ -670,5 +670,60 @@ class ServiceClose(unittest.TestCase):
             self.assertTrue(reply['ok'], reply)
 
 
+class StopAndReap(LoopCase):
+    def test_a_signal_landing_inside_request_stop_never_downgrades_cancel_to_drain(self):
+        order = []
+
+        class Racy(loop.Supervisor):
+            """A signal handler that runs right before request_stop stores its mode."""
+            injected = False
+
+            @property
+            def _stop_mode(self):
+                return self.__dict__.get('_mode')
+
+            @_stop_mode.setter
+            def _stop_mode(self, value):
+                if value == 'drain' and not Racy.injected:
+                    Racy.injected = True
+                    self.on_signal(signal.SIGTERM)
+                order.append(value)
+                self.__dict__['_mode'] = value
+
+        sup = Racy(self.b.root, config_loader=self.load, state=self.b.state, driver=self.b.driver,
+                   scheduler=self.sched, fetch=self.fetch, clock=self.clock, mono=self.mono, run=self.b.run)
+        sup.request_stop('drain')
+        self.assertTrue(Racy.injected, 'the race was not provoked')
+        self.assertEqual(sup._stop_mode, 'cancel')
+
+    def test_a_drain_never_replaces_a_cancel_and_the_effective_mode_is_reported(self):
+        self.assertEqual(self.sup.request_stop('cancel'), 'cancel')
+        self.assertEqual(self.sup.request_stop('drain'), 'cancel')
+
+    def test_reap_that_gives_up_still_writes_a_ledger_line_with_unknown_counts(self):
+        from supervisor import state, usage
+
+        class Stuck:
+            def cancel(self, grace):
+                pass
+
+            def poll(self):
+                return None
+
+        action = state.Action(card=12, action='start', column='ready', role='implementor', provider='claude',
+                              paths=[], started_at=time.time(), started_mono=time.monotonic(), session=Stuck())
+        self.b.state.begin(action)
+        with mock.patch.object(loop, 'REAP_WAIT', 0.2):
+            self.sup._reap()
+        lines, skipped = usage.read(self.b.root)
+        self.assertEqual((len(lines), skipped), (1, 0))
+        line = lines[0]
+        self.assertEqual((line['card'], line['action'], line['column'], line['role'], line['run_id']),
+                         (12, 'start', 'ready', 'implementor', self.b.state.run_id))
+        for key in usage.COUNTS:
+            self.assertIsNone(line[key], key)
+        self.assertTrue(self.b.state.run_tokens['partial'])
+
+
 if __name__ == '__main__':
     unittest.main()
