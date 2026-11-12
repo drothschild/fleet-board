@@ -164,22 +164,25 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `<LOG_DIR>/<owner>-<name>.lock` (pid, then `ps -o lstart=` in C/UTC; the board page's
   `run.pid` format) for its life and exits 1 while another live run holds it; `board-web.py`
   reads the same path, so keep the two in step.
-- **Persistent supervisor** (`scripts/supervisor/`, `scripts/supervisor.sh`; **disabled**:
-  `supervisor.enabled` defaults to false and nothing schedules work yet). The service owns one
-  domain: private 0700 socket dir + 0600 controller socket (location from `supervisor/paths.py`,
-  the single definition shared by service, CLI and board server; domain ids are a pure hash, never
-  a DB open), a separate restricted worker socket, actor derived from peer credentials (never from
-  a request body), explicit `request_id` + `expected_revision` on every mutation (stale => 409
-  with current state; request-id replay returns the original outcome), typed error codes
-  (`supervisor/errors.py`, one classifier), `supervisor.enabled: false` => read-only service and
-  the board's `/api/supervisor*` and `/api/cards/<n>/execution*` routes answer 404. Ownership
-  shares the run lock with the legacy wrapper (`claim-run-lock.py --kind service`). CLI:
-  `supervisor.sh start|pause|resume|stop --mode drain|cancel|status|reconcile|events|resolve`
-  (exit 2 usage, 3 start refused because disabled). `resolve` applies an action only with an
-  injected verifier or trusted evidence (default verifiers reject everything), so over the wire it
-  fails closed; a default shutdown check reports unresolved while any attempt is live. Status shape
-  is the merged `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
-  (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
+- **Command-line supervisor** (`scripts/supervisor/`, `scripts/supervisor.sh`; design:
+  `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`). After Phase 1 it is a
+  foreground process you start yourself: `supervisor.sh start` runs until Ctrl-C, SIGTERM or
+  `stop`; `status`, `pause`, `resume` and `stop [--drain|--cancel]` talk to it over one socket.
+  It keeps everything in memory (`state.py`, `scopes.py`): no database, no journal, no restart
+  recovery, no OS service or boot registration, no sandbox; it dispatches nothing yet. The socket
+  is a 0600 file in a 0700 directory under `/tmp/fleet-board-<uid>/` (or `FLEET_BOARD_SOCKET_DIR`;
+  never `$TMPDIR`), location from `supervisor/paths.py`, the one definition shared by service, CLI
+  and board server; domain ids are a pure hash. The actor comes from peer credentials (never a
+  request body), every mutation carries `request_id` + `expected_revision` (stale => 409 with
+  current state; request-id replay returns the original outcome), typed error codes in
+  `supervisor/errors.py`. Ownership shares the run lock with the legacy wrapper
+  (`claim-run-lock.py --kind service`). The board server has no config switch: its
+  `/api/supervisor*` routes and supervisor-shaped `/api/run` answer only while a supervisor
+  socket answers `status` within 1 s (`supervisor_running()`), otherwise 404 and the legacy run
+  API; a Start treats a stopping supervisor as not running and waits for it to go before
+  launching. Status is `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service
+  output (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service
+  cannot drift.
 
 ## Invariants
 

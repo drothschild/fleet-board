@@ -758,21 +758,24 @@ assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"
 REPO="$(make_test_repo supervisor-default.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor defaults accepted" 0
-assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"enabled":false,"start_on_boot":true,"reconcile_interval_seconds":5,"heartbeat_interval_seconds":10,"heartbeat_timeout_seconds":60,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
-REPO="$(make_test_repo supervisor-disabled-boot.yml)"
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
+assert_stdout_exact_jq "supervisor defaults carry no enabled, start_on_boot or heartbeat key" '.supervisor | [has("enabled"), has("start_on_boot"), has("heartbeat_interval_seconds"), has("heartbeat_timeout_seconds")]' '[false,false,false,false]'
+REPO="$(make_test_repo supervisor-caps.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_exit "supervisor enabled with boot disabled and configured caps" 0
-assert_stdout_exact_jq "supervisor booleans preserved" '.supervisor | [.enabled,.start_on_boot]' '[true,false]'
+assert_exit "supervisor with configured caps" 0
 assert_stdout_exact_jq "supervisor provider caps preserved" '.supervisor.provider_concurrency' '{"claude":2,"codex":1}'
+# config.sh checks only the supervisor keys it knows: a stale enabled or start_on_boot is ignored, not rejected.
+for k in enabled start_on_boot heartbeat_interval_seconds; do
+  for v in null 1 '"true"' 0; do
+    REPO="$(printf 'board: { repo: a/b }\nsupervisor: { %s: %s }\n' "$k" "$v" | make_inline_repo)"
+    CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+    assert_exit "supervisor $k: $v is ignored, not validated" 0
+  done
+done
 REPO="$(make_test_repo supervisor-invalid.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor invalid fixture rejected" 5
-for k in enabled start_on_boot; do
-  for v in null 1 '"true"' '[]'; do
-    invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be boolean"
-  done
-done
-for k in reconcile_interval_seconds heartbeat_interval_seconds heartbeat_timeout_seconds progress_timeout_seconds attempt_timeout_seconds shutdown_grace_seconds retry_backoff_seconds aging_seconds; do
+for k in reconcile_interval_seconds progress_timeout_seconds attempt_timeout_seconds shutdown_grace_seconds retry_backoff_seconds aging_seconds; do
   for v in 0 -1 1.5 null '"5"' '[]'; do
     invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be a positive integer"
   done
@@ -783,8 +786,6 @@ invalid_field_case "supervisor unknown cap" 'supervisor: { provider_concurrency:
 for v in 0 -1 1.5 null '"1"' '[]'; do
   invalid_field_case "supervisor cap rejects $v" "supervisor: { provider_concurrency: { claude: $v } }" 'supervisor.provider_concurrency.claude must be a positive integer'
 done
-invalid_field_case "supervisor heartbeat equality" 'supervisor: { heartbeat_interval_seconds: 60, heartbeat_timeout_seconds: 60 }' 'supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds'
-invalid_field_case "supervisor heartbeat less" 'supervisor: { heartbeat_interval_seconds: 61, heartbeat_timeout_seconds: 60 }' 'supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds'
 invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 
