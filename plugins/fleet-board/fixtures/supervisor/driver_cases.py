@@ -457,6 +457,24 @@ def test_finish_blocked_after_merge_posts_the_comment(base):
     assert b.comments() == ['after-merge: rm is not on the allowlist']
 
 
+def test_finish_of_a_merging_card_blocks_from_merging(base):
+    b = board_for(base, 'merging', body='## After merge\n\n- `rm -rf x`\n')
+    b.stubs['after-merge.sh'] = ok(json.dumps({'outcome': 'blocked', 'results': [
+        {'command': 'rm -rf x', 'status': 'refused', 'exit': 126}], 'note': ['x'],
+        'comment': 'after-merge: rm is not on the allowlist'}))
+    begin(b, 'finish', state='merging')
+    assert b.card()['state'] == 'blocked' and b.note()['blocked_from'] == 'merging', b.note()
+
+
+def test_finish_after_the_merger_ran_does_not_rerun_after_merge(base):
+    b = board_for(base, 'merging', body='## After merge\n\n- `make deploy`\n')
+    b.put_note({'merger': {'mode': 'after_merge', 'status': 'done', 'head': 'abc1234'}})
+    b.stubs['after-merge.sh'] = lambda *a: (_ for _ in ()).throw(AssertionError('after-merge.sh ran twice'))
+    begin(b, 'finish', state='merging')
+    assert b.card()['state'] == 'done', b.calls
+    assert 'after-merge.sh' not in b.scripts_called()
+
+
 def test_unblock_resets_the_blocking_fields(base):
     b = board_for(base, 'blocked')
     b.put_note({'blocking_pr': 9, 'blocked_from': 'in_review',
@@ -615,7 +633,7 @@ def test_begin_refuses_merge_and_unknown_actions(base):
     assert b.calls == [] and 12 not in b.state.active
     assert 'skip' in driver.SCRIPT_ACTIONS and 'merge' not in driver.SCRIPT_ACTIONS
     assert driver.SCRIPT_ACTIONS.isdisjoint(driver.ROLE_ACTIONS)
-    assert {'start', 'start_review', 'fix', 'review'} <= set(driver.ROLE_ACTIONS)
+    assert {'start', 'start_review', 'fix', 'review', 'after_merge', 'merge_refusal'} <= set(driver.ROLE_ACTIONS)
 
 
 def test_a_busy_card_is_refused(base):
@@ -1358,15 +1376,6 @@ def test_a_block_from_review_leaves_the_merge_records_alone(base):
     b.put_note({'last_review': LAST})
     begin(b, 'block', state='in_review', reason='r')
     assert 'pending_merge' not in b.note() and 'merge_refusal' not in b.note(), b.note()
-
-
-def test_begin_merger_is_a_hook_until_task_4_5(base):
-    b = board_for(base, 'merging')
-    try:
-        b.driver.begin_merger(12, 'merged', {})
-    except NotImplementedError:
-        return
-    raise AssertionError('begin_merger must raise NotImplementedError until the merger session exists')
 
 
 if __name__ == '__main__':
