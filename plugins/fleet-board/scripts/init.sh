@@ -31,7 +31,7 @@ unset CDPATH
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=board-lib.sh
 . "$HERE/board-lib.sh"
-CANONICAL="backlog ready in_progress in_review human_qa blocked done wont_do"
+CANONICAL="backlog ready in_progress in_review merging human_qa blocked done wont_do"
 HEADER='# fleet-board config. See the fleet-board README.'
 NL='
 '

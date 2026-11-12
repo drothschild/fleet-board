@@ -5,7 +5,7 @@
 # Exports: FLEET_CFG, FLEET_ROOT, FLEET_REPO, FLEET_SCRIPTS (set by fb_load_config)
 # FB_LOCK is set by fb_lock and used with trap EXIT to clean up
 
-FB_STATES_FIXED="backlog ready in_progress in_review human_qa blocked done wont_do"
+FB_STATES_FIXED="backlog ready in_progress in_review merging human_qa blocked done wont_do"
 FB_STATES="$FB_STATES_FIXED"
 FB_MARKER='<!-- fleet-board:manager-note -->'
 # With CDPATH exported, a relative cd can land in a CDPATH directory and echo
@@ -160,6 +160,7 @@ fb_default_name() {
     ready) echo "Ready" ;;
     in_progress) echo "In Progress" ;;
     in_review) echo "In Review" ;;
+    merging) echo "Merging" ;;
     human_qa) echo "Human QA" ;;
     blocked) echo "Blocked" ;;
     done) echo "Done" ;;

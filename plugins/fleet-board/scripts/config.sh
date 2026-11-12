@@ -210,7 +210,7 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" and (.board.states | type) == "object" then
         (stage_names as $names
           | .board.states | to_entries | map(
-              if (.key | test("^(backlog|ready|in_progress|in_review|human_qa|blocked|done|wont_do)$")) then empty
+              if (.key | test("^(backlog|ready|in_progress|in_review|merging|human_qa|blocked|done|wont_do)$")) then empty
               elif (.key | startswith("review_")) then (.key | ltrimstr("review_")) as $n |
                 (if ($names | index($n)) != null then empty else "board.states key \(.key) names no stage" end)
               else "board.states key \(.key) is not canonical" end)[])

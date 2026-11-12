@@ -444,7 +444,7 @@ card_input() {
   fi
 
   # The card's own PR: known from the note, or discovered from its branch
-  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$st" = merging ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
     branch="$(jq -r '.branch // empty' <<<"$note")"
     if [ "$pr" = null ] && [ -n "$branch" ]; then
       cmd="gh pr list --repo $FLEET_REPO --head $branch --state open --json number"
@@ -650,7 +650,7 @@ if [ "$SETTLE" = true ]; then
 fi
 
 SEEN=" "
-for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
+for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
   NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
@@ -695,7 +695,7 @@ if [ "$SETTLE" != true ] && { [ "$CANDIDATES" = true ] || jq -es 'any(.[]; .stat
     fi
     jq -cn --argjson n "$n" --argjson paths "$paths" --argjson unknown "$unknown" \
       '{number:$n, paths:$paths, unknown:$unknown}' >> "$SCOPE_FILE" || fb_die 1 "cannot record scope input"
-  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
+  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "merging" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
 fi
 
 # Provider stages whose API key variable is unset or empty (checked here, so
@@ -733,6 +733,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   # absolute, and single-quoted when the shell would split or expand it
   # A review column: in_review, or the column of a configured stage ($c.stage set)
   def is_review($c): $c.state == "in_review" or $c.stage != null;
+  # merging (merge.policy auto only): the card is past review, its PR is being merged
+  def is_merging($c): $c.state == "merging";
   # The conflicted files update-branch.sh recorded in the note (strings only)
   def conflict_files($n): [($n.conflicted_files // [])[]? | strings | select(. != "")];
   def reset_cmd($n): "bash \($note_sh | if test("\\A[A-Za-z0-9/._+:@-]+\\z") then . else @sh end) reset-failures \($n)";
@@ -757,14 +759,14 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
         # Never let failure limits or follow-ups move an unverified merge out
         # of review, where the headless recovery pass can still find it.
-        elif is_review($c) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
+        elif (is_review($c) or is_merging($c)) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
           then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
         elif $n.pending_followups != null and ($n.pending_followups.pr // $n.pr // $c.pr) != null
           then act("file_pending"; "pending follow-ups")
-        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c))
+        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c) or is_merging($c))
              and $fails >= 2 * $max
           then act("skip"; "could not be blocked after \($fails) attempts: \($err)")
-        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c))
+        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c) or is_merging($c))
              and $fails >= $max
           then act("block"; "no progress after \($fails) attempts: \($err)")
         elif $c.state == "blocked" and $n.blocking_pr != null and $c.blocking_merged == true and $fails >= $max
@@ -790,6 +792,19 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           if $c.pr != null then act("start_review"; "PR #\($c.pr) exists")
           elif $tries >= $max then act("block"; "implementor produced no PR after \($tries) attempts")
           else act("continue_implementor"; "no PR yet (\($tries) of \($max) implementor attempts)") end
+        # merging: the merge itself. A merge_operation marker (merge-reviewed.sh, keyed form)
+        # means the merge is in flight or was refused: the supervisor decides, not the planner.
+        elif is_merging($c) then
+          if $c.pr == null or $c.pr_info == null then act("skip"; "in merging, but no PR is known")
+          elif $c.pr_info.state == "MERGED" then
+            if $n.main_check.ok != true then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
+            else act("finish"; "PR #\($c.pr) merged and main verified") end
+          elif $c.pr_info.state == "CLOSED" then act("block"; "PR #\($c.pr) closed without a merge")
+          elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
+          elif $n.merge_operation != null then act("skip"; "merge in flight or refused; supervisor decides")
+          elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
+          else act("merge"; "PR #\($c.pr) open at the merge head, merge.policy auto") end
         elif is_review($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in review, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
@@ -841,7 +856,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
-  | [$all[] | select(.state == "in_progress" or is_review(.))] as $open
+  | [$all[] | select(.state == "in_progress" or is_review(.) or is_merging(.))] as $open
   | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
   | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
   | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger

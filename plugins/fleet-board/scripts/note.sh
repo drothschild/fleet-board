@@ -41,7 +41,7 @@
 # get, parse, merge and put read them as action_failures and
 # last_action_error (the new key wins when both are present) and drop them.
 #
-# blocked_from (null, or ready, in_progress or in_review) is the state the
+# blocked_from (null, or ready, in_progress, in_review or merging) is the state the
 # manager blocked the card from; accept.sh moves the card back to it. get
 # rejects any other value.
 #
@@ -151,7 +151,7 @@ invalid_field() {
     elif (.reviewed_stages | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "reviewed_stages"
     elif (.last_review | . == null or type != "object" or (.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "last_review.stage"
     elif (.last_review | . == null or type != "object" or (.provider | . == null or (type == "string" and test("\\A[a-z][a-z0-9_-]*\\z"))) | not) then "last_review.provider"
-    elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review"
+    elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review" or . == "merging"
             or (type == "string" and test("\\Areview_[a-z][a-z0-9_]*\\z")) | not) then "blocked_from"
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
             and (.at | type == "string" and clean) and (.sha | type == "string" and test("\\A[0-9a-f]+\\z"))) | not) then "accepted"

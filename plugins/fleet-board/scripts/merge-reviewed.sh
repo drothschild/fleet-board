@@ -3,8 +3,8 @@
 # headless runs.
 #
 # Usage: merge-reviewed.sh      (no arguments; run from the repo root)
-#        merge-reviewed.sh --card <n>
-#        merge-reviewed.sh --card <n> --operation-key <key> --pr <pr> --head <sha>
+#        merge-reviewed.sh --card <n> [--no-finish]
+#        merge-reviewed.sh --card <n> --operation-key <key> --pr <pr> --head <sha> [--no-finish]
 #        merge-reviewed.sh --inspect --card <n> --operation-key <key> --pr <pr> --head <sha>
 #
 # Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge`
@@ -14,7 +14,7 @@
 #
 # What it does:
 #   1. merge.policy other than auto: exits 0 and makes no call at all.
-#   2. Lists the in_review column and every review stage column (a card in
+#   2. Lists the in_review column, every review stage column and merging (a card in
 #      Human QA is never listed). A
 #      listing that fails ends the run with exit 1 before anything is written.
 #   3. Repeatedly runs tick-plan.sh --settle-merge on remaining cards. The planner plans
@@ -33,6 +33,11 @@
 # A failure on one card ends that card's steps; the next tick plans what is
 # left (a merged PR is planned verify_main, then finish).
 #
+# --no-finish (with --card, also the keyed form): merges, notes merged_pr (and
+# merge_operation), verifies main and notes main_check, then stops. The card is
+# not moved to done and no done note is written (the supervisor finishes it
+# after the merger); exit codes are unchanged (3 on a failed verification).
+#
 # Exit codes:
 #   0 - nothing to do, or every planned merge succeeded
 #   1 - the column or the plan could not be read, or some step failed
@@ -48,6 +53,14 @@
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
+
+NO_FINISH=0
+ARGS=()
+for a in "$@"; do
+  if [ "$a" = --no-finish ]; then NO_FINISH=1; else ARGS+=("$a"); fi
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+[ "$NO_FINISH" = 0 ] || [ "$#" -gt 0 ] || fb_die 2 "--no-finish requires --card"
 
 INSPECT=0
 CARD_ONLY=""
@@ -109,7 +122,7 @@ TMPD="$(mktemp -d)" || fb_die 1 "mktemp failed"
 
 
 NUMS=""
-for st in in_review $(fb_stage_states); do
+for st in in_review $(fb_stage_states) merging; do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st" </dev/null)" || fb_die 1 "cannot list the $st column; nothing merged"
   COL="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column; nothing merged"
@@ -167,7 +180,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   REST=""
   for candidate in $NUMS; do [ "$candidate" = "$n" ] || REST="$REST $candidate"; done
   NUMS="$REST"
-  case "$(jq -r '.state' <<<"$card")" in in_review|review_*) ;; *) continue ;; esac
+  case "$(jq -r '.state' <<<"$card")" in in_review|review_*|merging) ;; *) continue ;; esac
 
   if [ "$(jq -r '.action' <<<"$card")" = merge ]; then
     case "$head" in ''|*[!0-9a-fA-F]*) fb_die 3 "missing or invalid planned head for #$n" ;; esac
@@ -218,6 +231,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     merge_note "$n" "$(jq -c '{main_check: .}' <<<"$main_check")" || fb_die 3 "#$n: cannot record main verification"
   fi
   [ "$(jq -r '.ok' <<<"$main_check")" = true ] || fb_die 3 "#$n: main verification failed; stopping merge drain"
+  [ "$NO_FINISH" = 0 ] || continue # --no-finish: the card stays where it is
 
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null)" || { fail "$n" "cannot read pending follow-ups"; continue; }
   if jq -e '.pending_followups != null' <<<"$note" >/dev/null; then
@@ -232,7 +246,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   final_state="$(jq -er '.state // empty' <<<"$final_card" 2>/dev/null)" \
     || { fail "$n" "cannot determine card state before completing merge"; continue; }
   case "$final_state" in
-    in_review|review_*) ;;
+    in_review|review_*|merging) ;;
     *) warn "#$n: card moved to $final_state during verification; leaving its state unchanged"; continue ;;
   esac
   bash "$FLEET_SCRIPTS/board-move.sh" "$n" done </dev/null >/dev/null || { fail "$n" "board-move to done failed"; continue; }
