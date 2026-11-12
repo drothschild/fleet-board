@@ -109,7 +109,7 @@ expect "a headline ending in an ellipsis with an ordinary body passes" 0
 
 # Malformed input never breaks the report or the check.
 jq -n '{title: "t", body: "b", commits: [{oid: "a/b&c\\x", messageHeadline: "Fixes #1", messageBody: ""}]}' > "$FAKE_PR_JSON"; run 34
-expect "an oid with sed metacharacters still names the commit hit" 1 "commit a: "
+expect "an oid with sed metacharacters still names the commit hit" 1 "commit abc: "
 { jq -n '{title: "t", body: "b", commits: []}'; jq -n '{title: "t", body: "b", commits: []}'; } > "$FAKE_PR_JSON"; run 34
 expect "two JSON documents exit 3" 3
 

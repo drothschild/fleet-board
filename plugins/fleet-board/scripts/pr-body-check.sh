@@ -11,7 +11,8 @@
 # Rejected, in any case, with or without a colon: close, closes, closed, fix,
 # fixes, fixed, resolve, resolves, resolved, followed by "#<digits>",
 # "<owner>/<repo>#<digits>", "GH-<digits>" or a github.com issues or pull URL,
-# also when markdown marks (* _ ` < [) wrap the keyword or the reference.
+# also when markdown marks (* _ ` ~ < [) or HTML tags wrap the keyword, the
+# colon or the reference.
 # GitHub documents only "KEYWORD #N" and "KEYWORD OWNER/REPO#N", with an
 # optional colon, in any case. The rest is caught anyway, since a false
 # positive costs a reword and a miss closes an unrelated issue: GH-<digits>,
@@ -37,11 +38,12 @@ fi
 body="$(printf '%s\n' "$body" | LC_ALL=C sed $'s/\xc2\xa0/ /g; s/\xe2\x80\xaf/ /g')" \
   || { echo "pr-body-check: sed failed" >&2; exit 2; }
 
-# Markdown emphasis or code marks (* _ ` < [) may wrap the keyword or the reference.
+# Markdown emphasis, strikethrough or code marks (* _ ` ~ < [) and HTML tags
+# may wrap the keyword, the colon or the reference.
 KW='(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)'
 REF='(([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+|gh-[0-9]+|(https?://)?(www\.)?github\.com/[^/[:space:]]+/[^/[:space:]]+/(issues|pull)/[0-9]+)'
-WRAP='[*_`<[]*'
-GAP='[[:space:]]*:?[[:space:]]*'
+WRAP='([*_`~<[]|<[^>]*>)*'
+GAP="[[:space:]]*${WRAP}:?${WRAP}[[:space:]]*"
 J=$'\001' # joins a line to the next one
 PAT="(^|[^[:alnum:]_])${WRAP}${KW}${WRAP}${GAP}${WRAP}${REF}"
 SPLIT="(^|[^[:alnum:]_])${WRAP}${KW}${WRAP}${GAP}${J}${GAP}${WRAP}${REF}"

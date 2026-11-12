@@ -48,16 +48,28 @@ else
   what="PR #$pr"
 fi
 
+# Exactly one JSON document.
+json="$(jq -cs 'if length == 1 then .[0] else error("not one document") end' <<<"$json" 2>/dev/null)" \
+  || { echo "pr-closing-check: cannot check $what in full (not one JSON reply)" >&2; exit 3; }
+
+# GitHub cuts a long commit subject at about 70 characters: messageHeadline
+# ends in "…" and messageBody opens with "…" and the rest of the line. The
+# commit on main holds the whole line, so the halves are joined again.
+MSG='def msg: if (.messageHeadline | endswith("…")) and (.messageBody | startswith("…"))
+  then (.messageHeadline | .[0:length - 1]) + (.messageBody | .[1:])
+  else .messageHeadline + "\n\n" + .messageBody end;
+def commit_label: "commit \((.oid // "") | tostring | gsub("[^0-9a-fA-F]"; "") | .[0:7])";'
+
 # Title, body, then each commit (headline, a blank line, the body), each part
 # opening with a label line so a reference cannot run on from the part before.
-text="$(jq -er '
+text="$(jq -er "$MSG"'
   def str: type == "string";
   if type == "object" and (.title | str) and has("body") and (.body | str or . == null)
      and (.commits | type == "array") and (.commits | length) < 100
      and all(.commits[]; type == "object" and (.messageHeadline | str) and (.messageBody | str))
   then
     "PR title:", .title, "", "PR body:", (.body // ""),
-    (.commits[] | "", "commit \((.oid // "") | tostring | .[0:7]):", .messageHeadline, "", .messageBody)
+    (.commits[] | "", commit_label + ":", msg)
   else error("unexpected shape") end' <<<"$json" 2>/dev/null)" \
   || { echo "pr-closing-check: cannot check $what in full (unreadable reply, or 100 or more commits)" >&2; exit 3; }
 
@@ -71,10 +83,10 @@ printf 'pr-closing-check: %s holds a GitHub closing keyword before an issue refe
 # Name the part each hit is in: check the parts one by one (only on a hit,
 # so a clean PR costs one check). The label lines keep parts apart, so the
 # parts' hits are the whole text's hits.
-labels="$(jq -r '"title", "body", (.commits[] | "commit \((.oid // "") | tostring | .[0:7])")' <<<"$json")" || exit 3
+labels="$(jq -r "$MSG"'"title", "body", (.commits[] | commit_label)' <<<"$json")" || exit 3
 i=0
 while IFS= read -r label; do
-  part="$(jq -r --argjson i "$i" '[.title, (.body // ""), (.commits[] | .messageHeadline + "\n\n" + .messageBody)][$i]' <<<"$json")" || exit 3
+  part="$(jq -r --argjson i "$i" "$MSG"'[.title, (.body // ""), (.commits[] | msg)][$i]' <<<"$json")" || exit 3
   printf '%s\n' "$part" | bash "$HERE/pr-body-check.sh" - 2>&1 >/dev/null | sed "s/^pr-body-check: /pr-closing-check: $label: /" >&2
   i=$((i + 1))
 done <<<"$labels"
