@@ -46,6 +46,7 @@ if _SCRIPTS_DIR not in sys.path:
 from supervisor import launcher as supervisor_launcher
 from supervisor import paths as supervisor_paths
 from supervisor import roles as supervisor_roles
+from supervisor import stuck as supervisor_stuck
 from supervisor import usage as supervisor_usage
 from supervisor import webproxy
 
@@ -349,10 +350,9 @@ def run_alive() -> bool:
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
-    if supervisor_running():
-        status = supervisor_snapshot()
-        return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
-                and status.get("desired_mode") == "running")
+    status = supervisor_status()
+    if status is not None:
+        return status.get("phase") in ("running", "ready") and status.get("desired_mode") == "running"
     with _RUN_LOCK:
         pid, started = read_pid_file(state_dir(APP["root"], cfg))
         alive = pid is not None and pid_alive(pid, started)
@@ -412,8 +412,9 @@ def to_float(s: str):
 def run_status(alive=None) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
-    if supervisor_running():
-        return supervisor_run_status(cfg)
+    status = supervisor_status()
+    if status is not None:
+        return supervisor_run_status(status)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
         alive = run_alive()
@@ -1104,10 +1105,14 @@ def get_board(params, body):
     state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
     keys = [s["key"] for s in sts]
+    run = board_run_status(alive)
+    stuck_of, activity = board_extras(run.get("supervisor"))
     return 200, {
         "states": sts,
-        "cards": [card_summary(cfg, dir, c, alive, state_of, keys) for c in cards],
-        "run": board_run_status(alive),
+        "cards": [dict(card_summary(cfg, dir, c, alive, state_of, keys),
+                       stuck=stuck_of.get(c.get("number")), activity=activity.get(c.get("number")))
+                  for c in cards],
+        "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
     }
 
@@ -1352,11 +1357,22 @@ def stop_run(params, body):
     cfg, _ = ctx()
     if supervisor_running():
         return compat_run_control("stop", body)
+    if service_holds_run_lock(cfg):
+        # The tick-stop file is for the legacy wrapper only; a supervisor that holds the lock is
+        # stopped through its own controls, never by a file it does not read.
+        raise ApiError(409, "a supervisor holds the run lock; stop it with the supervisor controls")
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
         Path(APP["root"], STOP_FILE).touch()
     return 200, {"state": "stopping"}
+
+
+def service_holds_run_lock(cfg) -> bool:
+    """True when a live supervisor (the lock's third line is "service") holds the repository run lock."""
+    lines = read_text(run_lock_path(cfg)).split("\n")
+    pid, started = read_pid_path(run_lock_path(cfg))
+    return len(lines) > 2 and lines[2].strip() == "service" and pid is not None and pid_alive(pid, started)
 
 
 SUPERVISOR_PROBE_TIMEOUT = 1.0
@@ -1389,6 +1405,19 @@ def supervisor_running():
     thread.start()
     thread.join(SUPERVISOR_PROBE_TIMEOUT)
     return box.get("answered") is True
+
+
+def supervisor_status():
+    """The page-shaped status of the supervisor that answers for this board, else None (also when it
+    exits between the liveness probe and the status read)."""
+    if not supervisor_running():
+        return None
+    try:
+        return proxy_call("status")
+    except ApiError as exc:
+        if exc.code != 503:
+            raise
+        return None
 
 
 def supervisor_stopping(status):
@@ -1450,7 +1479,6 @@ def proxy_call(command, body=None, **extra):
         raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
     if command == "status":
         result = webproxy.ui_status(result)
-        webproxy.remember(domain_id, result)
     return result
 
 
@@ -1492,23 +1520,13 @@ def ensure_service():
         try:
             supervisor_launcher.launch_detached(APP["root"], supervisor_paths.log_dir() / "supervisor.log")
         except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
+            if live():  # a CLI start won the run lock between the probe and the launch: that one runs
+                return False
             raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
         if not supervisor_launcher.wait_until(live, timeout=5.0):
             raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
                            {"code": "launch_failed"})
     return True
-
-
-def remember_stopped(result):
-    """A Stop that ended the service leaves nothing listening: remember that it stopped, so the
-    next unreachable answer reads as a deliberate stop and not as an outage."""
-    domain_id = supervisor_domain_id()
-    prior = webproxy.last(domain_id)
-    known = dict(prior[1]) if prior and isinstance(prior[1], dict) else {}
-    known.update({"desired_mode": "stopped", "phase": "stopped", "ready": False, "shutdown": "resolved"})
-    if isinstance(result.get("state_revision"), int):
-        known["revision"] = result["state_revision"]
-    webproxy.remember(domain_id, known)
 
 
 def proxy_control(command, body):
@@ -1523,41 +1541,20 @@ def proxy_control(command, body):
         # supervisor has no start command, so a Start never changes its state.
         launched = ensure_service()
         status = proxy_call("status")
+        resumed = False
+        if not launched and status.get("mode") == "paused":
+            # Start on a paused supervisor is a resume, bound exactly like the Resume button.
+            proxy_call("resume", {"request_id": body["request_id"], "expected_revision": body["expected_revision"]})
+            status, resumed = proxy_call("status"), True
         result = {"command_id": body["request_id"], "state_revision": status.get("revision"),
                   "desired_mode": status.get("desired_mode"), "phase": status.get("phase")}
+        if resumed:
+            result["resumed"] = True
         return 202, (dict(result, launched=True) if launched else result)
-    result = proxy_call(command, body)
-    if command == "stop" and isinstance(result, dict) and result.get("stopping") is True:
-        remember_stopped(result)
-    return 202, result
+    return 202, proxy_call(command, body)
 
 
-def supervisor_snapshot():
-    domain_id = supervisor_domain_id()
-    try:
-        state = proxy_call("status")
-        return dict(state, unreachable=False)
-    except ApiError as exc:
-        if exc.code != 503:
-            raise
-        prior = webproxy.last(domain_id)
-        known = prior[1] if prior else None
-        return {"schema_version": None, "ready": None, "revision": None, "desired_mode": None,
-                "phase": None, "run_id": None, "mode": None, "pause_reason": None, "active": None,
-                "lane": None, "provider_health": None, "run_tokens": None, "pid": None, "root": None,
-                "capacity": None, "queue": None,
-                "unreachable": True, "last_known": known,
-                "last_known_at": prior[0] if prior else None, "occupancy": None}
-
-
-def supervisor_run_status(cfg):
-    status = supervisor_snapshot()
-    if status.get("unreachable"):
-        known = status.get("last_known") if isinstance(status.get("last_known"), dict) else {}
-        stopped = known.get("phase") == "stopped" and known.get("ready") is False
-        return {"state": "stopped" if stopped else "unreachable", "supervisor": status, "pid": None,
-                "tick": None, "stop_reason": None, "cost": None, "hours": None,
-                "log_path": None, "log_tail": [], "out_tail": None}
+def supervisor_run_status(status):
     phase = status.get("phase", "unknown")
     ready = status.get("ready") is True
     desired = status.get("desired_mode")
@@ -1572,20 +1569,92 @@ def supervisor_run_status(cfg):
             "out_tail": None, "supervisor": status}
 
 
-def require_supervisor_mode():
-    """The supervisor API exists only while a supervisor answers; otherwise the board answers 404."""
-    if not supervisor_running():
-        raise ApiError(404, "not found")
+def usage_view(run_id=None, card=None):
+    """The usage ledger's answer (read here, never through the supervisor); tokens only."""
+    cfg, _ = ctx()
+    try:
+        return supervisor_usage.view(APP["root"], (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR,
+                                     card=card, run_id=run_id)
+    except (OSError, ValueError) as exc:
+        raise ApiError(500, "usage ledger unreadable: %s" % str(exc)[:200])
 
 
 def get_supervisor(params, body):
-    require_supervisor_mode()
-    return 200, supervisor_snapshot()
+    status = supervisor_status()
+    if status is None:
+        return 200, dict(usage_view(), running=False)
+    return 200, dict(status, running=True)
 
 
 def supervisor_command(params, body):
-    require_supervisor_mode()
-    return proxy_control(params["action"], body)
+    action = params["action"]
+    if "actor" in body:
+        raise ApiError(400, "actor must come from authenticated peer")
+    if action != "start" and not supervisor_running():
+        raise ApiError(409, "no supervisor is running", {"code": "not_running"})
+    return proxy_control(action, body)
+
+
+def get_usage(params, body):
+    status = supervisor_status()
+    return 200, usage_view(run_id=status.get("run_id") if status else None)
+
+
+def get_card_usage(params, body):
+    return 200, usage_view(card=params["n"])
+
+
+STUCK_TTL = 5.0  # seconds a stuck check is reused: polling must not run a gh call per pending merge each time
+_STUCK = {"key": None, "at": 0.0, "found": None, "error": None}
+_STUCK_LOCK = threading.Lock()
+
+
+def stuck_findings(live_cards):
+    """Stuck.find() run here, in the board server (the supervisor's loop thread never runs it for a
+    request), read-only and cached for STUCK_TTL seconds per set of live cards. Raises ApiError(503)."""
+    key = frozenset(live_cards)
+    with _STUCK_LOCK:
+        if _STUCK["key"] == key and time.monotonic() - _STUCK["at"] < STUCK_TTL:
+            found, error = _STUCK["found"], _STUCK["error"]
+        else:
+            try:
+                found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
+                                for x in supervisor_stuck.find(APP["root"], live_cards=key)], None
+            except Exception as exc:  # noqa: BLE001 - a failed check is reported, and reused briefly
+                found, error = None, str(exc)[:300] or exc.__class__.__name__
+            _STUCK.update(key=key, at=time.monotonic(), found=found, error=error)
+    if error is not None:
+        raise ApiError(503, "stuck check failed: " + error, {"code": "unavailable"})
+    return [dict(item) for item in found]
+
+
+def live_cards_of(status):
+    active = status.get("active") if isinstance(status, dict) else None
+    return {a["card"] for a in active or [] if isinstance(a, dict) and is_int(a.get("card"))}
+
+
+def get_stuck(params, body):
+    return 200, stuck_findings(live_cards_of(supervisor_status()))
+
+
+def board_extras(status):
+    """({card: {kind, detail}}, {card: {action, elapsed_seconds}}) for /api/board. A failed stuck
+    check leaves every card's stuck null: the board must still load."""
+    try:
+        findings = stuck_findings(live_cards_of(status))
+    except ApiError:
+        findings = []
+    stuck_of = {}
+    for item in findings:
+        stuck_of.setdefault(item["card"], {"kind": item["kind"], "detail": item["detail"]})
+    activity = {}
+    now = time.time()
+    for a in (status.get("active") if isinstance(status, dict) else None) or []:
+        if isinstance(a, dict) and is_int(a.get("card")):
+            began = a.get("started_at")
+            activity[a["card"]] = {"action": a.get("action"), "elapsed_seconds": (
+                max(0, int(now - began)) if isinstance(began, (int, float)) and not isinstance(began, bool) else None)}
+    return stuck_of, activity
 
 
 def post_planner(params, body):
@@ -1642,6 +1711,9 @@ ROUTES = [
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
     ("GET", r"/api/supervisor", get_supervisor),
+    ("GET", r"/api/usage", get_usage),
+    ("GET", r"/api/stuck", get_stuck),
+    ("GET", r"/api/cards/(?P<n>\d+)/usage", get_card_usage),
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),

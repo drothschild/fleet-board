@@ -27,7 +27,7 @@ class Action:
     session: Any = None
     kind: str = 'role'  # "role" | "script" | "merge"
     marker: Any = None  # the card's active marker path once a session or merge child was launched
-    pgid: Any = None    # the process group that marker names
+    pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
 
 
 class State:
@@ -89,7 +89,8 @@ class State:
             self._bump()
 
     def end(self, card):
-        """End the card's action; its active marker goes too, while it still names the action's group."""
+        """End the card's action. Its active marker goes too, unless it names another process group: a marker naming
+        the action's own pgid, or no usable pgid, is removed when the action ends."""
         with self._lock:
             action = self.active.pop(card)
             if self.lane is action:
