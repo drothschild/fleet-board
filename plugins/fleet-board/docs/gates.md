@@ -2,7 +2,7 @@
 
 ## The gates
 
-`hooks/gate.sh` is a `PreToolUse` hook on Bash. It reads every Bash command the manager or a role agent is about to run, and blocks it with exit 2 and a one-line reason:
+`hooks/gate.sh` is a `PreToolUse` hook on Bash. It reads every Bash command a role agent (or any Claude session in the repo) is about to run, and blocks it with exit 2 and a one-line reason:
 
 1. **Human QA.** Nothing moves a card out of `human_qa`: not `board-move.sh` or an adapter's `move.sh`, and `import-github.sh --force` keeps a card that is in `human_qa` instead of overwriting it. Cards live in files under `board.dir`, so there are no GitHub label or Status writes to gate; see the raw-write residual below.
 2. **Merges.** Under `merge.policy: human`, every `gh pr merge` is blocked. Under `auto`, a merge is blocked when it uses `--admin`, names no PR, targets a draft, or the PR's checks are not green. For a fleet PR (head branch `fleet/<n>-*`) it is also blocked when the title, the body or any commit message holds a GitHub closing keyword before an issue reference (`scripts/pr-closing-check.sh`), since card numbers on the local board are not GitHub numbers and the merge would close an unrelated issue or PR. `merge-reviewed.sh` runs the same check before every headless merge, for every PR it would merge. Raw merges through the API are blocked.
@@ -14,7 +14,7 @@ The gate is inert in a directory without `.fleet-board.yml`, so it does nothing 
 
 ## settle.sh runs outside the gate
 
-`scripts/settle.sh` is run by the headless wrapper after each successful tick, in its own shell and outside any Claude session, so no `PreToolUse` hook sees what it runs. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress, in_review and every review stage column; besides the move into human_qa after a clean review it moves cards between review columns, `advance_stage`, and adds routing labels with `review-stages.sh route`, before the move). A person's interactive `/fleet-board:tick` does not run it.
+`scripts/settle.sh` is a plain shell script you can run by hand from the repo root, outside any Claude session, so no `PreToolUse` hook sees what it runs. The supervisor does not run it: it plans the same steps itself. It moves cards and marks PRs ready without the gate. The limit is built into the script: it never merges, and it never moves a card out of human_qa (it lists only in_progress, in_review and every review stage column; besides the move into human_qa after a clean review it moves cards between review columns, `advance_stage`, and adds routing labels with `review-stages.sh route`, before the move).
 
 ## A commit and a PR in one call
 
@@ -52,12 +52,10 @@ The gates stop agents that use the documented commands. Branch protection on Git
 
 ## Other plugins
 
-Ticks and role agents load the other installed plugins and the user's `~/.claude/CLAUDE.md`, like any Claude Code session. A global instruction such as "open the PR in the browser" or a plugin hook that injects a skill mandate could, in principle, pull a role off its spec.
+Role sessions load the other installed plugins and the user's `~/.claude/CLAUDE.md`, like any Claude Code session. A global instruction such as "open the PR in the browser" or a plugin hook that injects a skill mandate could, in principle, pull a role off its spec.
 
-This was measured before release, on a setup with 16 other plugins (several with `SessionStart` and `UserPromptSubmit` hooks) and a global `CLAUDE.md` with branch, PR, TDD and browser directives. Across every role and tick transcript, no role invoked a foreign skill or agent, asked the user a question, opened a browser, or created a PR beyond the implementor's one required draft PR. Isolated runs of the implementor and reviewer, with no user plugins or `CLAUDE.md`, gave the same counts and results. So fleet-board ships no isolation (`ROLE_ISOLATION: none`). `FLEET_BOARD_ISOLATE` is unset by default, `0` means the same, and the headless wrapper refuses `1` with exit 2.
+This was measured before release, on a setup with 16 other plugins (several with `SessionStart` and `UserPromptSubmit` hooks) and a global `CLAUDE.md` with branch, PR, TDD and browser directives. Across every role transcript, no role invoked a foreign skill or agent, asked the user a question, opened a browser, or created a PR beyond the implementor's one required draft PR. Isolated runs of the implementor and reviewer, with no user plugins or `CLAUDE.md`, gave the same counts and results. So fleet-board ships no isolation (`ROLE_ISOLATION: none`), and nothing reads `FLEET_BOARD_ISOLATE`.
 
-**Interactive use.** `/fleet-board:tick`, `/fleet-board:run`, or plain English such as "process the board" run inside the current interactive session, where no isolation could apply anyway. The same measurement covers this case, and found nothing (`INTERACTIVE_RISK: none`). For long runs, use the headless wrapper anyway: `/fleet-board:run` keeps the session busy and spends its context on every tick.
+Other setups weren't measured. A plugin with its own `PreToolUse` hook can still block a role's commands; a rule-based hook plugin with rules that match `gh` or `git`, for example. If a role's report or log shows commands denied by something other than `fleet-board gate:`, look there first.
 
-Other setups weren't measured. A plugin with its own `PreToolUse` hook can still block a role's commands; a rule-based hook plugin with rules that match `gh` or `git`, for example. If a tick report shows commands denied by something other than `fleet-board gate:`, look there first.
-
-Names and gates can't conflict otherwise: plugin skills and agents are namespaced (`fleet-board:tick`, `fleet-board:implementor`), and the gate is the only `PreToolUse` hook fleet-board adds.
+Names and gates can't conflict otherwise: plugin skills and agents are namespaced (`fleet-board:status`, `fleet-board:implementor`), and the gate is the only `PreToolUse` hook fleet-board adds.

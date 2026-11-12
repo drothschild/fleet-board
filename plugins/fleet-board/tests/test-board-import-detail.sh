@@ -40,7 +40,6 @@ async function setup(reduceMotion, patchReply, beforeDraft) {
     calls.push({url, method: opts.method, body: opts.body});
     let data, status = 200;
     if (url === "/api/board") data = {repo: "acme/toy", states, cards: [], run: {state: "idle"}};
-    else if (url === "/api/run") data = {state: "idle"};
     else if (url === "/api/planner" && opts.method === "POST") data = {id: "c1"};
     else if (url === "/api/planner/c1/draft") data = {import_id: "imp7"};
     else if (url === "/api/planner/c1/messages") data = {ok: true};

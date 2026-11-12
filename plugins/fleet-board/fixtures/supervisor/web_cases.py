@@ -136,9 +136,7 @@ class SupervisorWebContract(unittest.TestCase):
 
     def test_supervisor_routes_with_no_supervisor(self):
         self.start_web()
-        code, payload = self.http("GET", "/api/run")
-        self.assertEqual(code, 200)
-        self.assertIn("state", payload)
+        self.assertEqual(self.http("GET", "/api/run")[0], 404, "the tick wrapper's run route is gone")
         code, payload = self.http("GET", "/api/supervisor")
         self.assertEqual(code, 200, payload)
         self.assertIs(payload["running"], False)
@@ -171,9 +169,9 @@ class SupervisorWebContract(unittest.TestCase):
         code, payload = self.http("GET", "/api/supervisor")
         self.assertEqual(code, 200, "GET /api/supervisor is not routed to the service")
         self.assertIn("revision", payload)
-        self.assertTrue(marker.exists(), "supervisor mode cleared legacy active marker")
+        self.assertTrue(marker.exists(), "supervisor mode cleared an active marker")
         self.assertFalse((self.case / "logs" / "toy" / "run.pid").exists(),
-                         "supervisor mode wrote legacy run.pid")
+                         "supervisor mode wrote a run.pid")
 
     def test_design_routes_are_proxied_and_mutations_are_revision_bound(self):
         self.start_service()
@@ -206,46 +204,6 @@ class SupervisorWebContract(unittest.TestCase):
         with self.assertRaises(HTTPError) as caught:
             urlopen(request, timeout=3)
         self.assertEqual(caught.exception.code, 400)
-
-    def test_compat_run_routes_enforce_a_supplied_binding_exactly_like_the_new_routes(self):
-        self.start_service()
-        self.start_web()
-        revision = self.service.status_view()["revision"]
-        body = {"request_id": "compat-bound-start", "expected_revision": revision}
-        code, first = self.http("POST", "/api/run/start", body)
-        self.assertIn(code, (200, 202))
-        self.assertNotIn("unbound", first, "a bound request must not be labelled unbound")
-        # A stale binding conflicts and carries the current state; nothing is applied.
-        code, paused = self.http("POST", "/api/supervisor/pause", {"request_id": "bump", "expected_revision": revision})
-        self.assertEqual(code, 202, paused)
-        after = self.service.status_view()
-        code, stale = self.http("POST", "/api/run/stop", {"request_id": "compat-stale-stop", "expected_revision": revision})
-        self.assertEqual(code, 409, stale)
-        self.assertIn("current", stale)
-        self.assertEqual(stale["current"]["revision"], after["revision"])
-        self.assertEqual(self.service.status_view(), after)
-        self.assertFalse(self.handler.stop_requested.is_set(), "a stale compat stop stopped the supervisor")
-        # Half a binding, or a forged actor, is refused like on the new routes.
-        for bad in ({"request_id": "only-id"}, {"expected_revision": revision}, {"request_id": "x", "expected_revision": "7"},
-                    {"request_id": "a", "expected_revision": revision, "actor": "forged"}):
-            with self.subTest(bad=bad):
-                code, _ = self.http("POST", "/api/run/stop", bad)
-                self.assertEqual(code, 400)
-        self.assertEqual(self.service.status_view(), after)
-
-    def test_compat_run_routes_without_a_body_derive_their_own_binding_and_say_unbound(self):
-        self.start_service()
-        self.start_web()
-        code, payload = self.http("POST", "/api/run/start")
-        self.assertIn(code, (200, 202))
-        self.assertIs(payload.get("unbound"), True)
-        code, payload = self.http("POST", "/api/run/start")  # idempotent by design
-        self.assertIn(code, (200, 202))
-        self.assertIs(payload.get("unbound"), True)
-        code, payload = self.http("POST", "/api/run/stop")
-        self.assertIn(code, (200, 202))
-        self.assertIs(payload.get("unbound"), True)
-        self.assertEqual(self.handler.stop_mode, "drain")
 
     def test_methods_and_unknown_routes_keep_http_semantics(self):
         self.start_service()
@@ -298,17 +256,6 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertIn("current", stale_body)
         self.assertEqual(self.service.status_view(), after_first)
 
-    def test_legacy_no_body_run_start_and_stop_derive_binding_and_are_idempotent(self):
-        """Only these no-body compatibility routes may synthesize request IDs/revisions."""
-        self.start_service()
-        self.start_web()
-        for action in ("start", "stop"):
-            with self.subTest(action=action):
-                code, payload = self.http("POST", "/api/run/" + action)
-                self.assertIn(code, (200, 202))
-                self.assertNotIn("request_id", payload)
-                self.assertNotIn("expected_revision", payload)
-
     def test_default_socket_location_is_shared_by_service_cli_and_web(self):
         # No FLEET_BOARD_SUPERVISOR_SOCKET override: the three components derive the same location.
         self.start_service()
@@ -355,16 +302,17 @@ class SupervisorWebContract(unittest.TestCase):
             time.sleep(0.1)
         return probe()
 
-    def test_a_supervisor_that_exits_turns_the_board_back_to_the_run_api(self):
+    def test_a_supervisor_that_exits_turns_the_board_back_to_not_running(self):
         self.start_service()
         self.start_web()
         self.assertEqual(self.http("GET", "/api/supervisor")[0], 200)
         self.service.close()
         code, payload = self.http("GET", "/api/supervisor")
         self.assertEqual((code, payload.get("running")), (200, False))
-        code, run = self.http("GET", "/api/run")
+        code, board = self.http("GET", "/api/board")
         self.assertEqual(code, 200)
-        self.assertNotIn("supervisor", run)
+        self.assertEqual(board["run"]["state"], "idle")
+        self.assertIsNone(board["run"]["supervisor"])
 
     def test_start_waits_for_a_stopping_supervisor_to_go_then_launches_a_new_one(self):
         self.launching_world()
@@ -381,6 +329,22 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertEqual(code, 200, status)
         self.assertNotEqual(status["pid"], old, "Start must launch a new supervisor, not reuse the exiting one")
         self.assertEqual(status["mode"], "running")
+
+    def test_start_launches_the_supervisor_with_no_tick_wrapper_present(self):
+        self.assertFalse((SCRIPTS / ("fleet-board-" + "run.sh")).exists(), "the tick wrapper is still shipped")
+        self.launching_world()
+        self.env.pop("FLEET_BOARD_RUN", None)
+        self.start_web()
+        for method, path in (("GET", "/api/run"), ("POST", "/api/run/start"), ("POST", "/api/run/stop")):
+            self.assertEqual(self.http(method, path)[0], 404, "%s %s is still routed" % (method, path))
+        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "nowrap-1", "expected_revision": 0},
+                                  timeout=20)
+        self.skip_if_sandboxed(code, started)
+        self.assertEqual(code, 202, started)
+        self.assertIs(started.get("launched"), True, "Start did not launch a supervisor")
+        code, status = self.http("GET", "/api/supervisor")
+        self.assertEqual((code, status.get("running")), (200, True), status)
+        self.assertFalse((self.repo / ".fleet-board.stop").exists(), "Start wrote the tick-stop file")
 
     def test_start_never_launches_beside_a_supervisor_that_stays_stopping(self):
         self.launching_world()
@@ -405,7 +369,7 @@ class SupervisorWebContract(unittest.TestCase):
 
     def test_reads_create_no_supervisor_state_when_no_service_ran(self):
         self.start_web()
-        for path, want in (("/api/board", 200), ("/api/supervisor", 200), ("/api/run", 200),
+        for path, want in (("/api/board", 200), ("/api/supervisor", 200),
                            ("/api/board", 200), ("/api/supervisor", 200), ("/api/usage", 200)):
             code, _ = self.http("GET", path)
             self.assertEqual(code, want, path)
@@ -421,7 +385,7 @@ class SupervisorWebContract(unittest.TestCase):
         link.symlink_to(real)
         self.env["FLEET_BOARD_LOG_DIR"] = str(link)
         self.start_web()
-        for path in ("/api/board", "/api/supervisor", "/api/run"):
+        for path in ("/api/board", "/api/supervisor"):
             code, _ = self.http("GET", path)
             self.assertEqual(code, 200,
                              "%s answered %s with a broken runtime location" % (path, code))
@@ -527,18 +491,17 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertNotIn("last_known", source)
         self.assertNotIn("remember_stopped", source)
 
-    def test_run_compatibility_projects_the_supervisor_mode(self):
+    def test_the_board_run_field_projects_the_supervisor_mode(self):
         self.start_service()
         self.start_web()
-        code, payload = self.http("GET", "/api/run")
+        code, board = self.http("GET", "/api/board")
         self.assertEqual(code, 200)
-        self.assertEqual(payload.get("state"), "running", "a serving supervisor in running mode is running")
+        self.assertEqual(board["run"].get("state"), "running", "a serving supervisor in running mode is running")
         self.state.pause("provider down")
-        code, payload = self.http("GET", "/api/run")
-        self.assertEqual(payload.get("state"), "paused")
-        code, response = self.http("POST", "/api/run/start")
-        self.assertIn(code, (200, 202), "compatibility Start did not delegate")
-        self.assertNotIn("pid", response, "supervisor projection leaked legacy PID semantics")
+        code, board = self.http("GET", "/api/board")
+        self.assertEqual(board["run"].get("state"), "paused")
+        for key in ("pid", "tick", "stop_reason", "cost", "hours", "log_path", "log_tail", "out_tail"):
+            self.assertNotIn(key, board["run"], "the run field still carries the tick wrapper's %s" % key)
 
     def launched_pid(self):
         code, payload = self.http("GET", "/api/supervisor")
@@ -1042,19 +1005,6 @@ class SupervisorWebContract(unittest.TestCase):
                 mock.patch.object(board.supervisor_launcher, "launch_detached", lose):
             self.assertIs(board.ensure_service(), False)
 
-    def test_legacy_stop_rechecks_the_service_lock_inside_the_run_lock(self):
-        board = self.load_board_module("board_web_recheck")
-        board.APP["scripts"] = str(SCRIPTS)
-        answers = iter([False, True])
-        with mock.patch.object(board, "ctx", return_value=({}, self.repo / ".fleet-board")), \
-                mock.patch.object(board, "supervisor_running", return_value=False), \
-                mock.patch.object(board, "service_holds_run_lock", lambda cfg: next(answers, True)), \
-                mock.patch.object(board, "run_alive", return_value=True):
-            with self.assertRaises(board.ApiError) as caught:
-                board.stop_run({}, {})
-        self.assertEqual(caught.exception.code, 409)
-        self.assertFalse((self.repo / ".fleet-board.stop").exists())
-
     def test_start_on_a_paused_supervisor_resumes_it(self):
         self.start_service()
         self.state.pause("operator")
@@ -1104,21 +1054,6 @@ class SupervisorWebContract(unittest.TestCase):
             with self.assertRaises(board.ApiError) as caught:
                 board.ensure_service()
         self.assertEqual(caught.exception.code, 503)
-
-    def test_legacy_stop_never_touches_the_stop_file_while_a_supervisor_holds_the_run_lock(self):
-        # A supervisor that holds the lock but does not answer: the lock's third line says "service".
-        start = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True,
-                                        text=True, env=dict(os.environ, LC_ALL="C", TZ="UTC")).stdout.split())
-        lock = self.case / "logs" / "acme-toy.lock"
-        lock.parent.mkdir(parents=True, exist_ok=True)
-        lock.write_text("%d\n%s\nservice\n" % (os.getpid(), start))
-        self.start_web()
-        code, body = self.http("POST", "/api/run/stop")
-        self.assertEqual(code, 409, body)
-        self.assertFalse((self.repo / ".fleet-board.stop").exists(), "Stop touched the tick-stop file")
-        code, body = self.http("POST", "/api/run/start")
-        self.assertEqual(code, 409, body)
-        self.assertFalse((self.repo / ".fleet-board.stop").exists())
 
 
 if __name__ == "__main__":

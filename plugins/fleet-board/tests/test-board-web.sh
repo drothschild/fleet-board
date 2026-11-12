@@ -49,12 +49,6 @@ stop_server() {
 
 cleanup() {
   stop_server
-  # A run left alive by a failed case lives in its own session: end it.
-  for pidfile in "$TMP"/logs/web/*/run.pid; do
-    [ -f "$pidfile" ] || continue
-    [ "$(head -n 1 "$pidfile")" != "$$" ] || continue
-    kill "$(head -n 1 "$pidfile")" 2>/dev/null || true
-  done
   for dir in ${CLEANUP_DIRS[@]+"${CLEANUP_DIRS[@]}"}; do
     rm -rf "$dir" 2>/dev/null || true
   done
@@ -98,12 +92,6 @@ PATH="$NOGH_DIR:$ORIG_PATH"
 TMP="$(mktemp -d)"
 CLEANUP_DIRS+=("$TMP")
 BODY_FILE="$TMP/body"
-
-# The run routes spawn this stand-in instead of the headless wrapper.
-FAKE_RUN_DIR="$TMP/fake-run"
-mkdir -p "$FAKE_RUN_DIR"
-FLEET_BOARD_RUN="$SCRIPT_DIR/fake-run.sh"
-export FAKE_RUN_DIR FLEET_BOARD_RUN
 
 # new_repo <yml>: prints a fresh git repo path holding <yml> as .fleet-board.yml
 # (no config when <yml> is empty).
@@ -354,90 +342,16 @@ if setup_case; then
   api POST /api/cards/4/comments '{}'
   assert_code 400
 
-  api GET /api/run;                 assert_body "run starts idle" '.state' idle
-  api POST /api/run/stop;           assert_code 409
-  rm -f "$FAKE_RUN_DIR/release"
-  api POST /api/run/start;          assert_code 200
-  assert_body "start returns a pid" '.pid|type' number
-  if grep -q -- "--repo $REPO" "$FAKE_RUN_DIR/args.log"; then pass "wrapper got --repo root"; else fail "wrapper got --repo root" "args: $(cat "$FAKE_RUN_DIR/args.log" 2>/dev/null)"; fi
-  api GET /api/run;                 assert_body "run is running" '.state' running
-  wait_for 'api GET /api/run; body_is .tick 2'
-  api GET /api/run;                 assert_body "run reached tick 2" '.tick' 2
-  assert_body "run log path parsed" '.log_path' "$FAKE_RUN_DIR/fake.log"
-  if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "start clears stale markers"; else fail "start clears stale markers" "active/2 survived the start"; fi
-  : > "$REPO/.fleet-board/active/2"   # the run's manager writes this marker
-  api GET /api/board;               assert_body "marker counts while running" '.cards[]|select(.number==2)|.active' true
-  assert_body "board run has no log_tail" '.run|has("log_tail")' false
-  api POST /api/run/start;          assert_code 409
-  api POST /api/run/stop;           assert_code 200
-  if [ -e "$REPO/.fleet-board.stop" ]; then pass "stop file written"; else fail "stop file written" "no $REPO/.fleet-board.stop"; fi
-  api GET /api/run;                 assert_body "run is stopping" '.state' stopping
-  api POST /api/run/start;          assert_code 409
-  : > "$FAKE_RUN_DIR/release"   # let the fake finish stopping
-  wait_for 'api GET /api/run; body_is .state stopped'
-  api GET /api/run
-  assert_body "run state stopped" '.state' stopped
-  assert_body "stop reason" '.stop_reason' stop-file
-  assert_body "run cost" '.cost' 0.42
-  assert_body "run hours" '.hours' 0.01
-  assert_body "log tail has the two tick lines" '.log_tail|length' 2
-  if [ ! -e "$REPO/.fleet-board/active/2" ]; then pass "markers cleared when the run ended"; else fail "markers cleared when the run ended" "active/2 still exists"; fi
-  api GET /api/board;               assert_body "no card active after the run" '.cards[]|select(.number==2)|.active' false
-  rm -f "$FAKE_RUN_DIR/release"
-  api POST /api/run/start;          assert_code 200
-  if [ ! -e "$REPO/.fleet-board.stop" ]; then pass "start removes the stale stop file"; else fail "start removes the stale stop file" "stop file still there"; fi
-  api GET /api/run;                 assert_body "restarted run is running" '.state' running
-  stop_server
-  start_server "$REPO"
-  api GET /api/run;                 assert_body "restarted server reattaches to the live run" '.state' running
-  api POST /api/run/stop;           assert_code 200
-  : > "$FAKE_RUN_DIR/release"
-  wait_for 'api GET /api/run; body_is .state stopped'
-  api GET /api/run;                 assert_body "reattached run stopped" '.state' stopped
-
-  # A pid file naming a live, unrelated process (this shell) with the wrong start time is not a run.
-  stop_server
-  SD="$TMP/logs/web/acme-toy"
-  printf '%s\nMon Jan  1 00:00:00 2001\n' "$$" > "$SD/run.pid"
-  : > "$SD/run.out"
-  start_server "$REPO"
-  api GET /api/run;                 assert_body "reused pid with another start time is idle" '.state' idle
-  api POST /api/run/stop;           assert_code 409
-  rm -f "$FAKE_RUN_DIR/release"
-  api POST /api/run/start;          assert_code 200
-  api POST /api/run/stop;           assert_code 200
-  : > "$FAKE_RUN_DIR/release"
-  wait_for 'api GET /api/run; body_is .state stopped'
-
-  # A wrapper started outside the page holds the run lock: the page sees it.
-  LOCKF="$TMP/logs/acme-toy.lock"
-  rm -f "$REPO/.fleet-board.stop"   # the last run's stop file
-  printf '%s\n%s\n' "$$" "$(LC_ALL=C TZ=UTC ps -o lstart= -p $$ | awk '{ $1 = $1; print }')" > "$LOCKF"
-  api GET /api/run;                 assert_body "a live run lock reads as running" '.state' running
-  assert_body "the status names the lock's pid" '.pid' "$$"
-  assert_body "the page's older run.out does not describe the lock's run" '.stop_reason' null
-  api POST /api/run/start;          assert_code 409
-  assert_body "the start refusal names the pid" '.error' "*pid $$*"
-  api POST /api/run/stop;           assert_code 200
-  if [ -e "$REPO/.fleet-board.stop" ]; then pass "stop on a lock-held run writes the stop file"; else fail "stop on a lock-held run writes the stop file" "no stop file"; fi
-  api GET /api/run;                 assert_body "a lock-held run with the stop file is stopping" '.state' stopping
-  rm -f "$REPO/.fleet-board.stop"
-  printf '%s\nMon Jan  1 00:00:00 2001\n' "$$" > "$LOCKF"
-  api GET /api/run;                 assert_body "a lock with another start time is not a run" '.state' stopped
-  rm -f "$LOCKF"
-
-  # A wrapper that exits at once (before any stopped: line) shows its output.
-  stop_server
-  FAIL_RUN="$TMP/fail-run.sh"
-  printf '#!/bin/sh\necho "fleet-board-run: log: /nowhere/run.log" >/dev/null\necho "fleet-board-run: cannot read board.repo from the config" >&2\nexit 1\n' > "$FAIL_RUN"
-  FLEET_BOARD_RUN="$FAIL_RUN" start_server "$REPO"
-  api POST /api/run/start;          assert_code 200
-  wait_for 'api GET /api/run; body_is .state stopped'
-  api GET /api/run
-  assert_body "an early exit has no stop reason" '.stop_reason' null
-  assert_body "an early exit shows the wrapper's stderr" '.out_tail[0]' 'fleet-board-run: cannot read board.repo from the config'
-  stop_server
-  start_server "$REPO"
+  # The tick wrapper's run routes are gone: the page's Start goes to /api/supervisor/start, which
+  # always launches the supervisor (fixtures/supervisor/web_cases.py covers the launch).
+  api GET /api/run;                 assert_code 404
+  api POST /api/run/start;          assert_code 404
+  api POST /api/run/stop;           assert_code 404
+  if [ ! -e "$REPO/.fleet-board.stop" ]; then pass "no tick-stop file is written"; else fail "no tick-stop file is written" "$REPO/.fleet-board.stop exists"; fi
+  api GET /api/board;               assert_body "board run is idle with no supervisor" '.run.state' idle
+  assert_body "board run carries no tick-wrapper fields" '.run | [has("pid"), has("tick"), has("cost"), has("log_tail"), has("out_tail")] | any' false
+  assert_body "a marker does not light a card while no supervisor runs" '.cards[]|select(.number==2)|.active' false
+  if [ -e "$REPO/.fleet-board/active/2" ]; then pass "the board leaves markers alone"; else fail "the board leaves markers alone" "active/2 was removed"; fi
 
   api GET /api/nothing
   assert_code 404
@@ -856,20 +770,6 @@ if setup_case "$TMP/srvtmp"; then
   assert_code 200
   assert_body "create url carries the listening port" '.url' "http://127.0.0.1:$PORT/cards/*"
 
-  # run.pid and run.out are tightened to 600 even when they pre-existed as 644
-  SD="$TMP/logs/web/acme-toy"
-  : > "$SD/run.pid"; : > "$SD/run.out"
-  chmod 644 "$SD/run.pid" "$SD/run.out"
-  rm -f "$FAKE_RUN_DIR/release"
-  api POST /api/run/start
-  assert_code 200
-  for f in run.pid run.out; do
-    mode="$(ls -l "$SD/$f" | cut -c1-10)"
-    if [ "$mode" = "-rw-------" ]; then pass "$f has mode 600 after Start"; else fail "$f has mode 600 after Start" "got $mode"; fi
-  done
-  api POST /api/run/stop
-  : > "$FAKE_RUN_DIR/release"
-  wait_for 'api GET /api/run; body_is .state stopped'
   stop_server
 fi
 

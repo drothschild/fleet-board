@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
-# settle.sh - moves cards right after a tick, for the steps that start no agent.
+# settle.sh - moves cards for the steps that start no agent.
 #
 # Usage: settle.sh      (no arguments; run from the repo root)
 #
-# The headless wrapper runs it after each successful tick, before
-# cleanup-done.sh, so a board change that needs no agent (a clean review
-# reaching Human QA, a PR that exists moving to In review) does not wait a
-# whole tick. It starts no Claude session and costs no API key.
+# A plain shell step you may run by hand, so a board change that needs no
+# agent (a clean review reaching Human QA, a PR that exists moving to In
+# review) happens at once. The supervisor does not run it: its own driver
+# carries out the same steps. It starts no Claude session and costs no API key.
 #
 # What it does:
 #   1. Lists the in_progress and in_review columns, and every review stage
 #      column (review_<name>), with board-list.sh (no --allow-truncated). A listing that fails ends the run with exit 1 before
 #      anything is written. With no cards it stops without running the planner.
 #   2. Runs tick-plan.sh --settle <those cards> once.
-#   3. Carries out each planned action, as the manager's action table does
-#      (agents/manager.md 2.2, 2.10, 2.11):
+#   3. Carries out each planned action, as the supervisor's driver does:
 #        move_to_review  review-stages.sh route N <pr> first (a failure ends the
 #                        card's action with no move and no note, so the card
-#                        stays in in_progress and the next tick retries: nothing
+#                        stays in in_progress and the next plan retries: nothing
 #                        re-routes a card once it is in in_review); then
 #                        board-move.sh N in_review; note.sh merge with round 1,
 #                        pr and state in_review
@@ -34,19 +33,18 @@
 #        block           board-move.sh N blocked; note.sh merge with blocked_from,
 #                        blocked_findings and state blocked; then a comment
 #                        listing the findings. A block whose reason starts with
-#                        "no progress after" is left for the next tick (the
-#                        manager has its own order for those, 2.D).
-#        skip, other     nothing (a review_stage is planned as skip: it waits for
-#                        the next tick, so settle never runs a review stage)
+#                        "no progress after" is left for the supervisor (its
+#                        driver has its own order for those).
+#        skip, other     nothing (a review_stage is planned as skip, so settle
+#                        never runs a review stage)
 #   It never merges and never moves a card out of human_qa.
 #
 # Failures stay small: a failed step ends that card's action and the script
 # moves to the next card. It writes no action_failures or last_action_error;
-# the next tick plans the same action and counts it there.
+# the next plan has the same action and counts it there.
 #
-# Run it outside any Claude session, after the manager has finished, so only
-# one writer touches the board. A person's interactive /fleet-board:tick does
-# not run it.
+# Run it outside any Claude session, and not while a supervisor is running, so
+# only one writer touches the board.
 #
 # Exit codes:
 #   0 - every planned action succeeded (or there was nothing to do)

@@ -405,7 +405,8 @@ _REJECTED = ('Your previous report was rejected by the manager: %s\nThe rule: ev
 
 
 def rejection_text(lines):
-    """The re-dispatch text of manager.md 3.3: every parse-report line quoted exactly, each followed by its rule."""
+    """The re-dispatch text: every parse-report line quoted exactly, each followed by its rule (the retired
+    manager agent's rule 3.3)."""
     quoted = []
     for line in lines:
         message = line[len('parse-report: '):] if line.startswith('parse-report: ') else line

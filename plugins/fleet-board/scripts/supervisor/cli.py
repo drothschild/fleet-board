@@ -300,7 +300,7 @@ def _stuck(args, env, stdout, stderr, transport):
     """List (or release) stuck cards. The board is read here, never through the supervisor's socket (a slow
     check must not hit the socket timeout); a running supervisor is asked only for the cards it owns. The socket
     alone is never trusted: a live process holding the repository run lock that did not answer as the
-    supervisor (a legacy run, or a supervisor this client cannot reach) refuses a release."""
+    supervisor (a supervisor of another checkout, or one this client cannot reach) refuses a release."""
     if args.force and args.release is None:
         raise errors.Invalid("--force needs --release N")
     root = _board_root(env)
