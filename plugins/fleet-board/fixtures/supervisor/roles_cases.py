@@ -315,7 +315,7 @@ def test_attempt_timeout_is_absolute(e):
 def test_permission_mode_mismatch_is_cancelled(e):
     s = e.launch(permission_mode='auto', kill_grace=0.5)
     r = e.wait(s)
-    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch' and r.cancelled, r
+    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch' and not r.cancelled, r
     assert not alive(s.pid)
 
 
@@ -340,7 +340,7 @@ def test_cwd_is_the_repo_root(e):
 def test_mismatch_is_found_after_a_non_init_event(e):
     s = e.launch(permission_mode='auto', kill_grace=0.5)
     r = e.wait(s)
-    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch' and r.cancelled, r
+    assert r.failure == 'card' and r.reason == 'permission-mode-mismatch' and not r.cancelled, r
 
 
 @with_plans({'report': 'fine', 'permission_mode': 'bypassPermissions', 'post': False})
@@ -389,6 +389,19 @@ def test_missing_binary_is_a_provider_failure():
         s = e.launch(argv=[str(e.tmp / 'no-such-claude'), '-p', 'x'])
         r = s.poll()
         assert r is not None and r.failure == 'provider' and 'not found' in r.reason, r
+    finally:
+        e.close()
+
+
+def test_non_executable_binary_is_a_provider_failure():
+    e = Env()
+    try:
+        path = e.tmp / 'claude-no-exec'
+        path.write_text('#!/bin/sh\nexit 0\n')
+        path.chmod(0o644)
+        s = e.launch(argv=[str(path), '-p', 'x'])
+        r = s.poll()
+        assert r is not None and r.failure == 'provider' and not r.cancelled, r
     finally:
         e.close()
 

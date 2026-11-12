@@ -568,6 +568,62 @@ class Cycle(LoopCase):
         self.assertFalse(alive(child))
 
 
+class Failures(LoopCase):
+    def test_an_exception_from_finish_counts_once_and_does_not_recycle_at_once(self):
+        self.b.config['supervisor']['reconcile_interval_seconds'] = 60
+        self.b.plans({'report': 'implementor-ok', 'post': False, 'sleep': 1.5}, {'report': 'implementor-ok'})
+
+        def boom(action, result, allow_redispatch=True):
+            raise TypeError('bad report shape\nsecond line')
+
+        self.b.driver.finish = boom
+        self.start()
+        self.until(lambda: self.b.note().get('action_failures') == 1, what='the exception to be counted')
+        self.assertEqual(self.b.note()['last_action_error'], 'TypeError: bad report shape')
+        cycles = len(self.sched.calls)
+        time.sleep(1.5)
+        self.assertEqual((self.count(), len(self.sched.calls)), (1, cycles),
+                         'a finish that raised must not wake an immediate second cycle')
+        self.assertEqual(self.b.note()['action_failures'], 1)
+        self.assertEqual(self.b.state.snapshot()['active'], {})
+
+    def test_an_exception_from_begin_counts_the_card(self):
+        def boom(row):
+            raise TypeError('begin broke')
+
+        self.b.driver.begin = boom
+        self.b.config['supervisor']['reconcile_interval_seconds'] = 60
+        self.start()
+        self.until(lambda: self.b.note().get('action_failures') == 1, what='the exception to be counted')
+        self.assertEqual(self.b.note()['last_action_error'], 'TypeError: begin broke')
+
+    def test_the_signal_handler_never_touches_the_wake_event(self):
+        self.sup._wake = mock.Mock()
+        self.sup.on_signal(signal.SIGTERM)
+        self.sup._wake.set.assert_not_called()
+        self.sup.on_signal(signal.SIGINT)
+        self.sup.on_signal(signal.SIGINT)
+        self.sup._wake.set.assert_not_called()
+        self.assertEqual((self.sup._stop_mode, self.sup._force), ('cancel', True))
+
+    def test_a_signal_stops_the_running_loop(self):
+        self.rows = lambda: []
+        self.start()
+        self.cycles_done(1)
+        self.sup.on_signal(signal.SIGTERM)
+        self.assertEqual(self.finished(5), 0)
+
+    def test_a_paused_supervisor_still_redispatches_once_after_a_first_rejection(self):
+        self.b.plans({'report': 'no-verified', 'sleep': 2}, {'report': 'implementor-ok'})
+        self.start()
+        self.until(lambda: 12 in self.b.state.snapshot()['active'], what='the implementor to start')
+        self.sup.handle({'command': 'pause'})
+        self.until(lambda: self.mode() == 'paused', what='the pause')
+        self.until(lambda: self.count() == 2, timeout=15, what='the re-dispatch after the first rejection')
+        self.until(lambda: self.b.note().get('pr') == 12, what='the second report to be accepted')
+        self.assertEqual(self.b.note().get('action_failures') or 0, 0)
+
+
 class ServiceClose(unittest.TestCase):
     def test_close_waits_for_a_connection_accepted_just_before_shutdown(self):
         from supervisor.state import State

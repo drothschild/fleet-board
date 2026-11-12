@@ -960,6 +960,84 @@ def test_card_failure_counts_no_progress_with_the_reason(base):
     assert note['pr'] is None
 
 
+def test_permission_mode_mismatch_counts_the_card(base):
+    b = board_for(base)
+    b.plans({'report': 'implementor-ok', 'post': False, 'sleep': 30, 'permission_mode': 'default'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    result = wait_for(started)
+    assert result.cancelled is False and result.reason == 'permission-mode-mismatch', result
+    outcome = b.driver.finish(started.action, result)
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'] == 'permission-mode-mismatch', note
+    assert 12 not in b.state.active
+
+
+def test_provider_failure_gives_back_the_implementor_attempt_on_start(base):
+    b = board_for(base)
+    b.plans({'report': '', 'post': False, 'exit': 1, 'is_error': True, 'stderr': 'rate limit exceeded (429)'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    assert b.note()['implementor_attempts'] == 1
+    outcome = run_role(b, started)
+    assert outcome.provider_failure == 'claude', outcome
+    assert b.note()['implementor_attempts'] == 0, b.note()
+
+
+def test_provider_failure_gives_back_the_implementor_attempt_on_continue(base):
+    b = board_for(base, 'in_progress')
+    b.put_note({'implementor_attempts': 2, 'branch': BRANCH, 'worktree': b.worktree, 'round': 0})
+    b.plans({'report': '', 'post': False, 'exit': 1, 'is_error': True, 'stderr': 'rate limit exceeded (429)'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'continue_implementor', state='in_progress')
+    assert b.note()['implementor_attempts'] == 3
+    outcome = run_role(b, started)
+    assert outcome.provider_failure == 'claude', outcome
+    assert b.note()['implementor_attempts'] == 2, b.note()
+
+
+def test_a_card_failure_keeps_the_implementor_attempt(base):
+    b = board_for(base)
+    b.plans({'report': 'implementor-ok', 'post': False, 'exit': 1})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    run_role(b, begin(b, 'start'))
+    assert b.note()['implementor_attempts'] == 1 and b.note()['action_failures'] == 1, b.note()
+
+
+def test_a_launch_that_raises_gives_back_the_implementor_attempt(base):
+    import types
+    b = board_for(base)
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+
+    def boom(*a, **kw):
+        raise RuntimeError('no session')
+    b.driver.roles = types.SimpleNamespace(command=driver._roles.command, launch=boom, DEFAULT_KILL_GRACE=5.0)
+    try:
+        begin(b, 'start')
+        raise AssertionError('begin should have raised')
+    except RuntimeError:
+        pass
+    assert b.note()['implementor_attempts'] == 0, b.note()
+    assert 12 not in b.state.active
+
+
+def test_a_failing_tempdir_ends_the_action(base):
+    b = board_for(base)
+    original = driver.tempfile.mkdtemp
+
+    def boom(*a, **kw):
+        raise OSError('no space')
+    driver.tempfile.mkdtemp = boom
+    try:
+        begin(b, 'start')
+    except OSError:
+        pass
+    finally:
+        driver.tempfile.mkdtemp = original
+    assert 12 not in b.state.active, 'the action must end when the temp dir cannot be made'
+
+
 def test_a_cancelled_session_counts_nothing(base):
     b = board_for(base)
     b.plans({'report': 'implementor-ok', 'sleep': 30})
