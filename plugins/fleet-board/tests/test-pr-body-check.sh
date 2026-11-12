@@ -55,6 +55,13 @@ expect_reject "- fixes owner/repo#45"
 expect_reject "Closes https://github.com/owner/repo/issues/45"
 expect_reject "resolves https://github.com/owner/repo/pull/46"
 expect_reject "$(printf 'Summary line\n\nLocal board card 253\nCloses #253')"
+expect_reject "Fixes GH-12"
+expect_reject "closes gh-12"
+expect_reject "**Closes** #1"
+expect_reject "_Fixes_ #1"
+expect_reject "Closes **#1**"
+expect_reject "Closes : #1"
+expect_reject "Resolves <https://github.com/owner/repo/issues/3>"
 
 expect_accept "Local board card 253"
 expect_accept "Card 253 (local board; not a GitHub issue)"
@@ -67,6 +74,13 @@ expect_accept ""
 # Reads stdin with "-".
 printf 'Fixes #9\n' | /bin/bash "$CHECK" - >/dev/null 2>&1; rc=$?
 if [ "$rc" = 1 ]; then pass "reads stdin with -"; else fail "reads stdin with -" "rc=$rc"; fi
+
+# Fails closed when grep itself fails (exit 2, not 0).
+mkdir -p "$TMP/bin"
+printf '#!/bin/sh\nexit 2\n' > "$TMP/bin/grep"; chmod +x "$TMP/bin/grep"
+printf 'Local board card 1\n' > "$TMP/body"
+PATH="$TMP/bin:$PATH" /bin/bash "$CHECK" "$TMP/body" >/dev/null 2>&1; rc=$?
+if [ "$rc" = 2 ]; then pass "grep failure exits 2"; else fail "grep failure exits 2" "rc=$rc"; fi
 
 # Usage error.
 /bin/bash "$CHECK" >/dev/null 2>&1; rc=$?
@@ -86,6 +100,15 @@ else fail "no closing keyword before a card-number placeholder" "$hits"; fi
 # The implementor checks its PR body with pr-body-check.sh before gh pr create.
 if grep -q 'pr-body-check.sh' "$PLUGIN/agents/implementor.md"; then pass "implementor runs pr-body-check.sh"
 else fail "implementor runs pr-body-check.sh" "agents/implementor.md does not name pr-body-check.sh"; fi
+
+# The PR is opened from the checked body file, never an inline --body.
+if grep -q 'pr-body-check.sh <path> && gh pr create --draft' "$PLUGIN/agents/implementor.md" \
+  && grep -q -- '--body-file <path>' "$PLUGIN/agents/implementor.md"; then pass "implementor chains the check with gh pr create --body-file"
+else fail "implementor chains the check with gh pr create --body-file" "no 'pr-body-check.sh <path> && gh pr create --draft ... --body-file <path>'"; fi
+
+# Commit messages are checked too: a squash merge copies them onto main.
+if grep -q 'log --format=%B' "$PLUGIN/agents/implementor.md" && grep -q 'pr-body-check.sh -' "$PLUGIN/agents/implementor.md"; then pass "implementor checks commit messages"
+else fail "implementor checks commit messages" "no git log --format=%B piped to pr-body-check.sh -"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
