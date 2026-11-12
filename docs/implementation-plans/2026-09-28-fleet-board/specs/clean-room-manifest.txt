@@ -11,3 +11,4 @@ d2ce59bee25add56401c997c92704e6678e87365830e60d60854cc47be6f871f  agents/fixer.m
 e9b9d367885ffcd4b1ac35fd9adbfb8d4a0b08d2f1947e9aa5620fadc5ab580b  skills/tick/SKILL.md  # seeded: the isolated run's hash was never recorded; this is the current hash
 6dde50b75180b8477ab2f1f318e81b6149ead9225eb6379de822727287e2230c  skills/run/SKILL.md
 ca185e305e5782020ee7c17fe8a4b3b4024efe482d6ed92bf55356f98f8c6f68  skills/status/SKILL.md
+21b63bb9329766efc753b0d3ece41ac7fd8f6b6ce163897342aa670b785059de  agents/merger.md  # exception: hand-written by the owner's decision of 2026-11-11, no isolated author run

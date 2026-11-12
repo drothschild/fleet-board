@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # parse-report.sh - validate a fleet-board role report and convert it to JSON.
 #
-# Usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer]
-#                        [--commits-since-review <n>] <file>
+# Usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger]
+#                        [--mode after_merge|refusal] [--commits-since-review <n>] <file>
 #
 # The report shape. This script is the enforced definition; the role
 # agents and the manager follow it (line rules: see Pass 1 below):
@@ -29,6 +29,10 @@
 # --commits-since-review <n> (the commits on the branch past the reviewed
 # head, measured by the caller), n > 0 rejects it: it is valid only when the
 # fixer committed nothing.
+# The merger (the role after a merge or a refused merge) has no required role
+# sections and needs --mode: after_merge allows Status done|attention, refusal
+# allows retry|fix|attention; any other status for the mode is rejected.
+# --mode is accepted only with --role merger.
 # Section contents are checked whenever a section is present, with or without
 # --role.
 #
@@ -47,9 +51,10 @@
 set -uo pipefail
 unset CDPATH
 
-USAGE="usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer] [--commits-since-review <n>] <file>"
+USAGE="usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger] [--mode after_merge|refusal] [--commits-since-review <n>] <file>"
 
 ROLE=""
+MODE=""
 FILE=""
 COMMITS_SINCE=""
 while [ $# -gt 0 ]; do
@@ -57,6 +62,11 @@ while [ $# -gt 0 ]; do
     --role)
       if [ $# -lt 2 ]; then echo "parse-report: $USAGE" >&2; exit 2; fi
       ROLE="$2"
+      shift 2
+      ;;
+    --mode)
+      if [ $# -lt 2 ]; then echo "parse-report: $USAGE" >&2; exit 2; fi
+      MODE="$2"
       shift 2
       ;;
     --commits-since-review)
@@ -86,10 +96,28 @@ if [ -z "$FILE" ]; then
 fi
 
 case "$ROLE" in
-  ""|implementor|reviewer|fixer|stage-reviewer) ;;
+  ""|implementor|reviewer|fixer|stage-reviewer|merger) ;;
   *)
     echo "parse-report: unknown role: $ROLE" >&2
     echo "parse-report: $USAGE" >&2
+    exit 2
+    ;;
+esac
+
+case "$ROLE:$MODE" in
+  merger:after_merge|merger:refusal) ;;
+  merger:"")
+    echo "parse-report: role merger needs --mode after_merge|refusal" >&2
+    exit 2
+    ;;
+  merger:*)
+    echo "parse-report: unknown mode: $MODE" >&2
+    echo "parse-report: $USAGE" >&2
+    exit 2
+    ;;
+  *:"") ;;
+  *)
+    echo "parse-report: --mode applies only to --role merger" >&2
     exit 2
     ;;
 esac
@@ -428,13 +456,20 @@ done
 if has_section "Status"; then
   case "$STATUS" in
     done|blocked|clean|findings|not_reproducible) ;;
+    retry|fix|attention) [ "$ROLE" = merger ] || ERRORS+=("unknown status: $STATUS") ;;
     *) ERRORS+=("unknown status: $STATUS") ;;
   esac
   # Status values by role; an unknown word is reported once, above.
   case "$ROLE:$STATUS" in
-    implementor:not_reproducible|reviewer:not_reproducible|stage-reviewer:not_reproducible) ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
+    implementor:not_reproducible|reviewer:not_reproducible|stage-reviewer:not_reproducible|implementor:retry|implementor:fix|implementor:attention|fixer:retry|fixer:fix|fixer:attention|reviewer:retry|reviewer:fix|reviewer:attention|stage-reviewer:retry|stage-reviewer:fix|stage-reviewer:attention) ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
     implementor:clean|implementor:findings|fixer:clean|fixer:findings|reviewer:done|reviewer:blocked|stage-reviewer:done|stage-reviewer:blocked)
       ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
+    merger:*)
+      case "$MODE:$STATUS" in
+        after_merge:done|after_merge:attention|refusal:retry|refusal:fix|refusal:attention) ;;
+        *:clean|*:findings|*:blocked|*:not_reproducible|*:done|*:retry|*:fix|*:attention)
+          ERRORS+=("role $ROLE does not allow status: $STATUS in mode $MODE") ;;
+      esac ;;
   esac
 fi
 
