@@ -345,12 +345,15 @@ def clear_markers(dir: Path):
             pass
 
 
-def run_alive() -> bool:
+_UNSET = object()  # "the caller did not read the supervisor status"
+
+
+def run_alive(status=_UNSET) -> bool:
     """Whether a wrapper is alive: the one this page started (run.pid), else any wrapper
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
-    status = supervisor_status()
+    status = supervisor_status() if status is _UNSET else status
     if status is not None:
         return status.get("phase") in ("running", "ready") and status.get("desired_mode") == "running"
     with _RUN_LOCK:
@@ -409,15 +412,15 @@ def to_float(s: str):
         return None
 
 
-def run_status(alive=None) -> dict:
+def run_status(alive=None, status=_UNSET) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
-    status = supervisor_status()
+    status = supervisor_status() if status is _UNSET else status
     if status is not None:
         return supervisor_run_status(status)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
-        alive = run_alive()
+        alive = run_alive(None)
     pid = read_pid(sdir)
     out = read_text(sdir / "run.out")
     if alive:
@@ -459,11 +462,11 @@ def out_tail(out: str) -> list:
     return lines[:half] + lines[-half:]
 
 
-def board_run_status(alive: bool) -> dict:
+def board_run_status(alive: bool, status=_UNSET) -> dict:
     """run_status() without the log tail, for /api/board."""
-    status = run_status(alive)
-    del status["log_tail"]
-    return status
+    out = run_status(alive, status)
+    del out["log_tail"]
+    return out
 
 
 # --- script runner ------------------------------------------------------------
@@ -1100,13 +1103,14 @@ def board_context(cache: dict = None) -> list:
 
 def get_board(params, body):
     cfg, dir = ctx()
-    alive = run_alive()  # one liveness check per request
+    status = supervisor_status()  # read once: liveness, run state, activity and stuck all agree
+    alive = run_alive(status)
     cards = read_cards(dir)
     state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
     keys = [s["key"] for s in sts]
-    run = board_run_status(alive)
-    stuck_of, activity = board_extras(run.get("supervisor"))
+    run = board_run_status(alive, status)
+    stuck_of, activity = board_extras(status, run)
     return 200, {
         "states": sts,
         "cards": [dict(card_summary(cfg, dir, c, alive, state_of, keys),
@@ -1364,6 +1368,8 @@ def stop_run(params, body):
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
+        if service_holds_run_lock(cfg):  # a supervisor may have claimed the lock since the first look
+            raise ApiError(409, "a supervisor holds the run lock; stop it with the supervisor controls")
         Path(APP["root"], STOP_FILE).touch()
     return 200, {"state": "stopping"}
 
@@ -1520,7 +1526,9 @@ def ensure_service():
         try:
             supervisor_launcher.launch_detached(APP["root"], supervisor_paths.log_dir() / "supervisor.log")
         except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
-            if live():  # a CLI start won the run lock between the probe and the launch: that one runs
+            # A CLI start won the run lock between the probe and the launch: that one runs. Its socket may
+            # take a moment to answer after our child lost the lock (exit 1), so wait briefly for it.
+            if live() or (getattr(exc, "exit_code", None) == 1 and supervisor_launcher.wait_until(live, timeout=2.0)):
                 return False
             raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
         if not supervisor_launcher.wait_until(live, timeout=5.0):
@@ -1575,14 +1583,19 @@ def usage_view(run_id=None, card=None):
     try:
         return supervisor_usage.view(APP["root"], (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR,
                                      card=card, run_id=run_id)
-    except (OSError, ValueError) as exc:
+    except ValueError as exc:
+        raise ApiError(400, str(exc)[:200])
+    except OSError as exc:
         raise ApiError(500, "usage ledger unreadable: %s" % str(exc)[:200])
 
 
 def get_supervisor(params, body):
     status = supervisor_status()
     if status is None:
-        return 200, dict(usage_view(), running=False)
+        try:
+            return 200, dict(usage_view(), running=False)
+        except ApiError as exc:  # an unreadable ledger is unknown, never 0
+            return 200, {"running": False, "run": None, "all_time": None, "planner": None, "error": exc.msg}
     return 200, dict(status, running=True)
 
 
@@ -1605,27 +1618,39 @@ def get_card_usage(params, body):
 
 
 STUCK_TTL = 5.0  # seconds a stuck check is reused: polling must not run a gh call per pending merge each time
-_STUCK = {"key": None, "at": 0.0, "found": None, "error": None}
+_STUCK = {"key": None, "at": None, "mono": 0.0, "found": None, "error": None, "running": False}
 _STUCK_LOCK = threading.Lock()
 
 
-def stuck_findings(live_cards):
-    """Stuck.find() run here, in the board server (the supervisor's loop thread never runs it for a
-    request), read-only and cached for STUCK_TTL seconds per set of live cards. Raises ApiError(503)."""
+def _refresh_stuck(key):
+    """The one background refresher: runs stuck.find (read-only) and writes the cache."""
+    try:
+        found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
+                        for x in supervisor_stuck.find(APP["root"], live_cards=key)], None
+    except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
+        found, error = None, str(exc)[:300] or exc.__class__.__name__
+    with _STUCK_LOCK:
+        if found is None:
+            found = _STUCK["found"] if _STUCK["key"] is not None else None  # keep the last good result
+        _STUCK.update(key=key, at=time.time(), mono=time.monotonic(), found=found, error=error, running=False)
+
+
+def stuck_state(live_cards):
+    """{findings, checked_at, error, checking} for the live-card set, answered at once from the cache.
+
+    Never computes on the calling thread: a miss or an expiry starts one guarded background refresher
+    (only one runs at a time). Before the first result, findings is None and checking is true. Findings for
+    cards the live set owns now are left out of an older result."""
     key = frozenset(live_cards)
     with _STUCK_LOCK:
-        if _STUCK["key"] == key and time.monotonic() - _STUCK["at"] < STUCK_TTL:
-            found, error = _STUCK["found"], _STUCK["error"]
-        else:
-            try:
-                found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
-                                for x in supervisor_stuck.find(APP["root"], live_cards=key)], None
-            except Exception as exc:  # noqa: BLE001 - a failed check is reported, and reused briefly
-                found, error = None, str(exc)[:300] or exc.__class__.__name__
-            _STUCK.update(key=key, at=time.monotonic(), found=found, error=error)
-    if error is not None:
-        raise ApiError(503, "stuck check failed: " + error, {"code": "unavailable"})
-    return [dict(item) for item in found]
+        fresh = _STUCK["at"] is not None and _STUCK["key"] == key and time.monotonic() - _STUCK["mono"] < STUCK_TTL
+        if not fresh and not _STUCK["running"]:
+            _STUCK["running"] = True
+            threading.Thread(target=_refresh_stuck, args=(key,), daemon=True).start()
+        found = _STUCK["found"]
+        return {"findings": None if found is None else [dict(i) for i in found if i["card"] not in key],
+                "checked_at": _STUCK["at"], "error": _STUCK["error"],
+                "checking": _STUCK["running"] or _STUCK["at"] is None}
 
 
 def live_cards_of(status):
@@ -1633,19 +1658,37 @@ def live_cards_of(status):
     return {a["card"] for a in active or [] if isinstance(a, dict) and is_int(a.get("card"))}
 
 
+def stuck_suppressed(status):
+    """A notice when a run holds the repository run lock without answering as the supervisor: its live work
+    would read as stuck (matches the CLI's notice), so stuck is suppressed. None otherwise."""
+    if status is not None:
+        return None
+    cfg, _ = ctx()
+    holder = supervisor_stuck.run_lock_holder(run_lock_path(cfg))
+    return "a run is active (pid %d)" % holder if holder is not None else None
+
+
+def stuck_view(status):
+    """The /api/stuck answer for a supervisor status (None: none answers)."""
+    notice = stuck_suppressed(status)
+    if notice is not None:
+        return {"findings": [], "checked_at": None, "error": None, "checking": False, "suppressed": notice}
+    return dict(stuck_state(live_cards_of(status)), suppressed=None)
+
+
 def get_stuck(params, body):
-    return 200, stuck_findings(live_cards_of(supervisor_status()))
+    return 200, stuck_view(supervisor_status())
 
 
-def board_extras(status):
-    """({card: {kind, detail}}, {card: {action, elapsed_seconds}}) for /api/board. A failed stuck
-    check leaves every card's stuck null: the board must still load."""
-    try:
-        findings = stuck_findings(live_cards_of(status))
-    except ApiError:
-        findings = []
+def board_extras(status, run):
+    """({card: {kind, detail}}, {card: {action, elapsed_seconds}}) for /api/board; also adds stuck_checked_at,
+    stuck_error, stuck_checking and stuck_suppressed to `run`. Stuck is null for every card while no result
+    exists, a check failed before any result, or a run holds the lock without answering."""
+    view = stuck_view(status)
+    run.update(stuck_checked_at=view["checked_at"], stuck_error=view["error"],
+               stuck_checking=view["checking"], stuck_suppressed=view["suppressed"])
     stuck_of = {}
-    for item in findings:
+    for item in view["findings"] or []:
         stuck_of.setdefault(item["card"], {"kind": item["kind"], "detail": item["detail"]})
     activity = {}
     now = time.time()
