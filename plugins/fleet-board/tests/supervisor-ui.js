@@ -258,7 +258,7 @@ async function main() {
     f.enqueue("/api/supervisor/start",response(202,{command_id:"c1",state_revision:1,desired_mode:"running",phase:"starting"}));
     await h.$("supervisor-start-btn").fire("click"); await h.waitForRequests();
     const call=f.calls.find(c=>c.url==="/api/supervisor/start"&&c.method==="POST"); assert.ok(call,"Start did not POST"); assert.ok(call.body.request_id); assert.equal(typeof call.body.expected_revision,"number");
-    f.setSnapshot({...json(snapshot),revision:2}); await h.fireTimers(); // the next poll finds it running
+    f.enqueue("/api/supervisor",response(200,{...json(snapshot),revision:2,running:true})); await h.fireTimers(); // the next poll finds it running
     assert.equal(state(h),"++-+","running enables Start, Pause and Stop"); assert.match(h.$("supervisor-status").textContent,/running/i);
     // running
     ({h}=await open({})); assert.equal(h.$("supervisor-pause-btn").disabled,false); assert.equal(h.$("supervisor-resume-btn").disabled,true); assert.equal(h.$("supervisor-stop-btn").disabled,false);
@@ -272,7 +272,7 @@ async function main() {
     assert.match(h.$("supervisor-status").textContent,/codex.*unhealthy.*rate limited|unhealthy.*codex.*rate limited/i,"unhealthy provider reason missing");
     // a command that meets no supervisor refreshes to "not running"
     ({f,h}=await open({})); f.enqueue("/api/supervisor/pause",response(409,{error:"no supervisor is running",code:"not_running"}));
-    f.enqueue("/api/supervisor",response(200,notRunning())); await h.$("supervisor-pause-btn").fire("click"); await h.waitForRequests(); await h.fireTimers();
+    f.enqueue("/api/supervisor",response(200,notRunning())); await h.$("supervisor-pause-btn").fire("click"); await h.waitForRequests();
     assert.match(h.$("supervisor-status").textContent,/not running/i,"409 not_running did not refresh to not running"); assert.equal(state(h),"+---");
   });
   await check("7. Hostile server values remain text throughout UI fields and usage and stuck text",async()=>{

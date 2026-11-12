@@ -62,8 +62,8 @@ def main(out_path):
             service, state = build_service(base, name)
             try:
                 build(state)
-                # Exactly what board-web serves: the UI projection of the status plus its reachability flag.
-                result[name] = {"status": dict(webproxy.ui_status(service.status_view()), unreachable=False)}
+                # Exactly what board-web serves for GET /api/supervisor while a supervisor runs: the UI projection plus running.
+                result[name] = {"status": dict(webproxy.ui_status(service.status_view()), running=True)}
             finally:
                 service.close()
         Path(out_path).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")

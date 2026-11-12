@@ -1625,14 +1625,18 @@ _STUCK_LOCK = threading.Lock()
 def _refresh_stuck(key):
     """The one background refresher: runs stuck.find (read-only) and writes the cache."""
     try:
-        found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
-                        for x in supervisor_stuck.find(APP["root"], live_cards=key)], None
-    except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
-        found, error = None, str(exc)[:300] or exc.__class__.__name__
-    with _STUCK_LOCK:
-        if found is None:
-            found = _STUCK["found"] if _STUCK["key"] is not None else None  # keep the last good result
-        _STUCK.update(key=key, at=time.time(), mono=time.monotonic(), found=found, error=error, running=False)
+        try:
+            found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
+                            for x in supervisor_stuck.find(APP["root"], live_cards=key)], None
+        except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
+            found, error = None, str(exc)[:300] or exc.__class__.__name__
+        with _STUCK_LOCK:
+            if found is None:
+                found = _STUCK["found"] if _STUCK["key"] is not None else None  # keep the last good result
+            _STUCK.update(key=key, at=time.time(), mono=time.monotonic(), found=found, error=error)
+    finally:
+        with _STUCK_LOCK:
+            _STUCK["running"] = False  # whatever happened, a later request may start another refresher
 
 
 def stuck_state(live_cards):
@@ -1646,7 +1650,11 @@ def stuck_state(live_cards):
         fresh = _STUCK["at"] is not None and _STUCK["key"] == key and time.monotonic() - _STUCK["mono"] < STUCK_TTL
         if not fresh and not _STUCK["running"]:
             _STUCK["running"] = True
-            threading.Thread(target=_refresh_stuck, args=(key,), daemon=True).start()
+            try:
+                threading.Thread(target=_refresh_stuck, args=(key,), daemon=True).start()
+            except BaseException:
+                _STUCK["running"] = False  # the thread never ran: nothing would ever clear the flag
+                raise
         found = _STUCK["found"]
         return {"findings": None if found is None else [dict(i) for i in found if i["card"] not in key],
                 "checked_at": _STUCK["at"], "error": _STUCK["error"],
