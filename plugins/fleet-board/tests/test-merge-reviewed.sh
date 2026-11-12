@@ -163,6 +163,18 @@ pr() {
   route "pr view $p --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid" 0 "$FX/pr-$p.json"
   route "pr view $p --repo acme/toy --json files*" 0 "$FX/files-$p.json"
   route "pr view $p --repo acme/toy --json isDraft,mergeable,statusCheckRollup" 0 "$FX/handoff-$p.json"
+  # the merge-time closing-keyword check (pr-closing-check.sh): clean unless a case rewrites it
+  closing "$p" "Add subtract" "Local board card 12" "feat: subtract" "Local board card 12"
+  route "pr view $p --repo acme/toy --json title,body,commits" 0 "$FX/closing-$p.json"
+}
+
+# closing <pr> <title> <body> [<headline> <commit body>]...: the PR's title, body and commits
+closing() {
+  local p="$1" t="$2" b="$3" c='[]'; shift 3
+  while [ $# -ge 2 ]; do
+    c="$(jq -c --arg h "$1" --arg m "$2" '. + [{oid:"abc1234def", messageHeadline:$h, messageBody:$m}]' <<<"$c")"; shift 2
+  done
+  jq -cn --arg t "$t" --arg b "$b" --argjson c "$c" '{title:$t, body:$b, commits:$c}' > "$FX/closing-$p.json"
 }
 
 CLEAN='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}}'
@@ -261,6 +273,62 @@ finalize
 run_merge
 assert_exit "failed merge: exit 1" 1
 assert_eq "failed merge: no move to done" "$(moved_done)" 0
+
+echo "a closing keyword in the PR title, body or a commit message refuses the merge"
+for where in title body commit; do
+  setup_case auto
+  card 12 in_review "$CLEAN"
+  pr 34 false "$GREEN"
+  case "$where" in
+    title) closing 34 "Closes #253" "Local board card 12" "feat: subtract" "" ;;
+    body) closing 34 "Add subtract" "$(printf 'Summary\n\nCloses #253')" "feat: subtract" "" ;;
+    commit) closing 34 "Add subtract" "Local board card 12" "feat: subtract" "Fixes #253" ;;
+  esac
+  finalize
+  run_merge
+  assert_exit "closing keyword ($where): exit 1" 1
+  assert_eq "closing keyword ($where): no gh pr merge" "$(cnt "pr merge")" 0
+  assert_eq "closing keyword ($where): no move to done" "$(moved_done)" 0
+  case "$LAST_ERR" in
+    *"#12: PR #34"*"closing keyword"*) pass "closing keyword ($where): the warning names the card, the PR and the cause" ;;
+    *) fail "closing keyword ($where): the warning names the card, the PR and the cause" "stderr: $LAST_ERR" ;;
+  esac
+done
+
+setup_case auto
+card 12 in_review "$CLEAN"
+card 13 in_review "$(jq -c '.pr=35 | .branch="fleet/13-next"' <<<"$CLEAN")"
+pr 34 false "$GREEN"
+pr 35 false "$GREEN"
+closing 34 "Add subtract" "Closes #253"
+finalize
+run_merge
+assert_exit "closing keyword on one card: exit 1" 1
+assert_eq "closing keyword on one card: that PR is not merged" "$(cnt "pr merge 34 ")" 0
+assert_eq "closing keyword on one card: the other card still merges" "$(cnt "pr merge 35 ")" 1
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+printf 'pr view 34 --repo acme/toy --json title,body,commits\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
+finalize
+run_merge
+assert_exit "closing check cannot read the PR: exit 1" 1
+assert_eq "closing check cannot read the PR: no gh pr merge" "$(cnt "pr merge")" 0
+assert_eq "closing check cannot read the PR: no move to done" "$(moved_done)" 0
+
+echo "keyed form: a closing-keyword refusal leaves the operation marker, so the lane classifies it refused"
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+closing 34 "Add subtract" "Local board card 12" "feat: subtract" "Resolves owner/repo#4"
+finalize
+run_merge --no-finish --card 12 --operation-key op-12 --pr 34 --head abc1234
+assert_exit "keyed closing refusal: exit 1" 1
+assert_eq "keyed closing refusal: no gh pr merge" "$(cnt "pr merge")" 0
+INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+assert_eq "keyed closing refusal: inspection observes the marker on the open PR at the planned head" \
+  "$(jq -c '[.status,.state,.observed_head]' <<<"$INSPECT" 2>/dev/null)" '["observed","OPEN","abc1234"]'
 
 echo "cases that must never merge"
 no_merge() { # <desc> ; the case is already finalized
