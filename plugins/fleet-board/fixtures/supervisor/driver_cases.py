@@ -4,15 +4,18 @@ Board scripts (board-move, board-comment, note, board-read) run for real against
 scripts that need a remote or a worktree (worktree, update-branch, verify-main, ...) are stubbed and recorded.
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / 'scripts'))
 from supervisor import driver, scripts, state  # noqa: E402
 
+FAKE_ROLE = PLUGIN / 'fixtures' / 'supervisor' / 'fake_role.py'
 BRANCH = 'fleet/12-add-subtract'
 CONFIG = {'board': {'repo': 'acme/toy'}, 'review': {'stages': [{'name': 'security'}, {'name': 'perf'}]},
           'commands': {}}
@@ -37,15 +40,39 @@ class Board:
             '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n')
         (self.root / '.fleet-board' / 'cards').mkdir(parents=True)
         (self.root / '.fleet-board' / 'next').write_text('100\n')
-        self.env = {'FLEET_BOARD_USER': 'fleet-bot'}
+        self.fake = Path(base).resolve() / 'fake'
+        self.fake.mkdir()
+        os.environ['FLEET_BOARD_CLAUDE'] = str(FAKE_ROLE)
+        self.env = {'FLEET_BOARD_USER': 'fleet-bot', 'FAKE_ROLE_DIR': str(self.fake), 'FAKE_ROLE_CARD': '12',
+                    'FAKE_ROLE_ROLE': '', 'FAKE_STAGE_DIR': str(self.fake)}
         self.worktree = str(self.root / '.fw' / '12-add-subtract')
         self.config = config or CONFIG
         self.calls = []
         self.gh_calls = []
         self.stubs = {}
         self.gh_result = ok()
+        self.git_calls = []
+        self.git_result = ok('abc1234\n')
         self.state = state.State('run-1')
-        self.driver = driver.CardDriver(self.root, lambda: self.config, self.state, run=self.run, gh=self.gh)
+        self.driver = driver.CardDriver(self.root, lambda: self.config, self.state, run=self.run, gh=self.gh,
+                                        git=self.git, env=self.env, log_dir=Path(base).resolve() / 'logs')
+
+    def plans(self, *plans):
+        for i, plan in enumerate(plans, 1):
+            (self.fake / ('%d.json' % i)).write_text(json.dumps(plan))
+
+    def fake_calls(self):
+        path = self.fake / 'log.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def prompt(self, n=1):
+        argv = self.fake_calls()[n - 1]['argv']
+        return argv[argv.index('-p') + 1]
+
+    def git(self, cwd, *args):
+        self.git_calls.append((str(cwd),) + tuple(str(a) for a in args))
+        r = self.git_result
+        return r(*args) if callable(r) else r
 
     def run(self, root, name, *args, **kw):
         self.calls.append((name,) + tuple(str(a) for a in args))
@@ -56,7 +83,8 @@ class Board:
 
     def gh(self, root, *args):
         self.gh_calls.append(tuple(args))
-        return self.gh_result
+        r = self.gh_result
+        return r(*args) if callable(r) else r
 
     def scripts_called(self):
         """Script names in call order, without the note reads and merges."""
@@ -101,6 +129,32 @@ def board_for(base, card_state='ready', **kw):
     return b
 
 
+def wait_for(started, limit=30):
+    session = started.action.session
+    end = time.monotonic() + limit
+    while time.monotonic() < end:
+        result = session.poll()
+        if result is not None:
+            return result
+        time.sleep(0.05)
+    raise AssertionError('role session did not finish')
+
+
+def run_role(b, started):
+    """Wait for the session and hand its result to finish()."""
+    return b.driver.finish(started.action, wait_for(started))
+
+
+def worktree_ok(b):
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234',
+                                                       'base': 'base000'})
+                                           if a[0] == 'review' else b.worktree + '\n')
+
+
+LAST_REVIEW = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 1, 'stage': None, 'agent': None,
+               'model': None, 'provider': None, 'findings': [{'severity': 'Important', 'text': 'no test'}]}
+
+
 def begin(b, action, **kw):
     kw.setdefault('worktree', b.worktree)
     return b.driver.begin(candidate(action, **kw))
@@ -110,7 +164,7 @@ def test_start_runs_setup_and_returns_a_session(base):
     b = board_for(base)
     b.stubs['worktree.sh'] = ok(b.worktree + '\n')
     started = begin(b, 'start')
-    assert started.kind == 'session' and started.action.action == 'start' and started.action.session is None
+    assert started.kind == 'session' and started.action.action == 'start'
     assert started.action.card == 12 and started.action.role == 'implementor'
     assert b.scripts_called() == ['worktree.sh', 'board-move.sh'], b.calls
     assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
@@ -120,12 +174,9 @@ def test_start_runs_setup_and_returns_a_session(base):
     assert note['branch'] == BRANCH and note['worktree'] == b.worktree and note['round'] == 0, note
     assert note['implementor_attempts'] == 1 and note['models']['implementor'] == 'sonnet', note
     assert note['state'] == 'in_progress'
-    assert b.state.active[12] is started.action
-    try:
-        b.driver._dispatch_role(started.action, candidate('start'))
-    except NotImplementedError:
-        return
-    raise AssertionError('the role dispatch hook must raise NotImplementedError until task 2.7')
+    assert b.state.active[12] is started.action and started.action.session is not None
+    wait_for(started)
+    assert b.fake_calls()[0]['argv'][b.fake_calls()[0]['argv'].index('--agent') + 1] == 'fleet-board:implementor'
 
 
 def test_failed_step_counts_once_and_stops(base):
@@ -152,9 +203,11 @@ def test_timed_out_step_counts_a_failure(base):
 def test_start_review_routes_moves_and_notes(base):
     b = board_for(base, 'in_progress')
     b.stubs['review-stages.sh'] = ok('["security"]\n')
+    b.stubs['worktree.sh'] = ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234', 'base': 'base000'}))
     started = begin(b, 'start_review', state='in_progress')
-    assert started.kind == 'session' and started.action.role == 'reviewer'
-    assert b.scripts_called() == ['review-stages.sh', 'board-move.sh'], b.calls
+    assert started.kind == 'session' and started.action.role == 'reviewer' and started.action.session
+    assert b.scripts_called() == ['review-stages.sh', 'board-move.sh', 'worktree.sh'], b.calls
+    assert b.calls[-1] == ('worktree.sh', 'review', '12', '34'), b.calls
     assert b.calls[0] == ('review-stages.sh', 'route', '12', '34')
     assert b.calls[1] == ('board-move.sh', '12', 'in_review')
     assert b.card()['state'] == 'in_review'
@@ -304,7 +357,7 @@ def test_to_human_qa_without_qa_build_and_failed_handoff_still_progresses(base):
     b.stubs['human-qa-handoff.sh'] = fail_with('cannot post\n')
     assert begin(b, 'to_human_qa', state='in_review').kind == 'done'
     assert b.calls[0] == ('board-move.sh', '12', 'human_qa')
-    assert ('human-qa-handoff.sh', '12', '34') in b.calls, b.calls
+    assert [c for c in b.calls if c[0] == 'human-qa-handoff.sh'][0][-2:] == ('12', '34'), b.calls
     assert b.card()['state'] == 'human_qa' and b.note()['action_failures'] == 0
     assert [e for e in b.state.events if e['type'] == 'warning']
 
@@ -569,6 +622,542 @@ def test_a_busy_card_is_refused(base):
     except ValueError:
         return
     raise AssertionError('a card with an active action must be refused')
+
+
+# --- role dispatch and reconciliation (task 2.7) -------------------------------------------------------
+
+def started_implementor(b, report='implementor-ok', **kw):
+    b.plans({'report': report}, *kw.get('more', ()))
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    assert started.kind == 'session' and started.action.session is not None
+    return started
+
+
+def test_implementor_done_records_pr(base):
+    b = board_for(base)
+    started = started_implementor(b)
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, True, False, None), outcome
+    assert 12 not in b.state.active
+    note = b.note()
+    assert note['pr'] == 12 and note['last_verified'] == "VERIFIED: `node --test test/calc.test.js` -> 3 passing tests"
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    call = b.fake_calls()[0]
+    assert call['cwd'] == str(b.root) and '--model' in call['argv'] and 'sonnet' in call['argv'], call
+    prompt = b.prompt()
+    for want in ('Add subtract', 'does it', b.worktree, BRANCH, '12'):
+        assert want in prompt, (want, prompt)
+    assert any('## Status' in c for c in b.comments()), 'the fake role posted its report'
+
+
+def test_continue_implementor_counts_the_attempt_first(base):
+    b = board_for(base, 'in_progress')
+    b.put_note({'implementor_attempts': 1, 'branch': BRANCH, 'worktree': b.worktree, 'round': 0})
+    b.plans({'report': 'implementor-ok'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'continue_implementor', state='in_progress')
+    assert started.kind == 'session' and started.action.role == 'implementor'
+    assert b.note()['implementor_attempts'] == 2
+    assert b.scripts_called() == ['worktree.sh'] and b.calls[-1][:2] == ('worktree.sh', 'create'), b.calls
+    first_merge = [i for i, c in enumerate(b.calls) if c[:2] == ('note.sh', 'merge')][0]
+    assert first_merge < b.calls.index(b.calls[-1]), 'the attempt is counted before worktree.sh create'
+    assert '"implementor_attempts": 2' in b.prompt(), b.prompt()
+    assert run_role(b, started).progressed is True
+
+
+def test_reviewer_findings_record_last_review(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    started = begin(b, 'review', state='in_review', round=1)
+    assert started.kind == 'session' and started.action.role == 'reviewer'
+    assert ('worktree.sh', 'review', '12', '34') in b.calls
+    assert b.gh_calls[0][:3] == ('pr', 'diff', '34') and '--repo' in b.gh_calls[0], b.gh_calls
+    prompt = b.prompt()
+    assert '+line' in prompt and 'base000' in prompt and b.worktree in prompt, prompt
+    outcome = run_role(b, started)
+    assert outcome.progressed is True and outcome.redispatch is False, outcome
+    review = b.note()['last_review']
+    assert review == {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 1, 'stage': None, 'agent': None,
+                      'model': None, 'provider': None,
+                      'findings': [{'severity': 'Important', 'text': 'subtract(2, 5) returns -3 is unmapped'}]}, review
+    assert b.note()['last_verified'].startswith('VERIFIED:')
+
+
+def test_reviewer_round_two_gets_prev_sha_and_findings_and_a_long_diff_goes_to_a_file(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 2, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                'last_review': dict(LAST_REVIEW, sha='feed123')})
+    worktree_ok(b)
+    b.gh_result = ok('\n'.join('+row %d' % i for i in range(1600)) + '\n')
+    b.plans({'report': 'reviewer-ok'})
+    started = begin(b, 'review', state='in_review', round=2)
+    prompt = b.prompt()
+    assert 'feed123' in prompt and 'base000' not in prompt, prompt
+    assert '- [Important] no test' in prompt, prompt
+    assert '+row 1599' not in prompt and '+row 0' not in prompt, 'a long diff is passed as a path'
+    path = [w for w in prompt.split() if w.endswith('.diff')]
+    assert path, prompt
+    assert run_role(b, started).progressed is True
+    assert b.note()['last_review']['round'] == 2 and b.note()['last_review']['important'] == 0
+
+
+def test_role_prompt_sections_and_diff_file(base):
+    text = driver.role_prompt('reviewer', {'number': 12, 'body': 'B', 'diff': 'a\nb', 'round': 1, 'config': {'a': 1}})
+    assert '## Card number\n12' in text and '## PR diff\na\nb' in text and '"a": 1' in text, text
+    long_diff = '\n'.join('x%d' % i for i in range(1501))
+    text = driver.role_prompt('reviewer', {'number': 1, 'diff': long_diff}, tmp=base)
+    assert 'x1500' not in text and base in text, text
+    try:
+        driver.role_prompt('manager', {})
+    except ValueError:
+        return
+    raise AssertionError('an unknown role must be refused')
+
+
+def test_rejected_report_redispatches_once_with_the_rule_text(base):
+    b = board_for(base)
+    started = started_implementor(b, 'no-verified', more=[{'report': 'implementor-ok'}])
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, False, True, None), outcome
+    assert b.state.active[12] is started.action and started.action.session is not None
+    assert b.note()['pr'] is None and b.note()['action_failures'] == 0
+    run_role(b, started)
+    prompt = b.prompt(2)
+    assert prompt.startswith(b.prompt(1)), 'same inputs'
+    assert 'Your previous report was rejected by the manager: parse-report: expected exactly one VERIFIED: line, ' \
+           'found 0' in prompt, prompt
+    assert 'There is exactly one `VERIFIED:` line.' in prompt, prompt
+    assert 'The rule: every report contains ## Status, ## Findings, ## For the card, and exactly one line of ' \
+           'the form VERIFIED:' in prompt, prompt
+    assert [c['argv'][c['argv'].index('--agent') + 1] for c in b.fake_calls()] == ['fleet-board:implementor'] * 2
+
+
+def test_redispatch_is_declined_when_the_caller_says_so(base):
+    b = board_for(base)
+    started = started_implementor(b, 'no-verified')
+    outcome = b.driver.finish(started.action, wait_for(started), allow_redispatch=False)
+    assert outcome.redispatch is False and outcome.progressed is False and 12 not in b.state.active
+    assert b.note()['action_failures'] == 1 and 'rejected' in b.note()['last_action_error']
+
+
+def test_second_rejection_records_report_errors(base):
+    b = board_for(base)
+    started = started_implementor(b, 'no-verified', more=[{'report': 'no-verified'}])
+    assert run_role(b, started).redispatch is True
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    assert 12 not in b.state.active and len(b.fake_calls()) == 2
+    note = b.note()
+    assert len(note['report_errors']) == 1, note
+    entry = note['report_errors'][0]
+    assert entry['role'] == 'implementor' and entry['round'] == 0 and entry['at'], entry
+    assert entry['errors'] == ['parse-report: expected exactly one VERIFIED: line, found 0'], entry
+    assert note['action_failures'] == 1
+    assert note['last_action_error'] == ('implementor report rejected twice: '
+                                         'parse-report: expected exactly one VERIFIED: line, found 0'), note
+    assert note['pr'] is None and note['last_verified'] is None
+
+
+def seed_fix(b, **note):
+    b.put_note(dict({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                     'last_review': LAST_REVIEW}, **note))
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+
+
+def test_fix_done_increments_round(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.plans({'report': 'fixer-ok'})
+    started = begin(b, 'fix', state='in_review', escalated=True, round=1)
+    assert started.kind == 'session' and started.action.role == 'fixer'
+    assert b.note()['branch'] == BRANCH and b.calls[-1][:2] == ('worktree.sh', 'create'), b.calls
+    assert '- [Important] no test' in b.prompt()
+    assert run_role(b, started) == driver.Outcome(12, True, False, None)
+    note = b.note()
+    assert note['round'] == 2 and note['escalated'] is True and note['escalated_at_round'] == 2, note
+    assert note['models']['fixer'] == 'sonnet' and note['action_failures'] == 0, note
+    assert note['last_review']['sha'] == 'abc1234', 'review is preserved for the next round'
+    assert note['last_verified'].startswith('VERIFIED:')
+
+
+def test_fix_blocked_with_blocked_by_moves_to_blocked(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.plans({'report': 'fixer-blocked-by'})
+    started = begin(b, 'fix', state='in_review')
+    outcome = run_role(b, started)
+    assert outcome.progressed is True
+    note = b.note()
+    assert b.card()['state'] == 'blocked' and note['state'] == 'blocked', note
+    assert note['blocking_pr'] == 41 and note['blocked_from'] == 'in_review' and note['round'] == 1, note
+
+
+def test_fix_blocked_without_blocked_by_lists_the_findings(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.plans({'report': 'fixer-blocked-by'})
+    report = (PLUGIN / 'fixtures' / 'reports' / 'fixer-blocked-by.md').read_text().replace('Blocked by: #41\n', '')
+    b.plans({'report': report})
+    outcome = run_role(b, begin(b, 'fix', state='in_review'))
+    assert outcome.progressed is True
+    note = b.note()
+    assert b.card()['state'] == 'blocked' and note['blocking_pr'] is None, note
+    assert [f['severity'] for f in note['blocked_findings']] == ['Important'], note
+    assert any('Blocked' in c for c in b.comments())
+
+
+def conflict_board(base, state_name='in_review'):
+    b = board_for(base, state_name)
+    b.put_note({'round': 2, 'pr': 34, 'state': state_name, 'branch': BRANCH, 'worktree': b.worktree,
+                'conflicted_files': ['a.py'], 'last_review': LAST_REVIEW, 'stage': 'security',
+                'reviewed_stages': ['perf'], 'action_failures': 1, 'last_action_error': 'old'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['review-stages.sh'] = ok('[]')
+    b.gh_result = ok('abc1234\n')
+    return b
+
+
+def test_conflict_fix_resets_review(base):
+    b = conflict_board(base)
+    b.plans({'report': 'fixer-ok'})
+    findings = [{'severity': 'Important', 'text': 'merge conflict in a.py'}]
+    started = begin(b, 'fix', state='in_review', findings=findings)
+    assert '- [Important] merge conflict in a.py' in b.prompt()
+    assert 'no test' not in b.prompt(), 'stale review findings are not passed to a conflict fixer'
+    assert run_role(b, started) == driver.Outcome(12, True, False, None)
+    assert [c[:2] for c in b.calls if c[0] in ('review-stages.sh', 'board-move.sh')] == \
+        [('review-stages.sh', 'route'), ('board-move.sh', '12')], b.calls
+    assert b.gh_calls[-1][:3] == ('pr', 'view', '34') and 'headRefOid' in b.gh_calls[-1]
+    note = b.note()
+    assert note['conflicted_files'] is None and note['last_review'] is None and note['round'] == 1, note
+    assert note['stage'] is None and note['reviewed_stages'] == [] and note['state'] == 'in_review', note
+    assert note['blocking_pr'] is None and note['blocked_from'] is None and note['blocked_findings'] == []
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert b.card()['state'] == 'in_review'
+
+
+def test_conflict_fix_refuses_an_unpushed_resolution(base):
+    b = conflict_board(base)
+    b.gh_result = ok('9999999\n')
+    b.plans({'report': 'fixer-ok'})
+    outcome = run_role(b, begin(b, 'fix', state='in_review',
+                                findings=[{'severity': 'Important', 'text': 'merge conflict in a.py'}]))
+    assert outcome.progressed is False
+    note = b.note()
+    assert note['conflicted_files'] == ['a.py'] and note['round'] == 2, note
+    assert note['action_failures'] == 2 and 'push' in note['last_action_error'], note
+    assert 'review-stages.sh' not in [c[0] for c in b.calls]
+
+
+def test_conflict_fix_blocked_keeps_the_files_and_notes_before_the_move(base):
+    b = conflict_board(base)
+    b.plans({'report': 'fixer-blocked-by'})
+    findings = [{'severity': 'Important', 'text': 'merge conflict in a.py'}]
+    assert run_role(b, begin(b, 'fix', state='in_review', findings=findings)).progressed is True
+    note = b.note()
+    assert note['conflicted_files'] == ['a.py'] and b.card()['state'] == 'blocked', note
+    assert note['blocked_from'] == 'in_review' and note['blocked_findings'] == findings, note
+    assert note['blocking_pr'] == 41 and note['state'] == 'blocked' and note['action_failures'] == 0, note
+    assert any('a.py' in c for c in b.comments())
+
+
+def test_not_reproducible_records_last_fix(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.git_result = ok('0\n')
+    b.plans({'report': 'fixer-not-reproducible'})
+    outcome = run_role(b, begin(b, 'fix', state='in_review'))
+    assert outcome.progressed is True
+    note = b.note()
+    assert note['last_fix'] == {'status': 'not_reproducible', 'round': 1}, note
+    assert note['round'] == 1, 'no round increment'
+    assert any('rev-list' in ' '.join(c) for c in b.git_calls), b.git_calls
+
+
+def test_not_reproducible_is_rejected_when_the_fixer_committed(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.git_result = ok('3\n')
+    b.plans({'report': 'fixer-not-reproducible'}, {'report': 'fixer-ok'})
+    outcome = run_role(b, begin(b, 'fix', state='in_review'))
+    assert outcome.redispatch is True and b.note().get('last_fix') is None
+
+
+def test_provider_failure_does_not_charge_the_card(base):
+    b = board_for(base)
+    b.plans({'report': '', 'post': False, 'exit': 1, 'is_error': True, 'stderr': 'rate limit exceeded (429)'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, False, False, 'claude'), outcome
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert 12 not in b.state.active
+    assert b.card()['state'] == 'in_progress'
+
+
+def test_card_failure_counts_no_progress_with_the_reason(base):
+    b = board_for(base)
+    b.plans({'report': 'implementor-ok', 'post': False, 'exit': 1})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'] == 'exit 1', note
+    assert note['pr'] is None
+
+
+def test_a_cancelled_session_counts_nothing(base):
+    b = board_for(base)
+    b.plans({'report': 'implementor-ok', 'sleep': 30})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    started.action.session.cancel(0.2)
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    assert b.note()['action_failures'] == 0 and 12 not in b.state.active
+
+
+def test_followups_are_filed(base):
+    b = board_for(base)
+    seen = {}
+
+    def file_followups(*args):
+        seen['args'] = tuple(str(a) for a in args)
+        seen['file'] = json.loads(Path(str(args[2])).read_text())
+        return ok(json.dumps({'out_of_scope_created': [{'title': 'Add multiply', 'number': 101, 'existing': False}],
+                              'bugs_filed': [{'title': 'add drops a third argument', 'number': 102,
+                                              'existing': False}]}))
+    b.stubs['file-followups.sh'] = file_followups
+    b.put_note({'pr': 34})
+    started = started_implementor(b, 'with-oos-and-bugs')
+    assert run_role(b, started).progressed is True
+    assert seen['args'][:2] == ('12', '34'), seen
+    assert [i['title'] for i in seen['file']['out_of_scope']] == ['Add multiply'], seen
+    assert [i['title'] for i in seen['file']['bugs']] == ['add drops a third argument'], seen
+    note = b.note()
+    assert [e['number'] for e in note['out_of_scope_created']] == [101], note
+    assert [e['number'] for e in note['bugs_filed']] == [102] and note['pending_followups'] is None, note
+
+
+def test_followups_partly_filed_stay_pending_and_progress_stands(base):
+    b = board_for(base)
+    b.stubs['file-followups.sh'] = lambda *a: scripts.ScriptResult(
+        1, json.dumps({'out_of_scope_created': [{'title': 'Add multiply', 'number': 101, 'existing': False}],
+                       'bugs_filed': []}), 'boom\n', False)
+    b.put_note({'pr': 34, 'pending_followups': {'out_of_scope': [{'title': 'Earlier', 'detail': 'd'}],
+                                                'bugs': [], 'pr': 34}})
+    started = started_implementor(b, 'with-oos-and-bugs')
+    assert run_role(b, started).progressed is True
+    note = b.note()
+    assert [e['number'] for e in note['out_of_scope_created']] == [101], note
+    pending = note['pending_followups']
+    assert [i['title'] for i in pending['out_of_scope']] == ['Earlier'], pending
+    assert [i['title'] for i in pending['bugs']] == ['add drops a third argument'] and pending['pr'] == 34
+    assert [e for e in b.state.events if e['type'] == 'warning']
+
+
+def fake_plugin(b, exit_code, stdout, stderr=''):
+    plugin = Path(b.root).parent / 'plugin'
+    (plugin / 'scripts').mkdir(parents=True, exist_ok=True)
+    script = ('#!/bin/bash\nprintf \'%s\\n\' "$@" > "$FAKE_STAGE_DIR/args.txt"\nprev=""\n'
+              'for a in "$@"; do [ "$prev" = --impl-report ] && cp "$a" "$FAKE_STAGE_DIR/impl.txt"; '
+              'prev=$a; done\ncat "$FAKE_STAGE_DIR/stdout.json"\n'
+              '[ -f "$FAKE_STAGE_DIR/stderr.txt" ] && cat "$FAKE_STAGE_DIR/stderr.txt" >&2\n'
+              'exit "$(cat "$FAKE_STAGE_DIR/exit")"\n')
+    for name in ('evidence-review.sh', 'stage-review.sh'):
+        (plugin / 'scripts' / name).write_text(script)
+    (b.fake / 'exit').write_text('%d\n' % exit_code)
+    (b.fake / 'stdout.json').write_text(stdout)
+    (b.fake / 'stderr.txt').write_text(stderr)
+    b.driver.plugin_dir = plugin
+
+
+def report_file(b, name):
+    path = b.fake / 'report.md'
+    path.write_text((PLUGIN / 'fixtures' / 'reports' / (name + '.md')).read_text())
+    return str(path)
+
+
+EVIDENCE_CONFIG = {'board': {'repo': 'acme/toy'}, 'commands': {},
+                   'models': {'reviewer': {'provider': 'codex', 'model': 'gpt-5', 'timeout': 600}}}
+
+
+def test_evidence_reviewer_path(base):
+    b = board_for(base, 'in_review', config=EVIDENCE_CONFIG)
+    b.put_note({'round': 2, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                'last_review': dict(LAST_REVIEW, sha='feed123')})
+    fake_plugin(b, 0, json.dumps({'status': 'posted', 'report_file': report_file(b, 'reviewer-ok'),
+                                  'parsed': {}, 'provider': 'codex', 'model': 'gpt-5', 'sha': 'deadbee',
+                                  'input_tokens': None, 'output_tokens': None, 'cost_usd': 0, 'attempts': 1}))
+    started = begin(b, 'review', state='in_review', round=2)
+    assert started.kind == 'session' and started.action.role == 'reviewer' and started.action.provider == 'codex'
+    assert 'worktree.sh' not in b.scripts_called(), 'the evidence runner makes its own review worktree'
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, True, False, None), outcome
+    args = (b.fake / 'args.txt').read_text().split('\n')
+    assert args[:5] == ['12', '34', '--round', '2', '--impl-report'], args
+    assert '--prev-sha' in args and args[args.index('--prev-sha') + 1] == 'feed123', args
+    assert '--findings' in args, args
+    review = b.note()['last_review']
+    assert review['sha'] == 'deadbee' and review['provider'] == 'codex' and review['model'] == 'gpt-5', review
+    assert review['stage'] is None and review['agent'] is None and review['important'] == 0, review
+    assert b.note()['models']['reviewer'] == 'opus', b.note()
+    assert b.fake_calls() == [], 'no claude session'
+
+
+def test_evidence_reviewer_exit_6_appends_report_errors_without_a_rerun(base):
+    b = board_for(base, 'in_review', config=EVIDENCE_CONFIG)
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})
+    fake_plugin(b, 6, '', 'parse-report: missing section: ## Status\nevidence-review: rejected twice\n')
+    outcome = run_role(b, begin(b, 'review', state='in_review', round=1))
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'] == 'evidence-review: rejected twice', note
+    assert note['report_errors'][0]['role'] == 'reviewer' and note['report_errors'][0]['round'] == 1
+    assert note['report_errors'][0]['errors'] == ['parse-report: missing section: ## Status',
+                                                  'evidence-review: rejected twice'], note
+    assert (b.fake / 'args.txt').exists() and 12 not in b.state.active
+
+
+def provider_stage_board(base, exit_code, stdout, stderr=''):
+    stage = {'name': 'security', 'provider': 'codex', 'model': 'gpt-5', 'agent': None}
+    b = board_for(base, 'review_security')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'review_security', 'stage': 'security', 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    b.gh_result = ok('abc1234\n')
+    fake_plugin(b, exit_code, stdout, stderr)
+    return b, stage
+
+
+def test_provider_stage_exit_7_blocks(base):
+    b, stage = provider_stage_board(base, 7, '', 'stage-review: diff exceeds max_diff_bytes\n')
+    started = begin(b, 'review_stage', state='review_security', stage=stage, round=1)
+    assert started.kind == 'session' and started.action.provider == 'codex'
+    assert b.gh_calls[0][:3] == ('pr', 'view', '34') and 'headRefOid' in b.gh_calls[0], b.gh_calls
+    outcome = run_role(b, started)
+    assert outcome == driver.Outcome(12, True, False, None), outcome
+    note = b.note()
+    assert b.card()['state'] == 'blocked' and note['blocked_from'] == 'review_security', note
+    assert note['blocked_findings'] == [{'severity': 'Important',
+                                         'text': 'stage-review: diff exceeds max_diff_bytes'}], note
+    assert any('max_diff_bytes' in c for c in b.comments())
+    args = (b.fake / 'args.txt').read_text().split('\n')
+    assert args[:8] == ['12', '34', '--stage', 'security', '--round', '1', '--prev-sha', 'abc1234'], args
+    assert '--impl-report' in args
+
+
+def test_provider_stage_done_records_the_stage_review(base):
+    out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
+           'input_tokens': 5, 'output_tokens': 6, 'cost_usd': 0, 'attempts': 1}
+    b, stage = provider_stage_board(base, 0, '')
+    out['report_file'] = report_file(b, 'stage-reviewer-findings')
+    fake_plugin(b, 0, json.dumps(out))
+    outcome = run_role(b, begin(b, 'review_stage', state='review_security', stage=stage, round=1))
+    assert outcome == driver.Outcome(12, True, False, None), outcome
+    review = b.note()['last_review']
+    assert review['stage'] == 'security' and review['agent'] is None and review['provider'] == 'codex', review
+    assert review['model'] == 'gpt-5' and review['sha'] == 'abc1234' and review['important'] == 1, review
+
+
+def test_provider_stage_exit_3_is_a_provider_failure(base):
+    b, stage = provider_stage_board(base, 3, '', 'first line\nstage-review: KEY is not set\n')
+    outcome = run_role(b, begin(b, 'review_stage', state='review_security', stage=stage, round=1))
+    assert outcome.progressed is False and outcome.redispatch is False
+    assert outcome.provider_failure == 'codex', outcome
+    assert b.note()['action_failures'] == 0, 'a provider failure does not charge the card'
+
+
+def test_provider_stage_exit_1_counts_with_the_last_stderr_line(base):
+    b, stage = provider_stage_board(base, 1, '', 'warming up\nstage-review: empty reply\n')
+    outcome = run_role(b, begin(b, 'review_stage', state='review_security', stage=stage, round=1))
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    note = b.note()
+    assert note['action_failures'] == 1 and note['last_action_error'] == 'stage-review: empty reply', note
+    assert b.card()['state'] == 'review_security' and note['report_errors'] == []
+
+
+def test_agent_stage_dispatches_the_stage_agent_with_its_brief(base):
+    b = board_for(base, 'review_security')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'review_security', 'stage': 'security', 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    worktree_ok(b)
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    started = begin(b, 'review_stage', state='review_security', stage=stage, round=1)
+    prompt = b.prompt()
+    assert 'Look for token leaks.' in prompt and 'security' in prompt and 'abc1234' in prompt, prompt
+    assert 'parse-report.sh --role stage-reviewer' in prompt and 'board-comment.sh' in prompt, prompt
+    argv = b.fake_calls()[0]['argv']
+    assert argv[argv.index('--agent') + 1] == 'sec-reviewer' and argv[argv.index('--model') + 1] == 'opus'
+    assert run_role(b, started).progressed is True
+    review = b.note()['last_review']
+    assert review['stage'] == 'security' and review['agent'] == 'sec-reviewer' and review['provider'] is None
+    assert review['model'] == 'opus' and review['sha'] == 'abc1234', review
+
+
+def test_exit_2_from_the_checker_pauses_the_supervisor(base):
+    b = board_for(base)
+    started = started_implementor(b)
+    wait_for(started)
+    b.stubs['parse-report.sh'] = fail_with('parse-report: cannot read file: x\n', rc=2)
+    outcome = b.driver.finish(started.action, started.action.session.poll())
+    assert outcome.progressed is False and outcome.redispatch is False
+    assert b.state.mode == 'paused' and b.state.pause_reason.startswith('driver bug: '), b.state.pause_reason
+    assert b.note()['action_failures'] == 0 and 12 not in b.state.active
+
+
+# --- findings carried from the 2.6 review ---------------------------------------------------------------
+
+def test_to_human_qa_without_a_qa_build_says_so_in_the_summary(base):
+    b = board_for(base, 'in_review')
+    seen = {}
+
+    def handoff(*args):
+        seen['args'] = tuple(str(a) for a in args)
+        seen['summary'] = Path(str(args[1])).read_text()
+        return ok()
+    b.stubs['human-qa-handoff.sh'] = handoff
+    begin(b, 'to_human_qa', state='in_review')
+    assert seen['args'][0] == '--qa-summary' and seen['args'][2:] == ('12', '34'), seen
+    assert seen['summary'].strip() == 'No QA build is configured.', seen
+
+
+def test_a_failed_note_read_does_not_write_an_unknown_counter(base):
+    b = board_for(base)
+    b.stubs['worktree.sh'] = fail_with('boom\n')
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+
+    def note_stub(*args):
+        if args[0] == 'get':
+            return fail_with('cannot read\n')
+        return scripts.run(b.root, 'note.sh', *args, env=b.env)
+    b.stubs['note.sh'] = note_stub
+    assert begin(b, 'start').kind == 'done'
+    note = b.note()
+    assert note['action_failures'] == 2 and note['last_action_error'] == 'older', note
+    messages = [e['payload'].get('message', '') for e in b.state.events]
+    assert [m for m in messages if 'cannot read' in m], list(b.state.events)
+
+
+def test_validation_errors_are_one_line_and_the_repo_regex_is_tight(base):
+    cfg = {'board': {'repo': 'acme/toy\nsecond line'}, 'commands': {}}
+    b = board_for(base, 'in_review', config=cfg)
+    begin(b, 'mark_ready', state='in_review')
+    assert b.note()['last_action_error'] == 'invalid repo: acme/toy', b.note()
+    for repo in ('acme/to;y', 'ac me/toy', 'a/b/c', '-x/y'):
+        sub = Path(base) / ('r%d' % abs(hash(repo)))
+        sub.mkdir()
+        b = board_for(sub, 'in_review', config={'board': {'repo': repo}, 'commands': {}})
+        begin(b, 'mark_ready', state='in_review')
+        assert b.gh_calls == [] and b.note()['last_action_error'].startswith('invalid repo: '), repo
 
 
 if __name__ == '__main__':
