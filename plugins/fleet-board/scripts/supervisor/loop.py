@@ -106,12 +106,17 @@ class Supervisor:
         return effective
 
     def on_signal(self, signum, _frame=None):
-        """SIGINT, SIGTERM and SIGHUP cancel; a second SIGINT also skips the grace period."""
+        """SIGINT, SIGTERM and SIGHUP cancel; a second SIGINT also skips the grace period.
+
+        Runs between two bytecodes of the main thread, so it takes no non-reentrant lock (no Event.set, no
+        self._lock): it sets plain flags and flips the State (an RLock). The loop acts on them within its
+        bounded wait (at most a second)."""
+        self._stop_mode = 'cancel'
         if signum == signal.SIGINT:
             self._sigints += 1
-            self.request_stop('cancel', force=self._sigints >= 2)
-        else:
-            self.request_stop('cancel')
+            if self._sigints >= 2:
+                self._force = True
+        self.state.stop()
 
     def handle(self, command):
         """The service's handler. stop applies now; pause and resume are applied by the loop."""
@@ -262,12 +267,14 @@ class Supervisor:
 
     def _ended(self, action, result):
         card = action.card
+        raised = False
         try:
-            outcome = self.driver.finish(action, result, allow_redispatch=self.state.mode == 'running')
-        except Exception as exc:  # noqa: BLE001 - the driver released the card; report and carry on
-            self.state.event('action_failed', card=card, action=action.action,
-                             error='%s: %s' % (type(exc).__name__, exc))
+            outcome = self.driver.finish(action, result,
+                                         allow_redispatch=self._stop_mode is None and self.state.mode != 'stopping')
+        except Exception as exc:  # noqa: BLE001 - the driver released the card; report, count and carry on
+            self._count_exception(card, action.action, exc)
             outcome = None
+            raised = True
         if outcome is not None and outcome.redispatch:
             return
         if card in self.state.active:
@@ -279,7 +286,31 @@ class Supervisor:
             self._provider_failed(outcome.provider_failure, result.reason)
         elif result.failure != 'provider':
             self.state.clear_health(action.provider)
-        self.wake('session ended')
+        if not raised:   # a finish that raised waits for the timer, like any other failed action
+            self.wake('session ended')
+
+    def _count_exception(self, card, action_name, exc):
+        """An exception that escaped the driver is one no-progress failure of the card (best effort)."""
+        first = (str(exc).splitlines() or [''])[0]
+        message = re.sub(r'[\x00-\x1f\x7f]', ' ', '%s: %s' % (type(exc).__name__, first)).strip()[:200]
+        self.state.event('action_failed', card=card, action=action_name, error=message)
+        if type(card) is not int or card <= 0:
+            return
+        try:
+            got = self.run_script(self.root, 'note.sh', 'get', card)
+            note = json.loads(got.stdout) if got.rc == 0 else None
+            if not isinstance(note, dict):
+                return   # an unknown count must not be overwritten
+            count = note.get('action_failures')
+            patch = {'action_failures': (count if type(count) is int else 0) + 1, 'last_action_error': message}
+            with tempfile.TemporaryDirectory(prefix='fleet-count-') as tmp:
+                path = Path(tmp) / 'patch.json'
+                path.write_text(json.dumps(patch))
+                done = self.run_script(self.root, 'note.sh', 'merge', card, str(path))
+            if done.rc != 0:
+                self.state.event('warning', card=card, message='failure not counted')
+        except Exception as inner:  # noqa: BLE001
+            self.state.event('warning', card=card, message='failure not counted: %s' % inner)
 
     def _provider_failed(self, provider, reason):
         failures = (self.state.provider_health.get(provider) or {}).get('failures', 0) + 1
@@ -442,7 +473,7 @@ class Supervisor:
         try:
             started = self.driver.begin(row)
         except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the others
-            self.state.event('action_failed', card=number, action=name, error='%s: %s' % (type(exc).__name__, exc))
+            self._count_exception(number, name, exc)
             started = None
         if started is None or started.kind != 'session':
             if reserved and number not in self.state.active:

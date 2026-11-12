@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from supervisor import webproxy
-from supervisor.service import Service, StubHandler
+from supervisor.service import Service
+from stub_handler import StubHandler
 from supervisor.state import Action, State
 
 NOW = datetime(2026, 11, 10, 18, 0, 0, tzinfo=timezone.utc).timestamp()

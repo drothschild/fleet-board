@@ -284,7 +284,7 @@ class Session:
             stderr = ''
         failure = reason = None
         timed_out = self._why in ('attempt', 'progress')
-        cancelled = self._why in ('cancel', 'mode')
+        cancelled = self._why == 'cancel'   # a mode breach is a card failure, not a cancel
         if self._stage:
             text, usage = _stage_scan(self.log_path)
             sid = None
@@ -327,7 +327,7 @@ def launch(argv, *, root, log_dir, label, env, clock=time.monotonic, attempt_tim
     """Start argv in its own process group with cwd=root. stdout goes to <log_dir>/<label>.jsonl and stderr
     to <label>.err (0600). `permission_mode` is the mode the session must report in its init event.
     `stage` marks a provider script (its stdout is not stream-json); by default it is inferred from argv.
-    A missing binary yields a finished Session whose result is a provider failure."""
+    A missing or non-executable binary yields a finished Session whose result is a provider failure."""
     if stage is None:
         stage = len(argv) > 1 and os.path.basename(str(argv[1])) in _STAGE_SCRIPTS
     log_dir = Path(log_dir)
@@ -340,10 +340,14 @@ def launch(argv, *, root, log_dir, label, env, clock=time.monotonic, attempt_tim
         try:
             proc = subprocess.Popen([str(a) for a in argv], cwd=str(root), env=env, stdin=subprocess.DEVNULL,
                                     stdout=out_fd, stderr=err_fd, start_new_session=True, close_fds=True)
-        except FileNotFoundError as exc:
+        except OSError as exc:
+            # a missing or non-executable binary (or any other launch error) is the environment, not the card
+            missing = isinstance(exc, FileNotFoundError)
             session = Session(argv, None, out_path, err_path, label, clock, attempt_timeout, progress_timeout,
                               permission_mode, kill_grace, stage)
-            session._result = RoleResult(127, '', _UNKNOWN, 'provider', 'binary not found: %s' % exc.filename,
+            reason = ('binary not found: %s' % exc.filename) if missing else \
+                ('cannot run %s: %s' % (exc.filename or argv[0], exc.strerror or type(exc).__name__))
+            session._result = RoleResult(127 if missing else 126, '', _UNKNOWN, 'provider', reason,
                                          None, str(out_path), False, False)
             return session
     finally:

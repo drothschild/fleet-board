@@ -12,7 +12,8 @@ from unittest import mock
 ROOT = Path(sys.argv.pop()).resolve()
 
 from supervisor import errors
-from supervisor.service import Service, StubHandler
+from supervisor.service import Service
+from stub_handler import StubHandler
 from supervisor.state import Action, State
 
 

@@ -116,6 +116,7 @@ class _Ctx:
         self.d, self.row, self.config, self.tmp = driver, row, config, tmp
         self.n = row['number']
         self.action = None
+        self.attempts_before = None   # implementor_attempts before this dispatch charged one
         self._files = 0
 
     # values -------------------------------------------------------------------------------------------
@@ -413,8 +414,9 @@ class CardDriver:
             return Started('done', action)
         self.state.begin(action)
         outcome = None
-        tmp = tempfile.mkdtemp(prefix='fleet-driver-')
+        tmp = None
         try:
+            tmp = tempfile.mkdtemp(prefix='fleet-driver-')
             ctx = _Ctx(self, row, config, tmp)
             ctx.action = action
             try:
@@ -425,7 +427,7 @@ class CardDriver:
             self.state.end(number)
             raise
         finally:
-            if outcome != 'session':
+            if tmp is not None and outcome != 'session':
                 shutil.rmtree(tmp, ignore_errors=True)
         if outcome == 'session':
             return Started('session', action)
@@ -446,6 +448,7 @@ class CardDriver:
     # role actions ---------------------------------------------------------------------------------------
     def _do_start(self, c):
         branch, worktree = c.branch(), c.worktree()
+        c.attempts_before = 0
         patch = {'state': 'in_progress', 'branch': branch, 'worktree': worktree, 'round': 0,
                  'implementor_attempts': 1}
         patch.update(c.models_patch())
@@ -457,8 +460,8 @@ class CardDriver:
     def _do_continue_implementor(self, c):
         branch, worktree = c.branch(), c.worktree()
         attempts = c.note().get('implementor_attempts')
-        patch = {'implementor_attempts': (attempts if isinstance(attempts, int) else 0) + 1, 'branch': branch,
-                 'worktree': worktree}
+        c.attempts_before = attempts if isinstance(attempts, int) else 0
+        patch = {'implementor_attempts': c.attempts_before + 1, 'branch': branch, 'worktree': worktree}
         patch.update(c.models_patch(strict=False))
         c.merge(patch)
         c.step('worktree.sh', 'create', c.n, branch, worktree)
@@ -553,6 +556,7 @@ class CardDriver:
             self._review_inputs(c, run, note, card, inputs)
         if not run.script:
             run.prompt = run.base_prompt = role_prompt(role, inputs, c.tmp)
+        run.attempts_before = c.attempts_before if role == 'implementor' else None
         self._launch(run)
         return 'session'
 
@@ -624,14 +628,27 @@ class CardDriver:
         argv = self.roles.command(d, run.prompt, c.config, self.plugin_dir, stage_args=run.stage_args)
         mode = None if run.script else ((c.config.get('headless') or {}).get('permission_mode') or 'auto')
         label = 'card-%d-%s-%d-%d' % (c.n, c.row['action'], int(self.clock() * 1000), run.attempt)
-        run.action.session = self.roles.launch(
-            argv, root=self.root, log_dir=self.log_dir, label=label, env=env,
-            attempt_timeout=sup.get('attempt_timeout_seconds'),
-            progress_timeout=None if run.script else sup.get('progress_timeout_seconds'),
-            permission_mode=mode,
-            kill_grace=sup.get('shutdown_grace_seconds', getattr(self.roles, 'DEFAULT_KILL_GRACE', 5.0)),
-            stage=run.script)
+        try:
+            run.action.session = self.roles.launch(
+                argv, root=self.root, log_dir=self.log_dir, label=label, env=env,
+                attempt_timeout=sup.get('attempt_timeout_seconds'),
+                progress_timeout=None if run.script else sup.get('progress_timeout_seconds'),
+                permission_mode=mode,
+                kill_grace=sup.get('shutdown_grace_seconds', getattr(self.roles, 'DEFAULT_KILL_GRACE', 5.0)),
+                stage=run.script)
+        except BaseException:
+            self._give_back_attempt(run)   # no session ever existed: the card was not tried
+            raise
         self._runs[c.n] = run
+
+    def _give_back_attempt(self, run):
+        """Undo the implementor attempt charged before dispatch (a provider failure is not the card's)."""
+        if run.attempts_before is None:
+            return
+        try:
+            run.c.merge({'implementor_attempts': run.attempts_before})
+        except _Fail as exc:
+            run.c.warn('could not give back the implementor attempt: ' + str(exc))
 
     # report reconciliation (manager.md section 3) -----------------------------------------------------------
     def finish(self, action, result, allow_redispatch=True):
@@ -670,6 +687,7 @@ class CardDriver:
             return Outcome(c.n, False, False, None)
         if result.failure == 'provider':
             self.state.event('provider_failure', card=c.n, provider=run.dispatch.provider, reason=result.reason)
+            self._give_back_attempt(run)
             return Outcome(c.n, False, False, run.dispatch.provider)
         if run.script:
             return self._reconcile_script(run, result)

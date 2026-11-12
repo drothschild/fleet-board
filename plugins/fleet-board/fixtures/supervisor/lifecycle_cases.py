@@ -21,7 +21,8 @@ SCRIPTS = PLUGIN / "scripts"
 
 from supervisor import errors, launcher, paths
 from supervisor.cli import main
-from supervisor.service import Service, StubHandler
+from supervisor.service import Service
+from stub_handler import StubHandler
 from supervisor.state import State
 
 SANDBOX_PS = "Operation not permitted: 'ps'"

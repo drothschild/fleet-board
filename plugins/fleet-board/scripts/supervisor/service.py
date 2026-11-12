@@ -1,8 +1,7 @@
 """The supervisor's control surface: one private socket, one owner per repository.
 
 The service answers `status` from the in-memory State and hands the mutating commands
-(`pause`, `resume`, `stop`) to a handler. The handler is supplied by whoever runs the loop; in
-Phase 1 it is StubHandler, which applies them to the State directly.
+(`pause`, `resume`, `stop`) to a handler, which is supplied by whoever runs the loop.
 
 Wire protocol: one JSON request per connection (at most 1 MiB), answered with
 `{"ok": true, "result": ...}` or the error envelope from errors.py. The peer's uid must equal
@@ -30,32 +29,6 @@ SCHEMA_VERSION = 2
 MUTATING = ("pause", "resume", "stop")
 STOP_MODES = ("drain", "cancel")
 _REPLAYS = 256
-
-
-class StubHandler:
-    """Phase 1 stand-in for the loop's handler: pause, resume and stop act on the State."""
-
-    def __init__(self, state):
-        self.state = state
-        self.stop_requested = threading.Event()
-        self.stop_mode = None
-
-    def request_stop(self, mode):
-        self.stop_mode = mode
-        self.stop_requested.set()
-
-    def __call__(self, command):
-        name = command.get("command")
-        if name == "pause":
-            self.state.pause(command.get("reason") or "paused by operator")
-        elif name == "resume":
-            self.state.resume()
-        elif name == "stop":
-            self.request_stop(command["mode"])
-            return {"stopping": True, "mode": command["mode"]}
-        else:
-            raise errors.Invalid("unsupported command")
-        return {"mode": self.state.mode, "revision": self.state.revision}
 
 
 class Service:
