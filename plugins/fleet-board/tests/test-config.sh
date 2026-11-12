@@ -823,6 +823,30 @@ REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens_per_card: null }\n' | 
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "max_tokens_per_card null accepted" 0
 
+# merge.persona (null or a non-empty relative path), merge.persona_append (null or string), models.merger
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.persona defaults to .fleet-board/merger.md" '.merge.persona' '".fleet-board/merger.md"'
+assert_stdout_exact_jq "merge.persona_append defaults to null" '.merge.persona_append' 'null'
+assert_stdout_exact_jq "models.merger defaults to sonnet" '.models.merger' '"sonnet"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: null\n  persona_append: "Also run make deploy."\nmodels: { merger: opus }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "merge.persona null with an append accepted" 0
+assert_stdout_exact_jq "merge.persona null kept" '.merge.persona' 'null'
+assert_stdout_exact_jq "merge.persona_append kept" '.merge.persona_append' '"Also run make deploy."'
+assert_stdout_exact_jq "models.merger overridden" '.models.merger' '"opus"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: docs/merger.md\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.persona relative path kept" '.merge.persona' '"docs/merger.md"'
+for v in '""' '/etc/merger.md' '../merger.md' 'a/../b.md' '5' '[x]'; do
+  invalid_field_case "merge.persona rejects $v" $'merge:\n  persona: '"$v" "merge.persona must be null or a non-empty relative path without .."
+done
+for v in '5' '[x]'; do
+  invalid_field_case "merge.persona_append rejects $v" $'merge:\n  persona_append: '"$v" "merge.persona_append must be null or a string"
+done
+invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
+invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
+
 # merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"

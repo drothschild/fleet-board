@@ -587,7 +587,36 @@ assert_stderr_line "stage-reviewer done: not allowed" "parse-report: role stage-
 run_parse --role stage-reviewer "$REPORTS/reviewer-missing-mutation.md"
 assert_exit "stage-reviewer: a full reviewer report without Mutation passes" 0
 run_parse --role nope "$REPORTS/stage-reviewer-ok.md"
-assert_stderr_line "usage names the role" "parse-report: usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer] [--commits-since-review <n>] <file>"
+assert_stderr_line "usage names the role" "parse-report: usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger] [--mode after_merge|refusal] [--commits-since-review <n>] <file>"
+
+# --- merger role -------------------------------------------------------------
+echo "merger"
+for pair in after-merge-done:after_merge:done after-merge-attention:after_merge:attention \
+            refusal-retry:refusal:retry refusal-fix:refusal:fix refusal-attention:refusal:attention; do
+  name="${pair%%:*}"; rest="${pair#*:}"; mode="${rest%%:*}"; want="${rest#*:}"
+  run_parse --role merger --mode "$mode" "$REPORTS/merger-$name.md"
+  assert_exit "merger $name ($mode): exit 0" 0
+  assert_jq "merger $name: status $want" ".status == \"$want\" and .verified.number == 1"
+done
+run_parse --role merger --mode after_merge "$REPORTS/merger-after-merge-fix.md"
+assert_exit "merger fix in an after_merge report: exit 1" 1
+assert_stderr_line "merger fix in after_merge: message" "parse-report: role merger does not allow status: fix in mode after_merge"
+run_parse --role merger --mode refusal "$REPORTS/merger-refusal-done.md"
+assert_exit "merger done in a refusal report: exit 1" 1
+assert_stderr_line "merger done in refusal: message" "parse-report: role merger does not allow status: done in mode refusal"
+run_parse --role merger --mode after_merge "$REPORTS/merger-refusal-retry.md"
+assert_stderr_line "merger retry in after_merge: message" "parse-report: role merger does not allow status: retry in mode after_merge"
+run_parse --role merger --mode refusal "$REPORTS/merger-bad-status.md"
+assert_exit "merger unknown status: exit 1" 1
+assert_stderr_line "merger unknown status: message" "parse-report: unknown status: merged"
+run_parse --role merger --mode refusal "$REPORTS/merger-no-verified.md"
+assert_stderr_line "merger without VERIFIED: message" "parse-report: expected exactly one VERIFIED: line, found 0"
+run_parse --role merger "$REPORTS/merger-after-merge-done.md"
+assert_exit "merger without --mode: exit 2" 2
+run_parse --role merger --mode sideways "$REPORTS/merger-after-merge-done.md"
+assert_exit "merger with an unknown mode: exit 2" 2
+run_parse --role reviewer --mode refusal "$REPORTS/reviewer-ok.md"
+assert_exit "--mode with another role: exit 2" 2
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
