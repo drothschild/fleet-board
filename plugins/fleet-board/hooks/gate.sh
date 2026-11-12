@@ -596,6 +596,7 @@ DIR_OK=()
 DIR_POLICY=()
 DIR_QA=()
 DIR_REPO=()
+DIR_IGNORE=()
 
 # use_dir D: loads D's config (once) and sets CURDIR, POLICY, CFG_REPO and
 # QA_NAME; returns 1 when D has no config. Blocks when D is missing or its
@@ -622,10 +623,11 @@ use_dir() {
     # state, tab-separated; any failure or unexpected value fails closed
     info="$(cd "$d" && . "$S/board-lib.sh" && fb_load_config >/dev/null 2>&1 \
       && p="$(fb_cfg merge.policy)" \
-      && printf 'policy\t%s\nrepo\t%s\n' "$p" "$(fb_cfg board.repo)" \
+      && printf 'policy\t%s\nrepo\t%s\nignore\t%s\n' "$p" "$(fb_cfg board.repo)" "$(fb_cfg merge.ignore_checks)" \
       && for s in $FB_STATES; do printf 'state\t%s\t%s\n' "$s" "$(fb_state_name "$s")"; done)" || info=""
     DIR_POLICY[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "policy" { print $2; exit }')"
     DIR_REPO[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "repo" { print $2; exit }')"
+    DIR_IGNORE[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "ignore" { print $2; exit }')"
     DIR_QA[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }')"
     case "${DIR_POLICY[n]}" in
       human|auto) ;;
@@ -636,7 +638,7 @@ use_dir() {
   fi
   [ "${DIR_OK[n]}" = 1 ] || return 1
   CURDIR="$d"; POLICY="${DIR_POLICY[n]}"
-  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"
+  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"; IGNORE_CHECKS="${DIR_IGNORE[n]:-[]}"
   return 0
 }
 
@@ -711,17 +713,17 @@ gate_move() {
 
 # check_pr REF REPO: blocks unless the PR is not a draft and its checks are green
 check_pr() {
-  local ref="$1" repo="$2" info num draft green what="PR $1"
+  local ref="$1" repo="$2" info num draft green today what="PR $1"
   local args=(pr view "$ref")
   [ -n "$repo" ] && args+=(-R "$repo")
   args+=(--json number,isDraft,statusCheckRollup)
   lookup "$what" gh "${args[@]}"
-  info="$(jq -r '
+  today="$(date -u +%Y-%m-%d)"
+  info="$(jq -r --argjson ig "${IGNORE_CHECKS:-[]}" --arg today "$today" "$(cat "$S/ignore-checks.jq")"'
     (.number // ""),
     (.isDraft | if type == "boolean" then . else error("no isDraft") end),
     (.statusCheckRollup | if type == "array" then . else error("no statusCheckRollup") end
-      | map(.conclusion // .state)
-      | all(. == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED"))' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+      | ic_green($ig; $today))' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify $what; blocking to be safe"
   num="$(printf '%s\n' "$info" | sed -n 1p)"
   draft="$(printf '%s\n' "$info" | sed -n 2p)"
