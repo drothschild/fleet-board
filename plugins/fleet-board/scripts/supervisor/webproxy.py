@@ -26,7 +26,8 @@ def ui_status(status):
         name = action.get("provider") if isinstance(action, dict) else None
         if isinstance(name, str):
             providers[name] = providers.get(name, 0) + 1
-    return dict(status, desired_mode=status.get("mode"), phase=status.get("mode"), ready=True,
+    # Ready only once the startup check is done: the socket answers while it still runs ("checking").
+    return dict(status, desired_mode=status.get("mode"), phase=status.get("mode"), ready=status.get("startup") == "done",
                 capacity={"slots": len(active), "global_cap": None, "per_provider": providers},
                 queue={"ready": None, "running": len(active), "waiting": None, "attention": None})
 

@@ -459,10 +459,13 @@ async function main() {
     await h.$("supervisor-start-btn").fire("click"); await h.waitForRequests();
     assert.ok(h.ctx.__test.S.sup.ack,"no acknowledgement kept");
     // the startup check still runs: the service answers, its revision moved, but it is not ready
-    f.enqueue("/api/supervisor",response(200,{...json(snapshot),revision:3,ready:false,startup:"checking",running:true})); await h.fireTimers();
+    const checking=response(200,{...json(snapshot),revision:3,ready:false,startup:"checking",running:true});
+    f.enqueue("/api/supervisor",checking,checking); await h.fireTimers();
+    assert.ok(h.ctx.__test.S.supervisor&&h.ctx.__test.S.supervisor.ready===false,"the not-ready status was not adopted");
     assert.ok(h.ctx.__test.S.sup.ack,"the Start acknowledgement was cleared before ready");
     assert.match(h.$("supervisor-status").textContent,/acknowledged/i);
-    f.setSnapshot({...json(snapshot),revision:3,ready:true,startup:"done"}); await h.fireTimers();
+    const ready=response(200,{...json(snapshot),revision:3,ready:true,startup:"done",running:true});
+    f.enqueue("/api/supervisor",ready,ready,ready); await h.fireTimers(); await h.fireTimers();
     assert.equal(h.ctx.__test.S.sup.ack,null,"ready did not clear the acknowledgement");
   });
   await check("a hidden tab backs the board poll off and asks for no stuck refresh",async()=>{

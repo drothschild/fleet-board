@@ -3,6 +3,7 @@
 "use strict";
 
 const BOARD_POLL_MS = 3000;
+const BOARD_HIDDEN_MS = 30000; // a hidden tab polls the board this often, and asks for no stuck refresh
 const RUN_FAST_MS = 3000;   // while a run is running or stopping
 const RUN_SLOW_MS = 15000;  // otherwise
 const TOAST_MS = 8000;
@@ -315,8 +316,10 @@ function mdInline(text, parent) {
 async function fetchBoard(force) {
   clearTimeout(S.boardTimer);
   const my = ++S.boardSeq;
+  // only a visible tab's poll may start a stuck check on the server (a scan of a large board takes seconds)
+  const hidden = !!document.hidden;
   try {
-    const r = await api("GET", "/api/board");
+    const r = await api("GET", hidden ? "/api/board?refresh_stuck=0" : "/api/board");
     if (my !== S.boardSeq) return;
     if (!r.ok) throw new Error(errorText(r));
     setOffline(false);
@@ -330,13 +333,15 @@ async function fetchBoard(force) {
     if (my !== S.boardSeq) return;
     setOffline(true, e.message);
   }
-  S.boardTimer = setTimeout(fetchBoard, BOARD_POLL_MS);
+  S.boardTimer = setTimeout(fetchBoard, document.hidden ? BOARD_HIDDEN_MS : BOARD_POLL_MS);
 }
 
 // renderStuck(board): the banner above the board counts the cards that carry a
 // stuck finding. A suppression text replaces the banner; a failed check is said
-// so beside it (the last good findings stay on the cards).
+// so beside it (the last good findings stay on the cards). While a supervisor
+// runs, its stuck cards are the ones it ignores (--ignore-stuck).
 function renderStuck(board) {
+  board = board || {};
   const run = board.run || {};
   const cards = Array.isArray(board.cards) ? board.cards : [];
   const n = cards.filter(function (c) { return c && c.stuck && typeof c.stuck === "object"; }).length;
@@ -344,7 +349,7 @@ function renderStuck(board) {
   const failed = !suppressed && run.stuck_error ? "stuck check failed: " + clean(run.stuck_error, 300) : "";
   const banner = $("stuck-banner");
   const note = $("stuck-note");
-  const bannerText = !suppressed && n > 0 ? stuckBannerText(n) : "";
+  const bannerText = !suppressed && n > 0 ? (S.supervisor ? stuckIgnoredText(n) : stuckBannerText(n)) : "";
   if (banner.textContent !== bannerText) banner.textContent = bannerText; // an unchanged alert is not announced again
   banner.hidden = !bannerText;
   const noteText = suppressed || failed;
@@ -423,8 +428,11 @@ function renderUnknown(cards, repo, force) {
   }
   g.el.hidden = false;
   g.count.textContent = String(cards.length);
-  const sig = JSON.stringify([repo, cards]);
-  if (!force && sig === g.sig) return;
+  const sig = cardsSig(repo, cards);
+  if (!force && sig === g.sig) {
+    refreshActivity(g.list, cards);
+    return;
+  }
   const frag = document.createDocumentFragment();
   for (const c of cards) frag.appendChild(renderCard(c, repo));
   g.list.replaceChildren(frag);
@@ -491,11 +499,34 @@ function toggleColumn(key) {
   col.el.classList.toggle("open", open);
 }
 
+// cardsSig(repo, cards): what a column re-renders on. An action's elapsed time
+// changes on every poll, so it is left out and updated in place instead.
+function cardsSig(repo, cards) {
+  return JSON.stringify([repo, cards], function (k, v) {
+    return k === "activity" && v && typeof v === "object" ? { action: v.action } : v;
+  });
+}
+
+// refreshActivity(list, cards): the activity line of each card, in place.
+function refreshActivity(list, cards) {
+  const byN = {};
+  for (const c of cards) if (c.activity) byN[String(c.number)] = cardActivityLine(c);
+  for (const li of Array.from(list.children)) {
+    const text = li.dataset ? byN[li.dataset.n] : undefined;
+    if (text === undefined) continue;
+    const line = li.querySelector(".card-exec");
+    if (line && line.textContent !== text) line.textContent = text;
+  }
+}
+
 function renderColumn(state, cards, repo, force) {
   const col = S.cols[state.key];
   col.count.textContent = String(cards.length);
-  const sig = JSON.stringify([repo, cards]);
-  if (!force && sig === col.sig) return;
+  const sig = cardsSig(repo, cards);
+  if (!force && sig === col.sig) {
+    refreshActivity(col.list, cards);
+    return;
+  }
   const top = col.list.scrollTop;
   const frag = document.createDocumentFragment();
   if (!cards.length) frag.appendChild(el("li", "col-empty", "Drop a card here"));
@@ -582,7 +613,10 @@ function renderCard(c, repo) {
     li.appendChild(el("div", "card-meta warn", fails + (fails === 1 ? " failed attempt" : " failed attempts")));
   }
 
-  if (stuck) li.appendChild(el("div", "card-meta card-stuck-detail", "stuck: " + clean(stuck.kind, 60) + (stuck.detail ? " — " + clean(stuck.detail, 300) : "")));
+  if (stuck) {
+    li.appendChild(el("div", "card-meta card-stuck-detail", "stuck: " + clean(stuck.kind, 60) + (stuck.detail ? " — " + clean(stuck.detail, 300) : "")));
+    li.appendChild(el("div", "card-meta card-stuck-resolve", "resolve with: supervisor.sh stuck --release " + n));
+  }
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
 
@@ -2585,13 +2619,14 @@ function adoptSnapshot(data) {
   if (ack) {
     const phase = supPhase(data);
     const reached = ack.kind === "pause" ? phase === "paused"
-      : ack.kind === "stop" ? phase === "stopped" || phase === "idle"
+      : ack.kind === "stop" ? phase === "stopping" || phase === "stopped" || phase === "idle"
       : data.ready === true && phase === "running";
     const moved = isNum(ack.state_revision) && isNum(data.revision) && data.revision > ack.state_revision;
-    if (reached || moved) sup.ack = null;
+    // a Start is not done until the supervisor is ready (its startup check has finished)
+    if ((reached || moved) && (ack.kind !== "start" || data.ready === true)) sup.ack = null;
   }
   if (was) fetchBoard(true); // reconnected: a fresh board with the snapshot
-  renderSupervisor();
+  renderStuck(S.board); // the banner's wording follows whether a supervisor runs; it renders the controls
 }
 
 // adoptNotRunning(data): the board answered {running: false}. That is a state of its
@@ -2608,7 +2643,7 @@ function adoptNotRunning(data) {
   const ack = sup.ack;
   if (ack && (ack.kind === "stop" || ack.kind === "pause" || Date.now() - ack.at > SUP_ACK_MS)) sup.ack = null;
   if (was) fetchBoard(true);
-  renderSupervisor();
+  renderStuck(S.board);
 }
 
 // refreshUsage(seq, data): the token totals. /api/usage is always answered; when it
@@ -2803,10 +2838,9 @@ function renderSupervisorControls(view) {
   const resume = $("supervisor-resume-btn");
   const stop = $("supervisor-stop-btn");
   // Start launches a supervisor when none runs, and resumes a paused one; it does nothing for a running one.
-  const stuckN = stuckCount();
   let startWhy = gate;
-  if (!startWhy && notRunning && stuckN > 0) startWhy = stuckBannerText(stuckN);
-  else if (!startWhy && !notRunning && (phase === "draining" || phase === "cancelling")) startWhy = "The supervisor is stopping.";
+  if (!startWhy && notRunning) startWhy = stuckStartGate();
+  else if (!startWhy && (phase === "stopping" || phase === "draining" || phase === "cancelling")) startWhy = "The supervisor is stopping.";
   else if (!startWhy && !notRunning && desired === "running") startWhy = "A supervisor is already running.";
   setControl(start, !startWhy, startWhy);
   setControl(pause, !rest && desired === "running",
@@ -2826,6 +2860,23 @@ function renderSupervisorControls(view) {
 function stuckCount() {
   const cards = S.board && Array.isArray(S.board.cards) ? S.board.cards : [];
   return cards.filter(function (c) { return c && c.stuck && typeof c.stuck === "object"; }).length;
+}
+
+// stuckStartGate(): why Start must wait when no supervisor runs, else null. The
+// supervisor's own startup check would refuse while cards are stuck, while a
+// run holds the lock, or before the board has any stuck result to go on.
+function stuckStartGate() {
+  const run = S.board && S.board.run ? S.board.run : {};
+  if (typeof run.stuck_suppressed === "string" && run.stuck_suppressed) return clean(run.stuck_suppressed, 300);
+  const n = stuckCount();
+  if (n > 0) return stuckBannerText(n);
+  if (run.stuck_known === false && run.stuck_error) return "stuck check failed: " + clean(run.stuck_error, 300);
+  if (run.stuck_known === false && run.stuck_checking === true) return "checking for stuck cards…";
+  return null;
+}
+
+function stuckIgnoredText(n) {
+  return n + (n === 1 ? " stuck card" : " stuck cards") + " — ignored by the running supervisor (--ignore-stuck)";
 }
 
 function stuckBannerText(n) {

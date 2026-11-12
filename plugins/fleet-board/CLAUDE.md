@@ -219,8 +219,14 @@ no file here. The gate's residual bypasses and false positives are listed in the
     running (waits for it to go), sends `resume` to a paused one, and when a CLI start won the run
     lock first reports that supervisor. `GET /api/usage` and `/api/cards/<n>/usage` read the ledger
     here (no supervisor needed; unknown counts stay `unknown`). `GET /api/stuck` and the `stuck`
-    and `activity` fields of `/api/board` run `stuck.find` in the board server (never in the
-    supervisor loop), answered at once from a cache that one background refresher fills (5 s TTL; `{findings, checked_at, error, checking, suppressed}`, and `run.stuck_*` on the board). The legacy `/api/run/stop` never writes `.fleet-board.stop`
+    and `activity` fields of `/api/board` run `stuck.find` in the board server only while no
+    supervisor answers (never in the supervisor loop; while one runs no card is stuck, because the
+    loop's `stuck` command computes find() on demand and keeps no cached list), answered at once
+    from a cache that one background refresher fills (`{findings, checked_at, error, checking,
+    known, suppressed}`, and `run.stuck_*` on the board). A refresh starts only from a poll without
+    `refresh_stuck=0` (a hidden tab sends it), never while a page Start is launching, and only when
+    due: no result yet, older than max(30 s, 2 x the last scan), or the mtime of `<board.dir>/cards`
+    or `<board.dir>/active` changed. `usage.view` is cached on the ledger's (size, mtime). The legacy `/api/run/stop` never writes `.fleet-board.stop`
     while a supervisor holds the run lock (409). Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
