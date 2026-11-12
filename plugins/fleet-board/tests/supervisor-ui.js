@@ -63,11 +63,19 @@ async function main() {
     assert.ok(ui.$("supervisor-status"),"missing supervisor status element");
     assert.equal(ui.$("supervisor-status").hidden,false,"supervisor status not shown for 200");
   });
-  await check("1b. Legacy 404 keeps legacy controls and polling read-only",async()=>{
+  await check("1b. A 404, a thrown fetch or a bad reply never means legacy mode: detection retries and legacy Start never posts",async()=>{
     const f=fakeFetch({supervisor:false}), h=make(f); await h.flush(); await h.waitForRequests();
-    assert.ok(countCalls(f,"/api/run")>=1,"legacy run poll absent");
-    assert.equal(h.$("start-btn").hidden,false,"legacy Start hidden"); assert.equal(h.$("stop-btn").hidden,false,"legacy Stop hidden");
-    assert.equal(f.calls.filter(c=>c.method==="POST").length,0,"legacy mode issued mutation during poll");
+    assert.equal(h.$("start-btn").hidden,true,"legacy Start shown after one failed detection");
+    assert.equal(h.$("stop-btn").hidden,true,"legacy Stop shown after one failed detection");
+    assert.equal(h.$("supervisor").hidden,true,"supervisor shown before detection succeeded");
+    const first=countCalls(f,"/api/supervisor"); assert.ok(h.timers.length>0,"no retry timer scheduled");
+    f.enqueue("/api/supervisor",new Error("network down"),response(500,{error:"boom"}),response(200,{ok:true}));
+    for(let i=0;i<3;i++) { await h.fireTimers(); assert.equal(h.$("supervisor").hidden,true,"adopted a bad detection reply"); }
+    assert.ok(countCalls(f,"/api/supervisor")>=first+3,"detection did not retry after a throw, a 500 and a bad reply");
+    assert.equal(f.calls.filter(c=>c.method==="POST").length,0,"a failed detection sent a command");
+    f.enqueue("/api/supervisor",response(200,{running:false,run:null,all_time:tok(1),planner:tok(1)})); await h.fireTimers();
+    assert.equal(h.$("supervisor").hidden,false,"a later good reply did not enter supervisor mode");
+    assert.match(h.$("supervisor-status").textContent,/not running/i);
   });
   await check("2. Status exposes the v2 snapshot fields and truthful occupancy, with no dollars or boot registration",async()=>{
     const s=ui.$("supervisor-status"), t=s.textContent;
@@ -81,7 +89,8 @@ async function main() {
     assert.match(h.$("supervisor-status").textContent,/occupancy unknown/i,"null occupancy rendered as zero/omitted");
   });
   await check("3a. Start click sends revision-bound command and waits for ready poll",async()=>{
-    const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
+    const paused={...json(snapshot),desired_mode:"paused",phase:"paused",mode:"paused"};
+    const f=fakeFetch({snapshot:paused}), h=make(f); await h.flush(); await h.waitForRequests();
     f.enqueue("/api/supervisor/start",response(202,{command_id:"c1",state_revision:8,desired_mode:"running",phase:"starting"}));
     const button=h.$("supervisor-start-btn"); assert.equal(button.tagName,"BUTTON","missing real Start button"); await button.fire("click"); await h.waitForRequests();
     const call=f.calls.find(c=>c.url==="/api/supervisor/start"&&c.method==="POST");
@@ -120,20 +129,22 @@ async function main() {
     assert.equal(h.ctx.__test.S.supervisor.revision,12,"409 state body not adopted");
     assert.match(h.$("supervisor-status").textContent,/recovering/i,"409 state not rendered");
     assert.equal(countCalls(f,"/api/supervisor/pause","POST"),1,"409 resent command");
-    f.enqueue("/api/supervisor/start",response(503,{reason:"maintenance window"}));
-    await h.$("supervisor-start-btn").fire("click"); assert.match(h.document.body.textContent,/maintenance window/i,"503 reason absent");
-    f.enqueue("/api/supervisor/start",response(400,{message:"invalid request"}));
-    await h.$("supervisor-start-btn").fire("click"); assert.match(h.document.body.textContent,/invalid request/i,"400 message absent");
+    const g=fakeFetch({notRunning:true}), k=make(g); await k.flush(); await k.waitForRequests();
+    g.enqueue("/api/supervisor/start",response(503,{reason:"maintenance window"}));
+    await k.$("supervisor-start-btn").fire("click"); assert.match(k.document.body.textContent,/maintenance window/i,"503 reason absent");
+    g.enqueue("/api/supervisor/start",response(400,{message:"invalid request"}));
+    await k.$("supervisor-start-btn").fire("click"); assert.match(k.document.body.textContent,/invalid request/i,"400 message absent");
   });
   await check("3e. Allowed mode matrix enables only valid controls",async()=>{
     const paused={...json(snapshot),desired_mode:"paused",phase:"stopped",ready:true};
     const f=fakeFetch({snapshot:paused}), h=make(f); await h.flush(); await h.waitForRequests();
-    assert.equal(h.$("supervisor-start-btn").disabled,true,"Start active while paused");
+    assert.equal(h.$("supervisor-start-btn").disabled,false,"Start (which resumes) unavailable while paused");
     assert.equal(h.$("supervisor-resume-btn").disabled,false,"Resume unavailable while paused");
     assert.equal(h.$("supervisor-pause-btn").disabled,true,"Pause available while paused");
     f.setSnapshot({...paused,desired_mode:"running",phase:"running"}); await h.fireTimers();
     assert.equal(h.$("supervisor-pause-btn").disabled,false,"Pause unavailable while running");
     assert.equal(h.$("supervisor-resume-btn").disabled,true,"Resume active while running");
+    assert.equal(h.$("supervisor-start-btn").disabled,true,"Start active while running");
   });
   await check("4. A failed poll preserves the last snapshot and gates mutations",async()=>{
     const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests(); const s=h.$("supervisor-status");
@@ -228,7 +239,7 @@ async function main() {
     assert.ok(cardOf(h,4).textContent.includes("merge_pending")&&cardOf(h,4).textContent.includes(hostile),"stuck kind/detail missing");
     assert.match(cardOf(h,6).textContent,/review/,"activity not shown"); assert.doesNotMatch(cardOf(h,6).textContent,/object Object/);
     const banner=h.$("stuck-banner"); assert.equal(banner.hidden,false); assert.equal(banner.textContent.trim(),"2 stuck cards — the supervisor will not start until they are resolved");
-    h=await mk(quiet,[stuck(4,"merge_pending"),fine]); assert.equal(h.$("stuck-banner").textContent.trim(),"1 stuck card — the supervisor will not start until they are resolved");
+    h=await mk(quiet,[stuck(4,"merge_pending"),fine]); assert.equal(h.$("stuck-banner").textContent.trim(),"1 stuck card — the supervisor will not start until it is resolved");
     h=await mk(quiet,[fine]); assert.equal(h.$("stuck-banner").hidden,true,"banner shown with nothing stuck");
     // still checking, nothing found yet: no banner; and the count comes from the cards, not from the run
     h=await mk({...quiet,stuck_checked_at:null,stuck_checking:true},[fine]); assert.equal(h.$("stuck-banner").hidden,true,"banner while the first check runs");
@@ -245,6 +256,8 @@ async function main() {
     const dark=[...css.matchAll(/@media \(prefers-color-scheme: dark\)\s*\{([\s\S]*?)\n\}/g)].map(m=>m[1]).join("\n");
     assert.doesNotMatch(dark,/card--stuck|--stuck/,"a dark-mode rule redefines the stuck border");
     assert.match(css,/\.card-stuck-badge\s*\{/,"no STUCK badge style");
+    assert.match(css,/\.card-id\s*\{[^}]*flex-wrap:\s*wrap/,"the card header cannot wrap: the STUCK badge would clip the acceptance count");
+    assert.match(css,/\.card-stuck-badge\s*\{[^}]*flex:\s*none/,"the badge may shrink and clip");
   });
   await check("controls enable per mode",async()=>{
     const ids=["supervisor-start-btn","supervisor-pause-btn","supervisor-resume-btn","supervisor-stop-btn"];
@@ -259,14 +272,14 @@ async function main() {
     await h.$("supervisor-start-btn").fire("click"); await h.waitForRequests();
     const call=f.calls.find(c=>c.url==="/api/supervisor/start"&&c.method==="POST"); assert.ok(call,"Start did not POST"); assert.ok(call.body.request_id); assert.equal(typeof call.body.expected_revision,"number");
     f.enqueue("/api/supervisor",response(200,{...json(snapshot),revision:2,running:true})); await h.fireTimers(); // the next poll finds it running
-    assert.equal(state(h),"++-+","running enables Start, Pause and Stop"); assert.match(h.$("supervisor-status").textContent,/running/i);
+    assert.equal(state(h),"-+-+","running: Pause and Stop only"); assert.match(h.$("supervisor-status").textContent,/running/i);
     // running
-    ({h}=await open({})); assert.equal(h.$("supervisor-pause-btn").disabled,false); assert.equal(h.$("supervisor-resume-btn").disabled,true); assert.equal(h.$("supervisor-stop-btn").disabled,false);
-    // paused: Resume, Stop; Start points at Resume
+    ({h}=await open({})); assert.equal(state(h),"-+-+"); need(h,"supervisor-start-btn"); assert.match(h.$("supervisor-start-btn").title,/already running/i); need(h,"supervisor-resume-btn");
+    // paused: Start (the server resumes it), Resume, Stop
     ({h}=await open({snapshot:{...json(snapshot),mode:"paused",desired_mode:"paused",phase:"paused",pause_reason:"provider claude is unhealthy"}}));
-    assert.equal(state(h),"--++"); need(h,"supervisor-start-btn"); need(h,"supervisor-pause-btn");
+    assert.equal(state(h),"+-++"); need(h,"supervisor-pause-btn");
     // draining: nothing to start, pause or resume; Stop stays
-    ({h}=await open({snapshot:{...json(snapshot),desired_mode:"stopped",phase:"draining"}})); assert.equal(h.$("supervisor-start-btn").disabled,true); assert.equal(h.$("supervisor-pause-btn").disabled,true);
+    ({h}=await open({snapshot:{...json(snapshot),desired_mode:"stopped",phase:"draining"}})); assert.equal(h.$("supervisor-start-btn").disabled,true); assert.equal(h.$("supervisor-pause-btn").disabled,true); assert.match(h.$("supervisor-start-btn").title,/stopping/i);
     // unhealthy providers say why
     ({h}=await open({snapshot:{...json(snapshot),provider_health:{codex:{until:1794333900,reason:"rate limited",failures:2}}}}));
     assert.match(h.$("supervisor-status").textContent,/codex.*unhealthy.*rate limited|unhealthy.*codex.*rate limited/i,"unhealthy provider reason missing");
@@ -375,6 +388,37 @@ async function main() {
     await h.$("supervisor-stop-btn").fire("click"); await h.$("supervisor-drain-btn").fire("click"); await h.waitForRequests();
     f.setSnapshot({...json(snapshot),revision:9,desired_mode:"stopped",phase:"draining"}); await h.fireTimers();
     assert.doesNotMatch(h.$("supervisor-status").textContent,/not running/i); assert.match(h.$("supervisor-status").textContent,/draining/i);
+  });
+  await check("Start is disabled while cards are stuck and no supervisor runs, with the banner text as the reason",async()=>{
+    const stuckCard={number:4,title:"S",body:"",labels:[],comments:[],state:"ready",known:true,stuck:{kind:"merge_pending",detail:"x"},activity:null};
+    const f=fakeFetch({notRunning:true,cards:[stuckCard,{...stuckCard,number:5}]}), h=make(f); await h.flush(); await h.waitForRequests();
+    const b=h.$("supervisor-start-btn"); assert.equal(b.disabled,true,"Start enabled with stuck cards");
+    assert.equal(b.title,"2 stuck cards — the supervisor will not start until they are resolved"); assert.ok(b.getAttribute("aria-describedby"));
+    const g=fakeFetch({notRunning:true,cards:[{...stuckCard,stuck:null}]}), k=make(g); await k.flush(); await k.waitForRequests();
+    assert.equal(k.$("supervisor-start-btn").disabled,false,"Start disabled with nothing stuck");
+  });
+  await check("the drill-down is fetched on open, not on every poll, and a failed refresh keeps the last render",async()=>{
+    const cardUsage={card:4,totals:tok(5),columns:[{column:"in_progress",totals:tok(5),actions:[{action:"implement",role:"implementor",model:"opus",input:5,output:0,cache_read:0,cache_write:0,log:null}]}]};
+    const f=fakeFetch({cardUsage}), h=make(f); await h.flush(); await h.waitForRequests();
+    const card=h.$("board").all().find(n=>n.classList.contains("card")&&n.dataset.n==="4"); await card.fire("click"); await h.waitForRequests();
+    assert.equal(countCalls(f,"/api/cards/4/usage"),1);
+    for(let i=0;i<3;i++) await h.fireTimers();
+    assert.equal(countCalls(f,"/api/cards/4/usage"),1,"the drill-down was refetched by a poll");
+    assert.ok(h.$("dr-usage-cols").textContent.includes("implement"));
+    // a refresh that fails (the same card reopened) must not wipe a render that is showing
+    const before=h.$("dr-usage-cols").textContent; f.enqueue("/api/cards/4/usage",response(500,{error:"x"}));
+    await h.ctx.loadCardUsage(h.ctx.__test.S.drawer); await h.flush();
+    assert.equal(h.$("dr-usage-cols").textContent,before,"a failed refresh dropped the last good render"); assert.equal(h.$("dr-usage-sec").hidden,false);
+  });
+  await check("/api/usage is re-read at most every 15 seconds",async()=>{
+    const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(countCalls(f,"/api/usage"),1);
+    for(let i=0;i<4;i++) await h.fireTimers();
+    assert.equal(countCalls(f,"/api/usage"),1,"usage re-read on every status poll");
+    h.ctx.__advanceClock(16000); await h.fireTimers();
+    assert.equal(countCalls(f,"/api/usage"),2,"usage never refreshed after 15 s");
+    for(let i=0;i<2;i++) await h.fireTimers();
+    assert.equal(countCalls(f,"/api/usage"),2);
   });
   // The failure summary is printed, never written: the suite leaves no file behind.
   if(failures.length) {
