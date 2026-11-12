@@ -284,7 +284,7 @@ class DriverLine(unittest.TestCase):
         got = lines[0]
         self.assertEqual(got['run_id'], 'run-1')
         self.assertEqual((got['card'], got['kind'], got['column'], got['action'], got['role']),
-                         (12, 'card', 'ready', 'start', 'implementor'))
+                         (12, 'card', 'in_progress', 'start', 'implementor'))
         self.assertEqual((got['input'], got['output'], got['cache_write'], got['cache_read']), (60, 40, 3, 9))
         self.assertEqual(got['provider'], 'claude')
         self.assertEqual(got['log'], result.log_path)

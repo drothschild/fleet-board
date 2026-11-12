@@ -190,8 +190,9 @@ prerequisite of the end-to-end run, because cancelling roles with SIGKILL can le
 supervisor path. (This absorbs PR #246 and card #215.)
 
 **Ledger.** `.fleet-board/usage.jsonl` in the repository (with the rest of `.fleet-board/`, kept out of git), one JSON
-line per completed action: `run_id`, `card` (or null for the planner), `kind` (`card` or `planner`), `column` the card
-was in, `action` (`start`, `review`, `review_<stage>`, `fix`, `update_branch`, `merge_refusal`, `after_merge`),
+line per completed action: `run_id`, `card` (or null for the planner), `kind` (`card` or `planner`), `column` (the column
+the card is in while the role works, after any move the action makes before dispatch; lines written before 0.25.5 used
+the column before that move), `action` (`start`, `review`, `review_<stage>`, `fix`, `update_branch`, `merge_refusal`, `after_merge`),
 `role`, `provider`, `model`, the four token counts (or `unknown`), `started_at`, `ended_at`, `log` path. Planner lines
 use `action` `planner` (a chat turn) or `import_preview`. Appends are
 single `write` calls of one line under an advisory lock. The supervisor never reads the ledger to decide anything.

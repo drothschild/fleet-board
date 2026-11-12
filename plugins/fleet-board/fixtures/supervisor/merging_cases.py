@@ -448,6 +448,14 @@ class MergerFlow(unittest.TestCase):
         self.assertEqual(note['merger'], {'mode': 'refusal', 'status': 'retry', 'head': 'abc1234'})
         self.assertEqual([l['action'] for l in self.ledger], ['merge_refusal'])
 
+    def test_the_merger_ledger_lines_are_recorded_under_merging(self):
+        self.merger('merged', MERGED, 'merger-after-merge-done')
+        self.assertEqual([(l['action'], l['column']) for l in self.ledger], [('after_merge', 'merging')])
+
+    def test_the_refusal_merger_ledger_line_is_recorded_under_merging(self):
+        self.merger('refused', self.refused(), 'merger-refusal-retry')
+        self.assertEqual([(l['action'], l['column']) for l in self.ledger], [('merge_refusal', 'merging')])
+
     def test_second_refusal_after_retry_is_attention(self):
         self.merger('refused', self.refused(), 'merger-refusal-retry')
         self.b.fake.joinpath('count').unlink()
@@ -685,6 +693,12 @@ class Lane(MergeCase):
         self.assertEqual(outcome.kind, 'refused')
         self.assertEqual(outcome.detail['required_check'], 'build')
         self.assertEqual(calls[0][:4], ('pr', 'checks', '34', '--repo'))
+
+    def test_the_merge_lane_action_works_in_merging_even_from_in_review(self):
+        # Consistency only: the merge lane writes no ledger line today, so this has no ledger effect yet.
+        self.lane.start(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+        action = self.b.state.active[12]
+        self.assertEqual((action.column, state.ledger_column(action)), ('in_review', 'merging'))
 
     def outcome_of(self, candidate):
         self.lane.start(candidate)
