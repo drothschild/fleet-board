@@ -521,9 +521,25 @@ card_input() {
     fi
   fi
 
+  # A merging card whose head moved since the review is merged only under the review row's
+  # allowance (a clean merge of main), and then only if the PR needs no human QA: the question
+  # is asked here, as the review row asks it (lookup failure: lookup_failed, so the card is skipped).
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = merging ] && [ "$info" != null ] \
+     && [ "$(jq -r '.state' <<<"$info")" = OPEN ] \
+     && [ "$(jq -r --argjson info "$info" '(.last_review.sha // null) as $s | ($info.headRefOid // null) as $h
+                      | ($s | type) == "string" and ($h | type) == "string" and $s != "" and $h != ""
+                        and (($h | startswith($s)) or ($s | startswith($h)) | not)' <<<"$note")" = true ]; then
+    labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
+    nhq="$(bash "$FLEET_SCRIPTS/needs-human-qa.sh" --labels "$labels" "$n" "$pr")" || { nhq=null; failed="needs-human-qa.sh $n $pr"; }
+    case "$nhq" in
+      true|false|null) ;;
+      *) nhq=null; failed="needs-human-qa.sh $n $pr (unexpected answer)" ;;
+    esac
+  fi
+
   # Review drift: commits on the PR since the last reviewed sha. Best effort: a
   # lookup that fails adds no warning and never skips the card.
-  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$review_col" = true ] && [ "$info" != null ]; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$review_col" = true ] || [ "$st" = merging ]; } && [ "$info" != null ]; then
     drift="$(drift_lookup "$note" "$info")" || drift=null
   fi
 
@@ -804,14 +820,18 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           elif $n.merge_operation != null then act("skip"; "merge in flight or refused; supervisor decides")
           elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
             then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
-          # Nothing merges here that the review rows would not merge: the review must be clean and
-          # cover this exact head (no drift allowance: the card needs a review or the supervisor),
-          # the PR not a draft and its checks green, and merge.policy auto.
+          # Nothing merges here that the review rows would not merge: a clean review (an advisory
+          # stage findings count as clean, as in its column) covering this head, or a head moved
+          # only by clean merges of main (the drift allowance of the review row) whose PR needs no human
+          # QA; the PR not a draft, its checks green, and merge.policy auto.
           elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
           elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
-          elif $ci > 0 then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
-          elif head_moved($c; $lr)
+          elif ((($lr.stage // null) as $ls | any(($cfg.review.stages // [])[]; .name == $ls and .advisory == true)) | not) and $ci > 0
+            then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
+          elif head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
             then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the reviewed head \($lr.sha[0:7]); supervisor decides")
+          elif head_moved($c; $lr) and $c.needs_human_qa != false
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) moved after the review and human-QA need is \(if $c.needs_human_qa == true then "true" else "unknown" end); supervisor decides")
           elif $c.pr_info.isDraft then act("skip"; "PR #\($c.pr) is a draft; supervisor decides")
           elif ($c.pr_info | green | not) then act("skip"; "PR #\($c.pr) checks are not green; supervisor decides")
           else act("merge"; "PR #\($c.pr) open at the reviewed head, green checks, merge.policy auto") end
