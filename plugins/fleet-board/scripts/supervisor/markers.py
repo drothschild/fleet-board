@@ -1,8 +1,9 @@
 """The supervisor owns each card's active marker (`<board.dir>/active/<n>`).
 
 While a role session or a merge child runs, the marker holds {"pgid", "supervisor_pid"} (written atomically);
-it is removed when the action ends, and only while it still names that action's process group. Board scripts
-keep working: they create an empty marker when none exists (never truncating one) and remove it when a role
+it is removed when the action ends, unless it names another process group. While the supervisor owns a card
+a marker naming no pgid is its own (a board script's empty marker during a script-only action) and goes too.
+Board scripts keep working: they create an empty marker when none exists (never truncating one) and remove it when a role
 posts its report. The startup check reads the pgid to tell a live orphan (a group still running) from a
 leftover marker.
 """
@@ -60,11 +61,14 @@ def group_alive(pgid):
 
 
 def clear(marker, pgid):
-    """Remove `marker` when it still names `pgid` (a later writer's marker is left alone). Never raises."""
-    if marker is None or pgid is None:
+    """Remove `marker` at the end of the action that owned the card: when it still names `pgid`, or names no
+    usable pgid at all (an empty marker a board script made while the supervisor owned the card is the
+    supervisor's own). A marker naming another process group is left alone. Never raises."""
+    if marker is None:
         return False
     try:
-        if read_pgid(marker) != pgid:
+        named = read_pgid(marker)
+        if named is not None and named != pgid:
             return False
         os.unlink(str(marker))
         return True

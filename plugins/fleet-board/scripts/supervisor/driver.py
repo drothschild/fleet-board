@@ -492,6 +492,9 @@ class CardDriver:
         if not _posint(number):
             self.state.event('action_failed', card=number, action=action_name, error='invalid number: %s' % (number,))
             return Started('done', action)
+        # The card is the supervisor's while the action runs: State.end removes its marker unless another
+        # process group's (a script-only action's empty marker, a session's own pgid marker).
+        action.marker = _markers.path(self.root, (config.get('board') or {}).get('dir'), number)
         self.state.begin(action)
         outcome = None
         tmp = None

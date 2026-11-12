@@ -79,9 +79,10 @@ class MergeLane:
         self._seq += 1
         key = '%s-%d-%d' % (_KEY.sub('_', str(self.state.run_id))[:80], number, self._seq)
         column = candidate.get('state')
+        board_dir = self.board_dir() if callable(self.board_dir) else self.board_dir
         action = Action(card=number, action='merge', column=column, role=None, provider='scripts',
                         paths=list(candidate.get('declared_paths') or []), started_at=self.clock(),
-                        started_mono=time.monotonic(), kind='merge')
+                        started_mono=time.monotonic(), kind='merge', marker=markers.path(self.root, board_dir, number))
         self.state.begin(action)
         try:
             if column != 'merging':

@@ -181,9 +181,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
     (`stuck {kind, detail, at}`), and nothing is started. `--ignore-stuck` starts anyway and keeps
     those cards out of admission until a fresh check no longer reports them.
   - Active markers: the supervisor owns `<board.dir>/active/<n>` while a role session or merge
-    child runs, writing `{pgid, supervisor_pid}` atomically (`markers.py`), and removes it when the
-    action ends (finish, cancel, reap, `State.end`) only while it still names that action's
-    process group. Board scripts still create an empty marker (`fb_mark_active`, which never
+    child runs, writing `{pgid, supervisor_pid}` atomically (`markers.py`). Every action, script-only
+    ones included, removes the marker when it ends (finish, cancel, reap, `State.end`) unless it
+    names another process group: while the supervisor owns the card, a marker naming no pgid (the
+    empty one a board script made) is its own. Board scripts still create an empty marker (`fb_mark_active`, which never
     truncates one) and remove it when a role posts its report (`comment.sh`).
   - `stuck [--json] [--release N [--force]]` (`stuck.py`) reads the board itself, asking a running
     supervisor only for the cards it owns (never reported). Kinds: `in_flight` (in_progress with no
