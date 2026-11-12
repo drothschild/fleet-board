@@ -826,7 +826,8 @@ assert_exit "max_tokens_per_card null accepted" 0
 # merge.persona (null or a non-empty relative path), merge.persona_append (null or string), models.merger
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_stdout_exact_jq "merge.persona defaults to .fleet-board/merger.md" '.merge.persona' '".fleet-board/merger.md"'
+# null: the driver uses .fleet-board/merger.md when present, else the plugin default (a set path is explicit)
+assert_stdout_exact_jq "merge.persona defaults to null" '.merge.persona' 'null'
 assert_stdout_exact_jq "merge.persona_append defaults to null" '.merge.persona_append' 'null'
 assert_stdout_exact_jq "models.merger defaults to sonnet" '.models.merger' '"sonnet"'
 REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: null\n  persona_append: "Also run make deploy."\nmodels: { merger: opus }\n' | make_inline_repo)"

@@ -58,6 +58,15 @@ def test_merger_defaults_to_sonnet_and_honours_models_merger():
     assert resolver.resolve(cfg, cand('merger')).model == 'opus'
 
 
+def test_merger_actions_run_the_merger_agent_with_models_merger():
+    for action in ('after_merge', 'merge_refusal'):
+        d = resolver.resolve(STRING_CFG, cand(action))
+        assert d == Dispatch('claude', 'fleet-board:merger', 'claude', 'sonnet', False), (action, d)
+        cfg = {'models': dict(STRING_CFG['models'], merger='opus')}
+        assert resolver.resolve(cfg, cand(action)).model == 'opus', action
+        assert resolver.provider_for(STRING_CFG, cand(action)) == 'claude', action
+
+
 def test_escalated_round_uses_the_escalation_model():
     models = {'implementor': 'opus', 'reviewer': 'opus', 'fixer': 'opus'}
     d = resolver.resolve(STRING_CFG, cand('fix', models, escalated=True))

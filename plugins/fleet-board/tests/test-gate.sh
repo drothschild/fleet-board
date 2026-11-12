@@ -207,9 +207,12 @@ YML
   mkdir -p "$BIN"
   ln -s "$SCRIPT_DIR/fake-gh.sh" "$BIN/gh"
   : > "$ROUTES"
+  ln -s "$SCRIPT_DIR/fake-date.sh" "$BIN/date"
+  REAL_DATE="$(PATH="$ORIG_PATH" command -v date)"
+  export REAL_DATE
 
   # Reset environment between cases
-  unset FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG FLEET_BOARD_GATE_TIMEOUT CDPATH RUN_CWD HOOK_PATH HOOK_LIMIT PAYLOAD_EDIT || true
+  unset FB_TEST_TODAY FLEET_BOARD_TODAY FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG FLEET_BOARD_GATE_TIMEOUT CDPATH RUN_CWD HOOK_PATH HOOK_LIMIT PAYLOAD_EDIT || true
   PATH="$BIN:$ORIG_PATH"
   export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH
 
@@ -1589,8 +1592,8 @@ ignore_routes() {
     printf 'pr view %s -R acme/toy --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
   done
 }
-export FLEET_BOARD_TODAY=2026-11-11
 setup_case auto
+export FB_TEST_TODAY=2026-11-11
 ignore_cfg 2026-12-31 2026-11-11
 ignore_routes > "$ROUTES"
 run_hook bash.json "gh pr merge 14 --repo acme/toy --squash"
@@ -1605,13 +1608,17 @@ ignore_cfg 2026-12-31 2026-11-10
 run_hook bash.json "gh pr merge 14 --squash"
 assert_blocked "ignore_checks: an expired entry no longer counts" "PR #14 checks are not green"
 ignore_cfg 2026-12-31 2026-11-11
-export FLEET_BOARD_TODAY=2026-11-12
+export FB_TEST_TODAY=2026-11-12
 run_hook bash.json "gh pr merge 14 --squash"
-assert_blocked "ignore_checks: today is injectable (FLEET_BOARD_TODAY), valid through the until day only" "PR #14 checks are not green"
-export FLEET_BOARD_TODAY=bogus
+assert_blocked "ignore_checks: today comes from date (stubbed on PATH), valid through the until day only" "PR #14 checks are not green"
+export FB_TEST_TODAY=bogus
 run_hook bash.json "gh pr merge 14 --squash"
 assert_blocked "ignore_checks: an unreadable today fails closed" "PR #14 checks are not green"
-unset FLEET_BOARD_TODAY
+export FB_TEST_TODAY=2026-11-12
+export FLEET_BOARD_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: the gate ignores FLEET_BOARD_TODAY" "PR #14 checks are not green"
+unset FLEET_BOARD_TODAY FB_TEST_TODAY
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

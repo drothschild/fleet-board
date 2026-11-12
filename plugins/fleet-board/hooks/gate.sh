@@ -718,7 +718,7 @@ check_pr() {
   [ -n "$repo" ] && args+=(-R "$repo")
   args+=(--json number,isDraft,statusCheckRollup)
   lookup "$what" gh "${args[@]}"
-  today="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
+  today="$(date -u +%Y-%m-%d)"
   info="$(jq -r --argjson ig "${IGNORE_CHECKS:-[]}" --arg today "$today" "$(cat "$S/ignore-checks.jq")"'
     (.number // ""),
     (.isDraft | if type == "boolean" then . else error("no isDraft") end),

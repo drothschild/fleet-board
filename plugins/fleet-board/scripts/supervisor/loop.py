@@ -7,6 +7,7 @@ the card driver. Between cycles the loop polls every session without blocking an
 ended. The service thread never touches the loop's work: `stop` flips State.mode to "stopping" at once,
 `pause` and `resume` are queued for the loop (the service waits a bounded time for the answer).
 """
+import calendar
 import json
 import queue
 import re
@@ -328,7 +329,9 @@ class Supervisor:
             self._merge_ended(outcome)
 
     def _merge_ended(self, outcome):
-        """merged and refused go to the merger session (a hook until task 4.5); anything else pauses the board."""
+        """merged and refused go to the merger session; not_attempted (the script's fresh plan skipped the card)
+        leaves it in merging to be planned again; anything else pauses the board. While stopping the merger
+        is deferred: the planner plans after_merge / merge_refusal for the card on the next run."""
         card, kind, detail = outcome
         self.state.release(card)
         self.state.event('merge_' + kind, card=card, reason=detail.get('reason'))
@@ -338,18 +341,19 @@ class Supervisor:
         if kind == 'unclear':
             self.state.pause('merge result unclear for #%d: %s' % (card, _clean(detail.get('reason'))))
             return
+        if kind == 'not_attempted':   # nothing merged: no pause, the card stays in merging and is re-planned
+            self.wake('merge not attempted')
+            return
         if kind == 'merged':
             try:
                 self.driver.record_ignored_checks(card, detail.get('ignored_checks'))
-            except ValueError as exc:   # a malformed entry must not crash the lane
+            except Exception as exc:  # noqa: BLE001 - a malformed entry or a failed note write must not end the loop
                 self.state.event('ignored_checks_failed', card=card, message=_clean(exc))
         if self._stop_mode or self.state.mode == 'stopping':
             self.state.event('merger_deferred', card=card, mode=kind, message='stopping')
         else:
             try:
                 self.driver.begin_merger(card, kind, detail)
-            except NotImplementedError:
-                self.state.event('merger_pending', card=card, mode=kind, message='merger arrives in task 4.5')
             except Exception as exc:  # noqa: BLE001
                 self._count_exception(card, 'merger', exc)
         self.wake('merge ended')
@@ -465,6 +469,10 @@ class Supervisor:
             if row.get('number') in capped and row['provider'] != 'scripts':
                 limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT})
                 continue
+            retry = self._retry_after(row) if row.get('action') == 'merge' else None
+            if retry is not None and retry > now:
+                limit_waits.append({'number': row.get('number'), 'reason': 'merge retry at %s' % _iso(retry)})
+                continue
             if row.get('action') == 'wait' and row.get('waiting_on'):
                 row['deps_commented'] = self._deps_commented(row.get('number'))
             rows.append(row)
@@ -491,6 +499,17 @@ class Supervisor:
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    @staticmethod
+    def _retry_after(row):
+        """The epoch before which a merge after a merger retry is held (the row's retry_after), else None."""
+        value = row.get('retry_after')
+        if not isinstance(value, str):
+            return None
+        try:
+            return float(calendar.timegm(time.strptime(value, '%Y-%m-%dT%H:%M:%SZ')))
+        except ValueError:
+            return None
 
     def _token_limit_reached(self):
         """Pause admissions once this run's known tokens reach limits.max_tokens (running sessions finish).

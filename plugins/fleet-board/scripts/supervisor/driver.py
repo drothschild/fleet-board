@@ -2,11 +2,12 @@
 
 `CardDriver.begin(candidate)` runs one planned action for one card. Script-only actions run to the end and
 return Started("done"). A role action (`start`, `continue_implementor`, `start_review`, `review`,
-`review_stage`, `fix`) runs its setup steps, launches the role and returns Started("session") with
-`action.session` set; when that session ends the caller passes its RoleResult to `finish`, which checks the
-report, applies it to the card's note and board state and returns an Outcome. A rejected report is
-re-dispatched once (Outcome.redispatch, `action.session` is the new session). `merge` belongs to the merge
-lane and is refused here.
+`review_stage`, `fix`, and the merger's `after_merge` and `merge_refusal`) runs its setup steps, launches the
+role and returns Started("session") with `action.session` set; when that session ends the caller passes its
+RoleResult to `finish`, which checks the report, applies it to the card's note and board state and returns an
+Outcome. A rejected report is re-dispatched once (Outcome.redispatch, `action.session` is the new session).
+`merge` belongs to the merge lane and is refused here; `begin_merger` starts the merger after the lane merged
+(`merged`, report mode after_merge) or was refused (`refused`, report mode refusal).
 
 Every value handed to a script is validated first (numbers are positive ints, a branch is
 `fleet/<n>-<slug>`, a worktree is an absolute path, a state is one of the board's states, and nothing
@@ -15,6 +16,7 @@ uncounted action merges `action_failures + 1` and the first stderr line into the
 """
 import json
 import os
+import posixpath
 import re
 import shutil
 import tempfile
@@ -32,19 +34,29 @@ SCRIPT_ACTIONS = frozenset((
     'advance_stage', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
     'file_pending', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
-ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix'))
+ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
+                          'after_merge', 'merge_refusal'))
 _ROLE_OF = {'start': 'implementor', 'continue_implementor': 'implementor', 'start_review': 'reviewer',
-            'review': 'reviewer', 'review_stage': 'stage-reviewer', 'fix': 'fixer'}
+            'review': 'reviewer', 'review_stage': 'stage-reviewer', 'fix': 'fixer',
+            'after_merge': 'merger', 'merge_refusal': 'merger'}
+# begin_merger's mode (the lane's outcome kind, or the report mode itself) -> the card action
+_MERGER_ACTION = {'merged': 'after_merge', 'after_merge': 'after_merge', 'refused': 'merge_refusal',
+                  'refusal': 'merge_refusal'}
+DEFAULT_PERSONA = Path(__file__).resolve().parent / 'defaults' / 'merger-persona.md'
+PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full list cannot prove the persona untouched
+_CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
-_FLAGS = frozenset(('--qa-summary', '--role', '--commits-since-review'))
+_FLAGS = frozenset(('--qa-summary', '--role', '--commits-since-review', '--mode'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
-_LEFT_MERGING = {'pending_merge': None, 'merge_refusal': None}   # a card that leaves merging drops both
+# a card that leaves merging drops its merge records
+_LEFT_MERGING = {'pending_merge': None, 'merge_refusal': None, 'merge_retry': None}
 _BRANCH = re.compile(r'fleet/[0-9]+-[a-z0-9-]{1,40}')
 _REPO = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
 _SHA = re.compile(r'[0-9a-f]{4,64}')
+_HEAD = re.compile(r'[0-9a-fA-F]{4,64}')
 _NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:/\[\]-]*')
 _REF = re.compile(r'[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+')
 _STAGE = re.compile(r'[a-z][a-z0-9_]*')
@@ -66,6 +78,10 @@ VERIFY_TIMEOUT = 1800
 
 class _Fail(Exception):
     """A step failed; the message is the one line recorded as last_action_error."""
+
+
+class _Attention(Exception):
+    """The merger cannot run or decide safely: the card stays in merging, flagged for a person."""
 
 
 class _Invalid(_Fail):
@@ -262,13 +278,15 @@ _SECTIONS = {
     'fixer': ('number', 'title', 'body', 'acceptance', 'pr', 'worktree', 'findings', 'config', 'scripts'),
     'stage-reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'stage_name',
                        'brief', 'round', 'prev_sha', 'findings', 'scripts', 'post'),
+    'merger': ('number', 'title', 'pr', 'mode', 'merged_head', 'refusal', 'persona', 'config', 'scripts'),
 }
 _LABELS = {
     'number': 'Card number', 'title': 'Card title', 'body': 'Card body', 'acceptance': 'Acceptance',
     'worktree': 'Worktree', 'branch': 'Branch', 'note': 'Manager note', 'config': 'Config', 'scripts': 'Scripts dir',
     'pr': 'PR number', 'diff': 'PR diff', 'report': 'Latest implementor or fixer report', 'round': 'Round',
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
-    'brief': 'Stage brief', 'post': 'Posting your report',
+    'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'merged_head': 'Merged head',
+    'refusal': 'Refusal', 'persona': 'Persona',
 }
 DIFF_FILE_LINES = 1500
 
@@ -439,8 +457,16 @@ class CardDriver:
             shutil.rmtree(tmp, ignore_errors=True)
 
     def begin_merger(self, card, mode, detail):
-        """Start the merger session after a merge (`merged`) or a refusal (`refused`). Task 4.5 builds it."""
-        raise NotImplementedError('merger arrives in task 4.5')
+        """Start the merger after the lane merged (`merged`) or was refused (`refused`); `detail` is the lane's
+        {pr, head, reason, required_check?}. Runs the same flow as the planner's after_merge / merge_refusal
+        action and returns its state.Action (`action.session` is None when no session was started)."""
+        action = _MERGER_ACTION.get(mode)
+        if action is None:
+            raise ValueError('unknown merger mode: %r' % (mode,))
+        detail = dict(detail) if isinstance(detail, dict) else {}
+        row = {'number': card, 'action': action, 'state': 'merging', 'pr': detail.get('pr'),
+               'head_sha': detail.get('head'), 'merger_detail': detail, 'declared_paths': []}
+        return self.begin(row).action
 
     def begin(self, candidate):
         action_name = candidate.get('action')
@@ -814,6 +840,8 @@ class CardDriver:
     def _check(self, run, report, allow, script=None):
         c = run.c
         flags = self._commits_since_review(run) if script is None else []
+        if run.role == 'merger':
+            flags = ['--mode', run.mode]
         result = c.soft('parse-report.sh', '--role', run.role, *(flags + [report]))
         if result.timed_out:
             raise _Fail('parse-report.sh timed out')
@@ -856,6 +884,8 @@ class CardDriver:
         """Section 3.6 in order: last_verified, last_review, pr, blocked handling, follow-ups; then the action's
         own effect (round + 1, the conflict reset, last_fix) folded into the last merge with the counter reset."""
         c, role, status = run.c, run.role, parsed.get('status')
+        if role == 'merger':
+            return self._apply_merger(run, parsed)
         note = c.note()
         patch = {'last_verified': (parsed.get('verified') or {}).get('line')}
         final = dict(_RESET)
@@ -1079,23 +1109,244 @@ class CardDriver:
         body = card.get('body') if isinstance(card, dict) else None
         if not isinstance(body, str):
             raise _Fail('board-read.sh printed no card body')
-        if _AFTER_MERGE.search(body):
-            merged = _json(c.step('after-merge.sh', 'run', c._file(body)).stdout)
-            if not isinstance(merged, dict) or merged.get('outcome') not in ('done', 'blocked'):
-                raise _Fail('after-merge.sh printed an unexpected result')
-            # Port of the script's behaviour: the note key is after_merge_results, a list of {command, exit}.
-            c.merge({'after_merge_results': [
-                {'command': r['command'], 'exit': r['exit']} for r in (merged.get('results') or [])
-                if isinstance(r, dict) and isinstance(r.get('command'), str) and r['command']
-                and isinstance(r.get('exit'), int) and not isinstance(r.get('exit'), bool)]})
+        merging = c.row.get('state') == 'merging'
+        came_from = 'merging' if merging else 'in_review'
+        # A merging card finishes only after the merger's after_merge, which already ran these steps
+        ran = merging and (c.note().get('merger') or {}).get('mode') == 'after_merge'
+        if _AFTER_MERGE.search(body) and not ran:
+            merged = self._after_merge_steps(c, body)
             if merged['outcome'] == 'blocked':
-                c.move('blocked')
-                c.merge_soft(dict(_RESET, state='blocked', blocked_from='in_review'))
-                if isinstance(merged.get('comment'), str) and merged['comment'].strip():
-                    c.comment_soft(merged['comment'])
-                return
+                return self._after_merge_blocked(c, merged, came_from)
         c.move('done')
-        c.merge_soft(dict(_RESET, state='done'))
+        c.merge_soft(dict(_RESET, state='done', **(_LEFT_MERGING if merging else {})))
+
+    def _after_merge_steps(self, c, body, extra=None):
+        merged = _json(c.step('after-merge.sh', 'run', c._file(body)).stdout)
+        if not isinstance(merged, dict) or merged.get('outcome') not in ('done', 'blocked'):
+            raise _Fail('after-merge.sh printed an unexpected result')
+        # Port of the script's behaviour: the note key is after_merge_results, a list of {command, exit}.
+        c.merge(dict(extra or {}, after_merge_results=[
+            {'command': r['command'], 'exit': r['exit']} for r in (merged.get('results') or [])
+            if isinstance(r, dict) and isinstance(r.get('command'), str) and r['command']
+            and isinstance(r.get('exit'), int) and not isinstance(r.get('exit'), bool)]))
+        return merged
+
+    def _after_merge_blocked(self, c, merged, came_from):
+        c.move('blocked')
+        c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from,
+                          **(_LEFT_MERGING if came_from == 'merging' else {})))
+        if isinstance(merged.get('comment'), str) and merged['comment'].strip():
+            c.comment_soft(merged['comment'])
+
+    # the merger (spec section 6) -----------------------------------------------------------------------
+    @staticmethod
+    def _head(value):
+        if not isinstance(value, str) or not _HEAD.fullmatch(value):
+            raise _Invalid('head', value)
+        return value
+
+    def _do_after_merge(self, c):
+        pr, head = c.pr(), self._head(c.row.get('head_sha'))
+        card = self._read_card(c)
+        body = card.get('body') if isinstance(card.get('body'), str) else ''
+        # The card's own ## After merge steps run first, once per merged head (a restart does not rerun them)
+        if _AFTER_MERGE.search(body) and c.note().get('after_merge_head') != head:
+            merged = self._after_merge_steps(c, body, {'after_merge_head': head})
+            if merged['outcome'] == 'blocked':
+                c.merge_soft({'after_merge_head': None})
+                return self._after_merge_blocked(c, merged, 'merging')
+        return self._dispatch_merger(c, 'after_merge', pr, head, card, {'merged_head': head})
+
+    def _do_merge_refusal(self, c):
+        detail = c.row.get('merger_detail')
+        if not isinstance(detail, dict):
+            stored = c.note().get('merge_refusal')
+            detail = stored if isinstance(stored, dict) else {}
+        pr = detail.get('pr', c.row.get('pr'))
+        if not _posint(pr):
+            raise _Invalid('pr', pr)
+        head = self._head(detail.get('head') or c.row.get('head_sha'))
+        reason = _first_line(detail.get('reason')) or 'the merge was refused'
+        refusal = {'pr': pr, 'head': head, 'reason': reason}
+        if isinstance(detail.get('required_check'), str) and _first_line(detail['required_check']):
+            refusal['required_check'] = _first_line(detail['required_check'])
+        if self._retried(c.note(), head):   # spec section 6: a second refusal after a retry is attention
+            return self._merger_attention(c, 'refusal', 'merge refused again after a retry: %s' % reason, head)
+        card = self._read_card(c)
+        return self._dispatch_merger(c, 'refusal', pr, head, card, {'refusal': refusal})
+
+    def _dispatch_merger(self, c, mode, pr, head, card, extra):
+        try:
+            persona = self._persona(c, pr)
+        except _Attention as exc:
+            return self._merger_attention(c, mode, str(exc), head)
+        dispatch = resolver.resolve(c.config, c.row)
+        if dispatch is None or dispatch.runner != 'claude' or not dispatch.agent:
+            raise _Fail('%s names no agent' % c.row['action'])
+        for field, value in (('agent', dispatch.agent), ('model', dispatch.model)):
+            if value is not None and not (isinstance(value, str) and _NAME.fullmatch(value)):
+                raise _Invalid(field, value)
+        run = _Run(c, c.action, dispatch, 'merger', '', prior='merging', mode=mode, head=head, pr_number=pr,
+                   refusal=extra.get('refusal'))
+        inputs = dict(extra, number=c.n, title=card.get('title'), pr=pr, mode=mode, persona=persona,
+                      config=json.dumps(c.config, indent=2, sort_keys=True), scripts=str(self.plugin_dir / 'scripts'))
+        run.prompt = run.base_prompt = role_prompt('merger', inputs, c.tmp)
+        run.attempts_before = None
+        self._launch(run)
+        return 'session'
+
+    def _persona(self, c, pr):
+        """The persona text (spec section 6): merge.persona null -> .fleet-board/merger.md when present, else the
+        plugin default; a set path that is missing is attention, never a fallback; merge.persona_append follows.
+        A git-tracked persona that this PR changed is never used."""
+        merge = c.config.get('merge') if isinstance(c.config.get('merge'), dict) else {}
+        configured = merge.get('persona')
+        if configured is None:
+            local = self.root / '.fleet-board' / 'merger.md'
+            path, rel = (local, '.fleet-board/merger.md') if local.is_file() else (DEFAULT_PERSONA, None)
+        else:
+            shown = _first_line(str(configured))
+            if (not isinstance(configured, str) or not configured or configured.startswith('/')
+                    or '..' in configured.split('/') or not (self.root / configured).is_file()):
+                raise _Attention('merge.persona not found: %s' % shown)
+            path, rel = self.root / configured, configured
+        if rel is not None and self._persona_changed(c, rel, pr):
+            raise _Attention('persona changed by this PR')
+        try:
+            text = path.read_text(errors='replace')
+        except OSError as exc:
+            raise _Attention('persona unreadable: %s' % _first_line(str(exc)))
+        append = merge.get('persona_append')
+        if isinstance(append, str) and append.strip():
+            text = text.rstrip('\n') + '\n\n' + append.strip('\n') + '\n'
+        return text
+
+    def _tracked(self, rel):
+        """True when git tracks `rel`. Only ls-files' own "did not match" (exit 1) means untracked; any other
+        failure is unknown and fails closed."""
+        result = self.git(self.root, 'ls-files', '--error-unmatch', '--', rel)
+        if result.rc == 0 and not result.timed_out:
+            return True
+        if result.rc == 1 and not result.timed_out and 'did not match' in (result.stderr or ''):
+            return False
+        raise _Fail('git ls-files %s: %s' % (rel, _first_line(result.stderr) or 'exit %d' % result.rc))
+
+    def _persona_paths(self, rel):
+        """The repo-relative paths a PR could change the persona through: the configured path normalised as git
+        and gh print it, and, for a symlink, its resolved target (outside the repository is attention)."""
+        norm = posixpath.normpath(rel.replace('\\', '/'))
+        if norm in ('.', '') or norm.startswith('../') or norm.startswith('/'):
+            raise _Attention('merge.persona not found: %s' % _first_line(rel))
+        names = [norm]
+        target = os.path.realpath(str(self.root / norm))
+        root = os.path.realpath(str(self.root))
+        if os.path.islink(str(self.root / norm)) or target != os.path.join(root, norm):
+            if os.path.commonpath([root, target]) != root:
+                raise _Attention('persona symlink points outside the repository')
+            names.append(posixpath.normpath(os.path.relpath(target, root).replace(os.sep, '/')))
+        return list(dict.fromkeys(names))
+
+    def _persona_changed(self, c, rel, pr):
+        candidates = self._persona_paths(rel)
+        if not any([self._tracked(name) for name in candidates]):
+            return False   # untracked (the store is kept out of git): no PR can have changed it
+        result = self.gh(self.root, 'pr', 'view', str(pr), '--repo', c.repo(), '--json', 'files')
+        data = _json(result.stdout) if result.rc == 0 and not result.timed_out else None
+        files = data.get('files') if isinstance(data, dict) else None
+        if not isinstance(files, list):
+            raise _Fail(_first_line(result.stderr) or 'could not read the files of PR #%d' % pr)
+        names = {posixpath.normpath(f['path']) for f in files if isinstance(f, dict) and isinstance(f.get('path'), str)}
+        if any(name in names for name in candidates):
+            return True
+        if len(files) >= PR_FILES_LIMIT:
+            raise _Attention('persona check: PR #%d lists %d files, so it may have changed the persona'
+                             % (pr, len(files)))
+        return False
+
+    def _merger_attention(self, c, mode, reason, head, verified=None):
+        # pending_merge goes: a person who clears the attention lets the card merge again under a new operation
+        # key, which merge-reviewed.sh refuses (exit 3, the lane pauses the board) over the refused one's marker
+        patch = dict(_RESET, pending_merge=None,
+                     merger={'mode': mode, 'status': 'attention', 'reason': reason, 'head': head})
+        if verified is not None:
+            patch['last_verified'] = verified
+        c.merge(patch)
+        self.state.event('attention', card=c.n, mode=mode, reason=reason)
+
+    @staticmethod
+    def _merger_reason(parsed):
+        for finding in parsed.get('findings') or []:
+            if isinstance(finding, dict) and _first_line(finding.get('text')):
+                return _first_line(finding['text'])
+        return _first_line(parsed.get('for_the_card')) or 'the merger asked for attention'
+
+    def _apply_merger(self, run, parsed):
+        c, mode, status, head = run.c, run.mode, parsed.get('status'), run.head
+        verified = (parsed.get('verified') or {}).get('line')
+        record = {'mode': mode, 'status': status, 'head': head}
+        left = dict(_RESET, merger=record, last_verified=verified, **_LEFT_MERGING)
+        if mode == 'after_merge' and status == 'done':
+            c.merge(dict(_RESET, merger=record, last_verified=verified))
+            c.move('done')
+            c.merge_soft(dict(left, state='done'))
+            return
+        if mode == 'refusal' and status == 'retry':
+            if self._retried(c.note(), head):
+                return self._merger_attention(c, mode, 'merge refused again after a retry: %s'
+                                              % run.refusal['reason'], head, verified)
+            backoff = (c.config.get('supervisor') or {}).get('retry_backoff_seconds')
+            if not isinstance(backoff, (int, float)) or isinstance(backoff, bool) or backoff < 0:
+                backoff = 60
+            after = _iso(self.clock() + backoff)
+            # pending_merge goes too: merge-reviewed.sh refuses a new operation key over a stale marker
+            c.merge(dict(left, merge_retry={'pr': run.pr_number, 'head': head, 'after': after}))
+            self.state.event('merge_retry', card=c.n, after=after)
+            return
+        if mode == 'refusal' and status == 'fix':
+            return self._refusal_fix(run, left)
+        return self._merger_attention(c, mode, self._merger_reason(parsed), head, verified)
+
+    @staticmethod
+    def _retried(note, head):
+        retry = note.get('merge_retry')
+        return (isinstance(retry, dict) and isinstance(retry.get('head'), str) and isinstance(head, str)
+                and retry['head'].lower() == head.lower())
+
+    def _is_conflict(self, c, run):
+        if _CONFLICT.search(run.refusal['reason']):
+            return True
+        result = self.gh(self.root, 'pr', 'view', str(run.pr_number), '--repo', c.repo(), '--json', 'mergeable',
+                         '--jq', '.mergeable')
+        return result.rc == 0 and not result.timed_out and result.stdout.strip() == 'CONFLICTING'
+
+    def _refusal_fix(self, run, left):
+        """fix: a conflict goes through update-branch.sh (the planner then plans the conflict fix); any other
+        refusal returns to in_review with the reason as an Important finding, so the planner plans fix."""
+        c, note = run.c, run.c.note()
+        if self._is_conflict(c, run):
+            for key in ('branch', 'worktree'):
+                if not c.row.get(key):
+                    c.row[key] = note.get(key)
+            branch, worktree = c.branch(), c.worktree()
+            c.step('worktree.sh', 'create', c.n, branch, worktree)
+            before = note.get('conflicted_files') or None
+            if before is not None:   # a stale list must not read as this run's conflict (nor survive a clean merge)
+                c.merge({'conflicted_files': None})
+            result = c.soft('update-branch.sh', c.n, run.pr_number, branch, worktree)
+            if result.timed_out:
+                raise _Fail('update-branch.sh timed out')
+            if result.rc != 0 and not c.note().get('conflicted_files'):
+                raise _Fail(_first_line(result.stderr) or 'update-branch.sh exited %d' % result.rc)
+            c.move('in_review')
+            c.merge(dict(left, state='in_review', stage=None))
+            return
+        last = note.get('last_review') if isinstance(note.get('last_review'), dict) else {}
+        rounds = note.get('round') if _posint(note.get('round')) else 1
+        review = dict(last, round=max(rounds, last.get('round') if _posint(last.get('round')) else 0),
+                      sha=run.head, critical=0, important=1, stage=None, agent=None, provider=None,
+                      findings=[{'severity': 'Important', 'text': 'merge refused: ' + run.refusal['reason']}])
+        c.move('in_review')
+        c.merge(dict(left, state='in_review', last_review=review, stage=None, reviewed_stages=[]))
 
     def _do_unblock(self, c):
         c.move('ready')

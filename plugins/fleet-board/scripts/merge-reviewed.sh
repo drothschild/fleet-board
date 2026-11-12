@@ -37,6 +37,13 @@
 # merge_operation), verifies main and notes main_check, then stops. The card is
 # not moved to done and no done note is written (the supervisor finishes it
 # after the merger); exit codes are unchanged (3 on a failed verification).
+# A card in merging is always handled as --no-finish, in every form (the
+# legacy no-argument one included): only the supervisor finishes it.
+#
+# --inspect prints {status:"observed", ...} when the note's marker matches the
+# key, PR and head; {status:"unmatched"} for another operation's marker; and
+# {status:"absent", pr, planned_head, observed_head, state} when the note has
+# no marker at all (nothing was attempted).
 #
 # Exit codes:
 #   0 - nothing to do, or every planned merge succeeded
@@ -91,8 +98,11 @@ if [ "$INSPECT" = 1 ]; then
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$CARD_ONLY" </dev/null)" || fb_die 3 "cannot read merge recovery note"
   info="$(gh pr view "$EXPECTED_PR" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid)" || fb_die 3 "cannot inspect merge recovery PR"
   jq -nc --arg key "$OPERATION_KEY" --argjson pr "$EXPECTED_PR" --arg head "$EXPECTED_HEAD" --argjson note "$note" --argjson info "$info" '
-    ($note.merge_operation // $note.pending_merge // {}) as $marker
-    | if ($marker.operation_key != $key or $marker.pr != $pr or $marker.head_sha != $head) then
+    ($note.merge_operation // $note.pending_merge // null) as $marker
+    | if $marker == null then
+        # no marker at all: no merge was attempted (the fresh plan skipped the card); the PR as it is now
+        {status:"absent", pr:$pr, planned_head:$head, observed_head:$info.headRefOid, state:$info.state}
+      elif ($marker.operation_key != $key or $marker.pr != $pr or $marker.head_sha != $head) then
         {status:"unmatched"}
       else
         {status:"observed", operation_key:$marker.operation_key, note_operation_key:$marker.operation_key,
@@ -232,6 +242,8 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   fi
   [ "$(jq -r '.ok' <<<"$main_check")" = true ] || fb_die 3 "#$n: main verification failed; stopping merge drain"
   [ "$NO_FINISH" = 0 ] || continue # --no-finish: the card stays where it is
+  # A merging card is finished only by the supervisor, after the merger: every form is --no-finish for it
+  [ "$(jq -r '.state' <<<"$card")" != merging ] || continue
 
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null)" || { fail "$n" "cannot read pending follow-ups"; continue; }
   if jq -e '.pending_followups != null' <<<"$note" >/dev/null; then
@@ -246,7 +258,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   final_state="$(jq -er '.state // empty' <<<"$final_card" 2>/dev/null)" \
     || { fail "$n" "cannot determine card state before completing merge"; continue; }
   case "$final_state" in
-    in_review|review_*|merging) ;;
+    in_review|review_*) ;;
     *) warn "#$n: card moved to $final_state during verification; leaving its state unchanged"; continue ;;
   esac
   bash "$FLEET_SCRIPTS/board-move.sh" "$n" done </dev/null >/dev/null || { fail "$n" "board-move to done failed"; continue; }

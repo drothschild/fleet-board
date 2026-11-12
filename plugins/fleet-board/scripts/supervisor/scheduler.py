@@ -15,6 +15,7 @@ _ACTION_CLASS = {
     'continue_implementor': 0, 'fix': 0, 'review': 0, 'review_stage': 0,
     'start_review': 1, 'unblock': 1, 'update_branch': 1, 'advance_stage': 1, 'to_human_qa': 1,
     'mark_ready': 1, 'verify_main': 1, 'finish': 1, 'block': 1, 'file_pending': 1, 'merge': 1,
+    'after_merge': 1, 'merge_refusal': 1,
     'start': 2,
 }
 # Planned actions that are never admitted and never attention. skip_* and wait become

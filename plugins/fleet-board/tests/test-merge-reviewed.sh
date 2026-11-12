@@ -517,7 +517,39 @@ finalize
 run_merge --card 12
 assert_exit "merging: a merging card is merged by --card" 0
 assert_eq "merging: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
-assert_eq "merging: without --no-finish the card moves to done" "$(card_state)" done
+assert_eq "merging: a merging card is never finished here, even without --no-finish" "$(card_state)" merging
+assert_eq "merging: --card verifies main and notes it" "$(note_field '.main_check.ok')" true
+assert_eq "merging: --card writes no done note" "$(note_field '.state')" '"merging"'
+
+# The legacy form (no arguments, from fleet-board-run.sh) lists merging too, but never finishes a merging
+# card: only the supervisor finishes it, after the merger
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "merging legacy: exit 0" 0
+assert_eq "merging legacy: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "merging legacy: the card stays in merging" "$(card_state)" merging
+assert_eq "merging legacy: no done note" "$(note_field '.state')" '"merging"'
+
+# --inspect with no marker at all reports the PR as it is (the supervisor reads a planner skip from it)
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+store_sync
+INSPECT_OUT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+LAST_EXIT=$?
+assert_exit "inspect absent: exit 0" 0
+assert_eq "inspect absent: status, state and heads" "$(jq -c '[.status, .state, .planned_head, .observed_head, .pr]' <<<"$INSPECT_OUT")" '["absent","OPEN","abc1234","abc1234",34]'
+setup_case auto
+card 12 merging "$(jq -c '.pending_merge={operation_key:"op-old",pr:34,head_sha:"abc1234"}' <<<"$MERGING_NOTE")"
+pr 34 false "$GREEN"
+finalize
+store_sync
+INSPECT_OUT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+assert_eq "inspect: another operation's marker is still unmatched" "$(jq -c '.status' <<<"$INSPECT_OUT")" '"unmatched"'
 
 setup_case auto
 card 12 merging "$MERGING_NOTE"
@@ -562,6 +594,26 @@ assert_eq "no-finish keyed: merged once" "$(cnt "pr merge 34 --repo acme/toy --s
 assert_eq "no-finish keyed: card stays in merging" "$(card_state)" merging
 assert_eq "no-finish keyed: merge_operation recorded" "$(note_field '.merge_operation.operation_key')" '"op-12"'
 assert_eq "no-finish keyed: verified evidence in merge_operation" "$(note_field '.merge_operation.main_check.ok')" true
+
+# A merger attention cleared by a person (note.sh merge: merger null, merge_refusal null) merges again with a
+# new operation key; the driver clears pending_merge when it records attention, since a stale marker of the
+# refused operation (same PR and head, old key) makes this script exit 3 and the lane pause the board
+CLEARED_NOTE="$(jq -c '.merger=null | .merge_refusal=null | .pending_merge=null' <<<"$MERGING_NOTE")"
+setup_case auto
+card 12 merging "$CLEARED_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-new --pr 34 --head abc1234
+assert_exit "cleared attention: a new operation key merges (exit 0)" 0
+assert_eq "cleared attention: merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+STALE_NOTE="$(jq -c '.pending_merge={operation_key:"op-old",pr:34,head_sha:"abc1234"}' <<<"$CLEARED_NOTE")"
+setup_case auto
+card 12 merging "$STALE_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-new --pr 34 --head abc1234
+assert_exit "stale pending_merge: a new operation key is refused (exit 3)" 3
+assert_eq "stale pending_merge: nothing merged" "$(cnt "pr merge 34 ")" 0
 
 setup_case auto
 card 12 merging "$MERGING_NOTE"
