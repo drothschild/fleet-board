@@ -1,5 +1,7 @@
 # Persistent Jobs and Supervisor Design
 
+> **Superseded (2026-11-11)** by [`docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
+
 ## Summary
 
 Replace tick-scoped execution with durable jobs and a persistent supervisor. A scheduling cycle reconciles results, advances eligible cards, claims capacity and scope, dispatches work, and returns without waiting for workers. Workers survive the initiating chat, browser, or tick. The supervisor recovers after crashes and reboot without duplicating work or silently resetting limits.
