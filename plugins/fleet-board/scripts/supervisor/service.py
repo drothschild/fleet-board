@@ -42,8 +42,7 @@ class Service:
         self.socket_path = str(self.socket_dir / "c.sock")
         self.lock_path = str(self.socket_dir / "owner.lock")
         if run_lock_path is None:
-            repo = board_repo or _repo_slug(self.root)
-            run_lock_path = str(paths.log_dir() / (repo.replace("/", "-") + ".lock"))
+            run_lock_path = default_run_lock_path(self.root, board_repo=board_repo)
         self.run_lock_path = str(run_lock_path)
         self.request_timeout = 5.0
         self._lock = threading.RLock()
@@ -339,6 +338,12 @@ class Service:
         snapshot["active"] = sorted(snapshot["active"].values(), key=lambda action: action["card"])
         snapshot.update(schema_version=SCHEMA_VERSION, pid=os.getpid(), root=str(self.root), startup=self.startup)
         return snapshot
+
+
+def default_run_lock_path(root, env=None, board_repo=None):
+    """The repository run lock shared with fleet-board-run.sh: <log dir>/<owner>-<name>.lock."""
+    repo = board_repo or _repo_slug(Path(root))
+    return str(paths.log_dir(env) / (repo.replace("/", "-") + ".lock"))
 
 
 def _repo_slug(root):

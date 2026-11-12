@@ -24,7 +24,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
-from . import paths, resolver, roles as _roles, scripts, usage as _usage
+from . import markers as _markers, paths, resolver, roles as _roles, scripts, usage as _usage
 from .state import Action
 
 Started = namedtuple('Started', 'kind action')
@@ -214,11 +214,13 @@ class _Ctx:
         data = _json(self.step('note.sh', 'get', self.n).stdout)
         if not isinstance(data, dict):
             raise _Fail('note.sh get printed no manager note')
-        if data.get('stuck_released') and not self._released:
-            # A person released this card's stuck finding: the first action that reads its note ends the
-            # exemption (no extra call on the normal path).
+        stale = {key: None for key in ('stuck', 'stuck_released') if data.get(key)}
+        if stale and not self._released:
+            # A person released this card's stuck finding, or the card was resolved some other way: the first
+            # action that reads its note ends the exemption and drops the stale stuck note (no extra call on the
+            # normal path).
             self._released = True
-            self.merge_soft({'stuck_released': None})
+            self.merge_soft(stale)
         return data
 
     def _file(self, text):
@@ -718,6 +720,19 @@ class CardDriver:
             self._give_back_attempt(run)   # no session ever existed: the card was not tried
             raise
         self._runs[c.n] = run
+        self._own_marker(c, run.action, getattr(run.action.session, 'pid', None))
+
+    def _own_marker(self, c, action, pgid):
+        """Write the card's active marker naming the session's process group (State.end removes it)."""
+        if type(pgid) is not int or pgid <= 1:
+            return
+        previous = (action.marker, action.pgid)
+        try:
+            action.marker = _markers.write(self.root, (c.config.get('board') or {}).get('dir'), c.n, pgid)
+            action.pgid = pgid
+        except OSError as exc:
+            c.warn('active marker not written: %s' % exc)
+            _markers.clear(*previous)
 
     def _give_back_attempt(self, run):
         """Undo the implementor attempt charged before dispatch (a provider failure is not the card's)."""

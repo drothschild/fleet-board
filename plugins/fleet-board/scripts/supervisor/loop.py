@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import candidates, errors, merging, resolver, scopes, scripts, stuck, usage
+from . import candidates, errors, markers, merging, resolver, scopes, scripts, stuck, usage
 from .state import DUPLICATE_ADMISSION
 
 STOP_MODES = ('drain', 'cancel')
@@ -69,7 +69,8 @@ class Supervisor:
         self.clock = clock
         self.mono = mono
         self.run_script = run
-        self.merge_lane = merge_lane or merging.MergeLane(self.root, state, run=run, clock=clock, repo=self._repo)
+        self.merge_lane = merge_lane or merging.MergeLane(self.root, state, run=run, clock=clock, repo=self._repo,
+                                                          board_dir=self._board_dir)
         self._ignored_checked = None
         self.ignored = dict(ignored or {})   # stuck cards left alone ({card: column found in}) until resolved
         self.config = None
@@ -308,6 +309,8 @@ class Supervisor:
             time.sleep(0.05)
         for action in [a for a in self.state.active.values() if a.session is not None]:
             self._record_unfinished(action)
+            if not markers.group_alive(action.pgid):   # a group still running keeps its marker: a live orphan
+                markers.clear(action.marker, action.pgid)
 
     def _record_unfinished(self, action):
         """Tokens are never silently missing: the session was given up on, so its counts are unknown."""
@@ -368,7 +371,8 @@ class Supervisor:
     def _merge_ended(self, outcome):
         """merged and refused go to the merger session; not_attempted (the script's fresh plan skipped the card)
         leaves it in merging to be planned again; anything else pauses the board. While stopping the merger
-        is deferred: the planner plans after_merge / merge_refusal for the card on the next run."""
+        or paused the merger is deferred: the planner plans after_merge / merge_refusal for the card once the
+        board runs again (after resume, or on the next run)."""
         card, kind, detail = outcome
         self.state.release(card)
         self.state.event('merge_' + kind, card=card, reason=detail.get('reason'))
@@ -388,6 +392,8 @@ class Supervisor:
                 self.state.event('ignored_checks_failed', card=card, message=_clean(exc))
         if self._stop_mode or self.state.mode == 'stopping':
             self.state.event('merger_deferred', card=card, mode=kind, message='stopping')
+        elif self.state.mode == 'paused':   # nothing starts while paused: after resume the planner plans it
+            self.state.event('merger_deferred', card=card, mode=kind, message='paused')
         else:
             try:
                 self.driver.begin_merger(card, kind, detail)
@@ -426,8 +432,9 @@ class Supervisor:
         self.state.set_health(provider, {'until': self.clock() + delay, 'reason': reason, 'failures': failures})
 
     def _note_cancelled(self, action):
-        """A cancelled card goes back to the column it was in when the action began."""
+        """A cancelled card goes back to the column it was in when the action began; its marker goes too."""
         card, column = action.card, action.column
+        markers.clear(action.marker, action.pgid)
         try:
             with tempfile.TemporaryDirectory(prefix='fleet-cancel-') as tmp:
                 path = Path(tmp) / 'patch.json'
