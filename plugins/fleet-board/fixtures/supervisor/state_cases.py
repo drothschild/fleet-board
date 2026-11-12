@@ -78,7 +78,9 @@ class Lifecycle(unittest.TestCase):
     def test_initial_shape(self):
         s = self.state
         self.assertEqual((s.mode, s.pause_reason, s.revision, s.lane), ('running', None, 0, None))
-        self.assertEqual((s.active, s.reservations, s.provider_health, s.run_tokens), ({}, {}, {}, {}))
+        self.assertEqual((s.active, s.reservations, s.provider_health, s.run_tokens),
+                         ({}, {}, {}, {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
+                                        'unknown': 0, 'partial': False}))
 
     def test_begin_refuses_a_second_action_for_a_card(self):
         self.state.begin(action(1))
@@ -132,7 +134,7 @@ class Lifecycle(unittest.TestCase):
         self.state.run_tokens['claude']['in'] = 99
         self.state.provider_health['claude']['until'] = 9.0
         self.assertEqual(snap['active'][1]['paths'], ['a'])
-        self.assertEqual(snap['run_tokens'], {'claude': {'in': 1}})
+        self.assertEqual(snap['run_tokens']['claude'], {'in': 1})
         self.assertEqual(snap['provider_health']['claude']['until'], 5.0)
 
     def test_every_mutation_bumps_revision(self):

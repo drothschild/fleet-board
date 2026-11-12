@@ -299,12 +299,13 @@ class Limits(lc.LoopCase):
 
     def test_per_card_limit_waits_only_that_card(self):
         self.add_card(13)
-        self.b.config['limits']['max_tokens_per_card'] = 50
-        # The fake role posts to card 12, so 12 is the card under its cap and 13 the one over it.
-        usage.append(self.b.root, line(run_id='earlier', card=13, input=30, output=30, cache_write=0, cache_read=0))
-        usage.append(self.b.root, line(run_id='earlier', card=12, input=5, output=5, cache_write=0, cache_read=0))
+        self.b.config['limits']['max_tokens_per_card'] = 100
+        # An earlier run's spend (another run_id in the ledger) does not count against this run.
+        usage.append(self.b.root, line(run_id='earlier', card=12, input=900, output=0, cache_write=0, cache_read=0))
+        # This run already spent the cap on card 13 (the fake role posts to card 12, the card that stays under).
+        self.b.state.add_tokens({'input': 60, 'output': 40, 'cache_write': 0, 'cache_read': 0}, 13)
         self.rows = self.implement_plan
-        self.b.plans({'report': 'implementor-ok', 'usage': FULL})
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=10, output_tokens=5)})
         self.start()
         self.until(lambda: self.b.note(12).get('pr') == 12, what="card 12's implementor")
         self.until(lambda: not self.b.state.snapshot()['active'], what='the card to settle')
@@ -313,6 +314,7 @@ class Limits(lc.LoopCase):
         self.assertEqual(self.count(), 1)
         waits = {w['number']: w['reason'] for w in self.sup.last_cycle['waits']}
         self.assertEqual(waits.get(13), 'card token limit reached')
+        self.assertNotIn(12, waits, "the earlier run's 900 tokens must not count")
         self.assertNotIn(13, [r['number'] for r in self.sched.calls[-1][0]], 'the scheduler never sees it')
         self.assertIn(12, [r['number'] for rows, _ in self.sched.calls for r in rows])
         self.assertEqual(self.mode(), 'running', 'a per-card limit never pauses the run')
@@ -321,7 +323,7 @@ class Limits(lc.LoopCase):
 
     def test_a_card_over_its_cap_still_gets_script_only_actions(self):
         self.b.config['limits']['max_tokens_per_card'] = 1
-        usage.append(self.b.root, line(card=12, input=30, output=30, cache_write=0, cache_read=0))
+        self.b.state.add_tokens({'input': 30, 'output': 30, 'cache_write': 0, 'cache_read': 0}, 12)
         self.rows = lambda: [dc.candidate('wait', number=12, state='ready', declared_paths=['a'])]
         self.start()
         self.cycles_done(1)
@@ -329,6 +331,14 @@ class Limits(lc.LoopCase):
         self.assertNotIn('card token limit reached', waits)
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
+
+    def test_usage_command_reports_this_runs_in_memory_total(self):
+        usage.append(self.b.root, line(run_id='earlier', card=12, input=900, output=0, cache_write=0, cache_read=0))
+        self.b.state.add_tokens({'input': 7, 'output': 3, 'cache_write': 0, 'cache_read': 0}, 12)
+        got = self.sup.handle({'command': 'usage'})
+        self.assertEqual(got['run']['total'], 10)
+        self.assertEqual(got['all_time']['total'], 900)
+        self.assertEqual(self.b.state.snapshot()['run_tokens']['total'], 10)
 
     def test_a_duplicate_admission_does_not_charge_the_running_card(self):
         row = dc.candidate('start', number=12, branch=lc.BRANCH[12], worktree=self.b.worktree,

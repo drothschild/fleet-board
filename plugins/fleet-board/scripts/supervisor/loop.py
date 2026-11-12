@@ -154,9 +154,12 @@ class Supervisor:
     def _usage(self, card=None):
         """Read-only view of the ledger for the `usage` command (the service thread calls this)."""
         try:
-            return usage.view(self.root, self._board_dir(), card=card, run_id=self.state.run_id)
+            result = usage.view(self.root, self._board_dir(), card=card, run_id=self.state.run_id)
         except ValueError as exc:
             raise errors.Invalid(str(exc)) from None
+        if card is None:   # this run's figure comes from the same totals the limit uses
+            result['run'] = dict(self.state.snapshot()['run_tokens'])
+        return result
 
     # --- the loop ------------------------------------------------------------------------------------
     def run(self):
@@ -454,19 +457,13 @@ class Supervisor:
         return True
 
     def _capped_cards(self):
-        """Cards whose all-time known tokens in the ledger have reached limits.max_tokens_per_card."""
+        """Cards whose known tokens in THIS run have reached limits.max_tokens_per_card (in-memory totals;
+        the ledger is never read to decide anything, and an earlier run's spend does not count)."""
         cap = self._limit('max_tokens_per_card', 0)
         if cap <= 0:
             return set()
-        warnings = []
-        lines, skipped = usage.read(self.root, self._board_dir(), warn=warnings.append)
-        if warnings:
-            self._error('usage_damaged', warnings[0])
-        spent = {}
-        for line in lines:
-            if line['card'] is not None:
-                spent[line['card']] = spent.get(line['card'], 0) + sum(line[k] or 0 for k in usage.COUNTS)
-        return {card for card, total in spent.items() if total >= cap}
+        with self.state._lock:
+            return {card for card, total in self.state.card_tokens.items() if total >= cap}
 
     def _probe_scheduler(self, config):
         """While paused by a scheduler stop_reason: True to skip this cycle, False once the scheduler no

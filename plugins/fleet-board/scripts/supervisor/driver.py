@@ -692,7 +692,7 @@ class CardDriver:
                 'action': action.action, 'role': action.role, 'provider': action.provider,
                 'model': getattr(u, 'model', None), 'started_at': _iso(action.started_at),
                 'ended_at': _iso(self.clock()), 'log': result.log_path, **counts}
-        self.state.add_tokens(counts)
+        self.state.add_tokens(counts, action.card)
         try:
             (self.ledger or _usage.append)(self.root, line, ((run.c.config.get('board') or {}).get('dir')
                                                              or _usage.DEFAULT_DIR))

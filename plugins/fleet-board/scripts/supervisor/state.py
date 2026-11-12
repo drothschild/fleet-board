@@ -36,7 +36,9 @@ class State:
         self.reservations = {}
         self.lane = None
         self.provider_health = {}
-        self.run_tokens = {}
+        self.run_tokens = {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
+                           'unknown': 0, 'partial': False}
+        self.card_tokens = {}   # card -> known tokens spent in this run (not part of the snapshot)
         self.events = deque(maxlen=500)
         self._sequence = 0
         self._lock = threading.RLock()
@@ -117,7 +119,7 @@ class State:
             if self.provider_health.pop(provider, None) is not None:
                 self._bump()
 
-    def add_tokens(self, counts):
+    def add_tokens(self, counts, card=None):
         """Add one action's counts (input, output, cache_write, cache_read; None is unknown, never zero) to
         this run's totals, kept in memory so the run limit never reads the ledger."""
         with self._lock:
@@ -128,6 +130,9 @@ class State:
                 'input', 'output', 'cache_write', 'cache_read')) else 0)
             run['total'] = sum(run[k] for k in ('input', 'output', 'cache_write', 'cache_read'))
             run['partial'] = run['unknown'] > 0
+            if card is not None:
+                self.card_tokens[card] = self.card_tokens.get(card, 0) + sum(
+                    counts.get(k) or 0 for k in ('input', 'output', 'cache_write', 'cache_read'))
             self._bump()
 
     def event(self, type, **payload):
