@@ -105,7 +105,7 @@ class LoopCase(unittest.TestCase):
                       pr=note.get('pr') or 34)
             if note.get('pr') and state == 'in_progress' and not note.get('last_review'):
                 rows.append(dc.candidate('start_review', **kw))
-            elif note.get('last_review') or (note.get('pr') and state == 'in_review'):
+            elif note.get('last_review'):
                 rows.append(dc.candidate('skip', **kw))
             elif state == 'in_review':
                 rows.append(dc.candidate('review', round=1, **kw))
@@ -113,6 +113,16 @@ class LoopCase(unittest.TestCase):
                 rows.append(dc.candidate('continue_implementor', **kw))
             else:
                 rows.append(dc.candidate('start', **kw))
+        return rows
+
+    def implement_plan(self):
+        """Implementation only: a card with a PR is done."""
+        rows = []
+        for n in self.cards:
+            note, state = self.b.note(n), self.b.card(n)['state']
+            kw = dict(number=n, branch=BRANCH[n], worktree=self.b.worktree, state=state, declared_paths=['p%d' % n])
+            action = 'skip' if note.get('pr') else 'continue_implementor' if state == 'in_progress' else 'start'
+            rows.append(dc.candidate(action, **kw))
         return rows
 
     # -- helpers -------------------------------------------------------------------------------------
@@ -151,7 +161,9 @@ class LoopCase(unittest.TestCase):
             if value:
                 return value
             time.sleep(0.05)
-        self.fail('timed out waiting for ' + what)
+        events = [(e['type'], e['payload']) for e in list(self.b.state.events)[-8:]]
+        self.fail('timed out waiting for %s; mode %s, cycle %s, events %s' % (
+            what, self.mode(), self.sup.last_cycle, events))
 
     def finished(self, timeout=20):
         self.thread.join(timeout)
@@ -313,7 +325,7 @@ class Controls(LoopCase):
     def test_stop_cancel_returns_cards_to_their_column(self):
         self.b.plans({'report': 'implementor-ok', 'sleep': 30})
         self.start()
-        self.until(lambda: 12 in self.b.state.snapshot()['active'], what='the implementor to start')
+        self.until(lambda: self.b.fake_calls(1), what='the implementor to launch')
         self.assertEqual(self.b.card()['state'], 'in_progress')
         self.assertEqual(self.sup.handle({'command': 'stop', 'mode': 'cancel'})['mode'], 'cancel')
         began = time.monotonic()
@@ -452,6 +464,7 @@ class Cycle(LoopCase):
         for number in (12, 13):
             self.in_progress(number)
         self.add_card(14)
+        self.rows = self.implement_plan
         self.b.plans({'report': 'implementor-ok', 'post': False, 'sleep': 3},
                      {'report': 'implementor-ok', 'post': False, 'sleep': 9},
                      {'report': 'implementor-ok', 'post': False})

@@ -233,11 +233,20 @@ class Service:
         thread, self._accept_thread = self._accept_thread, None
         if thread is not None and thread is not threading.current_thread():
             thread.join(2.0)
-        with self._threads_lock:
-            pending = list(self._threads)
-        for item in pending:
-            if item is not threading.current_thread():
-                item.join(2.0)
+        # Connection threads are registered before they start, so a connection accepted just before
+        # the shutdown is always in the list; re-read it until no live thread is left (bounded).
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            with self._threads_lock:
+                pending = [item for item in self._threads
+                           if (item.is_alive() or item.ident is None) and item is not threading.current_thread()]
+            if not pending:
+                break
+            for item in pending:
+                if item.ident is None:
+                    time.sleep(0.01)  # registered, about to start
+                else:
+                    item.join(max(0.05, min(2.0, deadline - time.monotonic())))
         if server is not None:
             try:
                 Path(self.socket_path).unlink()
@@ -256,13 +265,14 @@ class Service:
             except OSError:
                 break
             thread = threading.Thread(target=self._serve_connection, args=(connection,), daemon=True)
-            thread.start()
             self._track_thread(thread)
+            thread.start()
 
     def _track_thread(self, thread):
-        """Keep only live threads: a long-lived service sees one connection per poll."""
+        """Keep only live (or not yet started) threads: a long-lived service sees one connection per poll.
+        Called before thread.start(), so a thread that has not started yet is kept."""
         with self._threads_lock:
-            self._threads[:] = [item for item in self._threads if item.is_alive()]
+            self._threads[:] = [item for item in self._threads if item.is_alive() or item.ident is None]
             self._threads.append(thread)
 
     def _serve_connection(self, connection):
@@ -343,8 +353,9 @@ class Service:
 
     def status_view(self):
         """The one canonical status object: the State snapshot, with `active` as a list."""
-        with self._lock:
-            snapshot = self.state.snapshot()
+        # No service lock: State.snapshot() is atomic and a deep copy, and a status reply must never
+        # wait behind a mutating command that is waiting for the loop.
+        snapshot = self.state.snapshot()
         snapshot["active"] = sorted(snapshot["active"].values(), key=lambda action: action["card"])
         snapshot.update(schema_version=SCHEMA_VERSION, pid=os.getpid(), root=str(self.root))
         return snapshot

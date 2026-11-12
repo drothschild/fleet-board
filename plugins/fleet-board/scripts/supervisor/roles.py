@@ -209,11 +209,14 @@ class Session:
 
     def cancel(self, grace):
         """Start terminating the process group (SIGTERM now, SIGKILL once `grace` has passed on the session
-        clock) and return at once; poll() completes it. Idempotent; a no-op once the result is built."""
+        clock) and return at once; poll() completes it. Idempotent; a no-op once the result is built. A later
+        call with a shorter grace brings the SIGKILL forward (a second Ctrl-C), never pushes it back."""
         if self._result is not None or self.proc is None:
             return
         if self._why is None:
             self._why = 'cancel'
+        if self._term_deadline is not None:
+            self._term_deadline = min(self._term_deadline, self._clock() + max(grace, 0))
         self._advance_cleanup(grace)
 
     # -- observation ---------------------------------------------------------------------------

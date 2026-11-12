@@ -1,4 +1,8 @@
-"""Live supervisor state, held in memory. Single-threaded by design: the loop owns it."""
+"""Live supervisor state, held in memory. The loop owns it and mutates it; the service thread reads
+snapshots and applies `stop` (an immediate mode change), so every method takes one short lock and
+`snapshot()` returns a deep copy that later mutation cannot change."""
+import copy
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass, fields
@@ -35,59 +39,90 @@ class State:
         self.run_tokens = {}
         self.events = deque(maxlen=500)
         self._sequence = 0
+        self._lock = threading.RLock()
 
     def _bump(self):
         self.revision += 1
 
     def pause(self, reason):
-        self.mode = 'paused'
-        self.pause_reason = reason
-        self._bump()
+        with self._lock:
+            if self.mode == 'stopping':
+                return
+            self.mode = 'paused'
+            self.pause_reason = reason
+            self._bump()
 
     def resume(self):
-        self.mode = 'running'
-        self.pause_reason = None
-        self._bump()
+        with self._lock:
+            if self.mode == 'stopping':
+                return
+            self.mode = 'running'
+            self.pause_reason = None
+            self._bump()
+
+    def stop(self):
+        """Enter the terminal 'stopping' mode at once; pause() and resume() cannot leave it."""
+        with self._lock:
+            if self.mode != 'stopping':
+                self.mode = 'stopping'
+                self.pause_reason = None
+                self._bump()
 
     def begin(self, action):
-        if action.kind not in ('role', 'script', 'merge'):
-            raise ValueError('invalid action kind')
-        if action.card in self.active:
-            raise ValueError('card already active')
-        if action.kind == 'merge' and self.lane is not None:
-            raise ValueError('merge lane taken')
-        self.active[action.card] = action
-        if action.kind == 'merge':
-            self.lane = action
-        self._bump()
+        with self._lock:
+            if action.kind not in ('role', 'script', 'merge'):
+                raise ValueError('invalid action kind')
+            if action.card in self.active:
+                raise ValueError('card already active')
+            if action.kind == 'merge' and self.lane is not None:
+                raise ValueError('merge lane taken')
+            self.active[action.card] = action
+            if action.kind == 'merge':
+                self.lane = action
+            self._bump()
 
     def end(self, card):
-        action = self.active.pop(card)
-        if self.lane is action:
-            self.lane = None
-        self._bump()
-        return action
+        with self._lock:
+            action = self.active.pop(card)
+            if self.lane is action:
+                self.lane = None
+            self._bump()
+            return action
 
     def reserve(self, card, paths):
         """Reserve `paths` for `card`; they must already be `scopes.normalize()` output."""
-        for owner, held in self.reservations.items():
-            if owner != card and scopes.overlap(paths, held):
-                return owner
-        held = set(self.reservations.get(card, ())) | set(paths)
-        # Union like the store did; '' (whole repo) absorbs everything.
-        self.reservations[card] = [''] if '' in held else sorted(held)
-        self._bump()
-        return None
+        with self._lock:
+            for owner, held in self.reservations.items():
+                if owner != card and scopes.overlap(paths, held):
+                    return owner
+            held = set(self.reservations.get(card, ())) | set(paths)
+            # Union like the store did; '' (whole repo) absorbs everything.
+            self.reservations[card] = [''] if '' in held else sorted(held)
+            self._bump()
+            return None
 
     def release(self, card):
-        self.reservations.pop(card, None)
-        self._bump()
+        with self._lock:
+            self.reservations.pop(card, None)
+            self._bump()
+
+    def set_health(self, provider, entry):
+        """Mark `provider` unhealthy: entry is {"until", "reason", "failures"}."""
+        with self._lock:
+            self.provider_health[provider] = dict(entry)
+            self._bump()
+
+    def clear_health(self, provider):
+        with self._lock:
+            if self.provider_health.pop(provider, None) is not None:
+                self._bump()
 
     def event(self, type, **payload):
-        self._sequence += 1
-        self.events.append({'sequence': self._sequence, 'type': type, 'at': self.clock(), 'payload': payload})
-        self._bump()
-        return self._sequence
+        with self._lock:
+            self._sequence += 1
+            self.events.append({'sequence': self._sequence, 'type': type, 'at': self.clock(), 'payload': payload})
+            self._bump()
+            return self._sequence
 
     @staticmethod
     def _action_dict(action):
@@ -97,13 +132,14 @@ class State:
         return {f.name: getattr(action, f.name) for f in fields(action) if f.name != 'session'}
 
     def snapshot(self):
-        return {
-            'run_id': self.run_id,
-            'mode': self.mode,
-            'pause_reason': self.pause_reason,
-            'revision': self.revision,
-            'active': {card: self._action_dict(a) for card, a in self.active.items()},
-            'lane': self._action_dict(self.lane),
-            'provider_health': {k: dict(v) for k, v in self.provider_health.items()},
-            'run_tokens': dict(self.run_tokens),
-        }
+        with self._lock:
+            return copy.deepcopy({
+                'run_id': self.run_id,
+                'mode': self.mode,
+                'pause_reason': self.pause_reason,
+                'revision': self.revision,
+                'active': {card: self._action_dict(a) for card, a in self.active.items()},
+                'lane': self._action_dict(self.lane),
+                'provider_health': self.provider_health,
+                'run_tokens': self.run_tokens,
+            })

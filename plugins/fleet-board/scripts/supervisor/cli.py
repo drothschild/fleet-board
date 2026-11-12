@@ -10,8 +10,10 @@ import time
 import uuid
 from pathlib import Path
 
-from . import errors, paths
-from .service import Service, StubHandler
+from . import errors, loop, paths
+from .driver import CardDriver
+from .scheduler import Scheduler
+from .service import Service
 from .state import State
 
 USAGE = "usage: supervisor <start [--detach] [--ignore-stuck] | status [--json] | pause | resume | stop [--drain|--cancel]>"
@@ -166,15 +168,17 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
 def _start(root, stdout, stderr):
     """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop."""
     state = State(uuid.uuid4().hex, time.time)
-    handler = StubHandler(state)
-    service = Service(root, state, handler)
+    loader = loop.config_loader(root)
+    supervisor = loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
+                                 driver=CardDriver(root, loader, state))
+    service = Service(root, state, supervisor.handle)
     # Installed before readiness is announced (and before the socket exists): a signal at any
     # point after this ends the run through close(), never leaving a socket or run lock behind.
-    # Ctrl-C and SIGTERM end the run now; draining arrives with the loop.
+    # Ctrl-C (twice: no grace period), SIGTERM and SIGHUP cancel the running sessions and exit 0.
     previous = {}
-    for number in (signal.SIGINT, signal.SIGTERM):
+    for number in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         try:
-            previous[number] = signal.signal(number, lambda _signum, _frame: handler.request_stop("cancel"))
+            previous[number] = signal.signal(number, supervisor.on_signal)
         except ValueError:
             pass  # not the main thread: the caller stops it through the socket
     try:
@@ -187,9 +191,7 @@ def _start(root, stdout, stderr):
                 print("supervisor already running for %s (pid %s)" % (root, pid if pid else "unknown"), file=stderr)
             return 1
         print(json.dumps(ack), file=stdout, flush=True)
-        while not handler.stop_requested.wait(0.2):
-            pass
-        return 0
+        return supervisor.run()
     finally:
         service.close()
         for number, old in previous.items():
