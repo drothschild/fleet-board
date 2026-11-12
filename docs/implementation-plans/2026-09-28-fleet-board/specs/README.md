@@ -2125,3 +2125,9 @@ Isolation: the init event lists only the four built-in `cc-plugin-*@builtin` plu
 
 **Known limits.** The gate checks only `fleet/<n>-*` PRs; text passed with `gh pr merge --subject` or `--body`, a body edited between the check and the merge, and a merge in the GitHub UI are not checked (`docs/gates.md`).
 
+
+### Revision 28 (2026-11-12, CLI supervisor Phase 7.2): the tick system removed
+
+**Removed.** The supervisor (`scripts/supervisor.sh`) replaces the tick system. `agents/manager.md`, `skills/tick/SKILL.md` and `skills/run/SKILL.md` are deleted, with their specs (`manager.md`, `tick.md`, `run.md`), their briefs (`briefs/spec-req-{manager,tick,run}.md`) and their manifest lines. Their evidence files stay here as the record of the runs that produced them. `tests/test-clean-room.sh` now lists `CLEAN_ROOM_SKILLS="reporting status"` and fails on a manifest line that names no clean-room file.
+
+**Hand edit, named exception.** `skills/status/SKILL.md` was edited by the executing session, with no isolated author run: its last line names the supervisor (`Supervisor: <scripts dir>/supervisor.sh`) instead of the headless wrapper, the "not for" text points at the supervisor instead of the tick and run skills, the "What not to do" list names the merger and the supervisor, and the example board lists `merging`. `specs/status.md` was edited to match. The manifest line carries an `exception:` note. Cost: none (no model session).

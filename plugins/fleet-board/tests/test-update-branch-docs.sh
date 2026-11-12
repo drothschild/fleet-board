@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Plain-bash checks for the update_branch card: the role agents keep their
-# never-rebase / never-force-push rules, the manager knows the action, and
+# never-rebase / never-force-push rules and
 # docs/config.md documents it.
 #
 # Usage: bash plugins/fleet-board/tests/test-update-branch-docs.sh
@@ -23,8 +23,8 @@ check "fixer: never force-push or rebase" "$ROOT/agents/fixer.md" "Never force-p
 check "fixer: plain git push" "$ROOT/agents/fixer.md" "plain \`git push\` (never forced)"
 check "implementor: push never with force" "$ROOT/agents/implementor.md" "never with force"
 check "implementor: no force-push or rewrite" "$ROOT/agents/implementor.md" "Force-push, amend or rewrite commits already on the branch"
-check "manager: action table has update_branch" "$ROOT/agents/manager.md" "| \`update_branch\` |"
-check "manager: runs update-branch.sh" "$ROOT/agents/manager.md" "update-branch.sh N <pr>"
+# The two manager.md checks went with the tick system: driver_cases.py test_update_branch_runs_worktree_then_script
+# pins that the supervisor's driver runs update-branch.sh for update_branch.
 check "docs/config.md documents update_branch" "$ROOT/docs/config.md" "the action \`update_branch\`"
 check "docs/config.md names update-branch.sh" "$ROOT/docs/config.md" "scripts/update-branch.sh"
 check "docs/config.md: never force-pushes" "$ROOT/docs/config.md" "never force-pushes"

@@ -435,7 +435,7 @@ def process_start(pid):
 
 
 def run_lock_holder(path):
-    """The pid of the live process holding the repository run lock at `path` (claim-run-lock.py's format: pid,
+    """The pid of the live supervisor holding the repository run lock at `path` (claim-run-lock.py's format: pid,
     then its start time), else None. A pid whose start time differs from the recorded one is a reused pid."""
     try:
         lines = Path(path).read_text(encoding='utf-8', errors='replace').splitlines()

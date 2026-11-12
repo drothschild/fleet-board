@@ -1208,7 +1208,7 @@ STAGES_YAML="$(printf '%s\n' \
   '    - name: compliance' \
   '      provider: openai' \
   '      model: gpt-test' \
-  '      price: { input: 1, output: 2 }')"
+  '      price: { input: 1, output: 2 }')"  # an old price key: config.sh ignores it
 unset OPENAI_API_KEY || true
 splan() { plan "$1" "$STAGES_YAML"; }
 ssettle() { settle "$1" "$2" "$STAGES_YAML"; }
@@ -1233,7 +1233,7 @@ assert_jq "stage-review: dispatchable" '.dispatchable' 'true'
 assert_jq "agent_stage_plan_card_has_null_provider: provider" "$(card 12 stage.provider)" 'null'
 assert_jq "agent_stage_plan_card_has_null_provider: agent" "$(card 12 stage.agent)" '"acme:sec"'
 assert_jq "stage-review: stage object is the config stage whole" "$(card 12 stage) | keys" \
-  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","price","provider","timeout"]'
+  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","provider","timeout"]'
 # no_warning_when_stage_not_acted_on: no card in the provider stage
 assert_jq "no_warning_when_stage_not_acted_on: no card in the stage" '.warnings' '[]'
 # last_review from in_review (stage null, round 1) does not count
@@ -1395,12 +1395,11 @@ assert_eq "no_stages_no_next_lookup control: stub ran" "$([ -e "$NEXT_STUB/next-
 provider_models='models:
   reviewer: { provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }
   escalation: opus'
-zero_price='reviewer codex/gpt-6-astra has price 0; max_cost_usd does not count its spend'
 plan escalation-round2 "$provider_models"
 assert_exit "provider reviewer: planner exits 0" 0
-assert_jq "provider reviewer: passes merged object through" "$(card 12 models.reviewer)" '{"provider":"codex","model":"gpt-6-astra","price":{"input":0,"output":0},"timeout":1500}'
+assert_jq "provider reviewer: passes merged object through" "$(card 12 models.reviewer)" '{"provider":"codex","model":"gpt-6-astra","timeout":1500}'
 assert_jq "provider reviewer: escalation applies to both writers" "$(card 12 models) | [.implementor,.fixer]" '["opus","opus"]'
-assert_jq "provider reviewer: only the zero price warning" '.warnings' "$(warns_json "$zero_price")"
+assert_jq "provider reviewer: no price warning (tokens only)" '.warnings' '[]'
 plan escalation-round2 "$provider_models
   implementor: gpt-6-astra"
 assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | select(startswith("implementor and reviewer share model gpt-6-astra"))] | length' 1

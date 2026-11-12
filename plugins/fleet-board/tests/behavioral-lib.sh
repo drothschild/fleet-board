@@ -3,7 +3,7 @@
 #
 # Hits the REAL sandbox repo named by SANDBOX_REPO: it pushes branches, opens
 # draft PRs, creates card issues and posts comments there. Callers:
-# behavioral-role.sh (Phase 5), behavioral-tick.sh (Phase 6) and the Phase 7
+# behavioral-role.sh (Phase 5) and the Phase 7
 # overnight run.
 #
 # Provides:

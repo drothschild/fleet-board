@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pins the exact text of each weakening-outside-a-test-body example in the reviewer and fixer
-# weakened-test steps, and the start_review dispatch's round 1 reference SHA in the manager.
+# weakened-test steps.
 # test-weakened-test-scope.sh greps single words ("fixture", "helper") across a whole step, so a
 # deleted example bullet stays green there; this file checks each example on its own.
 # Run: bash plugins/fleet-board/tests/test-weakened-test-examples.sh
@@ -48,30 +48,14 @@ check_fixer() {
   block_has "$who: .only marker example" "$blk" 'no new `test.only(...)` block or other `.only` marker'
 }
 
-check_manager() {
-  local who="$1" f="$2" row
-  row="$(grep -E '^\| `start_review` ' "$f" | head -1)"
-  if [ -z "$row" ]; then bad "$who: start_review row found"; return; fi
-  block_has "$who: start_review dispatches round 1 with prev_sha = the base" "$row" 'dispatch the reviewer with `round: 1` and `prev_sha` = the `base` from `worktree.sh review` |'
-  if printf '%s\n' "$row" | grep -qF 'last_review'; then
-    bad "$who: start_review row never uses note.last_review as prev_sha"
-  else
-    ok "$who: start_review row never uses note.last_review as prev_sha"
-  fi
-  # The review row does name last_review (for rounds after 1), so pin its round 1 clause word for
-  # word: the base wins in round 1 even when an earlier review exists, last_review.sha is the else.
-  row="$(grep -E '^\| `review` ' "$f" | head -1)"
-  if [ -z "$row" ]; then bad "$who: review row found"; return; fi
-  block_has "$who: review row sets prev_sha to the base in round 1, even after an earlier review" "$row" '`prev_sha` = the `base` from `worktree.sh review` in round 1 (`note.round` is 1), even when an earlier review exists (`unblock`, `start` and `start_review` reset the round to 1), otherwise `note.last_review.sha` |'
-}
 
 check_reviewer agent "$AGENTS/reviewer.md"
 check_fixer agent "$AGENTS/fixer.md"
-check_manager agent "$AGENTS/manager.md"
+# The manager checks went with the tick system: driver_cases.py
+# test_reviewer_round_one_uses_the_base_even_after_an_earlier_review pins the round 1 reference SHA.
 if [ -d "$SPECS" ]; then
   check_reviewer spec "$SPECS/reviewer.md"
   check_fixer spec "$SPECS/fixer.md"
-  check_manager spec "$SPECS/manager.md"
 else
   echo "skip - no specs at $SPECS (installed plugin)"
 fi

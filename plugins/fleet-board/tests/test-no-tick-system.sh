@@ -66,8 +66,9 @@ grep_absent "no file names the run skill or the manager agent type" \
   --exclude='test-no-tick-system.sh' "$PLUGIN_DIR"
 
 echo "tokens only: no runtime script prices tokens"
+# config.sh is left out: it names the removed keys (limits.max_cost_usd, an old price) only to refuse or drop them.
 grep_absent "no cost_usd, cost_estimate or price under scripts/" \
-  -rnE 'cost_usd|cost_estimate|max_cost|PRICE_|\.price\b|"price"|price:' "$PLUGIN_DIR/scripts"
+  -rnE 'cost_usd|cost_estimate|max_cost|PRICE_|\.price\b|"price"|price:' --exclude=config.sh "$PLUGIN_DIR/scripts"
 
 echo "the board page has no tick-wrapper controls"
 WEB="$PLUGIN_DIR/scripts/board-web.py"

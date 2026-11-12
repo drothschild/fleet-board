@@ -589,7 +589,7 @@ assert_eq "merging: a merging card is never finished here, even without --no-fin
 assert_eq "merging: --card verifies main and notes it" "$(note_field '.main_check.ok')" true
 assert_eq "merging: --card writes no done note" "$(note_field '.state')" '"merging"'
 
-# The legacy form (no arguments, from fleet-board-run.sh) lists merging too, but never finishes a merging
+# The no-argument form (once the tick wrapper's) lists merging too, but never finishes a merging
 # card: only the supervisor finishes it, after the merger
 setup_case auto
 card 12 merging "$MERGING_NOTE"

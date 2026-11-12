@@ -17,7 +17,7 @@
 #      "comment_needed": bool|null}]}
 #
 # stage is the config's stage object whole (as config.sh prints it: name,
-# agent, provider, model, paths, label, advisory, max_rounds, brief, price,
+# agent, provider, model, paths, label, advisory, max_rounds, brief,
 # timeout, max_output_tokens, max_diff_bytes; provider is null for an agent
 # stage, agent null for a provider stage): for advance_stage the stage being
 # entered, for any other card in a stage column that column's stage, else null.
@@ -239,7 +239,7 @@
 # card's lookups would fail alike. When the script fails and its stderr names a
 # GitHub rate limit, it asks gh api rate_limit for the reset time and adds the line
 # "resets at <ISO UTC>" (e.g. 2026-01-01T00:00:00Z) to stderr, which
-# fleet-board-run.sh waits out. If that query fails, nothing is added. A
+# the supervisor waits out. If that query fails, nothing is added. A
 # failure that is not a rate limit never gets the line.
 #
 # Exit codes:
@@ -1055,9 +1055,6 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         else [] end)
        + (if $m.escalation != null and $m.escalation == $reviewer_model
           then ["escalation and reviewer share model \($m.escalation); the escalated writer shares the reviewer'"'"'s blind spots"]
-          else [] end)
-       + (if ($m.reviewer | type) == "object" and $m.reviewer.price.input == 0 and $m.reviewer.price.output == 0
-          then ["reviewer \($m.reviewer.provider)/\($reviewer_model) has price 0; max_cost_usd does not count its spend"]
           else [] end)
        + [$cards[] | select(.action == "skip" and (.reason | startswith("lookup failed")))
           | "#\(.number): \(.reason)"]

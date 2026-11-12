@@ -172,14 +172,16 @@ class Service:
             return self._ack(True)
 
     def _claim_run_lock(self):
-        """The legacy run lock stays until Phase 7: a tick wrapper and a supervisor exclude each other."""
+        """The repository run lock (one supervisor per repository): the socket's owner lock is per checkout, so
+        this lock, named after board.repo, is what keeps a supervisor of another checkout of the same repository
+        (or one behind another socket directory) from running beside this one."""
         claim_script = Path(__file__).resolve().parents[1] / "claim-run-lock.py"
         Path(self.run_lock_path).parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         claim = subprocess.run([os.environ.get("PYTHON", "python3"), str(claim_script),
                                 self.run_lock_path, str(os.getpid()), "--kind", "service"],
                                capture_output=True, text=True)
         if claim.returncode:
-            raise RuntimeError("legacy run lock: " + (claim.stderr.strip() or "claim failed"))
+            raise RuntimeError("repository run lock: " + (claim.stderr.strip() or "claim failed"))
         self._run_lock_claimed = True
 
     def _release_ownership(self):
@@ -341,7 +343,7 @@ class Service:
 
 
 def default_run_lock_path(root, env=None, board_repo=None):
-    """The repository run lock shared with fleet-board-run.sh: <log dir>/<owner>-<name>.lock."""
+    """The repository run lock: <log dir>/<owner>-<name>.lock (one supervisor per repository)."""
     repo = board_repo or _repo_slug(Path(root))
     return str(paths.log_dir(env) / (repo.replace("/", "-") + ".lock"))
 
