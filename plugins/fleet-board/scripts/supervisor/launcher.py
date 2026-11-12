@@ -1,6 +1,6 @@
 """The one place that starts the supervisor detached and waits until its socket answers.
 
-Both `supervisor start --detach` (a later phase) and the board server's Start on an unreachable
+Both `supervisor start --detach` and the board server's Start on an unreachable
 supervisor call launch_detached(). It never creates a second owner: the child takes the
 repository's owner lock or exits, and either way the caller talks to whoever owns it.
 """
@@ -15,14 +15,22 @@ from . import paths, webproxy
 
 READY_TIMEOUT = 8.0
 _LOG_TAIL = 300
+_OUTPUT_MAX = 64 * 1024
 
 
 class LaunchError(RuntimeError):
-    """The supervisor did not become ready; the message says why."""
+    """The supervisor did not become ready; the message says why. `exit_code` is the child's exit status when
+    it exited (4: it refused to start over stuck cards) and `output` is what it wrote during this launch."""
+
+    def __init__(self, message, exit_code=None, output=""):
+        super().__init__(message)
+        self.exit_code = exit_code
+        self.output = output
 
 
-def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT):
-    """Start `supervisor.cli start` in its own session for root; return once its socket answers.
+def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT, ignore_stuck=False):
+    """Start `supervisor.cli start` in its own session for root; return once it is ready: its socket answers
+    and reports startup "done" (the startup check passed and the loop is running).
 
     Output goes to log_path (private, appended). Returns {"ready": True, "pid": <supervisor pid>,
     "log": log_path}. Raises LaunchError when the child exits first or does not answer in time
@@ -37,6 +45,7 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT):
     if env.get("FLEET_BOARD_SOCKET_DIR"):
         child_env["FLEET_BOARD_SOCKET_DIR"] = env["FLEET_BOARD_SOCKET_DIR"]
     for key in ("FLEET_BOARD_LOG_DIR", "FLEET_BOARD_CONFIG"):
+        child_env.pop(key, None)
         if env.get(key):
             child_env[key] = env[key]
     child_env.update({"FLEET_BOARD_DOMAIN": str(root),
@@ -44,11 +53,15 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT):
                                                if child_env.get("PYTHONPATH") else "")})
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.fchmod(fd, 0o600)
+    offset = os.fstat(fd).st_size
+    argv = [sys.executable, "-m", "supervisor.cli", "start"] + (["--ignore-stuck"] if ignore_stuck else [])
     with os.fdopen(fd, "a") as log:
-        child = subprocess.Popen([sys.executable, "-m", "supervisor.cli", "start"], cwd=str(root),
+        child = subprocess.Popen(argv, cwd=str(root),
                                  env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                  start_new_session=True)
-    socket_path = paths.controller_socket(paths.domain_id_for_root(root), env=child_env)
+    socket_path = env.get("FLEET_BOARD_SUPERVISOR_SOCKET") or paths.controller_socket(
+        paths.domain_id_for_root(root), env=child_env)
 
     def probe():
         try:
@@ -58,22 +71,33 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT):
     deadline = time.time() + timeout
     while True:
         status = probe()
-        if status is not None:
+        if isinstance(status, dict) and status.get("startup") == "done":
             threading.Thread(target=_reap, args=(child,), daemon=True).start()
             return {"ready": True, "pid": status.get("pid"), "log": str(log_path)}
-        if child.poll() is not None:
-            raise LaunchError("supervisor exited before it answered" + _tail(log_path))
+        code = child.poll()
+        if code is not None:
+            output = _output(log_path, offset)
+            raise LaunchError("supervisor exited before it was ready (exit %s)" % code + _tail(output),
+                              exit_code=code, output=output)
         if time.time() >= deadline:
             _discard(child)
-            raise LaunchError("supervisor readiness timed out after %.0f seconds" % timeout + _tail(log_path))
+            raise LaunchError("supervisor readiness timed out after %.0f seconds" % timeout
+                              + _tail(_output(log_path, offset)))
         time.sleep(0.05)
 
 
-def _tail(log_path):
+def _output(log_path, offset):
+    """What the child wrote since this launch began (the log is appended across runs)."""
     try:
-        text = Path(log_path).read_text(encoding="utf-8", errors="replace").strip()
+        with open(str(log_path), "rb") as handle:
+            handle.seek(offset)
+            return handle.read(_OUTPUT_MAX).decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _tail(output):
+    text = output.strip()
     return ": " + text[-_LOG_TAIL:] if text else ""
 
 

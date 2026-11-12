@@ -432,11 +432,6 @@ class CLIContract(unittest.TestCase):
         for gone in ("socket-tmp", "socket_tmp", "socket_tmpdir", "boot_registration", "host_boot_id"):
             self.assertNotIn(gone, text)
 
-    def test_detach_arrives_in_a_later_phase(self):
-        code, _, err, _ = self.invoke("start", "--detach")
-        self.assertEqual(code, 2)
-        self.assertIn("--detach arrives in a later phase", err)
-
     def test_help_documents_the_socket_override_requirements(self):
         out = io.StringIO()
         code = main(["--help"], env={}, stdout=out, stderr=io.StringIO(), transport=lambda r: {})
@@ -635,6 +630,7 @@ class DetachedLauncher(unittest.TestCase):
 
     def test_launch_detached_starts_a_service_that_answers_and_logs_to_a_file(self):
         env = dict(os.environ, FLEET_BOARD_SOCKET_DIR=str(self.base), FLEET_BOARD_LOG_DIR=str(self.logs))
+        (self.case / ".fleet-board.yml").write_text("board:\n  repo: acme/toy\n", encoding="utf-8")
         log = self.logs / "supervisor.log"
         try:
             ack = launcher.launch_detached(self.case, log, env=env)
@@ -743,7 +739,7 @@ class DetachedLauncher(unittest.TestCase):
 
         def fake_request(path, payload):
             asked.append(path)
-            return {"phase": "running", "pid": 4242}
+            return {"startup": "done", "pid": 4242}
         with mock.patch.object(launcher.subprocess, "Popen", return_value=child), \
                 mock.patch.object(launcher.webproxy, "request", side_effect=fake_request):
             ack = launcher.launch_detached(board, self.logs / "o.log", timeout=2,
@@ -758,7 +754,7 @@ class DetachedLauncher(unittest.TestCase):
         polls = iter([None, None, None, 4, 4, 4])
         child.poll.side_effect = lambda: next(polls)
         with mock.patch.object(launcher.subprocess, "Popen", return_value=child), \
-                mock.patch.object(launcher.webproxy, "request", return_value={"phase": "starting", "pid": 1}):
+                mock.patch.object(launcher.webproxy, "request", return_value={"startup": "checking", "pid": 1}):
             with self.assertRaises(launcher.LaunchError) as caught:
                 launcher.launch_detached(board, self.logs / "s.log", timeout=5,
                                          env={"FLEET_BOARD_SOCKET_DIR": str(self.base)})
@@ -846,7 +842,7 @@ class DetachedStart(unittest.TestCase):
         self.assertEqual(status.returncode, 0, status.stderr)
         result = json.loads(status.stdout)
         self.assertEqual(result["pid"], ack["pid"])
-        self.assertEqual(result["phase"], "running", "ready means the startup check passed and the loop runs")
+        self.assertEqual(result["startup"], "done", "ready means the startup check passed and the loop runs")
         self.assertNotEqual(ack["pid"], os.getpid())
 
     def test_detached_output_goes_to_the_log(self):
@@ -954,13 +950,13 @@ class StartIsTheStartupEnv(unittest.TestCase):
             gate.set()
             end = time.time() + 10
             after = self.status()
-            while (after is None or after.get("phase") != "running") and time.time() < end:
+            while (after is None or after.get("startup") != "done") and time.time() < end:
                 time.sleep(0.02)
                 after = self.status()
             self.assertEqual(main(["stop", "--cancel"], env=self.env, stdout=io.StringIO(), stderr=io.StringIO()), 0)
             thread.join(15)
-        self.assertEqual(during["phase"], "starting", "the socket answers during the check, but not as ready")
-        self.assertEqual(after["phase"], "running")
+        self.assertEqual(during["startup"], "checking", "the socket answers during the check, but not as ready")
+        self.assertEqual(after["startup"], "done")
         self.assertEqual(box["rc"], 0, box)
         self.assertEqual(os.listdir(str(self.other)), [], "the process env's socket dir must stay untouched")
         self.assertEqual(os.listdir(str(self.elsewhere)), [], "the process env's log dir must stay untouched")

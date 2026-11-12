@@ -54,6 +54,8 @@ class Service:
         self._threads_lock = threading.Lock()
         self._owner_fd = None
         self._run_lock_claimed = False
+        # "checking" while the startup check runs (the socket already answers), then "done".
+        self.startup = "done"
 
     # --- peer authentication ---------------------------------------------------------
 
@@ -335,7 +337,7 @@ class Service:
         # wait behind a mutating command that is waiting for the loop.
         snapshot = self.state.snapshot()
         snapshot["active"] = sorted(snapshot["active"].values(), key=lambda action: action["card"])
-        snapshot.update(schema_version=SCHEMA_VERSION, pid=os.getpid(), root=str(self.root))
+        snapshot.update(schema_version=SCHEMA_VERSION, pid=os.getpid(), root=str(self.root), startup=self.startup)
         return snapshot
 
 

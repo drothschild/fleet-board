@@ -1,5 +1,6 @@
 """Command line for the supervisor: `start` is the supervisor process, the rest talk to it."""
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -10,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-from . import errors, loop, paths, stuck, usage
+from . import errors, launcher, loop, paths, stuck, usage
 from .driver import CardDriver
 from .scheduler import Scheduler
 from .service import Service
@@ -138,13 +139,13 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     except (ValueError, SystemExit):
         print(USAGE, file=stderr)
         return 2
-    if args.command == "start" and args.detach:
-        print("supervisor: --detach arrives in a later phase", file=stderr)
-        return 2
     root = None
     try:
+        if args.command == "start" and args.detach:
+            return _detach(_board_root(env), env, stdout, stderr, ignore_stuck=args.ignore_stuck)
         if args.command == "start":
-            return _start(_board_root(env), stdout, stderr, ignore_stuck=args.ignore_stuck)
+            with _process_env(env):
+                return _start(_board_root(env), stdout, stderr, ignore_stuck=args.ignore_stuck)
         if args.command == "usage":
             return _usage(args, env, stdout, transport)
         if args.command == "stuck":
@@ -182,6 +183,47 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         return 1
 
 
+_ENV_KEYS = ("FLEET_BOARD_SOCKET_DIR", "FLEET_BOARD_LOG_DIR", "FLEET_BOARD_CONFIG", "FLEET_BOARD_DOMAIN")
+
+
+@contextlib.contextmanager
+def _process_env(env):
+    """Run the supervisor on the env it was given: the paths, the run lock and the board scripts it starts
+    all read os.environ, so the FLEET_BOARD_* location keys of `env` are applied for the run and restored."""
+    if env is os.environ:
+        yield
+        return
+    saved = {key: os.environ.get(key) for key in _ENV_KEYS}
+    for key in _ENV_KEYS:
+        if env.get(key):
+            os.environ[key] = env[key]
+        else:
+            os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _detach(root, env, stdout, stderr, ignore_stuck=False):
+    """Start the supervisor in the background; return once it passed the startup check and runs the loop."""
+    try:
+        ack = launcher.launch_detached(root, paths.log_dir(env) / "supervisor.log", env=env,
+                                       ignore_stuck=ignore_stuck)
+    except launcher.LaunchError as exc:
+        if exc.exit_code == 4:
+            print(exc.output.strip(), file=stderr)
+            return 4
+        print("supervisor: " + str(exc), file=stderr)
+        return 1
+    print(json.dumps(ack), file=stdout)
+    return 0
+
+
 def _start(root, stdout, stderr, ignore_stuck=False):
     """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop, 4 when it
     refuses to start because a previous supervisor left cards half done."""
@@ -190,6 +232,7 @@ def _start(root, stdout, stderr, ignore_stuck=False):
     supervisor = loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
                                  driver=CardDriver(root, loader, state))
     service = Service(root, state, supervisor.handle)
+    service.startup = "checking"
     # Installed before readiness is announced (and before the socket exists): a signal at any
     # point after this ends the run through close(), never leaving a socket or run lock behind.
     # Ctrl-C (twice: no grace period), SIGTERM and SIGHUP cancel the running sessions and exit 0.
@@ -222,6 +265,7 @@ def _start(root, stdout, stderr, ignore_stuck=False):
                       % (len(found), "" if len(found) == 1 else "s"), file=stderr)
                 return 4
             supervisor.ignored = stuck.snapshot(root, found)
+        service.startup = "done"
         print(json.dumps(ack), file=stdout, flush=True)
         return supervisor.run()
     finally:
