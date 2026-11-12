@@ -139,17 +139,31 @@ case "$ANSWER" in y|Y|yes|YES|Yes) ;; *) echo "Nothing created."; exit 0 ;; esac
 
 fb_load_config
 
-# Docs referenced from a card's why or acceptance (scope lists files the card will
-# create, so it is not scanned) must exist on the default branch, because role
-# worktrees branch from it. A reference is path.md or path.md#section.
-DOCRE='[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/[A-Za-z0-9_.-]+\\.md(?:#[A-Za-z0-9_-]+)?'
+# Docs referenced from a card's why or acceptance must exist on the default branch,
+# because role worktrees branch from it. A reference is path.md or path.md#section.
+# Not checked: a path the card itself creates (it equals, or is a path suffix of, a
+# path in the card's scope), and a path that exists neither on the default branch
+# nor in the working tree (warned about and left as written: nothing to embed).
+DOCRE='[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*/[A-Za-z0-9_.-]+\.md(?:#[A-Za-z0-9_-]+)?'
 GITTOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 DEFREF="$(git -C "$GITTOP" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo HEAD)"
+# each card gains .docrefs: its why/acceptance references, minus the ones its scope owns
+PLAN="$(jq -c --arg re "$DOCRE" '
+  .cards |= map(
+    ([(.scope // [])[] | scan($re) | sub("#.*$"; "") | sub("^(\\./)+"; "")]) as $own
+    | .docrefs = ([([.why // ""] + (.acceptance // []))[] | scan($re)] | unique
+        | map(select(sub("#.*$"; "") | sub("^(\\./)+"; "") as $p | $own | any(. == $p or endswith("/" + $p)) | not))))' <<<"$PLAN")" \
+  || fb_die 1 "cannot scan the cards for doc references"
 MISSING=()
 while IFS= read -r p; do
   [ -n "$p" ] || continue
-  git -C "$GITTOP" cat-file -e "$DEFREF:$p" >/dev/null 2>&1 || MISSING+=("$p")
-done < <(jq -r "[.cards[] | ([.why // \"\"] + (.acceptance // []))[] | scan(\"$DOCRE\")] | map(sub(\"#.*\$\"; \"\")) | unique[]" <<<"$PLAN" 2>/dev/null)
+  q="$p"; while [ "${q#./}" != "$q" ]; do q="${q#./}"; done  # ./docs/x.md is docs/x.md
+  case "/$q/" in */./*|*/../*) echo "warning: $p is referenced but is not a plain repo path; left as written" >&2; continue ;; esac
+  git -C "$GITTOP" cat-file -e "$DEFREF:$q" >/dev/null 2>&1 && continue
+  if [ -f "$GITTOP/$q" ]; then MISSING+=("$p")
+  else echo "warning: $p is referenced but exists neither on $DEFREF nor in the working tree; left as written" >&2
+  fi
+done < <(jq -r '[.cards[].docrefs[] | sub("#.*$"; "")] | unique[]' <<<"$PLAN")
 EMBED=0
 if [ "${#MISSING[@]}" -gt 0 ]; then
   echo "These docs are missing on the default branch ($DEFREF), so agents cannot see them:"
@@ -172,39 +186,47 @@ section_text() {
     on { print }' "$1"
 }
 
-REFS='{}'
+# Prepare every card first, so an embed failure (a missing section) stops the run
+# before anything is created.
+PREP="$(mktemp)" || fb_die 1 "cannot create a temp file"
 ACC="$(mktemp)" || fb_die 1 "cannot create a temp file"
-trap 'rm -rf "$LINTDIR" "$BODY" "$ACC"' EXIT
+trap 'rm -rf "$LINTDIR" "$BODY" "$ACC" "$PREP"' EXIT
 i=0
 while [ "$i" -lt "$N" ]; do
   card="$(jq -c --argjson i "$i" '.cards[$i]' <<<"$PLAN")"
   i=$((i + 1))
   if [ "$EMBED" -eq 1 ]; then
-    embedded=""
+    embedded=""; used=()
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
       p="${ref%%#*}"; a=""; case "$ref" in *"#"*) a="${ref#*#}" ;; esac
-      miss=0; for m in "${MISSING[@]}"; do [ "$m" = "$p" ] && miss=1; done
+      miss=0; for m in ${MISSING[@]+"${MISSING[@]}"}; do [ "$m" = "$p" ] && miss=1; done
       [ "$miss" -eq 1 ] || continue
-      [ -f "$GITTOP/$p" ] || fb_die 1 "cannot embed $ref: $p is not in the working tree"
+      [ -f "$GITTOP/$p" ] || fb_die 1 "cannot embed $ref: $p is not in the working tree; nothing was created"
       text="$(section_text "$GITTOP/$p" "$a")"
-      [ -n "$text" ] || fb_die 1 "cannot embed $ref: section not found"
+      [ -n "$text" ] || fb_die 1 "cannot embed $ref: section not found; nothing was created"
+      used+=("$p")
       embedded="$embedded
 ### Embedded from $(basename "$p")
 
 $text
 "
-    done < <(jq -r "[([.why // \"\"] + (.acceptance // []))[] | scan(\"$DOCRE\")] | unique[]" <<<"$card")
+    done < <(jq -r '.docrefs[]' <<<"$card")
     if [ -n "$embedded" ]; then
       for m in "${MISSING[@]}"; do embedded="${embedded//$m/the doc}"; done
-      card="$(jq -c --arg e "$embedded" --argjson miss "$(printf '%s\n' "${MISSING[@]}" | jq -R . | jq -sc .)" '
+      card="$(jq -c --arg e "$embedded" --argjson miss "$(printf '%s\n' "${used[@]}" | jq -R . | jq -sc 'unique')" '
         def strip: reduce $miss[] as $m (.; split($m) | join("(embedded below)"));
-        def stripref: gsub("(embedded below)#[A-Za-z0-9_-]+"; "(embedded below)");
+        def stripref: gsub("\\(embedded below\\)#[A-Za-z0-9_-]+"; "(embedded below)");
         .why |= ((. // "") | strip | stripref)
         | .acceptance |= ((. // []) | map(strip | stripref))
-        | .embedded = $e' <<<"$card")"
+        | .embedded = $e' <<<"$card")" || fb_die 1 "cannot embed the docs; nothing was created"
     fi
   fi
+  printf '%s\n' "$card" >> "$PREP"
+done
+
+REFS='{}'
+while IFS= read -r card <&3; do
   # the body holds the prose and any outside dependency; the fields hold the rest
   jq -r --arg repo "$FLEET_REPO" '
     def board_ref: (ascii_downcase | startswith(($repo | ascii_downcase) + "#")) or test("^#[0-9]+$");
@@ -227,4 +249,4 @@ $text
   CREATED="#$num"
   REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "#$num" '. + {($k): $r}' <<<"$REFS")"
   echo "Created $CREATED: $title"
-done
+done 3< "$PREP"
