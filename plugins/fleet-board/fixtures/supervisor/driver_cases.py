@@ -1166,7 +1166,7 @@ def test_evidence_reviewer_path(base):
                 'last_review': dict(LAST_REVIEW, sha='feed123')})
     fake_plugin(b, 0, json.dumps({'status': 'posted', 'report_file': report_file(b, 'reviewer-ok'),
                                   'parsed': {}, 'provider': 'codex', 'model': 'gpt-5', 'sha': 'deadbee',
-                                  'input_tokens': None, 'output_tokens': None, 'cost_usd': 0, 'attempts': 1}))
+                                  'input_tokens': None, 'output_tokens': None, 'attempts': 1}))
     started = begin(b, 'review', state='in_review', round=2)
     assert started.kind == 'session' and started.action.role == 'reviewer' and started.action.provider == 'codex'
     assert 'worktree.sh' not in b.scripts_called(), 'the evidence runner makes its own review worktree'
@@ -1226,7 +1226,7 @@ def test_provider_stage_exit_7_blocks(base):
 
 def test_provider_stage_done_records_the_stage_review(base):
     out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
-           'input_tokens': 5, 'output_tokens': 6, 'cost_usd': 0, 'attempts': 1}
+           'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
     b, stage = provider_stage_board(base, 0, '')
     out['report_file'] = report_file(b, 'stage-reviewer-findings')
     fake_plugin(b, 0, json.dumps(out))
@@ -1240,7 +1240,7 @@ def test_provider_stage_done_records_the_stage_review(base):
 def _stage_ledger_line(base, **tokens):
     from supervisor import usage
     out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
-           'cost_usd': 0, 'attempts': 1}
+           'attempts': 1}
     out.update(tokens)
     b, stage = provider_stage_board(base, 0, '')
     out['report_file'] = report_file(b, 'stage-reviewer-findings')

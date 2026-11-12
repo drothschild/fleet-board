@@ -10,7 +10,7 @@ When `models.implementor` and `models.reviewer` are the same, every plan warns t
 
 ## `commands.preflight`
 
-Unset by default. A command that checks the environment works, for example that a generated client is current or a service answers. `tick-plan.sh` runs it once per plan, from the repo root, before planning. When it exits non-zero, the plan holds every card (no start, review, fix or other action), so the supervisor admits nothing, and the plan carries one warning, `preflight failed: <command> (exit <n>)`, followed by the last 20 lines of the output. No card's state or `action_failures` changes. When it exits 0 the plan is the same as with the key unset. Settle plans never run it.
+Unset by default. A command that checks the environment works, for example that a generated client is current or a service answers. `tick-plan.sh` runs it once per plan, from the repo root, before planning. When it exits non-zero, the plan holds every card (no start, review, fix or other action), so the supervisor admits nothing, and the plan carries one warning, `preflight failed: <command> (exit <n>)`, followed by the last 20 lines of the output. No card's state or `action_failures` changes. When it exits 0 the plan is the same as with the key unset. Merge plans (`tick-plan.sh --settle-merge`, run by `merge-reviewed.sh`) never run it.
 
 Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is unset, and `review-stages.sh setup` (nothing to create on the local store) exits 0.
 
@@ -154,7 +154,7 @@ review:
 
 ## `limits`
 
-The supervisor reads `limits.concurrency`, `max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns`, `rate_limit_max_wait` and `rate_limit_margin` (see [overnight.md](overnight.md#limits)). `config.sh` exits 5 when `rate_limit_max_wait` or `rate_limit_margin` is not a non-negative number.
+The supervisor reads `limits.concurrency`, `max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns`, `rate_limit_max_wait` and `rate_limit_margin` (see [overnight.md](overnight.md#limits)). `max_tokens` and `max_tokens_per_card` count input, output and cache-write tokens; cache reads are shown in the ledger and on the board but not counted. `config.sh` exits 5 when `rate_limit_max_wait` or `rate_limit_margin` is not a non-negative number.
 
 | Key | Default | Meaning |
 |---|---|---|

@@ -37,6 +37,10 @@ def ledger_column(action):
     return action.work_column or action.column
 
 
+# The token counts the budget limits count: cache reads are left out (owner decision, 0.27.0).
+BUDGET_KEYS = ('input', 'output', 'cache_write')
+
+
 class State:
     def __init__(self, run_id, clock=time.time):
         self.run_id = run_id
@@ -50,7 +54,10 @@ class State:
         self.provider_health = {}
         self.run_tokens = {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
                            'unknown': 0, 'partial': False}
-        self.card_tokens = {}   # card -> known tokens spent in this run (not part of the snapshot)
+        # The token budget (limits.max_tokens, limits.max_tokens_per_card) counts input + output + cache_write;
+        # cache reads are recorded and shown (run_tokens, the ledger) but not counted. Not part of the snapshot.
+        self.run_budget = 0
+        self.card_tokens = {}   # card -> known budget tokens spent in this run
         self.events = deque(maxlen=500)
         self._sequence = 0
         self._lock = threading.RLock()
@@ -145,9 +152,10 @@ class State:
                 'input', 'output', 'cache_write', 'cache_read')) else 0)
             run['total'] = sum(run[k] for k in ('input', 'output', 'cache_write', 'cache_read'))
             run['partial'] = run['unknown'] > 0
+            budget = sum(counts.get(k) or 0 for k in BUDGET_KEYS)
+            self.run_budget += budget
             if card is not None:
-                self.card_tokens[card] = self.card_tokens.get(card, 0) + sum(
-                    counts.get(k) or 0 for k in ('input', 'output', 'cache_write', 'cache_read'))
+                self.card_tokens[card] = self.card_tokens.get(card, 0) + budget
             self._bump()
 
     def event(self, type, **payload):

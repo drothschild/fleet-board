@@ -9,7 +9,7 @@
 #
 # Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge`
 # inside a headless session, so the merge runs here instead: a plain shell
-# step outside any Claude session, like settle.sh and cleanup-done.sh. The
+# step outside any Claude session, like cleanup-done.sh. The
 # wrapper adds no permission rule and never uses --dangerously-skip-permissions.
 #
 # What it does:

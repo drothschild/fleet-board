@@ -317,13 +317,14 @@ def _stuck(args, env, stdout, stderr, transport):
         if args.release in live:
             raise errors.Invalid("card #%d is owned by the running supervisor" % args.release)
         if other is not None:
-            raise errors.Invalid("a run is active (pid %d); stop it before releasing" % other)
+            raise errors.Invalid("a supervisor of another checkout holds the repository run lock (pid %d); stop it "
+                                 "before releasing" % other)
         stuck.release(root, args.release, force=args.force, live_cards=live)
         print("released #%d" % args.release, file=stdout)
         return 0
     found = [item._asdict() for item in stuck.find(root, live_cards=live)]
-    notice = ("note: a run is active (pid %d) and did not answer as the supervisor; this list may include its "
-              "live work" % other) if other is not None else None
+    notice = ("note: a supervisor of another checkout holds the repository run lock (pid %d) and did not answer "
+              "here; this list may include its live work" % other) if other is not None else None
     if args.json:
         if notice:
             print(notice, file=stderr)

@@ -141,7 +141,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `providers.<name>.review_command` | none | runs the evidence reviewer in a scratch clone. A Codex evidence reviewer can read the whole repository and sends what it reads to OpenAI through the Codex CLI. |
 | `models.escalation` | unset | model for escalated implementor and fixer; defaults to the reviewer model in string form and is required in object form. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |
 | `limits.concurrency` | `6` | role sessions running at once |
-| `limits.max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns` | `8`, `20000000`, none, `200` | supervisor limits: hours before it drains and exits, run tokens before admissions pause, tokens per card, `--max-turns` per session ([details](docs/overnight.md#limits)) |
+| `limits.max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns` | `8`, `20000000`, none, `200` | supervisor limits: hours before it drains and exits, run tokens before admissions pause, tokens per card, `--max-turns` per session; both token limits count input, output and cache-write tokens, and cache reads are shown but not counted ([details](docs/overnight.md#limits)) |
 | `limits.rate_limit_max_wait`, `rate_limit_margin` | `3600`, `5` | seconds: the longest rate-limit wait before the supervisor pauses, margin after a reset |
 | `headless.permission_mode` | `auto` | `--permission-mode` for each role session |
 | `supervisor.*` | see [config.md](docs/config.md) | timeouts, retry backoff, per-provider concurrency |
@@ -166,9 +166,7 @@ bash <path> status
 bash <path> stop                                     # finish running sessions, then exit
 ```
 
-Before it starts, it checks for cards a crashed run left behind and refuses to start (exit 4) until you resolve them (`stuck`, `stuck --release N`). It stops on its own after `limits.max_hours`, pauses admissions at `limits.max_tokens`, and counts tokens only. Under `merge.policy: auto` it merges reviewed, non-draft, green PRs that need no Human QA, one at a time, and moves their cards to Done; under `human` (the default) it merges nothing. Pause, resume, limits, the startup check and scheduling are in [docs/overnight.md](docs/overnight.md).
-
-`scripts/settle.sh` is a plain shell script you can run by hand, outside any Claude session: it moves the cards whose next step needs no agent (for example a clean review to Human QA). It never merges and never moves a card out of Human QA.
+Before it starts, it checks for cards a crashed run left behind and refuses to start (exit 4) until you resolve them (`stuck`, `stuck --release N`). It stops on its own after `limits.max_hours`, pauses admissions at `limits.max_tokens` (cache reads are shown but not counted), and counts tokens only. Under `merge.policy: auto` it merges reviewed, non-draft, green PRs that need no Human QA, one at a time, and moves their cards to Done; under `human` (the default) it merges nothing. Pause, resume, limits, the startup check and scheduling are in [docs/overnight.md](docs/overnight.md).
 
 ## Local board
 
@@ -209,6 +207,7 @@ Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaul
 2. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 naming the key until you do.
 3. Run `migrate-card-fields.sh` on the local store. If your cards are GitHub issues (`backend: github-labels`, `github-projects`, or no `backend` key: the old default was labels), skip this step and follow "Moving an existing GitHub board" below instead.
 4. From 0.26.0 the tick system is gone: the `tick` and `run` skills, the headless tick wrapper, the manager agent and the `.fleet-board.stop` file. Delete `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager` from `.fleet-board.yml` (`config.sh` exits 5 naming each), and run the supervisor instead.
+5. From 0.27.0 `scripts/settle.sh` and `tick-plan.sh --settle` are gone (the supervisor plans those steps itself), and `limits.max_tokens` and `limits.max_tokens_per_card` no longer count cache reads, so the same limit lets a run go further. Lower them if you set them with cache reads in mind.
 
 ### Moving an existing GitHub board
 

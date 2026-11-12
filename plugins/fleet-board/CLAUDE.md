@@ -71,11 +71,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
   `note.sh reset-failures <n>`. tick-plan only reads the count; the supervisor's driver writes it.
-  `tick-plan.sh --settle <n>...` plans only the named cards (read with `board-read.sh`, no
-  column listed) through the same table, keeping only steps that start no agent:
-  `to_human_qa`, `block` and `mark_ready` stay, `start_review` becomes `move_to_review`
-  (move the card, record `round: 1` and `pr`, no dispatch; only `--settle` emits it), and
-  every other action is a `skip`. A settle plan is never dispatchable.
+  `tick-plan.sh --settle-merge <n>...` (merge-reviewed.sh's planner) plans only the named cards
+  (read with `board-read.sh`, no column listed) through the same table, keeping only steps that
+  start no agent plus `merge` and `verify_main`: `to_human_qa`, `block` and `mark_ready` stay,
+  `start_review` becomes `move_to_review` (only settle mode emits it), and every other action is
+  a `skip`. A settle plan is never dispatchable. The by-hand `--settle` flag and `settle.sh` were
+  removed in 0.27.0 (run beside a supervisor, it wrote the board outside the gate and the run lock).
   Reviewed heads only: an in_review PR whose head moved past `last_review.sha` plans
   `review`, not `mark_ready`, `to_human_qa` or `merge`, unless every commit since
   is a merge of the base whose tree equals the `git merge-tree` result for its parents
@@ -89,8 +90,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   not fetch scope files or start workers.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
-  removes one) and prints the routed stage names; exit 1 on a failed read. The driver and
-  `settle.sh` run it BEFORE the move to in_review, so a route failure leaves the card in
+  removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
+  it BEFORE the move to in_review, so a route failure leaves the card in
   in_progress and the next plan retries. `match <pr>` is read-only: it prints the stages
   whose `paths` match the PR's current files (a truncated file list matches every stage
   with non-empty `paths`), adds no label; exit 1 on a failed read. At every clean,
@@ -190,8 +191,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
     never taken as clean), `dead_lock` (a card lock whose holder is gone, or pid-less past
     `LOCK_GRACE`, the same grace as board-lib.sh's `FB_LOCK_PIDLESS_GRACE`), `unreadable_note`. Every non-terminal state is checked (all but backlog, done,
     wont_do; review stages included). A live process holding the repository run lock that did not
-    answer `status` as the supervisor makes `--release` refuse ("a run is active (pid N)") and the
-    plain list print a one-line notice.
+    answer `status` as the supervisor makes `--release` refuse ("a supervisor of another checkout holds the
+    repository run lock (pid N)") and the plain list print a one-line notice; the board page shows the
+    same text and keeps Start disabled. Token budget: `limits.max_tokens` and `max_tokens_per_card`
+    count input + output + cache_write (`State.run_budget`, `card_tokens`); `cache_read` is recorded
+    and shown but not counted (0.27.0).
   - Release rules: refused for a card with no current finding unless `--force`, for a
     `live_orphan` (stop that process group first) and for a card locked by a running process.
     in_progress -> ready without a PR, else in_review. merging: PR merged -> stays in merging,
@@ -282,14 +286,6 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `cleanup-done.sh`, by hand, outside any Claude session. It reads a done card's note only when
   the worktrees base holds a `<n>-*` entry (a local prefilter), so its cost scales with the local
   dirs, not the Done column; keep any new per-card network call behind that prefilter.
-- **Settle step** (`scripts/settle.sh`): a standalone script, run by hand from the repo root,
-  outside any Claude session; the supervisor does not run it. It lists in_progress, in_review and
-  every review stage column, runs `tick-plan.sh --settle`, and carries out only the steps that
-  start no agent (`move_to_review` (routes via `review-stages.sh route` before the move, so a route
-  failure leaves the card in in_progress), `advance_stage`, `to_human_qa`, `mark_ready`, `block`).
-  It acts on the manager note, never merges, never moves a card out of human_qa, and writes no
-  `action_failures`; a `block` whose reason starts with `no progress after` is left to the
-  supervisor.
 - `ROLE_ISOLATION: none` (decided Phase 5); nothing reads `FLEET_BOARD_ISOLATE`.
 - **Clean-room primitives.** Every `agents/*.md` and
   `skills/{reporting,status}/SKILL.md` was authored by an isolated

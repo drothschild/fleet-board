@@ -1478,7 +1478,8 @@ def stuck_suppressed(status):
         return None
     cfg, _ = ctx()
     holder = supervisor_stuck.run_lock_holder(run_lock_path(cfg))
-    return "a run is active (pid %d)" % holder if holder is not None else None
+    return ("a supervisor of another checkout holds the repository run lock (pid %d)" % holder
+            if holder is not None else None)
 
 
 def stuck_view(status, refresh=True):
