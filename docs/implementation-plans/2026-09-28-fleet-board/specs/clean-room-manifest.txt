@@ -3,7 +3,7 @@
 # Format: <sha256>  <path under plugins/fleet-board>  [# note]
 # A line whose note starts with "exception:" is a named exception, not a
 # clean-room output. Update this file whenever a revision is recorded in README.md.
-d2ce59bee25add56401c997c92704e6678e87365830e60d60854cc47be6f871f  agents/fixer.md  # merge: git merge of the Revision 22 (card 70) run output with the Revision 24 (PR 202) run output; no single run produced this file
+0c7516c8e5dd13d00ff1cdbb01c5f584a51ae58b38c6a25728e4ba665b0d5650  agents/fixer.md  # Revision 27 run output: an isolated in-place edit of the merged Revision 22 (card 70) and Revision 24 (PR 202) file
 b9f114834c0627c4022196f2dcf13ee25e3c18ad44be45ceb6e17ec5b495571c  agents/implementor.md
 4bce88e231a6658b74464ceb79b4fb7ba3c31e0aac7d44bd4a097a6ffef975f0  agents/manager.md  # exception: owner-approved direct contract edits for PR 215 integration repair, git-merged with the Revision 21 run output from main, the PR 218 conflict-dispatch edits (card 210), the Revision 23 (PR 222) completion-driven run output from main and the Revision 24 (PR 202) run output; no single run produced this file
 18ddbde0e67f8e18e3d0d2a6f4b1747bb441d813e6d683dcda7835aec32c8067  agents/reviewer.md  # exception: owner-approved direct contract edits for PR 215 integration repair, git-merged with the Revision 24 (PR 202) run output
