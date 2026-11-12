@@ -340,8 +340,16 @@ fb_lock_acquire() {
     sleep 0.1; waited=$((waited + 1))
   done
   if ! { printf '%s\n' "$$" > "$lock/.pid.$$" && mv -f "$lock/.pid.$$" "$lock/pid"; } 2>/dev/null; then
-    # remove the lock only while our temp pid file shows it is still ours
-    [ "$(cat "$lock/.pid.$$" 2>/dev/null)" = "$$" ] && _fb_lock_remove "$lock"
+    # Undo our mkdir. No taker moves a lock that has no pid (only stuck.py does,
+    # after its grace period), so a pid-less dir at the path is still ours: drop
+    # our temp file and rmdir it. If the temp file was written but the rename
+    # failed, it holds $$ and shows the lock is ours; remove it by rename. A lock
+    # with someone else's pid is not ours and is left alone.
+    if [ ! -e "$lock/pid" ]; then
+      rm -f "$lock/.pid.$$"; rmdir "$lock" 2>/dev/null
+    elif [ "$(cat "$lock/.pid.$$" 2>/dev/null)" = "$$" ]; then
+      _fb_lock_remove "$lock"
+    fi
     fb_die 1 "cannot record the owner of lock $lock"
   fi
 }
