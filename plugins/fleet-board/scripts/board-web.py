@@ -45,6 +45,8 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 from supervisor import launcher as supervisor_launcher
 from supervisor import paths as supervisor_paths
+from supervisor import roles as supervisor_roles
+from supervisor import usage as supervisor_usage
 from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
@@ -653,6 +655,22 @@ def import_elapsed(idir: Path, running: bool) -> int:
     return max(0, int(end - start))
 
 
+def record_import_usage(idir: Path):
+    """Record a finished import-preview session's usage once: the first caller to create the marker wins."""
+    stream = idir / "session.jsonl"
+    if not stream.exists():
+        return
+    try:
+        fd = os.open(str(idir / "usage.recorded"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    except OSError as exc:
+        print("warning: planner usage not recorded: %s" % exc, file=sys.stderr)
+        return
+    os.close(fd)
+    record_planner_usage("import_preview", stream)
+
+
 def import_status(id: str) -> dict:
     """running while the session lives; ready when cards.json parses; failed otherwise."""
     idir = import_dir(id)
@@ -672,6 +690,7 @@ def import_status(id: str) -> dict:
               "cards": None, "table": None, "error": None, "created": created}
     if running:
         return status
+    record_import_usage(idir)
     cards = read_json_file(idir / "cards.json")
     if cards is None:
         status.update(state="failed", error=session_error(idir, rc))
@@ -805,12 +824,30 @@ def session_id_of(path: Path) -> str:
     return found
 
 
+def record_planner_usage(action: str, stream_path: Path, ended_at: str = None):
+    """One planner-kind ledger line for a finished planner or import-preview session. Tokens come from the
+    session's result event (unreadable counts stay unknown). A ledger failure is logged, never raised."""
+    try:
+        cfg, _ = ctx()
+        _text, use, _err, _sub, _sid, _mode = supervisor_roles.parse_stream(stream_path)
+        supervisor_usage.append(APP["root"], {
+            "run_id": None, "card": None, "kind": "planner", "column": None, "action": action, "role": None,
+            "provider": "claude", "model": use.model, "input": use.input, "output": use.output,
+            "cache_write": use.cache_write, "cache_read": use.cache_read, "started_at": None,
+            "ended_at": ended_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "log": str(stream_path),
+        }, (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR)
+    except Exception as exc:  # noqa: BLE001 - usage accounting must never break a planner reply
+        print("warning: planner usage not recorded: %s" % exc, file=sys.stderr)
+
+
 def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path):
     rc = proc.wait()
     reply = last_session_text(out_path)
     if rc != 0 and not reply:
         lines = [l for l in read_text(err_path).splitlines() if l.strip()]
         reply = "[error] " + (lines[-1] if lines else "claude exited %s" % rc)
+    record_planner_usage("planner", out_path)
     with _PLANNER_LOCK:
         turns = read_turns(pdir)
         turns.append({"role": "assistant", "text": reply})
