@@ -789,6 +789,28 @@ done
 invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 
+# Test 30: token limits. limits.max_tokens is a positive integer (default 20000000);
+# limits.max_tokens_per_card is null or a positive integer (default null).
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "token limits defaults accepted" 0
+assert_stdout_exact_jq "limits.max_tokens defaults to 20000000" '.limits.max_tokens' '20000000'
+assert_stdout_exact_jq "limits.max_tokens_per_card defaults to null" '.limits.max_tokens_per_card' 'null'
+REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens: 500000, max_tokens_per_card: 90000 }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "token limits set accepted" 0
+assert_stdout_exact_jq "limits.max_tokens set" '.limits.max_tokens' '500000'
+assert_stdout_exact_jq "limits.max_tokens_per_card set" '.limits.max_tokens_per_card' '90000'
+for v in 0 -1 1.5 null '"5"' '[]'; do
+  invalid_field_case "max_tokens rejects $v" "limits: { max_tokens: $v }" "limits.max_tokens must be a positive integer"
+done
+for v in 0 -1 1.5 '"5"' '[]'; do
+  invalid_field_case "max_tokens_per_card rejects $v" "limits: { max_tokens_per_card: $v }" "limits.max_tokens_per_card must be null or a positive integer"
+done
+REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens_per_card: null }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "max_tokens_per_card null accepted" 0
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
