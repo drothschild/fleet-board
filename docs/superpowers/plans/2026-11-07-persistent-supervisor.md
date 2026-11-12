@@ -1,5 +1,7 @@
 # Persistent Supervisor Implementation Plan
 
+> **Superseded (2026-11-11)** by [`docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
+
 **Design:** [Persistent Jobs and Supervisor](../specs/2026-11-07-persistent-supervisor-design.md)
 
 **Goal:** Replace tick-wide waits with independently running durable attempts, completion-driven scheduling, recoverable controller effects, and board lifecycle controls.
