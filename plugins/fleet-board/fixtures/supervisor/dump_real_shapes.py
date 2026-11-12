@@ -9,6 +9,7 @@ Scenarios:
   idle    running, nothing active
   paused  paused with a reason
   active  running with two actions in flight (cards 4 and 9, different providers)
+  stopping  a Stop was requested (State.stop()): the terminal 'stopping' mode
 """
 import json
 import os
@@ -51,7 +52,13 @@ def scenario_active(state):
     state.begin(action(9, "codex", "implementor"))
 
 
-SCENARIOS = {"idle": scenario_idle, "paused": scenario_paused, "active": scenario_active}
+def scenario_stopping(state):
+    state.begin(action(4, "claude", "reviewer"))
+    state.stop()
+
+
+SCENARIOS = {"idle": scenario_idle, "paused": scenario_paused, "active": scenario_active,
+             "stopping": scenario_stopping}
 
 
 def main(out_path):

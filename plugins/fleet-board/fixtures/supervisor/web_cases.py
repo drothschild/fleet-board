@@ -696,11 +696,16 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertIsNone(by_number[3]["activity"])
         self.assertIsNone(board["run"]["stuck_error"])
         self.assertIsInstance(board["run"]["stuck_checked_at"], float)
+        self.assertIs(board["run"]["stuck_known"], True)
 
-    def test_stuck_route_leaves_a_running_supervisors_cards_out_and_never_asks_the_loop(self):
+    def test_while_a_supervisor_runs_the_board_shows_no_stuck_card_and_never_runs_find(self):
+        # The loop's `stuck` handler runs find() on demand (it keeps no cached list), so while a supervisor
+        # answers the board shows no stuck card at all: cards waiting for a slot, a reconcile or a resume
+        # are healthy, and the board never runs find() itself nor asks the loop.
         from supervisor.state import Action
         self.write_card(3)
         self.write_card(5)
+        self.write_card(7, state="in_progress")   # waiting for a slot: no action, no marker
         self.active_marker(3)
         self.active_marker(5)
         self.start_service()
@@ -714,40 +719,163 @@ class SupervisorWebContract(unittest.TestCase):
         self.state.begin(Action(card=3, action="review", column="in_review", role="reviewer", provider="claude",
                                 paths=[], started_at=time.time() - 12, started_mono=0.0))
         self.start_web()
-        body = self.stuck_settled()
-        self.assertEqual([(x["card"], x["kind"]) for x in body["findings"]], [(5, "marker")])
+        code, body = self.http("GET", "/api/stuck")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["findings"], [])
+        self.assertIs(body["checking"], False)
+        time.sleep(1.0)   # a background find() would have reported card 5 or 7 by now
         code, board = self.http("GET", "/api/board")
         self.assertEqual(code, 200)
         by_number = {c["number"]: c for c in board["cards"]}
-        self.assertIsNone(by_number[3]["stuck"])
-        self.assertEqual(by_number[5]["stuck"]["kind"], "marker")
+        for n in (3, 5, 7):
+            self.assertIsNone(by_number[n]["stuck"], "card %d marked stuck while a supervisor runs" % n)
+        self.assertIs(board["run"]["stuck_checking"], False)
         self.assertEqual(by_number[3]["activity"]["action"], "review")
         self.assertGreaterEqual(by_number[3]["activity"]["elapsed_seconds"], 12)
         self.assertLess(by_number[3]["activity"]["elapsed_seconds"], 60)
         self.assertIsNone(by_number[5]["activity"])
         self.assertNotIn("stuck", commands, "the board asked the supervisor loop to run find()")
 
-    def test_stuck_results_are_cached_and_refreshed_in_the_background(self):
+    def test_the_board_never_runs_find_while_a_supervisor_answers(self):
+        board = self.load_board_module("board_web_running")
+        calls = []
+        with mock.patch.object(board.supervisor_stuck, "find", lambda *a, **k: calls.append(1) or []):
+            view = board.stuck_view({"schema_version": 2, "mode": "running", "active": []})
+            time.sleep(0.3)
+        self.assertEqual(calls, [], "find() ran while a supervisor answers")
+        self.assertEqual(view["findings"], [])
+        self.assertIs(view["checking"], False)
+        self.assertIs(view["known"], True)
+
+    def test_a_changed_board_is_rechecked_at_once_and_an_unchanged_one_waits_for_the_interval(self):
         self.write_card(3)
         self.active_marker(3)
         self.start_web()
         first = self.stuck_settled()
         self.assertEqual(len(first["findings"]), 1)
-        (self.repo / ".fleet-board" / "active" / "3").unlink()
         again = self.http("GET", "/api/stuck")[1]
-        self.assertEqual(again["findings"], first["findings"], "polling re-ran find() inside the cache window")
-        self.assertEqual(again["checked_at"], first["checked_at"])
-        self.assertEqual(self.http("GET", "/api/board")[1]["cards"][0]["stuck"]["kind"], "marker")
-        time.sleep(5.5)
-        stale = self.http("GET", "/api/stuck")[1]   # answers at once with the last result and starts a refresh
-        self.assertEqual(stale["findings"], first["findings"])
-        deadline = time.time() + 20
+        self.assertEqual(again["checked_at"], first["checked_at"], "an unchanged board was rescanned inside the interval")
+        (self.repo / ".fleet-board" / "active" / "3").unlink()   # what `stuck --release 3` does to the markers
+        deadline = time.time() + 10   # far below the 30 s interval: only the mtime change can refresh it
         while time.time() < deadline:
             body = self.http("GET", "/api/stuck")[1]
             if body["findings"] == [] and not body["checking"]:
                 break
             time.sleep(0.2)
-        self.assertEqual(body["findings"], [], "the cache never refreshed")
+        self.assertEqual(body["findings"], [], "a released card stayed stuck until the interval")
+        self.assertEqual(self.http("GET", "/api/board")[1]["cards"][0]["stuck"], None)
+
+    def test_the_refresh_interval_is_the_longer_of_30_seconds_and_twice_the_last_scan(self):
+        board = self.load_board_module("board_web_interval")
+        board._STUCK["duration"] = 0.5
+        self.assertEqual(board.stuck_interval(), 30.0)
+        board._STUCK["duration"] = 20.0
+        self.assertEqual(board.stuck_interval(), 40.0)
+
+    def test_stuck_refresh_runs_on_demand_and_only_when_due(self):
+        board = self.load_board_module("board_web_due")
+        calls = []
+        board_dir = self.repo / ".fleet-board"
+
+        def counting(*_a, **_k):
+            calls.append(1)
+            return []
+
+        def settle():
+            deadline = time.time() + 5
+            while board._STUCK["running"] and time.time() < deadline:
+                time.sleep(0.02)
+        with mock.patch.object(board.supervisor_stuck, "find", counting):
+            # a hidden tab's poll never starts one, even with no result yet
+            view = board.stuck_state(board_dir, refresh=False)
+            time.sleep(0.2)
+            self.assertEqual(calls, [], "a poll that asked for no refresh started one")
+            self.assertIsNone(view["findings"])
+            self.assertIs(view["known"], False)
+            # a page-initiated launch in flight: no refresh starts
+            with board._LAUNCH_LOCK:
+                board.stuck_state(board_dir)
+                time.sleep(0.2)
+            self.assertEqual(calls, [], "a refresh started while a page launch was in flight")
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 1)
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 1, "an unchanged board was rescanned inside the interval")
+            self.active_marker(9)   # the active markers directory appears: its mtime changed
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 2, "a changed markers directory was not rechecked")
+            self.write_card(11)
+            os.utime(str(board_dir / "cards"), ns=(1, 1))   # a cards directory mtime that is surely different
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 3, "a changed cards directory was not rechecked")
+            board._STUCK["mono"] -= 31   # the interval passes
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 4, "an expired result was not refreshed")
+            self.assertIs(board.stuck_state(board_dir, refresh=False)["known"], True)
+
+    def test_an_error_before_any_result_is_not_a_result(self):
+        board = self.load_board_module("board_web_error_first")
+
+        def broken(*_a, **_k):
+            raise ValueError("boom")
+        with mock.patch.object(board.supervisor_stuck, "find", broken):
+            board.stuck_state(None)
+            deadline = time.time() + 5
+            while board.stuck_state(None, refresh=False)["checking"] and time.time() < deadline:
+                time.sleep(0.05)
+            state = board.stuck_state(None, refresh=False)
+        self.assertIn("boom", state["error"])
+        self.assertIsNone(state["findings"])
+        self.assertIs(state["known"], False)
+
+    def test_the_board_poll_can_ask_for_no_stuck_refresh(self):
+        self.write_card(3)
+        self.active_marker(3)
+        self.start_web()
+        code, board = self.http("GET", "/api/board?refresh_stuck=0")
+        self.assertEqual(code, 200, board)
+        time.sleep(1.0)
+        code, body = self.http("GET", "/api/stuck?refresh_stuck=0")
+        self.assertIsNone(body["checked_at"], "a no-refresh poll started a stuck check")
+        self.assertIs(body["known"], False)
+        self.assertIs(board["run"]["stuck_known"], False)
+        body = self.stuck_settled()   # a visible poll does start it
+        self.assertEqual(len(body["findings"]), 1)
+        self.assertIs(self.http("GET", "/api/board")[1]["run"]["stuck_known"], True)
+
+    def test_ui_status_is_ready_only_once_the_startup_check_is_done(self):
+        from supervisor import webproxy
+        base = {"schema_version": 2, "mode": "running", "active": []}
+        self.assertIs(webproxy.ui_status(dict(base, startup="done"))["ready"], True)
+        self.assertIs(webproxy.ui_status(dict(base, startup="checking"))["ready"], False)
+        self.assertIs(webproxy.ui_status(dict(base))["ready"], False)
+
+    def test_the_not_running_usage_view_is_cached_on_the_ledger_size_and_mtime(self):
+        board = self.load_board_module("board_web_usage_cache")
+        board.APP["scripts"] = str(SCRIPTS)
+        self.write_ledger(self.ledger_line())
+        real = board.supervisor_usage.view
+        calls = []
+
+        def counting(*a, **k):
+            calls.append(1)
+            return real(*a, **k)
+        with mock.patch.object(board.supervisor_usage, "view", counting):
+            first = board.usage_view()
+            again = board.usage_view()
+            self.assertEqual(len(calls), 1, "an unchanged ledger was parsed again")
+            self.assertEqual(first, again)
+            self.write_ledger(self.ledger_line(input=90))
+            third = board.usage_view()
+            self.assertEqual(len(calls), 2, "a grown ledger was not parsed again")
+            self.assertEqual(third["all_time"]["input"], 100)
+            board.usage_view(card=3)
+            self.assertEqual(len(calls), 3, "a card drill-down reused the summary")
 
     def test_find_never_runs_on_a_request_thread(self):
         board = self.load_board_module("board_web_slow")
@@ -760,8 +888,8 @@ class SupervisorWebContract(unittest.TestCase):
             return []
         with mock.patch.object(board.supervisor_stuck, "find", slow_find):
             began = time.time()
-            first = board.stuck_state(set())
-            second = board.stuck_state(set())
+            first = board.stuck_state(None)
+            second = board.stuck_state(None)
             self.assertLess(time.time() - began, 1.0, "a request waited for find()")
             self.assertIsNone(first["findings"])
             self.assertIs(first["checking"], True)
@@ -773,9 +901,9 @@ class SupervisorWebContract(unittest.TestCase):
             self.assertIsNot(calls[0], threading.current_thread())
             release.set()
             deadline = time.time() + 5
-            while board.stuck_state(set())["checking"] and time.time() < deadline:
+            while board.stuck_state(None)["checking"] and time.time() < deadline:
                 time.sleep(0.05)
-            done = board.stuck_state(set())
+            done = board.stuck_state(None)
             self.assertEqual((done["findings"], done["error"]), ([], None))
 
     def test_a_failed_stuck_check_is_visible(self):
@@ -784,11 +912,11 @@ class SupervisorWebContract(unittest.TestCase):
         def broken(*_a, **_k):
             raise ValueError("config.sh failed: boom")
         with mock.patch.object(board.supervisor_stuck, "find", broken):
-            board.stuck_state(set())
+            board.stuck_state(None)
             deadline = time.time() + 5
-            while board.stuck_state(set())["checking"] and time.time() < deadline:
+            while board.stuck_state(None)["checking"] and time.time() < deadline:
                 time.sleep(0.05)
-            state = board.stuck_state(set())
+            state = board.stuck_state(None)
         self.assertIn("boom", state["error"])
         self.assertIsInstance(state["checked_at"], float)
 
@@ -804,7 +932,7 @@ class SupervisorWebContract(unittest.TestCase):
         with mock.patch.object(board.supervisor_stuck, "find", dies):
             board._STUCK["running"] = True  # as stuck_state sets it before starting the thread
             try:
-                board._refresh_stuck(frozenset())
+                board._refresh_stuck(None)
             except Boom:
                 pass
         self.assertIs(board._STUCK["running"], False, "running stayed True after the refresher died")
@@ -812,7 +940,7 @@ class SupervisorWebContract(unittest.TestCase):
         with mock.patch.object(board.threading, "Thread") as thread:
             thread.return_value.start.side_effect = RuntimeError("can't start new thread")
             with self.assertRaises(RuntimeError):
-                board.stuck_state(set())
+                board.stuck_state(None)
         self.assertIs(board._STUCK["running"], False, "running stayed True after Thread.start raised")
 
     def test_stuck_is_suppressed_while_a_run_holds_the_lock_without_answering_as_the_supervisor(self):

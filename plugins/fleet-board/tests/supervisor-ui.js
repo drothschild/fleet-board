@@ -28,7 +28,7 @@ function fakeFetch(options={}) {
     calls.push({url,method,body});
     const queue=queues.get(url);
     if(queue&&queue.length) { const item=queue.shift(); if(item instanceof Error) throw item; if(typeof item==="function") return item({url,method,body,current,setSnapshot}); return item; }
-    if(url==="/api/board") return response(200,{repo:"acme/toy",states,cards:options.cards||current.cards||[],run:options.run||{state:"idle"}});
+    if(url.split("?")[0]==="/api/board") return response(200,{repo:"acme/toy",states,cards:options.cards||current.cards||[],run:options.run||{state:"idle"}});
     if(url==="/api/supervisor") {
       if(options.supervisor===false) return response(404,{error:"missing"});
       if(options.notRunning) return response(200,notRunning(options.notRunning===true?{}:options.notRunning));
@@ -44,6 +44,7 @@ function fakeFetch(options={}) {
   function setSnapshot(value){current=json(value);}
   return {fetch,calls,enqueue,setSnapshot,get snapshot(){return current;}};
 }
+const realShapes=()=>JSON.parse(require("fs").readFileSync(process.env.SUPERVISOR_REAL_SHAPES,"utf8"));
 const failures=[];
 async function check(name, fn) {
   try { await fn(); console.log("ok - "+name); }
@@ -229,7 +230,7 @@ async function main() {
     const stuck=(n,kind)=>({number:n,title:"Stuck "+n,body:"",labels:[],comments:[],state:"ready",known:true,stuck:{kind,detail:"PR #"+n+" "+hostile},activity:null});
     const fine={number:6,title:"Fine",body:"",labels:[],comments:[],state:"ready",known:true,stuck:null,activity:{action:"review",elapsed_seconds:61}};
     const quiet={stuck_checked_at:1794333510,stuck_error:null,stuck_checking:false,stuck_suppressed:null};
-    const mk=async(run,cards)=>{ const f=fakeFetch({cards,run:{state:"idle",...run}}), h=make(f); await h.flush(); await h.waitForRequests(); return h; };
+    const mk=async(run,cards)=>{ const f=fakeFetch({notRunning:true,cards,run:{state:"idle",...run}}), h=make(f); await h.flush(); await h.waitForRequests(); return h; };
     let h=await mk(quiet,[stuck(4,"merge_pending"),stuck(5,"orphan_marker"),fine]);
     const cardOf=(h,n)=>h.$("board").all().find(x=>x.classList.contains("card")&&x.dataset.n===String(n));
     assert.ok(cardOf(h,4).classList.contains("card--stuck"),"stuck card lacks card--stuck"); assert.ok(cardOf(h,5).classList.contains("card--stuck"));
@@ -237,6 +238,8 @@ async function main() {
     assert.ok(cardOf(h,4).all().some(n=>n.classList.contains("card-stuck-badge")&&n.textContent.trim()==="STUCK"),"STUCK badge missing");
     assert.equal(cardOf(h,6).all().some(n=>n.classList.contains("card-stuck-badge")),false);
     assert.ok(cardOf(h,4).textContent.includes("merge_pending")&&cardOf(h,4).textContent.includes(hostile),"stuck kind/detail missing");
+    assert.ok(cardOf(h,4).textContent.includes("resolve with: supervisor.sh stuck --release 4"),"how to resolve is not said: "+cardOf(h,4).textContent);
+    assert.equal(cardOf(h,6).textContent.includes("resolve with"),false);
     assert.match(cardOf(h,6).textContent,/review/,"activity not shown"); assert.doesNotMatch(cardOf(h,6).textContent,/object Object/);
     const banner=h.$("stuck-banner"); assert.equal(banner.hidden,false); assert.equal(banner.textContent.trim(),"2 stuck cards — the supervisor will not start until they are resolved");
     h=await mk(quiet,[stuck(4,"merge_pending"),fine]); assert.equal(h.$("stuck-banner").textContent.trim(),"1 stuck card — the supervisor will not start until it is resolved");
@@ -278,8 +281,9 @@ async function main() {
     // paused: Start (the server resumes it), Resume, Stop
     ({h}=await open({snapshot:{...json(snapshot),mode:"paused",desired_mode:"paused",phase:"paused",pause_reason:"provider claude is unhealthy"}}));
     assert.equal(state(h),"+-++"); need(h,"supervisor-pause-btn");
-    // draining: nothing to start, pause or resume; Stop stays
-    ({h}=await open({snapshot:{...json(snapshot),desired_mode:"stopped",phase:"draining"}})); assert.equal(h.$("supervisor-start-btn").disabled,true); assert.equal(h.$("supervisor-pause-btn").disabled,true); assert.match(h.$("supervisor-start-btn").title,/stopping/i);
+    // stopping (the real service's shape after State.stop()): nothing to start, pause or resume
+    ({h}=await open({snapshot:{...json(realShapes().stopping.status)}})); assert.equal(h.$("supervisor-start-btn").disabled,true,"Start enabled while the supervisor is stopping");
+    assert.equal(h.$("supervisor-pause-btn").disabled,true); assert.equal(h.$("supervisor-resume-btn").disabled,true); assert.match(h.$("supervisor-start-btn").title,/stopping/i);
     // unhealthy providers say why
     ({h}=await open({snapshot:{...json(snapshot),provider_health:{codex:{until:1794333900,reason:"rate limited",failures:2}}}}));
     assert.match(h.$("supervisor-status").textContent,/codex.*unhealthy.*rate limited|unhealthy.*codex.*rate limited/i,"unhealthy provider reason missing");
@@ -332,7 +336,7 @@ async function main() {
     const file=process.env.SUPERVISOR_REAL_SHAPES;
     assert.ok(file,"SUPERVISOR_REAL_SHAPES is not set: run tests through test-supervisor-ui.sh");
     const real=JSON.parse(require("fs").readFileSync(file,"utf8"));
-    assert.deepEqual(Object.keys(real).sort(),["active","idle","paused"]);
+    assert.deepEqual(Object.keys(real).sort(),["active","idle","paused","stopping"]);
     for(const k of Object.keys(real)) { assert.equal(real[k].status.running,true,k+": the shape lacks running:true"); assert.equal("unreachable" in real[k].status,false,k+": the shape still carries unreachable"); }
     const plain={number:4,title:"Real card",body:"x",labels:[],comments:[],state:"in_progress",known:true};
     const itemsOf=h=>{ const m={}; for(const n of descendants(h.$("supervisor-status")).filter(x=>x.classList.contains("sup-item"))){
@@ -384,10 +388,15 @@ async function main() {
   });
   await check("11b. A stop that has not finished is not shown as not running",async()=>{
     const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
-    f.enqueue("/api/supervisor/stop",response(202,{command_id:"s1",state_revision:9,desired_mode:"stopped",phase:"draining",status:"unresolved_shutdown",terminated:false}));
+    // the loop's real reply to stop, then the real service's status while it stops
+    f.enqueue("/api/supervisor/stop",response(202,{stopping:true,mode:"drain"}));
     await h.$("supervisor-stop-btn").fire("click"); await h.$("supervisor-drain-btn").fire("click"); await h.waitForRequests();
-    f.setSnapshot({...json(snapshot),revision:9,desired_mode:"stopped",phase:"draining"}); await h.fireTimers();
-    assert.doesNotMatch(h.$("supervisor-status").textContent,/not running/i); assert.match(h.$("supervisor-status").textContent,/draining/i);
+    const stopping=realShapes().stopping.status; assert.equal(stopping.phase,"stopping","the real service no longer reports stopping");
+    f.setSnapshot(stopping); await h.fireTimers();
+    assert.doesNotMatch(h.$("supervisor-status").textContent,/not running/i); assert.match(h.$("supervisor-status").textContent,/stopping/i);
+    assert.equal(h.ctx.__test.S.sup.ack,null,"the stop acknowledgement was not cleared by the stopping status");
+    assert.doesNotMatch(h.$("supervisor-status").textContent,/acknowledged/i);
+    assert.equal(h.$("supervisor-start-btn").disabled,true,"Start enabled while stopping"); assert.match(h.$("supervisor-start-btn").title,/stopping/i);
   });
   await check("Start is disabled while cards are stuck and no supervisor runs, with the banner text as the reason",async()=>{
     const stuckCard={number:4,title:"S",body:"",labels:[],comments:[],state:"ready",known:true,stuck:{kind:"merge_pending",detail:"x"},activity:null};
@@ -419,6 +428,65 @@ async function main() {
     assert.equal(countCalls(f,"/api/usage"),2,"usage never refreshed after 15 s");
     for(let i=0;i<2;i++) await h.fireTimers();
     assert.equal(countCalls(f,"/api/usage"),2);
+  });
+  await check("while a supervisor runs, the banner says its stuck cards are ignored",async()=>{
+    const stuck=n=>({number:n,title:"S"+n,body:"",labels:[],comments:[],state:"ready",known:true,stuck:{kind:"marker",detail:"x"},activity:null});
+    const quiet={state:"idle",stuck_checked_at:1794333510,stuck_error:null,stuck_checking:false,stuck_suppressed:null,stuck_known:true};
+    let f=fakeFetch({cards:[stuck(4),stuck(5)],run:quiet}), h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(h.$("stuck-banner").textContent.trim(),"2 stuck cards — ignored by the running supervisor (--ignore-stuck)");
+    f=fakeFetch({cards:[stuck(4)],run:quiet}); h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(h.$("stuck-banner").textContent.trim(),"1 stuck card — ignored by the running supervisor (--ignore-stuck)");
+    assert.doesNotMatch(h.$("stuck-banner").textContent,/will not start/);
+  });
+  await check("with no supervisor, Start waits for the stuck check and for a suppression to end",async()=>{
+    const fine={number:6,title:"Fine",body:"",labels:[],comments:[],state:"ready",known:true,stuck:null,activity:null};
+    const startOf=async run=>{ const f=fakeFetch({notRunning:true,cards:[fine],run:{state:"idle",stuck_error:null,stuck_suppressed:null,...run}}), h=make(f);
+      await h.flush(); await h.waitForRequests(); return h.$("supervisor-start-btn"); };
+    let b=await startOf({stuck_checking:true,stuck_known:false,stuck_checked_at:null});
+    assert.equal(b.disabled,true,"Start enabled before the first stuck check"); assert.equal(b.title,"checking for stuck cards…"); assert.ok(b.getAttribute("aria-describedby"));
+    b=await startOf({stuck_checking:false,stuck_known:false,stuck_checked_at:1794333510,stuck_error:"config.sh failed: boom"});
+    assert.equal(b.disabled,true,"Start enabled when the only stuck check failed"); assert.match(b.title,/stuck check failed: config\.sh failed: boom/);
+    b=await startOf({stuck_checking:true,stuck_known:true,stuck_checked_at:1794333510});
+    assert.equal(b.disabled,false,"Start disabled while re-checking with a good result");
+    b=await startOf({stuck_checking:false,stuck_known:true,stuck_checked_at:1794333510,stuck_error:"boom"});
+    assert.equal(b.disabled,false,"a failed re-check hid the last good result");
+    b=await startOf({stuck_checking:false,stuck_known:false,stuck_suppressed:"a run is active (pid 77)"});
+    assert.equal(b.disabled,true,"Start enabled while a run holds the lock"); assert.equal(b.title,"a run is active (pid 77)");
+  });
+  await check("the Start acknowledgement waits for ready",async()=>{
+    const f=fakeFetch({notRunning:true}), h=make(f); await h.flush(); await h.waitForRequests();
+    f.enqueue("/api/supervisor/start",response(202,{command_id:"c1",state_revision:1,desired_mode:"running",phase:"starting",launched:true}));
+    await h.$("supervisor-start-btn").fire("click"); await h.waitForRequests();
+    assert.ok(h.ctx.__test.S.sup.ack,"no acknowledgement kept");
+    // the startup check still runs: the service answers, its revision moved, but it is not ready
+    f.enqueue("/api/supervisor",response(200,{...json(snapshot),revision:3,ready:false,startup:"checking",running:true})); await h.fireTimers();
+    assert.ok(h.ctx.__test.S.sup.ack,"the Start acknowledgement was cleared before ready");
+    assert.match(h.$("supervisor-status").textContent,/acknowledged/i);
+    f.setSnapshot({...json(snapshot),revision:3,ready:true,startup:"done"}); await h.fireTimers();
+    assert.equal(h.ctx.__test.S.sup.ack,null,"ready did not clear the acknowledgement");
+  });
+  await check("a hidden tab backs the board poll off and asks for no stuck refresh",async()=>{
+    const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
+    const delays=[], orig=h.ctx.setTimeout;
+    h.ctx.setTimeout=function(fn,ms){ if(fn===h.ctx.fetchBoard) delays.push(ms); return orig(fn,ms); };
+    await h.setHidden(true); await h.fireTimers();
+    const boards=()=>f.calls.filter(c=>c.url.split("?")[0]==="/api/board");
+    assert.equal(boards().slice(-1)[0].url,"/api/board?refresh_stuck=0","a hidden poll did not ask for no stuck refresh");
+    assert.ok(delays.length&&delays.every(ms=>ms>=30000),"the hidden board poll did not back off: "+JSON.stringify(delays));
+    delays.length=0; await h.setHidden(false); await h.fireTimers();
+    assert.equal(boards().slice(-1)[0].url,"/api/board","a visible poll asked for no refresh");
+    assert.ok(delays.includes(3000),"the visible board poll did not resume at 3 s: "+JSON.stringify(delays));
+  });
+  await check("a card's elapsed time updates in place without re-rendering its column",async()=>{
+    const card=e=>({number:6,title:"Busy",body:"",labels:[],comments:[],state:"ready",known:true,stuck:null,activity:{action:"review",elapsed_seconds:e}});
+    const f=fakeFetch({cards:[card(61)]}), h=make(f); await h.flush(); await h.waitForRequests();
+    const cardOf=()=>h.$("board").all().find(x=>x.classList.contains("card")&&x.dataset.n==="6");
+    const before=cardOf(); assert.match(before.textContent,/1m 1s/);
+    f.enqueue("/api/board",response(200,{repo:"acme/toy",states,cards:[card(64)],run:{state:"idle"}})); await h.fireTimers();
+    assert.equal(cardOf(),before,"the column re-rendered for an elapsed-time change");
+    assert.match(cardOf().textContent,/1m 4s/,"the elapsed time was not updated: "+cardOf().textContent);
+    f.enqueue("/api/board",response(200,{repo:"acme/toy",states,cards:[{...card(64),activity:{action:"merge",elapsed_seconds:65}}],run:{state:"idle"}})); await h.fireTimers();
+    assert.notEqual(cardOf(),before,"a changed action did not re-render"); assert.match(cardOf().textContent,/merge/);
   });
   // The failure summary is printed, never written: the suite leaves no file behind.
   if(failures.length) {
