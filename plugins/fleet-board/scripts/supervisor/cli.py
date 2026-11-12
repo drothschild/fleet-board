@@ -146,7 +146,11 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
             root = _board_root(env)
             transport = _socket_transport(_socket_for(root, env))
         if args.command == "status":
-            status = transport({"command": "status"})
+            try:
+                status = transport({"command": "status"})
+            except errors.UnsafeSocketDir:
+                # An unsafe socket location is never connected to: no supervisor is running here.
+                raise FileNotFoundError from None
             print(json.dumps(status) if args.json else _human_status(status), file=stdout)
             return 0
         extra = {}
@@ -216,7 +220,8 @@ def _usage(args, env, stdout, transport):
             root = _board_root(env)
             transport = _socket_transport(_socket_for(root, env))
         result = transport(request)
-    except (FileNotFoundError, ConnectionRefusedError):
+    except (FileNotFoundError, ConnectionRefusedError, errors.UnsafeSocketDir):
+        # An unsafe socket location is never connected to: it means no supervisor runs here.
         if root is None:
             raise
         result = _local_usage(root, args.card)

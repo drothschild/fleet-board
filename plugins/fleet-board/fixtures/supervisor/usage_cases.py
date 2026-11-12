@@ -181,6 +181,37 @@ class CliUsage(unittest.TestCase):
         self.assertIn('ready', out)
         self.assertIn('start', out)
 
+    def unsafe_socket_env(self):
+        """A socket path whose parent is private (0700) but whose grandparent is 0755."""
+        base = self.root / 'open-base'
+        base.mkdir()
+        os.chmod(str(base), 0o755)
+        private = base / 'private'
+        private.mkdir()
+        os.chmod(str(private), 0o700)
+        return dict(self.env, FLEET_BOARD_SUPERVISOR_SOCKET=str(private / 'c.sock'))
+
+    def test_usage_treats_an_unsafe_socket_location_as_no_supervisor(self):
+        self.env = self.unsafe_socket_env()
+        rc, out, err = self.run_cli('usage', '--json')
+        self.assertEqual(rc, 0, err)
+        data = json.loads(out)
+        self.assertIsNone(data['run'])
+        self.assertEqual(data['all_time']['total'], 100)
+
+    def test_status_treats_an_unsafe_socket_location_as_not_running(self):
+        self.env = self.unsafe_socket_env()
+        rc, out, err = self.run_cli('status')
+        self.assertEqual(rc, 1)
+        self.assertIn('supervisor not running', err)
+        self.assertEqual(out, '')
+
+    def test_pause_still_reports_an_unsafe_socket_location(self):
+        self.env = self.unsafe_socket_env()
+        rc, _, err = self.run_cli('pause')
+        self.assertEqual(rc, 1)
+        self.assertIn('group/other accessible', err)
+
     def test_usage_asks_a_running_supervisor_when_it_answers(self):
         reply = {'run': {'input': 1, 'output': 1, 'cache_write': 0, 'cache_read': 0, 'total': 2, 'unknown': 0,
                          'partial': False},
