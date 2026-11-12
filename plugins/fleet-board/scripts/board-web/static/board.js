@@ -397,6 +397,8 @@ function renderBoard(board, force) {
     renderColumn(s, cards, board.repo, force);
   }
   renderUnknown(unknown.sort(function (a, b) { return a.number - b.number; }), board.repo, force);
+  renderColumnTokens();
+  if (S.sup && S.sup.seen) renderTokens(); // the All time tooltip depends on whether the Unknown group is shown
   restoreFocus(focus);
 }
 
@@ -419,11 +421,13 @@ function renderUnknown(cards, repo, force) {
     head.appendChild(el("span", null, "Unknown state"));
     const count = el("span", "col-count", "0");
     head.appendChild(count);
+    const utokens = el("span", "col-tokens");
+    head.appendChild(utokens);
     col.appendChild(head);
     const list = el("ol", "cards");
     list.id = "cards-unknown";
     col.appendChild(list);
-    g = S.unknown = { el: col, list: list, count: count, sig: null };
+    g = S.unknown = { el: col, list: list, count: count, tokens: utokens, sig: null };
     $("board").appendChild(col);
   }
   g.el.hidden = false;
@@ -453,6 +457,7 @@ function buildColumns(states) {
     const list = el("ol", "cards");
     list.id = "cards-" + s.key;
     const count = el("span", "col-count", "0");
+    const tokens = el("span", "col-tokens");   // the column's all-time token total, set by renderColumnTokens
 
     if (collapsible) {
       const open = !!S.open[s.key];
@@ -460,8 +465,10 @@ function buildColumns(states) {
       toggle.type = "button";
       toggle.setAttribute("aria-expanded", String(open));
       toggle.setAttribute("aria-controls", list.id);
+      toggle.setAttribute("aria-label", s.name);   // the live token total is not part of the name
       toggle.appendChild(el("span", null, s.name));
       toggle.appendChild(count);
+      toggle.appendChild(tokens);
       toggle.appendChild(chevron());
       toggle.addEventListener("click", function () { toggleColumn(s.key); });
       col.appendChild(toggle);
@@ -471,6 +478,7 @@ function buildColumns(states) {
       const head = el("h2", "col-head");
       head.appendChild(el("span", null, s.name));
       head.appendChild(count);
+      head.appendChild(tokens);
       col.appendChild(head);
     }
     col.appendChild(list);
@@ -486,7 +494,92 @@ function buildColumns(states) {
       stack = null;
       root.appendChild(col);
     }
-    S.cols[s.key] = { el: col, list: list, count: count, toggle: col.querySelector(".col-toggle"), sig: null };
+    S.cols[s.key] = { el: col, list: list, count: count, tokens: tokens, toggle: col.querySelector(".col-toggle"), sig: null };
+  }
+  renderColumnTokens();
+}
+
+// compactTokens(n): 999 -> "999", 12345 -> "12.3k", 1234567 -> "1.2M", 1.5e9 -> "1.5B" (one decimal, no trailing ".0").
+function compactTokens(n) {
+  n = Math.floor(n);
+  if (n < 1000) return String(n);
+  const trim = function (v) { return v.toFixed(1).replace(/\.0$/, ""); };
+  if (n < 999950) return trim(n / 1000) + "k";
+  if (n < 999950000) return trim(n / 1000000) + "M";
+  return trim(n / 1000000000) + "B";
+}
+
+// columnTokens(t) -> {text, title}: a column's all-time token total. A total with
+// unknown usage is a lower bound, "≥ n", and its title says so.
+function columnTokens(t) {
+  const partial = t.partial === true || (isNum(t.unknown) && t.unknown > 0);
+  if (partial && t.total === 0) return { text: "unknown tokens", title: "unknown: some usage could not be read" };
+  return { text: (partial ? "≥ " : "") + compactTokens(t.total) + " tokens", title: tokensText(t) };
+}
+
+// columnsOf(u): the usage reply's per-column map, or null when the ledger is unreadable
+// or the reply has none (then no header and no remainder is shown, never a 0).
+function columnsOf(u) {
+  return u && !u.error && u.columns && typeof u.columns === "object" && !Array.isArray(u.columns) ? u.columns : null;
+}
+
+// tokenRemainder() -> {text, title} or null: the card tokens that no page column
+// shows (ledger columns the page no longer has, card lines with no column) =
+// all-time card total minus the shown columns. Unknown usage in them keeps it a
+// lower bound. Null when nothing is left over or the totals cannot be read.
+function tokenRemainder() {
+  const u = S.usage;
+  const cols = columnsOf(u);
+  const all = u && u.all_time;
+  if (!cols || !all || typeof all !== "object" || !isNum(all.total)) return null;
+  let total = all.total;
+  let unknown = isNum(all.unknown) ? all.unknown : 0;
+  for (const key of Object.keys(S.cols)) {
+    const t = Object.prototype.hasOwnProperty.call(cols, key) ? cols[key] : null;
+    if (t && typeof t === "object" && isNum(t.total)) {
+      total -= t.total;
+      unknown -= isNum(t.unknown) ? t.unknown : 0;
+    }
+  }
+  if (total <= 0 && unknown <= 0) return null;
+  const r = columnTokens({ total: Math.max(total, 0), unknown: Math.max(unknown, 0), partial: unknown > 0 });
+  return { text: r.text, title: r.title + " in columns no longer on the board" };
+}
+
+// shownUnknownTokens(): the span on the "Unknown state" group's header while it is shown.
+function shownUnknownTokens() {
+  return S.unknown && !S.unknown.el.hidden ? S.unknown.tokens : null;
+}
+
+function setText(node, text, title) {
+  if (node.textContent !== text) node.textContent = text;
+  if (node.title !== title) node.title = title;
+}
+
+// renderColumnTokens(): the token total in each column header, from S.usage.columns
+// (/api/usage, read on the supervisor's 15 s cadence). Columns are keyed by board
+// state, the page's own column keys. A column with no ledger line shows nothing,
+// and so does every column while the ledger is unreadable (never "0"). Tokens in
+// no page column are the remainder: on the "Unknown state" header while that group
+// is shown, else in the All time tooltip (see renderTokens). Text is set only when
+// it changed, so a poll with the same totals writes nothing, and the column's card
+// list and its re-render signature never depend on it.
+function renderColumnTokens() {
+  const cols = columnsOf(S.usage);
+  for (const key of Object.keys(S.cols)) {
+    let text = "";
+    let title = "";
+    if (cols && Object.prototype.hasOwnProperty.call(cols, key) && cols[key] && typeof cols[key] === "object" && isNum(cols[key].total)) {
+      const t = columnTokens(cols[key]);
+      text = t.text;
+      title = t.title;
+    }
+    setText(S.cols[key].tokens, text, title);
+  }
+  const unk = shownUnknownTokens();
+  if (unk) {
+    const r = tokenRemainder();
+    setText(unk, r ? r.text : "", r ? r.title : "");
   }
 }
 
@@ -2591,7 +2684,7 @@ async function supervisorTick(first) {
     if (due) {
       await refreshUsage(seq, r.data);
     } else if (!running) { // a not-running reply carries the ledger totals for free
-      S.usage = { run: null, all_time: r.data.all_time, planner: r.data.planner, error: r.data.error };
+      S.usage = { run: null, all_time: r.data.all_time, planner: r.data.planner, columns: r.data.columns, error: r.data.error };
       renderTokens();
     }
   }
@@ -2660,7 +2753,7 @@ async function refreshUsage(seq, data) {
   }
   if (seq !== S.sup.seq) return;
   if (!usage && data && data.running === false) {
-    usage = { run: null, all_time: data.all_time, planner: data.planner, error: data.error };
+    usage = { run: null, all_time: data.all_time, planner: data.planner, columns: data.columns, error: data.error };
   }
   if (usage) S.usage = usage;
   renderTokens();
@@ -2797,14 +2890,18 @@ function renderTokens() {
   else if (!S.supervisor) run = "none (no supervisor running)";
   else run = tokensText(runTokens);
   frag.appendChild(el("span", "sup-item sup-tok", "This run: " + run));
-  frag.appendChild(el("span", "sup-item sup-tok", "All time: " + tokensText(u && u.all_time)));
+  const allTime = el("span", "sup-item sup-tok", "All time: " + tokensText(u && u.all_time));
+  const rest = shownUnknownTokens() ? null : tokenRemainder();   // else it is on the Unknown state header
+  if (rest) allTime.title = rest.title;
+  frag.appendChild(allTime);
   frag.appendChild(el("span", "sup-item sup-tok sup-tok-planner", "Planner: " + tokensText(u && u.planner)));
   if (u && u.error) frag.appendChild(el("span", "sup-item sup-warn", "usage: " + clean(u.error, 200)));
-  const text = frag.textContent;
+  const text = frag.textContent + (rest ? "\n" + rest.title : "");
   if (text !== S.sup.tokensText) {
     S.sup.tokensText = text;
     $("supervisor-tokens").replaceChildren(frag);
   }
+  renderColumnTokens();
 }
 
 // setControl(btn, enabled, reason): a disabled control says why in its title and

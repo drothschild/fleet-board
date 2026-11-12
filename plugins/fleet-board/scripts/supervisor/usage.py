@@ -123,12 +123,23 @@ def drilldown(lines, card, skipped=0):
                         for name, rows in columns.items()]}
 
 
+def by_column(lines, skipped=0):
+    """All-time card totals per board column: `{column: totals}` for the columns that have a card line, each
+    through `totals`. Planner lines are left out (the planner has its own total) and so is a card line with no
+    column; a column with no line is absent, never a 0."""
+    rows = {}
+    for line in lines:
+        if line['kind'] == 'card' and line['column'] is not None:
+            rows.setdefault(line['column'], []).append(line)
+    return {name: totals(group, skipped=skipped) for name, group in rows.items()}
+
+
 def summary(lines, skipped=0, run_id=None):
-    """What the `usage` command shows: this run (None when no supervisor) and all time, both for card work, and
-    the planner on its own line."""
+    """What the `usage` command shows: this run (None when no supervisor) and all time, both for card work, the
+    planner on its own line, and the card totals per column."""
     return {'run': None if run_id is None else totals(lines, run_id=run_id, kind='card', skipped=skipped),
             'all_time': totals(lines, kind='card', skipped=skipped), 'planner': totals(lines, kind='planner', skipped=skipped),
-            'skipped': skipped}
+            'columns': by_column(lines, skipped), 'skipped': skipped}
 
 
 def view(root, board_dir=DEFAULT_DIR, card=None, run_id=None):
