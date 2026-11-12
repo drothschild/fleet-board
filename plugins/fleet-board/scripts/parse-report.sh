@@ -456,7 +456,7 @@ done
 if has_section "Status"; then
   case "$STATUS" in
     done|blocked|clean|findings|not_reproducible) ;;
-    retry|fix|attention) [ "$ROLE" = merger ] || ERRORS+=("unknown status: $STATUS") ;;
+    retry|fix|attention) [ -n "$ROLE" ] || ERRORS+=("unknown status: $STATUS") ;;
     *) ERRORS+=("unknown status: $STATUS") ;;
   esac
   # Status values by role; an unknown word is reported once, above.

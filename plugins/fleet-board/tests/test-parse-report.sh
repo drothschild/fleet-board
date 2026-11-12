@@ -615,6 +615,12 @@ run_parse --role merger "$REPORTS/merger-after-merge-done.md"
 assert_exit "merger without --mode: exit 2" 2
 run_parse --role merger --mode sideways "$REPORTS/merger-after-merge-done.md"
 assert_exit "merger with an unknown mode: exit 2" 2
+run_parse --role fixer "$REPORTS/merger-refusal-fix.md"
+assert_exit "fix status for the fixer role: exit 1" 1
+assert_stderr_line "fixer fix: reported once as a role error" "parse-report: role fixer does not allow status: fix"
+if [ "$(printf '%s\n' "$LAST_ERR" | grep -c 'status')" = 1 ]; then pass "fixer fix: one status line"; else fail "fixer fix: one status line" "$LAST_ERR"; fi
+run_parse "$REPORTS/merger-refusal-fix.md"
+assert_stderr_line "no role, fix: unknown status" "parse-report: unknown status: fix"
 run_parse --role reviewer --mode refusal "$REPORTS/reviewer-ok.md"
 assert_exit "--mode with another role: exit 2" 2
 

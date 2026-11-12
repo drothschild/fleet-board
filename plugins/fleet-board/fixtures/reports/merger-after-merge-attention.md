@@ -2,7 +2,7 @@
 attention
 
 ## Findings
-- none
+- [Important] deploy step failed: the server deploy exited 1
 
 ## For the card
 Deploy step failed: the server deploy exited 1.

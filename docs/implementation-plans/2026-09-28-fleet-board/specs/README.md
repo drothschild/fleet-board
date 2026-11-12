@@ -2072,3 +2072,5 @@ Isolation: the per-run assertion ran on each log's init event: only the four bui
 ### Revision 25 (2026-11-11, CLI supervisor Phase 4, Task 4.4): the merger agent, hand-written
 
 `agents/merger.md` is a fourth role agent, written by hand by the executing session on the owner's decision of 2026-11-11; no isolated author process ran, and no brief or evidence files exist for it. `specs/merger.md` is its behavior spec (written by hand too). The manifest lists `agents/merger.md` as a named exception, hash-checked like any other file. The default persona ships at `scripts/supervisor/defaults/merger-persona.md` (not a clean-room file). `parse-report.sh` gains `--role merger --mode after_merge|refusal`. No behavioral run exercised the agent. Cost: none (no model session).
+
+Fix round 1: persona resolution ruling (null or unset uses .fleet-board/merger.md if present, else the default; a set but missing path is an error; persona_append follows), Findings line for a failed step, narrowed push rule, driver mode mapping; manifest hash updated.

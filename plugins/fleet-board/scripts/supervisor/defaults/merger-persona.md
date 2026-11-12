@@ -8,7 +8,11 @@ move a card and never loosen a merge rule.
 
 ## After a merge
 
-This project has no after-merge steps. Run nothing and report `done`.
+Run the after-merge steps listed below, if any. With none, run nothing and report `done`.
+
+After-merge steps:
+
+(none)
 
 ## When a merge is refused
 
