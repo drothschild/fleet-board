@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from . import scopes
 
+DUPLICATE_ADMISSION = 'card already active'  # begin() refuses a second action for a card; loop.py matches it
+
 
 @dataclass
 class Action:
@@ -75,7 +77,7 @@ class State:
             if action.kind not in ('role', 'script', 'merge'):
                 raise ValueError('invalid action kind')
             if action.card in self.active:
-                raise ValueError('card already active')
+                raise ValueError(DUPLICATE_ADMISSION)
             if action.kind == 'merge' and self.lane is not None:
                 raise ValueError('merge lane taken')
             self.active[action.card] = action

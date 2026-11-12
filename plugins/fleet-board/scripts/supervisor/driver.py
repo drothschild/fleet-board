@@ -51,6 +51,8 @@ _NO_PROGRESS = re.compile(r'no progress after (\d+) attempts?: (.*)', re.S)
 _RESET = {'action_failures': 0, 'last_action_error': None}
 _SEVERE = ('Critical', 'Important')
 _SKIP_MARKER = '<!-- fleet-board:skip-no-acceptance -->'
+
+
 def _iso(seconds):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(seconds))
 
@@ -683,14 +685,17 @@ class CardDriver:
 
     def _record_usage(self, run, result):
         """Append one ledger line for the finished session and add its counts to the run's totals. Unreadable
-        usage is recorded as unknown (null), never zero. A failed write is a warning: the card's work stands."""
+        usage is recorded as unknown (null), never zero. A failed write is a warning: the card's work stands.
+        The ledger action is the candidate name, except a review stage's, which is `review_<stage name>` (spec
+        section 8). A rejected report that is re-dispatched ends one session and starts another: each session writes
+        its own line, and the redispatched one reuses the action's `started_at`."""
         action = run.action
         u = result.usage
         counts = {'input': getattr(u, 'input', None), 'output': getattr(u, 'output', None),
                   'cache_write': getattr(u, 'cache_write', None), 'cache_read': getattr(u, 'cache_read', None)}
         line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': action.column,
-                'action': action.action, 'role': action.role, 'provider': action.provider,
-                'model': getattr(u, 'model', None), 'started_at': _iso(action.started_at),
+                'action': ('review_' + run.stage) if run.stage else action.action, 'role': action.role,
+                'provider': action.provider, 'model': getattr(u, 'model', None), 'started_at': _iso(action.started_at),
                 'ended_at': _iso(self.clock()), 'log': result.log_path, **counts}
         self.state.add_tokens(counts, action.card)
         try:

@@ -17,11 +17,11 @@ import time
 from pathlib import Path
 
 from . import candidates, errors, resolver, scopes, scripts, usage
+from .state import DUPLICATE_ADMISSION
 
 STOP_MODES = ('drain', 'cancel')
 MERGE_IGNORED = 'merging arrives in phase 4'
 CARD_LIMIT_WAIT = 'card token limit reached'
-DUPLICATE_ADMISSION = 'card already active'
 BACKOFF_CAP = 3600
 POLL = 0.1            # seconds between session polls while any session runs
 COMMAND_WAIT = 0.5    # how long the service thread waits for the loop to apply pause or resume

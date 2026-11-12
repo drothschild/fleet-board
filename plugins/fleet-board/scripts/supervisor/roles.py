@@ -327,31 +327,39 @@ def launch(argv, *, root, log_dir, label, env, clock=time.monotonic, attempt_tim
     """Start argv in its own process group with cwd=root. stdout goes to <log_dir>/<label>.jsonl and stderr
     to <label>.err (0600). `permission_mode` is the mode the session must report in its init event.
     `stage` marks a provider script (its stdout is not stream-json); by default it is inferred from argv.
-    A missing or non-executable binary yields a finished Session whose result is a provider failure."""
+    A missing or non-executable binary, an unwritable log directory or a root that is not a directory yields a
+    finished Session whose result is a provider failure."""
     if stage is None:
         stage = len(argv) > 1 and os.path.basename(str(argv[1])) in _STAGE_SCRIPTS
     log_dir = Path(log_dir)
-    log_dir.mkdir(parents=True, exist_ok=True)
     out_path, err_path = log_dir / (label + '.jsonl'), log_dir / (label + '.err')
-    out_fd, err_fd = _open_private(out_path), _open_private(err_path)
+
+    def failed(exc):
+        # a missing or non-executable binary, an unwritable log dir or a bad root is the environment, not the card
+        missing = isinstance(exc, FileNotFoundError) and exc.filename is not None and \
+            str(exc.filename) == str(argv[0])
+        session = Session(argv, None, out_path, err_path, label, clock, attempt_timeout, progress_timeout,
+                          permission_mode, kill_grace, stage)
+        reason = ('binary not found: %s' % exc.filename) if missing else \
+            ('cannot run %s: %s' % (exc.filename or argv[0], exc.strerror or type(exc).__name__))
+        session._result = RoleResult(127 if missing else 126, '', _UNKNOWN, 'provider', reason,
+                                     None, str(out_path), False, False)
+        return session
+
+    out_fd = err_fd = None
     try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        out_fd = _open_private(out_path)
+        err_fd = _open_private(err_path)
         if not Path(root).is_dir():
             raise NotADirectoryError(str(root))
-        try:
-            proc = subprocess.Popen([str(a) for a in argv], cwd=str(root), env=env, stdin=subprocess.DEVNULL,
-                                    stdout=out_fd, stderr=err_fd, start_new_session=True, close_fds=True)
-        except OSError as exc:
-            # a missing or non-executable binary (or any other launch error) is the environment, not the card
-            missing = isinstance(exc, FileNotFoundError)
-            session = Session(argv, None, out_path, err_path, label, clock, attempt_timeout, progress_timeout,
-                              permission_mode, kill_grace, stage)
-            reason = ('binary not found: %s' % exc.filename) if missing else \
-                ('cannot run %s: %s' % (exc.filename or argv[0], exc.strerror or type(exc).__name__))
-            session._result = RoleResult(127 if missing else 126, '', _UNKNOWN, 'provider', reason,
-                                         None, str(out_path), False, False)
-            return session
+        proc = subprocess.Popen([str(a) for a in argv], cwd=str(root), env=env, stdin=subprocess.DEVNULL,
+                                stdout=out_fd, stderr=err_fd, start_new_session=True, close_fds=True)
+    except OSError as exc:
+        return failed(exc)
     finally:
-        os.close(out_fd)
-        os.close(err_fd)
+        for fd in (out_fd, err_fd):
+            if fd is not None:
+                os.close(fd)
     return Session(argv, proc, out_path, err_path, label, clock, attempt_timeout, progress_timeout,
                    permission_mode, kill_grace, stage)
