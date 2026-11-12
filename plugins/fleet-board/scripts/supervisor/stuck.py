@@ -24,7 +24,7 @@ FIXED_AFTER = ('merging', 'human_qa', 'blocked', 'done', 'wont_do')
 UNCHECKED = ('backlog', 'done', 'wont_do')   # every other state (review_<stage> included) has its card checked
 MERGE_RECORDS = ('merge_operation', 'merge_refusal', 'merger')
 MERGE_KEYS = ('pending_merge', 'merge_refusal', 'merge_retry', 'merger')
-LOCK_GRACE = 10     # seconds a lock may have no pid file (its holder is between mkdir and writing it)
+LOCK_GRACE = 20     # seconds a lock may have no pid file; board-lib.sh's FB_LOCK_PIDLESS_GRACE is the same value
 _LOCK = re.compile(r'card-(\d+)\.lock')
 _PR = re.compile(r'/pull/(\d+)')
 
@@ -106,9 +106,16 @@ def _pid_alive(pid):
     return True
 
 
-def _lock_dead(path, grace=LOCK_GRACE):
+def _lock_grace():
+    """LOCK_GRACE, or FLEET_BOARD_LOCK_PIDLESS_GRACE when it is a whole number (board-lib.sh reads it too)."""
+    value = os.environ.get('FLEET_BOARD_LOCK_PIDLESS_GRACE', '')
+    return int(value) if value.isdigit() else LOCK_GRACE
+
+
+def _lock_dead(path, grace=None):
     """True when the holder named in <lock>/pid is not running, or the lock has no usable pid and has been
-    that way for longer than `grace` seconds."""
+    that way for longer than `grace` seconds (default: the shared pid-less grace)."""
+    grace = _lock_grace() if grace is None else grace
     try:
         pid = int((Path(path) / 'pid').read_text().strip())
         if pid > 0:
@@ -119,6 +126,32 @@ def _lock_dead(path, grace=LOCK_GRACE):
         return time.time() - os.stat(str(path)).st_mtime >= grace
     except OSError:
         return False
+
+
+def _lock_pid(path):
+    """The text of <lock>/pid, or None when it has none."""
+    try:
+        return (Path(path) / 'pid').read_text()
+    except OSError:
+        return None
+
+
+def _fence(path):
+    """Take the empty pid slot of a pid-less lock the way board-lib.sh's _fb_lock_own does: our pid written to
+    a temp file and hard-linked onto <lock>/pid, which fails when pid exists. A slow holder whose own link comes
+    later then fails instead of landing in a lock we are removing. False when the slot is already filled."""
+    tmp = Path(path) / ('.pid.%d' % os.getpid())
+    try:
+        tmp.write_text('%d\n' % os.getpid())
+        os.link(str(tmp), str(Path(path) / 'pid'))
+        return True
+    except FileExistsError:
+        return False
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 def _live_claim(path):
@@ -352,11 +385,28 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
             raise ValueError('card #%d is locked by a running process (%s)' % (card, lock))
         if _live_claim(lock):      # a running waiter is taking the dead lock over and will remove it
             raise ValueError('card #%d has a dead lock that a running process is taking over (%s)' % (card, lock))
+        # A pid-less lock may have a holder that is only slow: fill its pid slot first, so the holder's late pid
+        # write fails rather than land in the lock being removed (if the holder's write won, it holds the lock).
+        try:
+            owner = _lock_pid(lock)
+            if owner is None and not _fence(lock):
+                owner = ''   # the holder's own write won the slot
+            elif owner is None:
+                owner = _lock_pid(lock)
+            elif owner.strip().isdigit() and int(owner) > 0 and _pid_alive(int(owner)):
+                owner = ''   # a pid that appeared since the checks above: its holder is running
+            if owner == '':
+                raise ValueError('card #%d is locked by a running process (%s)' % (card, lock))
+        except OSError as exc:
+            raise ValueError('cannot remove the dead lock %s of card #%d: %s' % (lock, card, exc)) from None
         # Rename the lock out of its path first, then delete the private copy: a taker's late claim goes through
         # the path, so it never lands in the copy being deleted, and a failed delete leaves no lock at the path.
         rel = lock.with_name('%s.rel.%d' % (lock.name, os.getpid()))
         try:
             lock.rename(rel)
+            if _lock_pid(rel) != owner:
+                raise ValueError('the lock %s of card #%d changed owner while it was removed; left it at %s'
+                                 % (lock, card, rel))
             for child in rel.iterdir():
                 child.unlink()
             rel.rmdir()
