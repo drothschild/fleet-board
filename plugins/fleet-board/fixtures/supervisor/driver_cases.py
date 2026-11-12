@@ -61,12 +61,17 @@ class Board:
         for i, plan in enumerate(plans, 1):
             (self.fake / ('%d.json' % i)).write_text(json.dumps(plan))
 
-    def fake_calls(self):
+    def fake_calls(self, at_least=0):
         path = self.fake / 'log.jsonl'
-        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+        end = time.monotonic() + 15
+        while True:
+            calls = [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+            if len(calls) >= at_least or time.monotonic() > end:
+                return calls
+            time.sleep(0.05)
 
     def prompt(self, n=1):
-        argv = self.fake_calls()[n - 1]['argv']
+        argv = self.fake_calls(n)[n - 1]['argv']
         return argv[argv.index('-p') + 1]
 
     def git(self, cwd, *args):
@@ -147,7 +152,7 @@ def run_role(b, started):
 
 def worktree_ok(b):
     b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234',
-                                                       'base': 'base000'})
+                                                       'base': 'bace000'})
                                            if a[0] == 'review' else b.worktree + '\n')
 
 
@@ -166,7 +171,7 @@ def test_start_runs_setup_and_returns_a_session(base):
     started = begin(b, 'start')
     assert started.kind == 'session' and started.action.action == 'start'
     assert started.action.card == 12 and started.action.role == 'implementor'
-    assert b.scripts_called() == ['worktree.sh', 'board-move.sh'], b.calls
+    assert b.scripts_called() == ['worktree.sh', 'board-move.sh', 'board-read.sh'], b.calls
     assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
     assert b.calls[1] == ('board-move.sh', '12', 'in_progress')
     assert b.card()['state'] == 'in_progress'
@@ -203,10 +208,10 @@ def test_timed_out_step_counts_a_failure(base):
 def test_start_review_routes_moves_and_notes(base):
     b = board_for(base, 'in_progress')
     b.stubs['review-stages.sh'] = ok('["security"]\n')
-    b.stubs['worktree.sh'] = ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234', 'base': 'base000'}))
+    b.stubs['worktree.sh'] = ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234', 'base': 'bace000'}))
     started = begin(b, 'start_review', state='in_progress')
     assert started.kind == 'session' and started.action.role == 'reviewer' and started.action.session
-    assert b.scripts_called() == ['review-stages.sh', 'board-move.sh', 'worktree.sh'], b.calls
+    assert b.scripts_called() == ['review-stages.sh', 'board-move.sh', 'board-read.sh', 'worktree.sh'], b.calls
     assert b.calls[-1] == ('worktree.sh', 'review', '12', '34'), b.calls
     assert b.calls[0] == ('review-stages.sh', 'route', '12', '34')
     assert b.calls[1] == ('board-move.sh', '12', 'in_review')
@@ -659,9 +664,10 @@ def test_continue_implementor_counts_the_attempt_first(base):
     started = begin(b, 'continue_implementor', state='in_progress')
     assert started.kind == 'session' and started.action.role == 'implementor'
     assert b.note()['implementor_attempts'] == 2
-    assert b.scripts_called() == ['worktree.sh'] and b.calls[-1][:2] == ('worktree.sh', 'create'), b.calls
-    first_merge = [i for i, c in enumerate(b.calls) if c[:2] == ('note.sh', 'merge')][0]
-    assert first_merge < b.calls.index(b.calls[-1]), 'the attempt is counted before worktree.sh create'
+    assert b.scripts_called() == ['worktree.sh', 'board-read.sh'], b.calls
+    assert [c[:2] for c in b.calls if c[0] == 'note.sh'][:2] == [('note.sh', 'get'), ('note.sh', 'merge')], b.calls
+    assert [i for i, c in enumerate(b.calls) if c[:2] == ('note.sh', 'merge')][0] < b.calls.index(
+        [c for c in b.calls if c[0] == 'worktree.sh'][0]), 'the attempt is counted before worktree.sh create'
     assert '"implementor_attempts": 2' in b.prompt(), b.prompt()
     assert run_role(b, started).progressed is True
 
@@ -677,7 +683,7 @@ def test_reviewer_findings_record_last_review(base):
     assert ('worktree.sh', 'review', '12', '34') in b.calls
     assert b.gh_calls[0][:3] == ('pr', 'diff', '34') and '--repo' in b.gh_calls[0], b.gh_calls
     prompt = b.prompt()
-    assert '+line' in prompt and 'base000' in prompt and b.worktree in prompt, prompt
+    assert '+line' in prompt and 'bace000' in prompt and b.worktree in prompt, prompt
     outcome = run_role(b, started)
     assert outcome.progressed is True and outcome.redispatch is False, outcome
     review = b.note()['last_review']
@@ -696,7 +702,7 @@ def test_reviewer_round_two_gets_prev_sha_and_findings_and_a_long_diff_goes_to_a
     b.plans({'report': 'reviewer-ok'})
     started = begin(b, 'review', state='in_review', round=2)
     prompt = b.prompt()
-    assert 'feed123' in prompt and 'base000' not in prompt, prompt
+    assert 'feed123' in prompt and 'bace000' not in prompt, prompt
     assert '- [Important] no test' in prompt, prompt
     assert '+row 1599' not in prompt and '+row 0' not in prompt, 'a long diff is passed as a path'
     path = [w for w in prompt.split() if w.endswith('.diff')]
@@ -774,7 +780,9 @@ def test_fix_done_increments_round(base):
     b.plans({'report': 'fixer-ok'})
     started = begin(b, 'fix', state='in_review', escalated=True, round=1)
     assert started.kind == 'session' and started.action.role == 'fixer'
-    assert b.note()['branch'] == BRANCH and b.calls[-1][:2] == ('worktree.sh', 'create'), b.calls
+    assert b.note()['branch'] == BRANCH and ('worktree.sh', 'create') == [c for c in b.calls
+                                                                          if c[0] == 'worktree.sh'][-1][:2], b.calls
+    assert b.calls[0][:2] == ('note.sh', 'merge'), 'branch and worktree are noted before worktree.sh create'
     assert '- [Important] no test' in b.prompt()
     assert run_role(b, started) == driver.Outcome(12, True, False, None)
     note = b.note()
