@@ -16,7 +16,7 @@ from . import scripts
 
 Stuck = namedtuple('Stuck', 'card kind detail')
 
-KINDS = ('in_flight', 'marker', 'dirty_worktree', 'dead_lock')
+KINDS = ('unreadable_note', 'in_flight', 'marker', 'dirty_worktree', 'dead_lock')
 FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 FIXED_AFTER = ('merging', 'human_qa', 'blocked', 'done', 'wont_do')
 CHECKED = ('ready', 'in_progress', 'in_review', 'merging', 'human_qa', 'blocked')   # cards whose worktree is checked
@@ -117,7 +117,7 @@ def _lock_dead(path, grace=LOCK_GRACE):
 def _dirty(root, worktree, run_argv):
     if not isinstance(worktree, str) or not os.path.isdir(worktree):
         return None
-    result = run_argv(root, ['git', '-C', worktree, 'status', '--porcelain'], timeout=60)
+    result = run_argv(root, ['git', '-C', worktree, '--no-optional-locks', 'status', '--porcelain'], timeout=60)
     if result.timed_out or result.rc != 0:
         return None
     lines = [line for line in result.stdout.splitlines() if line.strip()]
@@ -128,7 +128,13 @@ def _dirty(root, worktree, run_argv):
                                                     + (', ...' if len(lines) > 3 else ''))
 
 
-def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_argv):
+def _head(root, repo, pr, run_argv):
+    result = run_argv(root, ['gh', 'pr', 'view', str(pr), '--repo', repo, '--json', 'headRefOid', '--jq',
+                             '.headRefOid'], timeout=60)
+    return result.stdout.strip() if not result.timed_out and result.rc == 0 else None
+
+
+def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_argv, head=None):
     """Everything a dead supervisor left behind, as a list of Stuck (a card may appear more than once).
     `live_cards` are the cards a running supervisor owns: they are never reported. Writes nothing."""
     live = set(live_cards)
@@ -139,13 +145,23 @@ def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_arg
         for card, state in _cards(root, config, run):
             if card in live or state not in CHECKED:
                 continue
-            note = _note(root, card, run)
+            try:
+                note = _note(root, card, run)
+            except ValueError as exc:
+                found.append(Stuck(card, 'unreadable_note', str(exc)))
+                continue
+            if state == 'merging' and _merge_in_flight(note):
+                pending = note['pending_merge']
+                current = (head or _head)(root, (config.get('board') or {}).get('repo') or '', pending.get('pr'),
+                                          run_argv)
+                if current and pending.get('head_sha') and current != pending.get('head_sha'):
+                    note = dict(note, pending_merge=None)   # a stale marker for an earlier head: not in flight
             if state == 'in_progress':
                 found.append(Stuck(card, 'in_flight', 'in progress, and no supervisor session owns it'))
             elif state == 'merging' and _merge_in_flight(note):
                 found.append(Stuck(card, 'in_flight', 'in merging with a merge in flight (pending_merge for PR %s) '
                                    'and no record of how it ended' % (note['pending_merge'].get('pr'),)))
-            detail = _dirty(root, note.get('worktree'), run_argv)
+            detail = None if note.get('stuck_released') else _dirty(root, note.get('worktree'), run_argv)
             if detail:
                 found.append(Stuck(card, 'dirty_worktree', detail))
     try:
@@ -167,18 +183,20 @@ def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_arg
     return sorted(found, key=lambda s: (s.card, KINDS.index(s.kind)))
 
 
-def _patch(root, card, patch, run):
+def _patch(root, card, patch, run, wait=None):
     with tempfile.TemporaryDirectory(prefix='fleet-stuck-') as tmp:
         path = Path(tmp) / 'patch.json'
         path.write_text(json.dumps(patch))
-        result = run(root, 'note.sh', 'merge', card, str(path), timeout=60)
+        extra = {'env': {'FLEET_BOARD_LOCK_WAIT': str(wait)}} if wait is not None else {}
+        result = run(root, 'note.sh', 'merge', card, str(path), timeout=60, **extra)
     if result.timed_out or result.rc != 0:
         _json(result, 'note.sh merge #%d' % card)
 
 
 def record(root, found, now=None, run=scripts.run):
     """Write {"stuck": {"kind", "detail", "at"}} on each card in `found` (kind of its first finding, the details
-    joined). Returns the cards whose note could not be written (a lock for a card that does not exist)."""
+    joined). A note write waits at most a second for a card lock (a dead holder's lock must not stall the start).
+    Returns the cards whose note could not be written."""
     at = _iso(now)
     by_card = {}
     for item in found:
@@ -187,7 +205,7 @@ def record(root, found, now=None, run=scripts.run):
     for card, items in sorted(by_card.items()):
         try:
             _patch(root, card, {'stuck': {'kind': items[0].kind, 'detail': '; '.join(i.detail for i in items),
-                                          'at': at}}, run)
+                                          'at': at}}, run, wait=1)
         except ValueError:
             failed.append(card)
     return failed
@@ -212,17 +230,11 @@ def snapshot(root, found, run=scripts.run):
     return out
 
 
-def unresolved(root, ignored, run=scripts.run):
-    """The ignored cards that are still stuck: a card is resolved once its stuck note is cleared (release) or
-    a person moved it out of the column it was found in. A card that cannot be read stays ignored."""
-    keep = {}
-    for card, column in ignored.items():
-        try:
-            if _read(root, card, run).get('state') == column and _note(root, card, run).get('stuck'):
-                keep[card] = column
-        except ValueError:
-            keep[card] = column
-    return keep
+def unresolved(ignored, found):
+    """The ignored cards that are still stuck: those a fresh `find` still reports. A card is resolved when its
+    finding is gone (released, moved by a person, marker or lock cleared), whatever its note says."""
+    present = {item.card for item in found}
+    return {card: column for card, column in ignored.items() if card in present}
 
 
 def _pr_number(card, note):
@@ -267,13 +279,21 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv):
         repo = (config.get('board') or {}).get('repo') or ''
         pr_state = (gh or _gh_state(run_argv))(root, pr, repo)
         if pr_state == 'MERGED':
-            pass   # the planner plans after_merge for it
+            # End the in-flight state: the merge happened, so record it the way merge-reviewed.sh does (the
+            # planner's merged branch then plans verify_main / after_merge).
+            pending = note.get('pending_merge')
+            if isinstance(pending, dict) and not note.get('merge_operation'):
+                patch.update({'merge_operation': pending, 'merged_pr': pr})
         elif pr_state == 'OPEN':
             patch.update({key: None for key in MERGE_KEYS})
             target = 'in_review'
         else:
             raise ValueError('cannot tell whether PR %d of card #%d is merged (gh said %r)' % (pr, card, pr_state))
+    if _dirty(root, note.get('worktree'), run_argv):
+        patch['stuck_released'] = {'kind': 'dirty_worktree', 'at': _iso()}   # find skips it; the driver clears it
     if lock.is_dir():   # a dead holder's lock would block the move and the note write: they wait on it
+        if not _lock_dead(lock, grace=0):   # re-checked just before removing: its holder may have come back
+            raise ValueError('card #%d is locked by a running process (%s)' % (card, lock))
         for child in lock.iterdir():
             child.unlink()
         lock.rmdir()

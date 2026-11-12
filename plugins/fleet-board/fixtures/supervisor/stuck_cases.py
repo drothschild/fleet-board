@@ -30,6 +30,9 @@ class StuckCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {'FLEET_BOARD_USER': 'fleet-bot'})
         patcher.start()
         self.addCleanup(patcher.stop)
+        patcher = mock.patch.object(stuck, '_head', lambda *a: None)   # no network: the PR head is unknown
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.b = dc.Board(self.dir)
         self.root = self.b.root
         (self.root / '.fw').mkdir()
@@ -142,6 +145,17 @@ class Kinds(StuckCase):
         self.marker(12)
         self.assertEqual(self.kinds(), [(12, 'in_flight'), (12, 'marker')])
 
+    def test_an_unreadable_note_is_its_own_finding_and_does_not_fail_the_check(self):
+        self.b.seed(12, 'in_progress')
+        self.b.seed(13, 'ready')
+
+        def run(root, name, *args, **kw):
+            if name == 'note.sh' and args[:2] == ('get', 13):
+                return dc.fail_with('fleet-board: broken note')
+            return stuck.scripts.run(root, name, *args, **kw)
+        found = stuck.find(self.root, run=run)
+        self.assertEqual(sorted((s.card, s.kind) for s in found), [(12, 'in_flight'), (13, 'unreadable_note')])
+
     def test_a_missing_store_finds_no_cards(self):
         for p in (self.root / '.fleet-board' / 'cards').glob('*'):
             p.unlink()
@@ -187,8 +201,8 @@ class Release(StuckCase):
         self.assertEqual(self.b.note(12)['branch'], dc.BRANCH)
         self.assertEqual(self.head(path), head)
         self.assertTrue((path / 'wip.txt').exists(), 'release never touches the worktree')
-        self.assertEqual([s.kind for s in stuck.find(self.root)], ['dirty_worktree'],
-                         'the card is resolved; its uncommitted work is still a person\'s to deal with')
+        self.assertEqual(stuck.find(self.root), [], 'releasing a dirty_worktree finding resolves it')
+        self.assertEqual(self.b.note(12)['stuck_released']['kind'], 'dirty_worktree')
 
     def test_release_of_an_in_progress_card_with_a_pr_goes_to_in_review(self):
         self.b.seed(12, 'in_progress')
@@ -217,6 +231,34 @@ class Release(StuckCase):
         self.assertFalse((self.active / '12').exists())
         self.assertEqual(len(gh.calls), 1)
         self.assertEqual(gh.calls[0][0], 34)
+
+    def test_a_released_merged_card_is_no_longer_in_flight(self):
+        self.b.seed(12, 'merging')
+        pending = {'operation_key': 'k', 'pr': 34, 'head_sha': 'abc1234'}
+        self.b.put_note({'pr': 34, 'pending_merge': pending})
+        self.assertEqual(self.kinds(), [(12, 'in_flight')])
+        stuck.release(self.root, 12, gh=self.gh_state('MERGED'))
+        note = self.b.note(12)
+        self.assertEqual(note['merge_operation'], pending)
+        self.assertEqual(note['merged_pr'], 34)
+        self.assertEqual(stuck.find(self.root), [], 'the planner can now plan verify_main / after_merge')
+
+    def test_a_pending_merge_for_an_earlier_head_is_not_in_flight(self):
+        self.b.seed(12, 'merging')
+        self.b.put_note({'pr': 34, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'old'}})
+        with mock.patch.object(stuck, '_head', lambda *a: 'new'):
+            self.assertEqual(self.kinds(), [])
+        with mock.patch.object(stuck, '_head', lambda *a: 'old'):
+            self.assertEqual(self.kinds(), [(12, 'in_flight')])
+
+    def test_the_driver_clears_stuck_released_when_it_next_acts_on_the_card(self):
+        self.b.seed(12, 'in_progress')
+        path = self.worktree(12, dirty=True)
+        self.b.put_note({'worktree': str(path)})
+        stuck.release(self.root, 12)
+        self.assertIn('stuck_released', self.b.note(12))
+        self.b.driver.begin(dc.candidate('wait', state='ready', waiting_on=['acme/toy#3']))
+        self.assertIsNone(self.b.note(12).get('stuck_released'))
 
     def test_release_of_an_open_merging_card_clears_the_merge_records_and_goes_to_in_review(self):
         self.b.seed(12, 'merging')
@@ -351,6 +393,25 @@ class Start(StuckCase):
         self.assertEqual(rc, 0, err)
         self.assertEqual(set(captured['sup'].ignored), set())
 
+    def test_stuck_with_a_running_supervisor_reads_the_board_itself(self):
+        self.b.seed(12, 'in_progress')
+        self.b.seed(13, 'in_progress')
+        requests = []
+
+        def transport(request):
+            requests.append(request['command'])
+            if request['command'] != 'status':
+                raise AssertionError('stuck must not depend on a slow socket reply')
+            return {'active': [{'card': 13}]}
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck', '--json'], env=os.environ, stdout=out, stderr=err, transport=transport)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertEqual([r['card'] for r in json.loads(out.getvalue())], [12])
+        self.assertEqual(requests, ['status'])
+        rc = cli.main(['stuck', '--release', '13'], env=os.environ, stdout=out, stderr=err, transport=transport)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.b.card(13)['state'], 'in_progress')
+
     def test_the_stuck_command_lists_and_releases_without_a_supervisor(self):
         self.b.seed(12, 'in_progress')
         rc, out, err = self.invoke('stuck', '--json')
@@ -364,6 +425,22 @@ class Start(StuckCase):
         self.assertEqual(self.b.card(12)['state'], 'ready')
         rc, out, err = self.invoke('stuck')
         self.assertEqual((rc, out.strip()), (0, 'no stuck cards'))
+
+
+class Record(StuckCase):
+    def test_a_fresh_dead_lock_does_not_stall_the_note_write(self):
+        self.b.seed(12, 'in_progress')
+        self.lock(12, dead_pid())
+        found = stuck.find(self.root)
+        started = time.time()
+        failed = stuck.record(self.root, found)
+        self.assertLess(time.time() - started, 15, 'record waited on the dead lock')
+        self.assertEqual(failed, [12], 'the failed note write is reported by card')
+
+    def test_notes_are_written_for_cards_without_a_lock(self):
+        self.b.seed(12, 'in_progress')
+        self.assertEqual(stuck.record(self.root, stuck.find(self.root)), [])
+        self.assertEqual(self.b.note(12)['stuck']['kind'], 'in_flight')
 
 
 class Ignored(StuckCase):
@@ -403,10 +480,16 @@ class Ignored(StuckCase):
         self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
         sup = self.make({12: 'in_progress'})
         stuck.release(self.root, 12)
-        self.b.seed(12, 'in_progress')       # the card is back in the column it was ignored in
         sup._cycle()
         self.assertEqual([r['number'] for r in self.spy[0]], [12])
         self.assertEqual(sup.ignored, {})
+
+    def test_an_ignored_card_stays_ignored_while_its_finding_stands_even_without_a_note(self):
+        self.b.seed(12, 'in_progress')          # no stuck note: the note write may have failed
+        sup = self.make({12: 'in_progress'})
+        sup._cycle()
+        self.assertEqual(sup.ignored, {12: 'in_progress'})
+        self.assertEqual(self.spy, [[]])
 
     def test_an_ignored_card_that_a_person_moved_is_offered_again(self):
         self.b.seed(12, 'in_progress')

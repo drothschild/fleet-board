@@ -212,7 +212,8 @@ def _start(root, stdout, stderr, ignore_stuck=False):
         # cards would otherwise look stuck), and before any work is admitted or readiness is announced.
         found = stuck.find(root)
         if found:
-            stuck.record(root, found)
+            for card in stuck.record(root, found):
+                print("supervisor: warning: the stuck note for #%d could not be written" % card, file=stderr)
             for item in found:
                 print("#%d %s: %s" % (item.card, item.kind, item.detail), file=stderr)
             if not ignore_stuck:
@@ -251,26 +252,22 @@ def _usage(args, env, stdout, transport):
 
 
 def _stuck(args, env, stdout, transport):
-    """List (or release) stuck cards. A running supervisor is asked first, since it knows which cards it owns;
-    with none running the board is read directly."""
-    root = None
-    live = []
+    """List (or release) stuck cards. The board is read here, never through the supervisor's socket (a slow
+    check must not hit the socket timeout); a running supervisor is asked only for the cards it owns."""
+    root = _board_root(env)
+    live = set()
     try:
-        if transport is None:
-            root = _board_root(env)
-            transport = _socket_transport(_socket_for(root, env))
-        reply = transport({"command": "stuck"})
-        found, live = reply["stuck"], reply.get("live") or []
+        status = (transport or _socket_transport(_socket_for(root, env)))({"command": "status"})
+        live = {a.get("card") for a in status.get("active") or [] if isinstance(a, dict)}
     except (FileNotFoundError, ConnectionRefusedError, errors.UnsafeSocketDir):
-        if root is None:
-            raise
-        found = [item._asdict() for item in stuck.find(root)]
+        pass   # no supervisor running: nothing is live
     if args.release is not None:
         if args.release in live:
             raise errors.Invalid("card #%d is owned by the running supervisor" % args.release)
-        stuck.release(root if root is not None else _board_root(env), args.release)
+        stuck.release(root, args.release)
         print("released #%d" % args.release, file=stdout)
         return 0
+    found = [item._asdict() for item in stuck.find(root, live_cards=live)]
     if args.json:
         print(json.dumps(found), file=stdout)
     elif not found:

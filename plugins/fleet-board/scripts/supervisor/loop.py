@@ -24,6 +24,7 @@ STOP_MODES = ('drain', 'cancel')
 CARD_LIMIT_WAIT = 'card token limit reached'
 BACKOFF_CAP = 3600
 POLL = 0.1            # seconds between session polls while any session runs
+IGNORE_RECHECK = 15   # seconds between rechecks of the cards `start --ignore-stuck` leaves alone
 REAP_WAIT = 15        # seconds _reap waits for sessions to end before it gives up on them
 COMMAND_WAIT = 0.5    # how long the service thread waits for the loop to apply pause or resume
 _NAME = re.compile(r'[a-z][a-z0-9_]*')
@@ -69,6 +70,7 @@ class Supervisor:
         self.mono = mono
         self.run_script = run
         self.merge_lane = merge_lane or merging.MergeLane(self.root, state, run=run, clock=clock, repo=self._repo)
+        self._ignored_checked = None
         self.ignored = dict(ignored or {})   # stuck cards left alone ({card: column found in}) until resolved
         self.config = None
         self.last_cycle = {}
@@ -537,11 +539,13 @@ class Supervisor:
             self._begin(row)
 
     def _refresh_ignored(self):
-        """Stuck cards stay out of admission until released or moved by a person."""
-        if not self.ignored:
+        """Stuck cards stay out of admission while a fresh startup check still reports them (throttled)."""
+        if not self.ignored or (self._ignored_checked is not None and self.mono() - self._ignored_checked < IGNORE_RECHECK):
             return
+        self._ignored_checked = self.mono()
         try:
-            self.ignored = stuck.unresolved(self.root, self.ignored, run=self.run_script)
+            found = stuck.find(self.root, live_cards=set(self.state.active), run=self.run_script)
+            self.ignored = stuck.unresolved(self.ignored, found)
         except Exception as exc:  # noqa: BLE001 - when unreadable they stay ignored
             self._error('stuck_refresh_failed', _clean(exc))
 

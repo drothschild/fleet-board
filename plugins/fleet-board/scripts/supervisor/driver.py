@@ -143,6 +143,7 @@ class _Ctx:
         self.action = None
         self.attempts_before = None   # implementor_attempts before this dispatch charged one
         self._files = 0
+        self._released = False
 
     # values -------------------------------------------------------------------------------------------
     def states(self):
@@ -213,6 +214,11 @@ class _Ctx:
         data = _json(self.step('note.sh', 'get', self.n).stdout)
         if not isinstance(data, dict):
             raise _Fail('note.sh get printed no manager note')
+        if data.get('stuck_released') and not self._released:
+            # A person released this card's stuck finding: the first action that reads its note ends the
+            # exemption (no extra call on the normal path).
+            self._released = True
+            self.merge_soft({'stuck_released': None})
         return data
 
     def _file(self, text):
