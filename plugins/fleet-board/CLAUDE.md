@@ -75,7 +75,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (read with `board-read.sh`, no column listed) through the same table, keeping only steps that
   start no agent plus `merge` and `verify_main`: `to_human_qa`, `block` and `mark_ready` stay,
   `start_review` becomes `move_to_review` (only settle mode emits it), and every other action is
-  a `skip`. A settle plan is never dispatchable. The by-hand `--settle` flag and `settle.sh` were
+  a `skip`. A settle plan is never dispatchable. The by-hand `--settle` flag and the by-hand settle script were
   removed in 0.27.0 (run beside a supervisor, it wrote the board outside the gate and the run lock).
   Reviewed heads only: an in_review PR whose head moved past `last_review.sha` plans
   `review`, not `mark_ready`, `to_human_qa` or `merge`, unless every commit since
@@ -195,7 +195,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
     repository run lock (pid N)") and the plain list print a one-line notice; the board page shows the
     same text and keeps Start disabled. Token budget: `limits.max_tokens` and `max_tokens_per_card`
     count input + output + cache_write (`State.run_budget`, `card_tokens`); `cache_read` is recorded
-    and shown but not counted (0.27.0).
+    and shown but not counted (0.27.0). The status carries `run_budget` (`tokens`, `partial` over the
+    counted keys only, `cap`, `label`), shown by `supervisor status` and the board's token strip.
   - Release rules: refused for a card with no current finding unless `--force`, for a
     `live_orphan` (stop that process group first) and for a card locked by a running process.
     in_progress -> ready without a PR, else in_review. merging: PR merged -> stays in merging,

@@ -363,7 +363,7 @@ Usage errors exit 2 instead: `unknown flag: <flag>`, `unknown role: <role>`, `ca
 
 - Edit code or tests in the review worktree, except a temporary mutant that you revert with `git checkout -- <file>` before the next step.
 - Commit, push, or create or delete branches.
-- Move a card, write the manager note, or change a card's labels or fields (no `board-move`, `board-note`; on the local board a card changes state only through `board-move.sh`).
+- Move a card, write the card's manager note, or change a card's labels or fields (no `board-move`, `board-note`; on the local board a card changes state only through `board-move.sh`).
 - Merge a PR (`gh pr merge`), mark it ready (`gh pr ready`), or change the PR's state in any other way.
 - Leave a mutation in place. Revert every mutation before posting the report, and `git status --porcelain` in the review worktree must print nothing at the end.
 - Mutate test files, or mutate the review worktree when `worktrees.mutate_on_copy` is true.

@@ -391,6 +391,15 @@ def _human_status(status):
     lines.append("active: %d" % len(active))
     for action in active:
         lines.append("  card %s: %s (%s)" % (action.get("card"), action.get("action"), action.get("provider")))
+    budget = status.get("run_budget")
+    if isinstance(budget, dict) and isinstance(budget.get("tokens"), int):
+        label = budget.get("label") or "counted toward limits.max_tokens"
+        cap = budget.get("cap")
+        if isinstance(cap, (int, float)) and not isinstance(cap, bool):
+            text = "budget: %d of %d tokens %s (cache reads not counted)" % (budget["tokens"], cap, label)
+        else:
+            text = "budget: %d tokens %s (no limit; cache reads not counted)" % (budget["tokens"], label)
+        lines.append(text + (" [partial]" if budget.get("partial") else ""))
     return "\n".join(lines)
 
 

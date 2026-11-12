@@ -53,7 +53,7 @@ bash <path> stop --cancel    # end every session now and return each card to its
 | Key | Default | What happens |
 |---|---|---|
 | `limits.max_hours` | `8` | after this many hours the supervisor drains and exits; `0` turns it off |
-| `limits.max_tokens` | `20000000` | once this run's known input, output and cache-write tokens reach it, admissions pause (running sessions finish); cache reads are shown but not counted |
+| `limits.max_tokens` | `20000000` | once this run's known input, output and cache-write tokens reach it, admissions pause (running sessions finish); cache reads are shown but not counted. `supervisor status` and the board show the counted figure as the Budget line |
 | `limits.max_tokens_per_card` | `null` | a card whose input, output and cache-write tokens in this run reach it gets no new action; cache reads are shown but not counted |
 | `limits.concurrency` | `6` | role sessions running at once |
 | `supervisor.provider_concurrency` | `{}` | a cap per provider (`claude` or a provider name) |

@@ -39,6 +39,7 @@ def ledger_column(action):
 
 # The token counts the budget limits count: cache reads are left out (owner decision, 0.27.0).
 BUDGET_KEYS = ('input', 'output', 'cache_write')
+BUDGET_LABEL = 'counted toward limits.max_tokens'
 
 
 class State:
@@ -57,6 +58,8 @@ class State:
         # The token budget (limits.max_tokens, limits.max_tokens_per_card) counts input + output + cache_write;
         # cache reads are recorded and shown (run_tokens, the ledger) but not counted. Not part of the snapshot.
         self.run_budget = 0
+        self.budget_unknown = 0   # actions with an unknown count among BUDGET_KEYS (an unknown cache read is not)
+        self.budget_cap = None    # limits.max_tokens as the loop last read it (None: no limit)
         self.card_tokens = {}   # card -> known budget tokens spent in this run
         self.events = deque(maxlen=500)
         self._sequence = 0
@@ -154,9 +157,19 @@ class State:
             run['partial'] = run['unknown'] > 0
             budget = sum(counts.get(k) or 0 for k in BUDGET_KEYS)
             self.run_budget += budget
+            if any(counts.get(k) is None for k in BUDGET_KEYS):
+                self.budget_unknown += 1
             if card is not None:
                 self.card_tokens[card] = self.card_tokens.get(card, 0) + budget
             self._bump()
+
+    def set_budget_cap(self, cap):
+        """Record limits.max_tokens for the status (None or a non-positive value: no limit)."""
+        cap = cap if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0 else None
+        with self._lock:
+            if cap != self.budget_cap:
+                self.budget_cap = cap
+                self._bump()
 
     def event(self, type, **payload):
         with self._lock:
@@ -183,4 +196,6 @@ class State:
                 'lane': self._action_dict(self.lane),
                 'provider_health': self.provider_health,
                 'run_tokens': self.run_tokens,
+                'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,
+                               'label': BUDGET_LABEL},
             })

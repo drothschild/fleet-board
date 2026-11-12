@@ -45,7 +45,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
        - Wrong branch: `git -C <worktree> branch --show-current | grep -cx '<branch>'` prints `0`.
    - Never invent a PR number, a commit, a test file or a test command for this report.
 
-3. **Resume from the manager note on a continuation.** When the manager note records a PR, confirm it with `gh pr view <number> --json number,headRefName,isDraft,state` and treat that PR as the card's PR.
+3. **Resume from the card's manager note on a continuation.** When the card's manager note records a PR, confirm it with `gh pr view <number> --json number,headRefName,isDraft,state` and treat that PR as the card's PR.
    - Read `git -C <worktree> log` to see which commits already exist on the branch. Do not redo committed work.
    - Never rewrite or reorder existing commits.
 
@@ -79,7 +79,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
    - When no PR exists, write the PR body with the Write tool to a path `mktemp` printed, never inside a Bash command (no heredoc, `echo`, `printf` or `cat`) and never as an inline `--body`. If the Write tool refuses the file because it has not been read, read it once with the Read tool and write it again, at the same path. The body names the card with the line `Local board card <card number>`.
    - Take the PR title from the card; when the card title holds a closing keyword before an issue reference, leave that reference out of the PR title.
    - Then check and open in ONE Bash call: `bash <scripts dir>/pr-body-check.sh <path> && gh pr create --draft --head <branch> --title <title> --body-file <path>`. When the check fails, fix the file and repeat that call.
-   - When the manager note (or the check in step 3) shows a PR already exists, only push to that PR's branch and open no new PR.
+   - When the card's manager note (or the check in step 3) shows a PR already exists, only push to that PR's branch and open no new PR.
    - Afterwards, `gh pr view <number> --json isDraft` reports `true`.
 
 10. **Record measured evidence in the report.**

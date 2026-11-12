@@ -572,11 +572,13 @@ class Supervisor:
         (running sessions finish). Cache reads are shown but not counted. Checked every cycle, so lowering the
         limit, or resuming without raising it, pauses again."""
         cap = self._limit('max_tokens', 0)
+        self.state.set_budget_cap(cap)
         total = self.state.run_budget
         if cap <= 0 or total < cap:
             return False
         if self.state.mode == 'running':
-            partial = ' (known tokens only)' if self.state.run_tokens.get('partial') else ''
+            # partial over the counted keys only: an unknown cache read does not make the budget a lower bound
+            partial = ' (known tokens only)' if self.state.budget_unknown else ''
             self.state.pause('token limit reached: %d of limits.max_tokens %d (cache reads not counted)%s'
                              % (total, cap, partial))
         return True

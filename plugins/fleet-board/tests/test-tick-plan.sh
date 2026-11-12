@@ -846,11 +846,11 @@ assert_jq "conflict failures: action_failures at review.max_rounds on a conflict
 
 # ---------------------------------------------------------------------------
 # settle mode: tick-plan.sh --settle-merge <n>... (merge-reviewed.sh's planner) plans only the steps that
-# start no agent, plus merge and verify_main. The by-hand --settle flag went with settle.sh (0.27.0).
+# start no agent, plus merge and verify_main. The by-hand --settle flag went with the by-hand settle script (0.27.0).
 # settle <case> <n> [extra YAML]: set up the case and run --settle-merge <n>
 settle() { local c="$1" n="$2"; shift 2; setup_case "$c" "$@"; run_check "$SCRIPT" --settle-merge "$n"; }
 setup_case in-review-fix; run_check "$SCRIPT" --settle 12
-assert_exit "--settle is gone (settle.sh was its only caller): exit" 2
+assert_exit "--settle is gone (the by-hand settle script was its only caller): exit" 2
 
 settle in-review-human-qa-path 12
 assert_exit "settle: clean review needing human QA: exit" 0

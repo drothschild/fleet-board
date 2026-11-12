@@ -147,7 +147,7 @@
 # reason "<action> waits for the next tick". A settle plan always has
 # dispatchable false. A plan without --settle-merge never emits move_to_review.
 # Settle mode also keeps merge and verify_main actions (merge-reviewed.sh carries them out and
-# ignores every other action). The by-hand --settle flag went with settle.sh in 0.27.0.
+# ignores every other action). The by-hand --settle flag went with the by-hand settle script in 0.27.0.
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle-merge has no card or a non-numeric card.
 #

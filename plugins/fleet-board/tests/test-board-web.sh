@@ -348,11 +348,13 @@ if setup_case; then
   api POST /api/run/start;          assert_code 404
   api POST /api/run/stop;           assert_code 404
   # no stop file of any name anywhere under the repo or the log dir (the old tick-stop file included),
-  # before and after a Stop; a missing directory fails rather than reads as "nothing found"
+  # before and after a Stop; a missing repo fails rather than reads as "nothing found" (the log dir is
+  # searched when it exists: with no supervisor run, nothing creates it)
   no_stop_file() { # <label>
     local d out=""
+    if [ ! -d "$REPO" ]; then fail "$1" "$REPO is missing"; return; fi
     for d in "$REPO" "$TMP/logs"; do
-      if [ ! -d "$d" ]; then fail "$1" "$d is missing"; return; fi
+      [ -d "$d" ] || continue
       out="$out$(find "$d" -name .git -prune -o -name '*stop*' -print 2>&1)"
     done
     if [ -z "$out" ]; then pass "$1"; else fail "$1" "$(printf '%s' "$out" | tr '\n' ' ')"; fi
