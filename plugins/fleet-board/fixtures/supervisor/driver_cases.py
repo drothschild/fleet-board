@@ -28,10 +28,13 @@ def fail_with(stderr, rc=1):
 
 class Board:
     def __init__(self, base, config=None):
-        self.root = Path(base) / 'repo'
+        self.root = Path(base).resolve() / 'repo'
         self.root.mkdir()
         subprocess.run(['git', '-C', str(self.root), 'init', '-q'], check=True)
-        (self.root / '.fleet-board.yml').write_text('board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n')
+        (self.root / '.fleet-board.yml').write_text(
+            'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nreview:\n  stages:\n'
+            '    - name: security\n      agent: sec-reviewer\n      model: opus\n'
+            '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n')
         (self.root / '.fleet-board' / 'cards').mkdir(parents=True)
         (self.root / '.fleet-board' / 'next').write_text('100\n')
         self.env = {'FLEET_BOARD_USER': 'fleet-bot'}
