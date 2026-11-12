@@ -232,4 +232,36 @@ rm -rf "$L1"
   fb_lock_acquire "$L1" 1 ) >/dev/null 2>&1; r=$?
 if [ "$r" != 0 ] && [ ! -e "$L1" ]; then ok "a failed pid rename fails and removes our own lock"; else bad "a failed pid rename: exit $r, lock left: $([ -e "$L1" ] && echo yes || echo no)"; fi
 rm -rf "$L1" "$L1".*
+
+# --- Fix round 2 -----------------------------------------------------------------
+
+# The temp pid write itself fails (ENOSPC, EROFS, EACCES): our own pid-less lock
+# must not be left behind, and the next waiter takes the lock.
+L2="$T/pidw2.lock"
+( . "$S/board-lib.sh"
+  printf() { if [ "$1" = '%s\n' ] && [ "$2" = "$$" ]; then return 1; fi; builtin printf "$@"; }
+  fb_lock_acquire "$L2" 1 ) >/dev/null 2>&1; r=$?
+if [ "$r" != 0 ] && [ ! -e "$L2" ]; then ok "a failed temp pid write fails and leaves no pid-less lock"; else bad "a failed temp pid write: exit $r, left at the lock path: [$(ls -A "$L2" 2>/dev/null | tr '\n' ' ')] exists=$([ -d "$L2" ] && echo yes || echo no)"; fi
+out=$( ( . "$S/board-lib.sh"; fb_lock_acquire "$L2" 1 && echo acquired ) 2>&1 )
+case "$out" in *acquired*) ok "after a failed temp pid write the next waiter takes the lock" ;; *) bad "after a failed temp pid write the lock is wedged: $out" ;; esac
+rm -rf "$L2" "$L2".*
+
+# Release leaves a lock whose pid names another live process
+L3="$T/rel3.lock"; mkdir -p "$L3"; sleep 30 & lp=$!; echo "$lp" > "$L3/pid"
+( . "$S/board-lib.sh"; fb_lock_release "$L3" ) >/dev/null 2>&1
+if [ "$(cat "$L3/pid" 2>/dev/null)" = "$lp" ]; then ok "release leaves a lock that another live process holds"; else bad "release removed a lock held by another live process"; fi
+kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null; rm -rf "$L3" "$L3".*
+
+# A live owner this process cannot signal (pid 1: kill -0 gives EPERM) is alive
+if [ "$(id -u)" = 0 ]; then
+  echo "ok - # skip EPERM owner test: running as root, so kill -0 1 succeeds and cannot show EPERM"
+else
+  for kind in fb fl; do
+    lock=$FB; [ $kind = fl ] && lock=$FL
+    mkdir -p "$lock"; echo 1 > "$lock/pid"
+    out=$(FLEET_BOARD_LOCK_WAIT=1 run_$kind)
+    case "$out" in *acquired*) bad "$kind: a lock owned by a live process we cannot signal (EPERM) was taken over" ;; *) ok "$kind: a lock owned by a live process we cannot signal (EPERM) is kept" ;; esac
+    rm -rf "$lock"
+  done
+fi
 exit $fail
