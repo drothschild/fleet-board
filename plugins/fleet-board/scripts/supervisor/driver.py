@@ -25,7 +25,7 @@ from collections import namedtuple
 from pathlib import Path
 
 from . import markers as _markers, paths, resolver, roles as _roles, scripts, usage as _usage
-from .state import Action
+from .state import Action, ledger_column
 
 Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
@@ -704,6 +704,8 @@ class CardDriver:
 
     def _launch(self, run):
         c, d = run.c, run.dispatch
+        if run.prior:
+            run.action.work_column = run.prior   # the column the card is in while the role works
         sup = c.config.get('supervisor') or {}
         env = dict(os.environ)
         env.update(self.env)
@@ -783,7 +785,7 @@ class CardDriver:
         u = result.usage
         counts = {'input': getattr(u, 'input', None), 'output': getattr(u, 'output', None),
                   'cache_write': getattr(u, 'cache_write', None), 'cache_read': getattr(u, 'cache_read', None)}
-        line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': action.column,
+        line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': ledger_column(action),
                 'action': ('review_' + run.stage) if run.stage else action.action, 'role': action.role,
                 'provider': action.provider, 'model': getattr(u, 'model', None), 'started_at': _iso(action.started_at),
                 'ended_at': _iso(self.clock()), 'log': result.log_path, **counts}

@@ -82,7 +82,7 @@ class MergeLane:
         board_dir = self.board_dir() if callable(self.board_dir) else self.board_dir
         action = Action(card=number, action='merge', column=column, role=None, provider='scripts',
                         paths=list(candidate.get('declared_paths') or []), started_at=self.clock(),
-                        started_mono=time.monotonic(), kind='merge', marker=markers.path(self.root, board_dir, number))
+                        started_mono=time.monotonic(), kind='merge', work_column='merging', marker=markers.path(self.root, board_dir, number))
         self.state.begin(action)
         try:
             if column != 'merging':

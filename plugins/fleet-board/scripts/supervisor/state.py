@@ -11,7 +11,7 @@ from typing import Any, Optional
 from . import markers, scopes
 
 DUPLICATE_ADMISSION = 'card already active'  # begin() refuses a second action for a card; loop.py matches it
-_PRIVATE = ('session', 'marker', 'pgid')     # Action fields kept out of the snapshot
+_PRIVATE = ('session', 'marker', 'pgid', 'work_column')     # Action fields kept out of the snapshot
 
 
 @dataclass
@@ -28,6 +28,13 @@ class Action:
     kind: str = 'role'  # "role" | "script" | "merge"
     marker: Any = None  # the card's active marker path once a session or merge child was launched
     pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
+    work_column: Any = None  # the column the card is in while the role or script works (after the action's move)
+
+
+def ledger_column(action):
+    """The ledger's column for an action: where the card is while the work runs, not `column` (the card's state
+    when the planner saw it, which a cancel restores)."""
+    return action.work_column or action.column
 
 
 class State:
