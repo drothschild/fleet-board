@@ -242,7 +242,7 @@ if setup_case; then
   assert_code 200
   assert_body "board states start with backlog" '.states[0].key' backlog
   assert_body "board states carry display names" '.states[0].name' Backlog
-  assert_body "board has 8 states" '.states|length' 8
+  assert_body "board has 9 states" '.states|length' 9
   assert_body "board lists 3 cards" '.cards|length' 3
   assert_body "card 2 note pr" '.cards[]|select(.number==2)|.note.pr' 41
   assert_body "card 2 note round" '.cards[]|select(.number==2)|.note.round' 1
@@ -656,7 +656,7 @@ fixture="$IMPORT_FIXTURE"
 [ -e "$FAKE_CLAUDE_DIR/fixture" ] && fixture="$(cat "$FAKE_CLAUDE_DIR/fixture")"
 cp "$fixture" "$dest"
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"grouped into 2 cards"}]}}'
-echo '{"type":"result","result":"done"}'
+echo '{"type":"result","result":"done","usage":{"input_tokens":7,"output_tokens":4,"cache_creation_input_tokens":2,"cache_read_input_tokens":1}}'
 EOF
 chmod +x "$FAKE_IMPORT_CLAUDE"
 export FLEET_BOARD_CLAUDE="$FAKE_IMPORT_CLAUDE" FAKE_CLAUDE_DIR IMPORT_FIXTURE
@@ -686,6 +686,26 @@ if setup_case; then
   assert_body "last_text is the last assistant text" '.last_text' 'grouped into 2 cards'
   assert_body "elapsed_s is a number" '.elapsed_s|type' number
   assert_body "ready import has no error" '.error' null
+  api GET /api/import/fixed; api GET /api/import/fixed   # repeated polls must not re-record
+  if [ "$(grep -c '"action":"import_preview"' "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)" = 1 ] \
+     && grep '"action":"import_preview"' "$REPO/.fleet-board/usage.jsonl" | jq -e '.kind=="planner" and .card==null and .role==null and .provider=="claude" and .input==7 and .output==4 and .cache_write==2 and .cache_read==1' >/dev/null 2>&1; then
+    pass "import preview recorded exactly once as a planner line"
+  else
+    fail "import preview recorded exactly once as a planner line" "ledger: $(cat "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)"
+  fi
+  # a failed ledger append drops the marker so the next poll retries; the line is recorded once, with the
+  # session's own times (started_at = meta created_at, ended_at = session.jsonl mtime, not the poll time)
+  IDIR="$TMP/logs/web/acme-toy/imports/fixed"
+  rm -f "$REPO/.fleet-board/usage.jsonl" "$IDIR/usage.recorded"
+  mkdir "$REPO/.fleet-board/usage.jsonl"            # an append to a directory fails
+  python3 -c 'import os,sys; os.utime(sys.argv[1], (1577836800, 1577836800))' "$IDIR/session.jsonl"
+  api GET /api/import/fixed
+  if [ ! -e "$IDIR/usage.recorded" ]; then pass "a failed import usage append leaves no marker"; else fail "a failed import usage append leaves no marker" "marker exists"; fi
+  rmdir "$REPO/.fleet-board/usage.jsonl"
+  api GET /api/import/fixed; api GET /api/import/fixed
+  if [ "$(grep -c '"action":"import_preview"' "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)" = 1 ]; then pass "a failed import append is retried on the next poll and recorded once"; else fail "a failed import append is retried on the next poll and recorded once" "ledger: $(cat "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)"; fi
+  created="$(jq -r .created_at "$IDIR/meta.json")"
+  if grep '"action":"import_preview"' "$REPO/.fleet-board/usage.jsonl" | jq -e --arg c "$created" '.started_at==$c and .ended_at=="2020-01-01T00:00:00Z"' >/dev/null 2>&1; then pass "import line carries the session's started_at and ended_at"; else fail "import line carries the session's started_at and ended_at" "created $created; ledger: $(cat "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)"; fi
   if [ "$(find "$TMP/logs/web/acme-toy/imports/fixed" -name plan.md | wc -l | tr -d ' ')" = 1 ]; then pass "plan.md is kept in the import dir"; else fail "plan.md is kept in the import dir" "missing"; fi
   api GET /api/board;               assert_body "no card created before the create request" '[.cards[]|select(.state=="ready")]|length' 0
   api POST /api/import/fixed/create '{"embed_docs":true}';   assert_code 200
@@ -865,7 +885,7 @@ echo 1 > "$STAGES_REPO/.fleet-board/next"
 if start_server "$STAGES_REPO"; then
   api GET /api/board
   assert_code 200
-  assert_body "stages repo has 9 states" '.states|length' 9
+  assert_body "stages repo has 10 states" '.states|length' 10
   assert_body "review_security follows in_review" '[.states[].key]|index("in_review") as $i|.[$i+1]' review_security
   assert_body "review_security display name" '.states[]|select(.key=="review_security")|.name' 'Review: security'
   stop_server

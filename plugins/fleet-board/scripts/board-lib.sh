@@ -5,7 +5,7 @@
 # Exports: FLEET_CFG, FLEET_ROOT, FLEET_REPO, FLEET_SCRIPTS (set by fb_load_config)
 # FB_LOCK is set by fb_lock and used with trap EXIT to clean up
 
-FB_STATES_FIXED="backlog ready in_progress in_review human_qa blocked done wont_do"
+FB_STATES_FIXED="backlog ready in_progress in_review merging human_qa blocked done wont_do"
 FB_STATES="$FB_STATES_FIXED"
 FB_MARKER='<!-- fleet-board:manager-note -->'
 # With CDPATH exported, a relative cd can land in a CDPATH directory and echo
@@ -40,12 +40,13 @@ fb_set_states() {
 
 # fb_mark_active <n>: touches <board.dir>/active/<n>
 # (the web board lights the card while a role works on it) and sets
-# FB_ACTIVE_FILE to it. A failure is a warning, never an error. Needs the
-# config loaded.
+# FB_ACTIVE_FILE to it. An existing marker is never truncated: the
+# supervisor writes the session's process group into it. A failure is a
+# warning, never an error. Needs the config loaded.
 fb_mark_active() {
   . "$FB_SCRIPTS/adapters/local/local-lib.sh"
   local d; d="$(fl_active_dir)"
-  if mkdir -p "$d" 2>/dev/null && : > "$d/$1" 2>/dev/null; then
+  if mkdir -p "$d" 2>/dev/null && : >> "$d/$1" 2>/dev/null; then
     FB_ACTIVE_FILE="$d/$1"
   else
     printf 'fleet-board: warning: cannot write the active marker for #%s\n' "$1" >&2
@@ -160,6 +161,7 @@ fb_default_name() {
     ready) echo "Ready" ;;
     in_progress) echo "In Progress" ;;
     in_review) echo "In Review" ;;
+    merging) echo "Merging" ;;
     human_qa) echo "Human QA" ;;
     blocked) echo "Blocked" ;;
     done) echo "Done" ;;

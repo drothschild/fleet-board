@@ -376,6 +376,78 @@ assert_jq "merged-verify: dispatchable" '.dispatchable' 'true'
 plan merged-finish
 assert_jq "merged-finish: action" "$(card 12 action)" '"finish"'
 
+# merging (merge.policy auto only): the column is planned, with its own rows
+AUTO="$(printf 'merge:\n  policy: auto')"
+STAGES_ADVISORY_YAML="$(printf '%s\n' 'review:' '  stages:' '    - name: security' '      agent: "acme:sec"' '      model: opus' '    - name: ux' '      agent: ux-reviewer' '      model: sonnet' '      advisory: true')"
+plan merging-open-merge "$AUTO"
+assert_jq "merging-open-merge: action" "$(card 12 action)" '"merge"'
+assert_jq "merging-open-merge: state" "$(card 12 state)" '"merging"'
+assert_jq "merging-open-merge: head sha for the merge" "$(card 12 head_sha)" '"abc1234"'
+assert_jq "merging-open-merge: dispatchable" '.dispatchable' 'true'
+
+plan merging-open-no-marker "$AUTO"
+assert_jq "merging-open-no-marker: open PR, nothing in flight, plans merge" "$(card 12 action)" '"merge"'
+
+plan merging-open-in-flight "$AUTO"
+assert_jq "merging-open-in-flight: action" "$(card 12 action)" '"skip"'
+assert_jq "merging-open-in-flight: reason" "$(card 12 reason)" '"merge in flight or refused; supervisor decides"'
+
+plan merging-open-head-moved "$AUTO"
+assert_jq "merging-open-head-moved: a head other than the journaled one is not merged" "$(card 12 action)" '"skip"'
+
+plan merging-open-head-unreviewed "$AUTO"
+assert_jq "merging-open-head-unreviewed: head moved since the review plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging-open-head-unreviewed: reason" "$(card 12 reason)" '"PR head def5678 differs from the reviewed head abc1234; supervisor decides"'
+plan merging-open-red "$AUTO"
+assert_jq "merging-open-red: red checks plan skip" "$(card 12 action)" '"skip"'
+assert_jq "merging-open-red: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-open-draft "$AUTO"
+assert_jq "merging-open-draft: a draft PR plans skip" "$(card 12 action)" '"skip"'
+plan merging-open-merge "$(printf 'merge:\n  policy: human')"
+assert_jq "merging-open-merge: merge.policy human plans skip" "$(card 12 action)" '"skip"'
+
+# merging after a review of an advisory stage with findings: the findings count as clean
+plan merging-advisory-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging-advisory-last: an advisory stage's findings do not stop the merge" "$(card 12 action)" '"merge"'
+plan merging-blocking-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging-blocking-last: a non-advisory stage's findings still skip" "$(card 12 action)" '"skip"'
+
+plan merging-merged-verify "$AUTO"
+assert_jq "merging-merged-verify: action" "$(card 12 action)" '"verify_main"'
+
+# A merged, verified merging card finishes only after the merger reported done for this merge
+plan merging-merged-finish "$AUTO"
+assert_jq "merger gate: merged and verified with no merger result plans after_merge" "$(card 12 action)" '"after_merge"'
+assert_jq "merger gate: after_merge is dispatchable" '.dispatchable' 'true'
+plan merging-merged-merger-done "$AUTO"
+assert_jq "merger gate: merger done for this head plans finish" "$(card 12 action)" '"finish"'
+plan merging-merged-merger-attention "$AUTO"
+assert_jq "merger gate: merger attention plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merger gate: attention reason" "$(card 12 reason)" '"merger needs attention; a person decides"'
+plan merging-merged-merger-refusal "$AUTO"
+assert_jq "merger gate: a refusal-mode merger record is no after-merge result" "$(card 12 action)" '"after_merge"'
+setup_case merging-merged-finish "$AUTO"; run_check "$SCRIPT" --candidates
+assert_jq "merger gate: --candidates carries after_merge" '[.candidates[] | select(.number == 12) | .action]' '["after_merge"]'
+
+plan merging-closed-block "$AUTO"
+assert_jq "merging-closed-block: action" "$(card 12 action)" '"block"'
+assert_jq "merging-closed-block: reason" "$(card 12 reason)" '"PR #34 closed without a merge"'
+
+# a merging card is settled: settle keeps merge and verify_main when --settle-merge
+setup_case merging-merged-verify "$AUTO"; run_check "$SCRIPT" --settle-merge 12
+assert_jq "settle-merge: a merging card plans verify_main" "$(card 12 action)" '"verify_main"'
+setup_case merging-open-merge "$AUTO"; run_check "$SCRIPT" --settle-merge 12
+assert_jq "settle-merge: a merging card plans merge" "$(card 12 action)" '"merge"'
+settle_skips_merging() { setup_case "$1" "$AUTO"; run_check "$SCRIPT" --settle "$2"; }
+settle_skips_merging merging-merged-finish 12
+assert_jq "settle: a merging card's finish waits for the next tick" "$(card 12 action)" '"skip"'
+setup_case merging-closed-block "$AUTO"; run_check "$SCRIPT" --settle 12
+assert_jq "settle: a merging card with a closed PR blocks" "$(card 12 action)" '"block"'
+
+# a merging card appears in the plan's cards without the settle flags (it is listed)
+plan merging-open-merge "$AUTO"
+assert_jq "merging is listed in the plan" '[.cards[].number]' '[12]'
+
 # in_review with no PR known: skip, never dispatch a reviewer at nothing
 plan in-review-no-pr
 assert_jq "in-review-no-pr: action" "$(card 12 action)" '"skip"'
@@ -832,7 +904,9 @@ assert_exit "settle: a non-numeric second card exits 2" 2
 # merge of main whose conflict a person resolved), clean (a merge of main with
 # no conflict) or nonmerge (an ordinary commit).
 plan_real() {
-  local kind="$1" b0 r m h dir main_msg
+  local kind="$1" b0 r m h dir main_msg mrg="${2:-}" qa="${3:-}" issue=in_review inrev=list-in_review-12.json files=files-plain.json
+  [ -z "$mrg" ] || { issue=merging; inrev=empty.json; }
+  [ -z "$qa" ] || files=files-components.json
   setup_case drift-clean "$(printf 'merge:\n  policy: auto')"
   dir="$FAKE_GH_DIR/real"; mkdir -p "$dir"
   printf 'base\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -q -m "add f"
@@ -865,15 +939,17 @@ plan_real() {
   jq -n --arg h "$h" '{isDraft: false, state: "OPEN", mergedAt: null, headRefOid: $h,
     statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}]}' > "$dir/pr.json"
   sed -e "s/abc1234/$r/g" -e 's/\\"important\\":1/\\"important\\":0/' "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"
+  if [ -n "$mrg" ]; then sed -i.bak 's/\\"state\\":\\"in_review\\"/\\"state\\":\\"merging\\"/' "$dir/comments.json"; fi
   {
     printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
-    printf 'api repos/acme/toy/issues/12\t0\t%s/common/issue-12-in_review.json\n' "$TICK"
+    printf 'api repos/acme/toy/issues/12\t0\t%s/common/issue-12-%s.json\n' "$TICK" "$issue"
     printf 'api --paginate repos/acme/toy/issues/12/comments\t0\t%s/comments.json\n' "$dir"
     printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr.json\n' "$dir"
-    printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$TICK"
+    printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/common/%s\n' "$TICK" "$files"
     printf 'issue list --repo acme/toy --label fleet:ready *\t0\t%s/common/empty.json\n' "$TICK"
     printf 'issue list --repo acme/toy --label fleet:in_progress *\t0\t%s/common/empty.json\n' "$TICK"
-    printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s/common/list-in_review-12.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s/common/%s\n' "$TICK" "$inrev"
+    printf 'issue list --repo acme/toy --label fleet:merging *\t0\t%s/common/list-merging-12.json\n' "$TICK"
     printf 'issue list --repo acme/toy --label fleet:blocked *\t0\t%s/common/empty.json\n' "$TICK"
     printf 'api repos/acme/toy/compare/%s...%s\t0\t%s/compare.json\n' "$r" "$h" "$dir"
     printf 'api repos/acme/toy/commits/%s\t0\t%s/commit.json\n' "$h" "$dir"
@@ -893,6 +969,19 @@ assert_jq "merge-only-reviewed: only a clean merge of main after last_review pla
 plan_real nonmerge
 assert_exit "merge-only-reviewed: non-merge commit: exit" 0
 assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
+
+# A merging card keeps the review row's drift allowance: a head moved only by a clean
+# merge of main stays mergeable, unless the PR now needs human QA
+plan_real clean merging
+assert_exit "merging drift: clean merge of main: exit" 0
+assert_jq "merging drift: head moved only by a clean merge of main plans merge" "$(card 12 action)" '"merge"'
+plan_real clean merging qa
+assert_jq "merging drift: the same head needing human QA plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging drift: that skip ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan_real conflict merging
+assert_jq "merging drift: a conflict-resolving merge of main plans skip" "$(card 12 action)" '"skip"'
+plan_real nonmerge merging
+assert_jq "merging drift: a non-merge commit after the review plans skip" "$(card 12 action)" '"skip"'
 
 # Scope overlap and one merge per tick. Fixtures are built at run time.
 # scope_issue <dir> <n> <label> <scope section text, or NONE>: writes the issue
@@ -1336,7 +1425,7 @@ setup_case ready-start
 candidate_empty_human_qa_route
 run_check "$SCRIPT" --candidates
 assert_exit "candidate mode: exit" 0
-assert_jq "candidate mode: schema version" '.schema_version' '1'
+assert_jq "candidate mode: schema version" '.schema_version' '2'
 assert_jq "candidate mode: action parity" '.candidates[0].action' '"start"'
 assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | [has("preconditions"), has("declared_paths"), has("actual_paths"), has("scope_complete"), has("dependencies"), has("stage"), has("head_sha"), has("round"), has("priority"), has("state_revision")])' '[true,true,true,true,true,true,true,true,true,true]'
 assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
@@ -1361,10 +1450,108 @@ assert_jq "candidate mode: malformed labels fail closed" '.candidates[0].action'
 assert_jq "candidate mode: malformed labels report attention" '.candidates[0].reason' '"lookup failed: board-read.sh 12 (malformed labels)"'
 assert_jq "candidate mode: malformed labels do not start work" '[.candidates[] | select(.action == "start")] | length' '0'
 
+# Candidate rows carry the dispatch fields the full plan row has.
+setup_case in-review-fix
+candidate_empty_human_qa_route
+run_check "$SCRIPT" --candidates
+assert_exit "candidates_carry_dispatch_fields: exit" 0
+assert_jq "candidates_carry_dispatch_fields: schema version" '.schema_version' '2'
+assert_jq "candidates_carry_dispatch_fields: branch" '.candidates[0].branch' '"fleet/12-add-subtract"'
+assert_jq "candidates_carry_dispatch_fields: pr" '.candidates[0].pr' '34'
+assert_jq "candidates_carry_dispatch_fields: fixer model" '.candidates[0].models.fixer' '"sonnet"'
+assert_jq "candidates_carry_dispatch_fields: every field present" '(.candidates[0] | [has("title"),has("state"),has("branch"),has("worktree"),has("pr"),has("models"),has("escalated"),has("findings"),has("waiting_on"),has("needs_human_qa"),has("comment_needed"),has("lint"),has("lint_marker")] | all)' 'true'
+
+plan_note "$CONFLICT_NOTE"
+candidate_empty_human_qa_route
+run_check "$SCRIPT" --candidates
+assert_exit "candidates_carry_conflict_findings: exit" 0
+assert_jq "candidates_carry_conflict_findings: first finding" '.candidates[0].findings[0].text' '"merge conflict in src/calc.js"'
+
 run_check "$SCRIPT" --unknown-mode
 assert_exit "candidate mode: invalid mode rejected" 2
 run_check "$SCRIPT" --candidates --settle 12
 assert_exit "candidate mode: cannot combine with settle" 2
+
+# merge.ignore_checks: a red check whose name matches an unexpired entry counts as green
+IGN_YAML() { # IGN_YAML <until-lint> <until-legacy>
+  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: "docs lint is flaky"\n      until: %s\n    - name: "ci/legacy-?int"\n      reason: "legacy status"\n      until: %s\n' "$1" "$2"
+}
+export FLEET_BOARD_TODAY=2026-11-11
+for row in in-review merging; do
+  plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-11)"
+  assert_jq "$row-ignore: unexpired entries (through today) plan merge" "$(card 12 action)" '"merge"'
+  assert_jq "$row-ignore: the planner lists the checks it ignored" "$(card 12 ignored_checks)" \
+    '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11"}]'
+  assert_jq "$row-ignore: no expiry warning" '.warnings' '[]'
+  plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
+  assert_jq "$row-ignore-expired: an expired entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  assert_jq "$row-ignore-expired: warning names the entry and its date" '.warnings' '["merge.ignore_checks entry ci/legacy-?int expired 2026-11-10"]'
+  plan $row-ignore-pending "$(IGN_YAML 2026-12-31 2026-12-31)"
+  assert_jq "$row-ignore-pending: a pending check never counts as green" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  plan $row-ignore-other-red "$(IGN_YAML 2026-12-31 2026-12-31)"
+  assert_jq "$row-ignore-other-red: a red check no entry matches still blocks" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+done
+plan in-review-merge-auto "$AUTO"
+assert_jq "ignore_checks: an ordinary merge ignores nothing" "$(card 12 ignored_checks)" '[]'
+plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)" 
+assert_jq "ignore_checks: case-sensitive glob (unchanged config matches)" "$(card 12 action)" '"merge"'
+plan in-review-ignore-red "$(printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "LINT-*"\n      reason: r\n      until: 2026-12-31\n')"
+assert_jq "ignore_checks: glob matching is case-sensitive" "$(card 12 action)" '"wait"'
+export FLEET_BOARD_TODAY=2027-01-01
+plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)"
+assert_jq "ignore_checks: today is injectable (FLEET_BOARD_TODAY)" "$(card 12 action)" '"wait"'
+unset FLEET_BOARD_TODAY
+
+# A keyed refusal leaves pending_merge at the same head: the planner must not re-plan merge every cycle
+plan merging-refused "$AUTO"
+assert_jq "merge_refusal: a refusal at the current head with no merger decision plans merge_refusal" "$(card 12 action)" '"merge_refusal"'
+plan merging-refused-attention "$AUTO"
+assert_jq "merge_refusal: a merger attention decision plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merge_refusal: attention reason" "$(card 12 reason)" '"merger needs attention; a person decides"'
+plan merging-refused-after-retry "$AUTO"
+assert_jq "merge_refusal: a refusal after a retry decision plans merge_refusal again" "$(card 12 action)" '"merge_refusal"'
+# After a retry decision the merge is planned again, carrying the retry time for the supervisor to hold it
+setup_case merging-retry "$AUTO"; run_check "$SCRIPT" --candidates
+assert_jq "merge retry: the merge is planned again" '[.candidates[] | select(.number == 12) | .action]' '["merge"]'
+assert_jq "merge retry: retry_after is carried" '[.candidates[] | select(.number == 12) | .retry_after]' '["2026-11-11T00:05:00Z"]'
+setup_case merging-open-no-marker "$AUTO"; run_check "$SCRIPT" --candidates
+assert_jq "merge retry: no marker carries retry_after null" '[.candidates[] | select(.number == 12) | .retry_after]' '[null]'
+# Stages are routed per card: a merging card merges once no routed stage remains, and only on a review
+# of its last routed (or visited) stage, or a stage-less review when it was routed to none
+plan merging-stage-remaining "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a card that visited only the first stage, routed to no other, merges" "$(card 12 action)" '"merge"'
+plan merging-routed-first "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a card routed to only the first of two stages merges" "$(card 12 action)" '"merge"'
+plan merging-routed-both "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a routed stage remaining plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging routed stages: the remaining stage is named" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'stage ux')" '1'
+assert_jq "merging routed stages: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-open-merge "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a card routed to no stage merges on its in_review review" "$(card 12 action)" '"merge"'
+setup_case merging-routed-first "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"; run_check "$SCRIPT" --settle-merge 12
+assert_jq "merging routed stages: --settle-merge (merge-reviewed.sh) plans the same merge" "$(card 12 action)" '"merge"'
+# The human-QA question is asked for every merging card with an open PR, not only after its head moved
+plan merging-open-qa "$AUTO"
+assert_jq "merging human QA: a PR needing human QA at the reviewed head plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging human QA: needs_human_qa is asked" "$(card 12 needs_human_qa)" 'true'
+assert_jq "merging human QA: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-open-merge "$AUTO"
+assert_jq "merging human QA: a PR needing none is asked and answers false" "$(card 12 needs_human_qa)" 'false'
+plan merging-stage-remaining "$AUTO"
+assert_jq "merging last stage: a stage record with no stages configured plans skip" "$(card 12 action)" '"skip"'
+plan merging-advisory-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging last stage: the last stage's review still merges" "$(card 12 action)" '"merge"'
+
+# --candidates carries the planner's warnings (schema stays 2)
+export FLEET_BOARD_TODAY=2026-11-11
+setup_case merging-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
+run_check "$SCRIPT" --candidates
+assert_jq "candidates warnings: schema stays 2" '.schema_version' '2'
+assert_jq "candidates warnings: the expired-entry warning is carried" '.warnings' '["merge.ignore_checks entry ci/legacy-?int expired 2026-11-10"]'
+setup_case merging-open-merge "$AUTO"
+run_check "$SCRIPT" --candidates
+assert_jq "candidates warnings: none is an empty list" '.warnings' '[]'
+unset FLEET_BOARD_TODAY
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

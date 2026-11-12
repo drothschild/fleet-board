@@ -232,3 +232,7 @@ Ready cards are considered in ascending card-number order. Each selected start r
 ### Fresh scheduling decisions
 
 After settlement, merge draining and cleanup, the wrapper clears the board cache and reads a new tick plan before deciding whether to stop. This both picks up newly unblocked work and avoids an extra tick when post-tick work emptied the queue. Pending follow-up filing keeps the run active. A failed or malformed refresh stops with `plan-refresh-failed` (exit 1). `FLEET_BOARD_TICK_PLAN` overrides the planner executable for controlled testing.
+
+## The command-line supervisor
+
+A foreground supervisor you start yourself (`scripts/supervisor.sh start`) is replacing the tick wrapper described above. It has no boot registration and no OS service: if you want it unattended, run it under your own terminal multiplexer or service manager. See `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md` for what it does, how it stops and what it will dispatch.

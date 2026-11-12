@@ -439,6 +439,18 @@ run_config "$REPO"
 assert_exit "board.states string exit 5" "5"
 assert_stderr_contains "board.states string gives specific reason" "config.sh: invalid config: board.states must be a map"
 
+# Test 23b: merging is a canonical board.states key
+REPO="$(make_inline_repo <<'YML'
+board:
+  repo: a/b
+  states: { merging: "Landing" }
+YML
+)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO" "board.states.merging"
+assert_exit "board.states.merging exit 0" "0"
+assert_stdout_exact "board.states.merging is read back" "Landing"
+
 # Test 24: KEY lookup that jq cannot evaluate (index into an array by name) exits 2
 REPO="$(make_inline_repo <<'YML'
 board:
@@ -758,21 +770,24 @@ assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"
 REPO="$(make_test_repo supervisor-default.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor defaults accepted" 0
-assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"enabled":false,"start_on_boot":true,"reconcile_interval_seconds":5,"heartbeat_interval_seconds":10,"heartbeat_timeout_seconds":60,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
-REPO="$(make_test_repo supervisor-disabled-boot.yml)"
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
+assert_stdout_exact_jq "supervisor defaults carry no enabled, start_on_boot or heartbeat key" '.supervisor | [has("enabled"), has("start_on_boot"), has("heartbeat_interval_seconds"), has("heartbeat_timeout_seconds")]' '[false,false,false,false]'
+REPO="$(make_test_repo supervisor-caps.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_exit "supervisor enabled with boot disabled and configured caps" 0
-assert_stdout_exact_jq "supervisor booleans preserved" '.supervisor | [.enabled,.start_on_boot]' '[true,false]'
+assert_exit "supervisor with configured caps" 0
 assert_stdout_exact_jq "supervisor provider caps preserved" '.supervisor.provider_concurrency' '{"claude":2,"codex":1}'
+# config.sh checks only the supervisor keys it knows: a stale enabled or start_on_boot is ignored, not rejected.
+for k in enabled start_on_boot heartbeat_interval_seconds; do
+  for v in null 1 '"true"' 0; do
+    REPO="$(printf 'board: { repo: a/b }\nsupervisor: { %s: %s }\n' "$k" "$v" | make_inline_repo)"
+    CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+    assert_exit "supervisor $k: $v is ignored, not validated" 0
+  done
+done
 REPO="$(make_test_repo supervisor-invalid.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor invalid fixture rejected" 5
-for k in enabled start_on_boot; do
-  for v in null 1 '"true"' '[]'; do
-    invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be boolean"
-  done
-done
-for k in reconcile_interval_seconds heartbeat_interval_seconds heartbeat_timeout_seconds progress_timeout_seconds attempt_timeout_seconds shutdown_grace_seconds retry_backoff_seconds aging_seconds; do
+for k in reconcile_interval_seconds progress_timeout_seconds attempt_timeout_seconds shutdown_grace_seconds retry_backoff_seconds aging_seconds; do
   for v in 0 -1 1.5 null '"5"' '[]'; do
     invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be a positive integer"
   done
@@ -783,10 +798,74 @@ invalid_field_case "supervisor unknown cap" 'supervisor: { provider_concurrency:
 for v in 0 -1 1.5 null '"1"' '[]'; do
   invalid_field_case "supervisor cap rejects $v" "supervisor: { provider_concurrency: { claude: $v } }" 'supervisor.provider_concurrency.claude must be a positive integer'
 done
-invalid_field_case "supervisor heartbeat equality" 'supervisor: { heartbeat_interval_seconds: 60, heartbeat_timeout_seconds: 60 }' 'supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds'
-invalid_field_case "supervisor heartbeat less" 'supervisor: { heartbeat_interval_seconds: 61, heartbeat_timeout_seconds: 60 }' 'supervisor.heartbeat_timeout_seconds must exceed heartbeat_interval_seconds'
 invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
+
+# Test 30: token limits. limits.max_tokens is a positive integer (default 20000000);
+# limits.max_tokens_per_card is null or a positive integer (default null).
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "token limits defaults accepted" 0
+assert_stdout_exact_jq "limits.max_tokens defaults to 20000000" '.limits.max_tokens' '20000000'
+assert_stdout_exact_jq "limits.max_tokens_per_card defaults to null" '.limits.max_tokens_per_card' 'null'
+REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens: 500000, max_tokens_per_card: 90000 }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "token limits set accepted" 0
+assert_stdout_exact_jq "limits.max_tokens set" '.limits.max_tokens' '500000'
+assert_stdout_exact_jq "limits.max_tokens_per_card set" '.limits.max_tokens_per_card' '90000'
+for v in 0 -1 1.5 null '"5"' '[]'; do
+  invalid_field_case "max_tokens rejects $v" "limits: { max_tokens: $v }" "limits.max_tokens must be a positive integer"
+done
+for v in 0 -1 1.5 '"5"' '[]'; do
+  invalid_field_case "max_tokens_per_card rejects $v" "limits: { max_tokens_per_card: $v }" "limits.max_tokens_per_card must be null or a positive integer"
+done
+REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens_per_card: null }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "max_tokens_per_card null accepted" 0
+
+# merge.persona (null or a non-empty relative path), merge.persona_append (null or string), models.merger
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+# null: the driver uses .fleet-board/merger.md when present, else the plugin default (a set path is explicit)
+assert_stdout_exact_jq "merge.persona defaults to null" '.merge.persona' 'null'
+assert_stdout_exact_jq "merge.persona_append defaults to null" '.merge.persona_append' 'null'
+assert_stdout_exact_jq "models.merger defaults to sonnet" '.models.merger' '"sonnet"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: null\n  persona_append: "Also run make deploy."\nmodels: { merger: opus }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "merge.persona null with an append accepted" 0
+assert_stdout_exact_jq "merge.persona null kept" '.merge.persona' 'null'
+assert_stdout_exact_jq "merge.persona_append kept" '.merge.persona_append' '"Also run make deploy."'
+assert_stdout_exact_jq "models.merger overridden" '.models.merger' '"opus"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: docs/merger.md\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.persona relative path kept" '.merge.persona' '"docs/merger.md"'
+for v in '""' '/etc/merger.md' '../merger.md' 'a/../b.md' '5' '[x]'; do
+  invalid_field_case "merge.persona rejects $v" $'merge:\n  persona: '"$v" "merge.persona must be null or a non-empty relative path without .."
+done
+for v in '5' '[x]'; do
+  invalid_field_case "merge.persona_append rejects $v" $'merge:\n  persona_append: '"$v" "merge.persona_append must be null or a string"
+done
+invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
+invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
+
+# merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.ignore_checks defaults to []" '.merge.ignore_checks' '[]'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  ignore_checks:\n    - name: "lint-*"\n      reason: flaky docs lint\n      until: 2026-12-31\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "ignore_checks entry accepted" 0
+assert_stdout_exact_jq "ignore_checks entry kept as strings" '.merge.ignore_checks' '[{"name":"lint-*","reason":"flaky docs lint","until":"2026-12-31"}]'
+IGN_MSG="merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+invalid_field_case "ignore_checks missing until" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r' "$IGN_MSG"
+invalid_field_case "ignore_checks missing reason" $'merge:\n  ignore_checks:\n    - name: lint\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks missing name" $'merge:\n  ignore_checks:\n    - reason: r\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks empty reason" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: ""\n      until: 2026-12-31' "$IGN_MSG"
+for d in 2026-13-01 2026-02-30 20261231 2026-1-5 soon 2026-12-31T00:00; do
+  invalid_field_case "ignore_checks bad date $d" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: "'"$d"$'"' "$IGN_MSG"
+done
+invalid_field_case "ignore_checks not a list" $'merge:\n  ignore_checks: lint' "merge.ignore_checks must be a list"
+invalid_field_case "ignore_checks entry not a map" $'merge:\n  ignore_checks:\n    - lint' "$IGN_MSG"
 
 echo ""
 echo "-----------------------------------"

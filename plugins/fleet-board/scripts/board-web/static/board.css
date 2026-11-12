@@ -127,7 +127,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .pill[data-state="stopping"] { background: var(--amber-soft); color: var(--amber); }
 .pill[data-state="offline"] { background: transparent; color: var(--warn); box-shadow: inset 0 0 0 1px var(--line); }
 
-.run-cost {
+.run-hours {
   font-size: 12px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -215,6 +215,11 @@ button, select, input, textarea { font: inherit; color: inherit; }
   font-weight: 600;
 }
 .col-count { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.col-head { justify-content: flex-start; }
+.col-head .col-count { margin-left: auto; }
+.col-tokens { color: var(--muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.col-tokens:empty { display: none; }
+.col-tokens:not(:empty)::before { content: "· "; }
 
 .col-toggle {
   display: flex;
@@ -270,6 +275,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 
 .card-id {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   font: 12px/1.3 var(--mono);
@@ -993,7 +999,6 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .sup-warn .sup-v, .sup-warn.sup-item > .sup-v:only-child { color: var(--warn); }
 .sup-phase.pending .sup-v { color: var(--amber); }
 .sup-err { flex-basis: 100%; }
-.sup-note { flex: 1 1 100%; margin: 0; color: var(--muted); }
 .sup-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .sup-menu-wrap { position: relative; }
 .sup-menu {
@@ -1020,13 +1025,6 @@ button, select, input, textarea { font: inherit; color: inherit; }
   cursor: pointer;
 }
 .sup-menu-item:hover, .sup-menu-item:focus-visible { background: var(--panel); }
-.sup-tl-wrap { flex: 1 0 100%; }
-.sup-tl-sum { cursor: pointer; color: var(--muted); }
-.sup-timeline { margin: 6px 0 0; padding: 0; list-style: none; max-height: 180px; overflow-y: auto; }
-.sup-ev { display: flex; flex-wrap: wrap; gap: 2px 10px; padding: 3px 0; border-top: 1px solid var(--line); }
-.sup-ev-type { font-weight: 600; }
-.sup-ev-time, .sup-ev-age { color: var(--muted); font-variant-numeric: tabular-nums; }
-.sup-ev-detail { flex-basis: 100%; overflow-wrap: anywhere; color: var(--muted); }
 
 .sup-notice {
   position: fixed;
@@ -1049,27 +1047,45 @@ button, select, input, textarea { font: inherit; color: inherit; }
 
 .card-exec { overflow-wrap: anywhere; }
 
-.dr-exec { margin: 0 0 8px; display: grid; gap: 4px; }
-.dr-exec-row { display: grid; grid-template-columns: 110px 1fr; gap: 8px; }
-.dr-exec dt { color: var(--muted); }
-.dr-exec dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-.dr-exec-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
-.dr-exec-field { display: grid; gap: 4px; margin: 6px 0; font-size: 12px; color: var(--muted); }
-.dr-exec-field input, .dr-exec-field textarea {
-  padding: 6px 8px;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-control);
-  background: var(--card);
-  color: var(--text);
+.sup-tokens { flex: 1 0 100%; display: flex; flex-wrap: wrap; gap: 2px 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sup-tok-planner { padding-left: 18px; border-left: 1px solid var(--line-strong); }
+.sup-off .sup-v { color: var(--muted); }
+
+/* --- stuck cards: the red border is a hard requirement, light and dark alike --- */
+/* Not a theme token and not redefined in the dark block: 4px solid #d00000 everywhere. */
+.card.card--stuck { border: 4px solid #d00000 !important; padding: 6px 7px 5px; }
+.card-stuck-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #d00000;
+  color: #ffffff;
+  font: 700 11px/1.4 var(--sans);
+  letter-spacing: 0.06em;
 }
-.dr-h-sub { margin-top: 12px; font-weight: 500; color: var(--muted); }
-.dr-logs { margin: 0; padding-left: 18px; font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
-.dr-log.none { color: var(--faint); font-family: var(--sans); }
-.dr-hint { margin: 4px 0 0; font-size: 12px; color: var(--muted); }
-.dr-hint:empty { display: none; }
+.card-stuck-detail { color: var(--text); font-weight: 500; overflow-wrap: anywhere; }
+.stuck-banner {
+  flex: none;
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 4px solid #d00000;
+  background: #d00000;
+  color: #ffffff;
+  font-weight: 600;
+}
+.stuck-note { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--panel); color: var(--warn); font-size: 12px; }
+
+/* --- drawer: token drill-down --- */
+.dr-usage-total { margin: 0 0 8px; font-variant-numeric: tabular-nums; }
+.dr-usage-cols, .dr-usage-actions { margin: 0; padding: 0; list-style: none; }
+.dr-usage-col { margin-bottom: 10px; }
+.dr-usage-col-head { display: flex; justify-content: space-between; gap: 10px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.dr-usage-action { display: grid; gap: 1px; padding: 4px 0; border-top: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+.dr-usage-counts, .dr-usage-log { color: var(--muted); font-variant-numeric: tabular-nums; }
+.dr-usage-log { font-family: var(--mono); }
+.dr-usage-none { color: var(--faint); }
 
 @media (max-width: 720px) {
   .sup { padding: 8px 12px; }
   .sup-menu { right: auto; left: 0; }
-  .dr-exec-row { grid-template-columns: 1fr; gap: 0; }
 }
