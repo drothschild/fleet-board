@@ -924,7 +924,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         end) end) as $selected
   | $selected.cards as $cards
   | (if $candidates then
-       {schema_version:1,candidates:[$cards[] as $card
+       {schema_version:2,candidates:[$cards[] as $card
          | (first($all[] | select(.number == $card.number)) // {}) as $source
          | (first($actual_scope[] | select(.number == $card.number)) // {paths:[],unknown:false}) as $actual
          | ([$source.labels[]? | (if type == "object" then .name else . end)
@@ -934,7 +934,11 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
             declared_paths:($source.scope_paths // []),actual_paths:($actual.paths // []),scope_complete:(($actual.unknown // false) | not),
             dependencies:($source.deps_unmet // []),stage:$card.stage,head_sha:$card.head_sha,round:$card.round,
             priority:(if ($priority_labels|length)>1 then "conflict" elif ($priority_labels|length)==1 then ($priority_labels[0]|sub("fleet:priority:";"")) else "normal" end),
-            priority_conflict:(($priority_labels|length)>1),state_revision:$source.state_revision} ]}
+            priority_conflict:(($priority_labels|length)>1),state_revision:$source.state_revision,
+            title:$card.title,state:$card.state,branch:$card.branch,worktree:$card.worktree,pr:$card.pr,
+            models:$card.models,escalated:$card.escalated,findings:$card.findings,waiting_on:$card.waiting_on,
+            needs_human_qa:$card.needs_human_qa,comment_needed:$card.comment_needed,lint:$card.lint,
+            lint_marker:$card.lint_marker} ]}
      else
   {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")

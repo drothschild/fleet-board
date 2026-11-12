@@ -21,7 +21,8 @@ PLUGIN = Path(__file__).resolve().parents[2]
 SCRIPTS = PLUGIN / "scripts"
 
 from supervisor import paths
-from supervisor.service import Service, StubHandler
+from supervisor.service import Service
+from stub_handler import StubHandler
 from supervisor.state import State
 
 

@@ -25,11 +25,17 @@ class Scopes(unittest.TestCase):
 
     def test_normalize_empty_means_whole_repo(self):
         self.assertEqual(scopes.normalize([''], self.root), [''])
-        self.assertEqual(scopes.normalize(['./', '/'], self.root), [''])
+        self.assertEqual(scopes.normalize(['./'], self.root), [''])
         self.assertEqual(scopes.normalize([], self.root), [''])
 
     def test_normalize_rejects_dotdot(self):
         for bad in ('../x', 'a/../b', 'a//b', 'a/./b', '/abs/path'):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, 'invalid scope path'):
+                    scopes.normalize([bad], self.root)
+
+    def test_normalize_rejects_the_filesystem_root(self):
+        for bad in ('/', '//', '/src/'):
             with self.subTest(bad=bad):
                 with self.assertRaisesRegex(ValueError, 'invalid scope path'):
                     scopes.normalize([bad], self.root)
@@ -106,6 +112,29 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual((self.state.mode, self.state.pause_reason), ('running', None))
         self.assertGreater(self.state.revision, mid)
 
+    def test_stop_is_terminal_and_bumps_revision(self):
+        before = self.state.revision
+        self.state.stop()
+        self.assertEqual(self.state.mode, 'stopping')
+        self.assertGreater(self.state.revision, before)
+        settled = self.state.revision
+        self.state.pause('late')
+        self.state.resume()
+        self.state.stop()
+        self.assertEqual((self.state.mode, self.state.revision), ('stopping', settled))
+
+    def test_snapshot_is_a_deep_copy(self):
+        self.state.begin(action(1, paths=['a']))
+        self.state.run_tokens['claude'] = {'in': 1}
+        self.state.provider_health['claude'] = {'until': 5.0}
+        snap = self.state.snapshot()
+        self.state.active[1].paths.append('b')
+        self.state.run_tokens['claude']['in'] = 99
+        self.state.provider_health['claude']['until'] = 9.0
+        self.assertEqual(snap['active'][1]['paths'], ['a'])
+        self.assertEqual(snap['run_tokens'], {'claude': {'in': 1}})
+        self.assertEqual(snap['provider_health']['claude']['until'], 5.0)
+
     def test_every_mutation_bumps_revision(self):
         s = self.state
         for mutate in (lambda: s.begin(action(1)), lambda: s.reserve(1, ['a']),
@@ -144,6 +173,14 @@ class Lifecycle(unittest.TestCase):
         s.reserve(3, ['a'])
         s.reserve(3, [''])
         self.assertEqual(s.reservations[3], [''])
+
+    def test_begin_rejects_an_unknown_kind(self):
+        with self.assertRaises(ValueError):
+            self.state.begin(action(1, kind='bogus'))
+        self.assertEqual(self.state.active, {})
+        for kind in ('role', 'script', 'merge'):
+            self.state.begin(action(hash(kind) % 1000, kind=kind))
+            self.state.end(hash(kind) % 1000)
 
     def test_events_ring_keeps_the_last_500(self):
         seqs = [self.state.event('tick', n=i) for i in range(600)]

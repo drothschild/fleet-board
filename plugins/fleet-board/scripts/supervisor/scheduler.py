@@ -9,10 +9,20 @@ import copy
 import math
 import threading
 
+from . import scopes
+
 _ACTION_CLASS = {
     'continue_implementor': 0, 'fix': 0, 'review': 0, 'review_stage': 0,
-    'start_review': 1, 'unblock': 1, 'start': 2,
+    'start_review': 1, 'unblock': 1, 'update_branch': 1, 'advance_stage': 1, 'to_human_qa': 1,
+    'mark_ready': 1, 'verify_main': 1, 'finish': 1, 'block': 1, 'file_pending': 1, 'merge': 1,
+    'start': 2,
 }
+# Planned actions that are never admitted and never attention. skip_* and wait become
+# class 1 only when they carry work (see _has_work).
+_IGNORED = ('skip', 'skip_no_acceptance', 'skip_card_lint', 'wait')
+_WORK_CLASS = 1
+# Provider label of script-only actions: never capped by provider_concurrency.
+_SCRIPTS = 'scripts'
 _PRIORITY = {'high': 0, 'normal': 1, 'low': 2}
 
 
@@ -51,24 +61,19 @@ class _SystemTimerDriver:
         return timer
 
 
-def _scope(path):
-    if not isinstance(path, str) or not path or path.startswith('/'):
-        return ''
-    parts = path.replace('\\', '/').split('/')
-    if any(part in ('', '.', '..') for part in parts):
-        return ''
-    return '/'.join(parts).lower() if path.isascii() else ''
+def _has_work(row):
+    """True for a skip_no_acceptance / skip_card_lint / wait row that needs an action.
 
-
-def _overlap(left, right):
-    if not left or not right:
+    comment_needed means a card comment is owed. A `wait` also has work when its
+    `waiting_on` list is non-empty and differs from `deps_commented`, the list the
+    manager note last commented (set by the loop/driver; the scheduler has no note,
+    so a missing field counts as "differs").
+    """
+    if row.get('comment_needed'):
         return True
-    for a in left:
-        x = _scope(a)
-        for b in right:
-            y = _scope(b)
-            if not x or not y or x == y or x.startswith(y + '/') or y.startswith(x + '/'):
-                return True
+    if row.get('action') == 'wait':
+        waiting = row.get('waiting_on') or []
+        return bool(waiting) and {str(x) for x in waiting} != {str(x) for x in row.get('deps_commented') or []}
     return False
 
 
@@ -235,12 +240,18 @@ class Scheduler:
                 due.append({'attempt_id': attempt.get('attempt_id'), 'kind': 'cancel_grace'})
         return due
 
-    def admit(self, candidates, active=None, limits=None, validate=None, prepare=None, now=None, reservations=None):
+    def admit(self, candidates, active=None, limits=None, validate=None, prepare=None, now=None, reservations=None,
+              lane_free=False):
         """Select fitting candidates and optionally prepare each atomically.
 
         `validate(candidate)` rechecks board/head/revision immediately before
         `prepare(candidate)` claims resources and creates its durable attempt.
         A rejected candidate consumes no capacity or scope.
+
+        The provider of a candidate is its `provider` key (annotated by the loop);
+        none means "default". A `merge` is admitted only when `lane_free` is True,
+        and at most one per call. Returns admitted, active, attention, waits,
+        ignored, stop_reason and state.
         """
         now = self.clock() if now is None else now
         active = [dict(item) for item in (active or [])]
@@ -249,22 +260,23 @@ class Scheduler:
         try:
             _validate_limits(limits)
         except (TypeError, ValueError):
-            return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
+            return {'admitted': [], 'active': active, 'attention': [], 'waits': [], 'ignored': [], 'stop_reason': 'invalid limits', 'state': self.export_state()}
         with self._cycles, self._lock:
-            return self._admit_locked(candidates, active, limits, validate, prepare, now, reservations)
+            return self._admit_locked(candidates, active, limits, validate, prepare, now, reservations, lane_free)
 
-    def _admit_locked(self, candidates, active, limits, validate, prepare, now, reservations=None):
+    def _admit_locked(self, candidates, active, limits, validate, prepare, now, reservations=None, lane_free=False):
         reservations = reservations or []
-        eligible, attention, waits = [], [], []
-        if now >= limits.get('session_deadline', float('inf')):
-            return {'admitted': [], 'active': active, 'attention': [], 'waits': [],
-                    'stop_reason': 'session deadline reached', 'state': self.export_state()}
+        eligible, attention, waits, ignored = [], [], [], []
         seen = set(self.state['eligible_since'])
         for original in candidates:
             c = dict(original)
             number = c.get('number')
             action = c.get('action')
-            if action not in _ACTION_CLASS:
+            if action in _IGNORED:
+                if action == 'skip' or not _has_work(c):
+                    ignored.append({'number': number, 'action': action, 'reason': c.get('reason')})
+                    continue
+            elif action not in _ACTION_CLASS:
                 attention.append({'number': number, 'reason': c.get('reason') or 'unknown workflow state; reconciliation required'})
                 continue
             if c.get('priority_conflict') or c.get('priority') == 'conflict':
@@ -283,7 +295,7 @@ class Scheduler:
             if priority not in _PRIORITY:
                 attention.append({'number': number, 'reason': 'invalid priority'})
                 continue
-            base = _ACTION_CLASS[action] * 3 + _PRIORITY[priority]
+            base = _ACTION_CLASS.get(action, _WORK_CLASS) * 3 + _PRIORITY[priority]
             age = max(0, int((now - since) // max(1, limits.get('aging_seconds', 900))))
             c['_rank'] = max(0, base - age)
             eligible.append(c)
@@ -298,18 +310,20 @@ class Scheduler:
         last_launch = limits.get('last_launch_at', self._last_launch)
         for c in ordered:
             number = c.get('number')
-            provider = c.get('provider') or c.get('model_provider') or 'default'
+            provider = c.get('provider') or 'default'
             if str(number) in active_numbers:
                 waits.append({'number': number, 'reason': 'card already has an active claim'}); continue
-            if now >= limits.get('session_deadline', float('inf')):
-                return {'admitted': admitted, 'active': occupied, 'attention': attention, 'waits': waits,
-                        'stop_reason': 'session deadline reached', 'state': self.export_state()}
             retry_at = limits.get('retry_at', {}).get(str(number))
             if retry_at is not None and now < retry_at:
                 waits.append({'number': number, 'reason': 'retry backoff', 'until': retry_at}); continue
+            # Script actions (except update_branch/merge) run synchronously in the driver and
+            # hold no claim: no rate wait, caps or scope checks, and they occupy nothing.
+            free = provider == _SCRIPTS and c.get('action') not in ('update_branch', 'merge')
             rate_wait = limits.get('rate_limit_wait', {})
             rate_until = rate_wait.get(provider) if isinstance(rate_wait, dict) else rate_wait
-            if rate_until is not None and now < rate_until:
+            if free:
+                pass
+            elif rate_until is not None and now < rate_until:
                 key = str(provider)
                 since = self.state['rate_limit_since'].setdefault(key, now)
                 cap_deadline = since + limits.get('max_rate_wait', float('inf'))
@@ -322,21 +336,23 @@ class Scheduler:
             spacing = limits.get('min_launch_gap', 0)
             if last_launch is not None and now - last_launch < spacing:
                 waits.append({'number': number, 'reason': 'launch spacing', 'until': last_launch + spacing}); continue
-            if len(occupied) >= limits['global']:
+            if c.get('action') == 'merge' and not lane_free:
+                waits.append({'number': number, 'reason': 'merge lane busy'}); continue
+            if not free and len(occupied) >= limits['global']:
                 waits.append({'number': number, 'reason': 'global capacity'}); continue
             provider_cap = limits['providers'].get(provider, limits['providers'].get('*', limits['global']))
-            if provider_counts.get(provider, 0) >= provider_cap:
+            if not free and provider_counts.get(provider, 0) >= provider_cap:
                 waits.append({'number': number, 'reason': 'provider capacity'}); continue
             if sum(str(x.get('number', x.get('card'))) == str(number) for x in occupied) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
             paths = (c.get('declared_paths') or []) + (c.get('actual_paths') or [])
-            reserved = next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
-                             and _overlap(paths, x.get('paths') or [])), None)
+            reserved = None if free else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
+                             and scopes.overlap(paths, x.get('paths') or [])), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
                 continue
             conflict = next((x for x in occupied if str(x.get('number', x.get('card'))) == str(number)
-                             or _overlap(paths, x.get('paths') or [])), None)
+                             or (not free and scopes.overlap(paths, x.get('paths') or []))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue
             if validate is not None and not validate(dict(c)):
@@ -355,16 +371,21 @@ class Scheduler:
             else:
                 item = {'number': number, 'provider': provider, 'paths': paths}
             item.setdefault('number', number); item.setdefault('provider', provider); item.setdefault('paths', paths)
-            admitted.append(c); occupied.append(item)
+            admitted.append(c)
+            if free:
+                continue
+            occupied.append(item)
             provider_counts[provider] = provider_counts.get(provider, 0) + 1
             last_launch = now
+            if c.get('action') == 'merge':
+                lane_free = False
         admitted_numbers = {str(c.get('number')) for c in admitted}
         self.state['eligible_since'] = {k: v for k, v in self.state['eligible_since'].items()
                                         if k in admitted_numbers or any(str(c.get('number')) == k for c in eligible)}
         self._last_launch = last_launch
         self.state['last_launch_at'] = self._last_launch
         return {'admitted': [{k:v for k,v in c.items() if not k.startswith('_')} for c in admitted],
-                'active': occupied, 'attention': attention, 'waits': waits, 'stop_reason': None,
+                'active': occupied, 'attention': attention, 'waits': waits, 'ignored': ignored, 'stop_reason': None,
                 'state': self.export_state()}
 
 
@@ -388,9 +409,6 @@ def _validate_limits(limits):
         raise ValueError('invalid card cap')
     for key in ('aging_seconds', 'min_launch_gap', 'max_rate_wait'):
         if key in limits and (type(limits[key]) not in (int, float) or limits[key] < 0):
-            raise ValueError('invalid ' + key)
-    for key in ('session_deadline',):
-        if key in limits and limits[key] is not None and (type(limits[key]) not in (int, float) or limits[key] < 0):
             raise ValueError('invalid ' + key)
     if 'retry_at' in limits and not isinstance(limits['retry_at'], dict):
         raise ValueError('invalid retry schedule')

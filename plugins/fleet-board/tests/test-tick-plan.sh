@@ -1336,7 +1336,7 @@ setup_case ready-start
 candidate_empty_human_qa_route
 run_check "$SCRIPT" --candidates
 assert_exit "candidate mode: exit" 0
-assert_jq "candidate mode: schema version" '.schema_version' '1'
+assert_jq "candidate mode: schema version" '.schema_version' '2'
 assert_jq "candidate mode: action parity" '.candidates[0].action' '"start"'
 assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | [has("preconditions"), has("declared_paths"), has("actual_paths"), has("scope_complete"), has("dependencies"), has("stage"), has("head_sha"), has("round"), has("priority"), has("state_revision")])' '[true,true,true,true,true,true,true,true,true,true]'
 assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
@@ -1360,6 +1360,23 @@ assert_exit "candidate mode: malformed labels keep planner read successful" 0
 assert_jq "candidate mode: malformed labels fail closed" '.candidates[0].action' '"skip"'
 assert_jq "candidate mode: malformed labels report attention" '.candidates[0].reason' '"lookup failed: board-read.sh 12 (malformed labels)"'
 assert_jq "candidate mode: malformed labels do not start work" '[.candidates[] | select(.action == "start")] | length' '0'
+
+# Candidate rows carry the dispatch fields the full plan row has.
+setup_case in-review-fix
+candidate_empty_human_qa_route
+run_check "$SCRIPT" --candidates
+assert_exit "candidates_carry_dispatch_fields: exit" 0
+assert_jq "candidates_carry_dispatch_fields: schema version" '.schema_version' '2'
+assert_jq "candidates_carry_dispatch_fields: branch" '.candidates[0].branch' '"fleet/12-add-subtract"'
+assert_jq "candidates_carry_dispatch_fields: pr" '.candidates[0].pr' '34'
+assert_jq "candidates_carry_dispatch_fields: fixer model" '.candidates[0].models.fixer' '"sonnet"'
+assert_jq "candidates_carry_dispatch_fields: every field present" '(.candidates[0] | [has("title"),has("state"),has("branch"),has("worktree"),has("pr"),has("models"),has("escalated"),has("findings"),has("waiting_on"),has("needs_human_qa"),has("comment_needed"),has("lint"),has("lint_marker")] | all)' 'true'
+
+plan_note "$CONFLICT_NOTE"
+candidate_empty_human_qa_route
+run_check "$SCRIPT" --candidates
+assert_exit "candidates_carry_conflict_findings: exit" 0
+assert_jq "candidates_carry_conflict_findings: first finding" '.candidates[0].findings[0].text' '"merge conflict in src/calc.js"'
 
 run_check "$SCRIPT" --unknown-mode
 assert_exit "candidate mode: invalid mode rejected" 2

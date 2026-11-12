@@ -21,7 +21,8 @@ SCRIPTS = PLUGIN / "scripts"
 
 from supervisor import errors, launcher, paths
 from supervisor.cli import main
-from supervisor.service import Service, StubHandler
+from supervisor.service import Service
+from stub_handler import StubHandler
 from supervisor.state import State
 
 SANDBOX_PS = "Operation not permitted: 'ps'"
@@ -505,6 +506,8 @@ class ForegroundStart(unittest.TestCase):
 
     def setUp(self):
         self.case = make_root(ROOT, self.id().rsplit(".", 1)[-1])
+        # The loop reads the config every cycle: an unconfigured board would pause at once.
+        (self.case / ".fleet-board.yml").write_text("board:\n  repo: acme/toy\n", encoding="utf-8")
         self.base = short_base(self)
         self.logs = ROOT / (self.id().rsplit(".", 1)[-1] + "-logs")
         self.logs.mkdir(mode=0o700)
