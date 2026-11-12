@@ -28,7 +28,7 @@ function fakeFetch(options={}) {
     calls.push({url,method,body});
     const queue=queues.get(url);
     if(queue&&queue.length) { const item=queue.shift(); if(item instanceof Error) throw item; if(typeof item==="function") return item({url,method,body,current,setSnapshot}); return item; }
-    if(url.split("?")[0]==="/api/board") return response(200,{repo:"acme/toy",states,cards:options.cards||current.cards||[],run:options.run||{state:"idle"}});
+    if(url.split("?")[0]==="/api/board") return response(200,{repo:"acme/toy",states:options.states||states,cards:options.cards||current.cards||[],run:options.run||{state:"idle"}});
     if(url==="/api/supervisor") {
       if(options.supervisor===false) return response(404,{error:"missing"});
       if(options.notRunning) return response(200,notRunning(options.notRunning===true?{}:options.notRunning));
@@ -419,35 +419,93 @@ async function main() {
     await h.ctx.loadCardUsage(h.ctx.__test.S.drawer); await h.flush();
     assert.equal(h.$("dr-usage-cols").textContent,before,"a failed refresh dropped the last good render"); assert.equal(h.$("dr-usage-sec").hidden,false);
   });
+  const tokSpans=h=>h.$("board").all().filter(n=>n.classList.contains("col-tokens"));
+  const tokensOf=(h,key)=>h.$("board").all().find(n=>n.classList.contains("col")&&n.dataset.state===key).all().find(n=>n.classList.contains("col-tokens"));
   await check("column headers show the all-time token total of that column",async()=>{
-    const cols={in_progress:tok(1234567),ready:tok(45,{unknown:1,partial:true})};
+    const cols={in_progress:tok(1234567),ready:tok(45,{unknown:1,partial:true}),backlog:undefined};
+    delete cols.backlog;
     const f=fakeFetch({usage:{...usage,columns:cols}}), h=make(f); await h.flush(); await h.waitForRequests();
-    const tokens=key=>h.$("board").all().find(n=>n.classList.contains("col")&&n.dataset.state===key).all().find(n=>n.classList.contains("col-tokens"));
-    const prog=tokens("in_progress"); assert.equal(prog.textContent,"1.2M tokens"); assert.equal(prog.title,"1,234,567 tokens");
-    const ready=tokens("ready"); assert.equal(ready.textContent,"≥ 45"); assert.match(ready.title,/≥ 45.*some usage unknown/);
-    assert.equal(tokens("backlog").textContent,"","a column with no lines shows nothing, not 0");
+    const prog=tokensOf(h,"in_progress"); assert.equal(prog.textContent,"1.2M tokens"); assert.equal(prog.title,"1,234,567 tokens");
+    const ready=tokensOf(h,"ready"); assert.equal(ready.textContent,"≥ 45 tokens"); assert.match(ready.title,/≥ 45.*some usage unknown/);
+    assert.equal(tokensOf(h,"backlog").textContent,"","a column with no lines shows nothing, not 0");
     assert.doesNotMatch(h.$("board").textContent,/\$|\bUSD\b|\bcost\b/i);
     // an unreadable ledger shows no total at all, never 0
     const g=fakeFetch({usage:{run:null,all_time:null,planner:null,columns:cols,error:"usage ledger unreadable"}}), k=make(g); await k.flush(); await k.waitForRequests();
-    for(const n of k.$("board").all().filter(n=>n.classList.contains("col-tokens"))) assert.equal(n.textContent,"","an unreadable ledger showed "+n.textContent);
-    // a hostile column name is never rendered as markup
-    const x=fakeFetch({usage:{...usage,columns:{[hostile]:tok(5)}}}), y=make(x); await y.flush(); await y.waitForRequests();
-    assert.ok(!y.$("board").all().filter(n=>n.classList.contains("col-tokens")).some(n=>n.textContent.includes(hostile)||n.title.includes(hostile)));
-    // a not-running reply carries the columns too
-    const n=fakeFetch({notRunning:{columns:cols},usage:{run:null,all_time:tok(1234),planner:tok(7),columns:cols}}), m=make(n); await m.flush(); await m.waitForRequests();
-    assert.equal(m.$("board").all().find(e=>e.classList.contains("col-tokens")&&e.textContent==="1.2M tokens")!==undefined,true);
+    for(const n of tokSpans(k)) assert.equal(n.textContent,"","an unreadable ledger showed "+n.textContent);
+  });
+  await check("a column total is text only, even for hostile names and values",async()=>{
+    const x=fakeFetch({usage:{...usage,columns:{in_progress:tok(5),[hostile]:tok(5)}}}), y=make(x); await y.flush(); await y.waitForRequests();
+    assert.ok(tokSpans(y).length>=3);
+    for(const n of tokSpans(y)) assert.equal(n.children.length,0,"a column total span holds elements");
+    assert.equal(tokensOf(y,"in_progress").textContent,"5 tokens");
+  });
+  await check("compact counts step to B at 999,950,000",async()=>{
+    const cols={backlog:tok(999949999),ready:tok(999950000),in_progress:tok(999949),};
+    const f=fakeFetch({usage:{...usage,all_time:tok(999949999+999950000+999949),columns:cols}}), h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(tokensOf(h,"backlog").textContent,"999.9M tokens"); assert.equal(tokensOf(h,"ready").textContent,"1B tokens");
+    assert.equal(tokensOf(h,"in_progress").textContent,"999.9k tokens");
+  });
+  await check("a partial total reads as a lower bound with the unit; no readable count is unknown tokens",async()=>{
+    const cols={in_progress:tok(1234567,{unknown:2,partial:true}),ready:tok(0,{unknown:1,partial:true})};
+    const f=fakeFetch({usage:{...usage,all_time:tok(1234567),columns:cols}}), h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(tokensOf(h,"in_progress").textContent,"≥ 1.2M tokens");
+    assert.equal(tokensOf(h,"ready").textContent,"unknown tokens"); assert.doesNotMatch(tokensOf(h,"ready").textContent,/≥ 0|^0/);
+    assert.match(tokensOf(h,"ready").title,/unknown/i);
+  });
+  await check("a not-running status reply that is not due for a usage read supplies the columns",async()=>{
+    const fromUsage={in_progress:tok(100)}, fromStatus={in_progress:tok(7000)};
+    const f=fakeFetch({notRunning:{columns:fromStatus},usage:{run:null,all_time:tok(7000),planner:tok(7),columns:fromUsage}}), h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(tokensOf(h,"in_progress").textContent,"100 tokens"); assert.equal(countCalls(f,"/api/usage"),1);
+    await h.fireTimers(); await h.waitForRequests();
+    assert.equal(countCalls(f,"/api/usage"),1,"the poll was due for a usage read");
+    assert.equal(tokensOf(h,"in_progress").textContent,"7k tokens","the not-running reply's columns were dropped");
+  });
+  await check("when /api/usage fails and nothing runs, the not-running reply's columns are shown",async()=>{
+    const f=fakeFetch({notRunning:{columns:{in_progress:tok(7000)}}}); f.enqueue("/api/usage",response(500,{error:"x"}));
+    const h=make(f); await h.flush(); await h.waitForRequests();
+    assert.equal(countCalls(f,"/api/usage"),1);
+    assert.equal(tokensOf(h,"in_progress").textContent,"7k tokens","the fallback dropped the columns");
+  });
+  await check("tokens in no page column are shown as the remainder of the all-time total",async()=>{
+    // no unknown-state cards: the remainder goes in the All time tooltip
+    const f=fakeFetch({cards:[],usage:{...usage,all_time:tok(1234),columns:{in_progress:tok(1000)}}}), h=make(f); await h.flush(); await h.waitForRequests();
+    const all=h.$("supervisor-tokens").all().find(n=>/^All time/.test(n.textContent));
+    assert.match(all.title,/234 tokens in columns no longer on the board/);
+    const shown=tokSpans(h).map(n=>n.title).filter(Boolean).map(t=>Number(t.replace(/\D/g,"")));
+    assert.equal(shown.reduce((a,b)=>a+b,0)+234,1234,"headers plus remainder do not equal all time");
+    // with an Unknown state group, the remainder goes on its header
+    const g=fakeFetch({usage:{...usage,all_time:tok(1234),columns:{in_progress:tok(1000),gone_stage:tok(200)}}}), k=make(g); await k.flush(); await k.waitForRequests();
+    const unk=k.$("board").all().find(n=>n.classList.contains("col")&&n.classList.contains("unknown")).all().find(n=>n.classList.contains("col-tokens"));
+    assert.equal(unk.textContent,"234 tokens"); assert.match(unk.title,/in columns no longer on the board/);
+    const all2=k.$("supervisor-tokens").all().find(n=>/^All time/.test(n.textContent)); assert.ok(!all2.title,"the tooltip repeated a remainder shown on the group");
+    // nothing left over, nothing shown
+    const m=make(fakeFetch({cards:[],usage:{...usage,all_time:tok(1000),columns:{in_progress:tok(1000)}}})); await m.flush(); await m.waitForRequests();
+    assert.ok(!m.$("supervisor-tokens").all().find(n=>/^All time/.test(n.textContent)).title);
+  });
+  await check("the collapsible toggle's accessible name leaves out the live total",async()=>{
+    const f=fakeFetch({states:states.concat([{key:"done",name:"Done"}]),usage:{...usage,columns:{done:tok(1234567)}}}), h=make(f); await h.flush(); await h.waitForRequests();
+    const toggles=h.$("board").all().filter(n=>n.classList.contains("col-toggle"));
+    assert.equal(toggles.length,1,"no collapsible column to check");
+    assert.equal(toggles[0].attrs["aria-label"],"Done"); assert.equal(tokensOf(h,"done").textContent,"1.2M tokens");
   });
   await check("a poll with unchanged totals does not rewrite column headers; a changed total does",async()=>{
     const f=fakeFetch({usage:{...usage,columns:{in_progress:tok(900)}}}), h=make(f); await h.flush(); await h.waitForRequests();
-    const prog=()=>h.$("board").all().find(n=>n.classList.contains("col-tokens")&&n.textContent!=="");
-    const first=prog(); assert.equal(first.textContent,"900 tokens");
+    const span=tokensOf(h,"in_progress"); assert.equal(span.textContent,"900 tokens");
+    // count every write to the span, including a rewrite with the same value
+    const writes={text:0,title:0};
+    const find=(o,k)=>{ for(let p=o;p;p=Object.getPrototypeOf(p)){ const d=Object.getOwnPropertyDescriptor(p,k); if(d) return d; } };
+    for(const [k,w] of [["textContent","text"],["title","title"]]){
+      const d=find(span,k); let v=span[k];
+      Object.defineProperty(span,k,{configurable:true,get(){ return d&&d.get?d.get.call(this):v; },set(x){ writes[w]++; if(d&&d.set) d.set.call(this,x); else v=x; }});
+    }
     const list=h.$("cards-in_progress");
     h.ctx.__advanceClock(16000); await h.fireTimers(); await h.waitForRequests();
-    assert.equal(countCalls(f,"/api/usage"),2); assert.equal(prog(),first,"an unchanged total replaced the element");
+    assert.equal(countCalls(f,"/api/usage"),2); assert.equal(tokensOf(h,"in_progress"),span,"an unchanged total replaced the element");
+    assert.deepEqual(writes,{text:0,title:0},"an unchanged total was written again");
     assert.equal(h.$("cards-in_progress"),list,"the card list was rebuilt by a usage poll");
     const fresh=json({...usage,columns:{in_progress:tok(2500)}}); f.enqueue("/api/usage",response(200,fresh));
     h.ctx.__advanceClock(16000); await h.fireTimers(); await h.waitForRequests();
-    assert.equal(prog().textContent,"2.5k tokens");
+    assert.equal(span.textContent,"2.5k tokens"); assert.ok(writes.text>=1);
   });
   await check("/api/usage is re-read at most every 15 seconds",async()=>{
     const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
