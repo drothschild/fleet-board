@@ -768,6 +768,7 @@ case "$1 $2" in
     case "$*" in
       *files*) printf '{"files":[{"path":"src/calc.js"}],"changedFiles":1}\n' ;;
       *mergeable*) printf '{"mergeable":"MERGEABLE"}\n' ;;
+      *title,body,commits*) cat "$d/closing.json" ;;
       *) cat "$d/pr.json" ;;
     esac ;;
   "pr list") printf '[]\n' ;;
@@ -777,6 +778,9 @@ case "$1 $2" in
   *) printf 'chain gh: unexpected call: %s\n' "$*" >&2; exit 99 ;;
 esac
 '''
+# the merge-time closing-keyword check (pr-closing-check.sh) reads title, body and commits
+CHAIN_CLOSING = {'title': 'Add subtract', 'body': 'Local board card 12',
+                 'commits': [{'oid': 'abc1234', 'messageHeadline': 'feat: subtract', 'messageBody': ''}]}
 CHAIN_PR = {'isDraft': False, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': 'abc1234',
             'statusCheckRollup': [{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}
 
@@ -805,6 +809,7 @@ class Chained(unittest.TestCase):
         (bin_dir / 'gh').write_text(CHAIN_GH)
         (bin_dir / 'gh').chmod(0o755)
         (gh_dir / 'pr.json').write_text(json.dumps(CHAIN_PR))
+        (gh_dir / 'closing.json').write_text(json.dumps(CHAIN_CLOSING))
         verify = self.dir / 'verify-main.sh'
         verify.write_text('#!/bin/bash\nprintf \'{"commit":"c0ffee1","ok":true,"results":[]}\\n\'\n')
         verify.chmod(0o755)
@@ -869,6 +874,19 @@ class Chained(unittest.TestCase):
         # merged and verified, no merger result yet: the planner hands the card to the merger
         after = [r for r in candidates.fetch(self.root, run=self.script).candidates if r.get('number') == 12]
         self.assertEqual([r['action'] for r in after], ['after_merge'])
+
+    def test_a_closing_keyword_in_a_commit_message_is_refused_and_never_merged(self):
+        # card numbers are not GitHub numbers: merge-reviewed.sh refuses after its keyed marker, so the lane
+        # observes the open PR at the planned head and classifies the refusal (the merger decides)
+        row = self.candidate()
+        closing = {'title': 'Add subtract', 'body': 'Local board card 12',
+                   'commits': [{'oid': 'abc1234', 'messageHeadline': 'feat: subtract', 'messageBody': 'Fixes #253'}]}
+        (self.gh_dir / 'closing.json').write_text(json.dumps(closing))
+        outcome = self.ended(row)
+        self.assertEqual(outcome.kind, 'refused', outcome)
+        self.assertIn('closing keyword before an issue reference', outcome.detail['reason'])
+        self.assertNotIn('pr merge', (self.gh_dir / 'calls').read_text())
+        self.assertEqual(self.note()['merge_refusal']['pr'], 34)
 
     def test_a_planner_skip_in_the_merge_is_not_attempted_and_never_pauses(self):
         row = self.candidate()
