@@ -419,6 +419,36 @@ async function main() {
     await h.ctx.loadCardUsage(h.ctx.__test.S.drawer); await h.flush();
     assert.equal(h.$("dr-usage-cols").textContent,before,"a failed refresh dropped the last good render"); assert.equal(h.$("dr-usage-sec").hidden,false);
   });
+  await check("column headers show the all-time token total of that column",async()=>{
+    const cols={in_progress:tok(1234567),ready:tok(45,{unknown:1,partial:true})};
+    const f=fakeFetch({usage:{...usage,columns:cols}}), h=make(f); await h.flush(); await h.waitForRequests();
+    const tokens=key=>h.$("board").all().find(n=>n.classList.contains("col")&&n.dataset.state===key).all().find(n=>n.classList.contains("col-tokens"));
+    const prog=tokens("in_progress"); assert.equal(prog.textContent,"1.2M tokens"); assert.equal(prog.title,"1,234,567 tokens");
+    const ready=tokens("ready"); assert.equal(ready.textContent,"≥ 45"); assert.match(ready.title,/≥ 45.*some usage unknown/);
+    assert.equal(tokens("backlog").textContent,"","a column with no lines shows nothing, not 0");
+    assert.doesNotMatch(h.$("board").textContent,/\$|\bUSD\b|\bcost\b/i);
+    // an unreadable ledger shows no total at all, never 0
+    const g=fakeFetch({usage:{run:null,all_time:null,planner:null,columns:cols,error:"usage ledger unreadable"}}), k=make(g); await k.flush(); await k.waitForRequests();
+    for(const n of k.$("board").all().filter(n=>n.classList.contains("col-tokens"))) assert.equal(n.textContent,"","an unreadable ledger showed "+n.textContent);
+    // a hostile column name is never rendered as markup
+    const x=fakeFetch({usage:{...usage,columns:{[hostile]:tok(5)}}}), y=make(x); await y.flush(); await y.waitForRequests();
+    assert.ok(!y.$("board").textContent.includes(hostile));
+    // a not-running reply carries the columns too
+    const n=fakeFetch({notRunning:{columns:cols},usage:{run:null,all_time:tok(1234),planner:tok(7),columns:cols}}), m=make(n); await m.flush(); await m.waitForRequests();
+    assert.equal(m.$("board").all().find(e=>e.classList.contains("col-tokens")&&e.textContent==="1.2M tokens")!==undefined,true);
+  });
+  await check("a poll with unchanged totals does not rewrite column headers; a changed total does",async()=>{
+    const f=fakeFetch({usage:{...usage,columns:{in_progress:tok(900)}}}), h=make(f); await h.flush(); await h.waitForRequests();
+    const prog=()=>h.$("board").all().find(n=>n.classList.contains("col-tokens")&&n.textContent!=="");
+    const first=prog(); assert.equal(first.textContent,"900 tokens");
+    const list=h.$("cards-in_progress");
+    h.ctx.__advanceClock(16000); await h.fireTimers(); await h.waitForRequests();
+    assert.equal(countCalls(f,"/api/usage"),2); assert.equal(prog(),first,"an unchanged total replaced the element");
+    assert.equal(h.$("cards-in_progress"),list,"the card list was rebuilt by a usage poll");
+    const fresh=json({...usage,columns:{in_progress:tok(2500)}}); f.enqueue("/api/usage",response(200,fresh));
+    h.ctx.__advanceClock(16000); await h.fireTimers(); await h.waitForRequests();
+    assert.equal(prog().textContent,"2.5k tokens");
+  });
   await check("/api/usage is re-read at most every 15 seconds",async()=>{
     const f=fakeFetch(), h=make(f); await h.flush(); await h.waitForRequests();
     assert.equal(countCalls(f,"/api/usage"),1);

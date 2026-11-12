@@ -114,6 +114,39 @@ class Ledger(unittest.TestCase):
     def test_read_of_a_missing_ledger_is_empty(self):
         self.assertEqual(usage.read(self.root / 'nowhere'), ([], 0))
 
+    def test_by_column_sums_card_lines_per_column_and_leaves_the_planner_out(self):
+        zero = dict(cache_write=0, cache_read=0)
+        lines = [line(card=12, column='in_progress', input=1, output=1, **zero),
+                 line(card=13, column='in_progress', input=2, output=2, **zero),
+                 line(card=12, column='review_security', input=4, output=4, **zero),
+                 line(card=None, kind='planner', column='in_progress', action='planner', role='planner',
+                      input=100, output=100, **zero),
+                 line(card=None, kind='planner', column=None, action='planner', role='planner',
+                      input=50, output=50, **zero)]
+        got = usage.by_column(lines)
+        self.assertEqual(sorted(got), ['in_progress', 'review_security'], 'no planner line makes a column')
+        self.assertEqual(got['in_progress']['total'], 6, 'planner tokens leaked into a column')
+        self.assertEqual(got['in_progress'], usage.totals(lines[:2]))
+        self.assertEqual(got['review_security']['total'], 8)
+        self.assertFalse(got['in_progress']['partial'])
+        self.assertEqual(usage.by_column([]), {})
+
+    def test_by_column_marks_only_the_columns_with_unknown_usage_partial(self):
+        lines = [line(column='in_progress', input=5, output=None, cache_write=0, cache_read=0),
+                 line(column='in_review', input=5, output=5, cache_write=0, cache_read=0)]
+        got = usage.by_column(lines)
+        self.assertIs(got['in_progress']['partial'], True)
+        self.assertEqual(got['in_progress']['unknown'], 1)
+        self.assertIs(got['in_review']['partial'], False)
+        damaged = usage.by_column(lines, skipped=1)
+        self.assertIs(damaged['in_review']['partial'], True, 'a damaged ledger makes every total a lower bound')
+
+    def test_summary_carries_the_columns(self):
+        lines = [line(column='in_progress')]
+        got = usage.summary(lines)
+        self.assertEqual(got['columns'], usage.by_column(lines))
+        self.assertEqual(usage.view(self.root)['columns'], {})
+
     def test_totals_by_run_card_kind(self):
         lines = [line(run_id='a', card=12, input=1, output=1, cache_write=0, cache_read=0),
                  line(run_id='a', card=13, input=2, output=2, cache_write=0, cache_read=0),

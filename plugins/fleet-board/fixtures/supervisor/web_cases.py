@@ -652,6 +652,39 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertEqual(body["totals"]["unknown"], 1, "an unreadable count must stay unknown, not 0")
         self.assertEqual(self.http("GET", "/api/supervisor")[1]["all_time"]["input"], 10)
 
+    def test_usage_route_carries_per_column_totals(self):
+        self.write_ledger(self.ledger_line(column="in_progress"),
+                          self.ledger_line(card=4, column="in_progress", input=100),
+                          self.ledger_line(column="review_security", input=None),
+                          self.ledger_line(card=None, kind="planner", column="in_progress", input=7000))
+        self.start_web()
+        code, body = self.http("GET", "/api/usage")
+        self.assertEqual(code, 200, body)
+        cols = body["columns"]
+        self.assertEqual(sorted(cols), ["in_progress", "review_security"])
+        self.assertEqual(cols["in_progress"]["input"], 110, "the planner line leaked into a column")
+        self.assertIs(cols["in_progress"]["partial"], False)
+        self.assertEqual(cols["review_security"]["unknown"], 1)
+        self.assertIs(cols["review_security"]["partial"], True)
+        self.assertEqual(self.http("GET", "/api/supervisor")[1]["columns"]["in_progress"]["input"], 110)
+
+    def test_the_columns_come_from_the_one_cached_ledger_read(self):
+        board = self.load_board_module("board_web_usage_columns")
+        board.APP["scripts"] = str(SCRIPTS)
+        self.write_ledger(self.ledger_line(column="in_progress"))
+        real = board.supervisor_usage.read
+        calls = []
+
+        def counting(*a, **k):
+            calls.append(1)
+            return real(*a, **k)
+        with mock.patch.object(board.supervisor_usage, "read", counting):
+            first = board.usage_view()
+            again = board.usage_view()
+        self.assertEqual(len(calls), 1, "the ledger was read more than once for the totals and the columns")
+        self.assertEqual(first["columns"]["in_progress"]["input"], 10)
+        self.assertEqual(first, again)
+
     def test_usage_route_reports_this_run_while_a_supervisor_runs(self):
         self.write_ledger(self.ledger_line(), self.ledger_line(run_id="older", input=100))
         self.start_service()
