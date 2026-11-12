@@ -265,6 +265,20 @@ class CliUsage(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
+class StatusText(unittest.TestCase):
+    def test_supervisor_status_prints_the_budget_line(self):
+        base = {'mode': 'running', 'root': '/r', 'pid': 1, 'active': []}
+        text = cli._human_status(dict(base, run_budget={'tokens': 1234, 'partial': False, 'cap': 20000000,
+                                                        'label': 'counted toward limits.max_tokens'}))
+        self.assertIn('budget: 1234 of 20000000 tokens counted toward limits.max_tokens (cache reads not counted)',
+                      text.splitlines())
+        text = cli._human_status(dict(base, run_budget={'tokens': 5, 'partial': True, 'cap': None,
+                                                        'label': 'counted toward limits.max_tokens'}))
+        self.assertIn('budget: 5 tokens counted toward limits.max_tokens (no limit; cache reads not counted) '
+                      '[partial]', text.splitlines())
+        self.assertNotIn('budget', cli._human_status(base), 'an older supervisor without run_budget prints none')
+
+
 class DriverLine(unittest.TestCase):
     def board(self):
         d = BASE / self.id().rsplit('.', 1)[-1]
@@ -401,6 +415,35 @@ class Limits(lc.LoopCase):
         self.assertEqual(self.b.card(12)['state'], 'ready')
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
+
+    def limit_reason(self, counts):
+        self.b.config['limits']['max_tokens'] = 100
+        self.sup.config = self.b.config
+        self.b.state.add_tokens(counts, 12)
+        self.assertTrue(self.sup._token_limit_reached())
+        return self.b.state.snapshot()['pause_reason']
+
+    def test_an_unknown_cache_read_alone_adds_no_known_tokens_only_suffix(self):
+        reason = self.limit_reason({'input': 60, 'output': 30, 'cache_write': 10, 'cache_read': None})
+        self.assertTrue(self.b.state.snapshot()['run_tokens']['partial'], 'the displayed totals stay partial')
+        self.assertEqual(reason, 'token limit reached: 100 of limits.max_tokens 100 (cache reads not counted)')
+
+    def test_an_unknown_counted_token_adds_the_known_tokens_only_suffix(self):
+        reason = self.limit_reason({'input': 60, 'output': 40, 'cache_write': None, 'cache_read': 0})
+        self.assertEqual(reason, 'token limit reached: 100 of limits.max_tokens 100 (cache reads not counted)'
+                                 ' (known tokens only)')
+
+    def test_the_status_snapshot_carries_the_budget_and_its_cap(self):
+        self.b.config['limits']['max_tokens'] = 500
+        self.sup.config = self.b.config
+        self.b.state.add_tokens({'input': 60, 'output': 30, 'cache_write': 10, 'cache_read': 900}, 12)
+        self.assertFalse(self.sup._token_limit_reached())
+        budget = self.sup.handle({'command': 'status'})['run_budget']
+        self.assertEqual(budget, {'tokens': 100, 'partial': False, 'cap': 500,
+                                  'label': 'counted toward limits.max_tokens'})
+        self.b.config['limits']['max_tokens'] = 0
+        self.sup._token_limit_reached()
+        self.assertIsNone(self.b.state.snapshot()['run_budget']['cap'], 'no limit is no cap')
 
     def test_a_running_session_finishes_when_the_limit_is_reached(self):
         self.add_card(13)

@@ -347,9 +347,19 @@ if setup_case; then
   api GET /api/run;                 assert_code 404
   api POST /api/run/start;          assert_code 404
   api POST /api/run/stop;           assert_code 404
-  # no stop file of any name at the repo root (the old tick-stop file included)
-  stops="$(cd "$REPO" && ls -a | grep '\.stop$')"
-  if [ -z "$stops" ]; then pass "no tick-stop file is written"; else fail "no tick-stop file is written" "$stops"; fi
+  # no stop file of any name anywhere under the repo or the log dir (the old tick-stop file included),
+  # before and after a Stop; a missing directory fails rather than reads as "nothing found"
+  no_stop_file() { # <label>
+    local d out=""
+    for d in "$REPO" "$TMP/logs"; do
+      if [ ! -d "$d" ]; then fail "$1" "$d is missing"; return; fi
+      out="$out$(find "$d" -name .git -prune -o -name '*stop*' -print 2>&1)"
+    done
+    if [ -z "$out" ]; then pass "$1"; else fail "$1" "$(printf '%s' "$out" | tr '\n' ' ')"; fi
+  }
+  no_stop_file "no tick-stop file is written"
+  api POST /api/supervisor/stop '{"request_id":"stop-nofile","expected_revision":0,"mode":"drain"}'
+  no_stop_file "no tick-stop file is written after a Stop"
   api GET /api/board;               assert_body "board run is idle with no supervisor" '.run.state' idle
   assert_body "board run carries no tick-wrapper fields" '.run | [has("pid"), has("tick"), has("cost"), has("log_tail"), has("out_tail")] | any' false
   assert_body "a marker does not light a card while no supervisor runs" '.cards[]|select(.number==2)|.active' false

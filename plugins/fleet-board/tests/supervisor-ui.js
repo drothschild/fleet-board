@@ -194,6 +194,24 @@ async function main() {
     const b=fakeFetch({notRunning:{all_time:null,planner:null,error:"usage ledger unreadable"},usage:{run:null,all_time:null,planner:null,error:"usage ledger unreadable"}}), c=make(b); await c.flush(); await c.waitForRequests();
     assert.match(c.$("supervisor-tokens").textContent,/All time: unknown/); assert.doesNotMatch(c.$("supervisor-tokens").textContent,/All time: 0/);
   });
+  await check("token strip shows the budget counted toward limits.max_tokens on one line",async()=>{
+    const snap={...snapshot,run_budget:{tokens:1234,partial:false,cap:20000000,label:"counted toward limits.max_tokens"}};
+    const f=fakeFetch({snapshot:snap}), h=make(f); await h.flush(); await h.waitForRequests();
+    const items=h.$("supervisor-tokens").all().filter(n=>/^Budget:/.test(n.textContent));
+    assert.equal(items.length,1,"no single Budget line");
+    assert.equal(items[0].textContent,"Budget: 1,234 of 20,000,000 (cache reads not counted)");
+    assert.equal(items[0].title,"counted toward limits.max_tokens");
+    assert.doesNotMatch(h.$("supervisor-tokens").textContent,/\$/,"a dollar sign in the token strip");
+    const t=h.$("supervisor-tokens").textContent;
+    assert.ok(t.indexOf("This run")<t.indexOf("Budget")&&t.indexOf("Budget")<t.indexOf("All time"),"Budget follows This run");
+    // no cap: no "of"; a partial budget is a lower bound
+    const g=fakeFetch({snapshot:{...snapshot,run_budget:{tokens:5,partial:true,cap:null,label:"counted toward limits.max_tokens"}}}), k=make(g);
+    await k.flush(); await k.waitForRequests();
+    assert.match(k.$("supervisor-tokens").textContent,/Budget: ≥ 5 \(no limit; cache reads not counted\)/);
+    // no supervisor: no budget line
+    const n=fakeFetch({notRunning:true}), m=make(n); await m.flush(); await m.waitForRequests();
+    assert.doesNotMatch(m.$("supervisor-tokens").textContent,/Budget/);
+  });
   await check("no dollar sign rendered",async()=>{
     const run={state:"stopped",stop_reason:"nothing-dispatchable",cost:1.5,cost_estimate_usd:2.5,hours:2};
     const f=fakeFetch({run,usage:{run:tok(15),all_time:tok(1234),planner:tok(7)}}), h=make(f); await h.flush(); await h.waitForRequests();

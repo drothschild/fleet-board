@@ -13,11 +13,15 @@
 #      Start/Stop/log buttons or run pill outside the supervisor panel, no
 #      tick-stop file, no "ignored by the running supervisor" banner;
 #   5. no leftover names the cost estimator, its price table or the tick-stop
-#      file (*.json included), except the upgrade notes in the README and
+#      file (*.json and *.html included), except the upgrade notes in the README and
 #      docs/config.md;
-#   6. no skill, agent or hook names a removed config key;
-#   7. no agent or skill says "fleet-board manager" (the supervisor dispatches
-#      the roles); "manager note" is the note's name and stays.
+#   6. no skill, agent, hook, script or doc names a removed config key, except
+#      config.sh's refusal table and the upgrade notes;
+#   7. no agent, skill or the plugin's CLAUDE.md says "fleet-board manager",
+#      and no agent or skill says "the manager" except the quoted re-dispatch
+#      text "rejected by the manager:" (the supervisor dispatches the roles);
+#   8. no file is named settle.sh, and nothing names it outside the upgrade
+#      notes (test-readme-claims.sh, which checks the docs, excepted).
 #
 # Usage: bash plugins/fleet-board/tests/test-no-tick-system.sh
 
@@ -62,51 +66,74 @@ for rel in skills/tick skills/run scripts/fleet-board-run.sh agents/manager.md \
   fi
 done
 
-echo "no reference to the wrapper, the tick skill or the manager agent"
-grep_absent "no file names fleet-board-run, /fleet-board:tick or agents/manager.md" \
-  -rn -e 'fleet-board-run' -e '/fleet-board:tick' -e 'agents/manager\.md' \
-  --include='*.sh' --include='*.py' --include='*.md' --include='*.js' \
-  --exclude='test-no-tick-system.sh' "$PLUGIN_DIR"
-grep_absent "no file names fleet-board:run, fleet-board:tick or the manager agent type" \
-  -rnE 'fleet-board:(run|tick)\b|fleet-board:manager([^-]|$)' \
-  --include='*.sh' --include='*.py' --include='*.md' --include='*.js' --include='*.json' \
-  --exclude='test-no-tick-system.sh' "$PLUGIN_DIR"
-grep_absent "no file names the wrapper or agents/manager.md (*.json included)" \
-  -rn -e 'fleet-board-run' -e 'agents/manager\.md' --include='*.json' "$PLUGIN_DIR"
-
-echo "no leftover names the cost estimator, its prices or the tick-stop file"
 # The upgrade notes say what was removed: the README's "Upgrading from an earlier version" section and the
-# paragraph of docs/config.md that names the removed keys. Nothing else is excluded.
+# paragraph of docs/config.md that names the removed keys. They are the only notes excluded below.
 README="$PLUGIN_DIR/README.md"
+CONFIG_MD="$PLUGIN_DIR/docs/config.md"
 up_from="$(grep -n '^### Upgrading from an earlier version$' "$README" | head -1 | cut -d: -f1)"
 up_to="$(awk -v s="${up_from:-0}" 'NR > s && /^#/ {print NR; exit}' "$README")"
-leftovers="$(grep -rnE 'estimate-cost|prices\.json|\.fleet-board\.stop' \
-  --include='*.sh' --include='*.py' --include='*.md' --include='*.js' --include='*.json' \
-  --exclude='test-no-tick-system.sh' "$PLUGIN_DIR" 2>&1)"
-rc=$?
-kept="$(printf '%s\n' "$leftovers" | awk -F: -v r="$README" -v a="${up_from:-0}" -v b="${up_to:-0}" -v c="$PLUGIN_DIR/docs/config.md" '
-  $0 == "" { next }
-  $1 == r && $2 > a && $2 < b { next }
-  $1 == c && /belonged to the tick system/ { next }
-  { print }')"
-if [ -z "$up_from" ] || [ -z "$up_to" ]; then
-  fail "the README's upgrade section is found" "no '### Upgrading from an earlier version' section"
-elif [ "$rc" -gt 1 ]; then
-  fail "no estimate-cost, prices.json or .fleet-board.stop outside the upgrade notes" "grep error (exit $rc)"
-elif [ -n "$kept" ]; then
-  fail "no estimate-cost, prices.json or .fleet-board.stop outside the upgrade notes" "$(printf '%s' "$kept" | head -20 | tr '\n' ' ')"
+if [ -n "$up_from" ] && [ -n "$up_to" ]; then
+  pass "the README's upgrade section is found"
 else
-  pass "no estimate-cost, prices.json or .fleet-board.stop outside the upgrade notes"
+  fail "the README's upgrade section is found" "no '### Upgrading from an earlier version' section"
 fi
+UPGRADE_NOTES='($1 == r && $2 > a && $2 < b) || ($1 == c && /belonged to the tick system/)'
 
-echo "no skill, agent or hook names a removed config key"
-grep_absent "skills/, agents/ and hooks/ name no removed key" \
+# absent_but NAME KEEP GREP_ARGS...: passes when every line grep prints (path:line:text) is one KEEP leaves
+# out. KEEP is an awk condition (fields split on ":"; r, a, b and c name the upgrade notes). A grep error
+# (exit 2) fails.
+absent_but() {
+  local name="$1" keep="$2" out rc left
+  shift 2
+  out="$(grep "$@" 2>&1)"
+  rc=$?
+  if [ "$rc" -gt 1 ]; then
+    fail "$name" "grep error (exit $rc): $(printf '%s' "$out" | tr '\n' ' ')"
+    return
+  fi
+  left="$(printf '%s\n' "$out" | awk -F: -v r="$README" -v a="${up_from:-0}" -v b="${up_to:-0}" -v c="$CONFIG_MD" \
+    -v cs="$PLUGIN_DIR/scripts/config.sh" '$0 == "" { next } '"$keep"' { next } { print }')"
+  if [ -z "$left" ]; then pass "$name"; else fail "$name" "$(printf '%s' "$left" | head -20 | tr '\n' ' ')"; fi
+}
+INCLUDES="--include=*.sh --include=*.py --include=*.md --include=*.js --include=*.json --include=*.html"
+
+echo "no reference to the wrapper, the tick skill or the manager agent"
+# shellcheck disable=SC2086 # INCLUDES is a list of options
+grep_absent "no file names fleet-board-run or agents/manager.md" \
+  -rn -e 'fleet-board-run' -e 'agents/manager\.md' $INCLUDES --exclude='test-no-tick-system.sh' "$PLUGIN_DIR"
+# shellcheck disable=SC2086
+grep_absent "no file names fleet-board:run, fleet-board:tick or the manager agent type" \
+  -rnE 'fleet-board:(run|tick)\b|fleet-board:manager([^-]|$)' $INCLUDES \
+  --exclude='test-no-tick-system.sh' "$PLUGIN_DIR"
+
+echo "no leftover names the cost estimator, its prices or the tick-stop file"
+# shellcheck disable=SC2086
+absent_but "no estimate-cost, prices.json or .fleet-board.stop outside the upgrade notes" "$UPGRADE_NOTES" \
+  -rnE 'estimate-cost|prices\.json|\.fleet-board\.stop' $INCLUDES --exclude='test-no-tick-system.sh' "$PLUGIN_DIR"
+
+echo "settle.sh is gone, by file name and by mention"
+found="$(find "$PLUGIN_DIR" -name 'settle.sh' 2>&1)"
+if [ -z "$found" ]; then pass "no file named settle.sh anywhere under the plugin"; else fail "no file named settle.sh anywhere under the plugin" "$found"; fi
+# test-readme-claims.sh is the check that the docs do not name it, so it names it.
+# shellcheck disable=SC2086
+absent_but "nothing names settle.sh outside the upgrade notes" "$UPGRADE_NOTES" \
+  -rn 'settle\.sh' $INCLUDES --exclude='test-no-tick-system.sh' --exclude='test-readme-claims.sh' "$PLUGIN_DIR"
+
+echo "no skill, agent, hook, script or doc names a removed config key"
+# config.sh's refusal table names them to refuse them; the upgrade notes name them to say they went.
+absent_but "no removed key outside config.sh's refusal table and the upgrade notes" \
+  "$UPGRADE_NOTES"' || ($1 == cs && (/\["max_cost_usd", "tick_interval"/ || /has\("manager"\)/))' \
   -rnE 'max_cost_usd|tick_interval|min_tick_gap|max_consecutive_failures|models\.manager' \
-  "$PLUGIN_DIR/skills" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/hooks"
+  "$PLUGIN_DIR/skills" "$PLUGIN_DIR/agents" "$PLUGIN_DIR/hooks" "$PLUGIN_DIR/scripts" "$PLUGIN_DIR/docs"
 
 echo "the roles are dispatched by the supervisor, not a manager"
 grep_absent "no agent or skill says fleet-board manager" \
   -rni 'fleet-board manager' "$PLUGIN_DIR/agents" "$PLUGIN_DIR/skills"
+grep_absent "the plugin's CLAUDE.md does not say fleet-board manager" -ni 'fleet-board manager' "$PLUGIN_DIR/CLAUDE.md"
+# The quoted re-dispatch text is the driver's exact wording ("rejected by the manager:"); nothing else.
+absent_but "no agent or skill names the manager, except the quoted re-dispatch text" \
+  '/:rejected by the manager:$/' \
+  -rnoiE 'rejected by the manager:|\bthe manager\b' "$PLUGIN_DIR/agents" "$PLUGIN_DIR/skills"
 
 echo "tokens only: no runtime script prices tokens"
 # config.sh is left out: it names the removed keys (limits.max_cost_usd, an old price) only to refuse or drop them.
