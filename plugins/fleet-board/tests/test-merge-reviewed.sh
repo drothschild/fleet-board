@@ -187,6 +187,9 @@ finalize
 run_merge extra
 assert_exit "an argument is a usage error" 2
 assert_eq "usage: no gh call" "$(cnt "")" 0
+run_merge --no-finish
+assert_exit "--no-finish without --card is a usage error" 2
+assert_eq "--no-finish without --card: no gh call" "$(cnt "")" 0
 
 echo "merge.policy auto: a reviewed, non-draft, green PR is merged and its card moves to done"
 setup_case auto

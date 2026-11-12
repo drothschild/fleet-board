@@ -394,6 +394,17 @@ assert_jq "merging-open-in-flight: reason" "$(card 12 reason)" '"merge in flight
 plan merging-open-head-moved "$AUTO"
 assert_jq "merging-open-head-moved: a head other than the journaled one is not merged" "$(card 12 action)" '"skip"'
 
+plan merging-open-head-unreviewed "$AUTO"
+assert_jq "merging-open-head-unreviewed: head moved since the review plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging-open-head-unreviewed: reason" "$(card 12 reason)" '"PR head def5678 differs from the reviewed head abc1234; supervisor decides"'
+plan merging-open-red "$AUTO"
+assert_jq "merging-open-red: red checks plan skip" "$(card 12 action)" '"skip"'
+assert_jq "merging-open-red: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-open-draft "$AUTO"
+assert_jq "merging-open-draft: a draft PR plans skip" "$(card 12 action)" '"skip"'
+plan merging-open-merge "$(printf 'merge:\n  policy: human')"
+assert_jq "merging-open-merge: merge.policy human plans skip" "$(card 12 action)" '"skip"'
+
 plan merging-merged-verify "$AUTO"
 assert_jq "merging-merged-verify: action" "$(card 12 action)" '"verify_main"'
 

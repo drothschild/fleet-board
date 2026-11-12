@@ -804,7 +804,17 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           elif $n.merge_operation != null then act("skip"; "merge in flight or refused; supervisor decides")
           elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
             then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
-          else act("merge"; "PR #\($c.pr) open at the merge head, merge.policy auto") end
+          # Nothing merges here that the review rows would not merge: the review must be clean and
+          # cover this exact head (no drift allowance: the card needs a review or the supervisor),
+          # the PR not a draft and its checks green, and merge.policy auto.
+          elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
+          elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
+          elif $ci > 0 then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
+          elif head_moved($c; $lr)
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the reviewed head \($lr.sha[0:7]); supervisor decides")
+          elif $c.pr_info.isDraft then act("skip"; "PR #\($c.pr) is a draft; supervisor decides")
+          elif ($c.pr_info | green | not) then act("skip"; "PR #\($c.pr) checks are not green; supervisor decides")
+          else act("merge"; "PR #\($c.pr) open at the reviewed head, green checks, merge.policy auto") end
         elif is_review($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in review, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
