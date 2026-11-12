@@ -76,6 +76,12 @@ expect_reject "$(printf 'Resolves:\n#3')"
 expect_reject "$(printf 'resolves\n: #3')"
 expect_reject "$(printf 'closes\nowner/repo#4')"
 expect_reject "$(printf '**Fixes**\n`#9`')"
+expect_reject "**Fixes:** #253"
+expect_reject "_Closes:_ #1"
+expect_reject '`Fixes:` #1'
+expect_reject "~~Closes~~ #2"
+expect_reject "<b>Closes</b> #2"
+expect_reject "Closes <b>#2</b>"
 expect_reject "Fixes github.com/owner/repo/issues/45"
 expect_reject "closes www.github.com/owner/repo/pull/3"
 

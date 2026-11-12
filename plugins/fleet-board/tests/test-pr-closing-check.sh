@@ -94,6 +94,25 @@ pr_json "Add subtract" "$(printf 'The fix closes\n#253')"
 run 34 --repo acme/toy
 expect "a split hit in the body is refused" 1
 
+# GitHub cuts a long subject at about 70 characters: messageHeadline ends in
+# "…" and messageBody opens with "…" and the rest of the line. The squash
+# commit carries the whole line, so the two halves are joined before the check.
+pr_json "Add subtract" "Local board card 1" "feat: a long subject that goes on and on and on, Closes…" "… #253 more"
+run 34
+expect "a keyword before the cut and its reference after it is refused" 1 "Closes #253"
+pr_json "Add subtract" "Local board card 1" "feat: a long subject that goes on and on and on and on, Clo…" "…ses #253"
+run 34
+expect "a keyword cut in two is refused" 1 "Closes #253"
+pr_json "Add subtract" "Local board card 1" "feat: ends with an ellipsis…" "Body names card 253."
+run 34
+expect "a headline ending in an ellipsis with an ordinary body passes" 0
+
+# Malformed input never breaks the report or the check.
+jq -n '{title: "t", body: "b", commits: [{oid: "a/b&c\\x", messageHeadline: "Fixes #1", messageBody: ""}]}' > "$FAKE_PR_JSON"; run 34
+expect "an oid with sed metacharacters still names the commit hit" 1 "commit a: "
+{ jq -n '{title: "t", body: "b", commits: []}'; jq -n '{title: "t", body: "b", commits: []}'; } > "$FAKE_PR_JSON"; run 34
+expect "two JSON documents exit 3" 3
+
 # Fails closed: never a pass when the PR cannot be read in full.
 FAKE_GH_RC=1 run 34 --repo acme/toy
 expect "gh failure exits 3" 3
