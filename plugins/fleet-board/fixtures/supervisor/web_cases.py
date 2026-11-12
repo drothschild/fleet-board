@@ -792,6 +792,29 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertIn("boom", state["error"])
         self.assertIsInstance(state["checked_at"], float)
 
+    def test_the_stuck_refresher_never_stays_running_after_a_failure(self):
+        board = self.load_board_module("board_web_refresher_dies")
+
+        class Boom(BaseException):
+            pass
+
+        def dies(*_a, **_k):
+            raise Boom()
+        # a refresher that dies with a BaseException must still release the "running" guard
+        with mock.patch.object(board.supervisor_stuck, "find", dies):
+            board._STUCK["running"] = True  # as stuck_state sets it before starting the thread
+            try:
+                board._refresh_stuck(frozenset())
+            except Boom:
+                pass
+        self.assertIs(board._STUCK["running"], False, "running stayed True after the refresher died")
+        # Thread.start raising must not leave the guard set either
+        with mock.patch.object(board.threading, "Thread") as thread:
+            thread.return_value.start.side_effect = RuntimeError("can't start new thread")
+            with self.assertRaises(RuntimeError):
+                board.stuck_state(set())
+        self.assertIs(board._STUCK["running"], False, "running stayed True after Thread.start raised")
+
     def test_stuck_is_suppressed_while_a_run_holds_the_lock_without_answering_as_the_supervisor(self):
         start = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True,
                                         text=True, env=dict(os.environ, LC_ALL="C", TZ="UTC")).stdout.split())
