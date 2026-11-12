@@ -234,11 +234,39 @@ fb_valid_number() {
   esac
 }
 
-# fb_pid_alive <pid>: true when <pid> names a running process. ps -p also sees
-# other users' processes (kill -0 would call them dead). A non-numeric pid is dead.
+# fb_pid_alive <pid>: false only when <pid> is known not to run. Unknown counts as
+# alive, since calling a live owner dead lets its lock be stolen. It uses the kill
+# builtin (no ps, which can be missing, BusyBox or sandboxed): kill -0 succeeding
+# is alive, and of its failures only "No such process" (ESRCH, read under LC_ALL=C)
+# is dead; EPERM (another user's process) and anything else are alive. A
+# non-numeric pid is dead.
 fb_pid_alive() {
+  local err
   case "$1" in ''|*[!0-9]*) return 1 ;; esac
-  ps -p "$1" >/dev/null 2>&1
+  err="$(export LC_ALL=C; kill -0 "$1" 2>&1)" && return 0
+  case "$err" in *"No such process"*) return 1 ;; esac
+  return 0
+}
+
+# _fb_lock_remove <lockdir>: renames the lock to the private <lockdir>.rel.$$ and
+# deletes that copy (the rm is retried once). A late `ln` of a taker's claim goes
+# through the lock path, so it can never land in the copy being deleted, and the
+# rm cannot fail half done and leave a pid-less dir at the path.
+_fb_lock_remove() {
+  local rel="$1.rel.$$"
+  rm -rf "$rel" 2>/dev/null
+  mv "$1" "$rel" 2>/dev/null || return 0
+  rm -rf "$rel" 2>/dev/null || rm -rf "$rel"
+}
+
+# fb_lock_release <lockdir>: releases a lock this process holds (its pid file
+# names $$) through _fb_lock_remove. A lock that is gone or not ours is left alone,
+# so a second release (an explicit one, then the EXIT trap) never removes the lock
+# a later holder has taken. An empty argument is a no-op. Every release site uses it.
+fb_lock_release() {
+  [ -n "${1:-}" ] || return 0
+  [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] || return 0
+  _fb_lock_remove "$1"
 }
 
 # fb_lock_acquire <lockdir> <wait-seconds>: takes the mkdir lock <lockdir> and
@@ -273,6 +301,11 @@ fb_pid_alive() {
 # owner dies we find our own claim and reuse it). A moved copy that fails the
 # re-check cannot happen under the argument above; if it does, the lock is left at
 # the moved name and the call fails rather than retry and become a second holder.
+#
+# Release. A holder releases with fb_lock_release, which renames the lock out of
+# the path before deleting it. A plain rm -rf on the path could lose to a late
+# claim landing between its unlinks and its rmdir, leaving a pid-less dir that is
+# never stale.
 fb_lock_acquire() {
   local lock="$1" wait="$2" waited=0 pid k c moved
   while ! mkdir "$lock" 2>/dev/null; do
@@ -307,7 +340,9 @@ fb_lock_acquire() {
     sleep 0.1; waited=$((waited + 1))
   done
   if ! { printf '%s\n' "$$" > "$lock/.pid.$$" && mv -f "$lock/.pid.$$" "$lock/pid"; } 2>/dev/null; then
-    rm -rf "$lock"; fb_die 1 "cannot record the owner of lock $lock"
+    # remove the lock only while our temp pid file shows it is still ours
+    [ "$(cat "$lock/.pid.$$" 2>/dev/null)" = "$$" ] && _fb_lock_remove "$lock"
+    fb_die 1 "cannot record the owner of lock $lock"
   fi
 }
 
@@ -317,7 +352,7 @@ fb_lock() {
   dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
   FB_LOCK="$dir/card-$1.lock"
   fb_lock_acquire "$FB_LOCK" "${FLEET_BOARD_LOCK_WAIT:-30}"
-  trap 'rm -rf "$FB_LOCK"' EXIT
+  trap 'fb_lock_release "$FB_LOCK"' EXIT
 }
 
 # Adapter scripts are exec'd with FLEET_CFG exported and never call fb_load_config;

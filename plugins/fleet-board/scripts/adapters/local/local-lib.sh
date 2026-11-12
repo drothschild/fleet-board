@@ -66,7 +66,7 @@ fl_lock_next() {
   mkdir -p "$d" || fb_die 1 "cannot create $d"
   fb_lock_acquire "$d/.next.lock" "${FLEET_BOARD_LOCK_WAIT:-30}"
 }
-fl_unlock_next() { rm -rf "$(fl_dir)/.next.lock"; }
+fl_unlock_next() { fb_lock_release "$(fl_dir)/.next.lock"; }
 
 # fl_next_number: allocates and prints the next card number, under <dir>/.next.lock.
 fl_next_number() {
@@ -76,12 +76,12 @@ fl_next_number() {
   fl_lock_next
   n="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
   case "$n" in
-    ''|*[!0-9]*|0|0[0-9]*) rm -rf "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
+    ''|*[!0-9]*|0|0[0-9]*) fb_lock_release "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
   esac
   if ! printf '%s\n' $((n + 1)) > "$f.tmp.$$" || ! mv -f "$f.tmp.$$" "$f"; then
-    rm -f "$f.tmp.$$"; rm -rf "$lock"; fb_die 1 "cannot update $f"
+    rm -f "$f.tmp.$$"; fb_lock_release "$lock"; fb_die 1 "cannot update $f"
   fi
-  rm -rf "$lock"
+  fb_lock_release "$lock"
   printf '%s\n' "$n"
 }
 

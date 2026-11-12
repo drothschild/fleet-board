@@ -121,6 +121,24 @@ def _lock_dead(path, grace=LOCK_GRACE):
         return False
 
 
+def _live_claim(path):
+    """True when <lock> holds a taker's claim.<k> link naming a running pid (board-lib.sh's fb_lock_acquire is
+    mid-takeover of it: that taker removes the lock)."""
+    try:
+        children = list(Path(path).iterdir())
+    except OSError:
+        return False
+    for child in children:
+        if child.name.startswith('claim.') and child.is_symlink():
+            try:
+                pid = int(os.readlink(str(child)))
+            except (OSError, ValueError):
+                continue
+            if pid > 0 and _pid_alive(pid):
+                return True
+    return False
+
+
 def _dirty(root, worktree, run_argv):
     """(kind, detail) for a worktree with uncommitted changes to tracked files (`dirty_worktree`) or one whose
     status cannot be read (`unreadable_worktree`: never taken as clean), else None."""
@@ -332,10 +350,16 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
     if lock.is_dir():   # a dead holder's lock would block the move and the note write: they wait on it
         if not _lock_dead(lock):   # re-checked just before removing: its holder may have come back
             raise ValueError('card #%d is locked by a running process (%s)' % (card, lock))
+        if _live_claim(lock):      # a running waiter is taking the dead lock over and will remove it
+            raise ValueError('card #%d has a dead lock that a running process is taking over (%s)' % (card, lock))
+        # Rename the lock out of its path first, then delete the private copy: a taker's late claim goes through
+        # the path, so it never lands in the copy being deleted, and a failed delete leaves no lock at the path.
+        rel = lock.with_name('%s.rel.%d' % (lock.name, os.getpid()))
         try:
-            for child in lock.iterdir():
+            lock.rename(rel)
+            for child in rel.iterdir():
                 child.unlink()
-            lock.rmdir()
+            rel.rmdir()
         except OSError as exc:
             raise ValueError('cannot remove the dead lock %s of card #%d: %s' % (lock, card, exc)) from None
     if target:
