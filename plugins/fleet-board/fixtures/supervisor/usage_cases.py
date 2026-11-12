@@ -346,6 +346,62 @@ class Limits(lc.LoopCase):
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
 
+    def test_cache_reads_alone_never_reach_the_token_limit(self):
+        # Owner decision (0.27.0): cache reads are shown and recorded, but limits.max_tokens counts only
+        # input + output + cache_write.
+        self.b.config['limits']['max_tokens'] = 100
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=10, output_tokens=5,
+                                                                cache_read_input_tokens=5000)})
+        self.start()
+        self.until(lambda: self.b.note(12).get('pr') == 12, what="card 12's implementor")
+        self.until(lambda: not self.b.state.snapshot()['active'], what='the card to settle')
+        self.cycles_done(2)
+        self.assertEqual(self.mode(), 'running', 'cache reads alone paused the run')
+        run = self.b.state.snapshot()['run_tokens']
+        self.assertEqual((run['cache_read'], run['total']), (5000, 5015), 'cache reads stay on the board')
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_input_output_and_cache_write_reaching_the_limit_pause(self):
+        self.b.config['limits']['max_tokens'] = 100
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=50, output_tokens=30,
+                                                                cache_creation_input_tokens=20,
+                                                                cache_read_input_tokens=7)})
+        self.start()
+        self.until(lambda: self.mode() == 'paused', what='the token limit pause')
+        reason = self.b.state.snapshot()['pause_reason']
+        self.assertEqual(reason, 'token limit reached: 100 of limits.max_tokens 100 (cache reads not counted)')
+        self.assertEqual(self.b.state.snapshot()['run_tokens']['total'], 107)
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_cache_reads_alone_never_reach_the_per_card_limit(self):
+        self.b.config['limits']['max_tokens_per_card'] = 100
+        self.b.state.add_tokens({'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 5000}, 12)
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': dict(FULL, input_tokens=10, output_tokens=5)})
+        self.start()
+        self.until(lambda: self.b.note(12).get('pr') == 12, what="card 12's implementor (not capped)")
+        self.assertEqual(self.count(), 1)
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
+    def test_input_output_and_cache_write_reaching_the_per_card_limit_wait_the_card(self):
+        self.b.config['limits']['max_tokens_per_card'] = 100
+        self.b.state.add_tokens({'input': 50, 'output': 30, 'cache_write': 20, 'cache_read': 0}, 12)
+        self.rows = self.implement_plan
+        self.b.plans({'report': 'implementor-ok', 'usage': FULL})
+        self.start()
+        self.cycles_done(2)
+        waits = {w['number']: w['reason'] for w in self.sup.last_cycle['waits']}
+        self.assertEqual(waits.get(12), 'card token limit reached')
+        self.assertEqual(self.count(), 0)
+        self.assertEqual(self.b.card(12)['state'], 'ready')
+        self.sup.request_stop('drain')
+        self.assertEqual(self.finished(), 0)
+
     def test_a_running_session_finishes_when_the_limit_is_reached(self):
         self.add_card(13)
         self.b.config['limits']['max_tokens'] = 100

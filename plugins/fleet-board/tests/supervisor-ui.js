@@ -249,8 +249,8 @@ async function main() {
     h=await mk({...quiet,stuck_error:"config.sh failed: boom"},[stuck(4,"merge_pending"),fine]);
     assert.match(h.$("stuck-note").textContent,/stuck check failed: config\.sh failed: boom/); assert.equal(h.$("stuck-banner").hidden,false,"last good findings were hidden by an error");
     // suppressed: the suppression text replaces the banner
-    h=await mk({...quiet,stuck_suppressed:"a run is active (pid 77)"},[fine]);
-    assert.equal(h.$("stuck-banner").hidden,true,"banner shown while suppressed"); assert.match(h.$("stuck-note").textContent,/a run is active \(pid 77\)/);
+    h=await mk({...quiet,stuck_suppressed:"a supervisor of another checkout holds the repository run lock (pid 77)"},[fine]);
+    assert.equal(h.$("stuck-banner").hidden,true,"banner shown while suppressed"); assert.match(h.$("stuck-note").textContent,/a supervisor of another checkout holds the repository run lock \(pid 77\)/);
     // the red border is a hard requirement, in light and dark alike
     const css=require("fs").readFileSync(path.join(path.dirname(boardPath),"board.css"),"utf8");
     assert.match(css,/\.card\.card--stuck\s*\{[^}]*border:\s*4px solid #d00000/,"card--stuck lacks a 4px solid #d00000 border");
@@ -530,8 +530,13 @@ async function main() {
     assert.equal(b.disabled,false,"Start disabled while re-checking with a good result");
     b=await startOf({stuck_checking:false,stuck_known:true,stuck_checked_at:1794333510,stuck_error:"boom"});
     assert.equal(b.disabled,false,"a failed re-check hid the last good result");
-    b=await startOf({stuck_checking:false,stuck_known:false,stuck_suppressed:"a run is active (pid 77)"});
-    assert.equal(b.disabled,true,"Start enabled while a run holds the lock"); assert.equal(b.title,"a run is active (pid 77)");
+    const held="a supervisor of another checkout holds the repository run lock (pid 77)";
+    const f2=fakeFetch({notRunning:true,cards:[fine],run:{state:"idle",stuck_error:null,stuck_checking:false,stuck_known:false,stuck_suppressed:held}}), h2=make(f2);
+    await h2.flush(); await h2.waitForRequests(); b=h2.$("supervisor-start-btn");
+    assert.equal(b.disabled,true,"Start enabled while another checkout's supervisor holds the lock"); assert.equal(b.title,held);
+    assert.ok(b.getAttribute("aria-describedby"),"Start has no visible reason");
+    assert.equal(h2.$(b.getAttribute("aria-describedby")).textContent,held,"the visible reason is not the lock notice");
+    assert.match(h2.$("stuck-note").textContent,/another checkout holds the repository run lock \(pid 77\)/);
   });
   await check("the Start acknowledgement waits for ready",async()=>{
     const f=fakeFetch({notRunning:true}), h=make(f); await h.flush(); await h.waitForRequests();

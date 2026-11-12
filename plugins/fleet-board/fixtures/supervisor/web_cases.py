@@ -344,7 +344,8 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertIs(started.get("launched"), True, "Start did not launch a supervisor")
         code, status = self.http("GET", "/api/supervisor")
         self.assertEqual((code, status.get("running")), (200, True), status)
-        self.assertFalse((self.repo / ".fleet-board.stop").exists(), "Start wrote the tick-stop file")
+        stops = [p.name for p in self.repo.iterdir() if p.name.endswith(".stop")]
+        self.assertEqual(stops, [], "Start wrote a stop file (the old tick-stop file included)")
 
     def test_start_never_launches_beside_a_supervisor_that_stays_stopping(self):
         self.launching_world()
@@ -951,10 +952,10 @@ class SupervisorWebContract(unittest.TestCase):
         code, body = self.http("GET", "/api/stuck")
         self.assertEqual(code, 200, body)
         self.assertEqual(body["findings"], [])
-        self.assertEqual(body["suppressed"], "a run is active (pid %d)" % os.getpid())
+        self.assertEqual(body["suppressed"], "a supervisor of another checkout holds the repository run lock (pid %d)" % os.getpid())
         code, board = self.http("GET", "/api/board")
         self.assertIsNone(board["cards"][0]["stuck"])
-        self.assertEqual(board["run"]["stuck_suppressed"], "a run is active (pid %d)" % os.getpid())
+        self.assertEqual(board["run"]["stuck_suppressed"], "a supervisor of another checkout holds the repository run lock (pid %d)" % os.getpid())
 
     def test_board_reads_the_supervisor_status_once_per_request(self):
         self.write_card(3)

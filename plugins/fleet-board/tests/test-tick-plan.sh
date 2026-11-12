@@ -438,10 +438,10 @@ setup_case merging-merged-verify "$AUTO"; run_check "$SCRIPT" --settle-merge 12
 assert_jq "settle-merge: a merging card plans verify_main" "$(card 12 action)" '"verify_main"'
 setup_case merging-open-merge "$AUTO"; run_check "$SCRIPT" --settle-merge 12
 assert_jq "settle-merge: a merging card plans merge" "$(card 12 action)" '"merge"'
-settle_skips_merging() { setup_case "$1" "$AUTO"; run_check "$SCRIPT" --settle "$2"; }
+settle_skips_merging() { setup_case "$1" "$AUTO"; run_check "$SCRIPT" --settle-merge "$2"; }
 settle_skips_merging merging-merged-finish 12
 assert_jq "settle: a merging card's finish waits for the next tick" "$(card 12 action)" '"skip"'
-setup_case merging-closed-block "$AUTO"; run_check "$SCRIPT" --settle 12
+setup_case merging-closed-block "$AUTO"; run_check "$SCRIPT" --settle-merge 12
 assert_jq "settle: a merging card with a closed PR blocks" "$(card 12 action)" '"block"'
 
 # a merging card appears in the plan's cards without the settle flags (it is listed)
@@ -845,9 +845,12 @@ plan_note '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round"
 assert_jq "conflict failures: action_failures at review.max_rounds on a conflicted card plans block" "$(card 12 action)" '"block"'
 
 # ---------------------------------------------------------------------------
-# settle mode: tick-plan.sh --settle <n>... plans only the steps that start no agent
-# settle <case> <n> [extra YAML]: set up the case and run --settle <n>
-settle() { local c="$1" n="$2"; shift 2; setup_case "$c" "$@"; run_check "$SCRIPT" --settle "$n"; }
+# settle mode: tick-plan.sh --settle-merge <n>... (merge-reviewed.sh's planner) plans only the steps that
+# start no agent, plus merge and verify_main. The by-hand --settle flag went with settle.sh (0.27.0).
+# settle <case> <n> [extra YAML]: set up the case and run --settle-merge <n>
+settle() { local c="$1" n="$2"; shift 2; setup_case "$c" "$@"; run_check "$SCRIPT" --settle-merge "$n"; }
+setup_case in-review-fix; run_check "$SCRIPT" --settle 12
+assert_exit "--settle is gone (settle.sh was its only caller): exit" 2
 
 settle in-review-human-qa-path 12
 assert_exit "settle: clean review needing human QA: exit" 0
@@ -873,8 +876,7 @@ settle_skips ready-start 12 start
 settle_skips in-progress-no-pr 12 continue_implementor
 settle_skips in-review-needs-review 12 review
 settle_skips in-review-fix 12 fix
-settle_skips in-review-merge-auto 12 merge "$(printf 'merge:\n  policy: auto')"
-settle_skips merged-verify 12 verify_main
+# merge and verify_main are kept by --settle-merge (pinned in the merging cases above), so they are not here.
 settle_skips merged-finish 12 finish
 settle_skips blocked-unblock 20 unblock
 settle_skips pending-followups-hold-card 12 file_pending
@@ -891,11 +893,11 @@ settle in-review-fix 12
 assert_jq "settle: output lists only the named card" '[.cards[].number]' '[12]'
 
 plan in-review-fix
-run_check "$SCRIPT" --settle
+run_check "$SCRIPT" --settle-merge
 assert_exit "settle: no card exits 2" 2
-run_check "$SCRIPT" --settle abc
+run_check "$SCRIPT" --settle-merge abc
 assert_exit "settle: non-numeric card exits 2" 2
-run_check "$SCRIPT" --settle 12 x1
+run_check "$SCRIPT" --settle-merge 12 x1
 assert_exit "settle: a non-numeric second card exits 2" 2
 
 # Merge only reviewed heads: a clean review whose head moved past last_review.
@@ -1468,7 +1470,7 @@ assert_jq "candidates_carry_conflict_findings: first finding" '.candidates[0].fi
 
 run_check "$SCRIPT" --unknown-mode
 assert_exit "candidate mode: invalid mode rejected" 2
-run_check "$SCRIPT" --candidates --settle 12
+run_check "$SCRIPT" --candidates --settle-merge 12
 assert_exit "candidate mode: cannot combine with settle" 2
 
 # merge.ignore_checks: a red check whose name matches an unexpired entry counts as green
