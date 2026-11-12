@@ -61,7 +61,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
    - A test that passes before any implementation exists does not test the new behavior. Rewrite it until it fails against the current code.
    - If an item's behavior genuinely already exists, keep that item's passing test and say so under `## For the card`. At least one new test must still fail for the first commit to be a test-first commit. If no new test can fail, make no commit. Report `blocked` with an `[Important]` finding that the Acceptance describes behavior that already exists, and a `## PR` stating that no PR exists.
 
-6. **Commit the test files alone as the first commit.** The first commit you add to the branch contains only test files. `git -C <worktree> show --name-only --format= <that commit>` lists only paths that match `test_paths`, and none of them is implementation code, a fixture used as implementation, or config. The commit message says it adds failing tests, for example `test: failing tests for <card title>`.
+6. **Commit the test files alone as the first commit.** The first commit you add to the branch contains only test files. `git -C <worktree> show --name-only --format= <that commit>` lists only paths that match `test_paths`, and none of them is implementation code, a fixture used as implementation, or config. The commit message says it adds failing tests, for example `test: failing tests for <card title>`. No commit message holds a closing keyword before an issue reference (step 9).
 
 7. **Implement the minimum, re-run only those test files, and commit.** Write the least code that makes the new tests pass, then re-run only the same test files through `commands.test_one`, one file per run (for example `node --test test/calc.test.js`), and see them pass.
    - Commit the implementation as a separate commit, after the test commit.
@@ -73,9 +73,12 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
    - A failure in files the card did not touch, which you did not cause, goes under `Bugs found:`. It is not fixed as part of the card.
    - When either command is unset, say under `## For the card` that it was skipped because it is not configured.
 
-9. **Push and open a draft PR, or reuse the existing one.** Push with `git -C <worktree> push -u origin <branch>`, never with force.
-   - When no PR exists, write the PR body with the Write tool to a path `mktemp` printed. The body names the card with the line `Local board card <card number>`. It holds no GitHub closing keyword (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, in any case, with or without a colon) before an issue reference such as `#` and digits. Card numbers are local, so GitHub would close the unrelated issue or PR that has that number when the PR merges.
-   - Then check and open in ONE Bash call: `bash <scripts dir>/pr-body-check.sh <path> && gh pr create --draft --head <branch> --title <title taken from the card> --body-file <path>`. When the check fails, fix the file and repeat that call.
+9. **Push and open a draft PR, or reuse the existing one.** Card numbers are local, not GitHub issue numbers. GitHub closes the issue or PR a closing keyword names when the PR merges, and a squash merge copies the branch's commit messages onto the default branch, where GitHub reads them too. So no PR body, PR title or commit message holds a GitHub closing keyword (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, any case, with or without a colon) before an issue reference such as `#` and digits.
+   - Before pushing, check the messages of the commits not yet on the remote: `git -C <worktree> log --format=%B HEAD --not --remotes=origin | bash <scripts dir>/pr-body-check.sh -`. When the check fails, do not push, and report `blocked` with an `[Important]` finding naming the commit.
+   - Push with `git -C <worktree> push -u origin <branch>`, never with force.
+   - When no PR exists, write the PR body with the Write tool to a path `mktemp` printed, never inside a Bash command (no heredoc, `echo`, `printf` or `cat`) and never as an inline `--body`. If the Write tool refuses the file because it has not been read, read it once with the Read tool and write it again, at the same path. The body names the card with the line `Local board card <card number>`.
+   - Take the PR title from the card; when the card title holds a closing keyword before an issue reference, leave that reference out of the PR title.
+   - Then check and open in ONE Bash call: `bash <scripts dir>/pr-body-check.sh <path> && gh pr create --draft --head <branch> --title <title> --body-file <path>`. When the check fails, fix the file and repeat that call.
    - When the manager note (or the check in step 3) shows a PR already exists, only push to that PR's branch and open no new PR.
    - Afterwards, `gh pr view <number> --json isDraft` reports `true`.
 
