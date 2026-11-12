@@ -138,9 +138,11 @@ class MergeLane:
             if required:
                 detail['required_check'] = required
             try:
-                self._merge_note(number, {'merge_refusal': {
-                    'pr': candidate['pr'], 'head': candidate['head_sha'], 'reason': detail['reason'],
-                    'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.clock()))}})
+                refusal = {'pr': candidate['pr'], 'head': candidate['head_sha'], 'reason': detail['reason'],
+                           'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.clock()))}
+                if required:
+                    refusal['required_check'] = required
+                self._merge_note(number, {'merge_refusal': refusal})
             except Exception as exc:  # noqa: BLE001 - an unrecorded refusal would be re-planned every cycle
                 return MergeOutcome(number, 'unclear', dict(detail, error='refusal not recorded: %s' % exc))
             return MergeOutcome(number, 'refused', detail)

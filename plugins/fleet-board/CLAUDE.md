@@ -65,7 +65,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   a different PR. An unparsable note leaves `pr_url` unchanged and warns.
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
-  mark_ready, merge, verify_main, finish, to_human_qa, file_pending, block, unblock,
+  mark_ready, merge, verify_main, finish, after_merge, merge_refusal, to_human_qa, file_pending, block, unblock,
   skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage). Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
