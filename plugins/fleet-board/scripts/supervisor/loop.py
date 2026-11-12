@@ -16,11 +16,10 @@ import threading
 import time
 from pathlib import Path
 
-from . import candidates, errors, resolver, scopes, scripts, usage
+from . import candidates, errors, merging, resolver, scopes, scripts, usage
 from .state import DUPLICATE_ADMISSION
 
 STOP_MODES = ('drain', 'cancel')
-MERGE_IGNORED = 'merging arrives in phase 4'
 CARD_LIMIT_WAIT = 'card token limit reached'
 BACKOFF_CAP = 3600
 POLL = 0.1            # seconds between session polls while any session runs
@@ -47,13 +46,17 @@ def config_loader(root, run=scripts.run):
     return load
 
 
+def _clean(value):
+    return re.sub(r'[\x00-\x1f\x7f]', ' ', str(value))[:300]
+
+
 def _iso(seconds):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(seconds))
 
 
 class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
-                 clock=time.time, mono=time.monotonic, run=scripts.run):
+                 clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None):
         self.root = Path(root)
         self.config_loader = config_loader
         self.state = state
@@ -63,6 +66,7 @@ class Supervisor:
         self.clock = clock
         self.mono = mono
         self.run_script = run
+        self.merge_lane = merge_lane or merging.MergeLane(self.root, state, run=run, clock=clock, repo=self._repo)
         self.config = None
         self.last_cycle = {}
         self.command_wait = COMMAND_WAIT
@@ -83,6 +87,7 @@ class Supervisor:
         self._rate_since = None
         self._last_errors = {}
         self._last_attention = None
+        self._warned = set()       # planner warnings already recorded (one that goes away may return)
         self._sched_pause = None   # the pause reason set because the scheduler reported a stop_reason
 
     # --- the service's side --------------------------------------------------------------------------
@@ -147,6 +152,10 @@ class Supervisor:
             raise box['error']
         return box['result']
 
+    def _repo(self):
+        board = (self.config or {}).get('board')
+        return board.get('repo') if isinstance(board, dict) else None
+
     def _board_dir(self):
         board = (self.config or {}).get('board')
         return (board.get('dir') if isinstance(board, dict) else None) or usage.DEFAULT_DIR
@@ -171,6 +180,7 @@ class Supervisor:
                 self._drain_commands()
                 self._apply_stop()
                 self._poll()
+                self._poll_merge()
                 self._check_max_hours()
                 if self._stop_mode and not self.state.active:
                     return 0
@@ -196,7 +206,7 @@ class Supervisor:
         return max(0.05, self._sup('reconcile_interval_seconds', 5))
 
     def _timeout(self):
-        if any(a.session is not None for a in self.state.active.values()):
+        if self.state.lane is not None or any(a.session is not None for a in self.state.active.values()):
             return POLL
         return max(0.01, min(1.0, self._next_cycle - self.mono()))
 
@@ -307,6 +317,43 @@ class Supervisor:
         if not raised:   # a finish that raised waits for the timer, like any other failed action
             self.wake('session ended')
 
+    # --- the merge lane ------------------------------------------------------------------------------
+    def _poll_merge(self):
+        try:
+            outcome = self.merge_lane.poll()
+        except Exception as exc:  # noqa: BLE001 - the lane cannot say how the merge ended
+            self.state.pause('merge lane failed: %s' % _clean(exc))
+            return
+        if outcome is not None:
+            self._merge_ended(outcome)
+
+    def _merge_ended(self, outcome):
+        """merged and refused go to the merger session (a hook until task 4.5); anything else pauses the board."""
+        card, kind, detail = outcome
+        self.state.release(card)
+        self.state.event('merge_' + kind, card=card, reason=detail.get('reason'))
+        if kind == 'verify_failed':
+            self.state.pause('main verification failed after merging #%d' % card)
+            return
+        if kind == 'unclear':
+            self.state.pause('merge result unclear for #%d: %s' % (card, _clean(detail.get('reason'))))
+            return
+        if kind == 'merged':
+            try:
+                self.driver.record_ignored_checks(card, detail.get('ignored_checks'))
+            except ValueError as exc:   # a malformed entry must not crash the lane
+                self.state.event('ignored_checks_failed', card=card, message=_clean(exc))
+        if self._stop_mode or self.state.mode == 'stopping':
+            self.state.event('merger_deferred', card=card, mode=kind, message='stopping')
+        else:
+            try:
+                self.driver.begin_merger(card, kind, detail)
+            except NotImplementedError:
+                self.state.event('merger_pending', card=card, mode=kind, message='merger arrives in task 4.5')
+            except Exception as exc:  # noqa: BLE001
+                self._count_exception(card, 'merger', exc)
+        self.wake('merge ended')
+
     def _count_exception(self, card, action_name, exc):
         """An exception that escaped the driver is one no-progress failure of the card (best effort)."""
         first = (str(exc).splitlines() or [''])[0]
@@ -401,18 +448,19 @@ class Supervisor:
             self._error('fetch_failed', batch.error)
             return
         self._last_errors.pop('fetch_failed', None)
+        fresh = [w for w in batch.warnings if w not in self._warned]
+        self._warned = set(batch.warnings)
+        for warning in fresh:
+            self.state.event('planner_warning', message=_clean(warning))
         if batch.rate_limit_until is not None:
             return self._rate_limited(batch.rate_limit_until, now)
         self._rate_since = None
         capped = self._capped_cards()
-        rows, ignored, limit_waits = [], [], []
+        rows, limit_waits = [], []
         for original in batch.candidates:
             if not isinstance(original, dict):
                 continue
             row = dict(original)
-            if row.get('action') == 'merge':
-                ignored.append({'number': row.get('number'), 'action': 'merge', 'reason': MERGE_IGNORED})
-                continue
             row['provider'] = resolver.provider_for(config, row)
             if row.get('number') in capped and row['provider'] != 'scripts':
                 limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT})
@@ -424,14 +472,14 @@ class Supervisor:
                   for a in list(self.state.active.values())]
         reservations = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
-                                      now=now, lane_free=False)
+                                      now=now, lane_free=self.state.lane is None)
         if result.get('stop_reason'):
             self._sched_pause = result['stop_reason']
             self.state.pause(result['stop_reason'])
             return
         self.last_cycle = {'admitted': [r.get('number') for r in result['admitted']],
                            'waits': result['waits'] + limit_waits, 'attention': result['attention'],
-                           'ignored': result['ignored'] + ignored}
+                           'ignored': result['ignored']}
         attention = sorted((a.get('number'), a.get('reason')) for a in result['attention'])
         if attention != self._last_attention:
             self._last_attention = attention
@@ -503,6 +551,12 @@ class Supervisor:
 
     def _begin(self, row):
         number, name = row.get('number'), row.get('action')
+        if name == 'merge':   # the lane keeps no reservation: the scheduler sees its paths among the active
+            try:
+                self.merge_lane.start(row)
+            except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the others
+                self._count_exception(number, name, exc)
+            return
         free = row.get('provider') == 'scripts' and name != 'update_branch'
         reserved = False
         if not free:

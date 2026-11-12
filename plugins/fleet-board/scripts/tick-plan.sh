@@ -821,6 +821,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           elif $c.pr_info.state == "CLOSED" then act("block"; "PR #\($c.pr) closed without a merge")
           elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
           elif $n.merge_operation != null then act("skip"; "merge in flight or refused; supervisor decides")
+          # A keyed refusal leaves pending_merge at the same head: the merger session decides
+          # (and clears merge_refusal), the planner must not re-plan the same refused merge every cycle
+          elif ($n.merge_refusal.head // null) != null and (head_moved($c; {sha: $n.merge_refusal.head}) | not)
+            then act("skip"; "merge refused; supervisor decides")
           elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
             then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
           # Nothing merges here that the review rows would not merge: a clean review (an advisory
@@ -829,6 +833,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           # QA; the PR not a draft, its checks green, and merge.policy auto.
           elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
           elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
+          # The review must be that of the last configured stage (null when no stages are configured): a
+          # hand-moved card with stages remaining never merges
+          elif ($lr.stage // null) != (($cfg.review.stages // []) | if length == 0 then null else .[-1].name end)
+            then act("skip"; "the last review is not from the last review stage; supervisor decides")
           elif ((($lr.stage // null) as $ls | any(($cfg.review.stages // [])[]; .name == $ls and .advisory == true)) | not) and $ci > 0
             then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
           elif head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
@@ -974,7 +982,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         end) end) as $selected
   | $selected.cards as $cards
   | (if $candidates then
-       {schema_version:2,candidates:[$cards[] as $card
+       {schema_version:2,warnings:ic_expired($cfg.merge.ignore_checks; $today),candidates:[$cards[] as $card
          | (first($all[] | select(.number == $card.number)) // {}) as $source
          | (first($actual_scope[] | select(.number == $card.number)) // {paths:[],unknown:false}) as $actual
          | ([$source.labels[]? | (if type == "object" then .name else . end)

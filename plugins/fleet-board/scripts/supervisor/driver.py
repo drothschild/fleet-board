@@ -39,7 +39,9 @@ _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
 _FLAGS = frozenset(('--qa-summary', '--role', '--commits-since-review'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
+_MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
+_LEFT_MERGING = {'pending_merge': None, 'merge_refusal': None}   # a card that leaves merging drops both
 _BRANCH = re.compile(r'fleet/[0-9]+-[a-z0-9-]{1,40}')
 _REPO = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
 _SHA = re.compile(r'[0-9a-f]{4,64}')
@@ -130,7 +132,7 @@ class _Ctx:
     def states(self):
         stages = [s['name'] for s in ((self.config.get('review') or {}).get('stages') or [])
                   if isinstance(s, dict) and isinstance(s.get('name'), str) and _STAGE.fullmatch(s['name'])]
-        return _FIXED_BEFORE + tuple('review_' + s for s in stages) + _FIXED_AFTER
+        return _FIXED_BEFORE + tuple('review_' + s for s in stages) + _MERGING + _FIXED_AFTER
 
     def state_name(self, value):
         if not isinstance(value, str) or value not in self.states():
@@ -435,6 +437,10 @@ class CardDriver:
             ctx.merge({'ignored_checks': list(kept) + added})
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def begin_merger(self, card, mode, detail):
+        """Start the merger session after a merge (`merged`) or a refusal (`refused`). Task 4.5 builds it."""
+        raise NotImplementedError('merger arrives in task 4.5')
 
     def begin(self, candidate):
         action_name = candidate.get('action')
@@ -880,6 +886,8 @@ class CardDriver:
         prior = run.prior if run.prior in c.states() else None
         if prior is None:
             raise _Invalid('state', run.prior)
+        if prior == 'merging':
+            c.merge_soft(_LEFT_MERGING)
         blocked_by = parsed.get('blocked_by')
         reason = (parsed.get('for_the_card') or '').strip() or 'the %s reported blocked' % run.role
         if run.conflict:
@@ -913,6 +921,8 @@ class CardDriver:
                         % (remote_head[:7], local_head[:7]))
         c.step('review-stages.sh', 'route', c.n, pr)
         c.move('in_review')
+        if run.prior == 'merging':
+            final.update(_LEFT_MERGING)
         final.update(state='in_review', conflicted_files=None, last_review=None, round=1, stage=None,
                      reviewed_stages=[], blocking_pr=None, blocked_from=None, blocked_findings=[])
 
@@ -983,12 +993,13 @@ class CardDriver:
         came_from = c.state_name(c.row.get('state'))
         if came_from not in c.states()[1:c.states().index('human_qa')]:  # ready .. review_<stage>
             raise _Invalid('state', came_from)
+        left = _LEFT_MERGING if came_from == 'merging' else {}
         match = _NO_PROGRESS.match(reason)
         if match:
             c.merge({'blocking_pr': None})
             entries = [{'severity': 'Important', 'text': reason}]
             c.move('blocked')
-            c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from, blocked_findings=entries))
+            c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from, blocked_findings=entries, **left))
             c.comment_soft('This card was blocked because its action made no progress %s times in a row.\n\n'
                            'Last error: `%s`\n\nA person must fix the cause and then move the card back.'
                            % (match.group(1), ' '.join(match.group(2).split())))
@@ -999,7 +1010,7 @@ class CardDriver:
                  if isinstance(f, dict) and f.get('severity') in _SEVERE]
         entries = found or [{'severity': 'Important', 'text': reason}]
         c.move('blocked')
-        c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from, blocked_findings=entries))
+        c.merge_soft(dict(_RESET, state='blocked', blocked_from=came_from, blocked_findings=entries, **left))
         c.comment_soft('Blocked: ' + reason + '\n\n' + '\n'.join('- [%s] %s' % (e['severity'], e['text'])
                                                                for e in entries))
 
