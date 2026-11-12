@@ -1520,12 +1520,19 @@ def test_ledger_column_of_fix_is_the_column_the_card_is_in(base):
     assert ledger_column(b) == ('fix', 'in_review')
 
 
-def test_a_cancelled_action_still_returns_the_card_to_the_column_it_started_in(base):
+def test_the_launch_column_stays_ready_while_the_ledger_column_is_in_progress(base):
+    """`Action.column` keeps the launch-time column, which loop._note_cancelled restores on a cancel
+    (loop_cases covers the restore itself); the ledger reads `work_column`."""
     b = board_for(base)
     b.plans({'report': 'implementor-ok', 'sleep': 30})
     b.stubs['worktree.sh'] = ok(b.worktree + '\n')
     started = begin(b, 'start')
-    assert started.action.column == 'ready', 'the launch-time column is what a cancel restores'
+    try:
+        assert started.action.column == 'ready', started.action.column
+        assert state.ledger_column(started.action) == 'in_progress', state.ledger_column(started.action)
+    finally:
+        started.action.session.cancel(0)
+        wait_for(started)
 
 
 if __name__ == '__main__':

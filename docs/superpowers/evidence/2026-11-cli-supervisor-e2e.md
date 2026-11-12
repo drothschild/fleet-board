@@ -65,18 +65,28 @@ unknown. The planner used 0 tokens.
      squash-merges, so that commit is never on `main`. The merger correctly reported `attention` at 19:53:58 and the
      card waited in Merging.
    - Fix: the persona now checks `gh pr view --json state,mergeCommit` and the merge commit's ancestry. The attention was
-     cleared with `note.sh merge 50 {"merger": null}`, the documented way out, and the next cycle deployed.
+     cleared with `note.sh merge 50 <file>`, where the file holds `{"merger": null}`. That is the documented way out,
+     and the next cycle deployed.
    - The supervisor did what it was meant to: a merger `attention` held the card and nothing else was deployed.
 
 ## Defects found
 
-- **Defect 1:** the persona's squash-merge check, described above. It was project configuration, not plugin code, and
-  is fixed in the persona.
+- **Defect 1:** the persona's squash-merge check, described above. It is fixed in the persona. The plugin had a hand in
+  it: it gives the merger the PR head under the label "Merged head" (`driver.py` passes `merged_head` = the row's
+  `head_sha`, and `agents/merger.md` uses the same label). Under squash merges that commit never reaches `main`, and
+  the label invited the ancestry check. This is recorded as a follow-up: pass the merge commit, or rename the input.
 - **Defect 2:** the ledger `column` was the card's state before the action moved it. Implementor tokens landed under
   Ready and reviewer tokens under In Progress, so the column totals and the drill-down were off by one column. Fixed
-  test-first in this PR; the action's column is now the column the card is in while the role works.
+  test-first in this PR: the action's column is now the column the card is in while the role works.
+  - Lines written before 0.25.5 keep the earlier column and are not migrated. In HMB's ledger, card 50's implementor
+    tokens (270,717) stay under Ready and its reviewer tokens under In Progress.
 
 ## Notes
 
 - The deploy needs the owner's Mac awake, on the LAN, with `gh` logged in. The client build reads a private package.
-- The card's worktree `.worktrees/50-small-fix-for-test` stays after Done, as before. `/fleet-board:status` flags it.
+- The card's worktrees stay after Done, as before:
+  - `.worktrees/50-small-fix-for-test`, the implementor's;
+  - `.worktrees/50-review`, the reviewer's;
+  - `.worktrees/main-check`, the merge check's.
+
+  `/fleet-board:status` flags only the first.

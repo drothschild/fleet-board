@@ -695,6 +695,7 @@ class Lane(MergeCase):
         self.assertEqual(calls[0][:4], ('pr', 'checks', '34', '--repo'))
 
     def test_the_merge_lane_action_works_in_merging_even_from_in_review(self):
+        # Consistency only: the merge lane writes no ledger line today, so this has no ledger effect yet.
         self.lane.start(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
         action = self.b.state.active[12]
         self.assertEqual((action.column, state.ledger_column(action)), ('in_review', 'merging'))

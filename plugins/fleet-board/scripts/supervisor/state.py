@@ -28,7 +28,7 @@ class Action:
     kind: str = 'role'  # "role" | "script" | "merge"
     marker: Any = None  # the card's active marker path once a session or merge child was launched
     pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
-    work_column: Any = None  # the column the card is in while the role or script works (after the action's move)
+    work_column: Any = None  # the column the card is in while the role session runs; set in _launch and by the merge lane
 
 
 def ledger_column(action):
