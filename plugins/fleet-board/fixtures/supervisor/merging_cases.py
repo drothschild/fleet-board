@@ -870,6 +870,19 @@ class Chained(unittest.TestCase):
         after = [r for r in candidates.fetch(self.root, run=self.script).candidates if r.get('number') == 12]
         self.assertEqual([r['action'] for r in after], ['after_merge'])
 
+    def test_a_closing_keyword_in_a_commit_message_is_refused_and_never_merged(self):
+        # card numbers are not GitHub numbers: merge-reviewed.sh refuses after its keyed marker, so the lane
+        # observes the open PR at the planned head and classifies the refusal (the merger decides)
+        row = self.candidate()
+        closing = {'title': 'Add subtract', 'body': 'Local board card 12',
+                   'commits': [{'oid': 'abc1234', 'messageHeadline': 'feat: subtract', 'messageBody': 'Fixes #253'}]}
+        (self.gh_dir / 'closing.json').write_text(json.dumps(closing))
+        outcome = self.ended(row)
+        self.assertEqual(outcome.kind, 'refused', outcome)
+        self.assertIn('closing keyword before an issue reference', outcome.detail['reason'])
+        self.assertNotIn('pr merge', (self.gh_dir / 'calls').read_text())
+        self.assertEqual(self.note()['merge_refusal']['pr'], 34)
+
     def test_a_planner_skip_in_the_merge_is_not_attempted_and_never_pauses(self):
         row = self.candidate()
         red = dict(CHAIN_PR, statusCheckRollup=[{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'FAILURE'}])
