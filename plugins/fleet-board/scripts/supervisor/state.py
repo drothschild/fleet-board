@@ -56,7 +56,8 @@ class State:
         self.run_tokens = {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
                            'unknown': 0, 'partial': False}
         # The token budget (limits.max_tokens, limits.max_tokens_per_card) counts input + output + cache_write;
-        # cache reads are recorded and shown (run_tokens, the ledger) but not counted. Not part of the snapshot.
+        # cache reads are recorded and shown (run_tokens, the ledger) but not counted. The snapshot carries it as
+        # run_budget {tokens, partial, cap, label}.
         self.run_budget = 0
         self.budget_unknown = 0   # actions with an unknown count among BUDGET_KEYS (an unknown cache read is not)
         self.budget_cap = None    # limits.max_tokens as the loop last read it (None: no limit)
