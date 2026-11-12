@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import paths, webproxy
 
-READY_TIMEOUT = 8.0
+READY_TIMEOUT = 30.0
 _LOG_TAIL = 300
 _OUTPUT_MAX = 64 * 1024
 
@@ -51,6 +51,11 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT, ignore_stuc
     child_env.update({"FLEET_BOARD_DOMAIN": str(root),
                       "PYTHONPATH": scripts + (os.pathsep + child_env["PYTHONPATH"]
                                                if child_env.get("PYTHONPATH") else "")})
+    # FLEET_BOARD_SUPERVISOR_SOCKET is a client-side override: the child binds at the default location.
+    bind_path = paths.controller_socket(paths.domain_id_for_root(root), env=child_env)
+    override = env.get("FLEET_BOARD_SUPERVISOR_SOCKET")
+    if override and override != bind_path:
+        raise LaunchError("FLEET_BOARD_SUPERVISOR_SOCKET points away from where start binds: %s" % bind_path)
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     os.fchmod(fd, 0o600)
@@ -60,8 +65,7 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT, ignore_stuc
         child = subprocess.Popen(argv, cwd=str(root),
                                  env=child_env, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                  start_new_session=True)
-    socket_path = env.get("FLEET_BOARD_SUPERVISOR_SOCKET") or paths.controller_socket(
-        paths.domain_id_for_root(root), env=child_env)
+    socket_path = bind_path
 
     def probe():
         try:
@@ -71,7 +75,8 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT, ignore_stuc
     deadline = time.time() + timeout
     while True:
         status = probe()
-        if isinstance(status, dict) and status.get("startup") == "done":
+        # Only the child counts: a supervisor that already runs answers too, but the child then exits.
+        if isinstance(status, dict) and status.get("startup") == "done" and status.get("pid") == child.pid:
             threading.Thread(target=_reap, args=(child,), daemon=True).start()
             return {"ready": True, "pid": status.get("pid"), "log": str(log_path)}
         code = child.poll()
@@ -105,7 +110,7 @@ def _discard(child):
     """Terminate a child that never became ready and reap it."""
     child.terminate()
     try:
-        child.wait(timeout=3)
+        child.wait(timeout=10)
     except Exception:  # noqa: BLE001 - best effort; the child was asked to exit
         pass
 

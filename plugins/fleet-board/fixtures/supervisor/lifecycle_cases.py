@@ -735,7 +735,10 @@ class DetachedLauncher(unittest.TestCase):
         board = make_root(ROOT, "override-board")
         child = mock.Mock()
         child.poll.return_value = None
+        child.pid = 4242
         asked = []
+        env = {"FLEET_BOARD_SOCKET_DIR": str(self.base)}
+        bind = paths.controller_socket(paths.domain_id_for_root(board), env=env)
 
         def fake_request(path, payload):
             asked.append(path)
@@ -743,10 +746,40 @@ class DetachedLauncher(unittest.TestCase):
         with mock.patch.object(launcher.subprocess, "Popen", return_value=child), \
                 mock.patch.object(launcher.webproxy, "request", side_effect=fake_request):
             ack = launcher.launch_detached(board, self.logs / "o.log", timeout=2,
-                                           env={"FLEET_BOARD_SOCKET_DIR": str(self.base),
-                                                "FLEET_BOARD_SUPERVISOR_SOCKET": "/tmp/override/c.sock"})
-        self.assertEqual(asked[0], "/tmp/override/c.sock")
+                                           env=dict(env, FLEET_BOARD_SUPERVISOR_SOCKET=bind))
+        self.assertEqual(asked[0], bind)
         self.assertEqual(ack["pid"], 4242)
+
+    def test_an_override_pointing_away_from_where_start_binds_fails_fast(self):
+        board = make_root(ROOT, "away-board")
+        with mock.patch.object(launcher.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(launcher.LaunchError,
+                                        "FLEET_BOARD_SUPERVISOR_SOCKET points away from where start binds: "):
+                launcher.launch_detached(board, self.logs / "away.log", timeout=30,
+                                         env={"FLEET_BOARD_SOCKET_DIR": str(self.base),
+                                              "FLEET_BOARD_SUPERVISOR_SOCKET": "/tmp/override/c.sock"})
+        popen.assert_not_called()
+
+    def test_the_default_readiness_timeout_covers_the_startup_check(self):
+        self.assertEqual(launcher.READY_TIMEOUT, 30.0)
+
+    def test_a_running_supervisors_answer_is_not_the_childs_readiness(self):
+        board = make_root(ROOT, "other-board")
+        child = mock.Mock()
+        child.pid = 111
+        polls = iter([None, None, 1, 1])
+        child.poll.side_effect = lambda: next(polls)
+
+        def fake_popen(argv, **kwargs):
+            kwargs["stderr"].write("supervisor already running for x (pid 222)\n")
+            kwargs["stderr"].flush()
+            return child
+        with mock.patch.object(launcher.subprocess, "Popen", side_effect=fake_popen), \
+                mock.patch.object(launcher.webproxy, "request", return_value={"startup": "done", "pid": 222}):
+            with self.assertRaisesRegex(launcher.LaunchError, "pid 222") as caught:
+                launcher.launch_detached(board, self.logs / "r.log", timeout=5,
+                                         env={"FLEET_BOARD_SOCKET_DIR": str(self.base)})
+        self.assertEqual(caught.exception.exit_code, 1)
 
     def test_a_socket_that_answers_but_is_still_starting_is_not_ready(self):
         board = make_root(ROOT, "starting-board")
@@ -878,6 +911,40 @@ class DetachedStart(unittest.TestCase):
         self.assertEqual(stop.returncode, 0, stop.stderr)
         self.assertTrue(self.wait_gone(pid), "the detached supervisor must exit after stop")
         self.assertEqual(self.cli("status").returncode, 1)
+
+    def test_a_second_detach_names_the_running_supervisor_and_fails(self):
+        first = self.detach()
+        self.assertEqual(first.returncode, 0, first.stderr)
+        pid = json.loads(first.stdout)["pid"]
+        second = self.cli("start", "--detach")
+        self.assertEqual(second.returncode, 1, second.stdout + second.stderr)
+        self.assertIn("pid %d" % pid, second.stderr)
+        self.assertEqual(json.loads(self.cli("status", "--json").stdout)["pid"], pid)
+
+    def test_a_client_with_another_tmpdir_finds_the_supervisor_at_the_default_base(self):
+        a = ROOT / "tmp-a2"
+        b = ROOT / "tmp-b2"
+        a.mkdir(mode=0o700)
+        b.mkdir(mode=0o700)
+        env = dict(self.env)
+        env.pop("FLEET_BOARD_SOCKET_DIR")
+        # The default base is shared with real supervisors: touch only this root's own fbs-<hash> directory.
+        mine = Path(paths.socket_dir(paths.domain_id_for_root(self.case), env=env))
+        self.assertEqual(mine.parent, Path("/tmp") / ("fleet-board-%d" % os.getuid()))
+        self.assertFalse(mine.exists())
+        self.addCleanup(lambda: shutil.rmtree(str(mine), True))
+        run = self.cli("start", "--detach", env=dict(env, TMPDIR=str(a)))
+        if run.returncode == 1 and (SANDBOX_PS in run.stderr or SANDBOX_BIND in run.stderr):
+            self.skipTest("sandbox: " + run.stderr[:120])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        pid = json.loads(run.stdout)["pid"]
+        self.pids.append(pid)
+        # stop_all uses self.env (the hermetic base); stop the default-base one explicitly, last.
+        self.addCleanup(self.wait_gone, pid)
+        self.addCleanup(self.cli, "stop", "--cancel", env=env)
+        status = self.cli("status", "--json", env=dict(env, TMPDIR=str(b)))
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertEqual(json.loads(status.stdout)["pid"], pid)
 
     def test_a_client_with_another_tmpdir_finds_the_supervisor(self):
         a = ROOT / "tmp-a"
