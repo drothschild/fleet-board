@@ -1461,6 +1461,36 @@ assert_exit "candidate mode: invalid mode rejected" 2
 run_check "$SCRIPT" --candidates --settle 12
 assert_exit "candidate mode: cannot combine with settle" 2
 
+# merge.ignore_checks: a red check whose name matches an unexpired entry counts as green
+IGN_YAML() { # IGN_YAML <until-lint> <until-legacy>
+  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: "docs lint is flaky"\n      until: %s\n    - name: "ci/legacy-?int"\n      reason: "legacy status"\n      until: %s\n' "$1" "$2"
+}
+export FLEET_BOARD_TODAY=2026-11-11
+for row in in-review merging; do
+  plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-11)"
+  assert_jq "$row-ignore: unexpired entries (through today) plan merge" "$(card 12 action)" '"merge"'
+  assert_jq "$row-ignore: the planner lists the checks it ignored" "$(card 12 ignored_checks)" \
+    '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11"}]'
+  assert_jq "$row-ignore: no expiry warning" '.warnings' '[]'
+  plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
+  assert_jq "$row-ignore-expired: an expired entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  assert_jq "$row-ignore-expired: warning names the entry and its date" '.warnings' '["merge.ignore_checks entry ci/legacy-?int expired 2026-11-10"]'
+  plan $row-ignore-pending "$(IGN_YAML 2026-12-31 2026-12-31)"
+  assert_jq "$row-ignore-pending: a pending check never counts as green" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  plan $row-ignore-other-red "$(IGN_YAML 2026-12-31 2026-12-31)"
+  assert_jq "$row-ignore-other-red: a red check no entry matches still blocks" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+done
+plan in-review-merge-auto "$AUTO"
+assert_jq "ignore_checks: an ordinary merge ignores nothing" "$(card 12 ignored_checks)" '[]'
+plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)" 
+assert_jq "ignore_checks: case-sensitive glob (unchanged config matches)" "$(card 12 action)" '"merge"'
+plan in-review-ignore-red "$(printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "LINT-*"\n      reason: r\n      until: 2026-12-31\n')"
+assert_jq "ignore_checks: glob matching is case-sensitive" "$(card 12 action)" '"wait"'
+export FLEET_BOARD_TODAY=2027-01-01
+plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)"
+assert_jq "ignore_checks: today is injectable (FLEET_BOARD_TODAY)" "$(card 12 action)" '"wait"'
+unset FLEET_BOARD_TODAY
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

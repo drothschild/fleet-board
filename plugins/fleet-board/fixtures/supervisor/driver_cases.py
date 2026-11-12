@@ -1317,6 +1317,32 @@ def test_validation_errors_are_one_line_and_the_repo_regex_is_tight(base):
         assert b.gh_calls == [] and b.note()['last_action_error'].startswith('invalid repo: '), repo
 
 
+def test_record_ignored_checks_appends_to_the_note_with_a_timestamp(base):
+    b = board_for(base, 'merging')
+    b.driver.clock = lambda: 1794398400  # 2026-11-11T12:00:00Z
+    first = {'name': 'lint-docs', 'reason': 'docs lint is flaky', 'until': '2026-12-31'}
+    b.driver.record_ignored_checks(12, [first])
+    at = '2026-11-11T12:00:00Z'
+    assert b.note()['ignored_checks'] == [dict(first, at=at)], b.note()
+    second = {'name': 'ci/legacy-lint', 'reason': 'legacy', 'until': '2026-11-11'}
+    b.driver.record_ignored_checks(12, [second])
+    assert b.note()['ignored_checks'] == [dict(first, at=at), dict(second, at=at)], b.note()
+    b.driver.record_ignored_checks(12, [])
+    assert len(b.note()['ignored_checks']) == 2, b.note()
+
+
+def test_record_ignored_checks_refuses_a_malformed_entry(base):
+    b = board_for(base, 'merging')
+    for bad in ([{'name': 'x'}], [{'name': '', 'reason': 'r', 'until': '2026-12-31'}], ['lint'],
+                [{'name': 'x', 'reason': 'r', 'until': 'soon'}]):
+        try:
+            b.driver.record_ignored_checks(12, bad)
+        except ValueError:
+            continue
+        raise AssertionError('accepted %r' % (bad,))
+    assert 'ignored_checks' not in b.note() or b.note()['ignored_checks'] in (None, []), b.note()
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))

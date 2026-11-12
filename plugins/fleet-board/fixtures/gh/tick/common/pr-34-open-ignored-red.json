@@ -1,0 +1,1 @@
+{"isDraft":false,"state":"OPEN","mergedAt":null,"statusCheckRollup":[{"__typename":"CheckRun","name":"build","conclusion":"SUCCESS"},{"__typename":"CheckRun","name":"lint-docs","conclusion":"FAILURE"},{"__typename":"StatusContext","context":"ci/legacy-lint","state":"ERROR"}],"headRefOid":"abc1234"}

@@ -823,6 +823,25 @@ REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens_per_card: null }\n' | 
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "max_tokens_per_card null accepted" 0
 
+# merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.ignore_checks defaults to []" '.merge.ignore_checks' '[]'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  ignore_checks:\n    - name: "lint-*"\n      reason: flaky docs lint\n      until: 2026-12-31\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "ignore_checks entry accepted" 0
+assert_stdout_exact_jq "ignore_checks entry kept as strings" '.merge.ignore_checks' '[{"name":"lint-*","reason":"flaky docs lint","until":"2026-12-31"}]'
+IGN_MSG="merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+invalid_field_case "ignore_checks missing until" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r' "$IGN_MSG"
+invalid_field_case "ignore_checks missing reason" $'merge:\n  ignore_checks:\n    - name: lint\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks missing name" $'merge:\n  ignore_checks:\n    - reason: r\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks empty reason" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: ""\n      until: 2026-12-31' "$IGN_MSG"
+for d in 2026-13-01 2026-02-30 20261231 2026-1-5 soon 2026-12-31T00:00; do
+  invalid_field_case "ignore_checks bad date $d" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: "'"$d"$'"' "$IGN_MSG"
+done
+invalid_field_case "ignore_checks not a list" $'merge:\n  ignore_checks: lint' "merge.ignore_checks must be a list"
+invalid_field_case "ignore_checks entry not a map" $'merge:\n  ignore_checks:\n    - lint' "$IGN_MSG"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

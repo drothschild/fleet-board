@@ -1562,6 +1562,57 @@ run_hook bash.json "board-move.sh 12 review_security"
 assert_silent_allow "stage-move: board-move.sh 12 (ready) review_security"
 run_hook bash.json "board-move.sh 14 review_security"
 assert_blocked "stage-move: board-move.sh 14 review_security from human_qa" "Human QA"
+# ---------------------------------------------------------------------------
+# merge.ignore_checks: the gate lets a merge through a red check an unexpired
+# entry names; pending, expired and unnamed red checks still block
+ignore_cfg() { # ignore_cfg <until-lint> <until-legacy>
+  cat > "$REPO/.fleet-board.yml" << YML
+board:
+  repo: acme/toy
+merge:
+  policy: auto
+  ignore_checks:
+    - name: "lint-*"
+      reason: "docs lint is flaky"
+      until: $1
+    - name: "ci/legacy-?int"
+      reason: "legacy status"
+      until: $2
+worktrees:
+  dir: .fw
+YML
+}
+ignore_routes() {
+  card_routes
+  for n in 14:ignored-red 15:ignored-pending 16:ignored-other-red; do
+    printf 'pr view %s --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
+    printf 'pr view %s -R acme/toy --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
+  done
+}
+export FLEET_BOARD_TODAY=2026-11-11
+setup_case auto
+ignore_cfg 2026-12-31 2026-11-11
+ignore_routes > "$ROUTES"
+run_hook bash.json "gh pr merge 14 --repo acme/toy --squash"
+assert_silent_allow "ignore_checks: merge past red checks named by unexpired entries"
+run_hook bash.json "gh pr merge 14 --squash"
+assert_silent_allow "ignore_checks: same without --repo"
+run_hook bash.json "gh pr merge 15 --squash"
+assert_blocked "ignore_checks: a pending ignored check still blocks" "PR #15 checks are not green"
+run_hook bash.json "gh pr merge 16 --squash"
+assert_blocked "ignore_checks: a red check no entry names still blocks" "PR #16 checks are not green"
+ignore_cfg 2026-12-31 2026-11-10
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: an expired entry no longer counts" "PR #14 checks are not green"
+ignore_cfg 2026-12-31 2026-11-11
+export FLEET_BOARD_TODAY=2026-11-12
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: today is injectable (FLEET_BOARD_TODAY), valid through the until day only" "PR #14 checks are not green"
+export FLEET_BOARD_TODAY=bogus
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: an unreadable today fails closed" "PR #14 checks are not green"
+unset FLEET_BOARD_TODAY
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
