@@ -3,6 +3,7 @@ merge-reviewed.sh --no-finish), real board scripts, a scripted candidate feed an
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 import unittest
@@ -27,6 +28,7 @@ exit "$(cat "$d/rc" 2>/dev/null || echo 0)"
 OBSERVED = {'status': 'observed', 'state': 'MERGED', 'planned_head': 'abc1234', 'observed_head': 'abc1234',
             'main_check': {'commit': 'c0ffee1', 'ok': True, 'results': []}}
 OPEN = dict(OBSERVED, state='OPEN', main_check=None)
+ABSENT = {'status': 'absent', 'state': 'OPEN', 'planned_head': 'abc1234', 'observed_head': 'abc1234', 'pr': 34}
 LINT = {'name': 'lint-docs', 'reason': 'flaky', 'until': '2026-12-31'}
 
 
@@ -241,6 +243,37 @@ class Merging(MergeCase):
         self.assertIsNone(self.b.state.lane)
         self.assertEqual(self.b.card(12)['state'], 'merging')
         self.assertEqual(self.mergers, [], 'no merger session starts while stopping')
+
+    def test_a_planner_skip_is_not_attempted_and_never_pauses(self):
+        self.inspect = dict(ABSENT)
+        self.start()
+        self.until(lambda: any(e['type'] == 'merge_not_attempted' for e in self.b.state.events),
+                   what='the not-attempted event')
+        event = [e for e in self.b.state.events if e['type'] == 'merge_not_attempted'][0]
+        self.assertEqual(event['payload']['reason'], 'merge not attempted: planner skipped')
+        self.cycles_done(2)
+        self.assertEqual(self.mode(), 'running')
+        self.assertEqual(self.mergers, [])
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertIsNone(self.b.state.lane)
+
+    def test_a_failing_note_write_for_ignored_checks_never_ends_the_supervisor(self):
+        self.ignored = [LINT]
+
+        def note(*args):
+            if args[0] == 'merge' and 'ignored_checks' in Path(str(args[2])).read_text():
+                return dc.fail_with('note.sh: cannot write the note')
+            return scripts.run(self.b.root, 'note.sh', *args, env=self.b.env)
+        self.b.stubs['note.sh'] = note
+        self.start()
+        self.until(lambda: self.mergers, what='the merger after a failed ignored-checks write')
+        self.assertEqual(self.mergers[0][:2], (12, 'merged'))
+        events = [e for e in self.b.state.events if e['type'] == 'ignored_checks_failed']
+        self.assertEqual(len(events), 1, list(self.b.state.events))
+        self.assertIn('cannot write the note', events[0]['payload']['message'])
+        self.cycles_done(2)
+        self.assertTrue(self.thread.is_alive(), 'the supervisor exited')
+        self.assertEqual(self.mode(), 'running')
 
     def test_planner_warnings_are_recorded_once(self):
         self.merge_cards = []
@@ -551,6 +584,18 @@ class MergerFlow(unittest.TestCase):
         self.no_session('merged', MERGED)
         self.assertEqual(self.b.note(12)['merger']['reason'], 'persona changed by this PR')
 
+    def test_the_default_config_gives_the_plugin_persona(self):
+        # A repo that sets only merge.policy auto, with no .fleet-board/merger.md: the merger gets the plugin
+        # default persona (config-defaults.json must leave merge.persona null, never a path)
+        (self.b.root / '.fleet-board.yml').write_text(
+            'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n')
+        self.b.config = loop.config_loader(self.b.root)()
+        self.assertFalse((self.b.root / '.fleet-board' / 'merger.md').exists())
+        self.merger('merged', MERGED, 'merger-after-merge-done')
+        self.assertIn('# Default merger persona', self.b.prompt(1))
+        self.assertEqual(self.attention_events(), [])
+        self.assertEqual(self.b.card(12)['state'], 'done')
+
     def test_the_project_persona_and_its_append_are_used(self):
         (self.b.root / '.fleet-board' / 'merger.md').write_text('PROJECT PERSONA\n')
         self.b.config = dict(self.b.config, merge={'persona': None, 'persona_append': 'APPENDED RULE'})
@@ -592,6 +637,54 @@ class Lane(MergeCase):
         self.assertEqual(outcome.detail['required_check'], 'build')
         self.assertEqual(calls[0][:4], ('pr', 'checks', '34', '--repo'))
 
+    def outcome_of(self, candidate):
+        self.lane.start(candidate)
+        end = time.monotonic() + 20
+        while time.monotonic() < end:
+            outcome = self.lane.poll()
+            if outcome is not None:
+                return outcome
+            time.sleep(0.05)
+        self.fail('the merge did not end')
+
+    def test_rc0_with_no_marker_and_the_pr_open_at_the_planned_head_is_not_attempted(self):
+        self.inspect = dict(ABSENT)
+        outcome = self.outcome_of(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+        self.assertEqual(outcome.kind, 'not_attempted')
+        self.assertEqual(outcome.detail['reason'], 'merge not attempted: planner skipped')
+        self.assertNotIn('merge_refusal', self.b.note(12))
+
+    def test_rc0_with_no_marker_is_unclear_unless_open_at_the_planned_head(self):
+        for inspect in (dict(ABSENT, state='MERGED'), dict(ABSENT, observed_head='def5678'), {'status': 'unmatched'}):
+            self.inspect = inspect
+            outcome = self.outcome_of(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+            self.assertEqual(outcome.kind, 'unclear', inspect)
+
+    def test_a_card_moved_out_of_merging_by_hand_drops_its_merge_records(self):
+        self.b.put_note({'merge_refusal': {'pr': 34, 'head': 'abc1234', 'reason': 'refused', 'at': '2026-11-11T00:00:00Z'},
+                         'merge_retry': {'pr': 34, 'head': 'abc1234', 'after': '2026-11-11T00:01:00Z'},
+                         'pending_merge': {'operation_key': 'run-0-12-1', 'pr': 34, 'head_sha': 'abc1234'},
+                         'merger': {'mode': 'refusal', 'status': 'attention', 'head': 'abc1234', 'reason': 'x'}})
+        self.hold.write_text('')
+        self.lane.start(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+        note = self.b.note(12)
+        self.hold.unlink()
+        for key in ('merge_refusal', 'merge_retry', 'pending_merge', 'merger'):
+            self.assertIsNone(note.get(key), key)
+        self.assertEqual((note['state'], self.b.card(12)['state']), ('merging', 'merging'))
+        self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
+
+    def test_a_card_already_in_merging_keeps_its_merge_records(self):
+        self.b.seed(12, 'merging')
+        retry = {'pr': 34, 'head': 'abc1234', 'after': '2026-11-11T00:01:00Z'}
+        self.b.put_note({'merge_retry': retry})
+        self.hold.write_text('')
+        self.lane.start(dc.candidate('merge', number=12, state='merging', head_sha='abc1234', pr=34))
+        note = self.b.note(12)
+        self.hold.unlink()
+        self.assertEqual(note['merge_retry'], retry)
+        self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
+
     def test_a_malformed_candidate_never_spawns(self):
         for bad in (dict(head_sha='not-hex!'), dict(pr=0), dict(pr=None), dict(head_sha=None)):
             with self.assertRaises(ValueError):
@@ -599,6 +692,141 @@ class Lane(MergeCase):
                                                                                          **bad)))
         self.assertEqual(self.spawns(), [])
         self.assertIsNone(self.b.state.lane)
+
+
+CHAIN_YML = ('board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\nreview:\n  stages:\n'
+             '    - name: security\n      agent: sec-reviewer\n      model: opus\n'
+             '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n')
+CHAIN_GH = r'''#!/bin/bash
+d="$CHAIN_GH_DIR"
+printf '%s\n' "$*" >> "$d/calls"
+case "$1 $2" in
+  "pr view")
+    case "$*" in
+      *files*) printf '{"files":[{"path":"src/calc.js"}],"changedFiles":1}\n' ;;
+      *mergeable*) printf '{"mergeable":"MERGEABLE"}\n' ;;
+      *) cat "$d/pr.json" ;;
+    esac ;;
+  "pr list") printf '[]\n' ;;
+  "pr checks") printf '[]\n' ;;
+  "pr merge")
+    jq -c '.state = "MERGED" | .mergedAt = "2026-11-11T00:00:00Z"' "$d/pr.json" > "$d/pr.tmp" && mv "$d/pr.tmp" "$d/pr.json" ;;
+  *) printf 'chain gh: unexpected call: %s\n' "$*" >&2; exit 99 ;;
+esac
+'''
+CHAIN_PR = {'isDraft': False, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': 'abc1234',
+            'statusCheckRollup': [{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}
+
+
+class Chained(unittest.TestCase):
+    """The real chain: tick-plan.sh --candidates -> MergeLane -> merge-reviewed.sh --no-finish (keyed) ->
+    --inspect, on a real local board with a fake gh. The card was routed to only the first of two stages."""
+
+    def setUp(self):
+        self.dir = BASE / ('chain-' + self.id().rsplit('.', 1)[-1])
+        self.dir.mkdir()
+        self.root = self.dir / 'repo'
+        self.root.mkdir()
+        subprocess.run(['git', '-C', str(self.root), 'init', '-q'], check=True)
+        (self.root / '.fleet-board.yml').write_text(CHAIN_YML)
+        (self.root / '.fleet-board' / 'cards').mkdir(parents=True)
+        (self.root / '.fleet-board' / 'next').write_text('100\n')
+        card = {'number': 12, 'title': 'Add subtract', 'body': 'plain body', 'state': 'review_security',
+                'labels': ['needs-security-review'], 'acceptance': ['does it'], 'blocked_by': [],
+                'next_comment_id': 1, 'comments': [], 'created_at': '2026-01-01T00:00:00Z'}
+        (self.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
+        gh_dir = self.dir / 'gh'
+        bin_dir = self.dir / 'bin'
+        gh_dir.mkdir()
+        bin_dir.mkdir()
+        (bin_dir / 'gh').write_text(CHAIN_GH)
+        (bin_dir / 'gh').chmod(0o755)
+        (gh_dir / 'pr.json').write_text(json.dumps(CHAIN_PR))
+        verify = self.dir / 'verify-main.sh'
+        verify.write_text('#!/bin/bash\nprintf \'{"commit":"c0ffee1","ok":true,"results":[]}\\n\'\n')
+        verify.chmod(0o755)
+        self.gh_dir = gh_dir
+        self.env = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'CHAIN_GH_DIR': str(gh_dir),
+                    'FLEET_BOARD_USER': 'fleet-bot', 'FLEET_BOARD_VERIFY_MAIN': str(verify)}
+        self.put_note({'state': 'review_security', 'branch': lc.BRANCH[12], 'pr': 34, 'round': 1,
+                       'stage': 'security', 'reviewed_stages': [],
+                       'last_review': {'round': 1, 'sha': 'abc1234', 'stage': 'security', 'critical': 0,
+                                       'important': 0, 'findings': []}})
+        self.state = state.State('run-1')
+        self.lane = merging.MergeLane(self.root, self.state, run=self.script, spawn=self.spawn)
+
+    def script(self, root, name, *args, **kw):
+        return scripts.run(root, name, *args, env=self.env, **kw)
+
+    def spawn(self, root, name, *args):
+        return scripts.spawn(root, name, *args, env=self.env)
+
+    def put_note(self, patch):
+        path = self.dir / 'patch.json'
+        path.write_text(json.dumps(patch))
+        done = self.script(self.root, 'note.sh', 'merge', 12, str(path))
+        self.assertEqual(done.rc, 0, done)
+
+    def note(self):
+        done = self.script(self.root, 'note.sh', 'get', 12)
+        self.assertEqual(done.rc, 0, done)
+        return json.loads(done.stdout)
+
+    def card(self):
+        return json.loads((self.root / '.fleet-board' / 'cards' / '12.json').read_text())
+
+    def candidate(self):
+        batch = candidates.fetch(self.root, run=self.script)
+        self.assertIsNone(batch.error, batch)
+        rows = [r for r in batch.candidates if r.get('number') == 12]
+        self.assertEqual([r['action'] for r in rows], ['merge'], batch.candidates)
+        return rows[0]
+
+    def ended(self, row):
+        self.lane.start(row)
+        end = time.monotonic() + 60
+        while time.monotonic() < end:
+            outcome = self.lane.poll()
+            if outcome is not None:
+                return outcome
+            time.sleep(0.05)
+        self.fail('merge-reviewed.sh did not end')
+
+    def test_a_card_routed_to_only_the_first_of_two_stages_merges(self):
+        row = self.candidate()
+        self.assertEqual(row['state'], 'review_security')
+        outcome = self.ended(row)
+        self.assertEqual(outcome.kind, 'merged', outcome)
+        self.assertEqual(self.card()['state'], 'merging')
+        note = self.note()
+        self.assertEqual((note['merged_pr'], note['main_check']['ok'], note['state']), (34, True, 'merging'))
+        self.assertEqual(note['merge_operation']['operation_key'], 'run-1-12-1')
+        calls = (self.gh_dir / 'calls').read_text()
+        self.assertEqual(calls.count('pr merge 34 '), 1, calls)
+        # merged and verified, no merger result yet: the planner hands the card to the merger
+        after = [r for r in candidates.fetch(self.root, run=self.script).candidates if r.get('number') == 12]
+        self.assertEqual([r['action'] for r in after], ['after_merge'])
+
+    def test_a_planner_skip_in_the_merge_is_not_attempted_and_never_pauses(self):
+        row = self.candidate()
+        red = dict(CHAIN_PR, statusCheckRollup=[{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'FAILURE'}])
+        (self.gh_dir / 'pr.json').write_text(json.dumps(red))   # the checks go red after the plan
+        outcome = self.ended(row)
+        self.assertEqual(outcome.kind, 'not_attempted', outcome)
+        self.assertNotIn('pr merge', (self.gh_dir / 'calls').read_text())
+        self.assertEqual(self.card()['state'], 'merging')
+        self.assertIsNone(self.note().get('pending_merge'))
+        mergers = []
+        sup = loop.Supervisor(self.root, config_loader=lambda: {}, state=self.state,
+                              driver=type('D', (), {'begin_merger': lambda s, *a: mergers.append(a)})(),
+                              scheduler=None, run=self.script, merge_lane=self.lane)
+        sup._merge_ended(outcome)
+        self.assertNotEqual(self.state.mode, 'paused')
+        self.assertEqual(mergers, [])
+        self.assertIn('merge_not_attempted', [e['type'] for e in self.state.events])
+        # the card stays in merging and is planned again (a skip while the checks are red)
+        again = [r for r in candidates.fetch(self.root, run=self.script).candidates if r.get('number') == 12]
+        self.assertNotIn('merge', [r['action'] for r in again])
 
 
 if __name__ == '__main__':

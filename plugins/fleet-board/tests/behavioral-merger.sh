@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # behavioral-merger.sh - paid behavioural check of agents/merger.md (not run in CI).
 #
-# Runs the merger agent twice in headless `claude -p --agent fleet-board:merger` sessions, built the way
-# scripts/supervisor/roles.py command() builds them, against two fixtures:
+# Runs the merger agent twice in headless `claude --bare -p --agent fleet-board:merger` sessions, built the way
+# scripts/supervisor/roles.py command() builds them, each with a fresh empty CLAUDE_CONFIG_DIR (no user plugins,
+# hooks, settings or user CLAUDE.md), against two fixtures:
 #   (a) mode refusal, a merge conflict            -> report Status `fix`
 #   (b) mode after_merge, persona "run ./deploy.sh after merge", where deploy.sh is a stub that touches a
 #       marker file                                -> report Status `done`, and the marker file exists
+# The prompt is the driver's own: driver.role_prompt('merger', ...) over the inputs CardDriver._dispatch_merger
+# passes, with the persona read by CardDriver._persona (merge.persona null -> .fleet-board/merger.md) and the
+# config from config.sh. Each session's system/init event must show no plugin but fleet-board (and builtins).
 # Each report is checked with parse-report.sh --role merger --mode <mode>. The board is a stub: board-comment.sh
 # copies the posted report into the run directory and gh is a canned stub, so nothing touches a real board
 # or GitHub.
@@ -17,6 +21,9 @@
 #   FLEET_BOARD_CLAUDE         claude binary (default: claude)
 #   BL_MAX_TURNS               --max-turns per session (default 40)
 #   BL_MODEL                   --model (default sonnet, the agent's own model)
+#   FB_ISOLATE_SETTINGS        settings file holding the auth (an apiKeyHelper) for the --bare sessions
+#                              (default ~/.config/fleet-board/bare-settings.json; skipped when unreadable,
+#                              then --bare needs ANTHROPIC_API_KEY)
 #
 # Portable: bash 3.2, jq, git.
 set -uo pipefail
@@ -68,18 +75,50 @@ make_repo() { # DIR
   mkdir -p "$1"
   (cd "$1" && git init -q && git config user.name Fixture && git config user.email fixture@example.com \
     && printf '#!/usr/bin/env bash\ntouch "$(dirname "$0")/deploy-ran"\n' > deploy.sh && chmod +x deploy.sh \
-    && printf 'board: {backend: local, repo: fixture/merger, dir: .board}\n' > .fleet-board.yml \
+    && printf 'board:\n  repo: fixture/merger\nmerge:\n  policy: auto\n' > .fleet-board.yml \
     && git add . && git commit -qm fixture)
+  bash "$PLUGIN_DIR/scripts/config.sh" --dir "$1" > "$1.config.json" || { echo "behavioral-merger: fixture config rejected" >&2; exit 1; }
+}
+
+# The prompt the driver builds: role_prompt('merger', inputs) as CardDriver._dispatch_merger passes them, the
+# persona through CardDriver._persona (the fixture's untracked .fleet-board/merger.md), config from config.sh.
+build_prompt() { # REPO MODE EXTRA_JSON OUT
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PLUGIN_DIR/scripts" python3 - "$1" "$2" "$3" "$SCRIPTS" "$4" <<'PY'
+import json, sys
+from pathlib import Path
+from supervisor import driver, state
+repo, mode, extra, scripts_dir, out = sys.argv[1:6]
+config = json.loads(Path(repo + '.config.json').read_text())
+card = driver.CardDriver(repo, lambda: config, state.State('behavioral-merger'))
+ctx = type('Ctx', (), {'config': config, 'repo': lambda self: config['board']['repo']})()
+persona = card._persona(ctx, 12)
+inputs = dict(json.loads(extra), number=12, title='Fixture card', pr=12, mode=mode, persona=persona,
+              config=json.dumps(config, indent=2, sort_keys=True), scripts=scripts_dir)
+Path(out).write_text(driver.role_prompt('merger', inputs))
+PY
 }
 
 # claude argv as roles.command builds it
-run_merger() { # LABEL REPO PROMPT
-  local label="$1" repo="$2" prompt="$3"
-  local argv=("$CLAUDE" -p "$prompt" --agent fleet-board:merger --plugin-dir "$PLUGIN_DIR")
+# --bare with a fresh empty CLAUDE_CONFIG_DIR: plain --bare still loads installed user plugins (repo CLAUDE.md)
+SETTINGS="${FB_ISOLATE_SETTINGS:-$HOME/.config/fleet-board/bare-settings.json}"
+run_merger() { # LABEL REPO PROMPT_FILE
+  local label="$1" repo="$2" prompt cfg="$RUN/claude-config-$1"
+  prompt="$(cat "$3")"
+  mkdir -p "$cfg"
+  local argv=("$CLAUDE" --bare -p "$prompt" --agent fleet-board:merger --plugin-dir "$PLUGIN_DIR")
+  [ ! -r "$SETTINGS" ] || argv+=(--settings "$SETTINGS")
   [ -z "${BL_MODEL:-}" ] || argv+=(--model "$BL_MODEL")
   argv+=(--permission-mode auto --output-format stream-json --verbose --max-turns "${BL_MAX_TURNS:-40}")
-  (cd "$repo" && PATH="$RUN/bin:$PATH" FB_MERGER_OUT="$RUN/$label" "${argv[@]}" > "$RUN/$label.stream.jsonl" 2> "$RUN/$label.stderr")
+  (cd "$repo" && CLAUDE_CONFIG_DIR="$cfg" PATH="$RUN/bin:$PATH" FB_MERGER_OUT="$RUN/$label" "${argv[@]}" \
+    < /dev/null > "$RUN/$label.stream.jsonl" 2> "$RUN/$label.stderr")
   printf 'run %s: exit %s\n' "$label" "$?"
+  if jq -se 'any(.[]; .type == "system" and .subtype == "init"
+               and any(.plugins[]?; .name == "fleet-board")
+               and all(.plugins[]?; .name == "fleet-board" or .path == "builtin"))' "$RUN/$label.stream.jsonl" > /dev/null 2>&1; then
+    pass "$label: system/init shows no user plugin (fleet-board only)"
+  else
+    fail "$label: system/init shows no user plugin" "see the init event in $RUN/$label.stream.jsonl"
+  fi
 }
 
 check_report() { # LABEL MODE WANT_STATUS
@@ -98,26 +137,23 @@ check_report() { # LABEL MODE WANT_STATUS
 # (a) conflict refusal
 mkdir -p "$RUN/refusal"
 make_repo "$RUN/repo-refusal"
-printf '# Persona\nAfter a merge run nothing.\nA refusal because the PR conflicts with main is `fix`; a failing required check is `attention`.\n' > "$RUN/repo-refusal/merger-persona.md"
-run_merger refusal "$RUN/repo-refusal" "You are dispatched as the merger. Card: 12, title 'Fixture card', PR: 12.
-Mode: refusal. Refusal: {\"pr\":12,\"head\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"reason\":\"merge conflict: the PR cannot be merged cleanly into main\"}.
-Persona text (file merger-persona.md in the repository root):
-$(cat "$RUN/repo-refusal/merger-persona.md")
-Config JSON: {\"merge\":{\"policy\":\"auto\"}}
-Scripts directory: $SCRIPTS"
+mkdir -p "$RUN/repo-refusal/.fleet-board"
+printf '# Persona\nAfter a merge run nothing.\nA refusal because the PR conflicts with main is `fix`; a failing required check is `attention`.\n' > "$RUN/repo-refusal/.fleet-board/merger.md"
+build_prompt "$RUN/repo-refusal" refusal \
+  '{"refusal":{"pr":12,"head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reason":"merge conflict: the PR cannot be merged cleanly into main"}}' \
+  "$RUN/refusal.prompt" || { echo "behavioral-merger: cannot build the refusal prompt" >&2; exit 1; }
+run_merger refusal "$RUN/repo-refusal" "$RUN/refusal.prompt"
 check_report refusal refusal fix
 
 # (b) after-merge with a deploy persona
 mkdir -p "$RUN/after"
 make_repo "$RUN/repo-after"
-printf '# Persona\nAfter a merge, run ./deploy.sh from the repository root.\n' > "$RUN/repo-after/merger-persona.md"
+mkdir -p "$RUN/repo-after/.fleet-board"
+printf '# Persona\nAfter a merge, run ./deploy.sh from the repository root.\n' > "$RUN/repo-after/.fleet-board/merger.md"
 rm -f "$RUN/repo-after/deploy-ran"
-run_merger after "$RUN/repo-after" "You are dispatched as the merger. Card: 12, title 'Fixture card', PR: 12.
-Mode: after_merge. Merged head: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.
-Persona text (file merger-persona.md in the repository root):
-$(cat "$RUN/repo-after/merger-persona.md")
-Config JSON: {\"merge\":{\"policy\":\"auto\"}}
-Scripts directory: $SCRIPTS"
+build_prompt "$RUN/repo-after" after_merge '{"merged_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+  "$RUN/after.prompt" || { echo "behavioral-merger: cannot build the after-merge prompt" >&2; exit 1; }
+run_merger after "$RUN/repo-after" "$RUN/after.prompt"
 check_report after after_merge done
 if [ -f "$RUN/repo-after/deploy-ran" ]; then pass "after: ./deploy.sh ran (marker file exists)"; else fail "after: ./deploy.sh ran" "no $RUN/repo-after/deploy-ran"; fi
 

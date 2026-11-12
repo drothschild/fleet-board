@@ -1516,10 +1516,27 @@ assert_jq "merge retry: the merge is planned again" '[.candidates[] | select(.nu
 assert_jq "merge retry: retry_after is carried" '[.candidates[] | select(.number == 12) | .retry_after]' '["2026-11-11T00:05:00Z"]'
 setup_case merging-open-no-marker "$AUTO"; run_check "$SCRIPT" --candidates
 assert_jq "merge retry: no marker carries retry_after null" '[.candidates[] | select(.number == 12) | .retry_after]' '[null]'
-# The review must be the last configured stage's (or stage-less when none is configured)
+# Stages are routed per card: a merging card merges once no routed stage remains, and only on a review
+# of its last routed (or visited) stage, or a stage-less review when it was routed to none
 plan merging-stage-remaining "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
-assert_jq "merging last stage: a review of an earlier stage plans skip" "$(card 12 action)" '"skip"'
-assert_jq "merging last stage: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+assert_jq "merging routed stages: a card that visited only the first stage, routed to no other, merges" "$(card 12 action)" '"merge"'
+plan merging-routed-first "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a card routed to only the first of two stages merges" "$(card 12 action)" '"merge"'
+plan merging-routed-both "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a routed stage remaining plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging routed stages: the remaining stage is named" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'stage ux')" '1'
+assert_jq "merging routed stages: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-open-merge "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging routed stages: a card routed to no stage merges on its in_review review" "$(card 12 action)" '"merge"'
+setup_case merging-routed-first "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"; run_check "$SCRIPT" --settle-merge 12
+assert_jq "merging routed stages: --settle-merge (merge-reviewed.sh) plans the same merge" "$(card 12 action)" '"merge"'
+# The human-QA question is asked for every merging card with an open PR, not only after its head moved
+plan merging-open-qa "$AUTO"
+assert_jq "merging human QA: a PR needing human QA at the reviewed head plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging human QA: needs_human_qa is asked" "$(card 12 needs_human_qa)" 'true'
+assert_jq "merging human QA: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-open-merge "$AUTO"
+assert_jq "merging human QA: a PR needing none is asked and answers false" "$(card 12 needs_human_qa)" 'false'
 plan merging-stage-remaining "$AUTO"
 assert_jq "merging last stage: a stage record with no stages configured plans skip" "$(card 12 action)" '"skip"'
 plan merging-advisory-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"

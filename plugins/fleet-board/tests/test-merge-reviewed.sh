@@ -517,7 +517,39 @@ finalize
 run_merge --card 12
 assert_exit "merging: a merging card is merged by --card" 0
 assert_eq "merging: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
-assert_eq "merging: without --no-finish the card moves to done" "$(card_state)" done
+assert_eq "merging: a merging card is never finished here, even without --no-finish" "$(card_state)" merging
+assert_eq "merging: --card verifies main and notes it" "$(note_field '.main_check.ok')" true
+assert_eq "merging: --card writes no done note" "$(note_field '.state')" '"merging"'
+
+# The legacy form (no arguments, from fleet-board-run.sh) lists merging too, but never finishes a merging
+# card: only the supervisor finishes it, after the merger
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "merging legacy: exit 0" 0
+assert_eq "merging legacy: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "merging legacy: the card stays in merging" "$(card_state)" merging
+assert_eq "merging legacy: no done note" "$(note_field '.state')" '"merging"'
+
+# --inspect with no marker at all reports the PR as it is (the supervisor reads a planner skip from it)
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+store_sync
+INSPECT_OUT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+LAST_EXIT=$?
+assert_exit "inspect absent: exit 0" 0
+assert_eq "inspect absent: status, state and heads" "$(jq -c '[.status, .state, .planned_head, .observed_head, .pr]' <<<"$INSPECT_OUT")" '["absent","OPEN","abc1234","abc1234",34]'
+setup_case auto
+card 12 merging "$(jq -c '.pending_merge={operation_key:"op-old",pr:34,head_sha:"abc1234"}' <<<"$MERGING_NOTE")"
+pr 34 false "$GREEN"
+finalize
+store_sync
+INSPECT_OUT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+assert_eq "inspect: another operation's marker is still unmatched" "$(jq -c '.status' <<<"$INSPECT_OUT")" '"unmatched"'
 
 setup_case auto
 card 12 merging "$MERGING_NOTE"
