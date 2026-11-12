@@ -48,4 +48,96 @@ done
 ( . "$S/board-lib.sh"; . "$S/adapters/local/local-lib.sh"; fb_cfg() { case "$1" in board.dir) echo bd ;; esac; }
   fl_lock_next; [ -s "$FL/pid" ] ) && ok "fl_lock_next writes an owner pid file" || bad "fl_lock_next writes no pid file"
 rm -rf "$FL"
+
+# --- Concurrent takeover (C/D interleaving) ---------------------------------------
+# Waiter B finds a dead owner's lock. Right after B's liveness check says "dead",
+# process C takes the lock over and holds it (injected through a ps override in B).
+# If B then moves the lock dir, process D is started at that point (an mv override in
+# B), so it can mkdir the lock while it is moved away. At most one process may hold
+# the lock at any time: the lock's pid names the one live holder and no lock dir
+# is nested inside it. Every contender is its own bash process (the owner id is $$).
+# The overrides exist only in B's process; the library carries no test hook.
+W="$T/w"; mkdir -p "$W"
+cat > "$W/common.sh" <<'SH'
+. "$S/board-lib.sh"; . "$S/adapters/local/local-lib.sh"
+fb_cfg() { case "$1" in worktrees.dir) echo wt ;; board.dir) echo bd ;; esac; }
+take() { if [ "$KIND" = fb ]; then fb_lock 1; else fl_lock_next; fi; }
+hold() {  # records this process as a holder, then holds until the test releases
+  : > "$HELD/$$"; i=0
+  while [ ! -e "$HELD/../release" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+  [ "$KIND" = fl ] && fl_unlock_next; exit 0
+}
+start_holder() {  # start_holder <name>: a plain contender in its own process
+  bash "$W/holder.sh" >"$HELD/../$1.log" 2>&1 & echo $! > "$HELD/../$1.pid"
+}
+wait_for_holders() {  # wait_for_holders <n> <tenths>
+  i=0; while [ "$(ls "$HELD" | wc -l | tr -d ' ')" -lt "$1" ] && [ $i -lt "$2" ]; do sleep 0.1; i=$((i + 1)); done
+}
+SH
+cat > "$W/holder.sh" <<'SH'
+. "$W/common.sh"; take && hold
+SH
+cat > "$W/taker.sh" <<'SH'
+. "$W/common.sh"
+ps() {
+  command ps "$@"; local r=$?
+  if [ "$*" = "-p $DEAD" ] && [ ! -e "$HELD/../inj.C" ]; then
+    : > "$HELD/../inj.C"; start_holder C; wait_for_holders 1 30
+  fi
+  return $r
+}
+mv() {
+  command mv "$@"; local r=$?
+  if [ "$1" = "$LOCK" ] && [ ! -e "$HELD/../inj.D" ]; then
+    : > "$HELD/../inj.D"; start_holder D; wait_for_holders 2 15
+  fi
+  return $r
+}
+take && hold
+SH
+
+race() {  # race <kind>: runs the interleaving, then asserts a single holder
+  local kind="$1" lock R n live holder p nested
+  lock=$FB; [ "$kind" = fl ] && lock=$FL
+  R="$T/race-$kind"; rm -rf "$R"; mkdir -p "$R/held"
+  mkdir -p "$lock"; dead_pid > "$lock/pid"
+  ( export S W KIND="$kind" LOCK="$lock" HELD="$R/held" DEAD="$(cat "$lock/pid")" FLEET_BOARD_LOCK_WAIT=1
+    bash "$W/taker.sh" >"$R/B.log" 2>&1 & echo $! > "$R/B.pid"; wait
+    # D contends too even when B never moved the lock dir
+    [ -e "$R/inj.D" ] || { . "$W/common.sh"; start_holder D; sleep 1.5; } )
+  live=0; holder=""
+  for p in $(ls "$R/held"); do
+    if command ps -p "$p" >/dev/null 2>&1; then live=$((live + 1)); holder="$holder $p"; fi
+  done
+  holder="${holder# }"
+  nested=$(find "$lock" -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$live" = 1 ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$holder" ] && [ "$nested" = 0 ]; then
+    ok "$kind: concurrent stale takeover leaves exactly one holder"
+  else
+    bad "$kind: concurrent stale takeover: $live live holder(s) [$holder], lock pid $(cat "$lock/pid" 2>/dev/null), $nested nested dir(s)"
+  fi
+  : > "$R/release"
+  for n in B C D; do [ -f "$R/$n.pid" ] && kill "$(cat "$R/$n.pid")" 2>/dev/null; done
+  sleep 0.2; rm -rf "$lock" "$lock".*
+}
+race fb
+race fl
+
+# A taker that has claimed a dead lock and is still running is not overtaken
+for kind in fb fl; do
+  lock=$FB; [ $kind = fl ] && lock=$FL
+  mkdir -p "$lock"; dead_pid > "$lock/pid"; sleep 30 & lp=$!; ln -s "$lp" "$lock/claim.1"
+  out=$(FLEET_BOARD_LOCK_WAIT=1 run_$kind)
+  case "$out" in *acquired*) bad "$kind: a lock claimed by a live taker was taken over" ;; *) ok "$kind: a lock claimed by a live taker is left to that taker" ;; esac
+  kill "$lp" 2>/dev/null; wait "$lp" 2>/dev/null; rm -rf "$lock"
+done
+
+# A claim left by a taker that died does not wedge the lock
+for kind in fb fl; do
+  lock=$FB; [ $kind = fl ] && lock=$FL
+  mkdir -p "$lock"; dead_pid > "$lock/pid"; ln -s "$(dead_pid)" "$lock/claim.1"
+  out=$(run_$kind)
+  case "$out" in *acquired*) ok "$kind: a dead lock with a dead taker's claim is taken over" ;; *) bad "$kind: a dead taker's claim wedged the lock: $out" ;; esac
+  rm -rf "$lock"
+done
 exit $fail
