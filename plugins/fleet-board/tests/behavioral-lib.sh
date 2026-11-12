@@ -183,7 +183,7 @@ open_patch_pr() {
   git -C "$WT" push -q -u origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
   local url
   url="$(cd "$WT" && gh pr create --repo "$SANDBOX_REPO" --draft --base main --head "$BRANCH" \
-    --title "Add subtract [behavioral $BL_TS]" --body "Closes #$CARD")" || bl_die "gh pr create failed"
+    --title "Add subtract [behavioral $BL_TS]" --body "Local board card $CARD (behavioral seed)")" || bl_die "gh pr create failed"
   PR="${url##*/}"
   case "$PR" in ''|*[!0-9]*) bl_die "cannot read PR number from: $url" ;; esac
   bl_log "PR #$PR"

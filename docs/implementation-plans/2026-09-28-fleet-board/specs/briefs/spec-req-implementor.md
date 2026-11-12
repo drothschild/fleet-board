@@ -280,3 +280,21 @@ frontmatter and every other line unchanged.
    - File issues or bug cards itself (`board-create.sh`) in place of `gh issue create`.
 8. The scripts-directory input names `board-read.sh` beside `board-comment.sh` and
    `parse-report.sh`.
+
+## Revision 26 requirements (2026-11-12, no closing keyword for a local card; these win over anything above)
+
+Card numbers on the local board are not GitHub issue numbers. A fleet PR body with
+`Closes #<card number>` closes whatever GitHub issue or PR has that number when the PR
+merges (PR 252, card 253, closed the open PR 253). The spec now says:
+
+1. Step 9: the PR body names the card with the line `Local board card <card number>` and
+   holds no GitHub closing keyword (close, closes, closed, fix, fixes, fixed, resolve,
+   resolves, resolved, any case, with or without a colon) before an issue reference.
+2. Step 9: the body is written with the Write tool to a path `mktemp` printed, then checked
+   and the PR opened in one Bash call:
+   `bash <scripts dir>/pr-body-check.sh <path> && gh pr create --draft --head <branch> --title <title> --body-file <path>`.
+   A failed check is fixed in the file and the call repeated.
+3. The `## PR` rule says the card number goes in the PR body as
+   `Local board card <card number>`, never in `## PR`.
+4. Item 7 above ("whose body contains `Closes #<card number>`") is replaced by items 1 and 2.
+

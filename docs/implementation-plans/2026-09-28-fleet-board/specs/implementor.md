@@ -66,7 +66,8 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
    - When either command is unset, `## For the card` says it was skipped because it is not configured.
 
 9. **Pushes and opens a draft PR, or reuses the existing one.** It pushes the branch with `git -C <worktree> push -u origin <branch>`, never with force.
-   - When no PR exists, it runs `gh pr create --draft --head <branch>` with a title taken from the card. The PR body contains the line `Closes #<card number>`.
+   - When no PR exists, it writes the PR body with the Write tool to a path `mktemp` printed. The body names the card with the line `Local board card <card number>`. It holds no GitHub closing keyword (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, any case, with or without a colon) before an issue reference such as `#` and digits: card numbers are local, so GitHub would close the unrelated issue or PR that has that number when the PR merges.
+   - It then checks and opens in ONE Bash call: `bash <scripts dir>/pr-body-check.sh <path> && gh pr create --draft --head <branch> --title <title taken from the card> --body-file <path>`. When the check fails, it fixes the file and repeats that call.
    - When the manager note (or step 3's check) shows a PR already exists, it only pushes to that PR's branch and opens no new PR.
    - `gh pr view <number> --json isDraft` reports `true` afterwards.
 
@@ -123,7 +124,7 @@ The implementor produces one report per dispatch. It posts the report on the car
 **This role's rules:**
 - **Status values:** `done` or `blocked`. The values `clean` and `findings` are the reviewer's and are rejected for this role.
 - **Role section:** `## PR`. It contains `#<number>`, the real PR number, unless Status is `blocked` and no PR exists. In that case it states that no PR exists and contains no `#` followed by digits.
-- `## PR` must contain no other `#<digits>`: not the card number and not an example. The parser reads the first `#` followed by digits as the PR number. `Closes #<card number>` goes in the PR body, never in `## PR`.
+- `## PR` must contain no other `#<digits>`: not the card number and not an example. The parser reads the first `#` followed by digits as the PR number. The card number goes in the PR body as `Local board card <card number>`, never in `## PR`.
 - `## Findings`, `Out of scope:`, `Bugs found:` and the `VERIFIED:` line follow the shape and line rules below.
 
 **Enforcement:** `parse-report.sh --role implementor` enforces the Report shape, the Line rules and the `--role` rules below. A report that breaks any rule is rejected: exit 1, nothing on stdout, and one `parse-report: `-prefixed stderr line per problem. The manager then re-dispatches the role once, with those lines and the rule quoted. A second rejected report is recorded as a report error, and the card stays where it is. So the implementor writes the report with the Write tool to the path `mktemp` printed, then checks and posts it in ONE Bash call that names that literal path: `bash <scripts dir>/parse-report.sh --role implementor <path> && bash <scripts dir>/board-comment.sh <card number> <path>`. The post runs only when the check exits 0. If the check fails, it fixes the file with Edit or Write and repeats that check-and-post call.
