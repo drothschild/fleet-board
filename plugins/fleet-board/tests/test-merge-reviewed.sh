@@ -563,6 +563,26 @@ assert_eq "no-finish keyed: card stays in merging" "$(card_state)" merging
 assert_eq "no-finish keyed: merge_operation recorded" "$(note_field '.merge_operation.operation_key')" '"op-12"'
 assert_eq "no-finish keyed: verified evidence in merge_operation" "$(note_field '.merge_operation.main_check.ok')" true
 
+# A merger attention cleared by a person (note.sh merge: merger null, merge_refusal null) merges again with a
+# new operation key; the driver clears pending_merge when it records attention, since a stale marker of the
+# refused operation (same PR and head, old key) makes this script exit 3 and the lane pause the board
+CLEARED_NOTE="$(jq -c '.merger=null | .merge_refusal=null | .pending_merge=null' <<<"$MERGING_NOTE")"
+setup_case auto
+card 12 merging "$CLEARED_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-new --pr 34 --head abc1234
+assert_exit "cleared attention: a new operation key merges (exit 0)" 0
+assert_eq "cleared attention: merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+STALE_NOTE="$(jq -c '.pending_merge={operation_key:"op-old",pr:34,head_sha:"abc1234"}' <<<"$CLEARED_NOTE")"
+setup_case auto
+card 12 merging "$STALE_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-new --pr 34 --head abc1234
+assert_exit "stale pending_merge: a new operation key is refused (exit 3)" 3
+assert_eq "stale pending_merge: nothing merged" "$(cnt "pr merge 34 ")" 0
+
 setup_case auto
 card 12 merging "$MERGING_NOTE"
 pr 34 false "$GREEN"

@@ -1364,11 +1364,13 @@ def test_record_ignored_checks_refuses_a_malformed_entry(base):
 def test_states_include_merging_and_leaving_it_clears_the_merge_records(base):
     b = board_for(base, 'merging')
     b.put_note({'last_review': LAST, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'abc1234'},
-                'merge_refusal': {'pr': 34, 'head': 'abc1234', 'reason': 'r', 'at': '2026-11-11T00:00:00Z'}})
+                'merge_refusal': {'pr': 34, 'head': 'abc1234', 'reason': 'r', 'at': '2026-11-11T00:00:00Z'},
+                'merge_retry': {'pr': 34, 'head': 'abc1234', 'after': '2026-11-11T00:01:00Z'}})
     assert begin(b, 'block', state='merging', reason='merge refused for good').kind == 'done'
     assert b.card()['state'] == 'blocked', b.card()
     note = b.note()
     assert note['blocked_from'] == 'merging' and note['pending_merge'] is None and note['merge_refusal'] is None, note
+    assert note['merge_retry'] is None, note
 
 
 def test_a_block_from_review_leaves_the_merge_records_alone(base):

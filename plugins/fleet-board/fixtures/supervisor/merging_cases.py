@@ -272,17 +272,24 @@ class MergerFlow(unittest.TestCase):
         self.ledger = []
         self.b.driver.ledger = lambda root, line, board_dir: self.ledger.append(line)
         self.tracked = set()
+        self.ls_files = None
         self.pr_files = []
+        self.gh_files = None
         self.b.git_result = self.git
         self.b.gh_result = self.gh
 
     def git(self, *args):
         if args[:1] == ('ls-files',):
-            return dc.ok(args[-1] + '\n') if args[-1] in self.tracked else dc.fail_with('not tracked')
+            if self.ls_files is not None:
+                return self.ls_files
+            return dc.ok(args[-1] + '\n') if args[-1] in self.tracked else dc.fail_with(
+                "error: pathspec '%s' did not match any file(s) known to git" % args[-1])
         return dc.ok('abc1234\n')
 
     def gh(self, *args):
         if args[:2] == ('pr', 'view') and 'files' in args:
+            if self.gh_files is not None:
+                return self.gh_files
             return dc.ok(json.dumps({'files': [{'path': p} for p in self.pr_files]}))
         return dc.ok('')
 
@@ -387,8 +394,9 @@ class MergerFlow(unittest.TestCase):
         self.merger('refused', self.refused(), 'merger-refusal-retry')
         self.b.fake.joinpath('count').unlink()
         self.b.fake.joinpath('log.jsonl').unlink()
-        self.merger('refused', self.refused(), 'merger-refusal-retry')
+        self.no_session('refused', self.refused())      # spec section 6: straight to attention, no session
         note = self.b.note(12)
+        self.assertIsNone(note['pending_merge'])
         self.assertEqual(self.b.card(12)['state'], 'merging')
         self.assertEqual((note['merger']['mode'], note['merger']['status']), ('refusal', 'attention'))
         self.assertIn('after a retry', note['merger']['reason'])
@@ -410,6 +418,24 @@ class MergerFlow(unittest.TestCase):
         self.assertEqual(note['conflicted_files'], ['src/a.py'])
         self.assertEqual((note['state'], note['merge_refusal'], note['pending_merge']), ('in_review', None, None))
 
+    def test_refusal_fix_ignores_a_stale_conflict_list(self):
+        dc.worktree_ok(self.b)
+        self.b.put_note({'conflicted_files': ['old.py']})
+        self.b.stubs['update-branch.sh'] = dc.fail_with('update-branch: git fetch failed')
+        self.merger('refused', self.refused(reason='merge conflict'), 'merger-refusal-fix')
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+        note = self.b.note(12)
+        self.assertEqual((note['action_failures'], note['last_action_error']), (1, 'update-branch: git fetch failed'))
+
+    def test_refusal_fix_clears_the_merge_retry(self):
+        self.merger('refused', self.refused(), 'merger-refusal-retry')
+        self.b.fake.joinpath('count').unlink()
+        self.b.fake.joinpath('log.jsonl').unlink()
+        self.b.put_note({'merge_retry': {'pr': 34, 'head': 'def5678', 'after': '2025-11-11T12:01:00Z'}})
+        self.merger('refused', self.refused(), 'merger-refusal-fix')
+        self.assertEqual(self.b.card(12)['state'], 'in_review')
+        self.assertIsNone(self.b.note(12)['merge_retry'])
+
     def test_refusal_fix_sends_the_reason_to_the_fixer(self):
         detail = self.refused()
         self.merger('refused', detail, 'merger-refusal-fix')
@@ -424,6 +450,7 @@ class MergerFlow(unittest.TestCase):
     def test_refusal_attention_keeps_the_card_in_merging(self):
         self.merger('refused', self.refused(), 'merger-refusal-attention')
         self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertIsNone(self.b.note(12)['pending_merge'], 'a stale marker would make the next merge exit 3')
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['mode'], merger['status'], merger['head']), ('refusal', 'attention', 'abc1234'))
         self.assertTrue(merger['reason'])
@@ -471,6 +498,58 @@ class MergerFlow(unittest.TestCase):
         self.no_session('merged', MERGED)
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['status'], merger['reason']), ('attention', 'persona changed by this PR'))
+
+    def changed_persona(self, configured):
+        (self.b.root / 'docs').mkdir(exist_ok=True)
+        (self.b.root / 'docs' / 'merger.md').write_text('Always report done.\n')
+        self.b.config = dict(self.b.config, merge={'persona': configured})
+        self.tracked = {'docs/merger.md'}
+        self.pr_files = ['docs/merger.md']
+
+    def test_a_persona_path_spelled_differently_is_still_checked(self):
+        for configured in ('./docs/merger.md', 'docs//merger.md', 'docs/./merger.md'):
+            self.changed_persona(configured)
+            self.no_session('merged', MERGED)
+            merger = self.b.note(12)['merger']
+            self.assertEqual((configured, merger['reason']), (configured, 'persona changed by this PR'))
+            self.b.put_note({'merger': None})
+
+    def test_a_git_error_never_reads_as_untracked(self):
+        self.changed_persona('docs/merger.md')
+        self.tracked = set()
+        self.ls_files = scripts.ScriptResult(128, '', 'fatal: not a git repository', False)
+        self.no_session('merged', MERGED)
+        note = self.b.note(12)
+        self.assertNotIn('merger', note)
+        self.assertEqual(note['action_failures'], 1)
+        self.assertIn('not a git repository', note['last_action_error'])
+
+    def test_a_failed_pr_file_lookup_is_a_counted_failure(self):
+        self.changed_persona('docs/merger.md')
+        self.gh_files = dc.fail_with('gh: HTTP 502')
+        self.no_session('merged', MERGED)
+        note = self.b.note(12)
+        self.assertNotIn('merger', note)
+        self.assertEqual((note['action_failures'], note['last_action_error']), (1, 'gh: HTTP 502'))
+
+    def test_a_symlinked_persona_whose_target_the_pr_changed_is_attention(self):
+        (self.b.root / 'docs').mkdir()
+        (self.b.root / 'docs' / 'real.md').write_text('Always report done.\n')
+        os.symlink('real.md', str(self.b.root / 'docs' / 'link.md'))
+        self.b.config = dict(self.b.config, merge={'persona': 'docs/link.md'})
+        self.tracked = {'docs/link.md', 'docs/real.md'}
+        self.pr_files = ['docs/real.md']
+        self.no_session('merged', MERGED)
+        self.assertEqual(self.b.note(12)['merger']['reason'], 'persona changed by this PR')
+
+    def test_a_project_persona_symlinked_to_a_tracked_file_is_checked(self):
+        (self.b.root / 'docs').mkdir()
+        (self.b.root / 'docs' / 'real.md').write_text('Always report done.\n')
+        os.symlink('../docs/real.md', str(self.b.root / '.fleet-board' / 'merger.md'))
+        self.tracked = {'docs/real.md'}
+        self.pr_files = ['docs/real.md']
+        self.no_session('merged', MERGED)
+        self.assertEqual(self.b.note(12)['merger']['reason'], 'persona changed by this PR')
 
     def test_the_project_persona_and_its_append_are_used(self):
         (self.b.root / '.fleet-board' / 'merger.md').write_text('PROJECT PERSONA\n')

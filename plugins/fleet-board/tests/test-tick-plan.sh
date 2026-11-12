@@ -423,7 +423,7 @@ plan merging-merged-merger-done "$AUTO"
 assert_jq "merger gate: merger done for this head plans finish" "$(card 12 action)" '"finish"'
 plan merging-merged-merger-attention "$AUTO"
 assert_jq "merger gate: merger attention plans skip" "$(card 12 action)" '"skip"'
-assert_jq "merger gate: attention reason" "$(card 12 reason)" '"merger needs attention; supervisor decides"'
+assert_jq "merger gate: attention reason" "$(card 12 reason)" '"merger needs attention; a person decides"'
 plan merging-merged-merger-refusal "$AUTO"
 assert_jq "merger gate: a refusal-mode merger record is no after-merge result" "$(card 12 action)" '"after_merge"'
 setup_case merging-merged-finish "$AUTO"; run_check "$SCRIPT" --candidates
@@ -1507,7 +1507,7 @@ plan merging-refused "$AUTO"
 assert_jq "merge_refusal: a refusal at the current head with no merger decision plans merge_refusal" "$(card 12 action)" '"merge_refusal"'
 plan merging-refused-attention "$AUTO"
 assert_jq "merge_refusal: a merger attention decision plans skip" "$(card 12 action)" '"skip"'
-assert_jq "merge_refusal: attention reason" "$(card 12 reason)" '"merger needs attention; supervisor decides"'
+assert_jq "merge_refusal: attention reason" "$(card 12 reason)" '"merger needs attention; a person decides"'
 plan merging-refused-after-retry "$AUTO"
 assert_jq "merge_refusal: a refusal after a retry decision plans merge_refusal again" "$(card 12 action)" '"merge_refusal"'
 # After a retry decision the merge is planned again, carrying the retry time for the supervisor to hold it
