@@ -382,6 +382,22 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertNotEqual(status["pid"], old, "Start must launch a new supervisor, not reuse the exiting one")
         self.assertEqual(status["mode"], "running")
 
+    def test_start_launches_the_supervisor_with_no_tick_wrapper_present(self):
+        self.assertFalse((SCRIPTS / "fleet-board-run.sh").exists(), "the tick wrapper is still shipped")
+        self.launching_world()
+        self.env.pop("FLEET_BOARD_RUN", None)
+        self.start_web()
+        for method, path in (("GET", "/api/run"), ("POST", "/api/run/start"), ("POST", "/api/run/stop")):
+            self.assertEqual(self.http(method, path)[0], 404, "%s %s is still routed" % (method, path))
+        code, started = self.http("POST", "/api/supervisor/start", {"request_id": "nowrap-1", "expected_revision": 0},
+                                  timeout=20)
+        self.skip_if_sandboxed(code, started)
+        self.assertEqual(code, 202, started)
+        self.assertIs(started.get("launched"), True, "Start did not launch a supervisor")
+        code, status = self.http("GET", "/api/supervisor")
+        self.assertEqual((code, status.get("running")), (200, True), status)
+        self.assertFalse((self.repo / ".fleet-board.stop").exists(), "Start wrote the tick-stop file")
+
     def test_start_never_launches_beside_a_supervisor_that_stays_stopping(self):
         self.launching_world()
         self.start_service()
