@@ -378,6 +378,7 @@ assert_jq "merged-finish: action" "$(card 12 action)" '"finish"'
 
 # merging (merge.policy auto only): the column is planned, with its own rows
 AUTO="$(printf 'merge:\n  policy: auto')"
+STAGES_ADVISORY_YAML="$(printf '%s\n' 'review:' '  stages:' '    - name: security' '      agent: "acme:sec"' '      model: opus' '    - name: ux' '      agent: ux-reviewer' '      model: sonnet' '      advisory: true')"
 plan merging-open-merge "$AUTO"
 assert_jq "merging-open-merge: action" "$(card 12 action)" '"merge"'
 assert_jq "merging-open-merge: state" "$(card 12 state)" '"merging"'
@@ -404,6 +405,12 @@ plan merging-open-draft "$AUTO"
 assert_jq "merging-open-draft: a draft PR plans skip" "$(card 12 action)" '"skip"'
 plan merging-open-merge "$(printf 'merge:\n  policy: human')"
 assert_jq "merging-open-merge: merge.policy human plans skip" "$(card 12 action)" '"skip"'
+
+# merging after a review of an advisory stage with findings: the findings count as clean
+plan merging-advisory-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging-advisory-last: an advisory stage's findings do not stop the merge" "$(card 12 action)" '"merge"'
+plan merging-blocking-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging-blocking-last: a non-advisory stage's findings still skip" "$(card 12 action)" '"skip"'
 
 plan merging-merged-verify "$AUTO"
 assert_jq "merging-merged-verify: action" "$(card 12 action)" '"verify_main"'
@@ -886,7 +893,9 @@ assert_exit "settle: a non-numeric second card exits 2" 2
 # merge of main whose conflict a person resolved), clean (a merge of main with
 # no conflict) or nonmerge (an ordinary commit).
 plan_real() {
-  local kind="$1" b0 r m h dir main_msg
+  local kind="$1" b0 r m h dir main_msg mrg="${2:-}" qa="${3:-}" issue=in_review inrev=list-in_review-12.json files=files-plain.json
+  [ -z "$mrg" ] || { issue=merging; inrev=empty.json; }
+  [ -z "$qa" ] || files=files-components.json
   setup_case drift-clean "$(printf 'merge:\n  policy: auto')"
   dir="$FAKE_GH_DIR/real"; mkdir -p "$dir"
   printf 'base\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -q -m "add f"
@@ -919,15 +928,17 @@ plan_real() {
   jq -n --arg h "$h" '{isDraft: false, state: "OPEN", mergedAt: null, headRefOid: $h,
     statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}]}' > "$dir/pr.json"
   sed -e "s/abc1234/$r/g" -e 's/\\"important\\":1/\\"important\\":0/' "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"
+  if [ -n "$mrg" ]; then sed -i.bak 's/\\"state\\":\\"in_review\\"/\\"state\\":\\"merging\\"/' "$dir/comments.json"; fi
   {
     printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
-    printf 'api repos/acme/toy/issues/12\t0\t%s/common/issue-12-in_review.json\n' "$TICK"
+    printf 'api repos/acme/toy/issues/12\t0\t%s/common/issue-12-%s.json\n' "$TICK" "$issue"
     printf 'api --paginate repos/acme/toy/issues/12/comments\t0\t%s/comments.json\n' "$dir"
     printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr.json\n' "$dir"
-    printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/common/files-plain.json\n' "$TICK"
+    printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/common/%s\n' "$TICK" "$files"
     printf 'issue list --repo acme/toy --label fleet:ready *\t0\t%s/common/empty.json\n' "$TICK"
     printf 'issue list --repo acme/toy --label fleet:in_progress *\t0\t%s/common/empty.json\n' "$TICK"
-    printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s/common/list-in_review-12.json\n' "$TICK"
+    printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s/common/%s\n' "$TICK" "$inrev"
+    printf 'issue list --repo acme/toy --label fleet:merging *\t0\t%s/common/list-merging-12.json\n' "$TICK"
     printf 'issue list --repo acme/toy --label fleet:blocked *\t0\t%s/common/empty.json\n' "$TICK"
     printf 'api repos/acme/toy/compare/%s...%s\t0\t%s/compare.json\n' "$r" "$h" "$dir"
     printf 'api repos/acme/toy/commits/%s\t0\t%s/commit.json\n' "$h" "$dir"
@@ -947,6 +958,19 @@ assert_jq "merge-only-reviewed: only a clean merge of main after last_review pla
 plan_real nonmerge
 assert_exit "merge-only-reviewed: non-merge commit: exit" 0
 assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
+
+# A merging card keeps the review row's drift allowance: a head moved only by a clean
+# merge of main stays mergeable, unless the PR now needs human QA
+plan_real clean merging
+assert_exit "merging drift: clean merge of main: exit" 0
+assert_jq "merging drift: head moved only by a clean merge of main plans merge" "$(card 12 action)" '"merge"'
+plan_real clean merging qa
+assert_jq "merging drift: the same head needing human QA plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging drift: that skip ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan_real conflict merging
+assert_jq "merging drift: a conflict-resolving merge of main plans skip" "$(card 12 action)" '"skip"'
+plan_real nonmerge merging
+assert_jq "merging drift: a non-merge commit after the review plans skip" "$(card 12 action)" '"skip"'
 
 # Scope overlap and one merge per tick. Fixtures are built at run time.
 # scope_issue <dir> <n> <label> <scope section text, or NONE>: writes the issue
