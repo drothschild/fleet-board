@@ -358,6 +358,9 @@ VALIDATION_SCRIPT='
       else empty end),
       (if (.limits | type) == "object" then
         (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end),
+        (if (.limits.max_tokens | type) != "number" or (.limits.max_tokens | floor) != .limits.max_tokens or .limits.max_tokens <= 0 then "limits.max_tokens must be a positive integer" else empty end),
+        (if .limits.max_tokens_per_card == null then empty
+         elif (.limits.max_tokens_per_card | type) != "number" or (.limits.max_tokens_per_card | floor) != .limits.max_tokens_per_card or .limits.max_tokens_per_card <= 0 then "limits.max_tokens_per_card must be null or a positive integer" else empty end),
         (("rate_limit_max_wait", "rate_limit_margin", "min_tick_gap") as $k
           | if (.limits[$k] | type) != "number" or .limits[$k] < 0 then "limits.\($k) must be a non-negative number" else empty end)
       else empty end)

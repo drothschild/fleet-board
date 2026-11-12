@@ -1,6 +1,6 @@
 """The supervisor's control surface: one private socket, one owner per repository.
 
-The service answers `status` from the in-memory State and hands the mutating commands
+The service answers `status` from the in-memory State, hands the read-only `usage` and the mutating commands
 (`pause`, `resume`, `stop`) to a handler, which is supplied by whoever runs the loop.
 
 Wire protocol: one JSON request per connection (at most 1 MiB), answered with
@@ -293,6 +293,9 @@ class Service:
         command = request.get("command")
         if command == "status":
             return self.status_view()
+        if command == "usage":
+            card = request.get("card")
+            return self.handler({"command": "usage", "card": card} if card is not None else {"command": "usage"})
         if command in MUTATING:
             self._require_mutation_binding(request)
             if command == "stop" and request.get("mode") not in STOP_MODES:

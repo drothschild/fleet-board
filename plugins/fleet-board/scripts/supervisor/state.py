@@ -117,6 +117,19 @@ class State:
             if self.provider_health.pop(provider, None) is not None:
                 self._bump()
 
+    def add_tokens(self, counts):
+        """Add one action's counts (input, output, cache_write, cache_read; None is unknown, never zero) to
+        this run's totals, kept in memory so the run limit never reads the ledger."""
+        with self._lock:
+            run = self.run_tokens
+            for key in ('input', 'output', 'cache_write', 'cache_read'):
+                run[key] = run.get(key, 0) + (counts.get(key) or 0)
+            run['unknown'] = run.get('unknown', 0) + (1 if any(counts.get(k) is None for k in (
+                'input', 'output', 'cache_write', 'cache_read')) else 0)
+            run['total'] = sum(run[k] for k in ('input', 'output', 'cache_write', 'cache_read'))
+            run['partial'] = run['unknown'] > 0
+            self._bump()
+
     def event(self, type, **payload):
         with self._lock:
             self._sequence += 1

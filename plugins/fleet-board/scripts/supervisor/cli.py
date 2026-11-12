@@ -10,13 +10,14 @@ import time
 import uuid
 from pathlib import Path
 
-from . import errors, loop, paths
+from . import errors, loop, paths, usage
 from .driver import CardDriver
 from .scheduler import Scheduler
 from .service import Service
 from .state import State
 
-USAGE = "usage: supervisor <start [--detach] [--ignore-stuck] | status [--json] | pause | resume | stop [--drain|--cancel]>"
+USAGE = ("usage: supervisor <start [--detach] [--ignore-stuck] | status [--json] | pause | resume | "
+         "stop [--drain|--cancel] | usage [--card N] [--json]>")
 EPILOG = """\
 exit codes: 0 ok, 1 error or supervisor not running, 2 usage
 
@@ -107,6 +108,9 @@ def _parser():
     start.add_argument("--ignore-stuck", action="store_true")
     status = subs.add_parser("status")
     status.add_argument("--json", action="store_true")
+    use = subs.add_parser("usage")
+    use.add_argument("--card", type=int)
+    use.add_argument("--json", action="store_true")
     subs.add_parser("pause")
     subs.add_parser("resume")
     stop = subs.add_parser("stop")
@@ -136,6 +140,8 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     try:
         if args.command == "start":
             return _start(_board_root(env), stdout, stderr)
+        if args.command == "usage":
+            return _usage(args, env, stdout, transport)
         if transport is None:
             root = _board_root(env)
             transport = _socket_transport(_socket_for(root, env))
@@ -197,6 +203,66 @@ def _start(root, stdout, stderr):
         for number, old in previous.items():
             if old is not None:
                 signal.signal(number, old)
+
+
+def _usage(args, env, stdout, transport):
+    """Ask the running supervisor (it knows this run's total); with none running, read the ledger."""
+    request = {"command": "usage"}
+    if args.card is not None:
+        request["card"] = args.card
+    root = None
+    try:
+        if transport is None:
+            root = _board_root(env)
+            transport = _socket_transport(_socket_for(root, env))
+        result = transport(request)
+    except (FileNotFoundError, ConnectionRefusedError):
+        if root is None:
+            raise
+        result = _local_usage(root, args.card)
+    print(json.dumps(result) if args.json else _human_usage(result), file=stdout)
+    return 0
+
+
+def _local_usage(root, card):
+    try:
+        board_dir = (loop.config_loader(root)().get("board") or {}).get("dir")
+    except Exception:  # noqa: BLE001 - an unreadable config falls back to the default directory
+        board_dir = None
+    try:
+        return usage.view(root, board_dir or usage.DEFAULT_DIR, card=card)
+    except ValueError as exc:
+        raise errors.Invalid(str(exc)) from None
+
+
+def _tokens(totals):
+    text = "%d tokens (input %d, output %d, cache write %d, cache read %d)" % (
+        totals["total"], totals["input"], totals["output"], totals["cache_write"], totals["cache_read"])
+    if totals["unknown"]:
+        text += "; %d action%s with unknown usage" % (totals["unknown"], "" if totals["unknown"] == 1 else "s")
+    return text + (" [partial]" if totals["partial"] else "")
+
+
+def _human_usage(result):
+    lines = []
+    if "columns" in result:
+        lines.append("card %s: %s" % (result["card"], _tokens(result["totals"])))
+        for column in result["columns"]:
+            lines.append("  %s: %s" % (column["column"], _tokens(column["totals"])))
+            for action in column["actions"]:
+                known = [action[k] for k in usage.COUNTS]
+                counts = "unknown" if any(v is None for v in known) else "%d tokens" % sum(known)
+                detail = ", ".join("%s %s" % (k.replace("_", " "), "unknown" if action[k] is None else action[k])
+                                   for k in usage.COUNTS)
+                lines.append("    %s (%s): %s [%s] %s" % (action["action"], action["ended_at"], counts, detail,
+                                                           action["log"] or "no log"))
+    else:
+        lines.append("this run: " + (_tokens(result["run"]) if result.get("run") else "no supervisor running"))
+        lines.append("all time: " + _tokens(result["all_time"]))
+        lines.append("planner:  " + _tokens(result["planner"]))
+    if result.get("warning"):
+        lines.append("warning: " + result["warning"])
+    return "\n".join(lines)
 
 
 def _human_status(status):

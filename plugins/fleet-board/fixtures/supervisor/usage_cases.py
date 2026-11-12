@@ -5,6 +5,7 @@ import json
 import os
 import stat
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -79,7 +80,7 @@ class Ledger(unittest.TestCase):
         only = usage.totals(lines[:1])
         self.assertEqual((only['total'], only['unknown'], only['partial']), (0, 1, True))
         self.assertEqual(usage.totals(lines[1:])['partial'], False)
-        some = usage.totals([line(input=5, output=None)])
+        some = usage.totals([line(input=5, output=None, cache_write=0, cache_read=0)])
         self.assertEqual((some['input'], some['output'], some['total'], some['unknown']), (5, 0, 5, 1))
 
     def test_malformed_lines_are_skipped_and_reported(self):
@@ -152,7 +153,7 @@ class CliUsage(unittest.TestCase):
         usage.append(self.root, line(run_id='old', card=12, input=100, output=0, cache_write=0, cache_read=0))
         usage.append(self.root, line(run_id='old', card=None, kind='planner', column=None, action='planner',
                                      role='planner', input=7, output=0, cache_write=0, cache_read=0))
-        self.env = {'FLEET_BOARD_DOMAIN': str(self.root), 'FLEET_BOARD_SUPERVISOR_SOCKET': str(self.root / 's')}
+        self.env = {'FLEET_BOARD_DOMAIN': str(self.root), 'FLEET_BOARD_SOCKET_DIR': os.environ['FLEET_BOARD_SOCKET_DIR']}
 
     def run_cli(self, *argv, transport=None):
         out, err = io.StringIO(), io.StringIO()
@@ -273,7 +274,7 @@ class Limits(lc.LoopCase):
         self.assertEqual(self.b.state.snapshot()['run_tokens']['total'], 100)
         self.assertEqual(self.count(), 1)
         self.sup.wake('test')
-        self.cycles_done(2)
+        time.sleep(1.5)
         self.assertEqual(self.mode(), 'paused', 'a paused run stays paused while the limit is reached')
         # Raising the limit and resuming carries on.
         self.b.config['limits']['max_tokens'] = 100000
@@ -299,19 +300,21 @@ class Limits(lc.LoopCase):
     def test_per_card_limit_waits_only_that_card(self):
         self.add_card(13)
         self.b.config['limits']['max_tokens_per_card'] = 50
-        usage.append(self.b.root, line(run_id='earlier', card=12, input=30, output=30, cache_write=0, cache_read=0))
-        usage.append(self.b.root, line(run_id='earlier', card=13, input=5, output=5, cache_write=0, cache_read=0))
+        # The fake role posts to card 12, so 12 is the card under its cap and 13 the one over it.
+        usage.append(self.b.root, line(run_id='earlier', card=13, input=30, output=30, cache_write=0, cache_read=0))
+        usage.append(self.b.root, line(run_id='earlier', card=12, input=5, output=5, cache_write=0, cache_read=0))
         self.rows = self.implement_plan
         self.b.plans({'report': 'implementor-ok', 'usage': FULL})
         self.start()
-        self.until(lambda: self.b.note(13).get('pr') == 13, what="card 13's implementor")
-        self.cycles_done(2)
-        self.assertEqual(self.b.card(12)['state'], 'ready', 'a card at its cap is not admitted')
+        self.until(lambda: self.b.note(12).get('pr') == 12, what="card 12's implementor")
+        self.until(lambda: not self.b.state.snapshot()['active'], what='the card to settle')
+        time.sleep(1.5)
+        self.assertEqual(self.b.card(13)['state'], 'ready', 'a card at its cap is not admitted')
         self.assertEqual(self.count(), 1)
         waits = {w['number']: w['reason'] for w in self.sup.last_cycle['waits']}
-        self.assertEqual(waits.get(12), 'card token limit reached')
-        self.assertNotIn(12, [r['number'] for r in self.sched.calls[-1][0]], 'the scheduler never sees it')
-        self.assertIn(13, [r['number'] for rows, _ in self.sched.calls for r in rows])
+        self.assertEqual(waits.get(13), 'card token limit reached')
+        self.assertNotIn(13, [r['number'] for r in self.sched.calls[-1][0]], 'the scheduler never sees it')
+        self.assertIn(12, [r['number'] for rows, _ in self.sched.calls for r in rows])
         self.assertEqual(self.mode(), 'running', 'a per-card limit never pauses the run')
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)

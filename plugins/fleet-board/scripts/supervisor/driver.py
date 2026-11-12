@@ -22,7 +22,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
-from . import paths, resolver, roles as _roles, scripts
+from . import paths, resolver, roles as _roles, scripts, usage as _usage
 from .state import Action
 
 Started = namedtuple('Started', 'kind action')
@@ -51,6 +51,10 @@ _NO_PROGRESS = re.compile(r'no progress after (\d+) attempts?: (.*)', re.S)
 _RESET = {'action_failures': 0, 'last_action_error': None}
 _SEVERE = ('Critical', 'Important')
 _SKIP_MARKER = '<!-- fleet-board:skip-no-acceptance -->'
+def _iso(seconds):
+    return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(seconds))
+
+
 QA_BUILD_TIMEOUT = 1800
 VERIFY_TIMEOUT = 1800
 
@@ -678,8 +682,22 @@ class CardDriver:
         shutil.rmtree(run.c.tmp, ignore_errors=True)
 
     def _record_usage(self, run, result):
-        """The one place Phase 3 appends a token line to `self.ledger` (result.usage); nothing is recorded yet."""
-        return None
+        """Append one ledger line for the finished session and add its counts to the run's totals. Unreadable
+        usage is recorded as unknown (null), never zero. A failed write is a warning: the card's work stands."""
+        action = run.action
+        u = result.usage
+        counts = {'input': getattr(u, 'input', None), 'output': getattr(u, 'output', None),
+                  'cache_write': getattr(u, 'cache_write', None), 'cache_read': getattr(u, 'cache_read', None)}
+        line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': action.column,
+                'action': action.action, 'role': action.role, 'provider': action.provider,
+                'model': getattr(u, 'model', None), 'started_at': _iso(action.started_at),
+                'ended_at': _iso(self.clock()), 'log': result.log_path, **counts}
+        self.state.add_tokens(counts)
+        try:
+            (self.ledger or _usage.append)(self.root, line, ((run.c.config.get('board') or {}).get('dir')
+                                                             or _usage.DEFAULT_DIR))
+        except (OSError, ValueError) as exc:
+            self.state.event('warning', card=action.card, message='usage not recorded: %s' % exc)
 
     def _reconcile(self, run, result, allow):
         c = run.c
