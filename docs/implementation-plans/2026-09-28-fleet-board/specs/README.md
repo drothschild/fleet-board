@@ -2100,3 +2100,16 @@ Isolation: the init event lists only the four built-in `cc-plugin-*@builtin` plu
 **Tests.** `test-pr-body-check.sh` (40 passed), `test-clean-room.sh` and `test-version-bumped.sh` pass. A dry run of step 9 by a subagent, on an earlier wording, wrote `Local board card 253` and passed the check.
 
 **Known limits, not re-run.** The fixer's commit messages are not checked (its spec and agent file are unchanged), and nothing checks a PR body or commit edited by hand before a person merges. Open PRs opened before this change keep their `Closes #N` lines. Cost: $0.1850.
+
+### Revision 27 (2026-11-12): no closing keyword in a fixer commit message, and a merge-time check
+
+**Cause.** Revision 26 left two gaps: the fixer commits to the same branch as the implementor, but nothing checked its commit messages; and nothing checked a PR's title, body or commits at merge time, whatever role or person wrote them.
+
+**Spec and brief changes** (hand edits, as in Revision 26): `specs/fixer.md` behavior 8 gains the rule that no commit message holds a GitHub closing keyword before an issue reference, and the check before every push (the conflict merge commit included): `git -C <worktree> log --format=%B HEAD --not --remotes=origin | bash <scripts dir>/pr-body-check.sh -`. A failure means no push (this wins over pushing finished fixes when `blocked`), Status `blocked`, an `[Important]` finding naming the commit, and `not fixed: not pushed, commit <short sha> holds a closing keyword` for each finding whose fix is only in an unpushed commit. The scripts-directory input names `pr-body-check.sh`, and Must never gains the matching bullet. A "Revision 27 requirements" section was added to `briefs/spec-req-fixer.md`. Brief sha256 (16): `eb29bc95bfd96bd0` -> `01a50f2283dde23e`. Spec: `5fc95ec9f771da5d` -> `52303a71ece0a8cc`.
+
+**Run.** RUN_PENDING
+
+**Not clean-room.** `scripts/pr-closing-check.sh` (new: reads `gh pr view <pr> --json title,body,commits`, or that JSON with `--json`, and runs `pr-body-check.sh` over the title, the body and every commit message; exit 1 on a hit, 3 when the PR cannot be read in full, including 100 or more commits), wired into `scripts/merge-reviewed.sh` before every `gh pr merge` (after the keyed form's `pending_merge`, so the supervisor's lane classifies the refusal `refused`) and into the gate's G2 for a `fleet/<n>-*` PR. `scripts/pr-body-check.sh` also catches three forms GitHub does not document (its documented syntax is only `KEYWORD #N` and `KEYWORD OWNER/REPO#N`, with an optional colon, in any case): a no-break space (U+00A0, U+202F), a keyword ending one line with the reference opening the next, and a github.com URL without a scheme. A false positive costs a reword; a miss closes an unrelated issue. Tests: `test-pr-body-check.sh`, `test-pr-closing-check.sh` (new), `test-merge-reviewed.sh`, `test-gate.sh`, each written first and seen failing.
+
+**Known limits.** The gate checks only `fleet/<n>-*` PRs; text passed with `gh pr merge --subject` or `--body`, a body edited between the check and the merge, and a merge in the GitHub UI are not checked (`docs/gates.md`).
+
