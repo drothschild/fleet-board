@@ -287,63 +287,72 @@ def role_prompt(role, inputs, tmp=None):
 
 
 _RULES = (
-    ('missing section: ## Status', 'Every report contains `## Status`.'),
-    ('missing section: ## Findings', 'Every report contains `## Findings`.'),
-    ('missing section: ## For the card', 'Every report contains `## For the card`.'),
-    ('unknown status: <word>', '`## Status` is one word: `done`, `blocked`, `clean` or `findings`.'),
-    ('role <role> does not allow status: <word>', '`done` and `blocked` are for the implementor and fixer; '
-     '`clean` and `findings` are for the reviewer and the stage-reviewer.'),
-    ('expected exactly one VERIFIED: line, found <N>', 'There is exactly one `VERIFIED:` line.'),
-    ('VERIFIED line needs a backticked command and an integer after ->', 'The command sits between backticks, '
-     'the arrow is `->` or `\u2192`, and the first token after the arrow is an integer ending at whitespace or '
-     'the line end.'),
-    ('bug entry needs title, repro, expected, observed', 'Each Bugs found line has all four parts.'),
-    ('role <role> requires ## <section>', 'Role sections: implementor `## PR`; fixer `## PR` and '
-     '`## Resolutions`; reviewer `## Acceptance map`, `## Mutation` and `## Claim check`; the stage-reviewer has '
-     'none.'),
-    ('duplicate section: ## <heading>', 'Any heading appears at most once.'),
-    ('## Status must be one line, extra line: <line>', '`## Status` holds exactly one non-blank line.'),
-    ('malformed finding line: <line>', 'Every non-blank `## Findings` line is `- [Critical] <text>`, '
-     '`- [Important] <text>` or `- [Minor] <text>`, with that exact spelling and one space after `-`, or exactly '
-     '`- none`.'),
+    ('missing section: ## Status',
+     'Every report contains `## Status`.'),
+    ('missing section: ## Findings',
+     'Every report contains `## Findings`.'),
+    ('missing section: ## For the card',
+     'Every report contains `## For the card`.'),
+    ('unknown status: <word>',
+     '`## Status` is one word: `done`, `blocked`, `clean` or `findings`.'),
+    ('role <role> does not allow status: <word>',
+     '`done` and `blocked` are for the implementor and fixer; `clean` and `findings` are for the reviewer and the stage-reviewer.'),
+    ('expected exactly one VERIFIED: line, found <N>',
+     'There is exactly one `VERIFIED:` line.'),
+    ('VERIFIED line needs a backticked command and an integer after ->',
+     'The command sits between backticks, the arrow is `->` or `→`, and the first token after the arrow is an integer ending at whitespace or the line end.'),
+    ('bug entry needs title, repro, expected, observed',
+     'Each Bugs found line has all four parts.'),
+    ('role <role> requires ## <section>',
+     'Role sections: implementor `## PR`; fixer `## PR` and `## Resolutions`; reviewer `## Acceptance map`, `## Mutation` and `## Claim check`; the stage-reviewer has none.'),
+    ('duplicate section: ## <heading>',
+     'Any heading appears at most once.'),
+    ('## Status must be one line, extra line: <line>',
+     '`## Status` holds exactly one non-blank line.'),
+    ('malformed finding line: <line>',
+     'Every non-blank `## Findings` line is `- [Critical] <text>`, `- [Important] <text>` or `- [Minor] <text>`, with that exact spelling and one space after `-`, or exactly `- none`.'),
     ('## Findings needs "- none" or at least one "- [Critical|Important|Minor] <text>" line',
      '`## Findings` needs one of the two forms.'),
-    ('## Findings mixes "- none" with findings', '`## Findings` uses one of the two forms, never both.'),
-    ('empty sub-list: Out of scope:', 'An `Out of scope:` header needs at least one entry.'),
-    ('empty sub-list: Bugs found:', 'A `Bugs found:` header needs at least one entry.'),
-    ('stray list line in ## For the card <detail>: <line>', 'Entries are unindented `- ` lines directly under '
-     'the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, '
-     'or an indented `  - ` line inside a list, is an error.'),
-    ('bug repro must be a backticked command: <title>', "A bug's repro is backticked."),
-    ('out of scope entry needs <title> :: <detail>: <entry>', 'An Out of scope entry needs ` :: ` with a '
-     'non-empty title and detail. The detail must hold a backticked check command or the words '
-     '`no testable check`. Write the command before any other backticked text.'),
+    ('## Findings mixes "- none" with findings',
+     '`## Findings` uses one of the two forms, never both.'),
+    ('empty sub-list: Out of scope:',
+     'An `Out of scope:` header needs at least one entry.'),
+    ('empty sub-list: Bugs found:',
+     'A `Bugs found:` header needs at least one entry.'),
+    ('stray list line in ## For the card (sub-list entries follow their header or the previous entry directly, unindented): <line>',
+     'Entries are unindented `- ` lines directly under the header or the previous entry. A blank or text line ends the list. A `- ` line after that blank line, or an indented `  - ` line inside a list, is an error.'),
+    ('bug repro must be a backticked command: <title>',
+     "A bug's repro is backticked."),
+    ('out of scope entry needs <title> :: <detail>: <entry>',
+     "An Out of scope entry needs ` :: ` with a non-empty title and detail. The detail must hold a backticked check command or the words `no testable check`. Write the command before any other backticked text: the first non-blank backticked span becomes the follow-up card's Acceptance bullet. With the words, the card is filed in Backlog for a person to triage."),
     ('out of scope entry needs a backticked check command or the words no testable check: <entry>',
-     'The detail holds a backticked command a person can run to check the work, written before any other '
-     'backticked text, or the words `no testable check`.'),
-    ('malformed ## Acceptance map line: <line>', 'Acceptance map lines are split on the last ` -> `; the target '
-     'is `<file>::<test name>`, `UNMAPPED`, `CHECKED: `<command>`` or `NOT_APPLICABLE: <reason>`.'),
-    ('malformed ## Mutation line: <line>', 'Mutation is exactly one line: `killed: <n> survived: <n> invalid: '
-     '<n>` or `skipped: review.mutation is off`.'),
-    ('## Mutation needs exactly one <detail> line', 'Mutation is exactly one line of the two forms.'),
-    ('## Claim check command must be one backticked command: <value>', 'The Claim check `command:` holds one '
-     'backticked command.'),
-    ('## Claim check matches must be yes or no: <value>', 'The Claim check `matches:` is `yes` or `no`.'),
-    ('malformed ## Claim check line: <line>', 'Claim check holds only the lines `claim:`, `command:`, `result:` '
-     'and `matches:`, or only the skipped line.'),
-    ('## Claim check needs one each of <detail>', 'Claim check has each of the four keys once, or only the '
-     'skipped line.'),
-    ('malformed ## Resolutions line <detail>: <line>', 'One line per input finding. The finding and its outcome '
-     'are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, and `<why>` is non-empty.'),
-    ('role <role> requires a PR number (#<n>) in ## PR unless status is blocked', "The implementor's and "
-     "fixer's `## PR` holds `#<number>` unless Status is `blocked`."),
-    ('status clean needs zero Critical and Important findings, found <n>', "The reviewer's and the "
-     "stage-reviewer's `clean` means zero Critical and zero Important findings."),
-    ('status findings needs at least one Critical or Important finding', "The reviewer's and the "
-     "stage-reviewer's `findings` means at least one Critical or Important finding."),
-    ('role reviewer requires at least one ## Acceptance map entry', "The reviewer's Acceptance map has at least "
-     "one entry."),
-    ('role fixer requires at least one ## Resolutions entry', "The fixer's Resolutions has at least one entry."),
+     'The detail holds a backticked command a person can run to check the work, written before any other backticked text, or the words `no testable check`.'),
+    ('malformed ## Acceptance map line: <line>',
+     'Acceptance map lines are split on the last ` -> `; the target is `<file>::<test name>`, `UNMAPPED`, ``CHECKED: `<command>` `` or `NOT_APPLICABLE: <reason>`.'),
+    ('malformed ## Mutation line: <line>',
+     'Mutation is exactly one line: `killed: <n> survived: <n> invalid: <n>` or `skipped: review.mutation is off`.'),
+    ('## Mutation needs exactly one "killed: <n> survived: <n> invalid: <n>" or "skipped: review.mutation is off" line',
+     'Mutation is exactly one line of the two forms.'),
+    ('## Claim check command must be one backticked command: <value>',
+     'The Claim check `command:` holds one backticked command.'),
+    ('## Claim check matches must be yes or no: <value>',
+     'The Claim check `matches:` is `yes` or `no`.'),
+    ('malformed ## Claim check line: <line>',
+     'Claim check holds only the lines `claim:`, `command:`, `result:` and `matches:`, or only the skipped line.'),
+    ('## Claim check needs one each of claim:, command:, result: and matches:, or only "skipped: review.verify_claim is off"',
+     'Claim check has each of the four keys once, or only the skipped line.'),
+    ('malformed ## Resolutions line (want - <finding> :: fixed | not fixed: <why>): <line>',
+     'One line per input finding. The finding and its outcome are split at the first ` :: ` followed by `fixed` or `not fixed: <why>`, and `<why>` is non-empty.'),
+    ('role <role> requires a PR number (#<n>) in ## PR unless status is blocked',
+     "The implementor's and fixer's `## PR` holds `#<number>` unless Status is `blocked`."),
+    ('status clean needs zero Critical and Important findings, found <n>',
+     "The reviewer's and the stage-reviewer's `clean` means zero Critical and zero Important findings."),
+    ('status findings needs at least one Critical or Important finding',
+     "The reviewer's and the stage-reviewer's `findings` means at least one Critical or Important finding."),
+    ('role reviewer requires at least one ## Acceptance map entry',
+     "The reviewer's Acceptance map has at least one entry."),
+    ('role fixer requires at least one ## Resolutions entry',
+     "The fixer's Resolutions has at least one entry."),
     ('status not_reproducible needs no commits since the reviewed head, found <n>', 'A fixer that committed '
      'anything reports `done` or `blocked`; `not_reproducible` is only for a fixer that committed nothing.'),
 )
@@ -354,7 +363,7 @@ def _rule_pattern(template):
 
 
 _RULE_TABLE = tuple((_rule_pattern(t), rule) for t, rule in _RULES)
-_REJECTED = ('Your previous report was rejected by the manager: %s. The rule: every report contains ## Status, '
+_REJECTED = ('Your previous report was rejected by the manager: %s\nThe rule: every report contains ## Status, '
              '## Findings, ## For the card, and exactly one line of the form VERIFIED: `<command>` -> <integer> '
              '<what it counts>.')
 
@@ -365,7 +374,7 @@ def rejection_text(lines):
     for line in lines:
         message = line[len('parse-report: '):] if line.startswith('parse-report: ') else line
         rule = next((r for pattern, r in _RULE_TABLE if pattern.fullmatch(message)), None)
-        quoted.append(line + ('\nRule: ' + rule if rule else ''))
+        quoted.append(line + ('\n' + rule if rule else ''))
     return _REJECTED % '\n'.join(quoted)
 
 
@@ -734,15 +743,14 @@ class CardDriver:
             first = lines[0] if lines else 'parse-report rejected the report'
             if script is not None:
                 return self._rejected_twice(run, lines, first)
+            if run.attempt == 2:
+                return self._rejected_twice(run, lines, '%s report rejected twice: %s' % (run.role, first))
             if not allow:
-                self.state.event('action_failed', card=c.n, action=c.row['action'], error=first)
                 raise _Fail('%s report rejected: %s' % (run.role, first))
-            if run.attempt == 1:
-                run.prompt = run.base_prompt + '\n' + rejection_text(lines) + '\n'
-                run.attempt = 2
-                self._launch(run)
-                return Outcome(c.n, False, True, None)
-            return self._rejected_twice(run, lines, '%s report rejected twice: %s' % (run.role, first))
+            run.prompt = run.base_prompt + '\n' + rejection_text(lines) + '\n'
+            run.attempt = 2
+            self._launch(run)
+            return Outcome(c.n, False, True, None)
         parsed = _json(result.stdout) if result.rc == 0 else None
         if not isinstance(parsed, dict):
             raise _Fail('parse-report.sh exited %d' % result.rc if result.rc else 'parse-report.sh printed no JSON')

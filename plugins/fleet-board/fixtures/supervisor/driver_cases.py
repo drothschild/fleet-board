@@ -750,6 +750,46 @@ def test_redispatch_is_declined_when_the_caller_says_so(base):
     assert b.note()['action_failures'] == 1 and 'rejected' in b.note()['last_action_error']
 
 
+def test_rules_match_the_manager_table_cell_for_cell(base):
+    import re
+    lines = (PLUGIN / 'agents' / 'manager.md').read_text().splitlines()
+    start = [i for i, l in enumerate(lines) if l.startswith('| Rejection message')][0]
+    table = []
+    for line in lines[start + 2:]:
+        if not line.startswith('|'):
+            break
+        m = re.match(r'^\| `(.*)` \| (.*) \|$', line)
+        table.append((m.group(1).replace('\\|', '|'), m.group(2).replace('\\|', '|')))
+    ours = dict(driver._RULES)
+    assert table and [row[0] for row in table] == [r[0] for r in driver._RULES][:len(table)], 'row order or text drifted'
+    for message, rule in table:
+        assert ours[message] == rule, (message, ours[message], rule)
+    text = driver.rejection_text(['parse-report: expected exactly one VERIFIED: line, found 2'])
+    assert '..' not in text.replace('...', ''), text
+    assert 'found 2\nThere is exactly one `VERIFIED:` line.\nThe rule: every report' in text, text
+
+
+def test_second_rejection_without_redispatch_budget_still_records_report_errors(base):
+    b = board_for(base)
+    started = started_implementor(b, 'no-verified', more=[{'report': 'no-verified'}])
+    assert run_role(b, started).redispatch is True
+    outcome = b.driver.finish(started.action, wait_for(started), allow_redispatch=False)
+    assert outcome == driver.Outcome(12, False, False, None), outcome
+    note = b.note()
+    assert len(note['report_errors']) == 1 and note['report_errors'][0]['role'] == 'implementor', note
+    assert note['last_action_error'] == ('implementor report rejected twice: '
+                                         'parse-report: expected exactly one VERIFIED: line, found 0'), note
+    assert note['action_failures'] == 1
+    assert len([e for e in b.state.events if e['type'] == 'action_failed']) == 1, list(b.state.events)
+
+
+def test_declined_redispatch_logs_one_failure(base):
+    b = board_for(base)
+    started = started_implementor(b, 'no-verified')
+    b.driver.finish(started.action, wait_for(started), allow_redispatch=False)
+    assert len([e for e in b.state.events if e['type'] == 'action_failed']) == 1, list(b.state.events)
+
+
 def test_second_rejection_records_report_errors(base):
     b = board_for(base)
     started = started_implementor(b, 'no-verified', more=[{'report': 'no-verified'}])
