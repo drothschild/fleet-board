@@ -439,6 +439,18 @@ run_config "$REPO"
 assert_exit "board.states string exit 5" "5"
 assert_stderr_contains "board.states string gives specific reason" "config.sh: invalid config: board.states must be a map"
 
+# Test 23b: merging is a canonical board.states key
+REPO="$(make_inline_repo <<'YML'
+board:
+  repo: a/b
+  states: { merging: "Landing" }
+YML
+)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO" "board.states.merging"
+assert_exit "board.states.merging exit 0" "0"
+assert_stdout_exact "board.states.merging is read back" "Landing"
+
 # Test 24: KEY lookup that jq cannot evaluate (index into an array by name) exits 2
 REPO="$(make_inline_repo <<'YML'
 board:

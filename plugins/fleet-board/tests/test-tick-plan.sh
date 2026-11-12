@@ -376,6 +376,49 @@ assert_jq "merged-verify: dispatchable" '.dispatchable' 'true'
 plan merged-finish
 assert_jq "merged-finish: action" "$(card 12 action)" '"finish"'
 
+# merging (merge.policy auto only): the column is planned, with its own rows
+AUTO="$(printf 'merge:\n  policy: auto')"
+plan merging-open-merge "$AUTO"
+assert_jq "merging-open-merge: action" "$(card 12 action)" '"merge"'
+assert_jq "merging-open-merge: state" "$(card 12 state)" '"merging"'
+assert_jq "merging-open-merge: head sha for the merge" "$(card 12 head_sha)" '"abc1234"'
+assert_jq "merging-open-merge: dispatchable" '.dispatchable' 'true'
+
+plan merging-open-no-marker "$AUTO"
+assert_jq "merging-open-no-marker: open PR, nothing in flight, plans merge" "$(card 12 action)" '"merge"'
+
+plan merging-open-in-flight "$AUTO"
+assert_jq "merging-open-in-flight: action" "$(card 12 action)" '"skip"'
+assert_jq "merging-open-in-flight: reason" "$(card 12 reason)" '"merge in flight or refused; supervisor decides"'
+
+plan merging-open-head-moved "$AUTO"
+assert_jq "merging-open-head-moved: a head other than the journaled one is not merged" "$(card 12 action)" '"skip"'
+
+plan merging-merged-verify "$AUTO"
+assert_jq "merging-merged-verify: action" "$(card 12 action)" '"verify_main"'
+
+plan merging-merged-finish "$AUTO"
+assert_jq "merging-merged-finish: action" "$(card 12 action)" '"finish"'
+
+plan merging-closed-block "$AUTO"
+assert_jq "merging-closed-block: action" "$(card 12 action)" '"block"'
+assert_jq "merging-closed-block: reason" "$(card 12 reason)" '"PR #34 closed without a merge"'
+
+# a merging card is settled: settle keeps merge and verify_main when --settle-merge
+setup_case merging-merged-verify "$AUTO"; run_check "$SCRIPT" --settle-merge 12
+assert_jq "settle-merge: a merging card plans verify_main" "$(card 12 action)" '"verify_main"'
+setup_case merging-open-merge "$AUTO"; run_check "$SCRIPT" --settle-merge 12
+assert_jq "settle-merge: a merging card plans merge" "$(card 12 action)" '"merge"'
+settle_skips_merging() { setup_case "$1" "$AUTO"; run_check "$SCRIPT" --settle "$2"; }
+settle_skips_merging merging-merged-finish 12
+assert_jq "settle: a merging card's finish waits for the next tick" "$(card 12 action)" '"skip"'
+setup_case merging-closed-block "$AUTO"; run_check "$SCRIPT" --settle 12
+assert_jq "settle: a merging card with a closed PR blocks" "$(card 12 action)" '"block"'
+
+# a merging card appears in the plan's cards without the settle flags (it is listed)
+plan merging-open-merge "$AUTO"
+assert_jq "merging is listed in the plan" '[.cards[].number]' '[12]'
+
 # in_review with no PR known: skip, never dispatch a reviewer at nothing
 plan in-review-no-pr
 assert_jq "in-review-no-pr: action" "$(card 12 action)" '"skip"'

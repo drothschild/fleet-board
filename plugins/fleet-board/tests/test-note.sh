@@ -787,6 +787,12 @@ assert_eq "blocked-from: get returns a note with blocked_from in_review unchange
   "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"in_review"'
 
 setup_case
+set_note_json '{"state":"blocked","blocked_from":"merging"}'
+run_note get 12
+assert_eq "blocked-from: a note with blocked_from merging is accepted" \
+  "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"merging"'
+
+setup_case
 set_note_json '{"state":"blocked","blocked_from":"banana"}'
 run_note get 12
 assert_stdout_exact "blocked-from: a note with blocked_from banana is rejected" "{}"
