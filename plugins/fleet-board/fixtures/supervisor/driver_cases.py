@@ -1209,6 +1209,7 @@ def test_stage_review_tokens_reach_the_ledger(base):
     b, line = _stage_ledger_line(base, input_tokens=1200, output_tokens=300)
     assert (line['input'], line['output'], line['cache_write'], line['cache_read']) == (1200, 300, None, None), line
     assert (line['provider'], line['model'], line['role']) == ('codex', 'gpt-5', 'stage-reviewer'), line
+    assert line['action'] == 'review_security', line   # spec section 8: review_<stage name>, not the candidate name
     run = b.state.run_tokens
     assert run['input'] == 1200 and run['output'] == 300, run
 

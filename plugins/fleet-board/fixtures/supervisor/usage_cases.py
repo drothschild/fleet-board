@@ -14,7 +14,7 @@ PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / 'fixtures' / 'supervisor'))
 import loop_cases as lc  # noqa: E402  (pops the base directory from argv)
 import driver_cases as dc  # noqa: E402
-from supervisor import cli, usage  # noqa: E402
+from supervisor import cli, state as sup_state, usage  # noqa: E402
 
 BASE = lc.BASE
 KEYS = ('run_id', 'card', 'kind', 'column', 'action', 'role', 'provider', 'model', 'input', 'output',
@@ -343,12 +343,12 @@ class Limits(lc.LoopCase):
     def test_a_duplicate_admission_does_not_charge_the_running_card(self):
         row = dc.candidate('start', number=12, branch=lc.BRANCH[12], worktree=self.b.worktree,
                            declared_paths=['p12'])
-        self.b.driver.begin = mock.Mock(side_effect=ValueError('card already active'))
+        self.b.driver.begin = mock.Mock(side_effect=ValueError(sup_state.DUPLICATE_ADMISSION))
         self.sup._begin(row)
         self.assertEqual([c for c in self.b.calls if c[0] == 'note.sh'], [], 'no note was read or merged')
         events = [e for e in self.b.state.events if e['type'] == 'action_failed']
         self.assertEqual(len(events), 1)
-        self.assertIn('card already active', events[0]['payload']['error'])
+        self.assertIn(sup_state.DUPLICATE_ADMISSION, events[0]['payload']['error'])
         self.assertNotIn('action_failures', self.b.note())
 
     def test_a_real_failure_is_still_counted(self):

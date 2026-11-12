@@ -693,6 +693,19 @@ if setup_case; then
   else
     fail "import preview recorded exactly once as a planner line" "ledger: $(cat "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)"
   fi
+  # a failed ledger append drops the marker so the next poll retries; the line is recorded once, with the
+  # session's own times (started_at = meta created_at, ended_at = session.jsonl mtime, not the poll time)
+  IDIR="$TMP/logs/web/acme-toy/imports/fixed"
+  rm -f "$REPO/.fleet-board/usage.jsonl" "$IDIR/usage.recorded"
+  mkdir "$REPO/.fleet-board/usage.jsonl"            # an append to a directory fails
+  python3 -c 'import os,sys; os.utime(sys.argv[1], (1577836800, 1577836800))' "$IDIR/session.jsonl"
+  api GET /api/import/fixed
+  if [ ! -e "$IDIR/usage.recorded" ]; then pass "a failed import usage append leaves no marker"; else fail "a failed import usage append leaves no marker" "marker exists"; fi
+  rmdir "$REPO/.fleet-board/usage.jsonl"
+  api GET /api/import/fixed; api GET /api/import/fixed
+  if [ "$(grep -c '"action":"import_preview"' "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)" = 1 ]; then pass "a failed import append is retried on the next poll and recorded once"; else fail "a failed import append is retried on the next poll and recorded once" "ledger: $(cat "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)"; fi
+  created="$(jq -r .created_at "$IDIR/meta.json")"
+  if grep '"action":"import_preview"' "$REPO/.fleet-board/usage.jsonl" | jq -e --arg c "$created" '.started_at==$c and .ended_at=="2020-01-01T00:00:00Z"' >/dev/null 2>&1; then pass "import line carries the session's started_at and ended_at"; else fail "import line carries the session's started_at and ended_at" "created $created; ledger: $(cat "$REPO/.fleet-board/usage.jsonl" 2>/dev/null)"; fi
   if [ "$(find "$TMP/logs/web/acme-toy/imports/fixed" -name plan.md | wc -l | tr -d ' ')" = 1 ]; then pass "plan.md is kept in the import dir"; else fail "plan.md is kept in the import dir" "missing"; fi
   api GET /api/board;               assert_body "no card created before the create request" '[.cards[]|select(.state=="ready")]|length' 0
   api POST /api/import/fixed/create '{"embed_docs":true}';   assert_code 200
