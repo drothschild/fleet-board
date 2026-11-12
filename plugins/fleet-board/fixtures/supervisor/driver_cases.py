@@ -1455,6 +1455,79 @@ def test_ending_an_action_keeps_a_marker_naming_another_group_and_drops_an_empty
             path.unlink()
 
 
+def ledger_column(b):
+    """The column of the one ledger line the finished session wrote."""
+    from supervisor import usage
+    lines, skipped = usage.read(b.root)
+    assert len(lines) == 1 and skipped == 0, lines
+    return lines[0]['action'], lines[0]['column']
+
+
+def test_ledger_column_of_start_is_in_progress_not_ready(base):
+    b = board_for(base)
+    b.plans({'report': 'implementor-ok'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    run_role(b, begin(b, 'start'))
+    assert ledger_column(b) == ('start', 'in_progress')
+
+
+def test_ledger_column_of_continue_implementor_is_in_progress(base):
+    b = board_for(base, 'in_progress')
+    b.put_note({'implementor_attempts': 1, 'branch': BRANCH, 'worktree': b.worktree, 'round': 0})
+    b.plans({'report': 'implementor-ok'})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    run_role(b, begin(b, 'continue_implementor', state='in_progress'))
+    assert ledger_column(b) == ('continue_implementor', 'in_progress')
+
+
+def test_ledger_column_of_start_review_is_in_review_not_in_progress(base):
+    b = board_for(base, 'in_progress')
+    b.stubs['review-stages.sh'] = ok('["security"]\n')
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-ok'})
+    run_role(b, begin(b, 'start_review', state='in_progress'))
+    assert ledger_column(b) == ('start_review', 'in_review')
+
+
+def test_ledger_column_of_review_is_in_review(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    run_role(b, begin(b, 'review', state='in_review', round=1))
+    assert ledger_column(b) == ('review', 'in_review')
+
+
+def test_ledger_column_of_review_stage_is_the_stage_column(base):
+    b = board_for(base, 'review_security')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look.', 'provider': None}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'review_security', 'stage': 'security', 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    worktree_ok(b)
+    b.env['FAKE_ROLE_ROLE'] = 'stage-reviewer'
+    b.plans({'report': 'stage-reviewer-ok'})
+    run_role(b, begin(b, 'review_stage', state='review_security', stage=stage, round=1))
+    assert ledger_column(b) == ('review_security', 'review_security')
+
+
+def test_ledger_column_of_fix_is_the_column_the_card_is_in(base):
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.plans({'report': 'fixer-ok'})
+    run_role(b, begin(b, 'fix', state='in_review', round=1))
+    assert ledger_column(b) == ('fix', 'in_review')
+
+
+def test_a_cancelled_action_still_returns_the_card_to_the_column_it_started_in(base):
+    b = board_for(base)
+    b.plans({'report': 'implementor-ok', 'sleep': 30})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start')
+    assert started.action.column == 'ready', 'the launch-time column is what a cancel restores'
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
