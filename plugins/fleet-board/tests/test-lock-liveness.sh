@@ -210,14 +210,30 @@ for kind in fb fl; do
   : > "$R/release"; kill "$(cat "$R/H.pid")" 2>/dev/null; sleep 0.2; rm -rf "$lock"
 done
 
-# PR #252 (pre card #254): a lock with no pid file is never taken over. Card #254
-# changes this to "not before the grace period".
+# Card #254: a lock with no pid file (its creator crashed between mkdir and the pid
+# write) is not taken while younger than the pid-less grace, and is taken once older.
+# The grace is measured from the lock's first claim link (the dir's own mtime moves
+# with every claim), so a fresh lock is kept for the whole grace and a crashed lock
+# whose first claim is already old is taken at once.
 for kind in fb fl; do
   lock=$FB; [ $kind = fl ] && lock=$FL
   mkdir -p "$lock"
-  out=$(FLEET_BOARD_LOCK_WAIT=1 run_$kind)
-  case "$out" in *acquired*) bad "pr252 $kind: a lock with no pid file was taken over" ;; *) ok "pr252 $kind: a lock with no pid file is never taken over (#254: not before the grace period)" ;; esac
-  rm -rf "$lock"
+  out=$(FLEET_BOARD_LOCK_PIDLESS_GRACE=60 FLEET_BOARD_LOCK_WAIT=1 run_$kind)
+  case "$out" in *acquired*) bad "$kind: a pid-less lock younger than the grace was taken over" ;; *) ok "$kind: a pid-less lock younger than the grace is not taken" ;; esac
+  rm -rf "$lock" "$lock".*
+  mkdir -p "$lock"
+  out=$(FLEET_BOARD_LOCK_PIDLESS_GRACE=1 FLEET_BOARD_LOCK_WAIT=6 run_$kind)
+  left=$(ls -d "$lock".* 2>/dev/null | wc -l | tr -d ' ')
+  case "$out" in
+    *acquired*) [ "$left" = 0 ] && ok "$kind: a pid-less lock older than the grace is taken over" \
+                  || bad "$kind: pid-less takeover left $left renamed copies" ;;
+    *) bad "$kind: a pid-less lock older than the grace was not taken over: $out" ;;
+  esac
+  rm -rf "$lock" "$lock".*
+  mkdir -p "$lock"; ln -s "$(dead_pid)" "$lock/claim.1"; touch -h -t 200001010000 "$lock/claim.1"
+  out=$(FLEET_BOARD_LOCK_PIDLESS_GRACE=60 FLEET_BOARD_LOCK_WAIT=2 run_$kind)
+  case "$out" in *acquired*) ok "$kind: a pid-less lock whose first claim is older than the grace is taken at once" ;; *) bad "$kind: a pid-less lock with an old dead claim was not taken: $out" ;; esac
+  rm -rf "$lock" "$lock".*
 done
 
 # A failed pid write removes the lock only while the lock is still ours
@@ -229,6 +245,7 @@ if [ "$(cat "$L1/pid" 2>/dev/null)" = other ]; then ok "a failed pid write leave
 rm -rf "$L1"
 ( . "$S/board-lib.sh"
   mv() { case "$*" in *"$L1/pid") return 1 ;; esac; command mv "$@"; }
+  ln() { case "$*" in *"$L1/pid") return 1 ;; esac; command ln "$@"; }
   fb_lock_acquire "$L1" 1 ) >/dev/null 2>&1; r=$?
 if [ "$r" != 0 ] && [ ! -e "$L1" ]; then ok "a failed pid rename fails and removes our own lock"; else bad "a failed pid rename: exit $r, lock left: $([ -e "$L1" ] && echo yes || echo no)"; fi
 rm -rf "$L1" "$L1".*
@@ -264,4 +281,92 @@ else
     rm -rf "$lock"
   done
 fi
+# --- Card #254: a slow but live owner and the pid-less grace ------------------------
+
+# One grace for both sides: board-lib.sh's takeover and stuck.py's dead_lock / release.
+bg=$(sed -n 's/^FB_LOCK_PIDLESS_GRACE=\([0-9][0-9]*\).*/\1/p' "$S/board-lib.sh")
+pg=$(sed -n 's/^LOCK_GRACE = \([0-9][0-9]*\).*/\1/p' "$S/supervisor/stuck.py")
+if [ -n "$bg" ] && [ "$bg" = "$pg" ]; then ok "board-lib.sh and stuck.py share one pid-less grace (${bg}s)"
+else bad "pid-less grace differs: board-lib.sh '${bg}', stuck.py '${pg}'"; fi
+
+# P is a live owner that stalls right after its mkdir (an mkdir override in P's own
+# process), so its lock stays pid-less. W, a waiter, takes the lock over once it is
+# older than the grace. P's pid write is let through only at a chosen point:
+#   after  - once W holds the lock it re-made (the reviewer's late pid rename);
+#   ln, mv - while W is inside its takeover: just before W writes its pid into the
+#            pid-less lock (ln), or just before W renames that lock aside (mv).
+# Every case must end with exactly one live holder, named by the lock's pid.
+# (The holder must also be the expected one where the interleaving decides it.)
+cat > "$W/slow.sh" <<'SH'
+. "$W/common.sh"
+mkdir() {
+  command mkdir "$@"; local r=$? i=0
+  if [ $r = 0 ] && [ "$1" = "$LOCK" ] && [ ! -e "$HELD/../p.stalled" ]; then
+    : > "$HELD/../p.stalled"
+    while [ ! -e "$HELD/../p.go" ] && [ $i -lt 120 ]; do sleep 0.1; i=$((i + 1)); done
+  fi
+  return $r
+}
+placed() { case "$*" in *"$LOCK/pid") : > "$HELD/../p.placed" ;; esac; }
+ln() { command ln "$@"; local r=$?; placed "$@"; return $r; }
+mv() { command mv "$@"; local r=$?; placed "$@"; return $r; }
+take && hold
+SH
+cat > "$W/waiter.sh" <<'SH'
+. "$W/common.sh"
+let_p() {
+  local i=0
+  [ -e "$HELD/../w.trig" ] && return 0
+  : > "$HELD/../w.trig"; : > "$HELD/../p.go"
+  while [ ! -e "$HELD/../p.placed" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+}
+case "$TRIG" in
+  ln) ln() { case "$*" in *"$LOCK/pid") let_p ;; esac; command ln "$@"; } ;;
+  mv) mv() { [ "$1" = "$LOCK" ] && let_p; command mv "$@"; } ;;
+esac
+take && hold
+SH
+slow_owner() {  # slow_owner <kind> <after|ln|mv>
+  local kind="$1" trig="$2" lock R i live holder p want when
+  lock=$FB; [ "$kind" = fl ] && lock=$FL
+  R="$T/slow-$kind-$trig"; rm -rf "$R"; mkdir -p "$R/held"
+  ( export S W KIND="$kind" LOCK="$lock" HELD="$R/held" TRIG="$trig" FLEET_BOARD_LOCK_PIDLESS_GRACE=1 FLEET_BOARD_LOCK_WAIT=8
+    . "$W/common.sh"
+    bash "$W/slow.sh" >"$R/P.log" 2>&1 & echo $! > "$R/P.pid"
+    i=0; while [ ! -e "$R/p.stalled" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+    bash "$W/waiter.sh" >"$R/W.log" 2>&1 & echo $! > "$R/W.pid"
+    if [ "$trig" = after ]; then
+      wait_for_holders 1 80; : > "$R/p.go"
+    else
+      i=0; while [ ! -e "$R/w.trig" ] && [ $i -lt 80 ]; do sleep 0.1; i=$((i + 1)); done
+      : > "$R/p.go"; wait_for_holders 1 80
+    fi
+    i=0; while [ ! -e "$R/p.placed" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i + 1)); done
+    wait_for_holders 2 10 )
+  live=0; holder=""
+  for p in $(ls "$R/held"); do
+    if command ps -p "$p" >/dev/null 2>&1; then live=$((live + 1)); holder="$holder $p"; fi
+  done
+  holder="${holder# }"
+  # after: W holds before P's write. ln: P's write wins the pid slot. mv: W deletes
+  # its fenced copy, then P and W race fairly for the fresh mkdir, so either may hold.
+  want="$(cat "$R/W.pid")"; [ "$trig" = ln ] && want="$(cat "$R/P.pid")"
+  [ "$trig" = mv ] && want="$holder"
+  case "$trig" in
+    after) when="after the waiter's grace takeover" ;;
+    ln) when="just before the waiter writes its pid into the pid-less lock" ;;
+    mv) when="just before the waiter renames the pid-less lock aside" ;;
+  esac
+  if [ "$live" = 1 ] && [ "$holder" = "$want" ] && [ "$(cat "$lock/pid" 2>/dev/null)" = "$holder" ]; then
+    ok "$kind: a slow owner whose pid write lands $when leaves one holder"
+  else
+    bad "$kind: slow owner whose pid write lands $when: $live live holder(s) [$holder], want $want, lock pid $(cat "$lock/pid" 2>/dev/null)"
+  fi
+  : > "$R/release"
+  for p in P W; do [ -f "$R/$p.pid" ] && kill "$(cat "$R/$p.pid")" 2>/dev/null; done
+  sleep 0.2; rm -rf "$lock" "$lock".*
+}
+for kind in fb fl; do
+  for trig in after ln mv; do slow_owner "$kind" "$trig"; done
+done
 exit $fail

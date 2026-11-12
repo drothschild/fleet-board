@@ -59,7 +59,8 @@ fl_write_card() {
 }
 
 # fl_lock_next / fl_unlock_next: <dir>/.next.lock, the lock every writer of
-# <dir>/next takes (a lock whose owner process is gone is stale and removed).
+# <dir>/next takes (a lock whose owner process is gone, or that has had no owner
+# pid for longer than the pid-less grace, is stale and removed).
 fl_lock_next() {
   local d
   d="$(fl_dir)"

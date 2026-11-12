@@ -626,6 +626,43 @@ class Wave5Fixes(StuckCase):
         self.assertTrue(fresh.exists())
         self.assertEqual(self.b.card(12)['state'], 'in_progress')
 
+    def test_release_removes_an_old_lock_without_a_pid(self):
+        self.b.seed(12, 'in_progress')
+        old = self.lock(12, None, age=3600)  # its creator crashed between mkdir and writing its pid
+        stuck.release(self.root, 12)
+        self.assertFalse(old.exists())
+        self.assertEqual(sorted(p.name for p in self.locks.iterdir()), [], 'no renamed copy is left behind')
+
+    def test_release_leaves_a_pidless_lock_whose_slow_holder_records_its_pid_during_release(self):
+        # Card #254: the holder was only slow. Its pid lands after release judged the lock dead (here, at
+        # release's last check before removing it). Release must not remove a lock that now has a live owner.
+        self.b.seed(12, 'in_progress')
+        slow = self.lock(12, None, age=3600)
+        real = stuck._live_claim
+
+        def late_pid(path):
+            if not (Path(path) / 'pid').exists():
+                (Path(path) / 'pid').write_text('%d\n' % os.getpid())
+            return real(path)
+        stuck._live_claim = late_pid
+        try:
+            with self.assertRaises(ValueError):
+                stuck.release(self.root, 12)
+        finally:
+            stuck._live_claim = real
+        self.assertEqual((slow / 'pid').read_text().strip(), str(os.getpid()), 'the slow holder keeps its lock')
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    def test_lock_grace_honours_the_shared_override(self):
+        d = self.lock(12, None, age=5)
+        os.environ['FLEET_BOARD_LOCK_PIDLESS_GRACE'] = '2'
+        try:
+            self.assertTrue(stuck._lock_dead(d))
+            os.environ['FLEET_BOARD_LOCK_PIDLESS_GRACE'] = '60'
+            self.assertFalse(stuck._lock_dead(d))
+        finally:
+            del os.environ['FLEET_BOARD_LOCK_PIDLESS_GRACE']
+
     def test_release_leaves_a_dead_lock_that_a_running_taker_has_claimed(self):
         self.b.seed(12, 'in_progress')
         claimed = self.lock(12, dead_pid())
