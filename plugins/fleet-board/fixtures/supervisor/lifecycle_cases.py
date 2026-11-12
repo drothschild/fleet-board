@@ -931,7 +931,8 @@ class DetachedStart(unittest.TestCase):
         # The default base is shared with real supervisors: touch only this root's own fbs-<hash> directory.
         mine = Path(paths.socket_dir(paths.domain_id_for_root(self.case), env=env))
         self.assertEqual(mine.parent, Path("/tmp") / ("fleet-board-%d" % os.getuid()))
-        self.assertFalse(mine.exists())
+        if mine.exists():   # a stale directory for this root (a run that died): never someone else's to remove
+            self.skipTest("a stale %s already exists" % mine)
         self.addCleanup(lambda: shutil.rmtree(str(mine), True))
         run = self.cli("start", "--detach", env=dict(env, TMPDIR=str(a)))
         if run.returncode == 1 and (SANDBOX_PS in run.stderr or SANDBOX_BIND in run.stderr):

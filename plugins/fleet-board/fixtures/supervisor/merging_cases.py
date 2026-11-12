@@ -244,6 +244,31 @@ class Merging(MergeCase):
         self.assertEqual(self.b.card(12)['state'], 'merging')
         self.assertEqual(self.mergers, [], 'no merger session starts while stopping')
 
+    def test_the_merge_child_owns_the_active_marker_until_it_ends(self):
+        self.hold.write_text('')
+        self.start()
+        pid = int(self.spawned(1)[0][0])
+        path = self.b.root / '.fleet-board' / 'active' / '12'
+        marker = self.until(lambda: path.exists() and json.loads(path.read_text()), what='the merge marker')
+        self.assertEqual(marker['pgid'], pid)
+        self.assertEqual(marker['supervisor_pid'], os.getpid())
+        self.hold.unlink()
+        self.until(lambda: self.b.state.lane is None, what='the lane to free')
+        self.assertFalse(path.exists(), 'the merge left its marker')
+
+    def test_a_merge_that_ends_while_paused_defers_the_merger(self):
+        self.hold.write_text('')
+        self.start()
+        self.spawned(1)
+        self.sup.handle({'command': 'pause'})
+        self.until(lambda: self.mode() == 'paused', what='the pause')
+        self.hold.unlink()
+        self.until(lambda: any(e['type'] == 'merger_deferred' for e in self.b.state.events), what='the deferral')
+        deferred = [e['payload'] for e in self.b.state.events if e['type'] == 'merger_deferred']
+        self.assertEqual(deferred[0]['message'], 'paused')
+        self.assertEqual(self.mergers, [], 'no merger session starts while the board is paused')
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+
     def test_a_planner_skip_is_not_attempted_and_never_pauses(self):
         self.inspect = dict(ABSENT)
         self.start()

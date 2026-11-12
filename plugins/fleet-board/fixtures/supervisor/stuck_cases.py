@@ -14,7 +14,7 @@ BASE = Path(sys.argv.pop()).resolve()
 PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / 'fixtures' / 'supervisor'))
 import driver_cases as dc  # noqa: E402
-from supervisor import candidates, cli, loop, scheduler, state, stuck  # noqa: E402
+from supervisor import candidates, cli, loop, scheduler, service, state, stuck  # noqa: E402
 
 
 def dead_pid():
@@ -63,9 +63,30 @@ class StuckCase(unittest.TestCase):
         subprocess.run(['git', '-C', str(path), 'init', '-q'], check=True)
         subprocess.run(['git', '-C', str(path), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q',
                         '--allow-empty', '-m', 'work'], check=True)
-        if dirty:
+        (path / 'wip.txt').write_text('committed')
+        subprocess.run(['git', '-C', str(path), 'add', 'wip.txt'], check=True)
+        subprocess.run(['git', '-C', str(path), '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q',
+                        '-m', 'tracked'], check=True)
+        if dirty:   # an uncommitted change to a tracked file (untracked files are not work in progress)
             (path / 'wip.txt').write_text('uncommitted')
         return path
+
+    def group(self):
+        """A live process group (its own session), stopped at cleanup; returns its pgid."""
+        proc = subprocess.Popen(['sleep', '60'], start_new_session=True)
+
+        def stop():
+            try:
+                os.killpg(proc.pid, 9)
+            except OSError:
+                pass
+            proc.wait()
+        self.addCleanup(stop)
+        return proc.pid
+
+    def owned_marker(self, n, pgid):
+        self.active.mkdir(exist_ok=True)
+        (self.active / str(n)).write_text(json.dumps({'pgid': pgid, 'supervisor_pid': dead_pid()}))
 
     def head(self, path):
         return subprocess.run(['git', '-C', str(path), 'rev-parse', 'HEAD'], capture_output=True, text=True,
@@ -265,7 +286,8 @@ class Release(StuckCase):
         self.b.put_note({'pr': 34, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'a'},
                          'merge_refusal': {'pr': 34, 'head': 'a', 'reason': 'r'}, 'merge_retry': {'at': 'x'},
                          'merger': {'mode': 'refusal', 'status': 'attention'}, 'branch': dc.BRANCH})
-        stuck.release(self.root, 12, gh=self.gh_state('OPEN'))
+        # merge_refusal records how the merge ended: nothing is in flight, so this release needs --force
+        stuck.release(self.root, 12, gh=self.gh_state('OPEN'), force=True)
         self.assertEqual(self.b.card(12)['state'], 'in_review')
         note = self.b.note(12)
         for key in ('pending_merge', 'merge_refusal', 'merge_retry', 'merger'):
@@ -296,7 +318,7 @@ class Release(StuckCase):
             stuck.release(self.root, 99)
 
 
-class Start(StuckCase):
+class CliEnv(StuckCase):
     def setUp(self):
         super().setUp()
         sock = tempfile.mkdtemp(prefix='fbs.', dir='/tmp')
@@ -313,6 +335,8 @@ class Start(StuckCase):
         rc = cli.main(list(argv), env=os.environ, stdout=out, stderr=err)
         return rc, out.getvalue(), err.getvalue()
 
+
+class Start(CliEnv):
     def test_start_refuses_with_stuck_cards_exit_4(self):
         self.b.seed(12, 'in_progress')
         self.marker(12)
@@ -499,6 +523,212 @@ class Ignored(StuckCase):
         self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
         sup._cycle()
         self.assertEqual(sup.ignored, {})
+
+
+class Wave5Fixes(StuckCase):
+    """Phase 5 review fixes: live orphans, the run lock, release rules, worktree checks."""
+
+    def gh_state(self, value):
+        return lambda root, pr, repo: value
+
+    # live_orphan --------------------------------------------------------------------------------------
+    def test_live_orphan_is_a_kind(self):
+        self.assertIn('live_orphan', stuck.KINDS)
+        self.assertIn('unreadable_worktree', stuck.KINDS)
+
+    def test_a_marker_naming_a_live_process_group_is_a_live_orphan_and_release_refuses(self):
+        self.b.seed(13, 'in_review')
+        pgid = self.group()
+        self.owned_marker(13, pgid)
+        found = stuck.find(self.root)
+        self.assertEqual([(s.card, s.kind) for s in found], [(13, 'live_orphan')])
+        self.assertIn(str(pgid), found[0].detail)
+        with self.assertRaises(ValueError) as caught:
+            stuck.release(self.root, 13)
+        self.assertIn('stop', str(caught.exception))
+        self.assertIn(str(pgid), str(caught.exception))
+        self.assertTrue((self.active / '13').exists(), 'a live orphan keeps its marker')
+        with self.assertRaises(ValueError):
+            stuck.release(self.root, 13, force=True)
+        self.assertTrue((self.active / '13').exists())
+
+    def test_an_in_flight_card_whose_marker_group_is_alive_also_reports_live_orphan(self):
+        self.b.seed(12, 'in_progress')
+        self.owned_marker(12, self.group())
+        self.assertEqual(self.kinds(), [(12, 'in_flight'), (12, 'live_orphan')])
+        with self.assertRaises(ValueError):
+            stuck.release(self.root, 12)
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    def test_a_marker_naming_a_dead_process_group_is_a_plain_marker_and_release_clears_it(self):
+        self.b.seed(13, 'in_review')
+        self.owned_marker(13, dead_pid())
+        self.assertEqual(self.kinds(), [(13, 'marker')])
+        stuck.release(self.root, 13)
+        self.assertFalse((self.active / '13').exists())
+        self.assertEqual(stuck.find(self.root), [])
+
+    def test_a_marker_with_an_unusable_pgid_is_a_plain_marker(self):
+        self.b.seed(13, 'in_review')
+        self.active.mkdir()
+        for text in ('', 'garbage', '{"pgid": 0}', '{"pgid": 1}', '{"pgid": "7"}'):
+            (self.active / '13').write_text(text)
+            self.assertEqual(self.kinds(), [(13, 'marker')], text)
+
+    def test_fb_mark_active_keeps_an_existing_marker_and_creates_an_empty_one(self):
+        script = ('. "%s/scripts/board-lib.sh"; fb_load_config; fb_mark_active "$1"; '
+                  'printf "%%s" "$FB_ACTIVE_FILE"' % PLUGIN)
+        self.owned_marker(12, 4242)
+        done = subprocess.run(['bash', '-c', script, 'x', '12'], cwd=str(self.root), capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual(json.loads((self.active / '12').read_text())['pgid'], 4242,
+                         'fb_mark_active must not truncate the supervisor-owned marker')
+        done = subprocess.run(['bash', '-c', script, 'x', '14'], cwd=str(self.root), capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((self.active / '14').read_text(), '')
+        self.assertTrue(done.stdout.endswith('/active/14'), done.stdout)
+
+    # release rules ------------------------------------------------------------------------------------
+    def test_release_refuses_a_card_with_no_current_finding_unless_forced(self):
+        self.b.seed(13, 'in_review')
+        self.b.put_note({'stuck': {'kind': 'marker', 'detail': 'old', 'at': 't'}}, 13)
+        with self.assertRaises(ValueError) as caught:
+            stuck.release(self.root, 13)
+        self.assertIn('force', str(caught.exception))
+        self.assertEqual(self.b.note(13)['stuck']['detail'], 'old', 'a refused release changes nothing')
+        stuck.release(self.root, 13, force=True)
+        self.assertIsNone(self.b.note(13).get('stuck'))
+        self.assertEqual(self.b.card(13)['state'], 'in_review')
+
+    def test_release_of_a_merging_card_whose_pr_is_closed_is_treated_like_open(self):
+        self.b.seed(12, 'merging')
+        self.b.put_note({'pr': 34, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'a'}})
+        stuck.release(self.root, 12, gh=self.gh_state('CLOSED'))
+        self.assertEqual(self.b.card(12)['state'], 'in_review')
+        self.assertIsNone(self.b.note(12).get('pending_merge'))
+
+    def test_release_honours_the_lock_grace_for_a_lock_without_a_pid(self):
+        self.b.seed(12, 'in_progress')
+        fresh = self.lock(12, None)          # its holder is between mkdir and writing its pid
+        with self.assertRaises(ValueError):
+            stuck.release(self.root, 12)
+        self.assertTrue(fresh.exists())
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    def test_a_lock_that_cannot_be_removed_is_a_value_error(self):
+        self.b.seed(12, 'in_progress')
+        dead = self.lock(12, dead_pid())
+        (dead / 'nested').mkdir()            # unlink() of a directory fails with an OSError
+        with self.assertRaises(ValueError) as caught:
+            stuck.release(self.root, 12)
+        self.assertIn('lock', str(caught.exception))
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    # what find checks ---------------------------------------------------------------------------------
+    def test_a_card_in_a_review_stage_has_its_worktree_checked(self):
+        self.b.seed(14, 'review_security')
+        self.b.put_note({'worktree': str(self.worktree(14, dirty=True))}, 14)
+        self.assertEqual(self.kinds(), [(14, 'dirty_worktree')])
+        self.assertIn('review_security', stuck.checked_states(dc.CONFIG))
+        for state_name in ('backlog', 'done', 'wont_do'):
+            self.assertNotIn(state_name, stuck.checked_states(dc.CONFIG))
+
+    def test_untracked_files_alone_are_not_a_dirty_worktree(self):
+        self.b.seed(14, 'in_review')
+        path = self.worktree(14)
+        (path / 'scratch.txt').write_text('untracked')
+        self.b.put_note({'worktree': str(path)}, 14)
+        self.assertEqual(self.kinds(), [])
+
+    def test_a_failed_or_timed_out_git_status_is_unreadable_never_clean(self):
+        self.b.seed(14, 'in_review')
+        self.b.put_note({'worktree': str(self.worktree(14))}, 14)
+        argvs = []
+        for result in (dc.fail_with('fatal: index locked', 128), stuck.scripts.ScriptResult(124, '', '', True)):
+            def run_argv(root, argv, **kw):
+                argvs.append(argv)
+                return result
+            found = stuck.find(self.root, run_argv=run_argv)
+            self.assertEqual([(s.card, s.kind) for s in found], [(14, 'unreadable_worktree')], result)
+        self.assertIn('--untracked-files=no', argvs[0])
+        self.assertIn('--no-optional-locks', argvs[0])
+
+    def test_the_driver_clears_a_stale_stuck_note_when_it_next_acts_on_the_card(self):
+        self.b.seed(12, 'ready')
+        self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
+        self.b.driver.begin(dc.candidate('wait', state='ready', waiting_on=['acme/toy#3']))
+        self.assertIsNone(self.b.note(12).get('stuck'))
+
+
+class RunLock(CliEnv):
+    """`stuck --release` never trusts the socket alone: a live run lock without a supervisor reply refuses."""
+
+    def hold_lock(self, pid):
+        started = stuck.process_start(pid)
+        if not started:
+            self.skipTest('sandbox denies the ps call the run lock needs')
+        path = Path(service.default_run_lock_path(self.root))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('%d\n%s\n' % (pid, started))
+        return path
+
+    def no_supervisor(self, request):
+        raise FileNotFoundError
+
+    def test_release_refuses_while_another_run_holds_the_lock(self):
+        self.b.seed(12, 'in_progress')
+        self.hold_lock(os.getpid())
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck', '--release', '12'], env=os.environ, stdout=out, stderr=err,
+                      transport=self.no_supervisor)
+        self.assertEqual(rc, 1, out.getvalue())
+        self.assertIn('a run is active (pid %d)' % os.getpid(), err.getvalue())
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    def test_listing_warns_that_a_running_run_may_own_listed_cards(self):
+        self.b.seed(12, 'in_progress')
+        self.hold_lock(os.getpid())
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck'], env=os.environ, stdout=out, stderr=err, transport=self.no_supervisor)
+        self.assertEqual(rc, 0, err.getvalue())
+        lines = out.getvalue().splitlines()
+        self.assertIn('pid %d' % os.getpid(), lines[0])
+        self.assertIn('#12 in_flight: ', out.getvalue())
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck', '--json'], env=os.environ, stdout=out, stderr=err, transport=self.no_supervisor)
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertEqual([r['card'] for r in json.loads(out.getvalue())], [12], 'json stays parseable')
+        self.assertIn('pid %d' % os.getpid(), err.getvalue())
+
+    def test_release_proceeds_when_the_lock_holder_is_the_supervisor_that_answered(self):
+        self.b.seed(12, 'in_progress')
+        self.hold_lock(os.getpid())
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck', '--release', '12'], env=os.environ, stdout=out, stderr=err,
+                      transport=lambda request: {'active': [], 'pid': os.getpid()})
+        self.assertEqual(rc, 0, err.getvalue())
+        self.assertEqual(self.b.card(12)['state'], 'ready')
+
+    def test_a_lock_naming_a_dead_process_does_not_block_release(self):
+        self.b.seed(12, 'in_progress')
+        path = Path(service.default_run_lock_path(self.root))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('%d\nThu Jan  1 00:00:00 1970\n' % dead_pid())
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck', '--release', '12'], env=os.environ, stdout=out, stderr=err,
+                      transport=self.no_supervisor)
+        self.assertEqual(rc, 0, err.getvalue())
+
+    def test_the_cli_force_flag_releases_a_card_without_a_finding(self):
+        self.b.seed(13, 'in_review')
+        out, err = io.StringIO(), io.StringIO()
+        rc = cli.main(['stuck', '--release', '13'], env=os.environ, stdout=out, stderr=err,
+                      transport=self.no_supervisor)
+        self.assertEqual(rc, 1)
+        self.assertIn('--force', err.getvalue())
+        rc = cli.main(['stuck', '--release', '13', '--force'], env=os.environ, stdout=out, stderr=err,
+                      transport=self.no_supervisor)
+        self.assertEqual(rc, 0, err.getvalue())
 
 
 if __name__ == '__main__':

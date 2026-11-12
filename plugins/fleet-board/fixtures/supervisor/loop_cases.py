@@ -1,9 +1,11 @@
 """The supervisor loop on a fixture board: real fake-role child processes, real board scripts, a scripted
 candidate feed (tick-plan.sh itself needs gh and is covered by the candidates suite)."""
+import io
 import json
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -15,7 +17,7 @@ BASE = Path(sys.argv.pop()).resolve()
 PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / 'fixtures' / 'supervisor'))
 import driver_cases as dc  # noqa: E402
-from supervisor import candidates, errors, loop, scheduler, service  # noqa: E402
+from supervisor import candidates, cli, errors, loop, scheduler, service, stuck  # noqa: E402
 
 BRANCH = {12: 'fleet/12-add-subtract', 13: 'fleet/13-add-subtract', 14: 'fleet/14-add-subtract'}
 SUP = {'reconcile_interval_seconds': 1, 'shutdown_grace_seconds': 2, 'retry_backoff_seconds': 1,
@@ -723,6 +725,131 @@ class StopAndReap(LoopCase):
         for key in usage.COUNTS:
             self.assertIsNone(line[key], key)
         self.assertTrue(self.b.state.run_tokens['partial'])
+
+
+class Markers(LoopCase):
+    """The supervisor owns each card's active marker: it names the session's process group while the session
+    runs and is gone once the action ends, however it ends, so a fresh start finds nothing."""
+
+    def marker(self, n=12):
+        path = self.b.root / '.fleet-board' / 'active' / str(n)
+        try:
+            return json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+
+    def test_markers_end_with_their_action_and_a_fresh_start_finds_nothing(self):
+        self.in_review(12)
+        self.b.plans({'post': False, 'no_result': True, 'sleep': 1.5, 'exit': 1}, {'post': False, 'sleep': 30})
+        self.start()
+        first = self.until(lambda: self.marker(), what='the reviewer marker')
+        pid = self.b.fake_calls(1)[0]['pid']
+        self.assertEqual(first['pgid'], pid, 'the marker names the session process group')
+        self.assertEqual(first['supervisor_pid'], os.getpid())
+        # the first review ends without a report: the action fails and the marker goes with it
+        self.until(lambda: self.b.note().get('action_failures') == 1, what='the failed review')
+        self.until(lambda: self.marker() is None or self.marker()['pgid'] != pid, what='the marker to go')
+        # the second review is cancelled with stop --cancel
+        second = self.until(lambda: len(self.b.fake_calls(2)) >= 2 and self.marker(), what='the second review')
+        self.assertNotEqual(second['pgid'], pid)
+        self.assertEqual(self.sup.handle({'command': 'stop', 'mode': 'cancel'})['mode'], 'cancel')
+        self.assertEqual(self.finished(), 0)
+        self.assertIsNone(self.marker(), 'a cancelled action leaves no marker')
+        self.assertEqual(self.b.card()['state'], 'in_review')
+        with mock.patch.dict(os.environ, {'FLEET_BOARD_USER': 'fleet-bot'}):
+            self.assertEqual(stuck.find(self.b.root), [])
+            self.assertEqual(self.fresh_start(), 0)
+
+    def fresh_start(self):
+        class FakeSupervisor:
+            def __init__(self, root, **kw):
+                self.ignored = {}
+                self.on_signal = lambda *a: None
+
+            def handle(self, command):
+                return {}
+
+            def run(self):
+                return 0
+
+        class FakeService:
+            def __init__(self, *a, **kw):
+                self.startup = 'done'
+
+            def serve(self):
+                return {'owner': True}
+
+            def close(self):
+                pass
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(cli.loop, 'Supervisor', FakeSupervisor), mock.patch.object(cli, 'Service', FakeService):
+            rc = cli.main(['start'], env=dict(os.environ, FLEET_BOARD_DOMAIN=str(self.b.root)), stdout=out,
+                          stderr=err)
+        self.assertEqual(err.getvalue(), '')
+        return rc
+
+    def test_a_marker_that_names_another_group_is_left_alone(self):
+        self.in_review(12)
+        self.b.plans({'post': False, 'no_result': True, 'sleep': 1.5, 'exit': 1}, {'post': False, 'sleep': 30})
+        self.start()
+        self.until(lambda: self.marker(), what='the reviewer marker')
+        path = self.b.root / '.fleet-board' / 'active' / '12'
+        path.write_text(json.dumps({'pgid': 999999, 'supervisor_pid': 1}))
+        self.until(lambda: self.b.note().get('action_failures') == 1, what='the failed review')
+        self.assertEqual(self.marker(), {'pgid': 999999, 'supervisor_pid': 1})
+        self.sup.request_stop('cancel', force=True)
+        self.finished()
+
+    def test_reap_removes_the_marker_of_a_session_it_ended(self):
+        self.in_review(12)
+        self.b.plans({'post': False, 'sleep': 30})
+        self.start()
+        self.until(lambda: self.marker(), what='the reviewer marker')
+        pid = self.b.fake_calls(1)[0]['pid']
+
+        class Boom(BaseException):
+            pass
+
+        self.fetch_raises = Boom()          # the loop crashes: only _reap ends the session
+        self.sup.wake('test')
+        self.thread.join(20)
+        self.assertIsInstance(self.crash, Boom)
+        self.crash = None
+        self.assertFalse(alive(pid))
+        self.assertIsNone(self.marker(), 'the reaped session left its marker')
+
+    def test_reap_keeps_the_marker_of_a_session_it_gave_up_on_while_its_group_lives(self):
+        from supervisor import markers, state
+        proc = subprocess.Popen(['sleep', '60'], start_new_session=True)
+        self.addCleanup(proc.wait)
+
+        def kill():
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        self.addCleanup(kill)
+
+        class Stuck:
+            def cancel(self, grace):
+                pass
+
+            def poll(self):
+                return None
+
+        action = state.Action(card=12, action='review', column='in_review', role='reviewer', provider='claude',
+                              paths=[], started_at=time.time(), started_mono=time.monotonic(), session=Stuck())
+        self.b.state.begin(action)
+        path = markers.write(self.b.root, '.fleet-board', 12, proc.pid)
+        action.marker, action.pgid = path, proc.pid
+        with mock.patch.object(loop, 'REAP_WAIT', 0.2):
+            self.sup._reap()
+        self.assertEqual(self.marker()['pgid'], proc.pid, 'a live group keeps its marker (a live orphan)')
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+        self.b.state.end(12)
+        self.assertIsNone(self.marker())
 
 
 if __name__ == '__main__':
