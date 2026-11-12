@@ -214,7 +214,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
     legacy wrapper (`claim-run-lock.py --kind service`; path `service.default_run_lock_path`). The
     board server has no config switch. `GET /api/supervisor` answers the v2 status (plus
     `running: true`) while a supervisor socket answers `status` within 1 s (`supervisor_running()`),
-    else `{running: false, run: null, all_time, planner}` (ledger totals); `pause|resume|stop` with
+    else `{running: false, run: null, all_time, planner, columns}` (ledger totals); `pause|resume|stop` with
     none running is 409 `not_running`; Start launches one, treats a stopping supervisor as not
     running (waits for it to go), sends `resume` to a paused one, and when a CLI start won the run
     lock first reports that supervisor. `GET /api/usage` and `/api/cards/<n>/usage` read the ledger
@@ -226,7 +226,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
     known, suppressed}`, and `run.stuck_*` on the board). A refresh starts only from a poll without
     `refresh_stuck=0` (a hidden tab sends it), never while a page Start is launching, and only when
     due: no result yet, older than max(30 s, 2 x the last scan), or the mtime of `<board.dir>/cards`
-    or `<board.dir>/active` changed. `usage.view` is cached on the ledger's (size, mtime). The legacy `/api/run/stop` never writes `.fleet-board.stop`
+    or `<board.dir>/active` changed. `usage.view` is cached on the ledger's (size, mtime). Both `/api/usage` and that not-running `/api/supervisor` reply carry `columns`:
+    a `{<board state key>: totals}` map of all-time card tokens (planner and null-column lines left
+    out), built by `usage.by_column` from the same cached read. A missing key means the column has no
+    ledger line, which is not 0; `columns` is absent when the ledger is unreadable. The page shows each
+    column's total in its header, the remainder (`all_time` minus the shown columns) on the Unknown
+    state header or the All time tooltip, and never a 0 for unreadable usage. The legacy `/api/run/stop` never writes `.fleet-board.stop`
     while a supervisor holds the run lock (409). Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.

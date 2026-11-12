@@ -219,6 +219,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .col-head .col-count { margin-left: auto; }
 .col-tokens { color: var(--muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .col-tokens:empty { display: none; }
+.col-tokens:not(:empty)::before { content: "· "; }
 
 .col-toggle {
   display: flex;
