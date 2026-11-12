@@ -7,7 +7,9 @@
 #   G2  gh pr merge: blocked under merge.policy human; under auto, never --admin,
 #       never without an explicit PR, never a draft, never with checks that are
 #       not green, never a fleet PR whose head holds commits after the last
-#       review other than clean merges of main; raw merges blocked
+#       review other than clean merges of main, never a fleet PR whose title,
+#       body or a commit message holds a closing keyword before an issue
+#       reference (pr-closing-check.sh); raw merges blocked
 #   G3  board-move N ready needs a non-empty acceptance field on the card
 #
 # A block is exit 2 with one line on stderr. Within the shapes it recognizes,
@@ -760,6 +762,26 @@ check_reviewed() {
   return 0
 }
 
+# check_closing REF REPO: blocks when the PR is a fleet card's PR whose title,
+# body or a commit message holds a GitHub closing keyword before an issue
+# reference (pr-closing-check.sh): card numbers are not GitHub numbers, so the
+# merge would close an unrelated issue or PR
+check_closing() {
+  local ref="$1" repo="$2" name err rc
+  local args=(pr view "$ref")
+  [ -n "$repo" ] && args+=(-R "$repo")
+  args+=(--json headRefName,title,body,commits)
+  lookup "PR $ref" gh "${args[@]}"
+  name="$(jq -r '.headRefName // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify PR $ref; blocking to be safe"
+  case "$name" in fleet/[0-9]*-*) ;; *) return 0 ;; esac
+  err="$(printf '%s' "$LOOKUP_OUT" | bash "$S/pr-closing-check.sh" --json - 2>&1 >/dev/null)"
+  rc=$?
+  [ $rc -eq 0 ] && return 0
+  [ $rc -eq 1 ] || block "could not verify the title, body and commit messages of PR $ref; blocking to be safe"
+  block "PR #$ref holds a GitHub closing keyword before an issue reference; card numbers are not GitHub numbers, so reword it as \"Local board card <n>\": $(printf '%s\n' "$err" | sed -n 2p | sed 's/^pr-closing-check: //')"
+}
+
 # --- gates -----------------------------------------------------------------------
 # Pass 1: gates that need no lookup, so a policy block never waits on the network.
 k=0
@@ -809,7 +831,8 @@ while [ $k -lt ${#SHAPES[@]} ]; do
       merge)
         check_pr "$f1" "$f3"
         check_reviewed "$f1" "$f3"
-        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; done ;;
+        check_closing "$f1" "$f3"
+        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; check_closing "$ref" "$f3"; done ;;
     esac
   done <<<"${SHAPE_DIRS[k]}"
   k=$((k + 1))

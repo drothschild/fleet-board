@@ -200,6 +200,18 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
         || fb_die 3 "#$n: cannot persist merge recovery intent"
     fi
     ATTEMPTS=$((ATTEMPTS + 1))
+    # Card numbers are not GitHub numbers: a closing keyword in the title, body or
+    # a commit message would close an unrelated issue or PR. After the marker, so
+    # the keyed form's refusal is observed on the open PR at the planned head.
+    if ! bash "$FLEET_SCRIPTS/pr-closing-check.sh" "$pr" --repo "$FLEET_REPO" </dev/null 2>"$TMPD/closing.err"; then
+      if grep -q 'closing keyword' "$TMPD/closing.err"; then
+        fail "$n" "PR #$pr holds a GitHub closing keyword before an issue reference (title, body or a commit message); not merged"
+      else
+        fail "$n" "PR #$pr could not be checked for closing keywords; not merged"
+      fi
+      cat "$TMPD/closing.err" >&2
+      continue
+    fi
     merge_rc=0
     gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$head" </dev/null >/dev/null || merge_rc=$?
     # Both exit paths are ambiguous: success may mean queued, while a lost

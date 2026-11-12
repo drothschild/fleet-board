@@ -153,7 +153,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   moves a card out of human_qa. G2: `gh pr merge` blocked under `merge.policy: human`;
   under `auto` only explicit, non-draft, green, non-`--admin`, and, for a `fleet/<n>-*`
   branch, a head whose commits after the note's `last_review.sha` are all clean merges of
-  main (`review-drift.sh`; otherwise blocked as unreviewed). G3: moving to ready needs a non-empty
+  main (`review-drift.sh`; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
+  closing keyword before an issue reference in the title, body or a commit message
+  (`pr-closing-check.sh --json`, also run by `merge-reviewed.sh` before every merge, keyed
+  form after `pending_merge` so the lane classifies it `refused`). G3: moving to ready needs a non-empty
   `acceptance` field on the card. Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`

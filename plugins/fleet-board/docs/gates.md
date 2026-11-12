@@ -5,7 +5,7 @@
 `hooks/gate.sh` is a `PreToolUse` hook on Bash. It reads every Bash command the manager or a role agent is about to run, and blocks it with exit 2 and a one-line reason:
 
 1. **Human QA.** Nothing moves a card out of `human_qa`: not `board-move.sh` or an adapter's `move.sh`, and `import-github.sh --force` keeps a card that is in `human_qa` instead of overwriting it. Cards live in files under `board.dir`, so there are no GitHub label or Status writes to gate; see the raw-write residual below.
-2. **Merges.** Under `merge.policy: human`, every `gh pr merge` is blocked. Under `auto`, a merge is blocked when it uses `--admin`, names no PR, targets a draft, or the PR's checks are not green. Raw merges through the API are blocked.
+2. **Merges.** Under `merge.policy: human`, every `gh pr merge` is blocked. Under `auto`, a merge is blocked when it uses `--admin`, names no PR, targets a draft, or the PR's checks are not green. For a fleet PR (head branch `fleet/<n>-*`) it is also blocked when the title, the body or any commit message holds a GitHub closing keyword before an issue reference (`scripts/pr-closing-check.sh`), since card numbers on the local board are not GitHub numbers and the merge would close an unrelated issue or PR. `merge-reviewed.sh` runs the same check before every headless merge, for every PR it would merge. Raw merges through the API are blocked.
 3. **Ready.** `board-move.sh N ready` is blocked when the card's `acceptance` field is empty, whatever its body says.
 
 The gate is inert in a directory without `.fleet-board.yml`, so it does nothing in other repos. With an invalid config, it fails closed and blocks board and merge commands until the file is fixed. A command with no gated keyword passes after one `jq` call, without reading the config or the network. When it can't tell what a gated command would do (a variable where a card, PR, state or directory belongs) or can't look up the board or PR in time, it blocks.
@@ -32,6 +32,7 @@ The gate reads command text before it runs. A string check cannot see:
 - obfuscation beyond what the hook decodes: `$'gh'`, `eval "$(printf ...)"`, a variable holding a whole command (`C="gh pr merge 5"; $C`), `alias` with `shopt -s expand_aliases`, `env -C dir` or `sudo -D dir`, and shell functions defined in an earlier Bash call;
 - `gh ... -R owner/board` or `GH_REPO=owner/board` from a directory without a config, which is inert by design;
 - `parallel board-move.sh ::: 14 ::: done`;
+- for the closing-keyword check: a PR on a branch other than `fleet/<n>-*`, `gh pr merge --subject` or `--body` text (which becomes the squash commit message), a body edited between the check and the merge, a merge in the GitHub UI, and keyword forms GitHub accepts beyond the ones `pr-body-check.sh` lists;
 - `cd -P link/..`, which the hook resolves logically and the shell physically;
 - raw writes into `board.dir` (`jq ... > .fleet-board/cards/3.json`, `mv`, `sed -i`), which are not board commands. This is a residual, not covered;
 - with the board page running, `curl` against the page's API (`curl -X POST -H 'X-Fleet-Board: 1' http://127.0.0.1:<port>/api/cards/<n>/move`), which can move a card out of Human QA: the gate classifies `curl` only against the GitHub API. This is a residual, not covered.
@@ -42,6 +43,7 @@ It also blocks some harmless commands, because it prefers a block to a miss:
 - comments, and here-documents containing a gated command, apart from one shape: the body of `cat` or `tee`, with no `-` option and a delimiter written `'WORD'` or `"WORD"` (letters, digits, `_`) (`cat > f <<'EOF'`), nothing after the delimiter on its line, plain words before it, a delimiter line that exists, and only plain assignments or `mkdir`, `ls`, `echo`, `cat`, `tee`, `true`, `pwd`, `cd`, `rm` or `touch` as the command word of every earlier segment in the call (any other command, such as `gh`, a loop or a group, turns the skip off for the rest of the call), is treated as text and not read. Every other here-document (an unquoted delimiter, `VAR=1 cat <<'EOF'`, `cat <<'EOF' | bash`, `bash <<'EOF'`, one inside `$( )`) is still read as commands;
 - `cd <dir>; gh pr merge N` after `true &&`, in a pipeline, or after `||`;
 - `cd "$VAR" && ...`, `source env.sh && ...` and `popd && ...` before a gated command, since the directory is unknown;
+- a fleet PR that legitimately closes a GitHub issue: reword the reference (`See #12`) and close the issue by hand;
 - calls over 64 KiB with a gated keyword, more than 32 gated commands in one call, or nesting deeper than 24.
 
 To get past a false positive, put the text in a file (`git commit -F msg.txt`), phrase it differently, `cd` to a literal path, or split the call.
