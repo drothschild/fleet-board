@@ -183,12 +183,43 @@ no file here. The gate's residual bypasses and false positives are listed in the
   launching. Status is `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service
   output (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service
   cannot drift.
-  Merger: after the merge lane merges or is refused, the merger (`agents/merger.md`) runs as
-  `after_merge` or `merge_refusal`; a merging card plans `finish` only after
-  `note.merger {mode: after_merge, status: done}` for its head. A merger `attention` keeps the
-  card in merging (`skip "merger needs attention; a person decides"`) with `pending_merge`
-  cleared. The way out: `note.sh merge <n>` with `merger: null` (plus `merge_refusal: null`
-  and `merge_retry: null` to let it merge again), or move the card by hand.
+- **Merging and the merger** (Phase 4; spec section 6). `merging` is a fixed state between the
+  review stages and human_qa: a card goes stages -> merging -> done and never through human_qa
+  (a PR needing human QA is never merged from merging). Only `merge.policy: auto` merges.
+  - One-merge lane (`supervisor/merging.py`): one card at a time; `MergeLane.start` moves the card
+    to merging and spawns `merge-reviewed.sh --no-finish --card <n> --operation-key <key> --pr <pr>
+    --head <sha>` in its own process group; nothing ever kills it (`stop --cancel` and a second
+    Ctrl-C wait). A card entering from another column first drops `merge_refusal`, `merge_retry`,
+    `pending_merge` and `merger` left from an earlier stay.
+  - `merge-reviewed.sh`: the keyed form writes `pending_merge {operation_key, pr, head_sha}` before
+    `gh pr merge` and `merge_operation` (plus `main_check`) after it; `--no-finish` stops after
+    verification. A card in merging is never moved to done by the script, in any form (the legacy
+    no-argument one included). `--inspect` prints `observed` (marker matches), `unmatched`
+    (another operation's marker) or `absent` (no marker, with the PR's state and head).
+  - Outcomes: `merged` (exit 0, observed `main_check.ok == true`), `refused` (exit 1, PR open at
+    the planned head: `merge_refusal {pr, head, reason, at, required_check?}` noted),
+    `verify_failed` and `unclear` (both pause the board), `not_attempted` (exit 0, no marker, PR
+    open at the planned head: the script's fresh plan skipped the card; event `merge not
+    attempted: planner skipped`, no pause, the card stays in merging and is planned again).
+  - Planner (merging row): merges only a clean review covering the head (or a head moved only by
+    clean merges of main), with no routed stage left (`next_stage` computed as in the review
+    columns, `--done` = `reviewed_stages` plus the last review's stage) and the last review from
+    the card's last routed or visited stage (stage-less when routed to none); human QA asked and
+    `false`; non-draft; green. Stages are routed per card, never "the last configured stage".
+  - Merger gate: after the lane merges or is refused, the merger (`agents/merger.md`) runs as
+    `after_merge` or `merge_refusal`; a merging card plans `finish` only after
+    `note.merger {mode: after_merge, status: done}` for its head. A refusal merger's `retry` sets
+    `merge_retry {pr, head, after}`; the next merge row carries `retry_after` and the supervisor
+    holds it until then; a second refusal after a retry is attention. A merger `attention` keeps
+    the card in merging (`skip "merger needs attention; a person decides"`) with `pending_merge`
+    cleared. The way out: `note.sh merge <n>` with `merger: null` (plus `merge_refusal: null`
+    and `merge_retry: null` to let it merge again), or move the card by hand to another column
+    (the lane drops those records when the card is merged from there again).
+  - Persona: `merge.persona` null (the default) -> `.fleet-board/merger.md` when present, else the
+    plugin default; a set path that is missing, or a tracked persona this PR changed, is attention.
+  - Checks: one rule, `scripts/ignore-checks.jq`, shared by the planner and the gate: an unexpired
+    `merge.ignore_checks` entry ignores the red checks its glob matches (a `*` entry ignores every
+    red check); a pending check is never green.
 
 ## Invariants
 

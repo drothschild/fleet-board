@@ -652,7 +652,7 @@ class Lane(MergeCase):
         outcome = self.outcome_of(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
         self.assertEqual(outcome.kind, 'not_attempted')
         self.assertEqual(outcome.detail['reason'], 'merge not attempted: planner skipped')
-        self.assertNotIn('merge_refusal', self.b.note(12))
+        self.assertIsNone(self.b.note(12).get('merge_refusal'))
 
     def test_rc0_with_no_marker_is_unclear_unless_open_at_the_planned_head(self):
         for inspect in (dict(ABSENT, state='MERGED'), dict(ABSENT, observed_head='def5678'), {'status': 'unmatched'}):

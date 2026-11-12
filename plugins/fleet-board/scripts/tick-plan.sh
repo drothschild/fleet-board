@@ -399,7 +399,7 @@ card_input() {
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
   local drift=null scope='[]'
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
-  local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
+  local stage=null next_stage=null nxt done_stages review_col=false matched next_labels routed_last=null
 
   # A review column: in_review, or the column of a configured review stage
   # (a review_<name> state whose stage is not configured stays unplanned)
@@ -521,20 +521,44 @@ card_input() {
     fi
   fi
 
-  # A merging card whose head moved since the review is merged only under the review row's
-  # allowance (a clean merge of main), and then only if the PR needs no human QA: the question
-  # is asked here, as the review row asks it (lookup failure: lookup_failed, so the card is skipped).
+  # A merging card (an open PR): stages are routed per card, so it merges only once no routed stage
+  # remains (next_stage, computed as the review columns compute it, with --done = reviewed_stages plus
+  # the last review's stage) and only on a review of its last routed or visited stage (routed_last; null
+  # when it was routed to none). The human-QA question is asked for every such card, as the review row
+  # asks it (a lookup failure: lookup_failed, so the card is skipped); the merge needs the answer false.
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = merging ] && [ "$info" != null ] \
-     && [ "$(jq -r '.state' <<<"$info")" = OPEN ] \
-     && [ "$(jq -r --argjson info "$info" '(.last_review.sha // null) as $s | ($info.headRefOid // null) as $h
-                      | ($s | type) == "string" and ($h | type) == "string" and $s != "" and $h != ""
-                        and (($h | startswith($s)) or ($s | startswith($h)) | not)' <<<"$note")" = true ]; then
+     && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
     labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
-    nhq="$(bash "$FLEET_SCRIPTS/needs-human-qa.sh" --labels "$labels" "$n" "$pr")" || { nhq=null; failed="needs-human-qa.sh $n $pr"; }
-    case "$nhq" in
-      true|false|null) ;;
-      *) nhq=null; failed="needs-human-qa.sh $n $pr (unexpected answer)" ;;
-    esac
+    if [ "$HAS_STAGES" = true ] && [ "$(jq -r '.last_review != null' <<<"$note")" = true ]; then
+      if ! done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings] + [(.last_review.stage // empty) | strings] | unique' <<<"$note" 2>/dev/null)"; then
+        failed="note.sh parse $n (unparsable)"
+      elif ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+        failed="review-stages.sh match $pr"
+      elif ! next_labels="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" \
+             '(. + [$cfg.review.stages[] | select(.name as $s | $m | index($s) != null) | .label]) | unique' <<<"$labels" 2>/dev/null)"; then
+        failed="review-stages.sh match $pr (unexpected answer)"
+      elif nxt="$(bash "$FLEET_SCRIPTS/review-stages.sh" next --labels "$next_labels" --after in_review --done "$done_stages" "$n")"; then
+        if [ -n "$nxt" ]; then
+          if [ "$(jq -r --arg s "$nxt" 'any((.review.stages // [])[]; .name == $s)' <<<"$FLEET_CFG")" = true ]; then
+            next_stage="$(jq -cn --arg s "$nxt" '$s')"
+          else
+            failed="review-stages.sh next $n (unexpected answer)"
+          fi
+        fi
+        [ -n "$failed" ] || routed_last="$(jq -cn --argjson cfg "$FLEET_CFG" --argjson l "$next_labels" --argjson d "$done_stages" \
+          '[$cfg.review.stages[] | select(.label as $x | .name as $y | any($l[]; . == $x) or any($d[]; . == $y)) | .name] | last // null')" \
+          || failed="review-stages.sh next $n (unexpected answer)"
+      else
+        failed="review-stages.sh next $n"
+      fi
+    fi
+    if [ -z "$failed" ]; then
+      nhq="$(bash "$FLEET_SCRIPTS/needs-human-qa.sh" --labels "$labels" "$n" "$pr")" || { nhq=null; failed="needs-human-qa.sh $n $pr"; }
+      case "$nhq" in
+        true|false|null) ;;
+        *) nhq=null; failed="needs-human-qa.sh $n $pr (unexpected answer)" ;;
+      esac
+    fi
   fi
 
   # Review drift: commits on the PR since the last reviewed sha. Best effort: a
@@ -640,7 +664,7 @@ card_input() {
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" \
-    --argjson stage "$stage" --argjson next_stage "$next_stage" \
+    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson routed_last "$routed_last" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -650,7 +674,7 @@ card_input() {
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope,
-      stage: $stage, next_stage: $next_stage}'
+      stage: $stage, next_stage: $next_stage, routed_last_stage: $routed_last}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -849,16 +873,18 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           # QA; the PR not a draft, its checks green, and merge.policy auto.
           elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
           elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
-          # The review must be that of the last configured stage (null when no stages are configured): a
-          # hand-moved card with stages remaining never merges
-          elif ($lr.stage // null) != (($cfg.review.stages // []) | if length == 0 then null else .[-1].name end)
-            then act("skip"; "the last review is not from the last review stage; supervisor decides")
+          # Stages are routed per card: no routed stage may remain, and the review must be that of the
+          # last stage the card was routed to or visited (null when it was routed to none, or no stages are configured)
+          elif $c.next_stage != null
+            then act("skip"; "routed stage \($c.next_stage) not reviewed yet; supervisor decides")
+          elif ($lr.stage // null) != ($c.routed_last_stage // null)
+            then act("skip"; "the last review is not from the last stage the card was routed to; supervisor decides")
           elif ((($lr.stage // null) as $ls | any(($cfg.review.stages // [])[]; .name == $ls and .advisory == true)) | not) and $ci > 0
             then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
           elif head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
             then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the reviewed head \($lr.sha[0:7]); supervisor decides")
-          elif head_moved($c; $lr) and $c.needs_human_qa != false
-            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) moved after the review and human-QA need is \(if $c.needs_human_qa == true then "true" else "unknown" end); supervisor decides")
+          elif $c.needs_human_qa != false
+            then act("skip"; "human-QA need is \(if $c.needs_human_qa == true then "true" else "unknown" end); supervisor decides")
           elif $c.pr_info.isDraft then act("skip"; "PR #\($c.pr) is a draft; supervisor decides")
           elif ($c.pr_info | green | not) then act("skip"; "PR #\($c.pr) checks are not green; supervisor decides")
           else act("merge"; "PR #\($c.pr) open at the reviewed head, green checks, merge.policy auto") end
@@ -969,7 +995,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
        # merge: the red checks that merge goes past (the driver records them in the note)
        ignored_checks: (if $d.action == "merge" then ($c.pr_info.statusCheckRollup | ic_used($cfg.merge.ignore_checks; $today)) else null end),
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
-       needs_human_qa: (if is_review($c) then $c.needs_human_qa else null end),
+       needs_human_qa: (if is_review($c) or is_merging($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files
        findings: (if $d.action == "fix" and conflict_files($n) != []
                   then [conflict_files($n)[] | {severity: "Important", text: "merge conflict in \(.)"}]

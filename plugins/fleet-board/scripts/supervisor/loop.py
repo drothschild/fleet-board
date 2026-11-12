@@ -329,7 +329,8 @@ class Supervisor:
             self._merge_ended(outcome)
 
     def _merge_ended(self, outcome):
-        """merged and refused go to the merger session; anything else pauses the board. While stopping the merger
+        """merged and refused go to the merger session; not_attempted (the script's fresh plan skipped the card)
+        leaves it in merging to be planned again; anything else pauses the board. While stopping the merger
         is deferred: the planner plans after_merge / merge_refusal for the card on the next run."""
         card, kind, detail = outcome
         self.state.release(card)
@@ -340,10 +341,13 @@ class Supervisor:
         if kind == 'unclear':
             self.state.pause('merge result unclear for #%d: %s' % (card, _clean(detail.get('reason'))))
             return
+        if kind == 'not_attempted':   # nothing merged: no pause, the card stays in merging and is re-planned
+            self.wake('merge not attempted')
+            return
         if kind == 'merged':
             try:
                 self.driver.record_ignored_checks(card, detail.get('ignored_checks'))
-            except ValueError as exc:   # a malformed entry must not crash the lane
+            except Exception as exc:  # noqa: BLE001 - a malformed entry or a failed note write must not end the loop
                 self.state.event('ignored_checks_failed', card=card, message=_clean(exc))
         if self._stop_mode or self.state.mode == 'stopping':
             self.state.event('merger_deferred', card=card, mode=kind, message='stopping')

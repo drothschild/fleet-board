@@ -15,7 +15,12 @@ from pathlib import Path
 from . import scripts
 from .state import Action
 
-MergeOutcome = namedtuple('MergeOutcome', 'card kind detail')   # kind: merged | refused | unclear | verify_failed
+MergeOutcome = namedtuple('MergeOutcome', 'card kind detail')
+# kind: merged | refused | unclear | verify_failed | not_attempted (exit 0, no marker, the PR still open at the
+# planned head: the fresh plan inside merge-reviewed.sh skipped the card, so nothing was merged)
+NOT_ATTEMPTED = 'merge not attempted: planner skipped'
+# a card entering merging from another column drops the merge records of an earlier stay
+_STALE = {'merge_refusal': None, 'merge_retry': None, 'pending_merge': None, 'merger': None}
 
 _SHA = re.compile(r'[0-9a-fA-F]{4,64}')
 _KEY = re.compile(r'[^A-Za-z0-9._:-]')
@@ -78,6 +83,11 @@ class MergeLane:
         self.state.begin(action)
         try:
             if column != 'merging':
+                # moved out of merging by hand and back: a refusal, retry, marker or merger result of the
+                # earlier stay must not steer this merge (a stale merge_refusal would plan merge_refusal)
+                stale = {key: None for key, value in self._note(number).items() if key in _STALE and value is not None}
+                if stale:
+                    self._merge_note(number, stale)
                 self._step('board-move.sh', number, 'merging')
             self._merge_note(number, {'state': 'merging'})
             handle = self.spawn(self.root, 'merge-reviewed.sh', '--no-finish', '--card', number,
@@ -119,17 +129,23 @@ class MergeLane:
                         candidate['operation_key'], '--pr', candidate['pr'], '--head', candidate['head_sha'],
                         timeout=INSPECT_TIMEOUT)
         data = _json(done.stdout) if done.rc == 0 and not done.timed_out else None
-        return data if isinstance(data, dict) and data.get('status') == 'observed' else None
+        return data if isinstance(data, dict) and data.get('status') in ('observed', 'absent') else None
 
     def _classify(self, number, candidate, result):
         detail = self._detail(candidate, result)
         if result.timed_out or result.rc not in (0, 1, 3):
             return MergeOutcome(number, 'unclear', detail)
-        seen = self._inspect(number, candidate)
+        evidence = self._inspect(number, candidate)
+        seen = evidence if evidence and evidence.get('status') == 'observed' else None
         check = seen.get('main_check') if seen else None
         if result.rc == 0:
             if isinstance(check, dict) and check.get('ok') is True:
                 return MergeOutcome(number, 'merged', dict(detail, main_check=check))
+            # no marker and the PR still open at the planned head: the script's fresh plan skipped the card
+            if (evidence and evidence.get('status') == 'absent' and evidence.get('state') == 'OPEN'
+                    and _same_head(evidence.get('observed_head'), candidate['head_sha'])
+                    and _same_head(evidence.get('planned_head'), candidate['head_sha'])):
+                return MergeOutcome(number, 'not_attempted', dict(detail, reason=NOT_ATTEMPTED))
             return MergeOutcome(number, 'unclear', detail)
         if result.rc == 3 and isinstance(check, dict) and check.get('ok') is False:
             return MergeOutcome(number, 'verify_failed', dict(detail, main_check=check))
@@ -168,6 +184,12 @@ class MergeLane:
         if done.timed_out or done.rc != 0:
             raise RuntimeError(_line(done.stderr) or '%s %s' % (name, 'timed out' if done.timed_out else 'failed'))
         return done
+
+    def _note(self, number):
+        data = _json(self._step('note.sh', 'get', number).stdout)
+        if not isinstance(data, dict):
+            raise RuntimeError('note.sh get %d printed no note' % number)
+        return data
 
     def _merge_note(self, number, patch):
         with tempfile.TemporaryDirectory(prefix='fleet-merge-') as tmp:
