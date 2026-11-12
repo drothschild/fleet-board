@@ -10,7 +10,7 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 `listening on http://127.0.0.1:<port>`; requests are logged to stderr.
 
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
-FLEET_BOARD_RUN (headless wrapper override), FLEET_BOARD_CLAUDE (the claude binary the
+FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
 session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one).
@@ -32,7 +32,6 @@ import tempfile
 import threading
 import time
 import traceback
-from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -241,22 +240,7 @@ def is_active(dir: Path, n, alive: bool) -> bool:
     return alive and (Path(dir) / "active" / str(n)).exists()
 
 
-# --- run state ----------------------------------------------------------------
-
-STOP_FILE = ".fleet-board.stop"
-STOPPED_RE = re.compile(
-    r"^fleet-board-run: stopped: (.+?) after \d+ ticks, ([0-9.]+) h, cost_estimate_usd (\S+)",
-    re.M,
-)
-LOG_RE = re.compile(r"^fleet-board-run: log: (.+)$", re.M)
-TICK_RE = re.compile(r"^=== tick (\d+)\b")
-LOG_TAIL_LINES = 200
-
-# proc: the Popen this server spawned (kept so it is reaped); alive: the last
-# observed liveness (None before the first look); holder: the live wrapper's pid.
-_RUN: dict = {"proc": None, "alive": None, "holder": None}
-_RUN_LOCK = threading.RLock()
-
+# --- runtime state -------------------------------------------------------------
 
 def state_dir(root: str, cfg: dict) -> Path:
     """<FLEET_BOARD_LOG_DIR or ~/.fleet-board>/web/<owner>-<name>/, created mode 700."""
@@ -276,31 +260,11 @@ def read_text(path: Path) -> str:
 
 
 def run_lock_path(cfg: dict) -> Path:
-    """The wrapper's run lock, <FLEET_BOARD_LOG_DIR or ~/.fleet-board/runs>/<owner>-<name>.lock."""
+    """The supervisor's repository run lock, <FLEET_BOARD_LOG_DIR or ~/.fleet-board/runs>/<owner>-<name>.lock
+    (supervisor/service.py's default_run_lock_path)."""
     base = os.environ.get("FLEET_BOARD_LOG_DIR") or os.path.join(os.path.expanduser("~"), ".fleet-board", "runs")
     repo = (cfg.get("board") or {}).get("repo") or os.path.basename(APP["root"])
     return Path(os.path.abspath(base)) / (repo.replace("/", "-") + ".lock")
-
-
-def read_pid_file(sdir: Path):
-    """(pid or None, recorded start time or ""). run.pid: line 1 the pid, line 2 its ps lstart."""
-    return read_pid_path(sdir / "run.pid")
-
-
-def read_pid_path(path: Path):
-    """(pid or None, start time or "") from a run.pid-shaped file (the page's, or the wrapper's lock)."""
-    lines = read_text(path).split("\n")
-    try:
-        pid = int(lines[0].strip())
-    except ValueError:
-        return None, ""
-    if pid <= 0:
-        return None, ""
-    return pid, (lines[1].strip() if len(lines) > 1 else "")
-
-
-def read_pid(sdir: Path):
-    return read_pid_file(sdir)[0]
 
 
 def ps_start(pid: int):
@@ -316,10 +280,7 @@ def ps_start(pid: int):
 
 
 def pid_alive(pid: int, started: str = "") -> bool:
-    """Whether pid is our wrapper: the server's own child, else a live pid with the recorded start time."""
-    proc = _RUN["proc"]
-    if proc is not None and proc.pid == pid:
-        return proc.poll() is None
+    """Whether pid is a live process with the recorded start time (an import session this server started)."""
     if started:
         now = ps_start(pid)
         if now is not None and now != started:
@@ -333,141 +294,21 @@ def pid_alive(pid: int, started: str = "") -> bool:
     return True
 
 
-def clear_markers(dir: Path):
-    try:
-        entries = list((Path(dir) / "active").iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        try:
-            if entry.is_file() or entry.is_symlink():
-                entry.unlink()
-        except OSError:
-            pass
-
-
 _UNSET = object()  # "the caller did not read the supervisor status"
 
 
 def run_alive(status=_UNSET) -> bool:
-    """Whether a wrapper is alive: the one this page started (run.pid), else any wrapper
-    holding the repo's run lock (one started from a terminal or launchd). Sets
-    _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
-    cfg, dir = ctx()
+    """Whether a supervisor answers for this board and is running (not paused or stopping)."""
     status = supervisor_status() if status is _UNSET else status
-    if status is not None:
-        return status.get("phase") in ("running", "ready") and status.get("desired_mode") == "running"
-    with _RUN_LOCK:
-        pid, started = read_pid_file(state_dir(APP["root"], cfg))
-        alive = pid is not None and pid_alive(pid, started)
-        if not alive:
-            pid, started = read_pid_path(run_lock_path(cfg))
-            alive = pid is not None and bool(started) and pid_alive(pid, started)
-        if _RUN["alive"] and not alive:
-            clear_markers(dir)
-        _RUN["alive"] = alive
-        _RUN["holder"] = pid if alive else None
-        return alive
+    return status is not None and status.get("phase") in ("running", "ready") and status.get("desired_mode") == "running"
 
 
-_LOG_CACHE: dict = {}
-
-
-def scan_run_log(path: str):
-    """(last tick number or None, last LOG_TAIL_LINES lines) of the run log; rescanned only
-    when the file's size or mtime changed."""
-    try:
-        st = os.stat(path)
-        sig = (st.st_size, st.st_mtime_ns)
-    except OSError:
-        sig = None
-    hit = _LOG_CACHE.get(path)
-    if sig is not None and hit is not None and hit[0] == sig:
-        return hit[1], list(hit[2])
-    tick, tail = _scan_run_log(path)
-    if sig is not None:
-        _LOG_CACHE.clear()
-        _LOG_CACHE[path] = (sig, tick, tail)
-    return tick, tail
-
-
-def _scan_run_log(path: str):
-    tick, tail = None, deque(maxlen=LOG_TAIL_LINES)
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n")
-                tail.append(line)
-                m = TICK_RE.match(line)
-                if m:
-                    tick = int(m.group(1))
-    except OSError:
-        pass
-    return tick, list(tail)
-
-
-def to_float(s: str):
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def run_status(alive=None, status=_UNSET) -> dict:
-    """The run status; pass alive when the caller already checked liveness this request."""
-    cfg, _ = ctx()
+def run_status(status=_UNSET) -> dict:
+    """The board's `run` field: the supervisor's projected state, else idle (no supervisor answers)."""
     status = supervisor_status() if status is _UNSET else status
     if status is not None:
         return supervisor_run_status(status)
-    sdir = state_dir(APP["root"], cfg)
-    if alive is None:
-        alive = run_alive(None)
-    pid = read_pid(sdir)
-    out = read_text(sdir / "run.out")
-    if alive:
-        if _RUN["holder"] and _RUN["holder"] != pid:
-            # a wrapper this page did not start: run.out describes an older run
-            pid, out = _RUN["holder"], ""
-        state = "stopping" if (Path(APP["root"]) / STOP_FILE).exists() else "running"
-    elif pid is None:
-        state = "idle"
-    else:
-        state = "stopped" if out.strip() else "idle"
-    log = LOG_RE.search(out)
-    log_path = log.group(1) if log else None
-    stops = STOPPED_RE.findall(out)
-    tick, tail = scan_run_log(log_path) if log_path else (None, [])
-    return {
-        "state": state,
-        "pid": pid,
-        "tick": tick,
-        "stop_reason": stops[-1][0] if stops else None,
-        "cost": to_float(stops[-1][2]) if stops else None,
-        "hours": to_float(stops[-1][1]) if stops else None,
-        "log_path": log_path,
-        "log_tail": tail,
-        "out_tail": out_tail(out) if state == "stopped" and not stops else None,
-    }
-
-
-OUT_TAIL_LINES = 20
-
-
-def out_tail(out: str) -> list:
-    """The first and last lines of run.out (at most OUT_TAIL_LINES): what a wrapper that
-    exited before its stopped: line printed, such as a config or run-lock error."""
-    lines = [line for line in out.split("\n") if line.strip()]
-    if len(lines) <= OUT_TAIL_LINES:
-        return lines
-    half = OUT_TAIL_LINES // 2
-    return lines[:half] + lines[-half:]
-
-
-def board_run_status(alive: bool, status=_UNSET) -> dict:
-    """run_status() without the log tail, for /api/board."""
-    out = run_status(alive, status)
-    del out["log_tail"]
-    return out
+    return {"state": "idle", "supervisor": None}
 
 
 # --- script runner ------------------------------------------------------------
@@ -1110,7 +951,7 @@ def get_board(params, body):
     state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
     keys = [s["key"] for s in sts]
-    run = board_run_status(alive, status)
+    run = run_status(status)
     stuck_of, activity = board_extras(status, run, refresh=wants_stuck_refresh(params))
     return 200, {
         "states": sts,
@@ -1307,81 +1148,6 @@ def comment_card(params, body):
     return 200, card_detail(cfg, dir, n)
 
 
-def get_run(params, body):
-    return 200, run_status()
-
-
-def compat_run_control(command, body):
-    """/api/run/start and /api/run/stop in supervisor mode.
-
-    A body with request_id and expected_revision is enforced exactly like the new routes
-    (replay dedupes, a stale revision is a 409 with the current state). With no body the
-    route derives its own binding (Start and drain-stop are idempotent by design) and the
-    answer says unbound: true."""
-    if not body:
-        launched = ensure_service() if command == "start" else False
-        body = {"request_id": "compat-%s-%d" % (command, time.time_ns()),
-                "expected_revision": proxy_call("status").get("revision", 0)}
-        code, result = proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
-        return code, dict(result, unbound=True, **({"launched": True} if launched else {}))
-    return proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
-
-
-def start_run(params, body):
-    cfg, dir = ctx()
-    if supervisor_running():
-        return compat_run_control("start", body)
-    sdir = state_dir(APP["root"], cfg)
-    wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
-    with _RUN_LOCK:
-        if run_alive():
-            raise ApiError(409, "a run is already alive (pid %s)" % _RUN["holder"])
-        try:
-            os.remove(os.path.join(APP["root"], STOP_FILE))
-        except FileNotFoundError:
-            pass
-        clear_markers(dir)
-        fd = os.open(str(sdir / "run.out"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as out:
-            proc = subprocess.Popen(
-                ["bash", wrapper, "--repo", APP["root"]], cwd=APP["root"],
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        pfd = os.open(str(sdir / "run.pid"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(pfd, 0o600)
-        with os.fdopen(pfd, "w") as f:
-            f.write("%d\n%s\n" % (proc.pid, ps_start(proc.pid) or ""))
-        _RUN["proc"] = proc
-        _RUN["alive"] = True
-    return 200, {"pid": proc.pid}
-
-
-def stop_run(params, body):
-    cfg, _ = ctx()
-    if supervisor_running():
-        return compat_run_control("stop", body)
-    if service_holds_run_lock(cfg):
-        # The tick-stop file is for the legacy wrapper only; a supervisor that holds the lock is
-        # stopped through its own controls, never by a file it does not read.
-        raise ApiError(409, "a supervisor holds the run lock; stop it with the supervisor controls")
-    with _RUN_LOCK:
-        if not run_alive():
-            raise ApiError(409, "no run is alive")
-        if service_holds_run_lock(cfg):  # a supervisor may have claimed the lock since the first look
-            raise ApiError(409, "a supervisor holds the run lock; stop it with the supervisor controls")
-        Path(APP["root"], STOP_FILE).touch()
-    return 200, {"state": "stopping"}
-
-
-def service_holds_run_lock(cfg) -> bool:
-    """True when a live supervisor (the lock's third line is "service") holds the repository run lock."""
-    lines = read_text(run_lock_path(cfg)).split("\n")
-    pid, started = read_pid_path(run_lock_path(cfg))
-    return len(lines) > 2 and lines[2].strip() == "service" and pid is not None and pid_alive(pid, started)
-
-
 SUPERVISOR_PROBE_TIMEOUT = 1.0
 
 
@@ -1573,9 +1339,7 @@ def supervisor_run_status(status):
              "stopping" if phase in ("draining", "cancelling", "stopping") else
              "starting" if desired == "running" and not ready else
              "stopped" if phase in ("stopped", "idle") else phase)
-    return {"state": state, "pid": None, "tick": None, "stop_reason": None,
-            "cost": None, "hours": None, "log_path": None, "log_tail": [],
-            "out_tail": None, "supervisor": status}
+    return {"state": state, "supervisor": status}
 
 
 _USAGE_CACHE = {}  # (root, board dir, run_id, card) -> (ledger stat, view): an unchanged ledger is not reparsed
@@ -1707,7 +1471,8 @@ def stuck_state(board_dir, refresh=True):
 
 
 def stuck_suppressed(status):
-    """A notice when a run holds the repository run lock without answering as the supervisor: its live work
+    """A notice when a live process holds the repository run lock without answering here as the supervisor (a
+    supervisor of another checkout of this repository, or one behind another socket directory): its live work
     would read as stuck (matches the CLI's notice), so stuck is suppressed. None otherwise."""
     if status is not None:
         return None
@@ -1814,9 +1579,6 @@ ROUTES = [
     ("PATCH", r"/api/cards/(?P<n>\d+)", edit_card),
     ("POST", r"/api/cards/(?P<n>\d+)/move", move_card),
     ("POST", r"/api/cards/(?P<n>\d+)/comments", comment_card),
-    ("GET", r"/api/run", get_run),
-    ("POST", r"/api/run/start", start_run),
-    ("POST", r"/api/run/stop", stop_run),
     ("GET", r"/api/supervisor", get_supervisor),
     ("GET", r"/api/usage", get_usage),
     ("GET", r"/api/stuck", get_stuck),
@@ -1831,7 +1593,6 @@ ROUTES = [
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
     ("PATCH", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cards/(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)", edit_import_card_route),
 ]
-NO_BODY = (start_run, stop_run)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
 
 
@@ -1877,15 +1638,6 @@ def host_ok(handler) -> bool:
 
 MAX_BODY = 1024 * 1024
 REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
-
-
-def read_optional_json_body(handler) -> dict:
-    """The JSON object body, or {} when the request has none (the compatibility routes)."""
-    try:
-        length = int(handler.headers.get("Content-Length") or 0)
-    except ValueError:
-        raise ApiError(400, "bad Content-Length")
-    return read_json_body(handler) if length > 0 else {}
 
 
 def read_json_body(handler) -> dict:
@@ -1964,10 +1716,8 @@ class Handler(BaseHTTPRequestHandler):
             if route is not None:
                 fn, params = route
                 params["query"] = parse_qs(urlsplit(self.path).query)
-                if method in ("POST", "PATCH") and fn not in NO_BODY:
+                if method in ("POST", "PATCH"):
                     body = read_json_body(self)
-                elif fn in NO_BODY and supervisor_running():
-                    body = read_optional_json_body(self)  # an optional {request_id, expected_revision}
                 else:
                     body = {}
                 code, payload = fn(params, body)

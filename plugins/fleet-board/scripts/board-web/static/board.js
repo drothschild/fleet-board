@@ -4,15 +4,12 @@
 
 const BOARD_POLL_MS = 3000;
 const BOARD_HIDDEN_MS = 30000; // a hidden tab polls the board this often, and asks for no stuck refresh
-const RUN_FAST_MS = 3000;   // while a run is running or stopping
-const RUN_SLOW_MS = 15000;  // otherwise
 const TOAST_MS = 8000;
 const COLLAPSIBLE = { done: true, wont_do: true };
 const SVG_NS = "http://www.w3.org/2000/svg";
 
 const S = {
   board: null,        // the last /api/board reply
-  run: null,          // the last run dict (log_tail kept from /api/run)
   stateKeys: "",      // the column list the board was built for
   cols: {},           // state key -> {el, list, count, sig}
   unknown: null,      // the Unknown state group {el, list, count, sig}
@@ -20,14 +17,9 @@ const S = {
   dragging: null,     // number of the card being dragged
   pendingBoard: null, // a board that arrived mid-drag, rendered on dragend
   pendingMove: null,  // number of the card whose move is in flight
-  logOpen: false,
-  busy: false,        // a start/stop request is in flight
   offline: false,
   boardSeq: 0,
-  runSeq: 0,
-  runFast: false,
   boardTimer: null,
-  runTimer: null,
   toastTimer: null,
 };
 
@@ -63,10 +55,6 @@ async function api(method, path, body) {
 
 function errorText(r) {
   return (r.data && r.data.error) || "the server answered HTTP " + r.status;
-}
-
-function isAlive(run) {
-  return !!run && (run.state === "running" || run.state === "stopping");
 }
 
 function stateName(key) {
@@ -120,10 +108,6 @@ function prLink(url, text) {
   a.draggable = false;
   a.title = url;
   return a;
-}
-
-function formatHours(h) {
-  return (h < 1 ? h.toFixed(2) : h.toFixed(1)) + " h";
 }
 
 // --- markdown ----------------------------------------------------------------
@@ -326,9 +310,7 @@ async function fetchBoard(force) {
     S.board = r.data;
     renderBoard(r.data, force);
     renderStuck(r.data);
-    renderHeader(r.data.run);
     syncDrawer();
-    if (isAlive(r.data.run) && !S.runFast) pollRun();
   } catch (e) {
     if (my !== S.boardSeq) return;
     setOffline(true, e.message);
@@ -339,7 +321,7 @@ async function fetchBoard(force) {
 // renderStuck(board): the banner above the board counts the cards that carry a
 // stuck finding. A suppression text replaces the banner; a failed check is said
 // so beside it (the last good findings stay on the cards). While a supervisor
-// runs, its stuck cards are the ones it ignores (--ignore-stuck).
+// runs the board carries no stuck findings, so there is no banner.
 function renderStuck(board) {
   board = board || {};
   const run = board.run || {};
@@ -349,7 +331,7 @@ function renderStuck(board) {
   const failed = !suppressed && run.stuck_error ? "stuck check failed: " + clean(run.stuck_error, 300) : "";
   const banner = $("stuck-banner");
   const note = $("stuck-note");
-  const bannerText = !suppressed && n > 0 ? (S.supervisor ? stuckIgnoredText(n) : stuckBannerText(n)) : "";
+  const bannerText = !suppressed && n > 0 ? stuckBannerText(n) : "";
   if (banner.textContent !== bannerText) banner.textContent = bannerText; // an unchanged alert is not announced again
   banner.hidden = !bannerText;
   const noteText = suppressed || failed;
@@ -806,132 +788,12 @@ async function moveCard(n, state) {
   return r.ok;
 }
 
-// --- header and run ----------------------------------------------------------
-
-async function pollRun() {
-  if (S.supMode) return; // the supervisor status replaces the run poll
-  clearTimeout(S.runTimer);
-  const my = ++S.runSeq;
-  let alive = isAlive(S.run);
-  try {
-    const r = await api("GET", "/api/run");
-    if (my !== S.runSeq) return;
-    if (r.ok) {
-      renderHeader(r.data);
-      alive = isAlive(r.data);
-    }
-  } catch (e) {
-    if (my !== S.runSeq) return; // fetchBoard reports the server as unreachable
-  }
-  S.runFast = alive;
-  S.runTimer = setTimeout(pollRun, alive ? RUN_FAST_MS : RUN_SLOW_MS);
-}
-
-function runPillText(run) {
-  if (S.offline) return "server unreachable";
-  switch (run.state) {
-    case "running": return run.tick != null ? "running · tick " + run.tick : "running";
-    case "stopped": return run.stop_reason ? "stopped: " + run.stop_reason : "stopped";
-    default: return run.state || "idle";
-  }
-}
-
-// renderHeader(run): the pill, hours, Start/Stop, and the log panel
-// (when run carries log_tail; /api/board's run does not).
-function renderHeader(run) {
-  if (run) {
-    const next = Object.assign({}, S.run, run);
-    // the stop fields describe one run: never carry them into another
-    if (run.state !== "stopped") {
-      for (const k of ["stop_reason", "hours"]) {
-        if (!(k in run)) delete next[k];
-      }
-    }
-    S.run = next;
-  }
-  run = S.run || { state: "idle" };
-  const state = S.offline ? "offline" : run.state || "idle";
-
-  const pill = $("run-pill");
-  pill.dataset.state = state;
-  $("run-pill-text").textContent = runPillText(run);
-  const tip = [];
-  if (run.pid) tip.push("pid " + run.pid);
-  if (run.log_path) tip.push(run.log_path);
-  // a wrapper that exited before its stopped: line (a config or run-lock error)
-  if (run.out_tail && run.out_tail.length) tip.push.apply(tip, run.out_tail);
-  pill.title = tip.join("\n");
-
-  const hours = $("run-hours");
-  const parts = [];
-  if (typeof run.hours === "number") parts.push(formatHours(run.hours));
-  hours.textContent = parts.join(" · ");
-  hours.hidden = !(run.state === "stopped" && parts.length);
-
-  const start = $("start-btn");
-  const stop = $("stop-btn");
-  start.disabled = S.offline || S.busy || isAlive(run);
-  stop.disabled = S.offline || S.busy || run.state !== "running";
-  start.classList.toggle("primary", !start.disabled && !S.imp && !S.pl); // one filled button per page
-
-  if (S.logOpen && run.log_tail) renderLog(logLines(run));
-}
-
-// logLines(run): the run log's tail, else the wrapper's own output when it
-// exited before writing a stopped: line
-function logLines(run) {
-  if (run.log_tail && run.log_tail.length) return run.log_tail;
-  return (run.out_tail && run.out_tail.length) ? run.out_tail : [];
-}
-
-function renderLog(lines) {
-  const pre = $("log");
-  const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
-  const text = lines.length ? lines.join("\n") : "No run log yet. Start a run and its output appears here.";
-  if (pre.textContent !== text) pre.textContent = text;
-  if (atBottom) pre.scrollTop = pre.scrollHeight;
-}
-
-function toggleLog() {
-  S.logOpen = !S.logOpen;
-  const pre = $("log");
-  pre.hidden = !S.logOpen;
-  $("log-btn").setAttribute("aria-expanded", String(S.logOpen));
-  if (S.logOpen) {
-    renderLog(S.run ? logLines(S.run) : []);
-    pre.scrollTop = pre.scrollHeight;
-    pollRun();
-  }
-}
-
-async function runAction(path, verb) {
-  S.busy = true;
-  renderHeader();
-  let r;
-  try {
-    r = await api("POST", path);
-  } catch (e) {
-    r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
-  }
-  S.busy = false;
-  if (!r.ok) showToast(verb + " failed: " + errorText(r), "error");
-  await pollRun();
-  fetchBoard();
-}
-
-function startRun() {
-  return runAction("/api/run/start", "Start");
-}
-
-function stopRun() {
-  return runAction("/api/run/stop", "Stop");
-}
+// --- header ------------------------------------------------------------------
 
 function setOffline(on, why) {
   if (on === S.offline) return;
   S.offline = on;
   if (on) showToast("Can't reach the board server (" + why + "). Retrying every 3 s.", "error");
-  renderHeader();
 }
 
 // --- toast -------------------------------------------------------------------
@@ -1870,7 +1732,6 @@ function openDraft(id, text) {
   showImportProgress(0, "");
   $("planner").hidden = true;
   $("import").hidden = false;
-  renderHeader();
   $("imp-discard").focus({ preventScroll: true });
   imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
 }
@@ -1893,7 +1754,6 @@ function closeImport() {
     $("board").hidden = false;
     if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
   }
-  renderHeader();
 }
 
 // setImportPhase(phase): shows the parts of the view that phase has.
@@ -2315,7 +2175,6 @@ async function openPlanner() {
   $("plan-btn").setAttribute("aria-expanded", "true");
   setPlannerBusy(true);
   $("pl-running").hidden = true;
-  renderHeader();
   const r = await writeApi("POST", "/api/planner", {});
   if (S.pl !== pl) return;
   if (!r.ok || typeof r.data.id !== "string") {
@@ -2338,7 +2197,6 @@ function closePlanner() {
   $("planner").hidden = true;
   if (!S.imp) $("board").hidden = false;
   $("plan-btn").setAttribute("aria-expanded", "false");
-  renderHeader();
   if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
 }
 
@@ -2431,8 +2289,8 @@ function bindPlanner() {
 
 // --- supervisor --------------------------------------------------------------
 // Supervisor mode starts when GET /api/supervisor answers 200 with a boolean
-// `running` (the board server always does; an older server answers 404 and the
-// page keeps its run controls). `running: false` is "no supervisor", not a
+// `running` (the board server always does; until then the supervisor panel stays
+// hidden and detection is retried). `running: false` is "no supervisor", not a
 // snapshot: Start launches one. Nothing here sends a mutating request on load or
 // from a poll: commands run only from a click or key press. Every server-provided
 // value reaches the page through textContent / createTextNode (clean() also
@@ -2600,8 +2458,8 @@ function isSnapshot(d) {
 
 // detectSupervisor(): the board server always answers GET /api/supervisor with a
 // running flag. Any other outcome (a thrown fetch, a non-200, a reply without the
-// flag) is a failure to ask, never "legacy mode": it is retried on a timer, and
-// the page keeps its run controls hidden meanwhile, so no Start goes to /api/run.
+// flag) is a failure to ask: it is retried on a timer, and the supervisor panel
+// stays hidden meanwhile, so no Start is sent before the board has answered.
 async function detectSupervisor() {
   if (S.supMode) return;
   let r = null;
@@ -2631,10 +2489,6 @@ function enterSupervisorMode() {
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   status.setAttribute("aria-label", "Supervisor status");
-  $("start-btn").hidden = true;
-  $("stop-btn").hidden = true;
-  $("run-pill").hidden = true;
-  $("run-hours").hidden = true;
   $("supervisor-stop-menu").replaceChildren($("supervisor-drain-btn"), $("supervisor-cancel-btn"));
   setStopMenu(false);
   if (!S.sup.visBound) {
@@ -2972,10 +2826,6 @@ function stuckStartGate() {
   return null;
 }
 
-function stuckIgnoredText(n) {
-  return n + (n === 1 ? " stuck card" : " stuck cards") + " — ignored by the running supervisor (--ignore-stuck)";
-}
-
 function stuckBannerText(n) {
   return n + (n === 1 ? " stuck card — the supervisor will not start until it is resolved"
     : " stuck cards — the supervisor will not start until they are resolved");
@@ -3171,28 +3021,19 @@ function renderCardUsage(u) {
 // --- start -------------------------------------------------------------------
 
 function init() {
-  // the run controls and the supervisor panel appear only once detection has answered
-  $("start-btn").hidden = true;
-  $("stop-btn").hidden = true;
+  // the supervisor panel appears only once detection has answered
   $("supervisor").hidden = true;
-  $("start-btn").addEventListener("click", startRun);
-  $("stop-btn").addEventListener("click", stopRun);
-  $("log-btn").addEventListener("click", toggleLog);
   $("plan-btn").addEventListener("click", function () { openPlanner(); });
   $("new-card-btn").addEventListener("click", function () { openNewCard(); });
   $("toast").addEventListener("click", hideToast);
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) {
-      fetchBoard();
-      pollRun();
-    }
+    if (!document.hidden) fetchBoard();
   });
   bindSupervisor();
   bindDrawer();
   bindImport();
   bindPlanner();
   fetchBoard().then(drawerFromUrl);
-  pollRun();
   detectSupervisor();
 }
 

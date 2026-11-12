@@ -64,10 +64,10 @@ async function main() {
     assert.ok(ui.$("supervisor-status"),"missing supervisor status element");
     assert.equal(ui.$("supervisor-status").hidden,false,"supervisor status not shown for 200");
   });
-  await check("1b. A 404, a thrown fetch or a bad reply never means legacy mode: detection retries and legacy Start never posts",async()=>{
+  await check("1b. A 404, a thrown fetch or a bad reply is retried, and the page has no tick-wrapper Start or Stop",async()=>{
     const f=fakeFetch({supervisor:false}), h=make(f); await h.flush(); await h.waitForRequests();
-    assert.equal(h.$("start-btn").hidden,true,"legacy Start shown after one failed detection");
-    assert.equal(h.$("stop-btn").hidden,true,"legacy Stop shown after one failed detection");
+    for(const id of ["start-btn","stop-btn","log-btn","run-pill","run-hours"]) assert.doesNotMatch(h.pageHtml,new RegExp('id="'+id+'"'),"the page still has the tick wrapper's "+id);
+    assert.equal(countCalls(f,"/api/run"),0,"the page polled the removed /api/run route");
     assert.equal(h.$("supervisor").hidden,true,"supervisor shown before detection succeeded");
     const first=countCalls(f,"/api/supervisor"); assert.ok(h.timers.length>0,"no retry timer scheduled");
     f.enqueue("/api/supervisor",new Error("network down"),response(500,{error:"boom"}),response(200,{ok:true}));
@@ -197,11 +197,10 @@ async function main() {
   await check("no dollar sign rendered",async()=>{
     const run={state:"stopped",stop_reason:"nothing-dispatchable",cost:1.5,cost_estimate_usd:2.5,hours:2};
     const f=fakeFetch({run,usage:{run:tok(15),all_time:tok(1234),planner:tok(7)}}), h=make(f); await h.flush(); await h.waitForRequests();
-    const ids=["board","supervisor-status","supervisor-tokens","run-pill-text","run-hours","top","stuck-banner","stuck-note"];
+    const ids=["board","supervisor-status","supervisor-tokens","top","stuck-banner","stuck-note"];
     for(const id of ids) assert.doesNotMatch(h.$(id).textContent,/\$|\bUSD\b|\bcost\b/i,id+" shows a dollar or cost figure: "+h.$(id).textContent);
     const g=fakeFetch({supervisor:false,run}), k=make(g); await k.flush(); await k.waitForRequests();
-    for(const id of ids) assert.doesNotMatch(k.$(id).textContent,/\$|\bUSD\b|\bcost\b/i,"legacy "+id+" shows a dollar or cost figure");
-    assert.match(k.$("run-hours").textContent,/2/,"hours of a stopped run are still shown");
+    for(const id of ids) assert.doesNotMatch(k.$(id).textContent,/\$|\bUSD\b|\bcost\b/i,"undetected "+id+" shows a dollar or cost figure");
     assert.doesNotMatch(h0().pageHtml.replace(/<script[\s\S]*?<\/script>/g,""),/\$|\bcost\b/i,"the page itself mentions a dollar or cost");
   });
   await check("drilldown lists actions by column",async()=>{
@@ -517,15 +516,8 @@ async function main() {
     for(let i=0;i<2;i++) await h.fireTimers();
     assert.equal(countCalls(f,"/api/usage"),2);
   });
-  await check("while a supervisor runs, the banner says its stuck cards are ignored",async()=>{
-    const stuck=n=>({number:n,title:"S"+n,body:"",labels:[],comments:[],state:"ready",known:true,stuck:{kind:"marker",detail:"x"},activity:null});
-    const quiet={state:"idle",stuck_checked_at:1794333510,stuck_error:null,stuck_checking:false,stuck_suppressed:null,stuck_known:true};
-    let f=fakeFetch({cards:[stuck(4),stuck(5)],run:quiet}), h=make(f); await h.flush(); await h.waitForRequests();
-    assert.equal(h.$("stuck-banner").textContent.trim(),"2 stuck cards — ignored by the running supervisor (--ignore-stuck)");
-    f=fakeFetch({cards:[stuck(4)],run:quiet}); h=make(f); await h.flush(); await h.waitForRequests();
-    assert.equal(h.$("stuck-banner").textContent.trim(),"1 stuck card — ignored by the running supervisor (--ignore-stuck)");
-    assert.doesNotMatch(h.$("stuck-banner").textContent,/will not start/);
-  });
+  // The "ignored by the running supervisor" banner case is gone with its branch: while a supervisor runs the
+  // board carries no stuck findings (board-web.py stuck_view), so that banner could never show.
   await check("with no supervisor, Start waits for the stuck check and for a suppression to end",async()=>{
     const fine={number:6,title:"Fine",body:"",labels:[],comments:[],state:"ready",known:true,stuck:null,activity:null};
     const startOf=async run=>{ const f=fakeFetch({notRunning:true,cards:[fine],run:{state:"idle",stuck_error:null,stuck_suppressed:null,...run}}), h=make(f);

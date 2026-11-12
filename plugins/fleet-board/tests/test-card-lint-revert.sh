@@ -13,7 +13,6 @@ LINT="$SCRIPT_DIR/../scripts/card-lint.sh"
 PLAN="$SCRIPT_DIR/../scripts/tick-plan.sh"
 FIX="$SCRIPT_DIR/lint-fixtures"
 README="$SCRIPT_DIR/../README.md"
-MANAGER="$SCRIPT_DIR/../agents/manager.md"
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
 
 PASS=0

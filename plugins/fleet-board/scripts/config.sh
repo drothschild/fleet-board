@@ -116,6 +116,17 @@ if [ -n "$REMOVED" ]; then
   exit 5
 fi
 
+# The tick system is gone: the keys only its wrapper and manager read are refused.
+REMOVED="$(jq -r '
+  ((.limits // {}) as $l | if ($l | type) == "object" then (["max_cost_usd", "tick_interval", "min_tick_gap", "max_consecutive_failures"][] | select(. as $k | $l | has($k)) | "limits.\(.)") else empty end),
+  ((.models // {}) as $m | if ($m | type) == "object" and ($m | has("manager")) then "models.manager" else empty end)' <<<"$PARSED")"
+if [ -n "$REMOVED" ]; then
+  while IFS= read -r k; do
+    echo "config.sh: invalid config: $k is no longer a setting: the tick system is gone and the supervisor (scripts/supervisor.sh) does not read it. Delete it from $FILE" >&2
+  done <<<"$REMOVED"
+  exit 5
+fi
+
 # Merge with defaults
 MERGED="$(jq -c -n --slurpfile d "$HERE/config-defaults.json" '$d[0] * input' <(echo "$PARSED"))" || {
   echo "config.sh: invalid config: failed to merge with defaults" >&2
@@ -143,7 +154,6 @@ STAGE_DEFAULTS='
             advisory: (if $s | has("advisory") then $s.advisory else false end),
             max_rounds: (if $s | has("max_rounds") then $s.max_rounds else $root.review.max_rounds end),
             brief: (if $s | has("brief") then $s.brief else null end),
-            price: ($s.price // null),
             timeout: ($s.timeout // 600),
             max_output_tokens: ($s.max_output_tokens // 16000),
             max_diff_bytes: ($s.max_diff_bytes // 400000)
@@ -165,7 +175,8 @@ PROVIDER_DEFAULTS='
     then [.review.stages[] | select(type == "object") | .provider | select(type == "string")]
     else [] end;
   if (.models | type) == "object" and (.models.reviewer | type) == "object" then
-    .models.reviewer |= (if has("timeout") then . else .timeout = 1500 end)
+    # Tokens only: an old models.reviewer.price is dropped, never read.
+    .models.reviewer |= (del(.price) | if has("timeout") then . else .timeout = 1500 end)
   else . end
   | . as $root
   | $presets[0] as $p
@@ -234,13 +245,6 @@ VALIDATION_SCRIPT='
                 (if $s.provider != null and $s.model == null then "review.stages[\($i)].model must be set when provider is set"
                  elif $s.provider == null and $s.model == null and $reviewer_type == "object" then "review.stages[\($i)].model must be set when models.reviewer is a provider"
                  elif ($s.model | type) != "string" or $s.model == "" then "review.stages[\($i)].model must be a non-empty string" else empty end),
-                (if $s.provider != null then
-                  (if $s.price == null then "review.stages[\($i)].price is required when provider is set"
-                   else
-                    (("input", "output") as $k | ($s.price | if type == "object" then .[$k] else null end) as $v
-                      | if ($v | type) != "number" or $v < 0 then "review.stages[\($i)].price.\($k) must be a non-negative number" else empty end)
-                   end)
-                else empty end),
                 (("timeout", "max_output_tokens", "max_diff_bytes") as $k
                   | if ($s[$k] | type) != "number" or ($s[$k] | floor) != $s[$k] or $s[$k] <= 0 then "review.stages[\($i)].\($k) must be a positive integer" else empty end),
                 (if ($s.paths | type) != "array" or ($s.paths | map(type != "string" or . == "") | any) then "review.stages[\($i)].paths must be a list of non-empty strings" else empty end),
@@ -348,7 +352,7 @@ VALIDATION_SCRIPT='
         (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
       (if (.models | type) == "object" then
-        (("manager", "implementor", "fixer", "merger") as $r
+        (("implementor", "fixer", "merger") as $r
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end),
         (.models.reviewer as $r
          | if ($r | type) == "object" then
@@ -357,8 +361,6 @@ VALIDATION_SCRIPT='
               elif (.providers[$r.provider].review_command | type) != "string"
               then "models.reviewer.provider \($r.provider) has no review_command" else empty end),
              (if ($r.model | type) != "string" or $r.model == "" then "models.reviewer.model must be a non-empty string" else empty end),
-             (if ($r.price | type) != "object" or ([$r.price.input, $r.price.output] | any(type != "number" or . < 0))
-              then "models.reviewer.price must have non-negative input and output" else empty end),
              (if ($r.timeout | type) != "number" or ($r.timeout | floor) != $r.timeout or $r.timeout < 1 or $r.timeout > 1500
               then "models.reviewer.timeout must be an integer from 1 to 1500" else empty end),
              (if (.models.escalation | type) != "string" or .models.escalation == ""
@@ -371,7 +373,7 @@ VALIDATION_SCRIPT='
         (if (.limits.max_tokens | type) != "number" or (.limits.max_tokens | floor) != .limits.max_tokens or .limits.max_tokens <= 0 then "limits.max_tokens must be a positive integer" else empty end),
         (if .limits.max_tokens_per_card == null then empty
          elif (.limits.max_tokens_per_card | type) != "number" or (.limits.max_tokens_per_card | floor) != .limits.max_tokens_per_card or .limits.max_tokens_per_card <= 0 then "limits.max_tokens_per_card must be null or a positive integer" else empty end),
-        (("rate_limit_max_wait", "rate_limit_margin", "min_tick_gap") as $k
+        (("rate_limit_max_wait", "rate_limit_margin") as $k
           | if (.limits[$k] | type) != "number" or .limits[$k] < 0 then "limits.\($k) must be a non-negative number" else empty end)
       else empty end)
     ] | map(select(. != null))

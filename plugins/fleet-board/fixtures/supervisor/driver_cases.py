@@ -711,6 +711,20 @@ def test_reviewer_findings_record_last_review(base):
     assert b.note()['last_verified'].startswith('VERIFIED:')
 
 
+def test_reviewer_round_one_uses_the_base_even_after_an_earlier_review(base):
+    # Retargeted from the manager agent's review row (test-weakened-test-scope.sh, test-weakened-test-examples.sh):
+    # in round 1 prev_sha is the base from worktree.sh review, never note.last_review.sha.
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                'last_review': dict(LAST_REVIEW, sha='feed123')})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-ok'})
+    begin(b, 'review', state='in_review', round=1)
+    prompt = b.prompt()
+    assert 'bace000' in prompt and 'feed123' not in prompt, prompt
+
+
 def test_reviewer_round_two_gets_prev_sha_and_findings_and_a_long_diff_goes_to_a_file(base):
     b = board_for(base, 'in_review')
     b.put_note({'round': 2, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
@@ -768,20 +782,22 @@ def test_redispatch_is_declined_when_the_caller_says_so(base):
     assert b.note()['action_failures'] == 1 and 'rejected' in b.note()['last_action_error']
 
 
-def test_rules_match_the_manager_table_cell_for_cell(base):
+def test_rules_cover_every_rejection_message_of_the_reporting_skill(base):
+    # Retargeted from the retired manager agent's rule table (the manager agent is gone): the driver's own
+    # _RULES are the re-dispatch source now. Every rejection message the reporting skill lists has a rule,
+    # in the same order, so a re-dispatch can always quote one; the rule wording is the driver's.
     import re
-    lines = (PLUGIN / 'agents' / 'manager.md').read_text().splitlines()
+    lines = (PLUGIN / 'skills' / 'reporting' / 'SKILL.md').read_text().splitlines()
     start = [i for i, l in enumerate(lines) if l.startswith('| Rejection message')][0]
-    table = []
+    messages = []
     for line in lines[start + 2:]:
         if not line.startswith('|'):
             break
-        m = re.match(r'^\| `(.*)` \| (.*) \|$', line)
-        table.append((m.group(1).replace('\\|', '|'), m.group(2).replace('\\|', '|')))
-    ours = dict(driver._RULES)
-    assert table and [row[0] for row in table] == [r[0] for r in driver._RULES][:len(table)], 'row order or text drifted'
-    for message, rule in table:
-        assert ours[message] == rule, (message, ours[message], rule)
+        cells = [c.strip() for c in re.split(r'(?<!\\)\|', line)[1:-1]]
+        messages.append(cells[0].strip('`').replace('\\|', '|'))
+    ours = [r[0] for r in driver._RULES]
+    assert messages and ours[:len(messages)] == messages, 'row order or text drifted'
+    assert all(rule for _, rule in driver._RULES), 'a message has no rule text'
     text = driver.rejection_text(['parse-report: expected exactly one VERIFIED: line, found 2'])
     assert '..' not in text.replace('...', ''), text
     assert 'found 2\nThere is exactly one `VERIFIED:` line.\nThe rule: every report' in text, text

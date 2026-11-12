@@ -19,7 +19,7 @@ _MAX_SOCKET_PATH = 100
 
 
 def log_dir(env=None):
-    """The runtime log directory, the same default the headless wrapper uses."""
+    """The runtime log directory (FLEET_BOARD_LOG_DIR, default ~/.fleet-board/runs)."""
     env = os.environ if env is None else env
     return Path(env.get("FLEET_BOARD_LOG_DIR") or (Path.home() / ".fleet-board" / "runs"))
 

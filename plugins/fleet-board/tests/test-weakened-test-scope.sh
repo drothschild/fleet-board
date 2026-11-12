@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks that the weakened-test step (reviewer step 6 in the spec, step 7 in the agent; fixer step 3)
 # covers weakening outside a test body, runs in round 1 against the merge-base, never names a SHA at
-# which the test is already weakened, and that the manager states one round 1 reference SHA.
+# which the test is already weakened.
 # Run: bash plugins/fleet-board/tests/test-weakened-test-scope.sh
 set -u
 unset CDPATH
@@ -59,22 +59,14 @@ check_fixer() {
   block_has "$who: step 3 covers a .only marker" "$blk" 'test.only'
 }
 
-check_manager() {
-  local who="$1" f="$2" row
-  row="$(grep -E '^\| `review` ' "$f" | head -1)"
-  block_has "$who: review row says what round 1 uses" "$row" 'round 1'
-  block_has "$who: review row names base for round 1" "$row" '`base`'
-  block_lacks "$who: review row has no 'no previous review' reading" "$row" 'no previous review'
-  if grep -qF 'no previous review' "$f"; then bad "$who: no line says round 1 depends on a previous review"; else ok "$who: no line says round 1 depends on a previous review"; fi
-}
 
 check_reviewer agent "$AGENTS/reviewer.md"
 check_fixer agent "$AGENTS/fixer.md"
-check_manager agent "$AGENTS/manager.md"
+# The manager checks went with the tick system: driver_cases.py
+# test_reviewer_round_one_uses_the_base_even_after_an_earlier_review pins the round 1 reference SHA.
 if [ -d "$SPECS" ]; then
   check_reviewer spec "$SPECS/reviewer.md"
   check_fixer spec "$SPECS/fixer.md"
-  check_manager spec "$SPECS/manager.md"
 else
   echo "skip - no specs at $SPECS (installed plugin)"
 fi

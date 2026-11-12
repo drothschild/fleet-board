@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml/badge.svg)](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml)
 
-A Claude Code plugin that turns a local card board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates.
+A Claude Code plugin that turns a local card board into a work queue for a fleet of coding agents, with hook-enforced human-QA and merge gates. A command-line supervisor (`supervisor.sh start`, or Start on the board page) dispatches the work.
 
 ## Install
 
@@ -41,7 +41,7 @@ Everything else is in the [plugin README](plugins/fleet-board/README.md): requir
 
 ## How the agents were written
 
-The four agents (manager, implementor, reviewer, fixer) and four of the five skills (`reporting`, `tick`, `run`, `status`) were written **clean-room**. Here, that means the model that wrote each file could see only a written description of what the file must do, never another plugin's prompts or code.
+The role agents (implementor, reviewer, fixer) and the `reporting` and `status` skills were written **clean-room**. The manager agent and the `tick` and `run` skills were written the same way and later removed with the tick system; the `merger` agent was written by hand, and later hand edits to `reviewer` and `status` are recorded as named exceptions. Here, that means the model that wrote each file could see only a written description of what the file must do, never another plugin's prompts or code.
 
 How it was done:
 

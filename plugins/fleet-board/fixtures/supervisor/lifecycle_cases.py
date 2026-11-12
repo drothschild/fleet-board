@@ -156,8 +156,8 @@ class LifecycleContract(ServiceCase):
         second, _, _ = self.open("two")
         self.assertIs(self.serve(second)["owner"], True)
 
-    def test_legacy_wrapper_lock_refuses_service_start(self):
-        lock = self.logs / "legacy.lock"
+    def test_a_live_holder_of_the_repository_run_lock_refuses_service_start(self):
+        lock = self.logs / "held.lock"
         process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
 
         def stop_child():
@@ -171,11 +171,11 @@ class LifecycleContract(ServiceCase):
                            check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as exc:
             if SANDBOX_PS in (exc.stderr or ""):
-                self.skipTest("sandbox denies the real ps call required by legacy-lock fixture")
+                self.skipTest("sandbox denies the real ps call required by the run-lock fixture")
             raise
         service, _, _ = new_service(self.root, lock)
         self.addCleanup(service.close)
-        with self.assertRaisesRegex(RuntimeError, "legacy"):
+        with self.assertRaisesRegex(RuntimeError, "repository run lock"):
             service.serve()
         self.assertFalse(Path(service.socket_path).exists(), "a refused start left a socket behind")
 
@@ -195,7 +195,7 @@ class LifecycleContract(ServiceCase):
         self.addCleanup(first.close)
         self.addCleanup(second.close)
         self.assertTrue(self.serve(first).get("owner"))
-        with self.assertRaisesRegex(RuntimeError, "legacy"):
+        with self.assertRaisesRegex(RuntimeError, "repository run lock"):
             second.serve()
 
     def test_a_service_releases_its_run_lock_on_close(self):
