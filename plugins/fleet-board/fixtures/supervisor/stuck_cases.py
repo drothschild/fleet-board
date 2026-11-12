@@ -459,7 +459,9 @@ class Record(StuckCase):
         started = time.time()
         failed = stuck.record(self.root, found)
         self.assertLess(time.time() - started, 15, 'record waited on the dead lock')
-        self.assertEqual(failed, [12], 'the failed note write is reported by card')
+        # PR #252: a lock whose holder is dead is taken over at once, so the note write succeeds
+        self.assertEqual(failed, [], 'the note write takes over the dead lock')
+        self.assertIn('stuck', self.b.note(12))
 
     def test_notes_are_written_for_cards_without_a_lock(self):
         self.b.seed(12, 'in_progress')
@@ -623,6 +625,24 @@ class Wave5Fixes(StuckCase):
             stuck.release(self.root, 12)
         self.assertTrue(fresh.exists())
         self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    def test_release_leaves_a_dead_lock_that_a_running_taker_has_claimed(self):
+        self.b.seed(12, 'in_progress')
+        claimed = self.lock(12, dead_pid())
+        os.symlink(str(os.getpid()), str(claimed / 'claim.1'))   # a live taker is mid-takeover
+        with self.assertRaises(ValueError):
+            stuck.release(self.root, 12)
+        self.assertTrue(claimed.exists())
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
+    def test_release_removes_a_dead_lock_with_a_dead_takers_claim_by_rename(self):
+        self.b.seed(12, 'in_progress')
+        dead = self.lock(12, dead_pid())
+        os.symlink(str(dead_pid()), str(dead / 'claim.1'))
+        stuck.release(self.root, 12)
+        self.assertFalse(dead.exists())
+        self.assertEqual(sorted(p.name for p in self.locks.iterdir()), [], 'no renamed copy is left behind')
+        self.assertEqual(self.b.card(12)['state'], 'ready')
 
     def test_a_lock_that_cannot_be_removed_is_a_value_error(self):
         self.b.seed(12, 'in_progress')
