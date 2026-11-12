@@ -344,14 +344,13 @@ function renderStuck(board) {
   const failed = !suppressed && run.stuck_error ? "stuck check failed: " + clean(run.stuck_error, 300) : "";
   const banner = $("stuck-banner");
   const note = $("stuck-note");
-  const bannerText = !suppressed && n > 0
-    ? n + (n === 1 ? " stuck card" : " stuck cards") + " — the supervisor will not start until they are resolved"
-    : "";
+  const bannerText = !suppressed && n > 0 ? stuckBannerText(n) : "";
   if (banner.textContent !== bannerText) banner.textContent = bannerText; // an unchanged alert is not announced again
   banner.hidden = !bannerText;
   const noteText = suppressed || failed;
   if (note.textContent !== noteText) note.textContent = noteText;
   note.hidden = !noteText;
+  renderSupervisor(); // Start follows the stuck count
 }
 
 // renderBoard(board, force): builds the columns when the state list changes,
@@ -2314,6 +2313,8 @@ function bindPlanner() {
 
 const SUP_POLL_MS = 3000;
 const SUP_HIDDEN_MS = 30000;    // polling backs off while the document is hidden
+const SUP_DETECT_MS = 5000;     // detection is retried until the board answers with a running flag
+const SUP_USAGE_MS = 15000;     // /api/usage is re-read at most this often
 const SUP_ACK_MS = 30000;       // an acknowledged Start the supervisor never reports is dropped
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
 
@@ -2338,6 +2339,8 @@ S.sup = {
   statusText: null,
   tokensText: null,
   visBound: false,
+  usageAt: null,    // ms of the last /api/usage read
+  usageRunning: null, // whether a supervisor was running at that read
 };
 
 function clean(v, max) {
@@ -2468,14 +2471,22 @@ function isSnapshot(d) {
     ("revision" in d || "desired_mode" in d || "schema_version" in d);
 }
 
+// detectSupervisor(): the board server always answers GET /api/supervisor with a
+// running flag. Any other outcome (a thrown fetch, a non-200, a reply without the
+// flag) is a failure to ask, never "legacy mode": it is retried on a timer, and
+// the page keeps its run controls hidden meanwhile, so no Start goes to /api/run.
 async function detectSupervisor() {
-  let r;
+  if (S.supMode) return;
+  let r = null;
   try {
     r = await api("GET", "/api/supervisor");
   } catch (e) {
-    return; // fetchBoard reports an unreachable server; the legacy run controls stay
+    r = null;
   }
-  if (!r.ok || typeof r.data.running !== "boolean") return;
+  if (!r || !r.ok || typeof r.data.running !== "boolean") {
+    setTimeout(detectSupervisor, SUP_DETECT_MS);
+    return;
+  }
   enterSupervisorMode();
   await supervisorTick(r);
 }
@@ -2541,8 +2552,14 @@ async function supervisorTick(first) {
     else adoptNotRunning(r.data);
   }
   if (!failure && ack0 === sup.ackSeq) {
-    await refreshUsage(seq, r.data);
-    if (seq === sup.seq && S.drawer && S.drawer.n !== null) loadCardUsage(S.drawer);
+    const running = r.data.running === true;
+    const due = sup.usageAt === null || Date.now() - sup.usageAt >= SUP_USAGE_MS || sup.usageRunning !== running;
+    if (due) {
+      await refreshUsage(seq, r.data);
+    } else if (!running) { // a not-running reply carries the ledger totals for free
+      S.usage = { run: null, all_time: r.data.all_time, planner: r.data.planner, error: r.data.error };
+      renderTokens();
+    }
   }
   if (seq !== sup.seq) return;
   scheduleSupervisor(document.hidden ? SUP_HIDDEN_MS : SUP_POLL_MS);
@@ -2597,6 +2614,8 @@ function adoptNotRunning(data) {
 // refreshUsage(seq, data): the token totals. /api/usage is always answered; when it
 // is not, a not-running reply still carries the ledger totals.
 async function refreshUsage(seq, data) {
+  S.sup.usageAt = Date.now();
+  S.sup.usageRunning = !!(data && data.running === true);
   let usage = null;
   try {
     const r = await api("GET", "/api/usage");
@@ -2783,8 +2802,13 @@ function renderSupervisorControls(view) {
   const pause = $("supervisor-pause-btn");
   const resume = $("supervisor-resume-btn");
   const stop = $("supervisor-stop-btn");
-  setControl(start, !gate && (notRunning || (desired !== "paused" && phase !== "draining" && phase !== "cancelling")),
-    gate || (desired === "paused" ? "The session is paused: use Resume." : "The supervisor is stopping."));
+  // Start launches a supervisor when none runs, and resumes a paused one; it does nothing for a running one.
+  const stuckN = stuckCount();
+  let startWhy = gate;
+  if (!startWhy && notRunning && stuckN > 0) startWhy = stuckBannerText(stuckN);
+  else if (!startWhy && !notRunning && (phase === "draining" || phase === "cancelling")) startWhy = "The supervisor is stopping.";
+  else if (!startWhy && !notRunning && desired === "running") startWhy = "A supervisor is already running.";
+  setControl(start, !startWhy, startWhy);
   setControl(pause, !rest && desired === "running",
     rest || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
   setControl(resume, !rest && desired === "paused",
@@ -2796,6 +2820,17 @@ function renderSupervisorControls(view) {
   pause.classList.toggle("primary", !pause.disabled);
   resume.classList.toggle("primary", pause.disabled && !resume.disabled);
   start.classList.toggle("primary", pause.disabled && resume.disabled && !start.disabled);
+}
+
+// The cards the board marks stuck; Start (with no supervisor running) waits for none.
+function stuckCount() {
+  const cards = S.board && Array.isArray(S.board.cards) ? S.board.cards : [];
+  return cards.filter(function (c) { return c && c.stuck && typeof c.stuck === "object"; }).length;
+}
+
+function stuckBannerText(n) {
+  return n + (n === 1 ? " stuck card — the supervisor will not start until it is resolved"
+    : " stuck cards — the supervisor will not start until they are resolved");
 }
 
 // --- supervisor: commands -----------------------------------------------------
@@ -2950,8 +2985,8 @@ async function loadCardUsage(d) {
     r = null;
   }
   if (S.drawer !== d || seq !== d.usageSeq) return;
+  // a failed read keeps what is showing (clearDrawer emptied it for a new card): never a wrong figure, never a blank
   if (r && r.ok) renderCardUsage(r.data);
-  else clearCardUsage(); // the drill-down is a read-only extra: no usage shown rather than a wrong one
 }
 
 // renderCardUsage(u): the drawer's drill-down, columns then actions. A count the
@@ -2988,6 +3023,10 @@ function renderCardUsage(u) {
 // --- start -------------------------------------------------------------------
 
 function init() {
+  // the run controls and the supervisor panel appear only once detection has answered
+  $("start-btn").hidden = true;
+  $("stop-btn").hidden = true;
+  $("supervisor").hidden = true;
   $("start-btn").addEventListener("click", startRun);
   $("stop-btn").addEventListener("click", stopRun);
   $("log-btn").addEventListener("click", toggleLog);

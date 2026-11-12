@@ -270,6 +270,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 
 .card-id {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   font: 12px/1.3 var(--mono);
@@ -1049,6 +1050,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 /* Not a theme token and not redefined in the dark block: 4px solid #d00000 everywhere. */
 .card.card--stuck { border: 4px solid #d00000 !important; padding: 6px 7px 5px; }
 .card-stuck-badge {
+  flex: none;
   padding: 1px 6px;
   border-radius: 4px;
   background: #d00000;
