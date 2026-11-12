@@ -9,6 +9,7 @@ Scenarios:
   idle    running, nothing active
   paused  paused with a reason
   active  running with two actions in flight (cards 4 and 9, different providers)
+  stopping  a Stop was requested (State.stop()): the terminal 'stopping' mode
 """
 import json
 import os
@@ -51,7 +52,13 @@ def scenario_active(state):
     state.begin(action(9, "codex", "implementor"))
 
 
-SCENARIOS = {"idle": scenario_idle, "paused": scenario_paused, "active": scenario_active}
+def scenario_stopping(state):
+    state.begin(action(4, "claude", "reviewer"))
+    state.stop()
+
+
+SCENARIOS = {"idle": scenario_idle, "paused": scenario_paused, "active": scenario_active,
+             "stopping": scenario_stopping}
 
 
 def main(out_path):
@@ -62,8 +69,8 @@ def main(out_path):
             service, state = build_service(base, name)
             try:
                 build(state)
-                # Exactly what board-web serves: the UI projection of the status plus its reachability flag.
-                result[name] = {"status": dict(webproxy.ui_status(service.status_view()), unreachable=False)}
+                # Exactly what board-web serves for GET /api/supervisor while a supervisor runs: the UI projection plus running.
+                result[name] = {"status": dict(webproxy.ui_status(service.status_view()), running=True)}
             finally:
                 service.close()
         Path(out_path).write_text(json.dumps(result, sort_keys=True), encoding="utf-8")

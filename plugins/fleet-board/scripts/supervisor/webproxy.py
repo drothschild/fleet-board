@@ -4,19 +4,13 @@ import os
 from pathlib import Path
 
 from . import errors, paths
-from collections import OrderedDict
 import socket
 import stat
 import struct
-import threading
-import time
 
 MAX_REQUEST = 1024 * 1024
 MAX_RESPONSE = 4 * 1024 * 1024
 TIMEOUT = 5.0
-_LAST = OrderedDict()
-_LAST_LOCK = threading.Lock()
-_LAST_LIMIT = 128
 
 
 def ui_status(status):
@@ -32,7 +26,8 @@ def ui_status(status):
         name = action.get("provider") if isinstance(action, dict) else None
         if isinstance(name, str):
             providers[name] = providers.get(name, 0) + 1
-    return dict(status, desired_mode=status.get("mode"), phase=status.get("mode"), ready=True,
+    # Ready only once the startup check is done: the socket answers while it still runs ("checking").
+    return dict(status, desired_mode=status.get("mode"), phase=status.get("mode"), ready=status.get("startup") == "done",
                 capacity={"slots": len(active), "global_cap": None, "per_provider": providers},
                 queue={"ready": None, "running": len(active), "waiting": None, "attention": None})
 
@@ -110,16 +105,3 @@ def request(path, payload):
             error = {"code": "internal", "message": error}
         raise RuntimeError(json.dumps(error))
     return reply.get("result")
-
-
-def remember(domain_id, state):
-    with _LAST_LOCK:
-        _LAST[domain_id] = (time.time(), state)
-        _LAST.move_to_end(domain_id)
-        while len(_LAST) > _LAST_LIMIT:
-            del _LAST[next(iter(_LAST))]
-
-
-def last(domain_id):
-    with _LAST_LOCK:
-        return _LAST.get(domain_id)

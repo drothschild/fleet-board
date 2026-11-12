@@ -134,17 +134,20 @@ class SupervisorWebContract(unittest.TestCase):
         except HTTPError as exc:
             return exc.code, json.loads(exc.read() or b"{}")
 
-    def test_routes_404_when_no_supervisor_runs(self):
+    def test_supervisor_routes_with_no_supervisor(self):
         self.start_web()
         code, payload = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
         self.assertIn("state", payload)
-        # With no supervisor socket answering, the board must not look supervisor-capable to the UI.
-        code, _ = self.http("GET", "/api/supervisor")
-        self.assertEqual(code, 404, "GET /api/supervisor must be 404 when no supervisor answers")
-        for action in ("start", "pause", "resume", "stop"):
-            code, _ = self.http("POST", "/api/supervisor/" + action, {"request_id": "r", "expected_revision": 0})
-            self.assertEqual(code, 404, action)
+        code, payload = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200, payload)
+        self.assertIs(payload["running"], False)
+        self.assertIsNone(payload["run"])
+        self.assertIn("all_time", payload)
+        self.assertIn("planner", payload)
+        for action in ("pause", "resume", "stop"):
+            code, body = self.http("POST", "/api/supervisor/" + action, {"request_id": "r", "expected_revision": 0})
+            self.assertEqual((code, body.get("code")), (409, "not_running"), action)
         self.assertFalse(self.socket_exists(), "a request launched or created a supervisor")
         self.assertEqual([x for x in self.logs_tree() if "supervisor" in x], [], "a request created supervisor state")
 
@@ -357,7 +360,8 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_web()
         self.assertEqual(self.http("GET", "/api/supervisor")[0], 200)
         self.service.close()
-        self.assertEqual(self.http("GET", "/api/supervisor")[0], 404)
+        code, payload = self.http("GET", "/api/supervisor")
+        self.assertEqual((code, payload.get("running")), (200, False))
         code, run = self.http("GET", "/api/run")
         self.assertEqual(code, 200)
         self.assertNotIn("supervisor", run)
@@ -401,8 +405,8 @@ class SupervisorWebContract(unittest.TestCase):
 
     def test_reads_create_no_supervisor_state_when_no_service_ran(self):
         self.start_web()
-        for path, want in (("/api/board", 200), ("/api/supervisor", 404), ("/api/run", 200),
-                           ("/api/board", 200), ("/api/supervisor", 404)):
+        for path, want in (("/api/board", 200), ("/api/supervisor", 200), ("/api/run", 200),
+                           ("/api/board", 200), ("/api/supervisor", 200), ("/api/usage", 200)):
             code, _ = self.http("GET", path)
             self.assertEqual(code, want, path)
         tree = self.logs_tree()
@@ -419,7 +423,7 @@ class SupervisorWebContract(unittest.TestCase):
         self.start_web()
         for path in ("/api/board", "/api/supervisor", "/api/run"):
             code, _ = self.http("GET", path)
-            self.assertEqual(code, 404 if path == "/api/supervisor" else 200,
+            self.assertEqual(code, 200,
                              "%s answered %s with a broken runtime location" % (path, code))
 
     def test_linked_worktree_board_finds_its_service_at_the_default_socket(self):
@@ -515,24 +519,13 @@ class SupervisorWebContract(unittest.TestCase):
             with self.assertRaises((ValueError, OSError)):
                 webproxy.request("unused", {"command": "status"})
 
-    def test_status_last_known_cache_is_thread_safe_and_bounded(self):
+    def test_the_webproxy_keeps_no_last_known_state(self):
         from supervisor import webproxy
-        webproxy._LAST.clear()
-        for i in range(512):
-            webproxy.remember("domain-%d" % i, {"phase": "running"})
-        self.assertLessEqual(len(webproxy._LAST), 128, "per-domain status cache is unbounded")
-        errors = []
-        def reader():
-            for i in range(2000):
-                value = webproxy.last("flapping-domain")
-                if value is not None and (not isinstance(value[0], float) or not isinstance(value[1], dict)):
-                    errors.append(value)
-        import threading
-        threads = [threading.Thread(target=reader) for _ in range(8)]
-        for thread in threads: thread.start()
-        for i in range(2000): webproxy.remember("flapping-domain", {"revision": i})
-        for thread in threads: thread.join()
-        self.assertFalse(errors)
+        for name in ("remember", "last", "_LAST"):
+            self.assertFalse(hasattr(webproxy, name), "webproxy.%s is dead state" % name)
+        source = (SCRIPTS / "board-web.py").read_text(encoding="utf-8")
+        self.assertNotIn("last_known", source)
+        self.assertNotIn("remember_stopped", source)
 
     def test_run_compatibility_projects_the_supervisor_mode(self):
         self.start_service()
@@ -549,7 +542,7 @@ class SupervisorWebContract(unittest.TestCase):
 
     def launched_pid(self):
         code, payload = self.http("GET", "/api/supervisor")
-        return None if payload.get("unreachable") else payload.get("pid")
+        return payload.get("pid") if payload.get("running") is not False else None
 
     def pid_alive(self, pid):
         try:
@@ -605,6 +598,494 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertEqual(payload["queue"], {"ready": None, "running": 1, "waiting": None, "attention": None})
         for gone in ("session", "boot_registration", "known_spend", "host_boot_id", "heartbeat", "claims", "config"):
             self.assertNotIn(gone, payload)
+
+    # --- Task 6.1: usage, stuck, activity, Start semantics --------------------------------------
+
+    def ledger_line(self, **kw):
+        base = {"run_id": "web-run", "card": 3, "kind": "card", "column": "ready", "action": "start",
+                "role": "implementor", "provider": "claude", "model": "sonnet", "input": 10, "output": 5,
+                "cache_write": 2, "cache_read": 1, "started_at": "2026-11-11T10:00:00Z",
+                "ended_at": "2026-11-11T10:01:00Z", "log": "/x.jsonl"}
+        base.update(kw)
+        return base
+
+    def write_ledger(self, *lines):
+        from supervisor import usage
+        for line in lines:
+            usage.append(self.repo, line)
+
+    def write_card(self, n, state="in_review"):
+        (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
+            {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
+             "updated_at": "2026-11-11T10:00:00Z"}), encoding="utf-8")
+
+    def active_marker(self, n):
+        active = self.repo / ".fleet-board" / "active"
+        active.mkdir(exist_ok=True)
+        (active / str(n)).write_text("")
+
+    def load_board_module(self, name):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(name, str(SCRIPTS / "board-web.py"))
+        board = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(board)
+        board.APP["root"] = str(self.repo)
+        return board
+
+    def test_usage_route_works_with_no_supervisor(self):
+        self.write_ledger(self.ledger_line(), self.ledger_line(card=None, kind="planner", input=7, output=1,
+                                                               cache_write=0, cache_read=0),
+                          self.ledger_line(card=4, input=None))
+        self.start_web()
+        code, body = self.http("GET", "/api/usage")
+        self.assertEqual(code, 200, body)
+        self.assertIsNone(body["run"], "no supervisor, no run total")
+        self.assertEqual(body["all_time"]["input"], 10)
+        self.assertEqual(body["all_time"]["unknown"], 1)
+        self.assertIs(body["all_time"]["partial"], True)
+        self.assertEqual(body["planner"]["total"], 8)
+        code, body = self.http("GET", "/api/cards/3/usage")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["card"], 3)
+        self.assertEqual(body["totals"]["total"], 18)
+        code, body = self.http("GET", "/api/cards/4/usage")
+        self.assertEqual(body["totals"]["unknown"], 1, "an unreadable count must stay unknown, not 0")
+        self.assertEqual(self.http("GET", "/api/supervisor")[1]["all_time"]["input"], 10)
+
+    def test_usage_route_reports_this_run_while_a_supervisor_runs(self):
+        self.write_ledger(self.ledger_line(), self.ledger_line(run_id="older", input=100))
+        self.start_service()
+        self.start_web()
+        code, body = self.http("GET", "/api/usage")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["run"]["input"], 10)
+        self.assertEqual(body["all_time"]["input"], 110)
+
+    def test_a_damaged_ledger_marks_totals_partial(self):
+        self.write_ledger(self.ledger_line())
+        with open(str(self.repo / ".fleet-board" / "usage.jsonl"), "a") as handle:
+            handle.write("{not json\n")
+        self.start_web()
+        code, body = self.http("GET", "/api/usage")
+        self.assertEqual(code, 200)
+        self.assertIs(body["all_time"]["partial"], True)
+
+    def stuck_settled(self, seconds=20.0):
+        """GET /api/stuck until the background check has produced a result; returns the body."""
+        deadline = time.time() + seconds
+        while True:
+            code, body = self.http("GET", "/api/stuck")
+            self.assertEqual(code, 200, body)
+            if not body["checking"] or time.time() > deadline:
+                return body
+            time.sleep(0.1)
+
+    def test_stuck_route_works_with_no_supervisor(self):
+        self.write_card(3)
+        self.active_marker(3)
+        self.start_web()
+        body = self.stuck_settled()
+        self.assertEqual([(x["card"], x["kind"]) for x in body["findings"]], [(3, "marker")])
+        self.assertIn("detail", body["findings"][0])
+        self.assertIsNone(body["error"])
+        self.assertIsInstance(body["checked_at"], float)
+        code, board = self.http("GET", "/api/board")
+        by_number = {c["number"]: c for c in board["cards"]}
+        self.assertEqual(by_number[3]["stuck"]["kind"], "marker")
+        self.assertIn("detail", by_number[3]["stuck"])
+        self.assertIsNone(by_number[3]["activity"])
+        self.assertIsNone(board["run"]["stuck_error"])
+        self.assertIsInstance(board["run"]["stuck_checked_at"], float)
+        self.assertIs(board["run"]["stuck_known"], True)
+
+    def test_while_a_supervisor_runs_the_board_shows_no_stuck_card_and_never_runs_find(self):
+        # The loop's `stuck` handler runs find() on demand (it keeps no cached list), so while a supervisor
+        # answers the board shows no stuck card at all: cards waiting for a slot, a reconcile or a resume
+        # are healthy, and the board never runs find() itself nor asks the loop.
+        from supervisor.state import Action
+        self.write_card(3)
+        self.write_card(5)
+        self.write_card(7, state="in_progress")   # waiting for a slot: no action, no marker
+        self.active_marker(3)
+        self.active_marker(5)
+        self.start_service()
+        commands = []
+        inner = self.service.handler
+
+        def recording(command):
+            commands.append(command.get("command"))
+            return inner(command)
+        self.service.handler = recording
+        self.state.begin(Action(card=3, action="review", column="in_review", role="reviewer", provider="claude",
+                                paths=[], started_at=time.time() - 12, started_mono=0.0))
+        self.start_web()
+        code, body = self.http("GET", "/api/stuck")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["findings"], [])
+        self.assertIs(body["checking"], False)
+        time.sleep(1.0)   # a background find() would have reported card 5 or 7 by now
+        code, board = self.http("GET", "/api/board")
+        self.assertEqual(code, 200)
+        by_number = {c["number"]: c for c in board["cards"]}
+        for n in (3, 5, 7):
+            self.assertIsNone(by_number[n]["stuck"], "card %d marked stuck while a supervisor runs" % n)
+        self.assertIs(board["run"]["stuck_checking"], False)
+        self.assertEqual(by_number[3]["activity"]["action"], "review")
+        self.assertGreaterEqual(by_number[3]["activity"]["elapsed_seconds"], 12)
+        self.assertLess(by_number[3]["activity"]["elapsed_seconds"], 60)
+        self.assertIsNone(by_number[5]["activity"])
+        self.assertNotIn("stuck", commands, "the board asked the supervisor loop to run find()")
+
+    def test_the_board_never_runs_find_while_a_supervisor_answers(self):
+        board = self.load_board_module("board_web_running")
+        calls = []
+        with mock.patch.object(board.supervisor_stuck, "find", lambda *a, **k: calls.append(1) or []):
+            view = board.stuck_view({"schema_version": 2, "mode": "running", "active": []})
+            time.sleep(0.3)
+        self.assertEqual(calls, [], "find() ran while a supervisor answers")
+        self.assertEqual(view["findings"], [])
+        self.assertIs(view["checking"], False)
+        self.assertIs(view["known"], True)
+
+    def test_a_changed_board_is_rechecked_at_once_and_an_unchanged_one_waits_for_the_interval(self):
+        self.write_card(3)
+        self.active_marker(3)
+        self.start_web()
+        first = self.stuck_settled()
+        self.assertEqual(len(first["findings"]), 1)
+        again = self.http("GET", "/api/stuck")[1]
+        self.assertEqual(again["checked_at"], first["checked_at"], "an unchanged board was rescanned inside the interval")
+        (self.repo / ".fleet-board" / "active" / "3").unlink()   # what `stuck --release 3` does to the markers
+        deadline = time.time() + 10   # far below the 30 s interval: only the mtime change can refresh it
+        while time.time() < deadline:
+            body = self.http("GET", "/api/stuck")[1]
+            if body["findings"] == [] and not body["checking"]:
+                break
+            time.sleep(0.2)
+        self.assertEqual(body["findings"], [], "a released card stayed stuck until the interval")
+        self.assertEqual(self.http("GET", "/api/board")[1]["cards"][0]["stuck"], None)
+
+    def test_the_refresh_interval_is_the_longer_of_30_seconds_and_twice_the_last_scan(self):
+        board = self.load_board_module("board_web_interval")
+        board._STUCK["duration"] = 0.5
+        self.assertEqual(board.stuck_interval(), 30.0)
+        board._STUCK["duration"] = 20.0
+        self.assertEqual(board.stuck_interval(), 40.0)
+
+    def test_stuck_refresh_runs_on_demand_and_only_when_due(self):
+        board = self.load_board_module("board_web_due")
+        calls = []
+        board_dir = self.repo / ".fleet-board"
+
+        def counting(*_a, **_k):
+            calls.append(1)
+            return []
+
+        def settle():
+            deadline = time.time() + 5
+            while board._STUCK["running"] and time.time() < deadline:
+                time.sleep(0.02)
+        with mock.patch.object(board.supervisor_stuck, "find", counting):
+            # a hidden tab's poll never starts one, even with no result yet
+            view = board.stuck_state(board_dir, refresh=False)
+            time.sleep(0.2)
+            self.assertEqual(calls, [], "a poll that asked for no refresh started one")
+            self.assertIsNone(view["findings"])
+            self.assertIs(view["known"], False)
+            # a page-initiated launch in flight: no refresh starts
+            with board._LAUNCH_LOCK:
+                board.stuck_state(board_dir)
+                time.sleep(0.2)
+            self.assertEqual(calls, [], "a refresh started while a page launch was in flight")
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 1)
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 1, "an unchanged board was rescanned inside the interval")
+            self.active_marker(9)   # the active markers directory appears: its mtime changed
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 2, "a changed markers directory was not rechecked")
+            self.write_card(11)
+            os.utime(str(board_dir / "cards"), ns=(1, 1))   # a cards directory mtime that is surely different
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 3, "a changed cards directory was not rechecked")
+            board._STUCK["mono"] -= 31   # the interval passes
+            board.stuck_state(board_dir)
+            settle()
+            self.assertEqual(len(calls), 4, "an expired result was not refreshed")
+            self.assertIs(board.stuck_state(board_dir, refresh=False)["known"], True)
+
+    def test_an_error_before_any_result_is_not_a_result(self):
+        board = self.load_board_module("board_web_error_first")
+
+        def broken(*_a, **_k):
+            raise ValueError("boom")
+        with mock.patch.object(board.supervisor_stuck, "find", broken):
+            board.stuck_state(None)
+            deadline = time.time() + 5
+            while board.stuck_state(None, refresh=False)["checking"] and time.time() < deadline:
+                time.sleep(0.05)
+            state = board.stuck_state(None, refresh=False)
+        self.assertIn("boom", state["error"])
+        self.assertIsNone(state["findings"])
+        self.assertIs(state["known"], False)
+
+    def test_the_board_poll_can_ask_for_no_stuck_refresh(self):
+        self.write_card(3)
+        self.active_marker(3)
+        self.start_web()
+        code, board = self.http("GET", "/api/board?refresh_stuck=0")
+        self.assertEqual(code, 200, board)
+        time.sleep(1.0)
+        code, body = self.http("GET", "/api/stuck?refresh_stuck=0")
+        self.assertIsNone(body["checked_at"], "a no-refresh poll started a stuck check")
+        self.assertIs(body["known"], False)
+        self.assertIs(board["run"]["stuck_known"], False)
+        body = self.stuck_settled()   # a visible poll does start it
+        self.assertEqual(len(body["findings"]), 1)
+        self.assertIs(self.http("GET", "/api/board")[1]["run"]["stuck_known"], True)
+
+    def test_ui_status_is_ready_only_once_the_startup_check_is_done(self):
+        from supervisor import webproxy
+        base = {"schema_version": 2, "mode": "running", "active": []}
+        self.assertIs(webproxy.ui_status(dict(base, startup="done"))["ready"], True)
+        self.assertIs(webproxy.ui_status(dict(base, startup="checking"))["ready"], False)
+        self.assertIs(webproxy.ui_status(dict(base))["ready"], False)
+
+    def test_the_not_running_usage_view_is_cached_on_the_ledger_size_and_mtime(self):
+        board = self.load_board_module("board_web_usage_cache")
+        board.APP["scripts"] = str(SCRIPTS)
+        self.write_ledger(self.ledger_line())
+        real = board.supervisor_usage.view
+        calls = []
+
+        def counting(*a, **k):
+            calls.append(1)
+            return real(*a, **k)
+        with mock.patch.object(board.supervisor_usage, "view", counting):
+            first = board.usage_view()
+            again = board.usage_view()
+            self.assertEqual(len(calls), 1, "an unchanged ledger was parsed again")
+            self.assertEqual(first, again)
+            self.write_ledger(self.ledger_line(input=90))
+            third = board.usage_view()
+            self.assertEqual(len(calls), 2, "a grown ledger was not parsed again")
+            self.assertEqual(third["all_time"]["input"], 100)
+            board.usage_view(card=3)
+            self.assertEqual(len(calls), 3, "a card drill-down reused the summary")
+
+    def test_find_never_runs_on_a_request_thread(self):
+        board = self.load_board_module("board_web_slow")
+        release = threading.Event()
+        calls = []
+
+        def slow_find(root, live_cards=frozenset(), **_k):
+            calls.append(threading.current_thread())
+            release.wait(10)
+            return []
+        with mock.patch.object(board.supervisor_stuck, "find", slow_find):
+            began = time.time()
+            first = board.stuck_state(None)
+            second = board.stuck_state(None)
+            self.assertLess(time.time() - began, 1.0, "a request waited for find()")
+            self.assertIsNone(first["findings"])
+            self.assertIs(first["checking"], True)
+            self.assertIs(second["checking"], True)
+            deadline = time.time() + 5
+            while not calls and time.time() < deadline:
+                time.sleep(0.05)
+            self.assertEqual(len(calls), 1, "more than one refresher ran at once")
+            self.assertIsNot(calls[0], threading.current_thread())
+            release.set()
+            deadline = time.time() + 5
+            while board.stuck_state(None)["checking"] and time.time() < deadline:
+                time.sleep(0.05)
+            done = board.stuck_state(None)
+            self.assertEqual((done["findings"], done["error"]), ([], None))
+
+    def test_a_failed_stuck_check_is_visible(self):
+        board = self.load_board_module("board_web_failing")
+
+        def broken(*_a, **_k):
+            raise ValueError("config.sh failed: boom")
+        with mock.patch.object(board.supervisor_stuck, "find", broken):
+            board.stuck_state(None)
+            deadline = time.time() + 5
+            while board.stuck_state(None)["checking"] and time.time() < deadline:
+                time.sleep(0.05)
+            state = board.stuck_state(None)
+        self.assertIn("boom", state["error"])
+        self.assertIsInstance(state["checked_at"], float)
+
+    def test_the_stuck_refresher_never_stays_running_after_a_failure(self):
+        board = self.load_board_module("board_web_refresher_dies")
+
+        class Boom(BaseException):
+            pass
+
+        def dies(*_a, **_k):
+            raise Boom()
+        # a refresher that dies with a BaseException must still release the "running" guard
+        with mock.patch.object(board.supervisor_stuck, "find", dies):
+            board._STUCK["running"] = True  # as stuck_state sets it before starting the thread
+            try:
+                board._refresh_stuck(None)
+            except Boom:
+                pass
+        self.assertIs(board._STUCK["running"], False, "running stayed True after the refresher died")
+        # Thread.start raising must not leave the guard set either
+        with mock.patch.object(board.threading, "Thread") as thread:
+            thread.return_value.start.side_effect = RuntimeError("can't start new thread")
+            with self.assertRaises(RuntimeError):
+                board.stuck_state(None)
+        self.assertIs(board._STUCK["running"], False, "running stayed True after Thread.start raised")
+
+    def test_stuck_is_suppressed_while_a_run_holds_the_lock_without_answering_as_the_supervisor(self):
+        start = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True,
+                                        text=True, env=dict(os.environ, LC_ALL="C", TZ="UTC")).stdout.split())
+        lock = self.case / "logs" / "acme-toy.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("%d\n%s\n" % (os.getpid(), start))
+        self.write_card(3, state="in_progress")
+        self.active_marker(3)
+        self.start_web()
+        code, body = self.http("GET", "/api/stuck")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(body["findings"], [])
+        self.assertEqual(body["suppressed"], "a run is active (pid %d)" % os.getpid())
+        code, board = self.http("GET", "/api/board")
+        self.assertIsNone(board["cards"][0]["stuck"])
+        self.assertEqual(board["run"]["stuck_suppressed"], "a run is active (pid %d)" % os.getpid())
+
+    def test_board_reads_the_supervisor_status_once_per_request(self):
+        self.write_card(3)
+        self.start_service()
+        calls = []
+        real = self.service.status_view
+        self.service.status_view = lambda: (calls.append(1), real())[1]
+        self.start_web()
+        self.http("GET", "/api/board")
+        calls[:] = []
+        self.assertEqual(self.http("GET", "/api/board")[0], 200)
+        self.assertLessEqual(len(calls), 2, "/api/board asked the supervisor for status %d times" % len(calls))
+
+    def test_card_usage_of_a_non_positive_card_is_a_client_error(self):
+        self.start_web()
+        code, _ = self.http("GET", "/api/cards/0/usage")
+        self.assertIn(code, (400, 404))
+
+    def test_an_unreadable_ledger_reads_null_never_zero(self):
+        if os.getuid() == 0:
+            self.skipTest("root reads any file")
+        self.write_ledger(self.ledger_line())
+        ledger = self.repo / ".fleet-board" / "usage.jsonl"
+        os.chmod(str(ledger), 0)
+        self.addCleanup(os.chmod, str(ledger), 0o600)
+        self.start_web()
+        code, body = self.http("GET", "/api/supervisor")
+        self.assertEqual(code, 200, body)
+        self.assertIs(body["running"], False)
+        self.assertIsNone(body["run"])
+        self.assertIsNone(body["all_time"])
+        self.assertIsNone(body["planner"])
+        self.assertTrue(body["error"])
+
+    def test_a_launch_that_exits_1_waits_briefly_for_the_winning_supervisor(self):
+        board = self.load_board_module("board_web_slowwin")
+        answers = iter([None, None, None, None])
+
+        def fake_call(command, body=None, **extra):
+            value = next(answers, {"mode": "running", "revision": 1})
+            if value is None:
+                raise board.ApiError(503, "supervisor unavailable: down", {"code": "unavailable"})
+            return value
+
+        def lose(*_a, **_k):
+            raise board.supervisor_launcher.LaunchError("exit 1", exit_code=1)
+        with mock.patch.object(board, "proxy_call", fake_call), \
+                mock.patch.object(board.supervisor_launcher, "launch_detached", lose):
+            self.assertIs(board.ensure_service(), False)
+
+    def test_legacy_stop_rechecks_the_service_lock_inside_the_run_lock(self):
+        board = self.load_board_module("board_web_recheck")
+        board.APP["scripts"] = str(SCRIPTS)
+        answers = iter([False, True])
+        with mock.patch.object(board, "ctx", return_value=({}, self.repo / ".fleet-board")), \
+                mock.patch.object(board, "supervisor_running", return_value=False), \
+                mock.patch.object(board, "service_holds_run_lock", lambda cfg: next(answers, True)), \
+                mock.patch.object(board, "run_alive", return_value=True):
+            with self.assertRaises(board.ApiError) as caught:
+                board.stop_run({}, {})
+        self.assertEqual(caught.exception.code, 409)
+        self.assertFalse((self.repo / ".fleet-board.stop").exists())
+
+    def test_start_on_a_paused_supervisor_resumes_it(self):
+        self.start_service()
+        self.state.pause("operator")
+        self.start_web()
+        revision = self.service.status_view()["revision"]
+        code, body = self.http("POST", "/api/supervisor/start", {"request_id": "resume-by-start", "expected_revision": revision})
+        self.assertEqual(code, 202, body)
+        self.assertNotIn("launched", body)
+        self.assertEqual(self.state.mode, "running", "Start left a paused supervisor paused")
+        self.assertEqual(body["desired_mode"], "running")
+
+    def test_start_on_a_paused_supervisor_with_a_stale_revision_conflicts(self):
+        self.start_service()
+        self.state.pause("operator")
+        self.start_web()
+        code, body = self.http("POST", "/api/supervisor/start", {"request_id": "stale-start", "expected_revision": -1})
+        self.assertEqual((code, body.get("code")), (409, "stale_revision"))
+        self.assertEqual(self.state.mode, "paused")
+
+    def test_start_that_loses_the_run_lock_race_reports_the_running_supervisor(self):
+        # The probe finds nothing, the launch then fails because a CLI start won the lock: re-probe and report it.
+        board = self.load_board_module("board_web_race")
+        answers = iter([None, None])
+
+        def fake_call(command, body=None, **extra):
+            value = next(answers, {"mode": "running", "revision": 1})
+            if value is None:
+                raise board.ApiError(503, "supervisor unavailable: down", {"code": "unavailable"})
+            return value
+
+        def lose(*_a, **_k):
+            raise board.supervisor_launcher.LaunchError("supervisor exited before it was ready (exit 1)", exit_code=1)
+        with mock.patch.object(board, "proxy_call", fake_call), \
+                mock.patch.object(board.supervisor_launcher, "launch_detached", lose):
+            self.assertIs(board.ensure_service(), False)
+
+    def test_start_still_fails_when_the_launch_fails_and_nothing_runs(self):
+        board = self.load_board_module("board_web_nolaunch")
+
+        def down(command, body=None, **extra):
+            raise board.ApiError(503, "supervisor unavailable: down", {"code": "unavailable"})
+
+        def lose(*_a, **_k):
+            raise board.supervisor_launcher.LaunchError("boom", exit_code=1)
+        with mock.patch.object(board, "proxy_call", down), \
+                mock.patch.object(board.supervisor_launcher, "launch_detached", lose):
+            with self.assertRaises(board.ApiError) as caught:
+                board.ensure_service()
+        self.assertEqual(caught.exception.code, 503)
+
+    def test_legacy_stop_never_touches_the_stop_file_while_a_supervisor_holds_the_run_lock(self):
+        # A supervisor that holds the lock but does not answer: the lock's third line says "service".
+        start = " ".join(subprocess.run(["ps", "-o", "lstart=", "-p", str(os.getpid())], capture_output=True,
+                                        text=True, env=dict(os.environ, LC_ALL="C", TZ="UTC")).stdout.split())
+        lock = self.case / "logs" / "acme-toy.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text("%d\n%s\nservice\n" % (os.getpid(), start))
+        self.start_web()
+        code, body = self.http("POST", "/api/run/stop")
+        self.assertEqual(code, 409, body)
+        self.assertFalse((self.repo / ".fleet-board.stop").exists(), "Stop touched the tick-stop file")
+        code, body = self.http("POST", "/api/run/start")
+        self.assertEqual(code, 409, body)
+        self.assertFalse((self.repo / ".fleet-board.stop").exists())
 
 
 if __name__ == "__main__":

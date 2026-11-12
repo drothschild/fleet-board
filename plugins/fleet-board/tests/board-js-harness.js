@@ -112,11 +112,11 @@ function eq(a, b, what) {
     eq(ctx.md("snake_case_word").find("em").length, 0, "em in word");
   });
   await test("run: only the second stop reason shows after a new run", function () {
-    ctx.renderHeader({ state: "stopped", stop_reason: "stop-file", cost: 1.5, hours: 2 });
+    ctx.renderHeader({ state: "stopped", stop_reason: "stop-file", hours: 2 });
     ctx.renderHeader({ state: "running", tick: 1 });
     ctx.renderHeader({ state: "stopped", stop_reason: "nothing-dispatchable" });
     eq(ids["run-pill-text"].textContent, "stopped: nothing-dispatchable");
-    eq(ids["run-cost"].textContent, "", "stale cost and hours");
+    eq(ids["run-hours"].textContent, "", "stale hours");
   });
   await test("move: a re-rendered poll leaves no pending class", async function () {
     // a screen that rebuilds cards only on a forced render, as the columns do

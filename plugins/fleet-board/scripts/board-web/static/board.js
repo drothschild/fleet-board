@@ -3,6 +3,7 @@
 "use strict";
 
 const BOARD_POLL_MS = 3000;
+const BOARD_HIDDEN_MS = 30000; // a hidden tab polls the board this often, and asks for no stuck refresh
 const RUN_FAST_MS = 3000;   // while a run is running or stopping
 const RUN_SLOW_MS = 15000;  // otherwise
 const TOAST_MS = 8000;
@@ -315,13 +316,16 @@ function mdInline(text, parent) {
 async function fetchBoard(force) {
   clearTimeout(S.boardTimer);
   const my = ++S.boardSeq;
+  // only a visible tab's poll may start a stuck check on the server (a scan of a large board takes seconds)
+  const hidden = !!document.hidden;
   try {
-    const r = await api("GET", "/api/board");
+    const r = await api("GET", hidden ? "/api/board?refresh_stuck=0" : "/api/board");
     if (my !== S.boardSeq) return;
     if (!r.ok) throw new Error(errorText(r));
     setOffline(false);
     S.board = r.data;
     renderBoard(r.data, force);
+    renderStuck(r.data);
     renderHeader(r.data.run);
     syncDrawer();
     if (isAlive(r.data.run) && !S.runFast) pollRun();
@@ -329,7 +333,29 @@ async function fetchBoard(force) {
     if (my !== S.boardSeq) return;
     setOffline(true, e.message);
   }
-  S.boardTimer = setTimeout(fetchBoard, BOARD_POLL_MS);
+  S.boardTimer = setTimeout(fetchBoard, document.hidden ? BOARD_HIDDEN_MS : BOARD_POLL_MS);
+}
+
+// renderStuck(board): the banner above the board counts the cards that carry a
+// stuck finding. A suppression text replaces the banner; a failed check is said
+// so beside it (the last good findings stay on the cards). While a supervisor
+// runs, its stuck cards are the ones it ignores (--ignore-stuck).
+function renderStuck(board) {
+  board = board || {};
+  const run = board.run || {};
+  const cards = Array.isArray(board.cards) ? board.cards : [];
+  const n = cards.filter(function (c) { return c && c.stuck && typeof c.stuck === "object"; }).length;
+  const suppressed = typeof run.stuck_suppressed === "string" && run.stuck_suppressed ? clean(run.stuck_suppressed, 300) : "";
+  const failed = !suppressed && run.stuck_error ? "stuck check failed: " + clean(run.stuck_error, 300) : "";
+  const banner = $("stuck-banner");
+  const note = $("stuck-note");
+  const bannerText = !suppressed && n > 0 ? (S.supervisor ? stuckIgnoredText(n) : stuckBannerText(n)) : "";
+  if (banner.textContent !== bannerText) banner.textContent = bannerText; // an unchanged alert is not announced again
+  banner.hidden = !bannerText;
+  const noteText = suppressed || failed;
+  if (note.textContent !== noteText) note.textContent = noteText;
+  note.hidden = !noteText;
+  renderSupervisor(); // Start follows the stuck count
 }
 
 // renderBoard(board, force): builds the columns when the state list changes,
@@ -402,8 +428,11 @@ function renderUnknown(cards, repo, force) {
   }
   g.el.hidden = false;
   g.count.textContent = String(cards.length);
-  const sig = JSON.stringify([repo, cards]);
-  if (!force && sig === g.sig) return;
+  const sig = cardsSig(repo, cards);
+  if (!force && sig === g.sig) {
+    refreshActivity(g.list, cards);
+    return;
+  }
   const frag = document.createDocumentFragment();
   for (const c of cards) frag.appendChild(renderCard(c, repo));
   g.list.replaceChildren(frag);
@@ -470,11 +499,34 @@ function toggleColumn(key) {
   col.el.classList.toggle("open", open);
 }
 
+// cardsSig(repo, cards): what a column re-renders on. An action's elapsed time
+// changes on every poll, so it is left out and updated in place instead.
+function cardsSig(repo, cards) {
+  return JSON.stringify([repo, cards], function (k, v) {
+    return k === "activity" && v && typeof v === "object" ? { action: v.action } : v;
+  });
+}
+
+// refreshActivity(list, cards): the activity line of each card, in place.
+function refreshActivity(list, cards) {
+  const byN = {};
+  for (const c of cards) if (c.activity) byN[String(c.number)] = cardActivityLine(c);
+  for (const li of Array.from(list.children)) {
+    const text = li.dataset ? byN[li.dataset.n] : undefined;
+    if (text === undefined) continue;
+    const line = li.querySelector(".card-exec");
+    if (line && line.textContent !== text) line.textContent = text;
+  }
+}
+
 function renderColumn(state, cards, repo, force) {
   const col = S.cols[state.key];
   col.count.textContent = String(cards.length);
-  const sig = JSON.stringify([repo, cards]);
-  if (!force && sig === col.sig) return;
+  const sig = cardsSig(repo, cards);
+  if (!force && sig === col.sig) {
+    refreshActivity(col.list, cards);
+    return;
+  }
   const top = col.list.scrollTop;
   const frag = document.createDocumentFragment();
   if (!cards.length) frag.appendChild(el("li", "col-empty", "Drop a card here"));
@@ -510,6 +562,8 @@ function renderCard(c, repo) {
   li.tabIndex = 0;
   li.draggable = true;
   if (c.active) li.classList.add("active");
+  const stuck = c.stuck && typeof c.stuck === "object" ? c.stuck : null;
+  if (stuck) li.classList.add("card--stuck");
   if (S.pendingMove === n) li.classList.add("pending");
 
   const id = el("div", "card-id");
@@ -519,6 +573,7 @@ function renderCard(c, repo) {
   }
   id.appendChild(document.createTextNode("#" + n));
   if (c.active) id.appendChild(el("span", "sr-only", "an agent is working on it now"));
+  if (stuck) id.appendChild(el("span", "card-stuck-badge", "STUCK"));
   if (c.acceptance_count > 0) id.appendChild(el("span", "card-acc", c.acceptance_count + " acceptance"));
   li.appendChild(id);
 
@@ -558,8 +613,12 @@ function renderCard(c, repo) {
     li.appendChild(el("div", "card-meta warn", fails + (fails === 1 ? " failed attempt" : " failed attempts")));
   }
 
-  const exec = cardExecLine(c);
-  if (exec) li.appendChild(el("div", "card-meta card-exec", exec));
+  if (stuck) {
+    li.appendChild(el("div", "card-meta card-stuck-detail", "stuck: " + clean(stuck.kind, 60) + (stuck.detail ? " — " + clean(stuck.detail, 300) : "")));
+    li.appendChild(el("div", "card-meta card-stuck-resolve", "resolve with: supervisor.sh stuck --release " + n));
+  }
+  const activity = cardActivityLine(c);
+  if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
 
   const labels = Array.isArray(c.labels) ? c.labels : [];
   if (labels.length) {
@@ -684,14 +743,14 @@ function runPillText(run) {
   }
 }
 
-// renderHeader(run): the pill, cost and hours, Start/Stop, and the log panel
+// renderHeader(run): the pill, hours, Start/Stop, and the log panel
 // (when run carries log_tail; /api/board's run does not).
 function renderHeader(run) {
   if (run) {
     const next = Object.assign({}, S.run, run);
     // the stop fields describe one run: never carry them into another
     if (run.state !== "stopped") {
-      for (const k of ["stop_reason", "cost", "hours"]) {
+      for (const k of ["stop_reason", "hours"]) {
         if (!(k in run)) delete next[k];
       }
     }
@@ -710,12 +769,11 @@ function renderHeader(run) {
   if (run.out_tail && run.out_tail.length) tip.push.apply(tip, run.out_tail);
   pill.title = tip.join("\n");
 
-  const cost = $("run-cost");
+  const hours = $("run-hours");
   const parts = [];
-  if (typeof run.cost === "number") parts.push("$" + run.cost.toFixed(2));
   if (typeof run.hours === "number") parts.push(formatHours(run.hours));
-  cost.textContent = parts.join(" · ");
-  cost.hidden = !(run.state === "stopped" && parts.length);
+  hours.textContent = parts.join(" · ");
+  hours.hidden = !(run.state === "stopped" && parts.length);
 
   const start = $("start-btn");
   const stop = $("stop-btn");
@@ -832,10 +890,7 @@ async function openDrawer(n, opener) {
     opener: opener || (prev ? prev.opener : document.activeElement),
     seq: prev ? prev.seq + 1 : 1,
     busy: false,
-    exec: null,       // the last /api/cards/<n>/execution reply
-    execSeq: 0,
-    execBusy: false,
-    req: null,        // the execution command that may be retried
+    usageSeq: 0,      // the newest /api/cards/<n>/usage request
   };
   S.drawer = d;
   clearDrawer(n);
@@ -855,7 +910,7 @@ async function openDrawer(n, opener) {
   }
   renderDrawer(card);
   $("dr-title").focus();
-  loadExecution(d);
+  loadCardUsage(d);
 }
 
 const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-acc-input", "dr-blk-input",
@@ -886,7 +941,7 @@ function clearDrawer(n) {
   $("dr-comments").replaceChildren();
   $("dr-meta").replaceChildren();
   setDrawerFields(false);
-  clearExecution();
+  clearCardUsage();
   updateDirty();
 }
 
@@ -2282,43 +2337,44 @@ function bindPlanner() {
 }
 
 // --- supervisor --------------------------------------------------------------
-// Supervisor mode starts when GET /api/supervisor answers 200. Nothing here
-// sends a mutating request on load or from a poll: commands run only from a
-// click or key press. Every server-provided value reaches the page through
-// textContent / createTextNode (clean() also drops control characters).
+// Supervisor mode starts when GET /api/supervisor answers 200 with a boolean
+// `running` (the board server always does; an older server answers 404 and the
+// page keeps its run controls). `running: false` is "no supervisor", not a
+// snapshot: Start launches one. Nothing here sends a mutating request on load or
+// from a poll: commands run only from a click or key press. Every server-provided
+// value reaches the page through textContent / createTextNode (clean() also
+// drops control characters). Tokens are the only unit shown; there is no money.
 
 const SUP_POLL_MS = 3000;
 const SUP_HIDDEN_MS = 30000;    // polling backs off while the document is hidden
-const SUP_EVENT_LIMIT = 100;    // events per page; the server allows at most 500
-const SUP_EVENT_PAGES = 5;      // pages fetched in one poll
-const SUP_EVENT_KEEP = 200;     // timeline rows kept
-const SUP_CONTROLS = ["start", "pause", "resume", "stop"];
+const SUP_DETECT_MS = 5000;     // detection is retried until the board answers with a running flag
+const SUP_USAGE_MS = 15000;     // /api/usage is re-read at most this often
+const SUP_ACK_MS = 30000;       // an acknowledged Start the supervisor never reports is dropped
 const CONTROL_RE = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/g;
 
 S.supMode = false;
-S.supervisor = null;  // the last /api/supervisor reply (or the body of a 409)
+S.supervisor = null;  // the last status snapshot of a RUNNING supervisor (or the body of a 409); null when none runs
+S.usage = null;       // the last token totals: {run, all_time, planner, error?}
 S.sup = {
   seq: 0,           // newest status poll; an older one is dropped
   ackSeq: 0,        // bumped by a command reply: polls started before it are dropped
   timerSeq: 0,
   idSeq: 0,
-  stale: false,     // unreachable, or the last poll failed
-  launchable: false, // stale because the board answered "unreachable": Start launches the service
-  stopped: false,   // a Stop reply said the service ended (terminated): its exit is expected
-  stoppedView: false, // the board is unreachable because of a deliberate stop, not an outage
+  seen: false,      // a status reply (running or not) has been adopted
+  stale: false,     // the last poll failed: the board server did not give a status
   reason: "",
   okAt: null,       // ms of the last good status poll
   busy: false,      // a command is in flight
   req: null,        // {key, id, body}: the command a click may retry
-  ack: null,        // {kind, phase, state_revision}: acknowledged, not yet observed
+  ack: null,        // {kind, phase, state_revision, at}: acknowledged, not yet observed
   hint: 0,          // the revision an acknowledgement reported
-  cursor: 0,        // last event sequence seen
-  seen: {},
-  events: [],
   notice: null,
   menuOpen: false,
   statusText: null,
+  tokensText: null,
   visBound: false,
+  usageAt: null,    // ms of the last /api/usage read
+  usageRunning: null, // whether a supervisor was running at that read
 };
 
 function clean(v, max) {
@@ -2365,6 +2421,25 @@ function fmtDuration(sec) {
   if (h) return h + "h " + m + "m " + s + "s";
   if (m) return m + "m " + s + "s";
   return s + "s";
+}
+
+// fmtInt(n): 1234 -> "1,234" (no locale: the page reads the same everywhere)
+function fmtInt(n) {
+  return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+// A token total from /api/usage. `total` is the sum of the counts that were
+// readable, so a total with unknown usage is a lower bound: "≥ n", never an
+// exact figure (an input of 0 beside unknown usage is not 0).
+function tokensText(t) {
+  if (!t || typeof t !== "object" || !isNum(t.total)) return "unknown";
+  const partial = t.partial === true || (isNum(t.unknown) && t.unknown > 0);
+  return partial ? "≥ " + fmtInt(t.total) + " (some usage unknown)" : fmtInt(t.total) + " tokens";
+}
+
+// One count of a usage row: null (the ledger could not read it) is "unknown", never 0.
+function countText(v) {
+  return isNum(v) ? fmtInt(v) : "unknown";
 }
 
 // msgText(reply): the reason the server gave, whatever key it used.
@@ -2424,19 +2499,28 @@ function hideNotice() {
 
 // --- supervisor: mode, polling ------------------------------------------------
 
-function looksLikeSupervisor(d) {
+// A status snapshot of a running supervisor (also the body a 409 carries).
+function isSnapshot(d) {
   return !!d && typeof d === "object" && !Array.isArray(d) &&
-    ("revision" in d || "desired_mode" in d || "unreachable" in d || "schema_version" in d);
+    ("revision" in d || "desired_mode" in d || "schema_version" in d);
 }
 
+// detectSupervisor(): the board server always answers GET /api/supervisor with a
+// running flag. Any other outcome (a thrown fetch, a non-200, a reply without the
+// flag) is a failure to ask, never "legacy mode": it is retried on a timer, and
+// the page keeps its run controls hidden meanwhile, so no Start goes to /api/run.
 async function detectSupervisor() {
-  let r;
+  if (S.supMode) return;
+  let r = null;
   try {
     r = await api("GET", "/api/supervisor");
   } catch (e) {
-    return; // fetchBoard reports an unreachable server; the legacy run controls stay
+    r = null;
   }
-  if (!r.ok || !looksLikeSupervisor(r.data)) return;
+  if (!r || !r.ok || typeof r.data.running !== "boolean") {
+    setTimeout(detectSupervisor, SUP_DETECT_MS);
+    return;
+  }
   enterSupervisorMode();
   await supervisorTick(r);
 }
@@ -2450,7 +2534,6 @@ function enterSupervisorMode() {
   root.hidden = false;
   const status = $("supervisor-status");
   if (!root.contains(status)) root.appendChild(status);
-  if (!root.contains($("supervisor-timeline"))) root.appendChild($("supervisor-timeline"));
   status.hidden = false;
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
@@ -2458,7 +2541,7 @@ function enterSupervisorMode() {
   $("start-btn").hidden = true;
   $("stop-btn").hidden = true;
   $("run-pill").hidden = true;
-  $("run-cost").hidden = true;
+  $("run-hours").hidden = true;
   $("supervisor-stop-menu").replaceChildren($("supervisor-drain-btn"), $("supervisor-cancel-btn"));
   setStopMenu(false);
   if (!S.sup.visBound) {
@@ -2468,7 +2551,6 @@ function enterSupervisorMode() {
       else supervisorTick();
     });
   }
-  if (S.drawer && S.drawer.n !== null && !S.drawer.exec) loadExecution(S.drawer);
 }
 
 function scheduleSupervisor(ms) {
@@ -2478,7 +2560,7 @@ function scheduleSupervisor(ms) {
   }, ms);
 }
 
-// supervisorTick(first): one status poll, then the event pages. first is an
+// supervisorTick(first): one status poll, then the token totals. first is an
 // already fetched /api/supervisor reply (the mode detection's).
 async function supervisorTick(first) {
   const sup = S.sup;
@@ -2495,115 +2577,96 @@ async function supervisorTick(first) {
   }
   if (seq !== sup.seq) return; // a newer poll owns the schedule
   if (r && !r.ok) failure = msgText(r);
-  if (r && r.ok && !looksLikeSupervisor(r.data)) failure = "unreadable supervisor status";
+  if (r && r.ok && typeof r.data.running !== "boolean") failure = "unreadable supervisor status";
+  if (r && r.ok && r.data.running === true && !isSnapshot(r.data)) failure = "unreadable supervisor status";
   if (failure) {
     markStale("supervisor status unavailable: " + failure);
   } else if (ack0 === sup.ackSeq) {
-    adoptSnapshot(r.data);
+    if (r.data.running) adoptSnapshot(r.data);
+    else adoptNotRunning(r.data);
   }
-  if (!failure && !sup.stale && ack0 === sup.ackSeq) await pollEvents(seq);
+  if (!failure && ack0 === sup.ackSeq) {
+    const running = r.data.running === true;
+    const due = sup.usageAt === null || Date.now() - sup.usageAt >= SUP_USAGE_MS || sup.usageRunning !== running;
+    if (due) {
+      await refreshUsage(seq, r.data);
+    } else if (!running) { // a not-running reply carries the ledger totals for free
+      S.usage = { run: null, all_time: r.data.all_time, planner: r.data.planner, error: r.data.error };
+      renderTokens();
+    }
+  }
   if (seq !== sup.seq) return;
   scheduleSupervisor(document.hidden ? SUP_HIDDEN_MS : SUP_POLL_MS);
 }
 
 function markStale(reason) {
   S.sup.stale = true;
-  S.sup.launchable = false; // the board server itself did not answer: nothing can launch anything
-  S.sup.stoppedView = false;
   S.sup.reason = reason;
   renderSupervisor();
 }
 
-// adoptSnapshot(data): replaces the last status with a fresh full snapshot.
+// adoptSnapshot(data): replaces the last status with a fresh full snapshot of a running supervisor.
 function adoptSnapshot(data) {
   const sup = S.sup;
   const was = sup.stale;
   S.supervisor = data;
+  sup.seen = true;
   sup.hint = 0;
-  const known = data.last_known && typeof data.last_known === "object" ? data.last_known : null;
-  // The service exits by design after Stop: an unreachable answer then means stopped, not an outage.
-  sup.stoppedView = data.unreachable === true &&
-    (sup.stopped || (!!known && known.phase === "stopped" && known.ready === false));
-  sup.launchable = data.unreachable === true;
-  if (data.unreachable !== true) sup.stopped = false;
-  sup.stale = data.unreachable === true && !sup.stoppedView;
-  sup.reason = sup.stale ? clean(data.reason || data.error || "the supervisor did not answer", 300) : "";
-  if (!sup.stale) sup.okAt = Date.now();
+  sup.stale = false;
+  sup.reason = "";
+  sup.okAt = Date.now();
   const ack = sup.ack;
-  if (ack && !sup.stale) {
-    const view = supView() || {};
-    const phase = supPhase(view);
+  if (ack) {
+    const phase = supPhase(data);
     const reached = ack.kind === "pause" ? phase === "paused"
-      : ack.kind === "stop" ? phase === "stopped" || phase === "idle"
-      : view.ready === true && phase === "running";
-    const moved = isNum(ack.state_revision) && isNum(view.revision) && view.revision > ack.state_revision;
-    if (reached || moved) sup.ack = null;
+      : ack.kind === "stop" ? phase === "stopping" || phase === "stopped" || phase === "idle"
+      : data.ready === true && phase === "running";
+    const moved = isNum(ack.state_revision) && isNum(data.revision) && data.revision > ack.state_revision;
+    // a Start is not done until the supervisor is ready (its startup check has finished)
+    if ((reached || moved) && (ack.kind !== "start" || data.ready === true)) sup.ack = null;
   }
-  if (was && !sup.stale) fetchBoard(true); // reconnected: a fresh board with the snapshot
-  renderSupervisor();
+  if (was) fetchBoard(true); // reconnected: a fresh board with the snapshot
+  renderStuck(S.board); // the banner's wording follows whether a supervisor runs; it renders the controls
 }
 
-async function pollEvents(seq) {
+// adoptNotRunning(data): the board answered {running: false}. That is a state of its
+// own (Start launches a supervisor), never a snapshot and never an outage.
+function adoptNotRunning(data) {
   const sup = S.sup;
-  for (let page = 0; page < SUP_EVENT_PAGES; page++) {
-    let r;
-    try {
-      r = await api("GET", "/api/supervisor/events?after=" + sup.cursor + "&limit=" + SUP_EVENT_LIMIT);
-    } catch (e) {
-      return;
-    }
-    if (seq !== sup.seq) return;
-    if (!r.ok) return;
-    const d = r.data || {};
-    if (d.snapshot_required === true) {
-      // the cursor was compacted away: start over from a full snapshot
-      sup.cursor = 0;
-      sup.seen = {};
-      sup.events = [];
-      renderTimeline();
-      fetchBoard(true);
-      try {
-        const s = await api("GET", "/api/supervisor");
-        if (seq === sup.seq && s.ok && looksLikeSupervisor(s.data)) adoptSnapshot(s.data);
-      } catch (e) {
-        markStale("supervisor status unavailable: no answer from the board server");
-      }
-      return;
-    }
-    const list = Array.isArray(d.events) ? d.events : [];
-    let top = sup.cursor;
-    for (const ev of list) {
-      if (!ev || typeof ev !== "object" || !isNum(ev.sequence)) continue;
-      if (ev.sequence > top) top = ev.sequence;
-      if (sup.seen[ev.sequence]) continue;
-      sup.seen[ev.sequence] = true;
-      sup.events.push(ev);
-    }
-    const next = isNum(d.next_cursor) ? d.next_cursor : top;
-    if (next > sup.cursor) sup.cursor = next; // the cursor never moves back
-    if (top > sup.cursor) sup.cursor = top;
-    sup.events.sort(function (a, b) { return a.sequence - b.sequence; });
-    if (sup.events.length > SUP_EVENT_KEEP) {
-      for (const old of sup.events.splice(0, sup.events.length - SUP_EVENT_KEEP)) delete sup.seen[old.sequence];
-    }
-    renderTimeline();
-    if (list.length < SUP_EVENT_LIMIT) return;
+  const was = sup.stale;
+  S.supervisor = null;
+  sup.seen = true;
+  sup.hint = 0;
+  sup.stale = false;
+  sup.reason = "";
+  sup.okAt = Date.now();
+  const ack = sup.ack;
+  if (ack && (ack.kind === "stop" || ack.kind === "pause" || Date.now() - ack.at > SUP_ACK_MS)) sup.ack = null;
+  if (was) fetchBoard(true);
+  renderStuck(S.board);
+}
+
+// refreshUsage(seq, data): the token totals. /api/usage is always answered; when it
+// is not, a not-running reply still carries the ledger totals.
+async function refreshUsage(seq, data) {
+  S.sup.usageAt = Date.now();
+  S.sup.usageRunning = !!(data && data.running === true);
+  let usage = null;
+  try {
+    const r = await api("GET", "/api/usage");
+    if (r.ok && r.data && typeof r.data === "object" && !Array.isArray(r.data)) usage = r.data;
+  } catch (e) {
+    usage = null;
   }
+  if (seq !== S.sup.seq) return;
+  if (!usage && data && data.running === false) {
+    usage = { run: null, all_time: data.all_time, planner: data.planner, error: data.error };
+  }
+  if (usage) S.usage = usage;
+  renderTokens();
 }
 
 // --- supervisor: rendering ----------------------------------------------------
-
-function supView() {
-  const s = S.supervisor;
-  if (!s) return null;
-  const known = s.unreachable && s.last_known && typeof s.last_known === "object" ? s.last_known : null;
-  if (S.sup.stoppedView) {
-    // Stopped on purpose: the runtime fields of the last answer no longer describe anything live.
-    return Object.assign({}, known || {}, { desired_mode: "stopped", phase: "stopped", ready: false,
-      heartbeat: null, capacity: null, queue: null });
-  }
-  return known || s;
-}
 
 function supPhase(v) {
   return typeof v.phase === "string" && v.phase ? v.phase : null;
@@ -2623,63 +2686,76 @@ function supItem(cls, label, value) {
 function renderSupervisor() {
   if (!S.supMode) return;
   const sup = S.sup;
-  const snap = S.supervisor;
-  const view = supView() || {};
+  const view = S.supervisor || {};
+  const running = !!S.supervisor;
   const frag = document.createDocumentFragment();
   const phase = supPhase(view);
 
-  // headline: desired mode, observed phase, readiness
+  // headline: desired mode, observed phase, readiness (or: no supervisor)
   const head = el("span", "sup-head");
-  head.appendChild(supItem("sup-mode", "desired", clean(view.desired_mode || "unknown", 40)));
-  if (sup.ack) {
-    head.appendChild(supItem("sup-phase pending", "phase", clean(sup.ack.phase, 40) + " (acknowledged, waiting for the supervisor to report it)"));
+  if (running) {
+    head.appendChild(supItem("sup-mode", "desired", clean(view.desired_mode || "unknown", 40)));
+    if (sup.ack) {
+      head.appendChild(supItem("sup-phase pending", "phase", clean(sup.ack.phase, 40) + " (acknowledged, waiting for the supervisor to report it)"));
+    } else {
+      head.appendChild(supItem("sup-phase", "phase", clean(phase || "unknown", 40)));
+    }
+    head.appendChild(supItem(view.ready === true ? "" : "sup-warn", "", view.ready === true ? "ready" : view.ready === false ? "not ready" : "readiness unknown"));
+  } else if (sup.seen) {
+    head.appendChild(supItem("sup-mode sup-off", "supervisor", "not running"));
+    if (sup.ack) head.appendChild(supItem("sup-phase pending", "phase", clean(sup.ack.phase, 40) + " (acknowledged, waiting for the supervisor to report it)"));
   } else {
-    head.appendChild(supItem("sup-phase", "phase", clean(phase || "unknown", 40)));
+    head.appendChild(supItem("sup-warn", "supervisor", "status unknown"));
   }
-  head.appendChild(supItem(view.ready === true ? "" : "sup-warn", "", view.ready === true ? "ready" : view.ready === false ? "not ready" : "readiness unknown"));
   frag.appendChild(head);
 
-  if (sup.stoppedView) {
-    frag.appendChild(supItem("", "stopped", "the service exited after Stop; Start launches it again"));
-  }
   if (sup.stale) {
-    const at = snap ? (snap.last_known_at !== undefined && snap.last_known_at !== null ? snap.last_known_at : supHeartbeatAt(view)) : null;
-    const ms = toMs(at) !== null ? toMs(at) : sup.okAt;
     const row = el("span", "sup-item sup-warn sup-stale");
     row.appendChild(el("span", "sup-k", "unreachable"));
     row.appendChild(el("span", "sup-v", clean(sup.reason || "no connection", 300)));
     frag.appendChild(row);
-    if (ms !== null) {
+    if (sup.okAt !== null) {
       const when = el("span", "sup-item");
       when.appendChild(el("span", "sup-k", "last known"));
-      const t = el("time", "sup-v", typeof at === "string" && toMs(at) !== null ? clean(at, 64) : fmtUtc(ms));
-      t.setAttribute("datetime", new Date(ms).toISOString());
+      const t = el("time", "sup-v", fmtUtc(sup.okAt));
+      t.setAttribute("datetime", new Date(sup.okAt).toISOString());
       when.appendChild(t);
-      when.appendChild(el("span", "sup-v", ageText(ms)));
+      when.appendChild(el("span", "sup-v", ageText(sup.okAt)));
       frag.appendChild(when);
     }
   }
 
-  // slots: never shown as 0 when the supervisor cannot say
-  const capacity = view.capacity && typeof view.capacity === "object" ? view.capacity : {};
-  const cap = isNum(capacity.global_cap) ? String(capacity.global_cap) : "unknown";
-  if (sup.stale || !isNum(capacity.slots)) {
-    frag.appendChild(supItem("sup-warn", "", "occupancy unknown"));
-    frag.appendChild(supItem("", "global cap", cap));
-  } else {
-    frag.appendChild(supItem("", "slots", capacity.slots + " / " + cap));
-  }
-  const providers = capacity.per_provider && typeof capacity.per_provider === "object" ? capacity.per_provider : {};
-  for (const name of Object.keys(providers).slice(0, 20)) {
-    const known = !sup.stale && isNum(providers[name]);
-    frag.appendChild(supItem("sup-prov", clean(name, 60), known ? providers[name] : "unknown"));
+  if (running || sup.stale) {
+    // slots: never shown as 0 when the supervisor cannot say
+    const capacity = view.capacity && typeof view.capacity === "object" ? view.capacity : {};
+    const cap = isNum(capacity.global_cap) ? String(capacity.global_cap) : "unknown";
+    if (sup.stale || !isNum(capacity.slots)) {
+      frag.appendChild(supItem("sup-warn", "", "occupancy unknown"));
+      frag.appendChild(supItem("", "global cap", cap));
+    } else {
+      frag.appendChild(supItem("", "slots", capacity.slots + " / " + cap));
+    }
+    const providers = capacity.per_provider && typeof capacity.per_provider === "object" ? capacity.per_provider : {};
+    for (const name of Object.keys(providers).slice(0, 20)) {
+      const known = !sup.stale && isNum(providers[name]);
+      frag.appendChild(supItem("sup-prov", clean(name, 60), known ? providers[name] : "unknown"));
+    }
+
+    const counts = view.queue && typeof view.queue === "object" ? view.queue : {};
+    for (const k of ["ready", "running", "waiting", "attention"]) {
+      const n = counts[k];
+      const warn = k === "attention" && isNum(n) && n > 0;
+      frag.appendChild(supItem(warn ? "sup-warn" : "", k, isNum(n) ? n : "unknown"));
+    }
   }
 
-  const counts = view.queue && typeof view.queue === "object" ? view.queue : {};
-  for (const k of ["ready", "running", "waiting", "attention"]) {
-    const n = counts[k];
-    const warn = k === "attention" && isNum(n) && n > 0;
-    frag.appendChild(supItem(warn ? "sup-warn" : "", k, isNum(n) ? n : "unknown"));
+  // a provider the supervisor holds back says why
+  const health = view.provider_health && typeof view.provider_health === "object" ? view.provider_health : {};
+  for (const name of Object.keys(health).slice(0, 20)) {
+    const h = health[name] && typeof health[name] === "object" ? health[name] : {};
+    let why = h.reason ? clean(h.reason, 200) : "no reason given";
+    if (isNum(h.until)) why += " (until " + fmtUtc(h.until * 1000) + ")";
+    frag.appendChild(supItem("sup-warn", "unhealthy " + clean(name, 60), why));
   }
 
   if (view.mode === "paused" && typeof view.pause_reason === "string" && view.pause_reason) {
@@ -2698,11 +2774,37 @@ function renderSupervisor() {
     sup.statusText = text;
     $("supervisor-status").replaceChildren(frag);
   }
-  $("supervisor-status").setAttribute("aria-label", "Supervisor status: desired " + clean(view.desired_mode || "unknown", 40) + ", phase " + clean(sup.ack ? sup.ack.phase : phase || "unknown", 40));
+  $("supervisor-status").setAttribute("aria-label", "Supervisor status: " + (running
+    ? "desired " + clean(view.desired_mode || "unknown", 40) + ", phase " + clean(sup.ack ? sup.ack.phase : phase || "unknown", 40)
+    : sup.seen ? "not running" : "unknown"));
 
   renderSupervisorControls(view);
+  renderTokens();
   $("supervisor-retry-btn").hidden = !sup.stale;
   $("supervisor-retry-btn").disabled = false;
+}
+
+// renderTokens(): "This run", then "All time", then the planner on its own line.
+// Counts are tokens only; a total with unknown usage is a lower bound.
+function renderTokens() {
+  const u = S.usage;
+  const frag = document.createDocumentFragment();
+  const runTokens = [u && u.run, S.supervisor && S.supervisor.run_tokens].filter(function (t) {
+    return t && typeof t === "object" && isNum(t.total);
+  })[0];
+  let run;
+  if (!S.sup.seen) run = "unknown";
+  else if (!S.supervisor) run = "none (no supervisor running)";
+  else run = tokensText(runTokens);
+  frag.appendChild(el("span", "sup-item sup-tok", "This run: " + run));
+  frag.appendChild(el("span", "sup-item sup-tok", "All time: " + tokensText(u && u.all_time)));
+  frag.appendChild(el("span", "sup-item sup-tok sup-tok-planner", "Planner: " + tokensText(u && u.planner)));
+  if (u && u.error) frag.appendChild(el("span", "sup-item sup-warn", "usage: " + clean(u.error, 200)));
+  const text = frag.textContent;
+  if (text !== S.sup.tokensText) {
+    S.sup.tokensText = text;
+    $("supervisor-tokens").replaceChildren(frag);
+  }
 }
 
 // setControl(btn, enabled, reason): a disabled control says why in its title and
@@ -2725,20 +2827,22 @@ function renderSupervisorControls(view) {
   const sup = S.sup;
   const desired = view.desired_mode;
   const phase = supPhase(view);
-  // Down: the board answered "unreachable". Start launches the service; the rest need it running.
-  const down = sup.stale && sup.launchable;
-  const stopped = sup.stoppedView;
+  const notRunning = sup.seen && !sup.stale && !S.supervisor;
   let gate = null;
-  if (sup.stale && !sup.launchable) gate = "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Retry the connection first.";
-  else if (!down && !stopped && (!S.supervisor || !isNum(S.supervisor.revision))) gate = "No supervisor status yet.";
+  if (sup.stale) gate = "The supervisor status is unavailable (" + clean(sup.reason || "no connection", 120) + "). Retry the connection first.";
+  else if (!sup.seen) gate = "No supervisor status yet.";
   else if (sup.busy) gate = "Another supervisor command is in flight.";
-  const rest = gate || (down ? "The supervisor is unreachable (" + clean(sup.reason || "no connection", 120) + "). Start launches it; this needs it running." : null);
+  const rest = gate || (notRunning ? "No supervisor is running: Start launches one." : null);
   const start = $("supervisor-start-btn");
   const pause = $("supervisor-pause-btn");
   const resume = $("supervisor-resume-btn");
   const stop = $("supervisor-stop-btn");
-  setControl(start, !gate && (down || stopped || (desired !== "paused" && phase !== "draining" && phase !== "cancelling")),
-    gate || (desired === "paused" ? "The session is paused: use Resume." : "The supervisor is stopping."));
+  // Start launches a supervisor when none runs, and resumes a paused one; it does nothing for a running one.
+  let startWhy = gate;
+  if (!startWhy && notRunning) startWhy = stuckStartGate();
+  else if (!startWhy && (phase === "stopping" || phase === "draining" || phase === "cancelling")) startWhy = "The supervisor is stopping.";
+  else if (!startWhy && !notRunning && desired === "running") startWhy = "A supervisor is already running.";
+  setControl(start, !startWhy, startWhy);
   setControl(pause, !rest && desired === "running",
     rest || "Nothing is running to pause (desired mode: " + clean(desired || "unknown", 40) + ").");
   setControl(resume, !rest && desired === "paused",
@@ -2750,48 +2854,34 @@ function renderSupervisorControls(view) {
   pause.classList.toggle("primary", !pause.disabled);
   resume.classList.toggle("primary", pause.disabled && !resume.disabled);
   start.classList.toggle("primary", pause.disabled && resume.disabled && !start.disabled);
-  renderExecution(S.drawer); // the card controls follow the same stale/busy gate
 }
 
-function renderTimeline() {
-  const frag = document.createDocumentFragment();
-  for (const ev of S.sup.events) frag.appendChild(renderEvent(ev));
-  $("supervisor-timeline").replaceChildren(frag);
+// The cards the board marks stuck; Start (with no supervisor running) waits for none.
+function stuckCount() {
+  const cards = S.board && Array.isArray(S.board.cards) ? S.board.cards : [];
+  return cards.filter(function (c) { return c && c.stuck && typeof c.stuck === "object"; }).length;
 }
 
-function eventDetail(ev) {
-  const parts = [];
-  if (ev.card !== undefined && ev.card !== null) parts.push("card #" + clean(ev.card, 20));
-  const p = ev.payload;
-  if (p && typeof p === "object" && !Array.isArray(p)) {
-    for (const k of Object.keys(p).slice(0, 8)) {
-      const v = p[k];
-      parts.push(clean(k, 40) + ": " + (v !== null && typeof v === "object" ? clean(JSON.stringify(v), 160) : clean(v, 160)));
-    }
-  } else if (typeof p === "string") {
-    parts.push(clean(p, 200));
-  }
-  if (typeof ev.message === "string") parts.push(clean(ev.message, 200));
-  return parts.join(" · ");
+// stuckStartGate(): why Start must wait when no supervisor runs, else null. The
+// supervisor's own startup check would refuse while cards are stuck, while a
+// run holds the lock, or before the board has any stuck result to go on.
+function stuckStartGate() {
+  const run = S.board && S.board.run ? S.board.run : {};
+  if (typeof run.stuck_suppressed === "string" && run.stuck_suppressed) return clean(run.stuck_suppressed, 300);
+  const n = stuckCount();
+  if (n > 0) return stuckBannerText(n);
+  if (run.stuck_known === false && run.stuck_error) return "stuck check failed: " + clean(run.stuck_error, 300);
+  if (run.stuck_known === false && run.stuck_checking === true) return "checking for stuck cards…";
+  return null;
 }
 
-// One timeline row: the date and age come from the structured timestamp only.
-function renderEvent(ev) {
-  const li = el("li", "sup-ev");
-  li.dataset.seq = String(ev.sequence);
-  li.appendChild(el("span", "sup-ev-type", clean(ev.type || "event", 60)));
-  const ms = toMs(ev.timestamp);
-  if (ms !== null) {
-    const t = el("time", "sup-ev-time", fmtUtc(ms));
-    t.setAttribute("datetime", new Date(ms).toISOString());
-    li.appendChild(t);
-    li.appendChild(el("span", "sup-ev-age", ageText(ms)));
-  } else {
-    li.appendChild(el("span", "sup-ev-time", "time unknown"));
-  }
-  const detail = eventDetail(ev);
-  if (detail) li.appendChild(el("span", "sup-ev-detail", detail));
-  return li;
+function stuckIgnoredText(n) {
+  return n + (n === 1 ? " stuck card" : " stuck cards") + " — ignored by the running supervisor (--ignore-stuck)";
+}
+
+function stuckBannerText(n) {
+  return n + (n === 1 ? " stuck card — the supervisor will not start until it is resolved"
+    : " stuck cards — the supervisor will not start until they are resolved");
 }
 
 // --- supervisor: commands -----------------------------------------------------
@@ -2807,8 +2897,7 @@ const ACK_PHASE = { start: "starting", resume: "starting", pause: "pausing", sto
 // acknowledgement only: the page shows it as such until a poll observes it.
 async function supCommand(kind, extra) {
   const sup = S.sup;
-  const launching = kind === "start" && sup.stale && sup.launchable;
-  if (sup.busy || (sup.stale && !launching) || !S.supervisor) return;
+  if (sup.busy || sup.stale || !sup.seen) return;
   const key = kind + (extra && extra.mode ? ":" + extra.mode : "");
   hideNotice();
   sup.busy = true;
@@ -2818,13 +2907,16 @@ async function supCommand(kind, extra) {
   });
   sup.busy = false;
   const verb = kind === "stop" && extra ? "Stop (" + extra.mode + ")" : kind.charAt(0).toUpperCase() + kind.slice(1);
+  let refetch = false;
   if (!r) {
     showNotice(verb + ": the board server did not answer. Click again to retry the same request.");
   } else if (r.status === 409) {
     const cur = r.data && (r.data.snapshot || r.data.current);
     ++sup.ackSeq;
     sup.ack = null;
-    if (looksLikeSupervisor(cur)) adoptSnapshot(cur);
+    if (isSnapshot(cur)) adoptSnapshot(cur);
+    // no supervisor answered the command: ask again what is running
+    if (r.data && r.data.code === "not_running") refetch = true;
     showNotice(verb + " not applied, the supervisor state changed: " + msgText(r));
   } else if (!r.ok) {
     showNotice(verb + " failed: " + msgText(r));
@@ -2832,11 +2924,10 @@ async function supCommand(kind, extra) {
     const d = r.data || {};
     ++sup.ackSeq;
     if (isNum(d.state_revision)) sup.hint = d.state_revision;
-    if (kind === "stop" && d.terminated === true) sup.stopped = true; // the service exited by design
-    if (kind === "start") sup.stopped = false;
-    sup.ack = { kind: kind, phase: typeof d.phase === "string" && d.phase ? d.phase : ACK_PHASE[kind], state_revision: isNum(d.state_revision) ? d.state_revision : null };
+    sup.ack = { kind: kind, phase: typeof d.phase === "string" && d.phase ? d.phase : ACK_PHASE[kind], state_revision: isNum(d.state_revision) ? d.state_revision : null, at: Date.now() };
   }
   renderSupervisor();
+  if (refetch) supervisorTick();
 }
 
 function setStopMenu(open, focusFirst) {
@@ -2918,181 +3009,75 @@ function bindSupervisor() {
   document.addEventListener("click", function (e) {
     if (S.sup.menuOpen && !menu.contains(e.target) && !stop.contains(e.target)) setStopMenu(false);
   });
-
-  $("dr-exec-pause").addEventListener("click", function () {
-    execAction("pause", "pause", "Pause card", function () { return { mode: "drain" }; });
-  });
-  $("dr-exec-resume").addEventListener("click", function () {
-    execAction("resume", "resume", "Resume card", function () { return {}; });
-  });
-  $("dr-release-reservations").addEventListener("click", function () {
-    execAction("release", "release-reservations", "Release reservations", function () {
-      const x = (S.drawer && S.drawer.exec) || {};
-      return { reason: resolveReason("release reservations"), expected_reservation_revision: x.reservation_revision };
-    });
-  });
-  for (const action of ["retry", "record_usage", "confirm_effect", "abandon"]) {
-    $("dr-resolve-" + action).addEventListener("click", function () {
-      if (action === "abandon" && !confirm("Abandon stops further work on this card. Continue?")) return;
-      execAction("resolve:" + action, "resolve", "Resolve (" + action + ")", function () {
-        return {
-          action: action,
-          reason: resolveReason(action),
-          evidence: lines($("dr-resolve-evidence").value),
-        };
-      });
-    });
-  }
 }
 
-// --- supervisor: card execution -----------------------------------------------
+// --- card: activity and token drill-down --------------------------------------
 
-function cardExecLine(c) {
-  const parts = [];
-  if (c.activity) parts.push("activity: " + clean(c.activity, 60));
-  if (c.wait_reason) parts.push("waiting: " + clean(c.wait_reason, 120));
-  if (c.reservation_state) parts.push("reservation: " + clean(c.reservation_state, 60));
-  return parts.join(" · ");
+// The board's card carries activity: {action, elapsed_seconds} while a supervisor action runs on it.
+function cardActivityLine(c) {
+  const a = c.activity;
+  if (!a || typeof a !== "object") return "";
+  return "activity: " + clean(a.action, 60) + " · " + fmtDuration(a.elapsed_seconds);
 }
 
-function resolveReason(what) {
-  const typed = $("dr-resolve-reason").value.trim();
-  if (!typed) throw new Error("A reason is required before you can " + what + ".");
-  return typed;
+function clearCardUsage() {
+  $("dr-usage-sec").hidden = true;
+  $("dr-usage-total").textContent = "";
+  $("dr-usage-cols").replaceChildren();
 }
 
-function execRevision(d) {
-  if (d.exec && isNum(d.exec.revision)) return d.exec.revision;
-  return S.supervisor && isNum(S.supervisor.revision) ? S.supervisor.revision : 0;
-}
-
-function clearExecution() {
-  $("dr-exec-sec").hidden = true;
-  for (const id of ["dr-activity", "dr-elapsed", "dr-heartbeat-age", "dr-progress-age", "dr-retry-count", "dr-wait-reason", "dr-reservation-state"]) {
-    $(id).textContent = "";
-  }
-  $("dr-logs").replaceChildren();
-  $("dr-attempts").replaceChildren();
-  $("dr-resolve-reason").value = "";
-  $("dr-resolve-evidence").value = "";
-}
-
-async function loadExecution(d) {
-  if (!S.supMode || !d || d.n === null) return;
-  const seq = ++d.execSeq;
+async function loadCardUsage(d) {
+  if (!d || d.n === null) return;
+  const seq = ++d.usageSeq;
   let r;
   try {
-    r = await api("GET", "/api/cards/" + d.n + "/execution");
+    r = await api("GET", "/api/cards/" + d.n + "/usage");
   } catch (e) {
     r = null;
   }
-  if (S.drawer !== d || seq !== d.execSeq) return;
-  if (!r) {
-    showNotice("Could not refresh execution for #" + d.n + ": the board server did not answer.");
-  } else if (r.ok) {
-    d.exec = r.data;
-  } else {
-    if (r.data && r.data.execution && typeof r.data.execution === "object") d.exec = r.data.execution;
-    showNotice("Could not refresh execution for #" + d.n + ": " + msgText(r));
-  }
-  renderExecution(d);
+  if (S.drawer !== d || seq !== d.usageSeq) return;
+  // a failed read keeps what is showing (clearDrawer emptied it for a new card): never a wrong figure, never a blank
+  if (r && r.ok) renderCardUsage(r.data);
 }
 
-// renderExecution(d): the drawer's Execution section. Activity, elapsed,
-// heartbeat age and progress age are separate fields; a field the supervisor did
-// not report reads "unknown", never zero.
-function renderExecution(d) {
-  const sec = $("dr-exec-sec");
-  if (!d || d.n === null || !S.supMode) {
-    sec.hidden = true;
-    return;
+// renderCardUsage(u): the drawer's drill-down, columns then actions. A count the
+// ledger could not read is "unknown"; the log is a reference, shown as text.
+function renderCardUsage(u) {
+  const columns = u && Array.isArray(u.columns) ? u.columns : [];
+  $("dr-usage-sec").hidden = false;
+  $("dr-usage-total").textContent = "Total: " + tokensText(u && u.totals);
+  const ol = document.createDocumentFragment();
+  for (const col of columns.slice(0, 30)) {
+    if (!col || typeof col !== "object") continue;
+    const li = el("li", "dr-usage-col");
+    const head = el("div", "dr-usage-col-head");
+    head.appendChild(el("span", "dr-usage-col-name", clean(col.column || "unknown column", 60)));
+    head.appendChild(el("span", "dr-usage-col-total", tokensText(col.totals)));
+    li.appendChild(head);
+    const ul = el("ul", "dr-usage-actions");
+    for (const a of (Array.isArray(col.actions) ? col.actions : []).slice(0, 200)) {
+      if (!a || typeof a !== "object") continue;
+      const row = el("li", "dr-usage-action");
+      row.appendChild(el("span", "dr-usage-what", [a.action, a.role, a.model].map(function (v) { return clean(v || "unknown", 80); }).join(" · ")));
+      row.appendChild(el("span", "dr-usage-counts", "input " + countText(a.input) + " · output " + countText(a.output) +
+        " · cache read " + countText(a.cache_read) + " · cache write " + countText(a.cache_write)));
+      row.appendChild(el("span", "dr-usage-log", a.log ? "log " + clean(a.log, 200) : "no log"));
+      ul.appendChild(row);
+    }
+    li.appendChild(ul);
+    ol.appendChild(li);
   }
-  sec.hidden = false;
-  const x = d.exec || {};
-  $("dr-activity").textContent = x.activity ? clean(x.activity, 80) : "unknown";
-  $("dr-elapsed").textContent = fmtDuration(x.elapsed_seconds);
-  $("dr-heartbeat-age").textContent = fmtDuration(x.heartbeat_age_seconds);
-  $("dr-progress-age").textContent = fmtDuration(x.progress_age_seconds);
-  $("dr-retry-count").textContent = isNum(x.retry_count) ? String(x.retry_count) : "unknown";
-
-  let wait = x.wait_reason ? clean(x.wait_reason, 300) : d.exec ? "not waiting" : "unknown";
-  if (x.blocking_card !== undefined && x.blocking_card !== null) wait += " (blocked by card #" + clean(x.blocking_card, 20) + ")";
-  if (x.blocking_path) wait += " (path " + clean(x.blocking_path, 200) + ")";
-  $("dr-wait-reason").textContent = wait;
-  const rs = x.reservation_state ? clean(x.reservation_state, 80) : d.exec ? "none" : "unknown";
-  $("dr-reservation-state").textContent = rs + (isNum(x.reservation_revision) ? " (revision " + x.reservation_revision + ")" : "");
-
-  const logs = Array.isArray(x.logs) ? x.logs : [];
-  const ul = document.createDocumentFragment();
-  for (const l of logs.slice(0, 50)) {
-    const id = l && typeof l === "object" ? l.id : l;
-    ul.appendChild(el("li", "dr-log", clean(id, 200)));
-  }
-  if (!logs.length) ul.appendChild(el("li", "dr-log none", "no logs"));
-  $("dr-logs").replaceChildren(ul);
-
-  // Attempt history, oldest first: id, state and provider are text, never markup.
-  const history = Array.isArray(x.attempt_history) ? x.attempt_history : [];
-  const attempts = document.createDocumentFragment();
-  let shown = 0;
-  for (const a of history.slice(-50)) {
-    if (!a || typeof a !== "object") continue;
-    shown++;
-    let line = clean(a.id, 120) + " · " + clean(a.state, 40);
-    if (a.provider) line += " · " + clean(a.provider, 60);
-    if (a.quarantine_reason) line += " · " + clean(a.quarantine_reason, 160);
-    attempts.appendChild(el("li", "dr-log", line));
-  }
-  if (!shown) attempts.appendChild(el("li", "dr-log none", d.exec ? "no attempts" : "unknown"));
-  $("dr-attempts").replaceChildren(attempts);
-
-  let gate = null;
-  if (S.sup.stale) gate = "The supervisor is unreachable. Retry the connection first.";
-  else if (!d.exec) gate = "Execution status is not loaded.";
-  else if (d.execBusy || S.sup.busy) gate = "A command is in flight.";
-  setControl($("dr-exec-pause"), !gate && x.paused !== true, gate || "The card is already paused.", "dr-exec-why");
-  setControl($("dr-exec-resume"), !gate && x.paused === true, gate || "The card is not paused.", "dr-exec-why");
-  let rel = gate;
-  if (!rel && x.paused !== true) rel = "Pause the card first: reservations are released only while it is paused.";
-  else if (!rel && x.writer !== false) rel = "A writer may still be active: reservations stay held until none is.";
-  else if (!rel && !isNum(x.reservation_revision)) rel = "No reservation revision to release.";
-  setControl($("dr-release-reservations"), !rel, rel, "dr-release-why");
-  for (const action of ["retry", "record_usage", "confirm_effect", "abandon"]) {
-    setControl($("dr-resolve-" + action), !gate, gate, "dr-resolve-why");
-  }
-}
-
-// execAction(key, suffix, verb, build): a card command, then a fresh read of the
-// card's execution whatever the answer was.
-async function execAction(key, suffix, verb, build) {
-  const d = S.drawer;
-  if (!d || d.n === null || d.execBusy || S.sup.stale || !d.exec) return;
-  hideNotice();
-  d.execBusy = true;
-  renderExecution(d);
-  let extra;
-  try { extra = build(); } catch (e) {
-    // e.g. a missing reason: say so and send nothing (never invent an audit reason).
-    d.execBusy = false;
-    renderExecution(d);
-    showNotice(verb + ": " + e.message);
-    return;
-  }
-  const r = await runCommand(d, key, "/api/cards/" + d.n + "/execution/" + suffix, function () {
-    return Object.assign({ expected_revision: execRevision(d) }, extra);
-  });
-  d.execBusy = false;
-  if (!r) showNotice(verb + ": the board server did not answer. Click again to retry the same request.");
-  else if (!r.ok) {
-    if (r.status === 409 && r.data && r.data.execution && typeof r.data.execution === "object") d.exec = r.data.execution;
-    showNotice(verb + " failed: " + msgText(r));
-  }
-  await loadExecution(d);
+  if (!ol.children.length) ol.appendChild(el("li", "dr-usage-none", "No usage recorded for this card yet."));
+  $("dr-usage-cols").replaceChildren(ol);
 }
 
 // --- start -------------------------------------------------------------------
 
 function init() {
+  // the run controls and the supervisor panel appear only once detection has answered
+  $("start-btn").hidden = true;
+  $("stop-btn").hidden = true;
+  $("supervisor").hidden = true;
   $("start-btn").addEventListener("click", startRun);
   $("stop-btn").addEventListener("click", stopRun);
   $("log-btn").addEventListener("click", toggleLog);

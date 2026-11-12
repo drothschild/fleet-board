@@ -18,6 +18,7 @@ the import id instead of a generated one).
 from __future__ import annotations
 
 import argparse
+import copy
 import errno
 import getpass
 import json
@@ -46,6 +47,7 @@ if _SCRIPTS_DIR not in sys.path:
 from supervisor import launcher as supervisor_launcher
 from supervisor import paths as supervisor_paths
 from supervisor import roles as supervisor_roles
+from supervisor import stuck as supervisor_stuck
 from supervisor import usage as supervisor_usage
 from supervisor import webproxy
 
@@ -344,15 +346,17 @@ def clear_markers(dir: Path):
             pass
 
 
-def run_alive() -> bool:
+_UNSET = object()  # "the caller did not read the supervisor status"
+
+
+def run_alive(status=_UNSET) -> bool:
     """Whether a wrapper is alive: the one this page started (run.pid), else any wrapper
     holding the repo's run lock (one started from a terminal or launchd). Sets
     _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
     cfg, dir = ctx()
-    if supervisor_running():
-        status = supervisor_snapshot()
-        return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
-                and status.get("desired_mode") == "running")
+    status = supervisor_status() if status is _UNSET else status
+    if status is not None:
+        return status.get("phase") in ("running", "ready") and status.get("desired_mode") == "running"
     with _RUN_LOCK:
         pid, started = read_pid_file(state_dir(APP["root"], cfg))
         alive = pid is not None and pid_alive(pid, started)
@@ -409,14 +413,15 @@ def to_float(s: str):
         return None
 
 
-def run_status(alive=None) -> dict:
+def run_status(alive=None, status=_UNSET) -> dict:
     """The run status; pass alive when the caller already checked liveness this request."""
     cfg, _ = ctx()
-    if supervisor_running():
-        return supervisor_run_status(cfg)
+    status = supervisor_status() if status is _UNSET else status
+    if status is not None:
+        return supervisor_run_status(status)
     sdir = state_dir(APP["root"], cfg)
     if alive is None:
-        alive = run_alive()
+        alive = run_alive(None)
     pid = read_pid(sdir)
     out = read_text(sdir / "run.out")
     if alive:
@@ -458,11 +463,11 @@ def out_tail(out: str) -> list:
     return lines[:half] + lines[-half:]
 
 
-def board_run_status(alive: bool) -> dict:
+def board_run_status(alive: bool, status=_UNSET) -> dict:
     """run_status() without the log tail, for /api/board."""
-    status = run_status(alive)
-    del status["log_tail"]
-    return status
+    out = run_status(alive, status)
+    del out["log_tail"]
+    return out
 
 
 # --- script runner ------------------------------------------------------------
@@ -1099,15 +1104,20 @@ def board_context(cache: dict = None) -> list:
 
 def get_board(params, body):
     cfg, dir = ctx()
-    alive = run_alive()  # one liveness check per request
+    status = supervisor_status()  # read once: liveness, run state, activity and stuck all agree
+    alive = run_alive(status)
     cards = read_cards(dir)
     state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
     keys = [s["key"] for s in sts]
+    run = board_run_status(alive, status)
+    stuck_of, activity = board_extras(status, run, refresh=wants_stuck_refresh(params))
     return 200, {
         "states": sts,
-        "cards": [card_summary(cfg, dir, c, alive, state_of, keys) for c in cards],
-        "run": board_run_status(alive),
+        "cards": [dict(card_summary(cfg, dir, c, alive, state_of, keys),
+                       stuck=stuck_of.get(c.get("number")), activity=activity.get(c.get("number")))
+                  for c in cards],
+        "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
     }
 
@@ -1352,11 +1362,24 @@ def stop_run(params, body):
     cfg, _ = ctx()
     if supervisor_running():
         return compat_run_control("stop", body)
+    if service_holds_run_lock(cfg):
+        # The tick-stop file is for the legacy wrapper only; a supervisor that holds the lock is
+        # stopped through its own controls, never by a file it does not read.
+        raise ApiError(409, "a supervisor holds the run lock; stop it with the supervisor controls")
     with _RUN_LOCK:
         if not run_alive():
             raise ApiError(409, "no run is alive")
+        if service_holds_run_lock(cfg):  # a supervisor may have claimed the lock since the first look
+            raise ApiError(409, "a supervisor holds the run lock; stop it with the supervisor controls")
         Path(APP["root"], STOP_FILE).touch()
     return 200, {"state": "stopping"}
+
+
+def service_holds_run_lock(cfg) -> bool:
+    """True when a live supervisor (the lock's third line is "service") holds the repository run lock."""
+    lines = read_text(run_lock_path(cfg)).split("\n")
+    pid, started = read_pid_path(run_lock_path(cfg))
+    return len(lines) > 2 and lines[2].strip() == "service" and pid is not None and pid_alive(pid, started)
 
 
 SUPERVISOR_PROBE_TIMEOUT = 1.0
@@ -1389,6 +1412,19 @@ def supervisor_running():
     thread.start()
     thread.join(SUPERVISOR_PROBE_TIMEOUT)
     return box.get("answered") is True
+
+
+def supervisor_status():
+    """The page-shaped status of the supervisor that answers for this board, else None (also when it
+    exits between the liveness probe and the status read)."""
+    if not supervisor_running():
+        return None
+    try:
+        return proxy_call("status")
+    except ApiError as exc:
+        if exc.code != 503:
+            raise
+        return None
 
 
 def supervisor_stopping(status):
@@ -1450,7 +1486,6 @@ def proxy_call(command, body=None, **extra):
         raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
     if command == "status":
         result = webproxy.ui_status(result)
-        webproxy.remember(domain_id, result)
     return result
 
 
@@ -1492,23 +1527,15 @@ def ensure_service():
         try:
             supervisor_launcher.launch_detached(APP["root"], supervisor_paths.log_dir() / "supervisor.log")
         except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
+            # A CLI start won the run lock between the probe and the launch: that one runs. Its socket may
+            # take a moment to answer after our child lost the lock (exit 1), so wait briefly for it.
+            if live() or (getattr(exc, "exit_code", None) == 1 and supervisor_launcher.wait_until(live, timeout=2.0)):
+                return False
             raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
         if not supervisor_launcher.wait_until(live, timeout=5.0):
             raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
                            {"code": "launch_failed"})
     return True
-
-
-def remember_stopped(result):
-    """A Stop that ended the service leaves nothing listening: remember that it stopped, so the
-    next unreachable answer reads as a deliberate stop and not as an outage."""
-    domain_id = supervisor_domain_id()
-    prior = webproxy.last(domain_id)
-    known = dict(prior[1]) if prior and isinstance(prior[1], dict) else {}
-    known.update({"desired_mode": "stopped", "phase": "stopped", "ready": False, "shutdown": "resolved"})
-    if isinstance(result.get("state_revision"), int):
-        known["revision"] = result["state_revision"]
-    webproxy.remember(domain_id, known)
 
 
 def proxy_control(command, body):
@@ -1523,41 +1550,20 @@ def proxy_control(command, body):
         # supervisor has no start command, so a Start never changes its state.
         launched = ensure_service()
         status = proxy_call("status")
+        resumed = False
+        if not launched and status.get("mode") == "paused":
+            # Start on a paused supervisor is a resume, bound exactly like the Resume button.
+            proxy_call("resume", {"request_id": body["request_id"], "expected_revision": body["expected_revision"]})
+            status, resumed = proxy_call("status"), True
         result = {"command_id": body["request_id"], "state_revision": status.get("revision"),
                   "desired_mode": status.get("desired_mode"), "phase": status.get("phase")}
+        if resumed:
+            result["resumed"] = True
         return 202, (dict(result, launched=True) if launched else result)
-    result = proxy_call(command, body)
-    if command == "stop" and isinstance(result, dict) and result.get("stopping") is True:
-        remember_stopped(result)
-    return 202, result
+    return 202, proxy_call(command, body)
 
 
-def supervisor_snapshot():
-    domain_id = supervisor_domain_id()
-    try:
-        state = proxy_call("status")
-        return dict(state, unreachable=False)
-    except ApiError as exc:
-        if exc.code != 503:
-            raise
-        prior = webproxy.last(domain_id)
-        known = prior[1] if prior else None
-        return {"schema_version": None, "ready": None, "revision": None, "desired_mode": None,
-                "phase": None, "run_id": None, "mode": None, "pause_reason": None, "active": None,
-                "lane": None, "provider_health": None, "run_tokens": None, "pid": None, "root": None,
-                "capacity": None, "queue": None,
-                "unreachable": True, "last_known": known,
-                "last_known_at": prior[0] if prior else None, "occupancy": None}
-
-
-def supervisor_run_status(cfg):
-    status = supervisor_snapshot()
-    if status.get("unreachable"):
-        known = status.get("last_known") if isinstance(status.get("last_known"), dict) else {}
-        stopped = known.get("phase") == "stopped" and known.get("ready") is False
-        return {"state": "stopped" if stopped else "unreachable", "supervisor": status, "pid": None,
-                "tick": None, "stop_reason": None, "cost": None, "hours": None,
-                "log_path": None, "log_tail": [], "out_tail": None}
+def supervisor_run_status(status):
     phase = status.get("phase", "unknown")
     ready = status.get("ready") is True
     desired = status.get("desired_mode")
@@ -1572,20 +1578,190 @@ def supervisor_run_status(cfg):
             "out_tail": None, "supervisor": status}
 
 
-def require_supervisor_mode():
-    """The supervisor API exists only while a supervisor answers; otherwise the board answers 404."""
-    if not supervisor_running():
-        raise ApiError(404, "not found")
+_USAGE_CACHE = {}  # (root, board dir, run_id, card) -> (ledger stat, view): an unchanged ledger is not reparsed
+_USAGE_LOCK = threading.Lock()
+
+
+def usage_view(run_id=None, card=None):
+    """The usage ledger's answer (read here, never through the supervisor); tokens only. Cached on the
+    ledger's (size, mtime), so a poll of an unchanged ledger does not reparse it."""
+    cfg, _ = ctx()
+    board_dir = (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR
+    try:
+        info = os.stat(str(supervisor_usage.ledger_path(APP["root"], board_dir)))
+        stat_key = (info.st_size, info.st_mtime_ns, info.st_ino)
+    except OSError:
+        stat_key = None
+    key = (APP["root"], board_dir, run_id, card)
+    with _USAGE_LOCK:
+        hit = _USAGE_CACHE.get(key)
+    if hit is not None and stat_key is not None and hit[0] == stat_key:
+        return copy.deepcopy(hit[1])
+    try:
+        result = supervisor_usage.view(APP["root"], board_dir, card=card, run_id=run_id)
+    except ValueError as exc:
+        raise ApiError(400, str(exc)[:200])
+    except OSError as exc:
+        raise ApiError(500, "usage ledger unreadable: %s" % str(exc)[:200])
+    if stat_key is not None:
+        with _USAGE_LOCK:
+            if len(_USAGE_CACHE) >= 64:
+                _USAGE_CACHE.clear()
+            _USAGE_CACHE[key] = (stat_key, copy.deepcopy(result))
+    return result
 
 
 def get_supervisor(params, body):
-    require_supervisor_mode()
-    return 200, supervisor_snapshot()
+    status = supervisor_status()
+    if status is None:
+        try:
+            return 200, dict(usage_view(), running=False)
+        except ApiError as exc:  # an unreadable ledger is unknown, never 0
+            return 200, {"running": False, "run": None, "all_time": None, "planner": None, "error": exc.msg}
+    return 200, dict(status, running=True)
 
 
 def supervisor_command(params, body):
-    require_supervisor_mode()
-    return proxy_control(params["action"], body)
+    action = params["action"]
+    if "actor" in body:
+        raise ApiError(400, "actor must come from authenticated peer")
+    if action != "start" and not supervisor_running():
+        raise ApiError(409, "no supervisor is running", {"code": "not_running"})
+    return proxy_control(action, body)
+
+
+def get_usage(params, body):
+    status = supervisor_status()
+    return 200, usage_view(run_id=status.get("run_id") if status else None)
+
+
+def get_card_usage(params, body):
+    return 200, usage_view(card=params["n"])
+
+
+STUCK_MIN_INTERVAL = 30.0  # seconds: a stuck scan of a large board takes seconds and shells out per card
+_STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None}
+_STUCK_LOCK = threading.Lock()
+
+
+def stuck_interval():
+    """How long a stuck result is reused: the longer of 30 s and twice the last scan's duration."""
+    return max(STUCK_MIN_INTERVAL, 2.0 * _STUCK["duration"])
+
+
+def _mtime_ns(path):
+    try:
+        return os.stat(str(path)).st_mtime_ns
+    except OSError:
+        return None
+
+
+def stuck_stamp(board_dir):
+    """(cards dir mtime, active markers dir mtime): a card moved, created or released changes it."""
+    if board_dir is None:
+        return None
+    return (_mtime_ns(Path(board_dir) / "cards"), _mtime_ns(Path(board_dir) / "active"))
+
+
+def _refresh_stuck(stamp):
+    """The one background refresher: runs stuck.find (read-only) and writes the cache."""
+    began = time.monotonic()
+    try:
+        try:
+            found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
+                            for x in supervisor_stuck.find(APP["root"])], None
+        except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
+            found, error = None, str(exc)[:300] or exc.__class__.__name__
+        with _STUCK_LOCK:
+            if found is None:
+                found = _STUCK["found"]  # keep the last good result (None while there is none)
+            _STUCK.update(at=time.time(), mono=time.monotonic(), found=found, error=error,
+                          duration=time.monotonic() - began, stamp=stamp)
+    finally:
+        with _STUCK_LOCK:
+            _STUCK["running"] = False  # whatever happened, a later request may start another refresher
+
+
+def stuck_state(board_dir, refresh=True):
+    """{findings, checked_at, error, checking, known} with no supervisor running, answered at once from the cache.
+
+    Never computes on the calling thread. A refresh starts only when a caller asks for one (a poll from a
+    visible tab), no page-initiated launch is in flight, no refresher runs, and the result is due: none yet,
+    older than stuck_interval(), or the cards or active markers directory changed since it was taken.
+    findings is None (known false) until a check has succeeded."""
+    stamp = stuck_stamp(board_dir)
+    with _STUCK_LOCK:
+        due = (_STUCK["at"] is None or (stamp is not None and stamp != _STUCK["stamp"])
+               or time.monotonic() - _STUCK["mono"] >= stuck_interval())
+        if refresh and due and not _STUCK["running"] and not _LAUNCH_LOCK.locked():
+            _STUCK["running"] = True
+            try:
+                threading.Thread(target=_refresh_stuck, args=(stamp,), daemon=True).start()
+            except BaseException:
+                _STUCK["running"] = False  # the thread never ran: nothing would ever clear the flag
+                raise
+        found = _STUCK["found"]
+        return {"findings": None if found is None else [dict(i) for i in found],
+                "checked_at": _STUCK["at"], "error": _STUCK["error"],
+                "checking": _STUCK["running"] or _STUCK["at"] is None, "known": found is not None}
+
+
+def stuck_suppressed(status):
+    """A notice when a run holds the repository run lock without answering as the supervisor: its live work
+    would read as stuck (matches the CLI's notice), so stuck is suppressed. None otherwise."""
+    if status is not None:
+        return None
+    cfg, _ = ctx()
+    holder = supervisor_stuck.run_lock_holder(run_lock_path(cfg))
+    return "a run is active (pid %d)" % holder if holder is not None else None
+
+
+def stuck_view(status, refresh=True):
+    """The /api/stuck answer for a supervisor status (None: none answers).
+
+    While a supervisor answers, the board never runs find(): the loop's own `stuck` command computes find()
+    on demand rather than returning a cached list, so there is no cheap, current answer to show, and cards
+    that wait for a slot, a reconcile or a resume are healthy. No card is stuck then."""
+    if status is not None:
+        return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": True,
+                "suppressed": None}
+    notice = stuck_suppressed(status)
+    if notice is not None:
+        return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": False,
+                "suppressed": notice}
+    _, board_dir = ctx()
+    return dict(stuck_state(board_dir, refresh=refresh), suppressed=None)
+
+
+def wants_stuck_refresh(params):
+    """False when the page asks for no stuck refresh (a hidden tab polls with refresh_stuck=0)."""
+    values = (params.get("query") or {}).get("refresh_stuck") or []
+    return not values or values[-1] != "0"
+
+
+def get_stuck(params, body):
+    return 200, stuck_view(supervisor_status(), refresh=wants_stuck_refresh(params))
+
+
+def board_extras(status, run, refresh=True):
+    """({card: {kind, detail}}, {card: {action, elapsed_seconds}}) for /api/board; also adds stuck_checked_at,
+    stuck_error, stuck_checking, stuck_known and stuck_suppressed to `run`. Stuck is null for every card while
+    a supervisor runs, no result exists, a check failed before any result, or a run holds the lock without
+    answering."""
+    view = stuck_view(status, refresh=refresh)
+    run.update(stuck_checked_at=view["checked_at"], stuck_error=view["error"], stuck_checking=view["checking"],
+               stuck_known=view["known"], stuck_suppressed=view["suppressed"])
+    stuck_of = {}
+    for item in view["findings"] or []:
+        stuck_of.setdefault(item["card"], {"kind": item["kind"], "detail": item["detail"]})
+    activity = {}
+    now = time.time()
+    for a in (status.get("active") if isinstance(status, dict) else None) or []:
+        if isinstance(a, dict) and is_int(a.get("card")):
+            began = a.get("started_at")
+            activity[a["card"]] = {"action": a.get("action"), "elapsed_seconds": (
+                max(0, int(now - began)) if isinstance(began, (int, float)) and not isinstance(began, bool) else None)}
+    return stuck_of, activity
 
 
 def post_planner(params, body):
@@ -1642,6 +1818,9 @@ ROUTES = [
     ("POST", r"/api/run/start", start_run),
     ("POST", r"/api/run/stop", stop_run),
     ("GET", r"/api/supervisor", get_supervisor),
+    ("GET", r"/api/usage", get_usage),
+    ("GET", r"/api/stuck", get_stuck),
+    ("GET", r"/api/cards/(?P<n>\d+)/usage", get_card_usage),
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
