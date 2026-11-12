@@ -768,6 +768,7 @@ case "$1 $2" in
     case "$*" in
       *files*) printf '{"files":[{"path":"src/calc.js"}],"changedFiles":1}\n' ;;
       *mergeable*) printf '{"mergeable":"MERGEABLE"}\n' ;;
+      *title,body,commits*) cat "$d/closing.json" ;;
       *) cat "$d/pr.json" ;;
     esac ;;
   "pr list") printf '[]\n' ;;
@@ -777,6 +778,9 @@ case "$1 $2" in
   *) printf 'chain gh: unexpected call: %s\n' "$*" >&2; exit 99 ;;
 esac
 '''
+# the merge-time closing-keyword check (pr-closing-check.sh) reads title, body and commits
+CHAIN_CLOSING = {'title': 'Add subtract', 'body': 'Local board card 12',
+                 'commits': [{'oid': 'abc1234', 'messageHeadline': 'feat: subtract', 'messageBody': ''}]}
 CHAIN_PR = {'isDraft': False, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': 'abc1234',
             'statusCheckRollup': [{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}
 
@@ -805,6 +809,7 @@ class Chained(unittest.TestCase):
         (bin_dir / 'gh').write_text(CHAIN_GH)
         (bin_dir / 'gh').chmod(0o755)
         (gh_dir / 'pr.json').write_text(json.dumps(CHAIN_PR))
+        (gh_dir / 'closing.json').write_text(json.dumps(CHAIN_CLOSING))
         verify = self.dir / 'verify-main.sh'
         verify.write_text('#!/bin/bash\nprintf \'{"commit":"c0ffee1","ok":true,"results":[]}\\n\'\n')
         verify.chmod(0o755)
