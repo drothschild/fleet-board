@@ -234,23 +234,133 @@ fb_valid_number() {
   esac
 }
 
-# fb_lock <card-number>; releases on EXIT
-fb_lock() {
-  local dir wait stale_min=5 waited=0
-  dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
-  FB_LOCK="$dir/card-$1.lock"; wait="${FLEET_BOARD_LOCK_WAIT:-30}"
-  while ! mkdir "$FB_LOCK" 2>/dev/null; do
-    if [ -n "$(find "$FB_LOCK" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
-      # Known race: waiters A and B both see the lock as stale. B removes it and
-      # takes a fresh lock; A's rm -rf then deletes B's live lock and A takes it
-      # too, so two holders run at once. Accepted for now (see rehearsal notes).
-      rm -rf "$FB_LOCK"; continue
+# fb_pid_alive <pid>: false only when <pid> is known not to run. Unknown counts as
+# alive, since calling a live owner dead lets its lock be stolen. It uses the kill
+# builtin (no ps, which can be missing, BusyBox or sandboxed): kill -0 succeeding
+# is alive, and of its failures only "No such process" (ESRCH, read under LC_ALL=C)
+# is dead; EPERM (another user's process) and anything else are alive. A
+# non-numeric pid is dead.
+fb_pid_alive() {
+  local err
+  case "$1" in ''|*[!0-9]*) return 1 ;; esac
+  err="$(export LC_ALL=C; kill -0 "$1" 2>&1)" && return 0
+  case "$err" in *"No such process"*) return 1 ;; esac
+  return 0
+}
+
+# _fb_lock_remove <lockdir>: renames the lock to the private <lockdir>.rel.$$ and
+# deletes that copy (the rm is retried once). A late `ln` of a taker's claim goes
+# through the lock path, so it can never land in the copy being deleted, and the
+# rm cannot fail half done and leave a pid-less dir at the path.
+_fb_lock_remove() {
+  local rel="$1.rel.$$"
+  rm -rf "$rel" 2>/dev/null
+  mv "$1" "$rel" 2>/dev/null || return 0
+  rm -rf "$rel" 2>/dev/null || rm -rf "$rel"
+}
+
+# fb_lock_release <lockdir>: releases a lock this process holds (its pid file
+# names $$) through _fb_lock_remove. A lock that is gone or not ours is left alone,
+# so a second release (an explicit one, then the EXIT trap) never removes the lock
+# a later holder has taken. An empty argument is a no-op. Every release site uses it.
+fb_lock_release() {
+  [ -n "${1:-}" ] || return 0
+  [ "$(cat "$1/pid" 2>/dev/null)" = "$$" ] || return 0
+  _fb_lock_remove "$1"
+}
+
+# fb_lock_acquire <lockdir> <wait-seconds>: takes the mkdir lock <lockdir> and
+# records its owner ($$) in <lockdir>/pid. At most one process holds the lock at
+# any interleaving, including while a stale lock is taken over.
+#
+# Owner. The pid file is written to a temp name inside the lock and renamed into
+# place, so a reader sees no pid or a whole one. A lock with no pid is being
+# created and is never stale. A lock is stale only when its pid is not running
+# (liveness, not age). The owner is the process: subshells of one script share $$.
+#
+# Takeover. Nothing ever renames or removes a lock path on the strength of an
+# earlier read alone: the lock at that path may have been replaced since. A waiter
+# that finds a dead pid P first claims that lock instance from inside it:
+#   1. Claim. `ln -s $$ <lock>/claim.<k>` creates a symlink whose target is our pid,
+#      in one step that fails when the name exists (BSD and GNU ln). It walks k from
+#      1: a link naming us is our own claim (reused), a link naming a live process
+#      belongs to a taker still at work (back off), a link naming a dead process is
+#      passed over to k+1. So each instance has at most one live claimant.
+#   2. Verify. Re-read claim.<k> (ours), the pid (still P) and P's liveness (still
+#      dead), then claim.<k> again. Our link can only be in the instance we linked
+#      into, so both reads saw that instance; its owner P is dead and will never
+#      release it, and no other taker acts on an instance whose live claimant is
+#      us. That instance therefore stays at <lock> until we move it.
+#   3. Remove. Rename the instance to the private <lock>.dead.$$, re-verify claim
+#      and pid on the moved copy, then delete it and retry mkdir. The rename takes
+#      the instance out of the path at once, so a late claim lands in no dir or in
+#      a newer instance, never in the one being deleted.
+# Any failed step backs off (sleep, retry) and touches nothing: a lost claim, or a
+# claim made in a live lock that was put there after our read, is left in place,
+# where it is harmless (the owner's release removes it with the lock, and if that
+# owner dies we find our own claim and reuse it). A moved copy that fails the
+# re-check cannot happen under the argument above; if it does, the lock is left at
+# the moved name and the call fails rather than retry and become a second holder.
+#
+# Release. A holder releases with fb_lock_release, which renames the lock out of
+# the path before deleting it. A plain rm -rf on the path could lose to a late
+# claim landing between its unlinks and its rmdir, leaving a pid-less dir that is
+# never stale.
+fb_lock_acquire() {
+  local lock="$1" wait="$2" waited=0 pid k c moved
+  while ! mkdir "$lock" 2>/dev/null; do
+    pid="$(cat "$lock/pid" 2>/dev/null)"
+    if [ -n "$pid" ] && ! fb_pid_alive "$pid"; then
+      k=1; c=""
+      while [ "$k" -le 32 ]; do                    # 1. claim
+        c="$(readlink "$lock/claim.$k" 2>/dev/null)"
+        if [ -z "$c" ]; then
+          ln -s "$$" "$lock/claim.$k" 2>/dev/null && c=$$
+          break                                    # made it, or lost the race / lock gone
+        fi
+        [ "$c" = "$$" ] && break
+        fb_pid_alive "$c" && break                 # a live taker owns this lock
+        k=$((k + 1))
+      done
+      if [ "$c" = "$$" ] \
+         && [ "$(readlink "$lock/claim.$k" 2>/dev/null)" = "$$" ] \
+         && [ "$(cat "$lock/pid" 2>/dev/null)" = "$pid" ] && ! fb_pid_alive "$pid" \
+         && [ "$(readlink "$lock/claim.$k" 2>/dev/null)" = "$$" ]; then  # 2. verify
+        moved="$lock.dead.$$"; rm -rf "$moved"
+        if mv "$lock" "$moved" 2>/dev/null; then   # 3. remove
+          if [ "$(readlink "$moved/claim.$k" 2>/dev/null)" = "$$" ] \
+             && [ "$(cat "$moved/pid" 2>/dev/null)" = "$pid" ]; then
+            rm -rf "$moved"; continue
+          fi
+          fb_die 1 "lock takeover of $lock moved a lock it had not claimed; left it at $moved"
+        fi
+      fi
     fi
-    [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $FB_LOCK after ${wait}s"
+    [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
     sleep 0.1; waited=$((waited + 1))
   done
-  echo $$ > "$FB_LOCK/pid"
-  trap 'rm -rf "$FB_LOCK"' EXIT
+  if ! { printf '%s\n' "$$" > "$lock/.pid.$$" && mv -f "$lock/.pid.$$" "$lock/pid"; } 2>/dev/null; then
+    # Undo our mkdir. No taker moves a lock that has no pid (only stuck.py does,
+    # after its grace period), so a pid-less dir at the path is still ours: drop
+    # our temp file and rmdir it. If the temp file was written but the rename
+    # failed, it holds $$ and shows the lock is ours; remove it by rename. A lock
+    # with someone else's pid is not ours and is left alone.
+    if [ ! -e "$lock/pid" ]; then
+      rm -f "$lock/.pid.$$"; rmdir "$lock" 2>/dev/null
+    elif [ "$(cat "$lock/.pid.$$" 2>/dev/null)" = "$$" ]; then
+      _fb_lock_remove "$lock"
+    fi
+    fb_die 1 "cannot record the owner of lock $lock"
+  fi
+}
+
+# fb_lock <card-number>; releases on EXIT
+fb_lock() {
+  local dir
+  dir="$FLEET_ROOT/$(fb_cfg worktrees.dir)/.locks"; mkdir -p "$dir"
+  FB_LOCK="$dir/card-$1.lock"
+  fb_lock_acquire "$FB_LOCK" "${FLEET_BOARD_LOCK_WAIT:-30}"
+  trap 'fb_lock_release "$FB_LOCK"' EXIT
 }
 
 # Adapter scripts are exec'd with FLEET_CFG exported and never call fb_load_config;
