@@ -51,6 +51,7 @@ _NO_PROGRESS = re.compile(r'no progress after (\d+) attempts?: (.*)', re.S)
 _RESET = {'action_failures': 0, 'last_action_error': None}
 _SEVERE = ('Critical', 'Important')
 _SKIP_MARKER = '<!-- fleet-board:skip-no-acceptance -->'
+_CLEAN = re.compile(r'[^\x00-\x1f\x7f]+')
 
 
 def _iso(seconds):
@@ -401,6 +402,39 @@ class CardDriver:
         self.log_dir = Path(log_dir) if log_dir else paths.log_dir() / 'sessions'
         self.plugin_dir = Path(plugin_dir) if plugin_dir else scripts.SCRIPTS_DIR.parent
         self._runs = {}
+
+    def record_ignored_checks(self, card, entries):
+        """Append the checks a merge went past (merge.ignore_checks) to the card's note.
+
+        Each entry is {name, reason, until} as the planner's ignored_checks lists it; the note keeps
+        {name, reason, until, at}. A malformed entry raises ValueError and nothing is written.
+        """
+        if not _posint(card):
+            raise ValueError('invalid card number: %r' % (card,))
+        at = _iso(self.clock())
+        added = []
+        for entry in entries or ():
+            if not isinstance(entry, dict):
+                raise ValueError('invalid ignored check: %r' % (entry,))
+            for key in ('name', 'reason', 'until'):
+                if not isinstance(entry.get(key), str) or not _CLEAN.fullmatch(entry[key]):
+                    raise ValueError('invalid ignored check %s: %r' % (key, entry.get(key)))
+            try:
+                if not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', entry['until']):
+                    raise ValueError(entry['until'])
+                time.strptime(entry['until'], '%Y-%m-%d')
+            except ValueError:
+                raise ValueError('invalid ignored check until: %r' % (entry['until'],))
+            added.append({'name': entry['name'], 'reason': entry['reason'], 'until': entry['until'], 'at': at})
+        if not added:
+            return
+        tmp = tempfile.mkdtemp(prefix='fleet-driver-')
+        try:
+            ctx = _Ctx(self, {'number': card}, self.config_loader(), tmp)
+            kept = ctx.note().get('ignored_checks') or []
+            ctx.merge({'ignored_checks': list(kept) + added})
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def begin(self, candidate):
         action_name = candidate.get('action')

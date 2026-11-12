@@ -303,7 +303,13 @@ VALIDATION_SCRIPT='
          end)
       else empty end),
       (if (.merge | type) == "object" then
-        (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end)
+        (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end),
+        (if (.merge.ignore_checks | type) != "array" then "merge.ignore_checks must be a list"
+         elif any(.merge.ignore_checks[]; (type != "object")
+              or ((.name | type) != "string" or .name == "") or ((.reason | type) != "string" or .reason == "")
+              or ((.until | type) != "string" or ((try (.until | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z") and (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == .) catch false) | not)))
+         then "merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+         else empty end)
       else empty end),
       (if (.review | type) == "object" then
         (if (.review.max_rounds | type) != "number" or (.review.max_rounds | floor) != .review.max_rounds or .review.max_rounds <= 0 then "review.max_rounds must be a positive integer" else empty end)

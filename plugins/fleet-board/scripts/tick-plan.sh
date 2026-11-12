@@ -725,10 +725,13 @@ while IFS="$(printf '\t')" read -r sname kenv; do
 done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
   | ($c.providers[.provider].api_key_env // empty) as $k | "\(.name)\t\($k)"' <<<"$FLEET_CFG")"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
-  def green: (.statusCheckRollup | type) == "array"
-    and all(.statusCheckRollup[]; (.conclusion // .state) as $s
-      | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
+# merge.ignore_checks is judged against today (UTC; FLEET_BOARD_TODAY overrides it for tests)
+TODAY="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
+IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot read ignore-checks.jq"
+
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --arg today "$TODAY" "$IGNORE_CHECKS_JQ"'
+  # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
+  def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
   def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
   def overlap($left; $right):
     first($left[] as $a | $right[] as $b
@@ -935,6 +938,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
        pr: $c.pr, head_sha: $c.pr_info.headRefOid, round: $n.round, models: $models, escalated: $esc,
+       # merge: the red checks that merge goes past (the driver records them in the note)
+       ignored_checks: (if $d.action == "merge" then ($c.pr_info.statusCheckRollup | ic_used($cfg.merge.ignore_checks; $today)) else null end),
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files
@@ -983,13 +988,14 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
             title:$card.title,state:$card.state,branch:$card.branch,worktree:$card.worktree,pr:$card.pr,
             models:$card.models,escalated:$card.escalated,findings:$card.findings,waiting_on:$card.waiting_on,
             needs_human_qa:$card.needs_human_qa,comment_needed:$card.comment_needed,lint:$card.lint,
-            lint_marker:$card.lint_marker} ]}
+            lint_marker:$card.lint_marker,ignored_checks:$card.ignored_checks} ]}
      else
   {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
        (if $pre != "" then [$pre] else [] end)
+       + ic_expired($cfg.merge.ignore_checks; $today)
        + (if $m.implementor == $reviewer_model
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)
