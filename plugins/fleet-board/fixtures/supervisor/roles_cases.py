@@ -393,6 +393,30 @@ def test_missing_binary_is_a_provider_failure():
         e.close()
 
 
+def test_unwritable_log_dir_is_a_provider_failure():
+    e = Env()
+    try:
+        blocker = e.tmp / 'a-file'
+        blocker.write_text('x')
+        s = roles.launch([str(FAKE), '-p', 'x'], root=e.root, log_dir=blocker / 'logs', label='s1', env=e.env())
+        r = s.poll()
+        assert r is not None and r.failure == 'provider' and not r.cancelled, r
+        assert 'cannot' in r.reason, r
+    finally:
+        e.close()
+
+
+def test_root_that_is_not_a_directory_is_a_provider_failure():
+    e = Env()
+    try:
+        s = roles.launch([str(FAKE), '-p', 'x'], root=e.tmp / 'no-such-root', log_dir=e.logs, label='s1',
+                         env=e.env())
+        r = s.poll()
+        assert r is not None and r.failure == 'provider' and not r.cancelled, r
+    finally:
+        e.close()
+
+
 def test_non_executable_binary_is_a_provider_failure():
     e = Env()
     try:

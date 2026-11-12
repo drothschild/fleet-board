@@ -10,6 +10,8 @@ from typing import Any, Optional
 
 from . import scopes
 
+DUPLICATE_ADMISSION = 'card already active'  # begin() refuses a second action for a card; loop.py matches it
+
 
 @dataclass
 class Action:
@@ -36,7 +38,9 @@ class State:
         self.reservations = {}
         self.lane = None
         self.provider_health = {}
-        self.run_tokens = {}
+        self.run_tokens = {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
+                           'unknown': 0, 'partial': False}
+        self.card_tokens = {}   # card -> known tokens spent in this run (not part of the snapshot)
         self.events = deque(maxlen=500)
         self._sequence = 0
         self._lock = threading.RLock()
@@ -73,7 +77,7 @@ class State:
             if action.kind not in ('role', 'script', 'merge'):
                 raise ValueError('invalid action kind')
             if action.card in self.active:
-                raise ValueError('card already active')
+                raise ValueError(DUPLICATE_ADMISSION)
             if action.kind == 'merge' and self.lane is not None:
                 raise ValueError('merge lane taken')
             self.active[action.card] = action
@@ -116,6 +120,22 @@ class State:
         with self._lock:
             if self.provider_health.pop(provider, None) is not None:
                 self._bump()
+
+    def add_tokens(self, counts, card=None):
+        """Add one action's counts (input, output, cache_write, cache_read; None is unknown, never zero) to
+        this run's totals, kept in memory so the run limit never reads the ledger."""
+        with self._lock:
+            run = self.run_tokens
+            for key in ('input', 'output', 'cache_write', 'cache_read'):
+                run[key] = run.get(key, 0) + (counts.get(key) or 0)
+            run['unknown'] = run.get('unknown', 0) + (1 if any(counts.get(k) is None for k in (
+                'input', 'output', 'cache_write', 'cache_read')) else 0)
+            run['total'] = sum(run[k] for k in ('input', 'output', 'cache_write', 'cache_read'))
+            run['partial'] = run['unknown'] > 0
+            if card is not None:
+                self.card_tokens[card] = self.card_tokens.get(card, 0) + sum(
+                    counts.get(k) or 0 for k in ('input', 'output', 'cache_write', 'cache_read'))
+            self._bump()
 
     def event(self, type, **payload):
         with self._lock:

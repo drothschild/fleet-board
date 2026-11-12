@@ -16,10 +16,12 @@ import threading
 import time
 from pathlib import Path
 
-from . import candidates, errors, resolver, scopes, scripts
+from . import candidates, errors, resolver, scopes, scripts, usage
+from .state import DUPLICATE_ADMISSION
 
 STOP_MODES = ('drain', 'cancel')
 MERGE_IGNORED = 'merging arrives in phase 4'
+CARD_LIMIT_WAIT = 'card token limit reached'
 BACKOFF_CAP = 3600
 POLL = 0.1            # seconds between session polls while any session runs
 COMMAND_WAIT = 0.5    # how long the service thread waits for the loop to apply pause or resume
@@ -123,6 +125,8 @@ class Supervisor:
         name = command.get('command')
         if name == 'status':
             return self.state.snapshot()
+        if name == 'usage':
+            return self._usage(command.get('card'))
         if name == 'stop':
             mode = command.get('mode')
             if mode not in STOP_MODES:
@@ -142,6 +146,20 @@ class Supervisor:
         if 'error' in box:
             raise box['error']
         return box['result']
+
+    def _board_dir(self):
+        board = (self.config or {}).get('board')
+        return (board.get('dir') if isinstance(board, dict) else None) or usage.DEFAULT_DIR
+
+    def _usage(self, card=None):
+        """Read-only view of the ledger for the `usage` command (the service thread calls this)."""
+        try:
+            result = usage.view(self.root, self._board_dir(), card=card, run_id=self.state.run_id)
+        except ValueError as exc:
+            raise errors.Invalid(str(exc)) from None
+        if card is None:   # this run's figure comes from the same totals the limit uses
+            result['run'] = dict(self.state.snapshot()['run_tokens'])
+        return result
 
     # --- the loop ------------------------------------------------------------------------------------
     def run(self):
@@ -296,6 +314,8 @@ class Supervisor:
         self.state.event('action_failed', card=card, action=action_name, error=message)
         if type(card) is not int or card <= 0:
             return
+        if isinstance(exc, ValueError) and str(exc) == DUPLICATE_ADMISSION:
+            return   # a second admission of a running card: the running action is not at fault
         try:
             got = self.run_script(self.root, 'note.sh', 'get', card)
             note = json.loads(got.stdout) if got.rc == 0 else None
@@ -374,6 +394,8 @@ class Supervisor:
             if now < self._hold_until:
                 return
             self._hold_until = None
+        if self._token_limit_reached():
+            return
         batch = self.fetch(self.root, self.run_script, self.clock)
         if batch.error:
             self._error('fetch_failed', batch.error)
@@ -382,7 +404,8 @@ class Supervisor:
         if batch.rate_limit_until is not None:
             return self._rate_limited(batch.rate_limit_until, now)
         self._rate_since = None
-        rows, ignored = [], []
+        capped = self._capped_cards()
+        rows, ignored, limit_waits = [], [], []
         for original in batch.candidates:
             if not isinstance(original, dict):
                 continue
@@ -391,6 +414,9 @@ class Supervisor:
                 ignored.append({'number': row.get('number'), 'action': 'merge', 'reason': MERGE_IGNORED})
                 continue
             row['provider'] = resolver.provider_for(config, row)
+            if row.get('number') in capped and row['provider'] != 'scripts':
+                limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT})
+                continue
             if row.get('action') == 'wait' and row.get('waiting_on'):
                 row['deps_commented'] = self._deps_commented(row.get('number'))
             rows.append(row)
@@ -404,7 +430,7 @@ class Supervisor:
             self.state.pause(result['stop_reason'])
             return
         self.last_cycle = {'admitted': [r.get('number') for r in result['admitted']],
-                           'waits': result['waits'], 'attention': result['attention'],
+                           'waits': result['waits'] + limit_waits, 'attention': result['attention'],
                            'ignored': result['ignored'] + ignored}
         attention = sorted((a.get('number'), a.get('reason')) for a in result['attention'])
         if attention != self._last_attention:
@@ -417,6 +443,27 @@ class Supervisor:
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _token_limit_reached(self):
+        """Pause admissions once this run's known tokens reach limits.max_tokens (running sessions finish).
+        Checked every cycle, so lowering the limit, or resuming without raising it, pauses again."""
+        cap = self._limit('max_tokens', 0)
+        total = self.state.run_tokens.get('total', 0)
+        if cap <= 0 or total < cap:
+            return False
+        if self.state.mode == 'running':
+            partial = ' (known tokens only)' if self.state.run_tokens.get('partial') else ''
+            self.state.pause('token limit reached: %d of limits.max_tokens %d%s' % (total, cap, partial))
+        return True
+
+    def _capped_cards(self):
+        """Cards whose known tokens in THIS run have reached limits.max_tokens_per_card (in-memory totals;
+        the ledger is never read to decide anything, and an earlier run's spend does not count)."""
+        cap = self._limit('max_tokens_per_card', 0)
+        if cap <= 0:
+            return set()
+        with self.state._lock:
+            return {card for card, total in self.state.card_tokens.items() if total >= cap}
 
     def _probe_scheduler(self, config):
         """While paused by a scheduler stop_reason: True to skip this cycle, False once the scheduler no
