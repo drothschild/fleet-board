@@ -11,7 +11,7 @@ The implementor takes one Ready card and turns its acceptance items (the card's 
 - **Branch name:** the card's branch.
 - **Config JSON:** the parsed project config. It includes `commands.test_one`, a command template with a `{file}` placeholder (for example `node --test {file}`), and the optional `commands.typecheck` and `commands.lint`. It also includes `test_paths`, the globs that identify test files (for example `test/**/*.test.js`).
 - **Manager note:** set when this is a continuation. It may record that a PR already exists, and its number, along with the branch, round and earlier `VERIFIED:` line.
-- **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh`, `board-read.sh` and `parse-report.sh`.
+- **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh`, `board-read.sh`, `parse-report.sh` and `pr-body-check.sh`.
 
 ## 3. Required behavior
 
