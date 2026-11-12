@@ -1380,6 +1380,81 @@ def test_a_block_from_review_leaves_the_merge_records_alone(base):
     assert 'pending_merge' not in b.note() and 'merge_refusal' not in b.note(), b.note()
 
 
+def _marking_tree(b, out=None):
+    """A worktree.sh stub that, like the real `create`, leaves an empty active marker (fb_mark_active)."""
+    def tree(*a):
+        if a[0] == 'create':
+            active = b.root / '.fleet-board' / 'active'
+            active.mkdir(parents=True, exist_ok=True)
+            with open(str(active / str(a[1])), 'a'):
+                pass
+        return ok(out if out is not None else b.worktree + '\n')
+    return tree
+
+
+def _nothing_stuck(b):
+    from unittest import mock
+    from supervisor import stuck
+    with mock.patch.dict(os.environ, {'FLEET_BOARD_USER': 'fleet-bot'}):
+        found = stuck.find(b.root)
+    assert found == [], found
+    assert not (b.root / '.fleet-board' / 'active' / '12').exists()
+
+
+def test_update_branch_leaves_no_empty_marker(base):
+    b = board_for(base, 'in_review')
+    b.stubs['worktree.sh'] = _marking_tree(b)
+    b.stubs['update-branch.sh'] = ok()
+    assert begin(b, 'update_branch', state='in_review').kind == 'done'
+    _nothing_stuck(b)
+
+
+def test_a_failed_update_branch_leaves_no_empty_marker(base):
+    b = board_for(base, 'in_review')
+    b.stubs['worktree.sh'] = _marking_tree(b)
+    b.stubs['update-branch.sh'] = fail_with('merge of origin/main into fleet/12 conflicts\n')
+    begin(b, 'update_branch', state='in_review')
+    _nothing_stuck(b)
+
+
+def test_a_launch_that_raises_leaves_no_empty_marker(base):
+    import types
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'branch': BRANCH, 'worktree': b.worktree})
+    b.stubs['worktree.sh'] = _marking_tree(b)
+    b.stubs['review-stages.sh'] = ok('[]\n')
+
+    def boom(*a, **kw):
+        raise RuntimeError('no session')
+    b.driver.roles = types.SimpleNamespace(command=driver._roles.command, launch=boom, DEFAULT_KILL_GRACE=5.0)
+    b.seed(12, 'in_progress')
+    b.put_note({'implementor_attempts': 1, 'round': 0})
+    try:
+        begin(b, 'continue_implementor', state='in_progress')
+        raise AssertionError('begin should have raised')
+    except RuntimeError:
+        pass
+    assert 12 not in b.state.active
+    assert not (b.root / '.fleet-board' / 'active' / '12').exists(), 'the launch failure left an empty marker'
+
+
+def test_ending_an_action_keeps_a_marker_naming_another_group_and_drops_an_empty_one(base):
+    from supervisor import markers
+    b = board_for(base)
+    path = b.root / '.fleet-board' / 'active' / '12'
+    for content, kept in ((json.dumps({'pgid': 4242, 'supervisor_pid': 1}), True), ('', False), ('junk', False)):
+        action = state.Action(card=12, action='update_branch', column='in_review', role=None, provider='scripts',
+                              paths=[], started_at=0, started_mono=0, kind='script',
+                              marker=markers.path(b.root, None, 12))
+        b.state.begin(action)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        b.state.end(12)
+        assert path.exists() is kept, (content, kept)
+        if path.exists():
+            path.unlink()
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))

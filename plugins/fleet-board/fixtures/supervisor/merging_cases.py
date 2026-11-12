@@ -476,6 +476,30 @@ class MergerFlow(unittest.TestCase):
         self.assertEqual(note['conflicted_files'], ['src/a.py'])
         self.assertEqual((note['state'], note['merge_refusal'], note['pending_merge']), ('in_review', None, None))
 
+    def test_refusal_fix_for_a_conflict_leaves_no_marker_behind(self):
+        from unittest import mock
+        from supervisor import stuck
+        active = self.b.root / '.fleet-board' / 'active'
+
+        def tree(*a):
+            if a[0] == 'create':   # comment.sh already dropped the session marker; fb_mark_active makes a fresh one
+                active.mkdir(parents=True, exist_ok=True)
+                (active / '12').unlink() if (active / '12').exists() else None
+                (active / '12').write_text('')
+            return dc.ok(self.b.worktree + '\n')
+        self.b.stubs['worktree.sh'] = tree
+
+        def update(*args):
+            self.b.put_note({'conflicted_files': ['src/a.py']})
+            return dc.fail_with('update-branch: merge conflict in src/a.py')
+        self.b.stubs['update-branch.sh'] = update
+        self.merger('refused', self.refused(reason='Pull request is not mergeable: merge conflict'),
+                    'merger-refusal-fix')
+        self.assertEqual(self.b.card(12)['state'], 'in_review')
+        self.assertFalse((active / '12').exists(), 'the empty marker the refusal fix made outlived the action')
+        with mock.patch.dict(os.environ, {'FLEET_BOARD_USER': 'fleet-bot'}):
+            self.assertEqual(stuck.find(self.b.root), [])
+
     def test_refusal_fix_ignores_a_stale_conflict_list(self):
         dc.worktree_ok(self.b)
         self.b.put_note({'conflicted_files': ['old.py']})

@@ -600,6 +600,15 @@ class Wave5Fixes(StuckCase):
         self.assertIsNone(self.b.note(13).get('stuck'))
         self.assertEqual(self.b.card(13)['state'], 'in_review')
 
+    def test_release_of_an_in_flight_merging_card_with_an_open_pr_needs_no_force(self):
+        self.b.seed(12, 'merging')
+        self.b.put_note({'pr': 34, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'a'}})
+        self.assertEqual(self.kinds(), [(12, 'in_flight')])
+        stuck.release(self.root, 12, gh=self.gh_state('OPEN'))
+        self.assertEqual(self.b.card(12)['state'], 'in_review')
+        self.assertIsNone(self.b.note(12).get('pending_merge'))
+        self.assertEqual(stuck.find(self.root), [])
+
     def test_release_of_a_merging_card_whose_pr_is_closed_is_treated_like_open(self):
         self.b.seed(12, 'merging')
         self.b.put_note({'pr': 34, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'a'}})
