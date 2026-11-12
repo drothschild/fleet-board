@@ -196,11 +196,13 @@ class Release(StuckCase):
         stuck.release(self.root, 12)
         self.assertEqual(self.b.card(12)['state'], 'in_review')
 
-    def test_release_keeps_a_live_lock(self):
+    def test_release_refuses_a_card_whose_lock_is_held_by_a_running_process(self):
         self.b.seed(12, 'in_progress')
         live = self.lock(12, os.getpid())
-        stuck.release(self.root, 12)
+        with self.assertRaises(ValueError):
+            stuck.release(self.root, 12)
         self.assertTrue(live.exists())
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
 
     def test_release_of_a_merged_merging_card_leaves_it_in_merging(self):
         self.b.seed(12, 'merging')
@@ -291,8 +293,9 @@ class Start(StuckCase):
 
         class FakeSupervisor:
             def __init__(self, root, **kw):
-                captured.update(kw)
-                self.on_signal = None
+                captured['sup'] = self
+                self.ignored = {}
+                self.on_signal = lambda *a: None
 
             def handle(self, command):
                 return {}
@@ -313,7 +316,7 @@ class Start(StuckCase):
         with mock.patch.object(cli.loop, 'Supervisor', FakeSupervisor), mock.patch.object(cli, 'Service', FakeService):
             rc, out, err = self.invoke('start', '--ignore-stuck')
         self.assertEqual(rc, 0, err)
-        self.assertEqual(set(captured['ignored']), {12})
+        self.assertEqual(set(captured['sup'].ignored), {12})
         self.assertIn('#12 in_flight: ', err)
         self.assertEqual(self.b.note(12)['stuck']['kind'], 'in_flight')
 
@@ -323,8 +326,9 @@ class Start(StuckCase):
 
         class FakeSupervisor:
             def __init__(self, root, **kw):
-                captured.update(kw)
-                self.on_signal = None
+                captured['sup'] = self
+                self.ignored = {}
+                self.on_signal = lambda *a: None
 
             def handle(self, command):
                 return {}
@@ -345,7 +349,7 @@ class Start(StuckCase):
         with mock.patch.object(cli.loop, 'Supervisor', FakeSupervisor), mock.patch.object(cli, 'Service', FakeService):
             rc, out, err = self.invoke('start')
         self.assertEqual(rc, 0, err)
-        self.assertEqual(set(captured['ignored']), set())
+        self.assertEqual(set(captured['sup'].ignored), set())
 
     def test_the_stuck_command_lists_and_releases_without_a_supervisor(self):
         self.b.seed(12, 'in_progress')
@@ -388,6 +392,7 @@ class Ignored(StuckCase):
 
     def test_an_ignored_card_is_never_offered_to_the_scheduler(self):
         self.b.seed(12, 'in_progress')
+        self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
         sup = self.make({12: 'in_progress'})
         sup._cycle()
         self.assertEqual(self.spy, [[]])

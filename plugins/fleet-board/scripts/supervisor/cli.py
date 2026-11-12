@@ -10,16 +10,18 @@ import time
 import uuid
 from pathlib import Path
 
-from . import errors, loop, paths, usage
+from . import errors, loop, paths, stuck, usage
 from .driver import CardDriver
 from .scheduler import Scheduler
 from .service import Service
 from .state import State
 
 USAGE = ("usage: supervisor <start [--detach] [--ignore-stuck] | status [--json] | pause | resume | "
-         "stop [--drain|--cancel] | usage [--card N] [--json]>")
+         "stop [--drain|--cancel] | usage [--card N] [--json] | stuck [--json] [--release N]>")
 EPILOG = """\
-exit codes: 0 ok, 1 error or supervisor not running, 2 usage
+exit codes: 0 ok, 1 error or supervisor not running, 2 usage, 4 start refused: cards a previous
+  supervisor left half done (list them with `stuck`, resolve with `stuck --release N`, or
+  start with --ignore-stuck)
 
 environment:
   FLEET_BOARD_DOMAIN             the board root (default: the git toplevel of the current directory)
@@ -111,6 +113,9 @@ def _parser():
     use = subs.add_parser("usage")
     use.add_argument("--card", type=int)
     use.add_argument("--json", action="store_true")
+    left = subs.add_parser("stuck")
+    left.add_argument("--json", action="store_true")
+    left.add_argument("--release", type=int)
     subs.add_parser("pause")
     subs.add_parser("resume")
     stop = subs.add_parser("stop")
@@ -139,9 +144,11 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     root = None
     try:
         if args.command == "start":
-            return _start(_board_root(env), stdout, stderr)
+            return _start(_board_root(env), stdout, stderr, ignore_stuck=args.ignore_stuck)
         if args.command == "usage":
             return _usage(args, env, stdout, transport)
+        if args.command == "stuck":
+            return _stuck(args, env, stdout, transport)
         if transport is None:
             root = _board_root(env)
             transport = _socket_transport(_socket_for(root, env))
@@ -175,8 +182,9 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         return 1
 
 
-def _start(root, stdout, stderr):
-    """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop."""
+def _start(root, stdout, stderr, ignore_stuck=False):
+    """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop, 4 when it
+    refuses to start because a previous supervisor left cards half done."""
     state = State(uuid.uuid4().hex, time.time)
     loader = loop.config_loader(root)
     supervisor = loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
@@ -200,6 +208,19 @@ def _start(root, stdout, stderr):
                 pid = service.owner_pid()
                 print("supervisor already running for %s (pid %s)" % (root, pid if pid else "unknown"), file=stderr)
             return 1
+        # The startup check runs only once this process owns the repository (a running supervisor's own
+        # cards would otherwise look stuck), and before any work is admitted or readiness is announced.
+        found = stuck.find(root)
+        if found:
+            stuck.record(root, found)
+            for item in found:
+                print("#%d %s: %s" % (item.card, item.kind, item.detail), file=stderr)
+            if not ignore_stuck:
+                print("supervisor: %d stuck item%s from an earlier run; nothing was started. Resolve each card "
+                      "(move it, or `supervisor stuck --release N`), or start with --ignore-stuck."
+                      % (len(found), "" if len(found) == 1 else "s"), file=stderr)
+                return 4
+            supervisor.ignored = stuck.snapshot(root, found)
         print(json.dumps(ack), file=stdout, flush=True)
         return supervisor.run()
     finally:
@@ -226,6 +247,37 @@ def _usage(args, env, stdout, transport):
             raise
         result = _local_usage(root, args.card)
     print(json.dumps(result) if args.json else _human_usage(result), file=stdout)
+    return 0
+
+
+def _stuck(args, env, stdout, transport):
+    """List (or release) stuck cards. A running supervisor is asked first, since it knows which cards it owns;
+    with none running the board is read directly."""
+    root = None
+    live = []
+    try:
+        if transport is None:
+            root = _board_root(env)
+            transport = _socket_transport(_socket_for(root, env))
+        reply = transport({"command": "stuck"})
+        found, live = reply["stuck"], reply.get("live") or []
+    except (FileNotFoundError, ConnectionRefusedError, errors.UnsafeSocketDir):
+        if root is None:
+            raise
+        found = [item._asdict() for item in stuck.find(root)]
+    if args.release is not None:
+        if args.release in live:
+            raise errors.Invalid("card #%d is owned by the running supervisor" % args.release)
+        stuck.release(root if root is not None else _board_root(env), args.release)
+        print("released #%d" % args.release, file=stdout)
+        return 0
+    if args.json:
+        print(json.dumps(found), file=stdout)
+    elif not found:
+        print("no stuck cards", file=stdout)
+    else:
+        for item in found:
+            print("#%d %s: %s" % (item["card"], item["kind"], item["detail"]), file=stdout)
     return 0
 
 

@@ -296,6 +296,8 @@ class Service:
         if command == "usage":
             card = request.get("card")
             return self.handler({"command": "usage", "card": card} if card is not None else {"command": "usage"})
+        if command == "stuck":
+            return self.handler({"command": "stuck"})
         if command in MUTATING:
             self._require_mutation_binding(request)
             if command == "stop" and request.get("mode") not in STOP_MODES:
