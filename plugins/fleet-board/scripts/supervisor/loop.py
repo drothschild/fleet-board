@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 from . import candidates, errors, markers, merging, resolver, scopes, scripts, stuck, usage
-from .state import DUPLICATE_ADMISSION
+from .state import DUPLICATE_ADMISSION, ledger_column
 
 STOP_MODES = ('drain', 'cancel')
 CARD_LIMIT_WAIT = 'card token limit reached'
@@ -315,7 +315,7 @@ class Supervisor:
     def _record_unfinished(self, action):
         """Tokens are never silently missing: the session was given up on, so its counts are unknown."""
         counts = {key: None for key in usage.COUNTS}
-        line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': action.column,
+        line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': ledger_column(action),
                 'action': action.action, 'role': action.role, 'provider': action.provider, 'model': None,
                 'started_at': _iso(action.started_at), 'ended_at': _iso(self.clock()), 'log': None, **counts}
         try:
