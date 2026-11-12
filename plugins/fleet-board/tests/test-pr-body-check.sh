@@ -63,13 +63,37 @@ expect_reject "Closes **#1**"
 expect_reject "Closes : #1"
 expect_reject "Resolves <https://github.com/owner/repo/issues/3>"
 
+# Undocumented forms, caught anyway (a false positive costs a reword; a miss
+# closes an unrelated issue): a no-break space, a keyword at the end of one
+# line and the reference at the start of the next, a github.com URL without
+# a scheme.
+expect_reject "$(printf 'Closes\302\240#253')"
+expect_reject "$(printf 'Fixes:\302\240#5')"
+expect_reject "$(printf 'Resolves\342\200\257#6')"
+expect_reject "$(printf 'Closes\n#253')"
+expect_reject "$(printf 'This change fixes\n  #12 and more')"
+expect_reject "$(printf 'Resolves:\n#3')"
+expect_reject "$(printf 'resolves\n: #3')"
+expect_reject "$(printf 'closes\nowner/repo#4')"
+expect_reject "$(printf '**Fixes**\n`#9`')"
+expect_reject "Fixes github.com/owner/repo/issues/45"
+expect_reject "closes www.github.com/owner/repo/pull/3"
+
 expect_accept "Local board card 253"
+expect_accept "$(printf 'prefixes\n#12')"
+expect_accept "$(printf 'Closes the race\n#253 is the card')"
+expect_accept "$(printf 'Fixes the lock\nSee #253')"
+expect_accept "notgithub.com/owner/repo/issues/45 fixes nothing"
 expect_accept "Card 253 (local board; not a GitHub issue)"
 expect_accept "Closes the lock race; see card 253"
 expect_accept "prefixes #12"
 expect_accept "unfixed #12"
 expect_accept "See #253 for context"
 expect_accept ""
+
+# A split hit names both lines.
+run_check "$(printf 'Summary\nThis fixes\n#12\n')"
+case "$ERR" in *"lines 2-3"*) pass "a split hit names lines 2-3" ;; *) fail "a split hit names lines 2-3" "err=$ERR" ;; esac
 
 # Reads stdin with "-".
 printf 'Fixes #9\n' | /bin/bash "$CHECK" - >/dev/null 2>&1; rc=$?
@@ -109,6 +133,21 @@ else fail "implementor chains the check with gh pr create --body-file" "no 'pr-b
 # Commit messages are checked too: a squash merge copies them onto main.
 if grep -q 'log --format=%B' "$PLUGIN/agents/implementor.md" && grep -q 'pr-body-check.sh -' "$PLUGIN/agents/implementor.md"; then pass "implementor checks commit messages"
 else fail "implementor checks commit messages" "no git log --format=%B piped to pr-body-check.sh -"; fi
+
+# The fixer checks its unpushed commit messages before the push, as the
+# implementor does (spec, brief and the authored agent).
+SPECS="$PLUGIN/../../docs/implementation-plans/2026-09-28-fleet-board/specs"
+FIXCHK='log --format=%B HEAD --not --remotes=origin | bash <scripts dir>/pr-body-check.sh -'
+for f in "$PLUGIN/agents/fixer.md" "$SPECS/fixer.md"; do
+  label="$(basename "$(dirname "$f")")/fixer.md"
+  if grep -qF -- "$FIXCHK" "$f"; then pass "fixer checks unpushed commit messages: $label"
+  else fail "fixer checks unpushed commit messages: $label" "no '$FIXCHK'"; fi
+done
+if grep -q '^## Revision 27 requirements' "$SPECS/briefs/spec-req-fixer.md" \
+  && grep -qF -- "$FIXCHK" "$SPECS/briefs/spec-req-fixer.md"; then pass "fixer brief has the Revision 27 requirements"
+else fail "fixer brief has the Revision 27 requirements" "no '## Revision 27 requirements' section naming the check"; fi
+if grep -q 'pr-body-check.sh' "$PLUGIN/agents/fixer.md" && grep -qi 'no push\|push nothing\|do not push' "$PLUGIN/agents/fixer.md"; then pass "fixer names pr-body-check.sh and a no-push outcome"
+else fail "fixer names pr-body-check.sh and a no-push outcome" "agents/fixer.md"; fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" = 0 ]
