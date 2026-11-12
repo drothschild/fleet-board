@@ -453,6 +453,7 @@ function buildColumns(states) {
     const list = el("ol", "cards");
     list.id = "cards-" + s.key;
     const count = el("span", "col-count", "0");
+    const tokens = el("span", "col-tokens");   // the column's all-time token total, set by renderColumnTokens
 
     if (collapsible) {
       const open = !!S.open[s.key];
@@ -462,6 +463,7 @@ function buildColumns(states) {
       toggle.setAttribute("aria-controls", list.id);
       toggle.appendChild(el("span", null, s.name));
       toggle.appendChild(count);
+      toggle.appendChild(tokens);
       toggle.appendChild(chevron());
       toggle.addEventListener("click", function () { toggleColumn(s.key); });
       col.appendChild(toggle);
@@ -471,6 +473,7 @@ function buildColumns(states) {
       const head = el("h2", "col-head");
       head.appendChild(el("span", null, s.name));
       head.appendChild(count);
+      head.appendChild(tokens);
       col.appendChild(head);
     }
     col.appendChild(list);
@@ -486,7 +489,48 @@ function buildColumns(states) {
       stack = null;
       root.appendChild(col);
     }
-    S.cols[s.key] = { el: col, list: list, count: count, toggle: col.querySelector(".col-toggle"), sig: null };
+    S.cols[s.key] = { el: col, list: list, count: count, tokens: tokens, toggle: col.querySelector(".col-toggle"), sig: null };
+  }
+  renderColumnTokens();
+}
+
+// compactTokens(n): 999 -> "999", 12345 -> "12.3k", 1234567 -> "1.2M" (one decimal, no trailing ".0").
+function compactTokens(n) {
+  n = Math.floor(n);
+  if (n < 1000) return String(n);
+  const trim = function (v) { return v.toFixed(1).replace(/\.0$/, ""); };
+  if (n < 999950) return trim(n / 1000) + "k";
+  return trim(n / 1000000) + "M";
+}
+
+// columnTokens(t) -> {text, title}: a column's all-time token total. A total with
+// unknown usage is a lower bound, "≥ n", and its title says so.
+function columnTokens(t) {
+  const partial = t.partial === true || (isNum(t.unknown) && t.unknown > 0);
+  return { text: partial ? "≥ " + compactTokens(t.total) : compactTokens(t.total) + " tokens", title: tokensText(t) };
+}
+
+// renderColumnTokens(): the token total in each column header, from S.usage.columns
+// (/api/usage, read on the supervisor's 15 s cadence). Columns are keyed by board
+// state, the page's own column keys. A column with no ledger line shows nothing,
+// and so does every column while the ledger is unreadable (never "0"). A ledger
+// column the page has no column for (a removed review stage) is not shown. Text is
+// set only when it changed, so a poll with the same totals touches nothing, and
+// the column's card list and its re-render signature never depend on it.
+function renderColumnTokens() {
+  const u = S.usage;
+  const cols = u && !u.error && u.columns && typeof u.columns === "object" && !Array.isArray(u.columns) ? u.columns : null;
+  for (const key of Object.keys(S.cols)) {
+    const node = S.cols[key].tokens;
+    let text = "";
+    let title = "";
+    if (cols && Object.prototype.hasOwnProperty.call(cols, key) && cols[key] && typeof cols[key] === "object" && isNum(cols[key].total)) {
+      const t = columnTokens(cols[key]);
+      text = t.text;
+      title = t.title;
+    }
+    if (node.textContent !== text) node.textContent = text;
+    if (node.title !== title) node.title = title;
   }
 }
 
@@ -2591,7 +2635,7 @@ async function supervisorTick(first) {
     if (due) {
       await refreshUsage(seq, r.data);
     } else if (!running) { // a not-running reply carries the ledger totals for free
-      S.usage = { run: null, all_time: r.data.all_time, planner: r.data.planner, error: r.data.error };
+      S.usage = { run: null, all_time: r.data.all_time, planner: r.data.planner, columns: r.data.columns, error: r.data.error };
       renderTokens();
     }
   }
@@ -2660,7 +2704,7 @@ async function refreshUsage(seq, data) {
   }
   if (seq !== S.sup.seq) return;
   if (!usage && data && data.running === false) {
-    usage = { run: null, all_time: data.all_time, planner: data.planner, error: data.error };
+    usage = { run: null, all_time: data.all_time, planner: data.planner, columns: data.columns, error: data.error };
   }
   if (usage) S.usage = usage;
   renderTokens();
@@ -2805,6 +2849,7 @@ function renderTokens() {
     S.sup.tokensText = text;
     $("supervisor-tokens").replaceChildren(frag);
   }
+  renderColumnTokens();
 }
 
 // setControl(btn, enabled, reason): a disabled control says why in its title and

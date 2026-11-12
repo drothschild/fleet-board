@@ -432,7 +432,7 @@ async function main() {
     for(const n of k.$("board").all().filter(n=>n.classList.contains("col-tokens"))) assert.equal(n.textContent,"","an unreadable ledger showed "+n.textContent);
     // a hostile column name is never rendered as markup
     const x=fakeFetch({usage:{...usage,columns:{[hostile]:tok(5)}}}), y=make(x); await y.flush(); await y.waitForRequests();
-    assert.ok(!y.$("board").textContent.includes(hostile));
+    assert.ok(!y.$("board").all().filter(n=>n.classList.contains("col-tokens")).some(n=>n.textContent.includes(hostile)||n.title.includes(hostile)));
     // a not-running reply carries the columns too
     const n=fakeFetch({notRunning:{columns:cols},usage:{run:null,all_time:tok(1234),planner:tok(7),columns:cols}}), m=make(n); await m.flush(); await m.waitForRequests();
     assert.equal(m.$("board").all().find(e=>e.classList.contains("col-tokens")&&e.textContent==="1.2M tokens")!==undefined,true);

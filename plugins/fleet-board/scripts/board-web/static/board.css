@@ -215,6 +215,10 @@ button, select, input, textarea { font: inherit; color: inherit; }
   font-weight: 600;
 }
 .col-count { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
+.col-head { justify-content: flex-start; }
+.col-head .col-count { margin-left: auto; }
+.col-tokens { color: var(--muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
+.col-tokens:empty { display: none; }
 
 .col-toggle {
   display: flex;

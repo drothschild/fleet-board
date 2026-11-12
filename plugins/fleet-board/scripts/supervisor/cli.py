@@ -360,7 +360,7 @@ def _tokens(totals):
 
 def _human_usage(result):
     lines = []
-    if "columns" in result:
+    if "card" in result:   # the drill-down; the summary also has "columns" (per-column totals)
         lines.append("card %s: %s" % (result["card"], _tokens(result["totals"])))
         for column in result["columns"]:
             lines.append("  %s: %s" % (column["column"], _tokens(column["totals"])))
