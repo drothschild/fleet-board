@@ -17,13 +17,15 @@ import threading
 import time
 from pathlib import Path
 
-from . import candidates, errors, merging, resolver, scopes, scripts, usage
+from . import candidates, errors, markers, merging, resolver, scopes, scripts, stuck, usage
 from .state import DUPLICATE_ADMISSION
 
 STOP_MODES = ('drain', 'cancel')
 CARD_LIMIT_WAIT = 'card token limit reached'
 BACKOFF_CAP = 3600
 POLL = 0.1            # seconds between session polls while any session runs
+IGNORE_RECHECK = 15   # seconds between rechecks of the cards `start --ignore-stuck` leaves alone
+REAP_WAIT = 15        # seconds _reap waits for sessions to end before it gives up on them
 COMMAND_WAIT = 0.5    # how long the service thread waits for the loop to apply pause or resume
 _NAME = re.compile(r'[a-z][a-z0-9_]*')
 
@@ -57,7 +59,7 @@ def _iso(seconds):
 
 class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
-                 clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None):
+                 clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
         self.config_loader = config_loader
         self.state = state
@@ -67,7 +69,10 @@ class Supervisor:
         self.clock = clock
         self.mono = mono
         self.run_script = run
-        self.merge_lane = merge_lane or merging.MergeLane(self.root, state, run=run, clock=clock, repo=self._repo)
+        self.merge_lane = merge_lane or merging.MergeLane(self.root, state, run=run, clock=clock, repo=self._repo,
+                                                          board_dir=self._board_dir)
+        self._ignored_checked = None
+        self.ignored = dict(ignored or {})   # stuck cards left alone ({card: column found in}) until resolved
         self.config = None
         self.last_cycle = {}
         self.command_wait = COMMAND_WAIT
@@ -80,6 +85,7 @@ class Supervisor:
         self._stop_mode = None
         self._sigints = 0
         self._force = False
+        self._cancel_flag = False   # set first by on_signal and request_stop('cancel'); never cleared
         self._cancel_sent = False
         self._force_sent = False
         self._cancelled = {}
@@ -103,10 +109,15 @@ class Supervisor:
         if mode not in STOP_MODES:
             raise errors.Invalid('stop mode must be drain or cancel')
         with self._lock:
-            if self._stop_mode != 'cancel':
+            if mode == 'cancel' or force:
+                self._cancel_flag = True
+            if not self._cancel_flag:
                 self._stop_mode = mode
-            if force:
+                if self._cancel_flag:   # on_signal ran between the check and the store: cancel wins
+                    self._stop_mode = 'cancel'
+            else:
                 self._stop_mode = 'cancel'
+            if force:
                 self._force = True
             effective = self._stop_mode
         self.state.stop()
@@ -119,6 +130,7 @@ class Supervisor:
         Runs between two bytecodes of the main thread, so it takes no non-reentrant lock (no Event.set, no
         self._lock): it sets plain flags and flips the State (an RLock). The loop acts on them within its
         bounded wait (at most a second)."""
+        self._cancel_flag = True   # first: request_stop re-reads it after its own store
         self._stop_mode = 'cancel'
         if signum == signal.SIGINT:
             self._sigints += 1
@@ -133,6 +145,8 @@ class Supervisor:
             return self.state.snapshot()
         if name == 'usage':
             return self._usage(command.get('card'))
+        if name == 'stuck':
+            return self._stuck()
         if name == 'stop':
             mode = command.get('mode')
             if mode not in STOP_MODES:
@@ -160,6 +174,15 @@ class Supervisor:
     def _board_dir(self):
         board = (self.config or {}).get('board')
         return (board.get('dir') if isinstance(board, dict) else None) or usage.DEFAULT_DIR
+
+    def _stuck(self):
+        """Read-only view for the `stuck` command: what a dead supervisor left, excluding this one's live cards."""
+        live = sorted(self.state.active)
+        try:
+            found = stuck.find(self.root, live_cards=live, run=self.run_script)
+        except ValueError as exc:
+            raise errors.Invalid(str(exc)) from None
+        return {'stuck': [item._asdict() for item in found], 'live': live}
 
     def _usage(self, card=None):
         """Read-only view of the ledger for the `usage` command (the service thread calls this)."""
@@ -262,8 +285,9 @@ class Supervisor:
             self.request_stop('drain')
 
     def _reap(self):
-        """Last resort on the way out: terminate and reconcile whatever is still running."""
-        deadline = time.monotonic() + 15
+        """Last resort on the way out: terminate and reconcile whatever is still running. A session that has
+        not ended by the deadline is given up on, and still gets a ledger line (unknown counts)."""
+        deadline = time.monotonic() + REAP_WAIT
         for action in list(self.state.active.values()):
             if action.session is not None:
                 action.session.cancel(0)
@@ -283,6 +307,22 @@ class Supervisor:
                     self.state.end(action.card)
                 self.state.release(action.card)
             time.sleep(0.05)
+        for action in [a for a in self.state.active.values() if a.session is not None]:
+            self._record_unfinished(action)
+            if not markers.group_alive(action.pgid):   # a group still running keeps its marker: a live orphan
+                markers.clear(action.marker, action.pgid)
+
+    def _record_unfinished(self, action):
+        """Tokens are never silently missing: the session was given up on, so its counts are unknown."""
+        counts = {key: None for key in usage.COUNTS}
+        line = {'run_id': self.state.run_id, 'card': action.card, 'kind': 'card', 'column': action.column,
+                'action': action.action, 'role': action.role, 'provider': action.provider, 'model': None,
+                'started_at': _iso(action.started_at), 'ended_at': _iso(self.clock()), 'log': None, **counts}
+        try:
+            self.state.add_tokens(counts, action.card)
+            usage.append(self.root, line, self._board_dir())
+        except Exception as exc:  # noqa: BLE001 - best effort on the way out
+            self.state.event('warning', card=action.card, message='usage not recorded: %s' % _clean(exc))
 
     # --- sessions ------------------------------------------------------------------------------------
     def _poll(self):
@@ -331,7 +371,8 @@ class Supervisor:
     def _merge_ended(self, outcome):
         """merged and refused go to the merger session; not_attempted (the script's fresh plan skipped the card)
         leaves it in merging to be planned again; anything else pauses the board. While stopping the merger
-        is deferred: the planner plans after_merge / merge_refusal for the card on the next run."""
+        or paused the merger is deferred: the planner plans after_merge / merge_refusal for the card once the
+        board runs again (after resume, or on the next run)."""
         card, kind, detail = outcome
         self.state.release(card)
         self.state.event('merge_' + kind, card=card, reason=detail.get('reason'))
@@ -351,6 +392,8 @@ class Supervisor:
                 self.state.event('ignored_checks_failed', card=card, message=_clean(exc))
         if self._stop_mode or self.state.mode == 'stopping':
             self.state.event('merger_deferred', card=card, mode=kind, message='stopping')
+        elif self.state.mode == 'paused':   # nothing starts while paused: after resume the planner plans it
+            self.state.event('merger_deferred', card=card, mode=kind, message='paused')
         else:
             try:
                 self.driver.begin_merger(card, kind, detail)
@@ -389,8 +432,9 @@ class Supervisor:
         self.state.set_health(provider, {'until': self.clock() + delay, 'reason': reason, 'failures': failures})
 
     def _note_cancelled(self, action):
-        """A cancelled card goes back to the column it was in when the action began."""
+        """A cancelled card goes back to the column it was in when the action began; its marker goes too."""
         card, column = action.card, action.column
+        markers.clear(action.marker, action.pgid)
         try:
             with tempfile.TemporaryDirectory(prefix='fleet-cancel-') as tmp:
                 path = Path(tmp) / 'patch.json'
@@ -447,6 +491,7 @@ class Supervisor:
             self._hold_until = None
         if self._token_limit_reached():
             return
+        self._refresh_ignored()
         batch = self.fetch(self.root, self.run_script, self.clock)
         if batch.error:
             self._error('fetch_failed', batch.error)
@@ -462,7 +507,7 @@ class Supervisor:
         capped = self._capped_cards()
         rows, limit_waits = [], []
         for original in batch.candidates:
-            if not isinstance(original, dict):
+            if not isinstance(original, dict) or original.get('number') in self.ignored:
                 continue
             row = dict(original)
             row['provider'] = resolver.provider_for(config, row)
@@ -499,6 +544,17 @@ class Supervisor:
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _refresh_ignored(self):
+        """Stuck cards stay out of admission while a fresh startup check still reports them (throttled)."""
+        if not self.ignored or (self._ignored_checked is not None and self.mono() - self._ignored_checked < IGNORE_RECHECK):
+            return
+        self._ignored_checked = self.mono()
+        try:
+            found = stuck.find(self.root, live_cards=set(self.state.active), run=self.run_script)
+            self.ignored = stuck.unresolved(self.ignored, found)
+        except Exception as exc:  # noqa: BLE001 - when unreadable they stay ignored
+            self._error('stuck_refresh_failed', _clean(exc))
 
     @staticmethod
     def _retry_after(row):

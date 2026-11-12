@@ -165,24 +165,59 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `run.pid` format) for its life and exits 1 while another live run holds it; `board-web.py`
   reads the same path, so keep the two in step.
 - **Command-line supervisor** (`scripts/supervisor/`, `scripts/supervisor.sh`; design:
-  `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`). After Phase 1 it is a
-  foreground process you start yourself: `supervisor.sh start` runs until Ctrl-C, SIGTERM or
-  `stop`; `status`, `pause`, `resume` and `stop [--drain|--cancel]` talk to it over one socket.
-  It keeps everything in memory (`state.py`, `scopes.py`): no database, no journal, no restart
-  recovery, no OS service or boot registration, no sandbox; it dispatches nothing yet. The socket
-  is a 0600 file in a 0700 directory under `/tmp/fleet-board-<uid>/` (or `FLEET_BOARD_SOCKET_DIR`;
-  never `$TMPDIR`), location from `supervisor/paths.py`, the one definition shared by service, CLI
-  and board server; domain ids are a pure hash. The actor comes from peer credentials (never a
-  request body), every mutation carries `request_id` + `expected_revision` (stale => 409 with
-  current state; request-id replay returns the original outcome), typed error codes in
-  `supervisor/errors.py`. Ownership shares the run lock with the legacy wrapper
-  (`claim-run-lock.py --kind service`). The board server has no config switch: its
-  `/api/supervisor*` routes and supervisor-shaped `/api/run` answer only while a supervisor
-  socket answers `status` within 1 s (`supervisor_running()`), otherwise 404 and the legacy run
-  API; a Start treats a stopping supervisor as not running and waits for it to go before
-  launching. Status is `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service
-  output (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service
-  cannot drift.
+  `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`). A process you start yourself that
+  dispatches the board's work: it plans with `tick-plan.sh`, admits actions (`scheduler.py`), runs
+  role sessions (`roles.py`, `driver.py`) and the one-merge lane (`merging.py`). `status`, `pause`,
+  `resume`, `stop [--drain|--cancel]`, `usage` and `stuck` talk to it or to the board. It keeps
+  everything in memory (`state.py`, `scopes.py`): no database, no journal, no restart recovery, no
+  OS service or boot registration, no sandbox.
+  - `start [--detach] [--ignore-stuck]`: runs in the foreground until Ctrl-C, SIGTERM or `stop`;
+    `--detach` starts it in the background (`launcher.py`, output to `<log dir>/supervisor.log`)
+    and returns once the child itself reports `startup: "done"` (its own pid in `status`), within
+    30 s (`READY_TIMEOUT`). `status.startup` is `checking` while the startup check runs (the socket
+    already answers) and `done` once the loop runs. A `FLEET_BOARD_SUPERVISOR_SOCKET` that does not
+    point where `start` binds fails fast instead of waiting out the timeout. Exit 4: the startup
+    check found stuck items; each is printed (`#<n> <kind>: <detail>`) and noted on the card
+    (`stuck {kind, detail, at}`), and nothing is started. `--ignore-stuck` starts anyway and keeps
+    those cards out of admission until a fresh check no longer reports them.
+  - Active markers: the supervisor owns `<board.dir>/active/<n>` while a role session or merge
+    child runs, writing `{pgid, supervisor_pid}` atomically (`markers.py`). Every action, script-only
+    ones included, removes the marker when it ends (finish, cancel, reap, `State.end`) unless it
+    names another process group: while the supervisor owns the card, a marker naming no pgid (the
+    empty one a board script made) is its own. Board scripts still create an empty marker (`fb_mark_active`, which never
+    truncates one) and remove it when a role posts its report (`comment.sh`).
+  - `stuck [--json] [--release N [--force]]` (`stuck.py`) reads the board itself, asking a running
+    supervisor only for the cards it owns (never reported). Kinds: `in_flight` (in_progress with no
+    owning session, or merging with `pending_merge` and no record of how it ended), `live_orphan` (a
+    marker naming a process group that still runs), `marker` (a marker whose pgid is dead or absent),
+    `dirty_worktree` (uncommitted changes to tracked files; `git --no-optional-locks status
+    --porcelain --untracked-files=no`), `unreadable_worktree` (that status failed or timed out:
+    never taken as clean), `dead_lock` (a card lock whose holder is gone, or pid-less past
+    `LOCK_GRACE`), `unreadable_note`. Every non-terminal state is checked (all but backlog, done,
+    wont_do; review stages included). A live process holding the repository run lock that did not
+    answer `status` as the supervisor makes `--release` refuse ("a run is active (pid N)") and the
+    plain list print a one-line notice.
+  - Release rules: refused for a card with no current finding unless `--force`, for a
+    `live_orphan` (stop that process group first) and for a card locked by a running process.
+    in_progress -> ready without a PR, else in_review. merging: PR merged -> stays in merging,
+    recording `merge_operation` (and `merged_pr`) from `pending_merge`; open or closed -> the merge
+    records are cleared and it goes to in_review; an unreadable PR state changes nothing. A dirty or
+    unreadable worktree gets a `stuck_released` exemption, which the driver clears (with any stale
+    `stuck` note) on its first note read for the card. Release clears the card's marker, a dead lock
+    and the `stuck` note; it never touches git (no branch, worktree or PR is changed).
+  - The socket is a 0600 file in a 0700 directory under `/tmp/fleet-board-<uid>/` (or
+    `FLEET_BOARD_SOCKET_DIR`; never `$TMPDIR`), location from `supervisor/paths.py`, the one
+    definition shared by service, CLI and board server; domain ids are a pure hash. The actor comes
+    from peer credentials (never a request body), every mutation carries `request_id` +
+    `expected_revision` (stale => 409 with current state; request-id replay returns the original
+    outcome), typed error codes in `supervisor/errors.py`. Ownership shares the run lock with the
+    legacy wrapper (`claim-run-lock.py --kind service`; path `service.default_run_lock_path`). The
+    board server has no config switch: its `/api/supervisor*` routes and supervisor-shaped
+    `/api/run` answer only while a supervisor socket answers `status` within 1 s
+    (`supervisor_running()`), otherwise 404 and the legacy run API; a Start treats a stopping
+    supervisor as not running and waits for it to go before launching. Status is
+    `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
+    (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
 - **Merging and the merger** (Phase 4; spec section 6). `merging` is a fixed state between the
   review stages and human_qa: a card goes stages -> merging -> done and never through human_qa
   (a PR needing human QA is never merged from merging). Only `merge.policy: auto` merges.
@@ -207,7 +242,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
     the card's last routed or visited stage (stage-less when routed to none); human QA asked and
     `false`; non-draft; green. Stages are routed per card, never "the last configured stage".
   - Merger gate: after the lane merges or is refused, the merger (`agents/merger.md`) runs as
-    `after_merge` or `merge_refusal`; a merging card plans `finish` only after
+    `after_merge` or `merge_refusal` (deferred while stopping or paused: the planner plans it when
+    the board runs again); a merging card plans `finish` only after
     `note.merger {mode: after_merge, status: done}` for its head. A refusal merger's `retry` sets
     `merge_retry {pr, head, after}`; the next merge row carries `retry_after` and the supervisor
     holds it until then; a second refusal after a retry is attention. A merger `attention` keeps

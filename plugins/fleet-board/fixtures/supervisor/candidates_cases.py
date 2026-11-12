@@ -56,7 +56,8 @@ def test_unlisted_script_is_refused(base):
         except ValueError:
             continue
         raise AssertionError('unlisted script ran: ' + name)
-    assert 'tick-plan.sh' in scripts.ALLOWED and len(scripts.ALLOWED) == 18
+    assert 'tick-plan.sh' in scripts.ALLOWED and 'board-list.sh' in scripts.ALLOWED, scripts.ALLOWED
+    assert len(scripts.ALLOWED) == 19, len(scripts.ALLOWED)
 
 
 def test_run_captures_output_and_args(base):

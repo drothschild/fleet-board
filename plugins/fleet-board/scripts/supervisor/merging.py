@@ -12,7 +12,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
-from . import scripts
+from . import markers, scripts
 from .state import Action
 
 MergeOutcome = namedtuple('MergeOutcome', 'card kind detail')
@@ -57,10 +57,12 @@ def _same_head(left, right):
 
 
 class MergeLane:
-    def __init__(self, root, state, run=scripts.run, spawn=scripts.spawn, gh=None, repo=None, clock=time.time):
+    def __init__(self, root, state, run=scripts.run, spawn=scripts.spawn, gh=None, repo=None, clock=time.time,
+                 board_dir=None):
         self.root, self.state, self.run, self.spawn, self.clock = Path(root), state, run, spawn, clock
         self.gh = gh or _gh
         self.repo = repo           # a "owner/name" string or a callable returning one (for the required-check lookup)
+        self.board_dir = board_dir  # board.dir (a string or a callable returning one): where the active marker goes
         self._seq = 0
         self._child = None         # (handle, action, candidate) while a merge runs
 
@@ -77,9 +79,10 @@ class MergeLane:
         self._seq += 1
         key = '%s-%d-%d' % (_KEY.sub('_', str(self.state.run_id))[:80], number, self._seq)
         column = candidate.get('state')
+        board_dir = self.board_dir() if callable(self.board_dir) else self.board_dir
         action = Action(card=number, action='merge', column=column, role=None, provider='scripts',
                         paths=list(candidate.get('declared_paths') or []), started_at=self.clock(),
-                        started_mono=time.monotonic(), kind='merge')
+                        started_mono=time.monotonic(), kind='merge', marker=markers.path(self.root, board_dir, number))
         self.state.begin(action)
         try:
             if column != 'merging':
@@ -96,8 +99,20 @@ class MergeLane:
             self.state.end(number)
             raise
         self._child = (handle, action, dict(candidate, operation_key=key))
+        self._own_marker(action, getattr(handle, 'pid', None))
         self.state.event('merge_started', card=number, pr=pr, head=head, operation_key=key)
         return action
+
+    def _own_marker(self, action, pgid):
+        """The merge child owns the card's active marker until it ends (State.end removes it)."""
+        if type(pgid) is not int or pgid <= 1:
+            return
+        board_dir = self.board_dir() if callable(self.board_dir) else self.board_dir
+        try:
+            action.marker = markers.write(self.root, board_dir, action.card, pgid)
+            action.pgid = pgid
+        except OSError as exc:
+            self.state.event('warning', card=action.card, message='active marker not written: %s' % exc)
 
     def poll(self):
         """None while the merge runs; the MergeOutcome once it has ended (the lane is free again)."""

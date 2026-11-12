@@ -8,9 +8,10 @@ from collections import deque
 from dataclasses import dataclass, fields
 from typing import Any, Optional
 
-from . import scopes
+from . import markers, scopes
 
 DUPLICATE_ADMISSION = 'card already active'  # begin() refuses a second action for a card; loop.py matches it
+_PRIVATE = ('session', 'marker', 'pgid')     # Action fields kept out of the snapshot
 
 
 @dataclass
@@ -25,6 +26,8 @@ class Action:
     started_mono: float
     session: Any = None
     kind: str = 'role'  # "role" | "script" | "merge"
+    marker: Any = None  # the card's active marker path once a session or merge child was launched
+    pgid: Any = None    # the process group that marker names
 
 
 class State:
@@ -86,12 +89,14 @@ class State:
             self._bump()
 
     def end(self, card):
+        """End the card's action; its active marker goes too, while it still names the action's group."""
         with self._lock:
             action = self.active.pop(card)
             if self.lane is action:
                 self.lane = None
             self._bump()
-            return action
+        markers.clear(action.marker, action.pgid)
+        return action
 
     def reserve(self, card, paths):
         """Reserve `paths` for `card`; they must already be `scopes.normalize()` output."""
@@ -149,7 +154,7 @@ class State:
         if action is None:
             return None
         # Not asdict(): it deep-copies, and a live session handle is not copyable.
-        return {f.name: getattr(action, f.name) for f in fields(action) if f.name != 'session'}
+        return {f.name: getattr(action, f.name) for f in fields(action) if f.name not in _PRIVATE}
 
     def snapshot(self):
         with self._lock:

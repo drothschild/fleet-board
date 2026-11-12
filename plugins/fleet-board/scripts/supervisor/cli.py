@@ -1,5 +1,6 @@
 """Command line for the supervisor: `start` is the supervisor process, the rest talk to it."""
 import argparse
+import contextlib
 import json
 import os
 import signal
@@ -10,16 +11,18 @@ import time
 import uuid
 from pathlib import Path
 
-from . import errors, loop, paths, usage
+from . import errors, launcher, loop, paths, stuck, usage
 from .driver import CardDriver
 from .scheduler import Scheduler
-from .service import Service
+from .service import Service, default_run_lock_path
 from .state import State
 
 USAGE = ("usage: supervisor <start [--detach] [--ignore-stuck] | status [--json] | pause | resume | "
-         "stop [--drain|--cancel] | usage [--card N] [--json]>")
+         "stop [--drain|--cancel] | usage [--card N] [--json] | stuck [--json] [--release N [--force]]>")
 EPILOG = """\
-exit codes: 0 ok, 1 error or supervisor not running, 2 usage
+exit codes: 0 ok, 1 error or supervisor not running, 2 usage, 4 start refused: cards a previous
+  supervisor left half done (list them with `stuck`, resolve with `stuck --release N`, or
+  start with --ignore-stuck)
 
 environment:
   FLEET_BOARD_DOMAIN             the board root (default: the git toplevel of the current directory)
@@ -111,6 +114,10 @@ def _parser():
     use = subs.add_parser("usage")
     use.add_argument("--card", type=int)
     use.add_argument("--json", action="store_true")
+    left = subs.add_parser("stuck")
+    left.add_argument("--json", action="store_true")
+    left.add_argument("--release", type=int)
+    left.add_argument("--force", action="store_true")
     subs.add_parser("pause")
     subs.add_parser("resume")
     stop = subs.add_parser("stop")
@@ -133,15 +140,17 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
     except (ValueError, SystemExit):
         print(USAGE, file=stderr)
         return 2
-    if args.command == "start" and args.detach:
-        print("supervisor: --detach arrives in a later phase", file=stderr)
-        return 2
     root = None
     try:
+        if args.command == "start" and args.detach:
+            return _detach(_board_root(env), env, stdout, stderr, ignore_stuck=args.ignore_stuck)
         if args.command == "start":
-            return _start(_board_root(env), stdout, stderr)
+            with _process_env(env):
+                return _start(_board_root(env), stdout, stderr, ignore_stuck=args.ignore_stuck)
         if args.command == "usage":
             return _usage(args, env, stdout, transport)
+        if args.command == "stuck":
+            return _stuck(args, env, stdout, stderr, transport)
         if transport is None:
             root = _board_root(env)
             transport = _socket_transport(_socket_for(root, env))
@@ -175,13 +184,56 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         return 1
 
 
-def _start(root, stdout, stderr):
-    """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop."""
+_ENV_KEYS = ("FLEET_BOARD_SOCKET_DIR", "FLEET_BOARD_LOG_DIR", "FLEET_BOARD_CONFIG", "FLEET_BOARD_DOMAIN")
+
+
+@contextlib.contextmanager
+def _process_env(env):
+    """Run the supervisor on the env it was given: the paths, the run lock and the board scripts it starts
+    all read os.environ, so the FLEET_BOARD_* location keys of `env` are applied for the run and restored."""
+    if env is os.environ:
+        yield
+        return
+    saved = {key: os.environ.get(key) for key in _ENV_KEYS}
+    for key in _ENV_KEYS:
+        if env.get(key):
+            os.environ[key] = env[key]
+        else:
+            os.environ.pop(key, None)
+    try:
+        yield
+    finally:
+        for key, value in saved.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _detach(root, env, stdout, stderr, ignore_stuck=False):
+    """Start the supervisor in the background; return once it passed the startup check and runs the loop."""
+    try:
+        ack = launcher.launch_detached(root, paths.log_dir(env) / "supervisor.log", env=env,
+                                       ignore_stuck=ignore_stuck)
+    except launcher.LaunchError as exc:
+        if exc.exit_code == 4:
+            print(exc.output.strip(), file=stderr)
+            return 4
+        print("supervisor: " + str(exc), file=stderr)
+        return 1
+    print(json.dumps(ack), file=stdout)
+    return 0
+
+
+def _start(root, stdout, stderr, ignore_stuck=False):
+    """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop, 4 when it
+    refuses to start because a previous supervisor left cards half done."""
     state = State(uuid.uuid4().hex, time.time)
     loader = loop.config_loader(root)
     supervisor = loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
                                  driver=CardDriver(root, loader, state))
     service = Service(root, state, supervisor.handle)
+    service.startup = "checking"
     # Installed before readiness is announced (and before the socket exists): a signal at any
     # point after this ends the run through close(), never leaving a socket or run lock behind.
     # Ctrl-C (twice: no grace period), SIGTERM and SIGHUP cancel the running sessions and exit 0.
@@ -200,6 +252,21 @@ def _start(root, stdout, stderr):
                 pid = service.owner_pid()
                 print("supervisor already running for %s (pid %s)" % (root, pid if pid else "unknown"), file=stderr)
             return 1
+        # The startup check runs only once this process owns the repository (a running supervisor's own
+        # cards would otherwise look stuck), and before any work is admitted or readiness is announced.
+        found = stuck.find(root)
+        if found:
+            for card in stuck.record(root, found):
+                print("supervisor: warning: the stuck note for #%d could not be written" % card, file=stderr)
+            for item in found:
+                print("#%d %s: %s" % (item.card, item.kind, item.detail), file=stderr)
+            if not ignore_stuck:
+                print("supervisor: %d stuck item%s from an earlier run; nothing was started. Resolve each card "
+                      "(move it, or `supervisor stuck --release N`), or start with --ignore-stuck."
+                      % (len(found), "" if len(found) == 1 else "s"), file=stderr)
+                return 4
+            supervisor.ignored = stuck.snapshot(root, found)
+        service.startup = "done"
         print(json.dumps(ack), file=stdout, flush=True)
         return supervisor.run()
     finally:
@@ -226,6 +293,49 @@ def _usage(args, env, stdout, transport):
             raise
         result = _local_usage(root, args.card)
     print(json.dumps(result) if args.json else _human_usage(result), file=stdout)
+    return 0
+
+
+def _stuck(args, env, stdout, stderr, transport):
+    """List (or release) stuck cards. The board is read here, never through the supervisor's socket (a slow
+    check must not hit the socket timeout); a running supervisor is asked only for the cards it owns. The socket
+    alone is never trusted: a live process holding the repository run lock that did not answer as the
+    supervisor (a legacy run, or a supervisor this client cannot reach) refuses a release."""
+    if args.force and args.release is None:
+        raise errors.Invalid("--force needs --release N")
+    root = _board_root(env)
+    live, answered = set(), None
+    try:
+        status = (transport or _socket_transport(_socket_for(root, env)))({"command": "status"})
+        live = {a.get("card") for a in status.get("active") or [] if isinstance(a, dict)}
+        answered = status.get("pid") if isinstance(status, dict) else None
+    except (FileNotFoundError, ConnectionRefusedError, errors.UnsafeSocketDir):
+        pass   # no supervisor running: nothing is live
+    holder = stuck.run_lock_holder(default_run_lock_path(root, env=env))
+    other = holder if holder is not None and holder != answered else None
+    if args.release is not None:
+        if args.release in live:
+            raise errors.Invalid("card #%d is owned by the running supervisor" % args.release)
+        if other is not None:
+            raise errors.Invalid("a run is active (pid %d); stop it before releasing" % other)
+        stuck.release(root, args.release, force=args.force, live_cards=live)
+        print("released #%d" % args.release, file=stdout)
+        return 0
+    found = [item._asdict() for item in stuck.find(root, live_cards=live)]
+    notice = ("note: a run is active (pid %d) and did not answer as the supervisor; this list may include its "
+              "live work" % other) if other is not None else None
+    if args.json:
+        if notice:
+            print(notice, file=stderr)
+        print(json.dumps(found), file=stdout)
+        return 0
+    if notice:
+        print(notice, file=stdout)
+    if not found:
+        print("no stuck cards", file=stdout)
+    else:
+        for item in found:
+            print("#%d %s: %s" % (item["card"], item["kind"], item["detail"]), file=stdout)
     return 0
 
 

@@ -244,6 +244,31 @@ class Merging(MergeCase):
         self.assertEqual(self.b.card(12)['state'], 'merging')
         self.assertEqual(self.mergers, [], 'no merger session starts while stopping')
 
+    def test_the_merge_child_owns_the_active_marker_until_it_ends(self):
+        self.hold.write_text('')
+        self.start()
+        pid = int(self.spawned(1)[0][0])
+        path = self.b.root / '.fleet-board' / 'active' / '12'
+        marker = self.until(lambda: path.exists() and json.loads(path.read_text()), what='the merge marker')
+        self.assertEqual(marker['pgid'], pid)
+        self.assertEqual(marker['supervisor_pid'], os.getpid())
+        self.hold.unlink()
+        self.until(lambda: self.b.state.lane is None, what='the lane to free')
+        self.assertFalse(path.exists(), 'the merge left its marker')
+
+    def test_a_merge_that_ends_while_paused_defers_the_merger(self):
+        self.hold.write_text('')
+        self.start()
+        self.spawned(1)
+        self.sup.handle({'command': 'pause'})
+        self.until(lambda: self.mode() == 'paused', what='the pause')
+        self.hold.unlink()
+        self.until(lambda: any(e['type'] == 'merger_deferred' for e in self.b.state.events), what='the deferral')
+        deferred = [e['payload'] for e in self.b.state.events if e['type'] == 'merger_deferred']
+        self.assertEqual(deferred[0]['message'], 'paused')
+        self.assertEqual(self.mergers, [], 'no merger session starts while the board is paused')
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+
     def test_a_planner_skip_is_not_attempted_and_never_pauses(self):
         self.inspect = dict(ABSENT)
         self.start()
@@ -450,6 +475,30 @@ class MergerFlow(unittest.TestCase):
         note = self.b.note(12)
         self.assertEqual(note['conflicted_files'], ['src/a.py'])
         self.assertEqual((note['state'], note['merge_refusal'], note['pending_merge']), ('in_review', None, None))
+
+    def test_refusal_fix_for_a_conflict_leaves_no_marker_behind(self):
+        from unittest import mock
+        from supervisor import stuck
+        active = self.b.root / '.fleet-board' / 'active'
+
+        def tree(*a):
+            if a[0] == 'create':   # comment.sh already dropped the session marker; fb_mark_active makes a fresh one
+                active.mkdir(parents=True, exist_ok=True)
+                (active / '12').unlink() if (active / '12').exists() else None
+                (active / '12').write_text('')
+            return dc.ok(self.b.worktree + '\n')
+        self.b.stubs['worktree.sh'] = tree
+
+        def update(*args):
+            self.b.put_note({'conflicted_files': ['src/a.py']})
+            return dc.fail_with('update-branch: merge conflict in src/a.py')
+        self.b.stubs['update-branch.sh'] = update
+        self.merger('refused', self.refused(reason='Pull request is not mergeable: merge conflict'),
+                    'merger-refusal-fix')
+        self.assertEqual(self.b.card(12)['state'], 'in_review')
+        self.assertFalse((active / '12').exists(), 'the empty marker the refusal fix made outlived the action')
+        with mock.patch.dict(os.environ, {'FLEET_BOARD_USER': 'fleet-bot'}):
+            self.assertEqual(stuck.find(self.b.root), [])
 
     def test_refusal_fix_ignores_a_stale_conflict_list(self):
         dc.worktree_ok(self.b)
