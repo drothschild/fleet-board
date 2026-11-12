@@ -183,6 +183,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   launching. Status is `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service
   output (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service
   cannot drift.
+  Merger: after the merge lane merges or is refused, the merger (`agents/merger.md`) runs as
+  `after_merge` or `merge_refusal`; a merging card plans `finish` only after
+  `note.merger {mode: after_merge, status: done}` for its head. A merger `attention` keeps the
+  card in merging (`skip "merger needs attention; a person decides"`) with `pending_merge`
+  cleared. The way out: `note.sh merge <n>` with `merger: null` (plus `merge_refusal: null`
+  and `merge_retry: null` to let it merge again), or move the card by hand.
 
 ## Invariants
 

@@ -16,6 +16,7 @@ uncounted action merges `action_failures + 1` and the first stderr line into the
 """
 import json
 import os
+import posixpath
 import re
 import shutil
 import tempfile
@@ -50,7 +51,8 @@ _FLAGS = frozenset(('--qa-summary', '--role', '--commits-since-review', '--mode'
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
-_LEFT_MERGING = {'pending_merge': None, 'merge_refusal': None}   # a card that leaves merging drops both
+# a card that leaves merging drops its merge records
+_LEFT_MERGING = {'pending_merge': None, 'merge_refusal': None, 'merge_retry': None}
 _BRANCH = re.compile(r'fleet/[0-9]+-[a-z0-9-]{1,40}')
 _REPO = re.compile(r'^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
 _SHA = re.compile(r'[0-9a-f]{4,64}')
@@ -1168,6 +1170,8 @@ class CardDriver:
         refusal = {'pr': pr, 'head': head, 'reason': reason}
         if isinstance(detail.get('required_check'), str) and _first_line(detail['required_check']):
             refusal['required_check'] = _first_line(detail['required_check'])
+        if self._retried(c.note(), head):   # spec section 6: a second refusal after a retry is attention
+            return self._merger_attention(c, 'refusal', 'merge refused again after a retry: %s' % reason, head)
         card = self._read_card(c)
         return self._dispatch_merger(c, 'refusal', pr, head, card, {'refusal': refusal})
 
@@ -1217,16 +1221,42 @@ class CardDriver:
             text = text.rstrip('\n') + '\n\n' + append.strip('\n') + '\n'
         return text
 
+    def _tracked(self, rel):
+        """True when git tracks `rel`. Only ls-files' own "did not match" (exit 1) means untracked; any other
+        failure is unknown and fails closed."""
+        result = self.git(self.root, 'ls-files', '--error-unmatch', '--', rel)
+        if result.rc == 0 and not result.timed_out:
+            return True
+        if result.rc == 1 and not result.timed_out and 'did not match' in (result.stderr or ''):
+            return False
+        raise _Fail('git ls-files %s: %s' % (rel, _first_line(result.stderr) or 'exit %d' % result.rc))
+
+    def _persona_paths(self, rel):
+        """The repo-relative paths a PR could change the persona through: the configured path normalised as git
+        and gh print it, and, for a symlink, its resolved target (outside the repository is attention)."""
+        norm = posixpath.normpath(rel.replace('\\', '/'))
+        if norm in ('.', '') or norm.startswith('../') or norm.startswith('/'):
+            raise _Attention('merge.persona not found: %s' % _first_line(rel))
+        names = [norm]
+        target = os.path.realpath(str(self.root / norm))
+        root = os.path.realpath(str(self.root))
+        if os.path.islink(str(self.root / norm)) or target != os.path.join(root, norm):
+            if os.path.commonpath([root, target]) != root:
+                raise _Attention('persona symlink points outside the repository')
+            names.append(posixpath.normpath(os.path.relpath(target, root).replace(os.sep, '/')))
+        return list(dict.fromkeys(names))
+
     def _persona_changed(self, c, rel, pr):
-        if self.git(self.root, 'ls-files', '--error-unmatch', '--', rel).rc != 0:
+        candidates = self._persona_paths(rel)
+        if not any([self._tracked(name) for name in candidates]):
             return False   # untracked (the store is kept out of git): no PR can have changed it
         result = self.gh(self.root, 'pr', 'view', str(pr), '--repo', c.repo(), '--json', 'files')
         data = _json(result.stdout) if result.rc == 0 and not result.timed_out else None
         files = data.get('files') if isinstance(data, dict) else None
         if not isinstance(files, list):
             raise _Fail(_first_line(result.stderr) or 'could not read the files of PR #%d' % pr)
-        names = [f.get('path') for f in files if isinstance(f, dict)]
-        if rel in names:
+        names = {posixpath.normpath(f['path']) for f in files if isinstance(f, dict) and isinstance(f.get('path'), str)}
+        if any(name in names for name in candidates):
             return True
         if len(files) >= PR_FILES_LIMIT:
             raise _Attention('persona check: PR #%d lists %d files, so it may have changed the persona'
@@ -1234,7 +1264,10 @@ class CardDriver:
         return False
 
     def _merger_attention(self, c, mode, reason, head, verified=None):
-        patch = dict(_RESET, merger={'mode': mode, 'status': 'attention', 'reason': reason, 'head': head})
+        # pending_merge goes: a person who clears the attention lets the card merge again under a new operation
+        # key, which merge-reviewed.sh refuses (exit 3, the lane pauses the board) over the refused one's marker
+        patch = dict(_RESET, pending_merge=None,
+                     merger={'mode': mode, 'status': 'attention', 'reason': reason, 'head': head})
         if verified is not None:
             patch['last_verified'] = verified
         c.merge(patch)
@@ -1251,15 +1284,14 @@ class CardDriver:
         c, mode, status, head = run.c, run.mode, parsed.get('status'), run.head
         verified = (parsed.get('verified') or {}).get('line')
         record = {'mode': mode, 'status': status, 'head': head}
-        left = dict(_RESET, merger=record, last_verified=verified, merge_retry=None, **_LEFT_MERGING)
+        left = dict(_RESET, merger=record, last_verified=verified, **_LEFT_MERGING)
         if mode == 'after_merge' and status == 'done':
             c.merge(dict(_RESET, merger=record, last_verified=verified))
             c.move('done')
             c.merge_soft(dict(left, state='done'))
             return
         if mode == 'refusal' and status == 'retry':
-            retry = c.note().get('merge_retry')
-            if isinstance(retry, dict) and isinstance(retry.get('head'), str) and retry['head'].lower() == head.lower():
+            if self._retried(c.note(), head):
                 return self._merger_attention(c, mode, 'merge refused again after a retry: %s'
                                               % run.refusal['reason'], head, verified)
             backoff = (c.config.get('supervisor') or {}).get('retry_backoff_seconds')
@@ -1273,6 +1305,12 @@ class CardDriver:
         if mode == 'refusal' and status == 'fix':
             return self._refusal_fix(run, left)
         return self._merger_attention(c, mode, self._merger_reason(parsed), head, verified)
+
+    @staticmethod
+    def _retried(note, head):
+        retry = note.get('merge_retry')
+        return (isinstance(retry, dict) and isinstance(retry.get('head'), str) and isinstance(head, str)
+                and retry['head'].lower() == head.lower())
 
     def _is_conflict(self, c, run):
         if _CONFLICT.search(run.refusal['reason']):
@@ -1291,6 +1329,9 @@ class CardDriver:
                     c.row[key] = note.get(key)
             branch, worktree = c.branch(), c.worktree()
             c.step('worktree.sh', 'create', c.n, branch, worktree)
+            before = note.get('conflicted_files') or None
+            if before is not None:   # a stale list must not read as this run's conflict (nor survive a clean merge)
+                c.merge({'conflicted_files': None})
             result = c.soft('update-branch.sh', c.n, run.pr_number, branch, worktree)
             if result.timed_out:
                 raise _Fail('update-branch.sh timed out')

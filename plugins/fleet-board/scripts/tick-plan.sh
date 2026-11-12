@@ -823,13 +823,15 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         # starts the after-merge merger); a pending merge_refusal at this head plans merge_refusal
         # (the refusal merger) unless the merger asked for attention. A merge after a merger retry
         # carries retry_after (note.merge_retry.after), the time before which the supervisor holds it.
+        # Attention is a person's: clear it with `note.sh merge <n>` setting merger: null (and merge_refusal: null,
+        # merge_retry: null to let the card merge again), or move the card by hand.
         elif is_merging($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in merging, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
             if $n.main_check.ok != true then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
             # The merger gates finish: only its after-merge result for this merge lets the card leave
             elif merger_for($c; $n; "after_merge") == "done" then act("finish"; "PR #\($c.pr) merged, main verified, merger done")
-            elif merger_for($c; $n; "after_merge") == "attention" then act("skip"; "merger needs attention; supervisor decides")
+            elif merger_for($c; $n; "after_merge") == "attention" then act("skip"; "merger needs attention; a person decides")
             else act("after_merge"; "PR #\($c.pr) merged and main verified; the merger runs the after-merge steps") end
           elif $c.pr_info.state == "CLOSED" then act("block"; "PR #\($c.pr) closed without a merge")
           elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
@@ -837,7 +839,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           # A keyed refusal leaves pending_merge at the same head: the merger session decides
           # (and clears merge_refusal), the planner must not re-plan the same refused merge every cycle
           elif ($n.merge_refusal.head // null) != null and (head_moved($c; {sha: $n.merge_refusal.head}) | not) then
-            if merger_for($c; $n; "refusal") == "attention" then act("skip"; "merger needs attention; supervisor decides")
+            if merger_for($c; $n; "refusal") == "attention" then act("skip"; "merger needs attention; a person decides")
             else act("merge_refusal"; "merge of PR #\($c.pr) refused; the merger decides retry, fix or attention") end
           elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
             then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
