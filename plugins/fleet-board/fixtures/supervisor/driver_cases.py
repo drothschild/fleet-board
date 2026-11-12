@@ -1343,6 +1343,32 @@ def test_record_ignored_checks_refuses_a_malformed_entry(base):
     assert 'ignored_checks' not in b.note() or b.note()['ignored_checks'] in (None, []), b.note()
 
 
+def test_states_include_merging_and_leaving_it_clears_the_merge_records(base):
+    b = board_for(base, 'merging')
+    b.put_note({'last_review': LAST, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'abc1234'},
+                'merge_refusal': {'pr': 34, 'head': 'abc1234', 'reason': 'r', 'at': '2026-11-11T00:00:00Z'}})
+    assert begin(b, 'block', state='merging', reason='merge refused for good').kind == 'done'
+    assert b.card()['state'] == 'blocked', b.card()
+    note = b.note()
+    assert note['blocked_from'] == 'merging' and note['pending_merge'] is None and note['merge_refusal'] is None, note
+
+
+def test_a_block_from_review_leaves_the_merge_records_alone(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'last_review': LAST})
+    begin(b, 'block', state='in_review', reason='r')
+    assert 'pending_merge' not in b.note() and 'merge_refusal' not in b.note(), b.note()
+
+
+def test_begin_merger_is_a_hook_until_task_4_5(base):
+    b = board_for(base, 'merging')
+    try:
+        b.driver.begin_merger(12, 'merged', {})
+    except NotImplementedError:
+        return
+    raise AssertionError('begin_merger must raise NotImplementedError until the merger session exists')
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))

@@ -1491,6 +1491,30 @@ plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)"
 assert_jq "ignore_checks: today is injectable (FLEET_BOARD_TODAY)" "$(card 12 action)" '"wait"'
 unset FLEET_BOARD_TODAY
 
+# A keyed refusal leaves pending_merge at the same head: the planner must not re-plan merge every cycle
+plan merging-refused "$AUTO"
+assert_jq "merge_refusal: a refusal at the current head plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merge_refusal: reason" "$(card 12 reason)" '"merge refused; supervisor decides"'
+# The review must be the last configured stage's (or stage-less when none is configured)
+plan merging-stage-remaining "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging last stage: a review of an earlier stage plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging last stage: reason ends with supervisor decides" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'supervisor decides$')" '1'
+plan merging-stage-remaining "$AUTO"
+assert_jq "merging last stage: a stage record with no stages configured plans skip" "$(card 12 action)" '"skip"'
+plan merging-advisory-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+assert_jq "merging last stage: the last stage's review still merges" "$(card 12 action)" '"merge"'
+
+# --candidates carries the planner's warnings (schema stays 2)
+export FLEET_BOARD_TODAY=2026-11-11
+setup_case merging-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
+run_check "$SCRIPT" --candidates
+assert_jq "candidates warnings: schema stays 2" '.schema_version' '2'
+assert_jq "candidates warnings: the expired-entry warning is carried" '.warnings' '["merge.ignore_checks entry ci/legacy-?int expired 2026-11-10"]'
+setup_case merging-open-merge "$AUTO"
+run_check "$SCRIPT" --candidates
+assert_jq "candidates warnings: none is an empty list" '.warnings' '[]'
+unset FLEET_BOARD_TODAY
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
