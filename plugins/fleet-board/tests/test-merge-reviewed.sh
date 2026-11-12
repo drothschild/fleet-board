@@ -95,6 +95,7 @@ GH
   : > "$R"
   INREV=()
   INSTG=()
+  INMRG=()
   printf '{"login":"fleet-bot"}\n' > "$FX/user.json"
   printf '{"id":9001}\n' > "$FX/created.json"
   route 'issue edit *' 0 -
@@ -113,6 +114,11 @@ finalize() {
     items="$(jq -c --argjson n "$n" '. + [{number:$n, title:"Add subtract", url:"u", labels:[{name:"fleet:in_review"}]}]' <<<"$items")"
   done
   printf '%s\n' "$items" > "$FX/list-in_review.json"
+  items='[]'
+  for n in ${INMRG[@]+"${INMRG[@]}"}; do
+    items="$(jq -c --argjson n "$n" '. + [{number:$n, title:"Add subtract", url:"u", labels:[{name:"fleet:merging"}]}]' <<<"$items")"
+  done
+  printf '%s\n' "$items" > "$FX/list-merging.json"
   for col in in_progress; do printf '[]\n' > "$FX/list-$col.json"; done
   local e
   for col in review_security; do
@@ -126,6 +132,7 @@ finalize() {
   {
     printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s\n' "$FX/list-in_review.json"
     printf 'issue list --repo acme/toy --label fleet:review_security *\t0\t%s\n' "$FX/list-review_security.json"
+    printf 'issue list --repo acme/toy --label fleet:merging *\t0\t%s\n' "$FX/list-merging.json"
     cat "$R"
   } > "$FAKE_GH_ROUTES"
 }
@@ -142,7 +149,7 @@ card() {
       created_at:"2026-09-28T00:01:00Z"}]' > "$FX/comments-$n.json"
   route "api repos/acme/toy/issues/$n" 0 "$FX/issue-$n.json"
   route "api --paginate repos/acme/toy/issues/$n/comments" 0 "$FX/comments-$n.json"
-  case "$col" in review_*) INSTG+=("$col:$n"); return ;; esac
+  case "$col" in review_*) INSTG+=("$col:$n"); return ;; merging) INMRG+=("$n"); return ;; esac
   case "$col:${4:-yes}" in in_review:*|*:yes) INREV+=("$n") ;; esac
 }
 
@@ -180,6 +187,9 @@ finalize
 run_merge extra
 assert_exit "an argument is a usage error" 2
 assert_eq "usage: no gh call" "$(cnt "")" 0
+run_merge --no-finish
+assert_exit "--no-finish without --card is a usage error" 2
+assert_eq "--no-finish without --card: no gh call" "$(cnt "")" 0
 
 echo "merge.policy auto: a reviewed, non-draft, green PR is merged and its card moves to done"
 setup_case auto
@@ -493,6 +503,74 @@ for i in $(jq -r '.comments | keys[]' "$REPO/.fleet-board/cards/12.json" 2>/dev/
       && grep -q '"ok": true' "$FAKE_GH_DIR/evidence.md"; then RECORDED=1; break; fi
 done
 if [ "$RECORDED" = 1 ]; then pass "crash recovery: operation-bound main result persisted"; else fail "crash recovery: operation-bound main result persisted" "missing note write"; fi
+
+
+echo "merging: the merge script accepts the state; --no-finish stops after verification"
+MERGING_NOTE="$(jq -c '.state="merging"' <<<"$CLEAN")"
+note_field() { "$BASH_EXE" "$SCRIPT_DIR/../scripts/note.sh" get 12 </dev/null | jq -c "$1"; }
+card_state() { jq -r .state "$REPO/.fleet-board/cards/12.json"; }
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12
+assert_exit "merging: a merging card is merged by --card" 0
+assert_eq "merging: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "merging: without --no-finish the card moves to done" "$(card_state)" done
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: exit 0" 0
+assert_eq "no-finish: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "no-finish: the card stays in merging" "$(card_state)" merging
+assert_eq "no-finish: merged_pr is noted" "$(note_field .merged_pr)" 34
+assert_eq "no-finish: main_check is noted" "$(note_field '.main_check.ok')" true
+assert_eq "no-finish: no done note" "$(note_field '.state')" '"merging"'
+
+setup_case auto
+card 12 merging "$(jq -c '.merged_pr=34' <<<"$MERGING_NOTE")"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: a merged, unverified merging card is verified (exit 0)" 0
+assert_eq "no-finish: no second merge" "$(cnt "pr merge ")" 0
+assert_eq "no-finish: verification recorded" "$(note_field '.main_check.ok')" true
+assert_eq "no-finish: still merging after verification" "$(card_state)" merging
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: an in_review card also merges (exit 0)" 0
+assert_eq "no-finish: in_review card merged" "$(cnt "pr merge 34 ")" 1
+assert_eq "no-finish: in_review card is not moved to done" "$(card_state)" in_review
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-12 --pr 34 --head abc1234
+assert_exit "no-finish keyed: exit 0" 0
+assert_eq "no-finish keyed: merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "no-finish keyed: card stays in merging" "$(card_state)" merging
+assert_eq "no-finish keyed: merge_operation recorded" "$(note_field '.merge_operation.operation_key')" '"op-12"'
+assert_eq "no-finish keyed: verified evidence in merge_operation" "$(note_field '.merge_operation.main_check.ok')" true
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+printf '#!/usr/bin/env bash\nprintf '"'"'{"commit":"abc1234","ok":false,"results":[]}\\n'"'"'\n' > "$FX/verify-main.sh"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: a failed verification still exits 3" 3
+assert_eq "no-finish: a failed verification leaves the card in merging" "$(card_state)" merging
 
 echo ""
 echo "-----------------------------------"

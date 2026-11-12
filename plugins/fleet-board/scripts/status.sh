@@ -3,7 +3,7 @@
 #
 # Usage: status.sh [--all | --forecast]
 #
-# Sections, in order: ready, in_progress, in_review, human_qa, blocked; with
+# Sections, in order: ready, in_progress, in_review, merging, human_qa, blocked; with
 # --all also backlog, done and wont_do. Each section is the state name on
 # its own line, then one line per card:
 #   #<n> <title> · round <r> · PR #<pr> · <implementor>/<reviewer>
@@ -24,7 +24,7 @@
 # A board with no waiting card prints no graph.
 #
 # --forecast prints an overnight preflight instead of the board (not with
-# --all). It reads every card in ready, in_progress, in_review, human_qa,
+# --all). It reads every card in ready, in_progress, in_review, merging, human_qa,
 # blocked and backlog, and writes nothing. Its sections, each only when it has
 # entries:
 #   critical-path human gates         needs-human-qa cards another ready or
@@ -61,9 +61,9 @@ esac
 
 fb_load_config
 
-# The review stage columns (config order) sit between in_review and human_qa.
+# The review stage columns (config order) sit between in_review and merging.
 STAGE_STATES="$(fb_stage_states | tr '\n' ' ')"
-STATES="ready in_progress in_review ${STAGE_STATES}human_qa blocked"
+STATES="ready in_progress in_review ${STAGE_STATES}merging human_qa blocked"
 [ -z "$ALL" ] || STATES="$STATES backlog done wont_do"
 
 DEPS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
@@ -112,7 +112,7 @@ forecast_card() {
 }
 
 if [ -n "$FORECAST" ]; then
-  for st in ready in_progress in_review $STAGE_STATES human_qa blocked backlog; do
+  for st in ready in_progress in_review $STAGE_STATES merging human_qa blocked backlog; do
     LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
     ROWS="$(jq -c 'if type == "array" then .[] | {number, title} else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
       || fb_die 1 "cannot parse the $st column"

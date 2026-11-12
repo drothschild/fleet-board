@@ -218,10 +218,20 @@ class Flow(LoopCase):
         self.sup.request_stop('drain')
         self.assertEqual(self.finished(), 0)
 
-    def test_candidates_are_annotated_and_merge_is_ignored(self):
+    def test_candidates_are_annotated_and_merge_goes_to_the_lane(self):
         self.b.seed(13, 'in_review')
         self.b.seed(14, 'ready')
         self.b.put_note({'deps_commented': ['acme/toy#5']}, 14)
+        started = []
+
+        class Lane:
+            def start(self, row):
+                started.append(row['number'])
+
+            def poll(self):
+                return None
+
+        self.sup.merge_lane = Lane()
         self.rows = lambda: [
             dc.candidate('merge', number=13, state='in_review', declared_paths=['m']),
             dc.candidate('wait', number=14, state='ready', waiting_on=['acme/toy#5'], declared_paths=['w'])]
@@ -229,15 +239,12 @@ class Flow(LoopCase):
         self.cycles_done(1)
         rows, kw = self.sched.calls[-1]
         by = {r['number']: r for r in rows}
-        self.assertNotIn(13, by, 'a merge row is never offered to the scheduler')
+        self.assertIn(13, by, 'a merge row is offered to the scheduler')
         self.assertEqual(by[14]['provider'], 'scripts')
         self.assertEqual(by[14]['deps_commented'], ['acme/toy#5'])
-        self.assertIs(kw['lane_free'], False)
-        ignored = {i['number']: i['reason'] for i in self.sup.last_cycle['ignored']}
-        self.assertEqual(ignored[13], 'merging arrives in phase 4')
+        self.assertIs(kw['lane_free'], True)
+        self.assertEqual(started, [13])
         self.assertEqual(self.b.comments(14), [], 'an unchanged dependency list is not commented again')
-        self.assertEqual(self.b.card(13)['state'], 'in_review')
-        self.assertEqual(self.b.state.snapshot()['active'], {})
 
     def test_a_fetch_error_keeps_running(self):
         self.rows = lambda: None

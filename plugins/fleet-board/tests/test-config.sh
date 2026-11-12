@@ -439,6 +439,18 @@ run_config "$REPO"
 assert_exit "board.states string exit 5" "5"
 assert_stderr_contains "board.states string gives specific reason" "config.sh: invalid config: board.states must be a map"
 
+# Test 23b: merging is a canonical board.states key
+REPO="$(make_inline_repo <<'YML'
+board:
+  repo: a/b
+  states: { merging: "Landing" }
+YML
+)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO" "board.states.merging"
+assert_exit "board.states.merging exit 0" "0"
+assert_stdout_exact "board.states.merging is read back" "Landing"
+
 # Test 24: KEY lookup that jq cannot evaluate (index into an array by name) exits 2
 REPO="$(make_inline_repo <<'YML'
 board:
@@ -810,6 +822,49 @@ done
 REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens_per_card: null }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "max_tokens_per_card null accepted" 0
+
+# merge.persona (null or a non-empty relative path), merge.persona_append (null or string), models.merger
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.persona defaults to .fleet-board/merger.md" '.merge.persona' '".fleet-board/merger.md"'
+assert_stdout_exact_jq "merge.persona_append defaults to null" '.merge.persona_append' 'null'
+assert_stdout_exact_jq "models.merger defaults to sonnet" '.models.merger' '"sonnet"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: null\n  persona_append: "Also run make deploy."\nmodels: { merger: opus }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "merge.persona null with an append accepted" 0
+assert_stdout_exact_jq "merge.persona null kept" '.merge.persona' 'null'
+assert_stdout_exact_jq "merge.persona_append kept" '.merge.persona_append' '"Also run make deploy."'
+assert_stdout_exact_jq "models.merger overridden" '.models.merger' '"opus"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: docs/merger.md\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.persona relative path kept" '.merge.persona' '"docs/merger.md"'
+for v in '""' '/etc/merger.md' '../merger.md' 'a/../b.md' '5' '[x]'; do
+  invalid_field_case "merge.persona rejects $v" $'merge:\n  persona: '"$v" "merge.persona must be null or a non-empty relative path without .."
+done
+for v in '5' '[x]'; do
+  invalid_field_case "merge.persona_append rejects $v" $'merge:\n  persona_append: '"$v" "merge.persona_append must be null or a string"
+done
+invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
+invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
+
+# merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.ignore_checks defaults to []" '.merge.ignore_checks' '[]'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  ignore_checks:\n    - name: "lint-*"\n      reason: flaky docs lint\n      until: 2026-12-31\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "ignore_checks entry accepted" 0
+assert_stdout_exact_jq "ignore_checks entry kept as strings" '.merge.ignore_checks' '[{"name":"lint-*","reason":"flaky docs lint","until":"2026-12-31"}]'
+IGN_MSG="merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+invalid_field_case "ignore_checks missing until" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r' "$IGN_MSG"
+invalid_field_case "ignore_checks missing reason" $'merge:\n  ignore_checks:\n    - name: lint\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks missing name" $'merge:\n  ignore_checks:\n    - reason: r\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks empty reason" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: ""\n      until: 2026-12-31' "$IGN_MSG"
+for d in 2026-13-01 2026-02-30 20261231 2026-1-5 soon 2026-12-31T00:00; do
+  invalid_field_case "ignore_checks bad date $d" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: "'"$d"$'"' "$IGN_MSG"
+done
+invalid_field_case "ignore_checks not a list" $'merge:\n  ignore_checks: lint' "merge.ignore_checks must be a list"
+invalid_field_case "ignore_checks entry not a map" $'merge:\n  ignore_checks:\n    - lint' "$IGN_MSG"
 
 echo ""
 echo "-----------------------------------"

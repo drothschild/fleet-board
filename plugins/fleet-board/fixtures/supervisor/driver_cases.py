@@ -1317,6 +1317,58 @@ def test_validation_errors_are_one_line_and_the_repo_regex_is_tight(base):
         assert b.gh_calls == [] and b.note()['last_action_error'].startswith('invalid repo: '), repo
 
 
+def test_record_ignored_checks_appends_to_the_note_with_a_timestamp(base):
+    b = board_for(base, 'merging')
+    b.driver.clock = lambda: 1794398400  # 2026-11-11T12:00:00Z
+    first = {'name': 'lint-docs', 'reason': 'docs lint is flaky', 'until': '2026-12-31'}
+    b.driver.record_ignored_checks(12, [first])
+    at = '2026-11-11T12:00:00Z'
+    assert b.note()['ignored_checks'] == [dict(first, at=at)], b.note()
+    second = {'name': 'ci/legacy-lint', 'reason': 'legacy', 'until': '2026-11-11'}
+    b.driver.record_ignored_checks(12, [second])
+    assert b.note()['ignored_checks'] == [dict(first, at=at), dict(second, at=at)], b.note()
+    b.driver.record_ignored_checks(12, [])
+    assert len(b.note()['ignored_checks']) == 2, b.note()
+
+
+def test_record_ignored_checks_refuses_a_malformed_entry(base):
+    b = board_for(base, 'merging')
+    for bad in ([{'name': 'x'}], [{'name': '', 'reason': 'r', 'until': '2026-12-31'}], ['lint'],
+                [{'name': 'x', 'reason': 'r', 'until': 'soon'}]):
+        try:
+            b.driver.record_ignored_checks(12, bad)
+        except ValueError:
+            continue
+        raise AssertionError('accepted %r' % (bad,))
+    assert 'ignored_checks' not in b.note() or b.note()['ignored_checks'] in (None, []), b.note()
+
+
+def test_states_include_merging_and_leaving_it_clears_the_merge_records(base):
+    b = board_for(base, 'merging')
+    b.put_note({'last_review': LAST, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'abc1234'},
+                'merge_refusal': {'pr': 34, 'head': 'abc1234', 'reason': 'r', 'at': '2026-11-11T00:00:00Z'}})
+    assert begin(b, 'block', state='merging', reason='merge refused for good').kind == 'done'
+    assert b.card()['state'] == 'blocked', b.card()
+    note = b.note()
+    assert note['blocked_from'] == 'merging' and note['pending_merge'] is None and note['merge_refusal'] is None, note
+
+
+def test_a_block_from_review_leaves_the_merge_records_alone(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'last_review': LAST})
+    begin(b, 'block', state='in_review', reason='r')
+    assert 'pending_merge' not in b.note() and 'merge_refusal' not in b.note(), b.note()
+
+
+def test_begin_merger_is_a_hook_until_task_4_5(base):
+    b = board_for(base, 'merging')
+    try:
+        b.driver.begin_merger(12, 'merged', {})
+    except NotImplementedError:
+        return
+    raise AssertionError('begin_merger must raise NotImplementedError until the merger session exists')
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))

@@ -127,6 +127,7 @@ setup_case() {
   list_route ready open '[]'
   list_route in_progress open '[]'
   list_route in_review open "[$(item 12 "Add subtract" fleet:in_review),$(item 14 "Fix divide" fleet:in_review)]"
+  list_route merging open '[]'
   list_route human_qa open '[]'
   list_route blocked open "[$(item 15 "Parse flags" fleet:blocked)]"
   list_route backlog open "[$(item 20 "Later thing" fleet:backlog)]"
@@ -169,6 +170,7 @@ assert_stdout_exact "default: exact output" "$(printf '%s\n' \
   ready '  (none)' \
   in_progress '  (none)' \
   in_review "$LINE12" "$LINE14" \
+  merging '  (none)' \
   human_qa '  (none)' \
   blocked "$LINE15")"
 
@@ -179,6 +181,7 @@ assert_stdout_exact "--all: exact output" "$(printf '%s\n' \
   ready '  (none)' \
   in_progress '  (none)' \
   in_review "$LINE12" "$LINE14" \
+  merging '  (none)' \
   human_qa '  (none)' \
   blocked "$LINE15" \
   backlog "$LINE20" \
@@ -187,6 +190,22 @@ assert_stdout_exact "--all: exact output" "$(printf '%s\n' \
 
 run_check "$SCRIPT" --bogus
 assert_exit "unknown flag: exit 2" 2
+
+# A card in merging is listed between the review stages and human_qa
+setup_case
+grep -v 'label fleet:merging ' "$ROUTES" > "$ROUTES.new" && mv "$ROUTES.new" "$ROUTES"
+list_route merging open "[$(item 16 "Ship it" fleet:merging)]"
+card 16 "Ship it" fleet:merging \
+  '{"state":"merging","round":1,"pr":44,"models":{"implementor":"sonnet","reviewer":"opus","fixer":"sonnet"}}'
+run_check "$SCRIPT"
+assert_exit "merging: exit" 0
+assert_stdout_exact "merging: its own section between in_review and human_qa" "$(printf '%s\n' \
+  ready '  (none)' \
+  in_progress '  (none)' \
+  in_review "$LINE12" "$LINE14" \
+  merging '  #16 Ship it · round 1 · PR #44 · sonnet/opus' \
+  human_qa '  (none)' \
+  blocked "$LINE15")"
 
 # A column that cannot be listed fails the command
 setup_case "$(printf 'issue list --repo acme/toy --label fleet:blocked *\t1\t-\n')
@@ -512,6 +531,7 @@ assert_stdout_exact "stages: sections after in_review in config order, both card
   review_security '  #14 Fix divide · round 1 · PR #40 · sonnet/acme:security-reviewer@opus' \
   review_ux '  (none)' \
   review_compliance '  #15 Audit log · round 2 · PR #41 · sonnet/openai:gpt-test' \
+  merging '  (none)' \
   human_qa '  (none)' \
   blocked '  (none)')"
 if grep -Eq "$READONLY_RE" "$FAKE_GH_DIR/calls.log"; then

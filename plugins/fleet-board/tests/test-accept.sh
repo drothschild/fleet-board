@@ -217,6 +217,11 @@ set_note_json "$(jq -c '.blocked_from = "review_security" | .round = 0 | del(.la
 run_accept 12
 assert_eq "accept: round 0 blocked from a review stage: moved to in_progress" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 in_progress"
 
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.blocked_from = "merging"' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: blocked from merging: moved back to merging" "$(cat "$MOVE_LOG" 2>/dev/null)" "12 merging"
+
 echo "accept.sh: a failed note write does not move the card"
 setup_case "$BLOCKED"
 set_note_json "$NOTE"

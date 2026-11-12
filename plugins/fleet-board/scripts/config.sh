@@ -210,7 +210,7 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" and (.board.states | type) == "object" then
         (stage_names as $names
           | .board.states | to_entries | map(
-              if (.key | test("^(backlog|ready|in_progress|in_review|human_qa|blocked|done|wont_do)$")) then empty
+              if (.key | test("^(backlog|ready|in_progress|in_review|merging|human_qa|blocked|done|wont_do)$")) then empty
               elif (.key | startswith("review_")) then (.key | ltrimstr("review_")) as $n |
                 (if ($names | index($n)) != null then empty else "board.states key \(.key) names no stage" end)
               else "board.states key \(.key) is not canonical" end)[])
@@ -303,7 +303,17 @@ VALIDATION_SCRIPT='
          end)
       else empty end),
       (if (.merge | type) == "object" then
-        (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end)
+        (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end),
+        (if (.merge.ignore_checks | type) != "array" then "merge.ignore_checks must be a list"
+         elif any(.merge.ignore_checks[]; (type != "object")
+              or ((.name | type) != "string" or .name == "") or ((.reason | type) != "string" or .reason == "")
+              or ((.until | type) != "string" or ((try (.until | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z") and (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == .) catch false) | not)))
+         then "merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+         else empty end),
+        (if .merge.persona != null and ((.merge.persona | type) != "string" or .merge.persona == "" or (.merge.persona | startswith("/")) or (.merge.persona | split("/") | index("..") != null))
+         then "merge.persona must be null or a non-empty relative path without .." else empty end),
+        (if .merge.persona_append != null and (.merge.persona_append | type) != "string"
+         then "merge.persona_append must be null or a string" else empty end)
       else empty end),
       (if (.review | type) == "object" then
         (if (.review.max_rounds | type) != "number" or (.review.max_rounds | floor) != .review.max_rounds or .review.max_rounds <= 0 then "review.max_rounds must be a positive integer" else empty end)
@@ -338,7 +348,7 @@ VALIDATION_SCRIPT='
         (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
       (if (.models | type) == "object" then
-        (("manager", "implementor", "fixer") as $r
+        (("manager", "implementor", "fixer", "merger") as $r
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end),
         (.models.reviewer as $r
          | if ($r | type) == "object" then

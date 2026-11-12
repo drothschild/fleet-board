@@ -444,7 +444,7 @@ card_input() {
   fi
 
   # The card's own PR: known from the note, or discovered from its branch
-  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$st" = merging ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
     branch="$(jq -r '.branch // empty' <<<"$note")"
     if [ "$pr" = null ] && [ -n "$branch" ]; then
       cmd="gh pr list --repo $FLEET_REPO --head $branch --state open --json number"
@@ -521,9 +521,25 @@ card_input() {
     fi
   fi
 
+  # A merging card whose head moved since the review is merged only under the review row's
+  # allowance (a clean merge of main), and then only if the PR needs no human QA: the question
+  # is asked here, as the review row asks it (lookup failure: lookup_failed, so the card is skipped).
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = merging ] && [ "$info" != null ] \
+     && [ "$(jq -r '.state' <<<"$info")" = OPEN ] \
+     && [ "$(jq -r --argjson info "$info" '(.last_review.sha // null) as $s | ($info.headRefOid // null) as $h
+                      | ($s | type) == "string" and ($h | type) == "string" and $s != "" and $h != ""
+                        and (($h | startswith($s)) or ($s | startswith($h)) | not)' <<<"$note")" = true ]; then
+    labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
+    nhq="$(bash "$FLEET_SCRIPTS/needs-human-qa.sh" --labels "$labels" "$n" "$pr")" || { nhq=null; failed="needs-human-qa.sh $n $pr"; }
+    case "$nhq" in
+      true|false|null) ;;
+      *) nhq=null; failed="needs-human-qa.sh $n $pr (unexpected answer)" ;;
+    esac
+  fi
+
   # Review drift: commits on the PR since the last reviewed sha. Best effort: a
   # lookup that fails adds no warning and never skips the card.
-  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$review_col" = true ] && [ "$info" != null ]; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$review_col" = true ] || [ "$st" = merging ]; } && [ "$info" != null ]; then
     drift="$(drift_lookup "$note" "$info")" || drift=null
   fi
 
@@ -650,7 +666,7 @@ if [ "$SETTLE" = true ]; then
 fi
 
 SEEN=" "
-for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
+for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
   NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
@@ -695,7 +711,7 @@ if [ "$SETTLE" != true ] && { [ "$CANDIDATES" = true ] || jq -es 'any(.[]; .stat
     fi
     jq -cn --argjson n "$n" --argjson paths "$paths" --argjson unknown "$unknown" \
       '{number:$n, paths:$paths, unknown:$unknown}' >> "$SCOPE_FILE" || fb_die 1 "cannot record scope input"
-  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
+  done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "merging" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
 fi
 
 # Provider stages whose API key variable is unset or empty (checked here, so
@@ -709,10 +725,13 @@ while IFS="$(printf '\t')" read -r sname kenv; do
 done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
   | ($c.providers[.provider].api_key_env // empty) as $k | "\(.name)\t\($k)"' <<<"$FLEET_CFG")"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" '
-  def green: (.statusCheckRollup | type) == "array"
-    and all(.statusCheckRollup[]; (.conclusion // .state) as $s
-      | $s == "SUCCESS" or $s == "NEUTRAL" or $s == "SKIPPED");
+# merge.ignore_checks is judged against today (UTC; FLEET_BOARD_TODAY overrides it for tests)
+TODAY="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
+IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot read ignore-checks.jq"
+
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --arg today "$TODAY" "$IGNORE_CHECKS_JQ"'
+  # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
+  def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
   def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
   def overlap($left; $right):
     first($left[] as $a | $right[] as $b
@@ -733,6 +752,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   # absolute, and single-quoted when the shell would split or expand it
   # A review column: in_review, or the column of a configured stage ($c.stage set)
   def is_review($c): $c.state == "in_review" or $c.stage != null;
+  # merging (merge.policy auto only): the card is past review, its PR is being merged
+  def is_merging($c): $c.state == "merging";
   # The conflicted files update-branch.sh recorded in the note (strings only)
   def conflict_files($n): [($n.conflicted_files // [])[]? | strings | select(. != "")];
   def reset_cmd($n): "bash \($note_sh | if test("\\A[A-Za-z0-9/._+:@-]+\\z") then . else @sh end) reset-failures \($n)";
@@ -757,14 +778,14 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
         # Never let failure limits or follow-ups move an unverified merge out
         # of review, where the headless recovery pass can still find it.
-        elif is_review($c) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
+        elif (is_review($c) or is_merging($c)) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
           then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
         elif $n.pending_followups != null and ($n.pending_followups.pr // $n.pr // $c.pr) != null
           then act("file_pending"; "pending follow-ups")
-        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c))
+        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c) or is_merging($c))
              and $fails >= 2 * $max
           then act("skip"; "could not be blocked after \($fails) attempts: \($err)")
-        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c))
+        elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c) or is_merging($c))
              and $fails >= $max
           then act("block"; "no progress after \($fails) attempts: \($err)")
         elif $c.state == "blocked" and $n.blocking_pr != null and $c.blocking_merged == true and $fails >= $max
@@ -790,6 +811,41 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
           if $c.pr != null then act("start_review"; "PR #\($c.pr) exists")
           elif $tries >= $max then act("block"; "implementor produced no PR after \($tries) attempts")
           else act("continue_implementor"; "no PR yet (\($tries) of \($max) implementor attempts)") end
+        # merging: the merge itself. A merge_operation marker (merge-reviewed.sh, keyed form)
+        # means the merge is in flight or was refused: the supervisor decides, not the planner.
+        elif is_merging($c) then
+          if $c.pr == null or $c.pr_info == null then act("skip"; "in merging, but no PR is known")
+          elif $c.pr_info.state == "MERGED" then
+            if $n.main_check.ok != true then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
+            else act("finish"; "PR #\($c.pr) merged and main verified") end
+          elif $c.pr_info.state == "CLOSED" then act("block"; "PR #\($c.pr) closed without a merge")
+          elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
+          elif $n.merge_operation != null then act("skip"; "merge in flight or refused; supervisor decides")
+          # A keyed refusal leaves pending_merge at the same head: the merger session decides
+          # (and clears merge_refusal), the planner must not re-plan the same refused merge every cycle
+          elif ($n.merge_refusal.head // null) != null and (head_moved($c; {sha: $n.merge_refusal.head}) | not)
+            then act("skip"; "merge refused; supervisor decides")
+          elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
+          # Nothing merges here that the review rows would not merge: a clean review (an advisory
+          # stage findings count as clean, as in its column) covering this head, or a head moved
+          # only by clean merges of main (the drift allowance of the review row) whose PR needs no human
+          # QA; the PR not a draft, its checks green, and merge.policy auto.
+          elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
+          elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
+          # The review must be that of the last configured stage (null when no stages are configured): a
+          # hand-moved card with stages remaining never merges
+          elif ($lr.stage // null) != (($cfg.review.stages // []) | if length == 0 then null else .[-1].name end)
+            then act("skip"; "the last review is not from the last review stage; supervisor decides")
+          elif ((($lr.stage // null) as $ls | any(($cfg.review.stages // [])[]; .name == $ls and .advisory == true)) | not) and $ci > 0
+            then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
+          elif head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the reviewed head \($lr.sha[0:7]); supervisor decides")
+          elif head_moved($c; $lr) and $c.needs_human_qa != false
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) moved after the review and human-QA need is \(if $c.needs_human_qa == true then "true" else "unknown" end); supervisor decides")
+          elif $c.pr_info.isDraft then act("skip"; "PR #\($c.pr) is a draft; supervisor decides")
+          elif ($c.pr_info | green | not) then act("skip"; "PR #\($c.pr) checks are not green; supervisor decides")
+          else act("merge"; "PR #\($c.pr) open at the reviewed head, green checks, merge.policy auto") end
         elif is_review($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in review, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
@@ -841,7 +897,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
-  | [$all[] | select(.state == "in_progress" or is_review(.))] as $open
+  | [$all[] | select(.state == "in_progress" or is_review(.) or is_merging(.))] as $open
   | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
   | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
   | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger
@@ -890,6 +946,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
        pr: $c.pr, head_sha: $c.pr_info.headRefOid, round: $n.round, models: $models, escalated: $esc,
+       # merge: the red checks that merge goes past (the driver records them in the note)
+       ignored_checks: (if $d.action == "merge" then ($c.pr_info.statusCheckRollup | ic_used($cfg.merge.ignore_checks; $today)) else null end),
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files
@@ -924,7 +982,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         end) end) as $selected
   | $selected.cards as $cards
   | (if $candidates then
-       {schema_version:2,candidates:[$cards[] as $card
+       {schema_version:2,warnings:ic_expired($cfg.merge.ignore_checks; $today),candidates:[$cards[] as $card
          | (first($all[] | select(.number == $card.number)) // {}) as $source
          | (first($actual_scope[] | select(.number == $card.number)) // {paths:[],unknown:false}) as $actual
          | ([$source.labels[]? | (if type == "object" then .name else . end)
@@ -938,13 +996,14 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
             title:$card.title,state:$card.state,branch:$card.branch,worktree:$card.worktree,pr:$card.pr,
             models:$card.models,escalated:$card.escalated,findings:$card.findings,waiting_on:$card.waiting_on,
             needs_human_qa:$card.needs_human_qa,comment_needed:$card.comment_needed,lint:$card.lint,
-            lint_marker:$card.lint_marker} ]}
+            lint_marker:$card.lint_marker,ignored_checks:$card.ignored_checks} ]}
      else
   {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
         or ((.action == "skip_no_acceptance" or .action == "skip_card_lint") and .comment_needed == true))),
      warnings: (
        (if $pre != "" then [$pre] else [] end)
+       + ic_expired($cfg.merge.ignore_checks; $today)
        + (if $m.implementor == $reviewer_model
         then ["implementor and reviewer share model \($m.implementor); the reviewer shares the writer'"'"'s blind spots"]
         else [] end)

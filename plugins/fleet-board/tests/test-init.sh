@@ -662,6 +662,16 @@ assert_count "env-not-inherited projects: no POISON in the file" "$(grep -c POIS
 assert_count "env-not-inherited projects: no commands, worktrees, merge or human_qa_paths" \
   "$(grep -cE '^(commands|worktrees|merge|human_qa_paths):' "$TARGET/.fleet-board.yml" 2>/dev/null)" 0
 
+# merging is a canonical --state key
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+run_init --repo acme/toy --state "merging=Landing" --dir "$TARGET"
+assert_exit "state-merging: --state merging=Landing is accepted" 0
+assert_cfg "state-merging: board.states.merging written" board.states '{"merging":"Landing"}'
+
 # env-not-inherited (FORCE): FORCE=1 in the environment is not --force
 setup_case
 { cat << ROUTESEOF
