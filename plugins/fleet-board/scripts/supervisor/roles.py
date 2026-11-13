@@ -47,6 +47,45 @@ def command(dispatch, prompt, config, plugin_dir, stage_args=()):
     return argv
 
 
+DEFAULT_PERSONA = Path(__file__).resolve().parent / 'defaults' / 'merger-persona.md'
+Persona = namedtuple('Persona', 'text warnings')
+
+
+def resolve_persona(root, config):
+    """The persona text a merger session gets, and a list of warnings.
+    merge.persona replaces the base (else <root>/.fleet-board/merger.md when present, else the shipped default);
+    merge.persona_append follows it. A configured file that is missing falls back (default for persona, nothing
+    for the append) and adds a warning naming the path."""
+    root = Path(root)
+    merge = (config or {}).get('merge')
+    merge = merge if isinstance(merge, dict) else {}
+    warnings = []
+
+    def read(configured, what):
+        if isinstance(configured, str) and configured:
+            try:
+                return (root / configured).read_text(errors='replace')
+            except OSError:
+                pass
+        warnings.append('%s file not found: %s' % (what, configured))
+        return None
+
+    base = None
+    if merge.get('persona') is not None:
+        base = read(merge['persona'], 'merge.persona')
+    else:
+        local = root / '.fleet-board' / 'merger.md'
+        if local.is_file():
+            base = local.read_text(errors='replace')
+    if base is None:
+        base = DEFAULT_PERSONA.read_text(errors='replace')
+    if merge.get('persona_append') is not None:
+        extra = read(merge['persona_append'], 'merge.persona_append')
+        if extra is not None:
+            base = base.rstrip('\n') + '\n\n' + extra
+    return Persona(base, warnings)
+
+
 def _int(v):
     return v if isinstance(v, int) and not isinstance(v, bool) else None
 
