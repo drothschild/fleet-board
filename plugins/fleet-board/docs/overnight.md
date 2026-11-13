@@ -68,7 +68,7 @@ Merges stay human by default: under `merge.policy: human` the supervisor merges 
 
 ## Worktree cleanup
 
-The supervisor never removes worktrees, because Claude Code's auto-mode classifier denies that as irreversible local destruction. Remove the worktrees of done cards from the repo root, outside any Claude session. `<scripts dir>` is the directory of the path that `/fleet-board:status` prints:
+After the supervisor moves a card to done (the finish action, including a merged card's), it runs `scripts/cleanup-done.sh` once, outside the card's lock. A failure is a warning in the supervisor log and in the `status` events and never fails the action. Cards in human_qa, blocked or any other non-terminal state keep their worktrees. To clean up by hand, run this from the repo root. `<scripts dir>` is the directory of the path that `/fleet-board:status` prints:
 
 ```bash
 bash <scripts dir>/cleanup-done.sh
