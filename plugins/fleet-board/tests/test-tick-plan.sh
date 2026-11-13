@@ -1058,6 +1058,77 @@ plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
 assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
 
+# supervisor.scope_ignore: a Ready card naming a manifest is not held back by an
+# open PR that also touches the manifests (the same rule as scopes.drop_ignored)
+# plan_scope_ignore <extra YAML>: card 12 in review, its PR touching src/a.sh and both manifests
+plan_scope_ignore() {
+  setup_case ready-start "$1"
+  local dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+  scope_issue "$dir" 12 in_review '- Modify `src/a.sh`: the change'
+  scope_issue "$dir" 14 ready '- Bump `.claude-plugin/marketplace.json` and `plugins/fleet-board/.claude-plugin/plugin.json`'
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "14" "12"
+  printf '%s\n' '{"files":[{"path":"src/a.sh"},{"path":".claude-plugin/marketplace.json"},{"path":"plugins/fleet-board/.claude-plugin/plugin.json"}],"changedFiles":3}' > "$dir/files-manifests.json"
+  { printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/files-manifests.json\n' "$dir"; cat "$dir/routes"; } > "$dir/routes.new"
+  mv "$dir/routes.new" "$dir/routes"
+  run_check "$SCRIPT"
+}
+plan_scope_ignore ""
+assert_exit "scope-ignore unset: exit" 0
+assert_jq "scope-ignore unset: the Ready card naming a manifest waits" "$(card 14 action)" '"wait"'
+plan_scope_ignore "$(printf 'supervisor:\n  scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]')"
+assert_exit "scope-ignore: exit" 0
+assert_jq "scope-ignore: the Ready card naming only manifests starts" "$(card 14 action)" '"start"'
+plan_scope_ignore "$(printf 'supervisor:\n  scope_ignore: ["*.json"]')"
+assert_jq "scope-ignore: * does not cross /, so nested manifests still overlap" "$(card 14 action)" '"wait"'
+
+# supervisor.version_files: a review or merge candidate whose PR head version is not
+# strictly above the same line on the base plans update_branch
+VERSION_YAML="$(printf 'supervisor:\n  version_files: ["plugins/*/.claude-plugin/plugin.json"]')"
+# plan_version <main version after the branch was cut> <extra YAML>
+plan_version() {
+  setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto\n%s' "$2")"
+  local dir="$FAKE_GH_DIR/scope" remote="$FAKE_GH_DIR/remote.git" head base
+  mkdir -p "$dir"
+  git init -q --bare "$remote"
+  git -C "$REPO" remote add origin "$remote"
+  mkdir -p "$REPO/plugins/fb/.claude-plugin"
+  printf '{\n  "name": "fb",\n  "version": "0.28.3"\n}\n' > "$REPO/plugins/fb/.claude-plugin/plugin.json"
+  git -C "$REPO" add -A; git -C "$REPO" commit -q -m base
+  base="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" push -q origin HEAD:refs/heads/main
+  git -C "$REPO" checkout -q -b fleet/12-card
+  printf '{\n  "name": "fb",\n  "version": "0.28.4"\n}\n' > "$REPO/plugins/fb/.claude-plugin/plugin.json"
+  printf 'x\n' > "$REPO/src.txt"
+  git -C "$REPO" add -A; git -C "$REPO" commit -q -m branch
+  head="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" push -q origin fleet/12-card
+  git -C "$REPO" checkout -q -b base-work "$base"
+  if [ "$1" != 0.28.3 ]; then
+    printf '{\n  "name": "fb",\n  "version": "%s"\n}\n' "$1" > "$REPO/plugins/fb/.claude-plugin/plugin.json"
+    git -C "$REPO" commit -q -am main-bump
+    git -C "$REPO" push -q origin HEAD:refs/heads/main
+  fi
+  scope_issue "$dir" 12 in_review NONE
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "" "12"
+  jq -c --arg h "$head" '.headRefOid = $h' "$TICK/common/pr-34-open-green.json" > "$dir/pr-34.json"
+  { printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr-34.json\n' "$dir"; cat "$dir/routes"; } > "$dir/routes.new"
+  mv "$dir/routes.new" "$dir/routes"
+  run_check "$SCRIPT"
+}
+plan_version 0.28.4 "$VERSION_YAML"
+assert_exit "version-stale: exit" 0
+assert_jq "version-stale: an equal version on the base plans update_branch" "$(card 12 action)" '"update_branch"'
+assert_jq "version-stale: the reason says so" "$(card 12 reason) | startswith(\"version not above base\")" 'true'
+plan_version 0.29.0 "$VERSION_YAML"
+assert_jq "version-stale: a base version above the head plans update_branch" "$(card 12 action)" '"update_branch"'
+plan_version 0.28.3 "$VERSION_YAML"
+assert_exit "version-above: exit" 0
+assert_jq "version-above: a head version above the base is not held" "$(card 12 action) | . != \"update_branch\"" 'true'
+plan_version 0.28.4 ""
+assert_jq "version-stale without version_files: not checked" "$(card 12 action) | . != \"update_branch\"" 'true'
+
 # Three cards eligible to merge: exactly one merge, lowest number first
 setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto')"
 dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"

@@ -46,7 +46,7 @@ setup() {
   "$REAL_GIT" init -q "$REPO"
   "$REAL_GIT" -C "$REPO" config user.email "test@example.com"
   "$REAL_GIT" -C "$REPO" config user.name "Test User"
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n%s' "${UB_YAML:-}" > "$REPO/.fleet-board.yml"
   "$REAL_GIT" -C "$REPO" add .fleet-board.yml
   "$REAL_GIT" -C "$REPO" commit -q -m initial
 
@@ -68,7 +68,15 @@ if [ "${1:-}" = "-C" ] && [ "${2:-}" = "$STUB_WT" ]; then
   printf '%s\n' "$*" >> "$GIT_LOG"
   case "$1" in
     fetch) exit 0 ;;
+    symbolic-ref) echo "${STUB_HEAD_BRANCH:-fleet/12-add-subtract}"; exit 0 ;;
+    merge-base) echo 0000000000000000000000000000000000000000; exit 0 ;;
+    reset) rm -f "$STUB_STATE/merged"; exit 0 ;;
     rev-parse)
+      case "$*" in
+        *origin/*) # the remote-tracking branch: what the last successful push left
+          if [ -f "$STUB_STATE/pushed" ]; then echo "$STUB_AFTER"; else echo "${STUB_REMOTE:-$STUB_BEFORE}"; fi
+          exit 0 ;;
+      esac
       if [ -f "$STUB_STATE/merged" ]; then echo "$STUB_AFTER"; else echo "$STUB_BEFORE"; fi
       exit 0 ;;
     merge)
@@ -80,7 +88,10 @@ if [ "${1:-}" = "-C" ] && [ "${2:-}" = "$STUB_WT" ]; then
         *--diff-filter=U*) [ -n "$STUB_CONFLICTS" ] && printf '%s\n' $STUB_CONFLICTS; exit 0 ;;
         *) [ -n "$STUB_CHANGED" ] && printf '%s\n' $STUB_CHANGED; exit 0 ;;
       esac ;;
-    push) exit 0 ;;
+    push)
+      [ "${STUB_PUSH_RC:-0}" -eq 0 ] || exit "$STUB_PUSH_RC"
+      [ -n "${STUB_PUSH_LIES:-}" ] || touch "$STUB_STATE/pushed"
+      exit 0 ;;
     *) exit 0 ;;
   esac
 fi
@@ -99,7 +110,7 @@ issue edit 12 *	0	-
 issue comment 12 *	0	-
 ROUTES
 
-  unset CDPATH FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG || true
+  unset CDPATH FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG STUB_HEAD_BRANCH STUB_REMOTE STUB_PUSH_RC STUB_PUSH_LIES || true
   PATH="$BIN:$ORIG_PATH"
   FAKE_GH_ROUTES="$FAKE_GH_DIR/routes"
   STUB_WT="$WT"; STUB_STATE="$FAKE_GH_DIR/state"; mkdir -p "$STUB_STATE"
@@ -215,6 +226,10 @@ market_conflict() {
     "$2" "$3" > "$WT/$1"
 }
 PLUGIN_JSON="plugins/fleet-board/.claude-plugin/plugin.json"
+VF_YAML='supervisor:
+  version_files: [".claude-plugin/marketplace.json", "plugins/**/plugin.json", "notes.txt", "*.json"]
+'
+UB_YAML="$VF_YAML"
 MARKET_JSON=".claude-plugin/marketplace.json"
 
 assert_resolved() { # <label> <expected-version> <files...>
@@ -287,7 +302,7 @@ assert_resolved "branch 0.29.0 against base 0.29.0-rc.1 (release ranks above pre
 setup "" "$PLUGIN_JSON" 1
 plugin_conflict "$PLUGIN_JSON" 0.29.0-rc.2 0.29.0-rc.10
 run_update
-assert_resolved "branch 0.29.0-rc.2 against base 0.29.0-rc.10 (numeric prerelease)" 0.29.1 "$PLUGIN_JSON"
+assert_resolved "branch 0.29.0-rc.2 against base 0.29.0-rc.10 (numeric prerelease; the base core is above it)" 0.29.0 "$PLUGIN_JSON"
 
 # A hunk that also changes another line goes to the fixer as today
 setup "" "$PLUGIN_JSON" 1
@@ -324,6 +339,239 @@ run_update
 assert_to_fixer "a version-only file mixed with a real conflict" "$PLUGIN_JSON" src/calc.js
 assert_eq "a version-only file mixed with a real conflict: the version-only file is not rewritten" \
   "$(count_lines '^<<<<<<<' "$WT/$PLUGIN_JSON")" 1
+
+# The comment and the error say why a version-only resolution was refused
+comment_body() { cat "$(ls "$FAKE_GH_DIR"/bodies/* 2>/dev/null | head -1)" 2>/dev/null; }
+assert_why() { # <label> <fixed text>
+  assert_eq "$1: the comment says why" "$(comment_body | grep -cF -- "$2")" 1
+  assert_eq "$1: the error says why" "$(printf '%s\n' "$LAST_ERR" | grep -cF -- "$2")" 1
+}
+
+# C1: each conflicted version line is resolved from its own two sides
+two_plugin_market() { # <file> <a ours> <a theirs> <b ours> <b theirs>
+  mkdir -p "$(dirname "$WT/$1")"
+  printf '{\n  "name": "m",\n  "plugins": [\n    {\n      "name": "a",\n<<<<<<< HEAD\n      "version": "%s"\n=======\n      "version": "%s"\n>>>>>>> origin/main\n    },\n    {\n      "name": "b",\n<<<<<<< HEAD\n      "version": "%s"\n=======\n      "version": "%s"\n>>>>>>> origin/main\n    }\n  ]\n}\n' \
+    "$2" "$3" "$4" "$5" > "$WT/$1"
+}
+PA="plugins/a/.claude-plugin/plugin.json"; PB="plugins/b/.claude-plugin/plugin.json"
+setup "" "$MARKET_JSON $PA $PB" 1
+two_plugin_market "$MARKET_JSON" 0.3.0 0.2.0 1.0.1 1.1.0
+plugin_conflict "$PA" 0.3.0 0.2.0
+plugin_conflict "$PB" 1.0.1 1.1.0
+run_update
+assert_exit "two plugins: exit 0" 0
+assert_eq "two plugins: plugin a keeps its own higher branch version" "$(jq -r .version "$WT/$PA")" 0.3.0
+assert_eq "two plugins: plugin b goes one patch above its own base" "$(jq -r .version "$WT/$PB")" 1.1.1
+assert_eq "two plugins: marketplace a" "$(jq -r '.plugins[0].version' "$WT/$MARKET_JSON")" 0.3.0
+assert_eq "two plugins: marketplace b" "$(jq -r '.plugins[1].version' "$WT/$MARKET_JSON")" 1.1.1
+assert_eq "two plugins: plugin a equals its marketplace entry" "$(jq -r .version "$WT/$PA")" "$(jq -r '.plugins[0].version' "$WT/$MARKET_JSON")"
+assert_eq "two plugins: plugin b equals its marketplace entry" "$(jq -r .version "$WT/$PB")" "$(jq -r '.plugins[1].version' "$WT/$MARKET_JSON")"
+setup "" "$MARKET_JSON $PA" 1
+two_plugin_market "$MARKET_JSON" 0.1.1 0.2.0 1.0.0 1.0.0
+plugin_conflict "$PA" 0.1.1 0.2.0
+run_update
+assert_eq "one plugin of two: a is base + 1 patch" "$(jq -r '.plugins[0].version' "$WT/$MARKET_JSON")" 0.2.1
+assert_eq "one plugin of two: b is not lifted by a" "$(jq -r '.plugins[1].version' "$WT/$MARKET_JSON")" 1.0.1
+assert_eq "one plugin of two: plugin a equals its marketplace entry" "$(jq -r .version "$WT/$PA")" 0.2.1
+
+# I3: resolution is opt-in
+UB_YAML=""
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.3 0.28.4
+run_update
+assert_to_fixer "version_files unset: a version-only conflict goes to the fixer" "$PLUGIN_JSON"
+UB_YAML="$VF_YAML"
+setup "" "other/x.json" 1
+plugin_conflict "other/x.json" 0.28.3 0.28.4
+run_update
+assert_to_fixer "a version-only file outside version_files goes to the fixer" "other/x.json"
+assert_why "a version-only file outside version_files" "other/x.json does not match supervisor.version_files"
+
+# M1: diff3 hunks resolve; formatting differences, symlinks and invalid JSON are refused
+setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n||||||| merged common ancestors\n  "version": "0.28.2",\n=======\n  "version": "0.28.4",\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_resolved "a diff3 hunk" 0.28.5 "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n||||||| base\n  "description": "old",\n=======\n  "version": "0.28.4",\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_to_fixer "a diff3 base section with a non-version line" "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3"\n=======\n  "version": "0.28.4",\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_to_fixer "a hunk differing by a trailing comma" "$PLUGIN_JSON"
+assert_why "a hunk differing by a trailing comma" "differ in more than the version value"
+
+setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n=======\n    "version": "0.28.4",\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_to_fixer "a hunk differing by indentation" "$PLUGIN_JSON"
+
+setup "" "link.json" 1
+plugin_conflict "real/target.json" 0.28.3 0.28.4
+ln -s real/target.json "$WT/link.json"
+run_update
+assert_to_fixer "a symlinked JSON file" "link.json"
+assert_why "a symlinked JSON file" "link.json is a symlink"
+
+setup "" "bad.json" 1
+printf '{\n  // a comment makes this not JSON\n<<<<<<< HEAD\n  "version": "0.28.3",\n=======\n  "version": "0.28.4",\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/bad.json"
+run_update
+assert_to_fixer "a file that is not valid JSON once resolved" "bad.json"
+assert_why "a file that is not valid JSON once resolved" "bad.json is not valid JSON after resolution"
+
+setup "" "notes.txt" 1
+printf '<<<<<<< HEAD\n  "version": "0.28.3",\n=======\n  "version": "0.28.4",\n>>>>>>> origin/main\n' > "$WT/notes.txt"
+run_update
+assert_why "a non-JSON file in version_files" "notes.txt is not a JSON file"
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.3 latest
+run_update
+assert_why "an unparsable version" "not semver"
+
+# I1: the branch must be checked out; pushes are verified; a rejected push leaves nothing behind
+setup "" "" 0
+STUB_HEAD_BRANCH=main; export STUB_HEAD_BRANCH
+run_update
+assert_exit "another branch checked out: exit 1" 1
+assert_eq "another branch checked out: no merge" "$(count_lines '^merge' "$GIT_LOG")" 0
+assert_eq "another branch checked out: no push" "$(count_lines '^push' "$GIT_LOG")" 0
+
+setup "" "" 0
+STUB_AFTER="$STUB_BEFORE"; STUB_REMOTE="3333333333333333333333333333333333333333"; export STUB_AFTER STUB_REMOTE
+run_update
+assert_exit "local branch ahead of origin with nothing new merged: exit 0" 0
+assert_eq "local branch ahead of origin with nothing new merged: pushed" "$(count_lines '^push origin fleet/12-add-subtract$' "$GIT_LOG")" 1
+
+setup "" "" 0
+STUB_AFTER="$STUB_BEFORE"; STUB_REMOTE="$STUB_BEFORE"; export STUB_AFTER STUB_REMOTE
+run_update
+assert_exit "up to date with origin: exit 0" 0
+assert_eq "up to date with origin: no push" "$(count_lines '^push' "$GIT_LOG")" 0
+
+setup "" "" 0
+STUB_PUSH_RC=1; export STUB_PUSH_RC
+run_update
+assert_exit "rejected push: exit 1" 1
+assert_eq "rejected push: the branch is reset to where it was" "$(count_lines '^reset (-q )?--hard 1111111111111111111111111111111111111111$' "$GIT_LOG")" 1
+assert_eq "rejected push: no last_update in the note" "$(written_note | jq -c '.last_update // null')" 'null'
+
+setup "" "" 0
+STUB_PUSH_LIES=1; export STUB_PUSH_LIES
+run_update
+assert_exit "push that did not reach origin: exit 1" 1
+assert_eq "push that did not reach origin: no last_update in the note" "$(written_note | jq -c '.last_update // null')" 'null'
+
+# ---------------------------------------------------------------------------
+# M2: real git, a bare remote and a clone. gh, note.sh and board-comment.sh are stubs.
+RG_SCRIPTS=""
+real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging to $RG/log
+  RG_SCRIPTS="$(mktemp -d)"; CLEANUP_DIRS+=("$RG_SCRIPTS")
+  cp -R "$SCRIPT_DIR/../scripts/." "$RG_SCRIPTS/"
+  printf '#!/usr/bin/env bash\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\n' > "$RG_SCRIPTS/note.sh"
+  printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
+  mkdir -p "$RG_SCRIPTS/.bin"
+  printf '#!/usr/bin/env bash\necho main\n' > "$RG_SCRIPTS/.bin/gh"
+  chmod +x "$RG_SCRIPTS/.bin/gh"
+}
+rg_plugin() { printf '{\n  "name": "%s",\n  "version": "%s",\n  "description": "d"\n}\n' "$2" "$3" > "$1"; }
+rg_market() { printf '{\n  "name": "m",\n  "plugins": [\n    {\n      "name": "a",\n      "version": "%s"\n    },\n    {\n      "name": "b",\n      "version": "%s"\n    }\n  ]\n}\n' "$2" "$3" > "$1"; }
+rg_git() { git -c user.email=t@e -c user.name=T "$@"; }
+# real_setup: remote.git with main (a 0.1.0, b 1.0.0) and fleet/12-x; seed (main) and wt (the branch) clones
+real_setup() {
+  RG="$(mktemp -d)"; CLEANUP_DIRS+=("$RG"); RG_LOG="$RG/log"; : > "$RG_LOG"; export RG_LOG
+  PATH="$ORIG_PATH"
+  git init -q --bare "$RG/remote.git"
+  git -C "$RG/remote.git" symbolic-ref HEAD refs/heads/main
+  git clone -q "$RG/remote.git" "$RG/seed" 2>/dev/null
+  mkdir -p "$RG/seed/plugins/a/.claude-plugin" "$RG/seed/plugins/b/.claude-plugin" "$RG/seed/.claude-plugin" "$RG/seed/src"
+  printf 'board:\n  repo: acme/toy\nsupervisor:\n  version_files: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]\n' > "$RG/seed/.fleet-board.yml"
+  rg_plugin "$RG/seed/plugins/a/.claude-plugin/plugin.json" a 0.1.0
+  rg_plugin "$RG/seed/plugins/b/.claude-plugin/plugin.json" b 1.0.0
+  rg_market "$RG/seed/.claude-plugin/marketplace.json" 0.1.0 1.0.0
+  echo x > "$RG/seed/src/x.txt"; echo y > "$RG/seed/src/y.txt"
+  rg_git -C "$RG/seed" checkout -q -b main 2>/dev/null || true
+  rg_git -C "$RG/seed" add -A; rg_git -C "$RG/seed" commit -q -m init
+  rg_git -C "$RG/seed" push -q origin HEAD:main
+  rg_git -C "$RG/seed" push -q origin HEAD:refs/heads/fleet/12-x
+  git clone -q -b fleet/12-x "$RG/remote.git" "$RG/wt" 2>/dev/null
+  git -C "$RG/wt" config user.email t@e; git -C "$RG/wt" config user.name T
+}
+rg_main() { # <a> <b> [src/y content]: a commit on main
+  rg_plugin "$RG/seed/plugins/a/.claude-plugin/plugin.json" a "$1"
+  rg_plugin "$RG/seed/plugins/b/.claude-plugin/plugin.json" b "$2"
+  rg_market "$RG/seed/.claude-plugin/marketplace.json" "$1" "$2"
+  [ -z "${3:-}" ] || echo "$3" > "$RG/seed/src/y.txt"
+  rg_git -C "$RG/seed" commit -q -am "main $1"; rg_git -C "$RG/seed" push -q origin HEAD:main
+}
+rg_branch() { # <a> <b>: a commit on the branch (also touches src/x.txt), pushed
+  rg_plugin "$RG/wt/plugins/a/.claude-plugin/plugin.json" a "$1"
+  rg_plugin "$RG/wt/plugins/b/.claude-plugin/plugin.json" b "$2"
+  rg_market "$RG/wt/.claude-plugin/marketplace.json" "$1" "$2"
+  echo "branch $1" > "$RG/wt/src/x.txt"
+  git -C "$RG/wt" commit -q -am "branch $1"; git -C "$RG/wt" push -q origin fleet/12-x
+}
+real_run() {
+  local out err
+  out="$(mktemp)"; err="$(mktemp)"
+  (cd "$RG/wt" && PATH="$RG_SCRIPTS/.bin:$ORIG_PATH" bash "$RG_SCRIPTS/update-branch.sh" 12 34 fleet/12-x "$RG/wt") > "$out" 2> "$err"
+  LAST_EXIT=$?
+  LAST_OUT="$(cat "$out")"; LAST_ERR="$(cat "$err")"; rm -f "$out" "$err"
+}
+rg_ver() { jq -r "$2" "$RG/wt/$1"; }
+rg_local() { git -C "$RG/wt" rev-parse HEAD; }
+rg_remote() { git -C "$RG/remote.git" rev-parse refs/heads/fleet/12-x; }
+
+real_scripts
+
+# A version-only conflict: resolved, a two-parent merge, pushed, the remote equals local
+real_setup
+rg_main 0.2.0 1.0.0
+rg_branch 0.1.1 1.0.0
+real_run
+assert_exit "real git version-only: exit 0" 0
+assert_eq "real git version-only: a two-parent merge" "$(git -C "$RG/wt" log -1 --format=%P | wc -w | tr -d ' ')" 2
+assert_eq "real git version-only: plugin a is base + 1 patch" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.2.1
+assert_eq "real git version-only: marketplace a matches" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.2.1
+assert_eq "real git version-only: plugin b untouched" "$(rg_ver .claude-plugin/marketplace.json '.plugins[1].version')" 1.0.0
+assert_eq "real git version-only: the remote equals local" "$(rg_remote)" "$(rg_local)"
+assert_eq "real git version-only: a clean tree" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+assert_eq "real git version-only: no fixer comment" "$(grep -c '^comment' "$RG_LOG")" 0
+
+# I4: identical bumps merge cleanly; the merged version equals the base and is raised
+real_setup
+rg_main 0.1.1 1.0.0
+rg_branch 0.1.1 1.0.0
+real_run
+assert_exit "real git identical bump: exit 0" 0
+assert_eq "real git identical bump: plugin a raised above base" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.2
+assert_eq "real git identical bump: marketplace a raised too" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.1.2
+assert_eq "real git identical bump: b, which the branch did not change, is untouched" "$(rg_ver .claude-plugin/marketplace.json '.plugins[1].version')" 1.0.0
+assert_eq "real git identical bump: the remote equals local" "$(rg_remote)" "$(rg_local)"
+assert_eq "real git identical bump: a clean tree" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+
+# A rejected push: exit 1, the branch is reset, and the next run is not a success either
+real_setup
+rg_main 0.1.0 1.0.0 "main change"
+rg_branch 0.1.1 1.0.0
+BEFORE_SHA="$(rg_local)"; REMOTE_SHA="$(rg_remote)"
+printf '#!/bin/sh\nexit 1\n' > "$RG/remote.git/hooks/pre-receive"; chmod +x "$RG/remote.git/hooks/pre-receive"
+real_run
+assert_exit "real git rejected push: exit 1" 1
+assert_eq "real git rejected push: local is reset to where it was" "$(rg_local)" "$BEFORE_SHA"
+assert_eq "real git rejected push: the remote is unchanged" "$(rg_remote)" "$REMOTE_SHA"
+assert_eq "real git rejected push: no last_update recorded" "$(grep -c 'last_update' "$RG_LOG")" 0
+real_run
+assert_exit "real git rejected push: the next run fails too" 1
+assert_eq "real git rejected push: still no last_update" "$(grep -c 'last_update' "$RG_LOG")" 0
+PATH="$ORIG_PATH"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

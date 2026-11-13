@@ -173,6 +173,18 @@ class Lifecycle(unittest.TestCase):
         self.assertIsNone(s.reserve(3, ['src/core']))
         s.release(99)  # releasing an absent card is a no-op
 
+    def test_reserve_drops_scope_ignore_paths_on_both_sides(self):
+        s = self.state
+        ignore = ['plugins/*/.claude-plugin/plugin.json']
+        manifest = 'plugins/fleet-board/.claude-plugin/plugin.json'
+        self.assertIsNone(s.reserve(1, ['src/a', manifest], ignore=ignore))
+        self.assertIsNone(s.reserve(2, ['src/b', manifest], ignore=ignore))
+        # Without the setting the manifest overlaps, as before.
+        self.assertEqual(s.reserve(3, ['src/c', manifest]), 1)
+        # A wholly-ignored scope is kept, but it no longer meets the others' manifests.
+        self.assertIsNone(s.reserve(4, [manifest], ignore=ignore))
+        self.assertEqual(s.reserve(5, ['src/a/x'], ignore=ignore), 1)
+
     def test_reserve_unions_with_the_held_scope(self):
         s = self.state
         self.assertIsNone(s.reserve(1, ['a']))

@@ -862,9 +862,10 @@ class ScopeIgnore(LoopCase):
         seen = []
         row = dict(number=12, action='review', provider='claude', declared_paths=['src/a.py'],
                    actual_paths=['plugins/fleet-board/.claude-plugin/plugin.json'])
-        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p: seen.append(p) or 99):
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append((p, kw)) or 99):
             self.sup._begin(row)
-        self.assertEqual(seen, [['src/a.py']], 'the reservation leaves the ignored manifest out')
+        self.assertEqual(seen, [(['src/a.py'], {'ignore': ['plugins/*/.claude-plugin/plugin.json']})],
+                         'the reservation leaves the ignored manifest out and filters the held scopes too')
 
 
 if __name__ == '__main__':

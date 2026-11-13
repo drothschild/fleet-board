@@ -220,6 +220,9 @@ def run():
     test_has_work_tolerates_mixed_dependency_types()
     test_scope_ignore_drops_version_manifests()
     test_scope_ignore_validated_in_limits()
+    test_scope_ignore_one_side_wholly_ignored()
+    test_scope_ignore_cleans_the_path_side()
+    test_glob_segments_and_jq_parity()
     print('scheduler cases passed')
 
 
@@ -441,6 +444,63 @@ def test_scope_ignore_validated_in_limits():
     for bad in ('x', [''], [3], None):
         result = Scheduler(clock=lambda: 0).admit([candidate(1)], limits=dict(LIMITS, scope_ignore=bad))
         assert result['stop_reason'] == 'invalid limits', bad
+
+
+
+def test_scope_ignore_one_side_wholly_ignored():
+    ignore = dict(LIMITS, scope_ignore=list(MANIFESTS))
+    # A wholly-ignored candidate keeps its paths; a reservation holding a manifest plus other
+    # paths is filtered, so the two do not overlap (needs the reservation-side filter).
+    only = dict(candidate(4, 'review', paths=[]), actual_paths=list(MANIFESTS))
+    res = [{'card': 8, 'paths': ['src/y.py'] + list(MANIFESTS)}]
+    r = Scheduler(clock=lambda: 0).admit([only], reservations=res, limits=ignore)
+    assert [x['number'] for x in r['admitted']] == [4], r
+    act = [{'number': 9, 'provider': 'claude', 'paths': ['src/y.py'] + list(MANIFESTS)}]
+    r = Scheduler(clock=lambda: 0).admit([only], active=act, limits=ignore)
+    assert [x['number'] for x in r['admitted']] == [4], r
+    # The mirror case needs the candidate-side filter: a candidate with a manifest plus
+    # other paths against a reservation that holds only manifests (kept whole).
+    mixed = _pr_row(5, 'review', 'src/e.py')
+    res = [{'card': 8, 'paths': list(MANIFESTS)}]
+    r = Scheduler(clock=lambda: 0).admit([mixed], reservations=res, limits=ignore)
+    assert [x['number'] for x in r['admitted']] == [5], r
+    act = [{'number': 9, 'provider': 'claude', 'paths': list(MANIFESTS)}]
+    r = Scheduler(clock=lambda: 0).admit([mixed], active=act, limits=ignore)
+    assert [x['number'] for x in r['admitted']] == [5], r
+
+
+def test_scope_ignore_cleans_the_path_side():
+    ignore = dict(LIMITS, scope_ignore=['.claude-plugin/marketplace.json'])
+    rows = [dict(candidate(n, 'review', paths=['src/%d.py' % n]), actual_paths=['./.claude-plugin/marketplace.json'])
+            for n in (1, 2)]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=ignore)
+    assert sorted(x['number'] for x in r['admitted']) == [1, 2], r
+
+
+def test_glob_segments_and_jq_parity():
+    import json
+    import subprocess
+    from supervisor import scopes
+    plugin = Path(__file__).resolve().parents[2]
+    cases = json.loads((plugin / 'fixtures' / 'glob-cases.json').read_text())
+    # `*` stays inside one segment; `**` spans any depth
+    assert scopes.drop_ignored(['src/deep/a.py', 'src/a.py'], ['src/*']) == ['src/deep/a.py']
+    assert scopes.drop_ignored(['a.json', 'dir/a.json'], ['*.json']) == ['dir/a.json']
+    for pattern, path, want in cases:
+        assert scopes.glob_match(pattern, path) is want, (pattern, path, want)
+    lib = (plugin / 'scripts' / 'path-glob.jq').read_text()
+    out = subprocess.run(['jq', '-c', lib + ' [.[] | . as $x | {r: ($x[0] | pg_regex), m: ($x[1] | pg_match([$x[0]]))}]'],
+                         input=json.dumps([[p, x] for p, x, _ in cases]), capture_output=True, text=True, check=True)
+    got = json.loads(out.stdout)
+    for (pattern, path, want), row in zip(cases, got):
+        assert row['r'] == scopes.glob_regex(pattern), (pattern, row['r'], scopes.glob_regex(pattern))
+        assert row['m'] is want, ('jq', pattern, path, want)
+    dropped = subprocess.run(['jq', '-c', lib + ' pg_drop(["*.json"])'], input='["a.json", "dir/a.json"]',
+                             capture_output=True, text=True, check=True)
+    assert json.loads(dropped.stdout) == ['dir/a.json']
+    whole = subprocess.run(['jq', '-c', lib + ' pg_drop(["*.json"])'], input='["a.json"]',
+                           capture_output=True, text=True, check=True)
+    assert json.loads(whole.stdout) == ['a.json']
 
 
 if __name__ == '__main__':
