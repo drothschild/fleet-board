@@ -77,6 +77,12 @@ QA_BUILD_TIMEOUT = 1800
 VERIFY_TIMEOUT = 1800
 
 
+def commits_since_review_args(sha):
+    """The git arguments that count the PR's own commits after the reviewed `sha`: first-parent and non-merge,
+    so a merge of main (update-branch.sh) and main's commits behind it are not counted as the fixer's."""
+    return ('rev-list', '--count', '--first-parent', '--no-merges', sha + '..HEAD')
+
+
 class _Fail(Exception):
     """A step failed; the message is the one line recorded as last_action_error."""
 
@@ -871,7 +877,7 @@ class CardDriver:
         sha = (run.c.note().get('last_review') or {}).get('sha')
         if not (isinstance(sha, str) and _SHA.fullmatch(sha)):
             return []
-        result = self.git(run.c.worktree(), 'rev-list', '--count', sha + '..HEAD')
+        result = self.git(run.c.worktree(), *commits_since_review_args(sha))
         count = result.stdout.strip()
         return ['--commits-since-review', count] if result.rc == 0 and count.isdigit() else []
 

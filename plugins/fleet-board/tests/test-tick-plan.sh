@@ -942,7 +942,7 @@ assert_exit "settle: a non-numeric second card exits 2" 2
 # merge of main whose conflict a person resolved), clean (a merge of main with
 # no conflict) or nonmerge (an ordinary commit).
 plan_real() {
-  local kind="$1" b0 r m h dir main_msg mrg="${2:-}" qa="${3:-}" issue=in_review inrev=list-in_review-12.json files=files-plain.json
+  local kind="$1" b0 r m h dir main_msg mrg="${2:-}" qa="${3:-}" fnd="${4:-}" issue=in_review inrev=list-in_review-12.json files=files-plain.json
   [ -z "$mrg" ] || { issue=merging; inrev=empty.json; }
   [ -z "$qa" ] || files=files-components.json
   setup_case drift-clean "$(printf 'merge:\n  policy: auto')"
@@ -978,7 +978,8 @@ plan_real() {
   printf '{"files":[{"filename":"src/calc.js"}]}\n' > "$dir/commit.json"
   jq -n --arg h "$h" '{isDraft: false, state: "OPEN", mergedAt: null, headRefOid: $h,
     statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}]}' > "$dir/pr.json"
-  sed -e "s/abc1234/$r/g" -e 's/\\"important\\":1/\\"important\\":0/' "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"
+  if [ -n "$fnd" ]; then sed -e "s/abc1234/$r/g" "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"
+  else sed -e "s/abc1234/$r/g" -e 's/\\"important\\":1/\\"important\\":0/' "$TICK/drift-merge/comments-12.json" > "$dir/comments.json"; fi
   if [ -n "$mrg" ]; then sed -i.bak 's/\\"state\\":\\"in_review\\"/\\"state\\":\\"merging\\"/' "$dir/comments.json"; fi
   {
     printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
@@ -1009,6 +1010,18 @@ assert_jq "merge-only-reviewed: only a clean merge of main after last_review pla
 plan_real nonmerge
 assert_exit "merge-only-reviewed: non-merge commit: exit" 0
 assert_jq "merge-only-reviewed: a non-merge commit after last_review does not plan merge" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
+
+# A review with findings keeps the drift allowance too: a head moved only by a clean
+# merge of main goes to the fixer, not to another review of the same findings.
+# Anything else after the review still needs a review before fixing again.
+plan_real clean "" "" findings
+assert_exit "findings drift: clean merge of main: exit" 0
+assert_jq "findings drift: head moved only by a clean merge of main after a review with findings plans fix" "$(card 12 action)" '"fix"'
+plan_real conflict "" "" findings
+assert_jq "findings drift: a conflict-resolving merge of main after a review with findings plans review" "$(card 12 action)" '"review"'
+plan_real nonmerge "" "" findings
+assert_jq "findings drift: a non-merge commit after a review with findings plans review" "$(card 12 action)" '"review"'
+assert_jq "findings drift: that review gives the head-moved reason" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'review the new commits before fixing again$')" '1'
 
 # A merging card keeps the review row's drift allowance: a head moved only by a clean
 # merge of main stays mergeable, unless the PR now needs human QA

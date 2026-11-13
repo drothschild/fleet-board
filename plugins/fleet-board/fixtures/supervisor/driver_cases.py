@@ -981,6 +981,44 @@ def test_not_reproducible_is_rejected_when_the_fixer_committed(base):
     assert outcome.redispatch is True and b.note().get('last_fix') is None
 
 
+
+def test_commits_since_review_counts_only_the_prs_own_commits(base):
+    """A not_reproducible fixer on a head that update-branch.sh moved by a merge of main has committed nothing:
+    the merge and main's commits behind it are not the fixer's. A fixer commit after that merge still counts."""
+    repo = Path(base) / 'repo'
+    repo.mkdir()
+
+    def g(*args):
+        out = subprocess.run(['git', '-C', str(repo)] + list(args), capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    def count():
+        return subprocess.run(['git', '-C', str(repo)] + list(driver.commits_since_review_args(reviewed)),
+                              capture_output=True, text=True, check=True).stdout.strip()
+
+    g('init', '-q', '-b', 'main')
+    g('config', 'user.email', 't@example.invalid')
+    g('config', 'user.name', 't')
+    (repo / 'f.txt').write_text('base\n')
+    g('add', 'f.txt')
+    g('commit', '-q', '-m', 'base')
+    g('checkout', '-q', '-b', 'feat')
+    (repo / 'f.txt').write_text('feature\n')
+    g('commit', '-q', '-am', 'feature')
+    reviewed = g('rev-parse', 'HEAD')
+    g('checkout', '-q', 'main')
+    for i in (1, 2):
+        (repo / ('m%d.txt' % i)).write_text('main\n')
+        g('add', 'm%d.txt' % i)
+        g('commit', '-q', '-m', 'main %d' % i)
+    g('checkout', '-q', 'feat')
+    g('merge', '-q', '--no-edit', '-m', "Merge origin/main into feat", 'main')
+    assert count() == '0', 'a merge of main after the review is not a fixer commit: %s' % count()
+    (repo / 'g.txt').write_text('fix\n')
+    g('add', 'g.txt')
+    g('commit', '-q', '-m', 'fix')
+    assert count() == '1', 'the fixer commit after the merge counts: %s' % count()
+
 def test_provider_failure_does_not_charge_the_card(base):
     b = board_for(base)
     b.plans({'report': '', 'post': False, 'exit': 1, 'is_error': True, 'stderr': 'rate limit exceeded (429)'})
