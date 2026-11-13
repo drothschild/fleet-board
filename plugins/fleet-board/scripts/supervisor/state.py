@@ -53,6 +53,7 @@ class State:
         self.reservations = {}
         self.lane = None
         self.provider_health = {}
+        self.holds = {}   # card number (str) -> {reason, source, until}: why the last cycle held each card back
         self.run_tokens = {'input': 0, 'output': 0, 'cache_write': 0, 'cache_read': 0, 'total': 0,
                            'unknown': 0, 'partial': False}
         # The token budget (limits.max_tokens, limits.max_tokens_per_card) counts input + output + cache_write;
@@ -68,6 +69,13 @@ class State:
 
     def _bump(self):
         self.revision += 1
+
+    def set_holds(self, holds):
+        """Replace the held-card map with the last cycle's (a card admitted since is no longer in it)."""
+        with self._lock:
+            if holds != self.holds:
+                self.holds = holds
+                self._bump()
 
     def pause(self, reason):
         with self._lock:
@@ -202,6 +210,7 @@ class State:
                 'active': {card: self._action_dict(a) for card, a in self.active.items()},
                 'lane': self._action_dict(self.lane),
                 'provider_health': self.provider_health,
+                'holds': self.holds,
                 'run_tokens': self.run_tokens,
                 'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,
                                'label': BUDGET_LABEL},
