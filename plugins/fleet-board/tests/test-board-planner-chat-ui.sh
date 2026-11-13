@@ -101,6 +101,74 @@ $OUT
 EOF
 case "$OUT" in *"ok   "*) ;; *) fail "driver produced results" "$OUT" ;; esac
 
+echo "Case: Enter sends, Shift+Enter adds a newline"
+DRIVER2="$(mktemp)"
+trap 'rm -f "$DRIVER" "$DRIVER2"' EXIT
+cat > "$DRIVER2" <<'JS'
+"use strict";
+const path = require("node:path");
+const loadBoard = require(path.join(process.argv[2], "board-interaction-harness.js"));
+const boardJs = path.join(process.argv[3], "board.js");
+process.on("unhandledRejection", () => {});
+const ok = (name, cond, info) => console.log((cond ? "ok   " : "FAIL ") + name + (cond ? "" : "\t" + info));
+(async () => {
+  const calls = [];
+  const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+  const h = loadBoard(boardJs, async (url, opts) => {
+    calls.push({url, method: opts.method});
+    let data;
+    if (url === "/api/board") data = {repo: "acme/toy", states, cards: [], run: {state: "idle"}};
+    else if (url === "/api/planner" && opts.method === "POST") data = {id: "c1"};
+    else if (url === "/api/planner/c1/messages") data = {ok: true};
+    else if (url === "/api/planner/c1") data = {running: false, turns: []};
+    else throw new Error("Unexpected request: " + opts.method + " " + url);
+    return {ok: true, status: 200, json: async () => data};
+  });
+  const runTimers = async () => { const t = h.timers.splice(0); for (const fn of t) { try { await fn(); } catch (e) {} } await h.flush(); };
+  const sends = () => calls.filter(c => c.url === "/api/planner/c1/messages").length;
+  // Press a key in the input; returns {sent, prevented}. Lets the reply finish afterwards.
+  const press = async (value, extra) => {
+    const before = sends();
+    let prevented = false;
+    h.$("pl-input").value = value;
+    await h.$("pl-input").fire("keydown", Object.assign({key: "Enter", preventDefault() { prevented = true; }}, extra));
+    const sent = sends() - before;
+    await runTimers(); await runTimers();
+    return {sent, prevented};
+  };
+  await h.flush();
+  try {
+    await h.$("plan-btn").fire("click");
+    const plain = await press("hello", {});
+    ok("Enter in the planner input with text sends the message", plain.sent === 1, JSON.stringify(plain));
+    ok("Enter cancels the default action so no newline is added", plain.prevented === true, JSON.stringify(plain));
+    const shift = await press("hello", {shiftKey: true});
+    ok("Shift+Enter does not send and the newline is still added", shift.sent === 0 && shift.prevented === false, JSON.stringify(shift));
+    const ime = await press("hello", {isComposing: true});
+    ok("Enter during an IME composition does not send", ime.sent === 0, JSON.stringify(ime));
+    const meta = await press("hello", {metaKey: true});
+    ok("Cmd+Enter still sends", meta.sent === 1, JSON.stringify(meta));
+    const ctrl = await press("hello", {ctrlKey: true});
+    ok("Ctrl+Enter still sends", ctrl.sent === 1, JSON.stringify(ctrl));
+    const empty = await press("", {});
+    const blank = await press("   \n ", {});
+    ok("Enter on an empty or whitespace-only input sends nothing", empty.sent === 0 && blank.sent === 0, JSON.stringify([empty, blank]));
+  } catch (e) {
+    ok("Enter key interaction ran without an error", false, String(e && e.message || e));
+  }
+})();
+JS
+OUT="$(node "$DRIVER2" "$SCRIPT_DIR" "$STATIC" 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok   "*) pass "${line#ok   }" ;;
+    "FAIL "*) fail "${line#FAIL }" "" ;;
+  esac
+done <<EOF
+$OUT
+EOF
+case "$OUT" in *"ok   "*) ;; *) fail "enter driver produced results" "$OUT" ;; esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
