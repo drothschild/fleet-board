@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import candidates, errors, markers, merging, resolver, scopes, scripts, stuck, usage
+from . import candidates, errors, markers, merging, resolver, roles, scopes, scripts, stuck, usage
 from .state import DUPLICATE_ADMISSION, ledger_column
 
 STOP_MODES = ('drain', 'cancel')
@@ -446,6 +446,14 @@ class Supervisor:
             self.state.event('warning', card=card, message='failure not counted: %s' % inner)
 
     def _provider_failed(self, provider, reason):
+        if reason and roles.AUTH_RE.search(reason):
+            # an expired or missing login does not heal by waiting: hold admissions until the operator resumes
+            if 'claude auth login' not in reason:
+                reason = '%s (run `claude auth login`, then resume)' % reason
+            failures = (self.state.provider_health.get(provider) or {}).get('failures', 0) + 1
+            self.state.set_health(provider, {'reason': reason, 'failures': failures, 'auth': True})
+            self.state.pause('%s: %s' % (provider, reason))
+            return
         failures = (self.state.provider_health.get(provider) or {}).get('failures', 0) + 1
         delay = min(self._sup('retry_backoff_seconds', 60) * 2 ** (failures - 1), BACKOFF_CAP)
         self.state.set_health(provider, {'until': self.clock() + delay, 'reason': reason, 'failures': failures})
