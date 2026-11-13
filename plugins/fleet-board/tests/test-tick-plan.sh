@@ -556,7 +556,7 @@ done_case() {
   jq -nc --argjson n "$n" --arg st "$st" '{number:$n,title:"Old card",html_url:"u",body:"Done.\n\n## Acceptance\n- it works\n",labels:[{name:("fleet:"+$st)}]}' > "$d/issue.json"
   jq -nc --argjson n "$n" --arg st "$st" '[{number:$n,title:"Old card",url:"u",labels:[{name:("fleet:"+$st)}]}]' > "$d/list.json"
   body="$(printf '<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: %s\n\n```json\n%s\n```\n' "$st" \
-    "$(jq -nc --arg st "$st" --argjson t "$t" '{state:$st,branch:"x",pr:null,round:null,pending_followups:{out_of_scope:$t,bugs:[],pr:null}}')")"
+    "$(jq -nc --arg st "$st" --argjson n "$n" --argjson t "$t" '{state:$st,branch:"fleet/\($n)-old-card",pr:null,round:null,pending_followups:{out_of_scope:$t,bugs:[],pr:null}}')")"
   jq -nc --arg b "$body" '[{id:555,user:{login:"fleet-bot"},body:$b,created_at:"2026-09-28T00:01:00Z"}]' > "$d/comments.json"
   {
     printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
