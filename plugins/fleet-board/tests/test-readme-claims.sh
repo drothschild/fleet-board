@@ -78,10 +78,21 @@ r=bad; grep -qF 'steps run before the merger' "$OVERNIGHT" && r=ok
 check "overnight.md says the after-merge steps run before the merger" "$r"
 
 # The local-board spec's adapter table: comment removes the active marker only for a validated role report.
-SPEC="${SPEC_FILE:-${SCRIPT_DIR}/../../../docs/superpowers/specs/2026-11-06-local-board-design.md}"
+SPEC="${SPEC_FILE:-${SCRIPT_DIR}/../../../docs/specs/2026-11-06-local-board-design.md}"
 r=bad
 grep -E '^\| `comment <n> <body-file>` \|' "$SPEC" | grep -qF 'removes `active/<n>` only for a validated role report' && r=ok
 check "spec comment row says the marker is removed only for a validated role report" "$r"
+
+# The CLI supervisor design lives at docs/specs/ and is the path the plugin docs name.
+REPO_ROOT="${SCRIPT_DIR}/../../.."
+CLI_SPEC="docs/specs/2026-11-11-cli-supervisor-design.md"
+for doc in "${SCRIPT_DIR}/../CLAUDE.md" "${SCRIPT_DIR}/../docs/overnight.md"; do
+  if [ -f "${REPO_ROOT}/${CLI_SPEC}" ] && grep -qF "$CLI_SPEC" "$doc"; then
+    PASS=$((PASS + 1)); echo "ok - $(basename "$doc") names the existing spec $CLI_SPEC"
+  else
+    FAIL=$((FAIL + 1)); echo "FAIL - $(basename "$doc") names the existing spec $CLI_SPEC"
+  fi
+done
 
 # The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
