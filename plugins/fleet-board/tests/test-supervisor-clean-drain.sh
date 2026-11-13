@@ -31,7 +31,7 @@ def start_exits_clean(case):
     logs = str(case.dir / 'logs')
     os.makedirs(logs, mode=0o700, exist_ok=True)
     env = dict(os.environ, FLEET_BOARD_DOMAIN=str(case.b.root), FLEET_BOARD_SOCKET_DIR=sock,
-               FLEET_BOARD_LOG_DIR=logs)
+               FLEET_BOARD_LOG_DIR=logs, FLEET_BOARD_USER=case.b.env['FLEET_BOARD_USER'])
     proc = subprocess.Popen([SCRIPTS, 'start'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True)
     try:
@@ -90,6 +90,7 @@ class DriverLeavesCardInReview(unittest.TestCase):
         import tempfile
         base = tempfile.mkdtemp(dir=BASE)
         b = dc.board_for(base)
+        b.stubs['review-stages.sh'] = dc.ok('[]\n')
         started = dc.started_implementor(b)
         dc.run_role(b, started)
         self.assertEqual(b.card()['state'], 'in_review')
