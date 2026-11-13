@@ -61,12 +61,27 @@ if [ "$BLOCKED" != null ]; then
     'if type == "array" then map(. as $x | select($s | index([$x]) | not)) else . end' <<<"$BLOCKED")"
   fl_check_blocked_by "$N" "$NEWREFS"
 fi
+SET_BODY=0; [ -z "$BODY_FILE" ] || SET_BODY=1
+if jq -e --argjson c "$CARD" 'type == "array" and index("needs-human-qa") != null
+    and (($c.labels // []) | index("needs-human-qa") == null)' >/dev/null 2>&1 <<<"$LABELS"; then
+  if [ "$SET_BODY" = 1 ]; then
+    BODY="$(cat "$BODYTMP"; printf x)"
+  else
+    BODY="$(jq -j '.body // ""' <<<"$CARD"; printf x)"
+  fi
+  BODY="${BODY%x}"
+  NEWBODY="$(fl_add_qa_section "$BODY"; printf x)"; NEWBODY="${NEWBODY%x}"
+  if [ "$NEWBODY" != "$BODY" ]; then
+    printf '%s' "$NEWBODY" > "$BODYTMP" || fb_die 1 "cannot update card #$N"
+    SET_BODY=1
+  fi
+fi
 jq --rawfile t "${TITLE_FILE:-/dev/null}" --rawfile b "$BODYTMP" \
-  --arg title_file "$TITLE_FILE" --arg body_file "$BODY_FILE" \
+  --arg title_file "$TITLE_FILE" --argjson set_body "$SET_BODY" \
   --argjson l "$LABELS" --argjson acc "$ACC" --argjson blk "$BLOCKED" \
   --argjson pr_set "$PR_SET" --arg pr "$PR_URL" --arg now "$(fl_now)" '
   (if $title_file != "" then .title = ($t | sub("\n+$"; "")) else . end)
-  | (if $body_file != "" then .body = $b else . end)
+  | (if $set_body == 1 then .body = $b else . end)
   | (if $l != null then .labels = $l else . end)
   | (if $acc != null then .acceptance = $acc else . end)
   | (if $blk != null then .blocked_by = $blk else . end)
