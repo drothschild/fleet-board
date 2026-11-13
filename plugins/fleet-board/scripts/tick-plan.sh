@@ -738,49 +738,67 @@ if [ "$SETTLE" != true ] && { [ "$CANDIDATES" = true ] || jq -es 'any(.[]; .stat
 fi
 
 # supervisor.version_files: for each open PR in progress, in review or merging,
-# the version files whose "version" keys the PR head changed (against its merge
-# base with origin's default branch, origin/HEAD, else origin/main) to a value
-# not strictly above that branch (versions.jq vr_raise). Cost: one
-# `git fetch origin` per plan when such a PR exists (plus one fetch of
-# refs/pull/<pr>/head when the head commit is not local), then local git diff
-# and git show per version file. A head that cannot be read is not checked.
+# the version files whose "version" keys the PR's own non-merge commits changed
+# to a value not strictly above origin/<baseRefName> (version-lib.sh, the rule
+# update-branch.sh uses). A card whose base, base ref or head commit cannot be
+# read is held ("version check needs <ref>"), never read as current.
+# Cost: one `gh pr view --json baseRefName` per such PR, and at most one
+# `git fetch origin <bases> [refs/pull/<pr>/head...]` per 60 s, stamped in
+# <git common dir>/fleet-board-version-fetch. A failed fetch does not fail the
+# plan: it goes on with the local refs. Then local git log and git show per file.
 VERSION_FILE="$(mktemp)" || fb_die 1 "cannot create version input"
 VFILES="$(jq -c '.supervisor.version_files // []' <<<"$FLEET_CFG")" || fb_die 1 "cannot read supervisor.version_files"
 if [ "$VFILES" != '[]' ]; then
-  VJQ="$(cat "$FLEET_SCRIPTS/path-glob.jq" "$FLEET_SCRIPTS/versions.jq")" || fb_die 1 "cannot read path-glob.jq or versions.jq"
+  . "$FLEET_SCRIPTS/version-lib.sh"
+  VL_JQ="$(cat "$FLEET_SCRIPTS/path-glob.jq" "$FLEET_SCRIPTS/versions.jq")" || fb_die 1 "cannot read path-glob.jq or versions.jq"
   VROWS="$(jq -c 'select((.state == "in_progress" or .state == "in_review" or .state == "merging" or .stage != null)
       and .pr != null and .pr_info.state == "OPEN" and (.pr_info.headRefOid | type) == "string")
       | {number, pr, head: .pr_info.headRefOid}' "$CARDS_FILE")" || fb_die 1 "cannot read the plan input"
   if [ -n "$VROWS" ]; then
-    git fetch -q origin >/dev/null 2>&1 || true
-    VBASE="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || VBASE=""
-    [ -n "$VBASE" ] || VBASE=origin/main
     VTMP="$(mktemp -d)" || fb_die 1 "cannot create version scratch"
+    : > "$VTMP/rows"
+    VBASES=""; VPULLS=""
     while IFS= read -r vrow; do
       [ -n "$vrow" ] || continue
       vn="$(jq -r .number <<<"$vrow")"; vpr="$(jq -r .pr <<<"$vrow")"; vhead="$(jq -r .head <<<"$vrow")"
-      case "$vhead" in ''|*[!0-9a-f]*) continue ;; esac
-      git cat-file -e "$vhead^{commit}" 2>/dev/null \
-        || git fetch -q origin "refs/pull/$vpr/head" >/dev/null 2>&1 || true
-      vstale=null
-      if git cat-file -e "$vhead^{commit}" 2>/dev/null && vmb="$(git merge-base "$VBASE" "$vhead" 2>/dev/null)"; then
-        vstale='[]'
+      vbase="$(gh pr view "$vpr" --repo "$FLEET_REPO" --json baseRefName --jq .baseRefName 2>/dev/null)" || vbase=""
+      case "$vbase" in ''|*[!A-Za-z0-9/._-]*|-*) vbase="" ;; esac
+      case "$vhead" in ''|*[!0-9a-f]*) vhead="" ;; esac
+      printf '%s %s %s %s\n' "$vn" "$vpr" "${vhead:--}" "${vbase:--}" >> "$VTMP/rows"
+      if [ -n "$vbase" ]; then case " $VBASES " in *" $vbase "*) ;; *) VBASES="$VBASES $vbase" ;; esac; fi
+      if [ -n "$vhead" ] && ! git cat-file -e "$vhead^{commit}" 2>/dev/null; then VPULLS="$VPULLS refs/pull/$vpr/head"; fi
+    done <<<"$VROWS"
+    # At most one fetch per 60 s; a failed fetch leaves the local refs in use
+    VSTAMP="$(fb_git_common_dir .)/fleet-board-version-fetch"
+    vnow="$(date +%s)"; vlast="$(cat "$VSTAMP" 2>/dev/null)" || vlast=0
+    case "$vlast" in ''|*[!0-9]*) vlast=0 ;; esac
+    if [ -n "$VBASES$VPULLS" ] && [ $((vnow - vlast)) -ge 60 ]; then
+      printf '%s\n' "$vnow" > "$VSTAMP" 2>/dev/null || true
+      # shellcheck disable=SC2086 # the lists are validated words
+      [ -z "$VBASES" ] || git fetch -q origin $VBASES >/dev/null 2>&1 || true
+      # A missing pull ref fails its own fetch only, never the base fetch
+      [ -z "$VPULLS" ] || git fetch -q origin $VPULLS >/dev/null 2>&1 || true
+    fi
+    while read -r vn vpr vhead vbase; do
+      vneeds=""; vstale='[]'
+      if [ "$vbase" = - ]; then vneeds="the base branch of PR #$vpr"
+      elif ! git rev-parse -q --verify "refs/remotes/origin/$vbase^{commit}" >/dev/null 2>&1; then vneeds="origin/$vbase"
+      elif [ "$vhead" = - ] || ! git cat-file -e "$vhead^{commit}" 2>/dev/null; then vneeds="the head commit of PR #$vpr"
+      elif ! vlist="$(vl_files . "origin/$vbase" "$vhead" 2>/dev/null)"; then vneeds="the history of PR #$vpr"
+      else
         while IFS= read -r vf; do
           [ -n "$vf" ] || continue
           case "$vf" in *.json) ;; *) continue ;; esac
-          [ "$(jq -rn --arg p "$vf" --argjson g "$VFILES" "$VJQ"' $p | pg_match($g)')" = true ] || continue
-          git show "$vhead:$vf" > "$VTMP/head.json" 2>/dev/null || continue
-          git show "$VBASE:$vf" > "$VTMP/base.json" 2>/dev/null || continue
-          git show "$vmb:$vf" > "$VTMP/mb.json" 2>/dev/null || printf 'null\n' > "$VTMP/mb.json"
-          if [ "$(jq -n --slurpfile h "$VTMP/head.json" --slurpfile m "$VTMP/mb.json" --slurpfile t "$VTMP/base.json" \
-                  "$VJQ"' $h[0] | vr_raise(.; $m[0]; $t[0]) | length > 0' 2>/dev/null)" = true ]; then
-            vstale="$(jq -c --arg f "$vf" '. + [$f]' <<<"$vstale")"
-          fi
-        done <<<"$(git diff --name-only "$vmb" "$vhead" 2>/dev/null)"
+          [ "$(jq -rn --arg p "$vf" --argjson g "$VFILES" "$VL_JQ"' $p | pg_match($g)')" = true ] || continue
+          if ! vch="$(vl_changes . "origin/$vbase" "$vhead" "$vf" "$VTMP" 2>/dev/null)"; then vneeds="the history of $vf"; break; fi
+          [ -n "$vch" ] && [ "$vch" != '[]' ] || continue
+          vstale="$(jq -c --arg f "$vf" '. + [$f]' <<<"$vstale")"
+        done <<<"$vlist"
       fi
-      jq -cn --argjson n "$vn" --argjson stale "$vstale" '{number: $n, stale: $stale}' >> "$VERSION_FILE" \
+      jq -cn --argjson n "$vn" --argjson stale "$vstale" --arg needs "$vneeds" \
+        '{number: $n, stale: $stale, needs: (if $needs == "" then null else $needs end)}' >> "$VERSION_FILE" \
         || fb_die 1 "cannot record version input"
-    done <<<"$VROWS"
+    done < "$VTMP/rows"
     rm -rf "$VTMP"
   fi
 fi
@@ -988,14 +1006,15 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     | .scope_paths = ((.scope_paths // []) + $actual.paths | unique)
     | .scope_unknown = $actual.unknown
     # version files whose PR head version is not above the base (supervisor.version_files)
-    | .version_stale = ((first($version_scope[] | select(.number == $c.number)) // {stale: null}).stale // [])) as $all
+    | (first($version_scope[] | select(.number == $c.number)) // {stale: [], needs: null}) as $vs
+    | .version_stale = ($vs.stale // []) | .version_needs = $vs.needs) as $all
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
   | [$all[] | select(.state == "in_progress" or is_review(.) or is_merging(.))] as $open
   | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
   | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
-  | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge" and (.version_stale | length) == 0)
+  | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge" and (.version_stale | length) == 0 and .version_needs == null)
       | .number] | min) as $merger
   | [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
@@ -1016,6 +1035,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         else null end) as $ov
     | (if $d00.action == "start" and $unknown_scope != null then act("wait"; "Scope unknown for #\($unknown_scope.number): PR file lookup failed or incomplete")
        elif $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
+       elif ($d00.action == "review" or $d00.action == "review_stage" or $d00.action == "merge") and $c.version_needs != null
+         then act("wait"; "version check needs \($c.version_needs)")
        elif ($d00.action == "review" or $d00.action == "review_stage" or $d00.action == "merge") and ($c.version_stale | length) > 0
          then act("update_branch"; "version not above base: \($c.version_stale | join(", "))")
        elif $d00.action == "merge" and $verify_pending

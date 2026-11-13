@@ -615,6 +615,25 @@ assert_eq "real git earlier merge: marketplace a raised too" "$(rg_ver .claude-p
 assert_eq "real git earlier merge: b untouched" "$(rg_ver .claude-plugin/marketplace.json '.plugins[1].version')" 1.0.0
 assert_eq "real git earlier merge: the remote equals local" "$(rg_remote)" "$(rg_local)"
 
+# A key the branch never bumped is not raised, even though the branch edited the
+# same file and a merge of the base brought the base's bump in
+real_setup
+long_plugin() { printf '{\n  "name": "a",\n  "version": "%s",\n  "k1": 1,\n  "k2": 2,\n  "description": "%s"\n}\n' "$2" "$3" > "$1"; }
+long_plugin "$RG/seed/plugins/a/.claude-plugin/plugin.json" 0.1.0 d
+rg_git -C "$RG/seed" commit -q -am long; rg_git -C "$RG/seed" push -q origin HEAD:main
+git -C "$RG/wt" pull -q --no-rebase origin main 2>/dev/null; git -C "$RG/wt" push -q origin fleet/12-x
+long_plugin "$RG/wt/plugins/a/.claude-plugin/plugin.json" 0.1.0 "edited on the branch"
+git -C "$RG/wt" commit -q -am "branch: description only"; git -C "$RG/wt" push -q origin fleet/12-x
+long_plugin "$RG/seed/plugins/a/.claude-plugin/plugin.json" 0.2.0 d
+rg_market "$RG/seed/.claude-plugin/marketplace.json" 0.2.0 1.0.0
+rg_git -C "$RG/seed" commit -q -am "main 0.2.0"; rg_git -C "$RG/seed" push -q origin HEAD:main
+git -C "$RG/wt" fetch -q origin; git -C "$RG/wt" merge -q --no-edit origin/main; git -C "$RG/wt" push -q origin fleet/12-x
+rg_main_other "later"
+real_run
+assert_exit "real git base bump merged in, branch never bumped: exit 0" 0
+assert_eq "real git base bump merged in, branch never bumped: version left at the base's" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.2.0
+assert_eq "real git base bump merged in, branch never bumped: the branch's edit kept" "$(rg_ver plugins/a/.claude-plugin/plugin.json .description)" "edited on the branch"
+
 # A lingering local merge commit (as a failed run without the reset would leave):
 # the raise still sees the branch's own bump
 real_setup

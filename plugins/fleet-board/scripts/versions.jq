@@ -92,16 +92,22 @@ def vc_resolve:
 def vr_paths: [paths(type == "string") | select(length > 0 and .[-1] == "version")];
 def vr_get($p): try getpath($p) catch null;
 
-# input: the head JSON. The version keys the branch changed ($before against the
-# merge base $mb) whose head value is not strictly above the base branch ($base):
-# [{path, from, to}] with to = sv_above(base). A key missing or not semver on
-# either side is left alone.
-def vr_raise($before; $mb; $base):
+# The string "version" key paths whose values differ between two JSON documents
+# (one commit of the branch and its parent; either may be null)
+def vr_diff_paths($a; $b):
+  [($a | vr_paths[]), ($b | vr_paths[])] | unique
+  | map(select(. as $p | ($a | vr_get($p)) != ($b | vr_get($p))));
+
+# input: the head JSON. Of the version keys in $changed (the paths the branch's own
+# commits changed, version-lib.sh vl_changes), those whose head value is not strictly
+# above the base branch's ($base): [{path, from, to}] with to = sv_above(base). A key
+# missing or not semver on either side is left alone.
+def vr_raise($changed; $base):
   . as $head
   | [vr_paths[] as $p
-     | ($head | vr_get($p)) as $h | ($before | vr_get($p)) as $b0
-     | ($mb | vr_get($p)) as $m | ($base | vr_get($p)) as $t
-     | select(($h | sv_valid) and ($t | sv_valid) and $b0 != $m and sv_cmp($h; $t) <= 0)
+     | select(any($changed[]; . == $p))
+     | ($head | vr_get($p)) as $h | ($base | vr_get($p)) as $t
+     | select(($h | sv_valid) and ($t | sv_valid) and sv_cmp($h; $t) <= 0)
      | {path: $p, from: $h, to: sv_above($t)}];
 
 # input: the raw text of a JSON file; sets each change's version line. Each string

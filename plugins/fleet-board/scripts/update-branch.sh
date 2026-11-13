@@ -26,10 +26,10 @@
 #                   file must still parse with jq, then the merge is committed
 #                   and pushed like a clean merge (exit 0, last_update).
 #   versions not    after any merge, with supervisor.version_files set: each
-#   above the base  "version" key the branch changed in a version file (against
-#                   the merge base) whose merged value is not strictly above the
-#                   base branch's is raised to base + 1 patch, key by key, in one
-#                   more commit. Keys the branch did not change are left alone.
+#   above the base  "version" key the branch's own non-merge commits changed in a
+#                   version file (version-lib.sh) whose merged value is not
+#                   strictly above origin/<base>'s is raised to base + 1 patch, key
+#                   by key, in one more commit. Other keys are left alone.
 #   conflict        the merge is aborted (nothing is pushed), a comment names
 #                   the conflicted files (and, with version_files set, why they
 #                   were not resolved here), the manager note gains
@@ -40,15 +40,19 @@
 #                   fail); the script does not count it too. When any
 #                   conflicted file is not version-only nothing is resolved or
 #                   committed.
-#   push rejected   the branch is reset (git reset --hard) to the head it had
-#                   before this run and the script exits 1, so the next run
-#                   merges again instead of finding nothing to do.
+#   any failure     once the merge has started, any non-zero exit (a rejected
+#                   push, a failed raise, a failed commit) aborts a merge in
+#                   progress, restores files this run wrote, and resets the
+#                   branch with git reset --keep to the head it had before this
+#                   run, so the next run merges again instead of finding nothing
+#                   to do. A refused reset --keep is reported; the exit stays 1.
 # Exit codes: 0 done (clean merge), 1 a git, gh or board step failed or the
 # merge conflicted (the manager counts the failure), 2 usage error.
 
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version-lib.sh"
 
 [ $# -eq 4 ] || fb_die 2 "usage: update-branch.sh <n> <pr> <branch> <worktree>"
 N="$1"; PR="$2"; BRANCH="$3"; WT="$4"
@@ -71,10 +75,39 @@ esac
 
 VFILES="$(jq -c '.supervisor.version_files // []' <<<"$FLEET_CFG")" || fb_die 1 "cannot read supervisor.version_files"
 JQ_LIB="$(cat "$FLEET_SCRIPTS/path-glob.jq" "$FLEET_SCRIPTS/versions.jq")" || fb_die 1 "cannot read path-glob.jq or versions.jq"
+VL_JQ="$JQ_LIB"
 
 TMP="$(mktemp)" || fb_die 1 "cannot create a temp file"
 TMPD="$(mktemp -d)" || { rm -f "$TMP"; fb_die 1 "cannot create a temp directory"; }
-trap 'rm -f "$TMP"; rm -rf "$TMPD"' EXIT
+: > "$TMPD/written"
+MERGE_STARTED=""
+BEFORE=""
+
+# on_exit: after the merge has started, a non-zero exit puts the branch back where it
+# was: abort a merge in progress, restore the files this run wrote, git reset --keep
+on_exit() {
+  local rc=$? now f
+  if [ "$rc" -ne 0 ] && [ -n "$MERGE_STARTED" ] && [ -n "$BEFORE" ]; then
+    if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+      git -C "$WT" merge --abort >/dev/null 2>&1 || true
+    fi
+    while IFS= read -r f; do
+      [ -n "$f" ] && git -C "$WT" checkout -q HEAD -- "$f" 2>/dev/null
+    done < "$TMPD/written"
+    now="$(git -C "$WT" rev-parse HEAD 2>/dev/null)" || now=""
+    if [ -n "$now" ] && [ "$now" != "$BEFORE" ]; then
+      if git -C "$WT" reset -q --keep "$BEFORE"; then
+        printf 'update-branch: reset %s from %s back to %s\n' "$BRANCH" "$now" "$BEFORE" >&2
+      else
+        printf 'update-branch: git reset --keep %s was refused in %s; %s is left at %s, reset it by hand\n' \
+          "$BEFORE" "$WT" "$BRANCH" "$now" >&2
+      fi
+    fi
+  fi
+  rm -f "$TMP"; rm -rf "$TMPD"
+  exit "$rc"
+}
+trap on_exit EXIT
 
 # vf_match <path>: exit 0 when supervisor.version_files matches the path
 vf_match() {
@@ -132,36 +165,31 @@ EOF_FILES
   return 0
 }
 
-# vr_raise: with version_files set, raises each version key the branch changed
-# whose merged value is not strictly above origin/<base>, then commits. Exit 1
-# (with a message) when a file cannot be read or edited.
+# vr_raise: with version_files set, raises each version key the branch's own commits
+# changed (version-lib.sh) whose merged value is not strictly above origin/<base>,
+# then commits. Exit 1 (with a message) when a file cannot be read or edited; the
+# EXIT trap then undoes the merge.
 vr_raise() {
-  local mb f before base changes summary="" i=0
+  local f changes summary="" i=0
   [ "$VFILES" != '[]' ] || return 0
-  mb="$(git -C "$WT" merge-base "$BEFORE" "origin/$BASE")" && [ -n "$mb" ] \
-    || fb_die 1 "cannot find the merge base of $BRANCH and origin/$BASE"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     case "$f" in *.json) ;; *) continue ;; esac
     vf_match "$f" || continue
     [ -f "$WT/$f" ] && [ ! -L "$WT/$f" ] || continue
-    git -C "$WT" show "$BEFORE:$f" > "$TMPD/before.json" 2>/dev/null || continue
-    git -C "$WT" show "origin/$BASE:$f" > "$TMPD/base.json" 2>/dev/null || continue
-    git -C "$WT" show "$mb:$f" > "$TMPD/mb.json" 2>/dev/null || printf 'null\n' > "$TMPD/mb.json"
-    jq -e . "$TMPD/before.json" "$TMPD/base.json" "$TMPD/mb.json" >/dev/null 2>&1 || continue
-    changes="$(jq -c --slurpfile b "$TMPD/before.json" --slurpfile m "$TMPD/mb.json" --slurpfile t "$TMPD/base.json" \
-      "$JQ_LIB"' vr_raise($b[0]; $m[0]; $t[0])' "$WT/$f" 2>/dev/null)" \
-      || fb_die 1 "$f is not valid JSON after the merge of origin/$BASE"
-    [ "$changes" != '[]' ] || continue
+    changes="$(vl_changes "$WT" "origin/$BASE" HEAD "$f" "$TMPD")" \
+      || fb_die 1 "cannot read the history of $f against origin/$BASE"
+    [ -n "$changes" ] && [ "$changes" != '[]' ] || continue
     i=$((i + 1))
     jq -Rsj --argjson c "$changes" "$JQ_LIB"' vr_apply($c)' "$WT/$f" > "$TMPD/raised" 2> "$TMPD/err" \
       || fb_die 1 "cannot raise the versions in $f: $(sed 's/^jq: error[^:]*: //' "$TMPD/err" | head -1)"
     jq -e . "$TMPD/raised" >/dev/null 2>&1 || fb_die 1 "$f is not valid JSON after raising its versions"
+    printf '%s\n' "$f" >> "$TMPD/written"
     cat "$TMPD/raised" > "$WT/$f" || fb_die 1 "cannot write $f"
     git -C "$WT" add -- "$f" || fb_die 1 "git add $f failed"
     summary="$summary$(jq -r --arg f "$f" '.[] | "\n- \($f) \(.path | map(tostring) | join(".")): \(.from) -> \(.to)"' <<<"$changes")"
   done <<EOF_FILES
-$(git -C "$WT" diff --name-only "$mb" "$BEFORE")
+$(vl_files "$WT" "origin/$BASE" HEAD)
 EOF_FILES
   [ "$i" -gt 0 ] || return 0
   git -C "$WT" commit -q -m "Raise versions above origin/$BASE$(printf '\n%s' "$summary")" >/dev/null \
@@ -174,6 +202,7 @@ CUR="$(git -C "$WT" symbolic-ref -q --short HEAD)" || CUR=""
 git -C "$WT" fetch origin || fb_die 1 "git fetch origin failed in $WT"
 BEFORE="$(git -C "$WT" rev-parse HEAD)" || fb_die 1 "cannot read HEAD in $WT"
 
+MERGE_STARTED=1
 git -C "$WT" merge --no-edit "origin/$BASE" >/dev/null 2>&1
 RC=$?
 CONFLICTS="$(git -C "$WT" diff --name-only --diff-filter=U)"
@@ -224,11 +253,9 @@ fi
 # merged without a successful push), then check the push landed.
 REMOTE="$(git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$BRANCH")" || REMOTE=""
 if [ "$AFTER" != "$REMOTE" ]; then
-  if ! git -C "$WT" push origin "$BRANCH"; then
-    git -C "$WT" reset -q --hard "$BEFORE" \
-      || fb_die 1 "git push origin $BRANCH was rejected, and git reset --hard $BEFORE failed in $WT"
-    fb_die 1 "git push origin $BRANCH was rejected; reset $BRANCH to $BEFORE so the next run merges again"
-  fi
+  # A rejected push exits 1; the EXIT trap resets the branch to $BEFORE
+  git -C "$WT" push origin "$BRANCH" \
+    || fb_die 1 "git push origin $BRANCH was rejected; resetting $BRANCH to $BEFORE so the next run merges again"
   git -C "$WT" fetch -q origin || fb_die 1 "git fetch origin failed in $WT after the push"
   PUSHED="$(git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$BRANCH")" || PUSHED=""
   [ "$PUSHED" = "$AFTER" ] || fb_die 1 "after the push origin/$BRANCH is ${PUSHED:-missing}, not $AFTER"

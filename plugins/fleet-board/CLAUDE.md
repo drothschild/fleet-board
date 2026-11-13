@@ -93,14 +93,17 @@ no file here. The gate's residual bypasses and false positives are listed in the
   segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
   language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
   parity test over `fixtures/glob-cases.json`.
-- **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`).
-  Off when empty. `update-branch.sh` resolves conflicts in matching JSON files whose
-  hunks hold only pairwise-identical `"version"` lines, each line from its own sides;
-  after any merge it raises branch-changed version keys not above the base to base +
-  1 patch. `tick-plan.sh` plans `update_branch` ("version not above base") for such a
-  review or merge candidate. `update-branch.sh` refuses a worktree not on the branch,
-  pushes whenever local differs from `origin/<branch>`, verifies the push, and on a
-  rejected push resets to the pre-run head and exits 1.
+- **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
+  `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
+  matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
+  line from its own sides; after any merge it raises keys the branch bumped (changed by
+  its own non-merge commits, `vl_changes`) that are not above the base to base + 1 patch.
+  `tick-plan.sh` uses the same rule against the PR's `baseRefName`: `update_branch`
+  ("version not above base"), or `wait` ("version check needs <ref>") when a ref cannot
+  be read; its `git fetch origin <bases>` runs at most once per 60 s. `update-branch.sh`
+  refuses a worktree not on the branch, pushes whenever local differs from
+  `origin/<branch>` and verifies the push; after the merge starts, any non-zero exit
+  aborts or resets (`git reset --keep`) to the pre-run head.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs

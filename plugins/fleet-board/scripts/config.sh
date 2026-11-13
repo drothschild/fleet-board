@@ -314,7 +314,9 @@ VALIDATION_SCRIPT='
             then "supervisor.\($k) entries must name a path, not only wildcards or separators"
             elif any($v[]; gsub("\\\\"; "/") | startswith("/") or (split("/") | any(. == ".." or . == ".")))
             then "supervisor.\($k) entries must be repo-relative, without a leading / or .."
-            else empty end)
+            else (first($v[] | select(. as $g | try (("" | test("\\A(?:" + ($g | pg_regex) + ")\\z")) | false) catch true)) // null) as $bad
+              | if $bad != null then "supervisor.\($k) entry \($bad | tojson) is not a valid glob" else empty end
+            end)
       else empty end),
       (if (.merge | type) == "object" then
         (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end),
@@ -408,7 +410,7 @@ VALIDATION_SCRIPT='
   (errors | .[]), (warnings | .[])
 '
 
-VALIDATION_ERRORS="$(echo "$MERGED" | jq -r --slurpfile presets "$HERE/providers/presets.json" "$VALIDATION_SCRIPT" 2>&1)" || {
+VALIDATION_ERRORS="$(echo "$MERGED" | jq -r --slurpfile presets "$HERE/providers/presets.json" "$(cat "$HERE/path-glob.jq")$VALIDATION_SCRIPT" 2>&1)" || {
   echo "config.sh: invalid config: validation script failed" >&2
   exit 5
 }

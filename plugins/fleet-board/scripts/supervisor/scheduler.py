@@ -7,6 +7,7 @@ Clock and planning are injectable so tests never wait on wall time.
 from concurrent.futures import ThreadPoolExecutor
 import copy
 import math
+import re
 import threading
 
 from . import scopes
@@ -416,6 +417,11 @@ def _validate_limits(limits):
     if 'scope_ignore' in limits and (not isinstance(limits['scope_ignore'], list)
                                      or any(not isinstance(g, str) or not g for g in limits['scope_ignore'])):
         raise ValueError('invalid scope_ignore')
+    for glob in limits.get('scope_ignore') or []:
+        try:
+            re.compile(scopes.glob_regex(glob))
+        except re.error as exc:
+            raise ValueError('invalid scope_ignore glob %r: %s' % (glob, exc))
     if 'retry_at' in limits and not isinstance(limits['retry_at'], dict):
         raise ValueError('invalid retry schedule')
     rate_wait = limits.get('rate_limit_wait', {})
