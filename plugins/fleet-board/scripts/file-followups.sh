@@ -3,6 +3,11 @@
 #
 # Usage: file-followups.sh <card-n> <pr> <parsed-report-json-file>
 #
+# <pr> may be the empty string (a card that blocked or closed with no PR): the
+# cards are filed, no PR comment is made, "Found while working" and "Also seen"
+# name no PR, and the items filed are removed from the card note's
+# pending_followups.
+#
 # The report file is parse-report.sh output; its out_of_scope items
 # ({title, detail}) and bugs ({title, repro, expected, observed}) are filed.
 #
@@ -55,11 +60,15 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 
 [ $# -eq 3 ] || fb_die 2 "usage: file-followups.sh <card-n> <pr> <parsed-report-json-file>"
 fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
-fb_valid_number "$2" || fb_die 2 "PR number must be numeric, got: $2"
+[ -z "$2" ] || fb_valid_number "$2" || fb_die 2 "PR number must be numeric or empty, got: $2"
 [ -f "$3" ] || fb_die 2 "file not found: $3"
 CARD="$1"
 PR="$2"
 REPORT_FILE="$3"
+# With no PR (a card that blocked or closed without one) there is no PR comment
+# and no PR number in the text; PR_SUFFIX is what follows "#<card>" in it
+PR_SUFFIX=""
+[ -z "$PR" ] || PR_SUFFIX=" (PR #$PR)"
 
 fb_load_config
 . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
@@ -134,6 +143,7 @@ local_comment() {
 }
 
 pr_comment() {
+  [ -n "$PR" ] || return 0
   gh pr comment "$PR" --repo "$FLEET_REPO" --body "$1" </dev/null >/dev/null \
     || printf 'fleet-board: warning: PR comment failed for #%s\n' "$2" >&2
 }
@@ -148,7 +158,7 @@ while IFS= read -r item; do
   kind="$(jq -r .kind <<<"$item")"
   title="$(jq -r .title <<<"$item")"
   if [ "$m" != none ]; then
-    local_comment "$m" "Also seen while working #$CARD (PR #$PR)." \
+    local_comment "$m" "Also seen while working #$CARD$PR_SUFFIX." \
       || stop "cannot comment on the existing card #$m for: $title"
     record "$kind" "$title" "$m" true "$how" || stop "cannot record #$m"
     if [ "$kind" = bug ]; then label="Known bug"; else label="Out of scope"; fi
@@ -158,8 +168,8 @@ while IFS= read -r item; do
   BODY="$(mktemp)" || stop "cannot create a temp file"
   ACC="$(mktemp)" || stop "cannot create a temp file"
   if [ "$kind" = bug ]; then
-    jq -r --arg c "$CARD" --arg p "$PR" '
-      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c) (PR #\($p))."' \
+    jq -r --arg c "$CARD" --arg p "$PR_SUFFIX" '
+      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c)\($p)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
     jq -r '"- `\(.repro)` gives the expected result: \(.expected)" | gsub("[\r\n]+"; " ")' <<<"$item" > "$ACC" || stop "cannot write the card acceptance for: $title"
     created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" --acceptance-file "$ACC" </dev/null)" || stop "cannot create the card for: $title"
@@ -169,9 +179,9 @@ while IFS= read -r item; do
     # The words "no testable check" mean Backlog even when the detail also backticks a path.
     # Spans pair up as in parse-report.sh: an even number of backticks, none adjacent, and the first span with a non-blank character is the command.
     cmd="$(jq -r 'if (.detail | ascii_downcase | test("(^|[^a-z])no testable check([^a-z]|$)")) or (.detail | contains("``")) then empty else (.detail | split("`")) as $p | if ($p | length) % 2 == 0 then empty else ([$p | to_entries[] | select(.key % 2 == 1) | .value | select(gsub("[\u00a0\u200b]"; "") | test("[^ \\t]"))] | first) // empty end end' <<<"$item" 2>/dev/null)"
-    jq -r --arg c "$CARD" --arg p "$PR" '
+    jq -r --arg c "$CARD" --arg p "$PR_SUFFIX" '
       (if .detail == "" then "" else "\(.detail)\n\n" end)
-      + "Found while working #\($c) (PR #\($p))."' \
+      + "Found while working #\($c)\($p)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
     if [ -n "$cmd" ]; then
       jq -rn --arg cmd "$cmd" '"- `\($cmd)` gives the result the description above expects" | gsub("[\r\n]+"; " ")' > "$ACC" \
@@ -205,5 +215,23 @@ while IFS= read -r item; do
     pr_comment "Out of scope, tracked as #$new: $title" "$new"
   fi
 done <<<"$ITEMS"
+
+# With no PR the supervisor has no later PR step to clear the note, so the items
+# filed here leave note.pending_followups now (the rest stay for another run)
+if [ -z "$PR" ]; then
+  PATCH="$(mktemp)" || fb_die 1 "cannot create a temp file"
+  if jq -n --argjson n "$NOTE" --argjson o "$FILED_OOS" --argjson b "$FILED_BUGS" '
+       def lc: ascii_downcase;
+       def left($items; $filed): [($items // [])[] | select(.title as $t | any($filed[]; (.title | lc) == ($t | lc)) | not)];
+       ($n.pending_followups // null) as $p
+       | if $p == null then empty
+         else (left($p.out_of_scope; $o)) as $os | (left($p.bugs; $b)) as $bs
+           | {pending_followups: (if ($os | length) == 0 and ($bs | length) == 0 then null else ($p + {out_of_scope: $os, bugs: $bs}) end)}
+         end' > "$PATCH" 2>/dev/null && [ -s "$PATCH" ]; then
+    bash "$FLEET_SCRIPTS/note.sh" merge "$CARD" "$PATCH" </dev/null >/dev/null \
+      || printf 'fleet-board: warning: cannot clear the filed follow-ups from the note of #%s\n' "$CARD" >&2
+  fi
+  rm -f "$PATCH"
+fi
 
 emit

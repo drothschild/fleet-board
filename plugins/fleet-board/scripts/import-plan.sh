@@ -76,7 +76,7 @@ jq -e '.cards | type == "array" and length > 0' "$CARDS" >/dev/null 2>&1 || fb_d
 
 # Resolve dependencies and order: {cards: [... + deps: [keys or refs]]} in creation order.
 PLAN="$(jq -c '
-  def isref: test("^[^/]+/[^#]+#[0-9]+$");
+  def isref: test("^[^/]+/[^#]+#[0-9]+$") or test("^#[0-9]+$");
   .cards as $all
   | ($all | map(.key)) as $keys
   | ($all | map(. as $c
