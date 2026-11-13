@@ -1000,10 +1000,12 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             then act($ra; if $c.stage != null then "round \($round) of \($c.stage.name) not reviewed yet" else "round \($round) not reviewed yet" end)
           # Commits landed after a review with findings (a fixer whose report
           # was never reconciled, or a person): review them; never fix again.
+          # A head moved only by clean merges of main (the drift allowance, as in
+          # the merge rows) goes to the fixer: re-reviewing it repeats the findings.
           # An accept by another login is not honored: its baseline is not trusted
           elif $ci_eff > 0 and $n.accepted != null and $c.accepted_mine == false
             then act($ra; "accept by \($n.accepted.login) is not honored (not the authenticated login); review PR head \($c.pr_info.headRefOid[0:7]) before fixing again")
-          elif $ci_eff > 0 and head_moved($c; $lr)
+          elif $ci_eff > 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
             then act($ra; "PR head \($c.pr_info.headRefOid[0:7]) differs from the round \($round) review at \($lr.sha[0:7]); review the new commits before fixing again")
           # Re-review instead of fixing again: a fixer that re-ran the finding and
           # could not reproduce it (note.last_fix, for this round), or a card a
