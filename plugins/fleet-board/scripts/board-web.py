@@ -13,7 +13,8 @@ Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-b
 FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
 session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
-the import id instead of a generated one).
+the import id instead of a generated one), FLEET_BOARD_CREATE (tests only: the script
+that creates the previewed cards, in place of import-plan.sh).
 """
 from __future__ import annotations
 
@@ -630,7 +631,7 @@ def create_import(id: str, embed: bool, status: str | None = None) -> dict:
         state = import_status(id)
         if state["state"] != "ready":
             raise ApiError(409, "import %s is %s, not ready" % (id, state["state"]))
-        argv = ["bash", script("import-plan.sh"), str(idir / "cards.json")]
+        argv = ["bash", os.environ.get("FLEET_BOARD_CREATE") or script("import-plan.sh"), str(idir / "cards.json")]
         if (status or meta.get("status")) == "ready":
             argv += ["--status", "ready"]
         rc, out, err = run_script(APP["root"], argv, stdin="y\n" + ("e\n" if embed else "m\n"))

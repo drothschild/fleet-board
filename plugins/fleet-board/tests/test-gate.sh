@@ -469,6 +469,13 @@ run_hook bash.json "gh pr merge 4"
 assert_silent_allow "local: auto policy allows a green PR"
 run_hook bash.json "gh pr merge 3"
 assert_blocked "local: auto policy blocks a draft PR" "draft"
+run_hook bash.json "gh issue edit 14 --add-label bug"
+assert_exit "local: gh issue edit on a local backend: hook exits 0" 0
+if printf '%s' "$LAST_ERR" | grep -Fq "could not verify the board config"; then
+  fail "local: backend local is not 'could not verify the board config'" "$LAST_ERR"
+else
+  pass "local: backend local is not 'could not verify the board config'"
+fi
 
 # ---------------------------------------------------------------------------
 # AC4.6 subagent-payload-gated-identically: the same command from a subagent
