@@ -46,7 +46,9 @@ fb_set_states() {
 fb_mark_active() {
   . "$FB_SCRIPTS/adapters/local/local-lib.sh"
   local d; d="$(fl_active_dir)"
-  if mkdir -p "$d" 2>/dev/null && : >> "$d/$1" 2>/dev/null; then
+  # the group's own stderr is silenced: a redirection error is printed by the
+  # shell before a trailing 2>/dev/null on the command takes effect
+  if { mkdir -p "$d" && : >> "$d/$1"; } 2>/dev/null; then
     FB_ACTIVE_FILE="$d/$1"
   else
     printf 'fleet-board: warning: cannot write the active marker for #%s\n' "$1" >&2
