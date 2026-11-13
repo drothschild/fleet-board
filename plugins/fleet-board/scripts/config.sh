@@ -157,7 +157,7 @@ STAGE_DEFAULTS='
             timeout: ($s.timeout // 600),
             max_output_tokens: ($s.max_output_tokens // 16000),
             max_diff_bytes: ($s.max_diff_bytes // 400000)
-          }
+          } + (if $s | has("default") then {default: $s.default} else {} end)
         else . end)
     else . end
 '
@@ -251,6 +251,7 @@ VALIDATION_SCRIPT='
                 (if ($s.label | type) != "string" or $s.label == "" or $s.label == "needs-human-qa" or $s.label == "needs-manual-step"
                       or (($stages[0:$i] | map(select(type == "object") | .label)) | index($s.label)) != null
                  then "review.stages[\($i)].label must be a non-empty string" else empty end),
+                (if ($s | has("default")) and ($s.default | type) != "boolean" then "review.stages[\($i)].default must be boolean" else empty end),
                 (if ($s.advisory | type) != "boolean" then "review.stages[\($i)].advisory must be boolean" else empty end),
                 (if ($s.max_rounds | type) != "number" or ($s.max_rounds | floor) != $s.max_rounds or $s.max_rounds <= 0 then "review.stages[\($i)].max_rounds must be a positive integer" else empty end),
                 (if ($s.brief | type) != "null" and ($s.brief | type) != "string" then "review.stages[\($i)].brief must be a string" else empty end)
