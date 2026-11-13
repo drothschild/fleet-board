@@ -2135,3 +2135,15 @@ Isolation: the init event lists only the four built-in `cc-plugin-*@builtin` plu
 ### Revision 29 (2026-11-12, after retiring ticks): the supervisor dispatches the roles
 
 **Hand edit, named exceptions (owner decision "Hand edit, exception").** `agents/implementor.md`, `agents/reviewer.md`, `agents/fixer.md` and `skills/reporting/SKILL.md` were edited by the executing session, with no isolated author run. Each frontmatter `description` now says the fleet-board supervisor, not the manager, dispatches the role (for the reporting skill: the supervisor is the reader that checks a role report). In the bodies, "the manager" became "the supervisor" wherever it named the one who dispatches the role, runs `parse-report.sh`, re-dispatches it, files bugs or reads the reviewed head; the reporting skill's title reads "(supervisor side)". In the three agents, "the manager note" became "the card's manager note" (review round 2 of PR 271), so no agent or skill says "the manager" except the quoted text below. Kept as they were: the name "manager note" (the note's marker and every script still use it) and the quoted re-dispatch text "Your previous report was rejected by the manager: ...", which is the driver's exact wording. No rule, shape or behavior changed. The behavior specs (`implementor.md`, `reviewer.md`, `fixer.md`, `reporting.md`) still call the dispatcher the manager; the supervisor's driver plays that part. The four manifest lines carry `exception:` notes. Cost: none (no model session).
+
+### Revision 30 (2026-11-13, card 291): the documentation reviewer agent
+
+**New.** `specs/documentation-reviewer.md` (hand-written by the executing session), `briefs/author-req-documentation-reviewer.md` (the author's brief) and `plugins/fleet-board/agents/documentation-reviewer.md`, authored clean-room by one isolated process: `claude -p --bare --settings "$FB_BARE_SETTINGS" --model opus --tools "Read,Edit" --permission-mode acceptEdits --strict-mcp-config --max-turns 30 --max-budget-usd 1.50`, with a fresh empty `CLAUDE_CONFIG_DIR`, reading only the staged brief and spec and editing only its output file.
+
+| Output | Isolation | Path audit | Turns | Cost (USD) |
+|---|---|---|---|---|
+| `agents/documentation-reviewer.md` | PASS: tools exactly `Edit` and `Read`, no MCP servers, `apiKeySource: apiKeyHelper` | PASS (3 reads, 1 edit) | 5 | 0.1275 |
+
+Evidence: `evidence/author-documentation-reviewer.init.json`. The manifest line is a clean-room output (no `exception:` note). The `plugins` list in the init event holds four built-in `cc-plugin-*` entries.
+
+**Behavioral check.** `tests/test-documentation-reviewer-behavior.sh` (run with `FB_BEHAVIORAL=1`) drives the agent on two fixture PRs. The isolated API key had no credit left after the authoring run, so the behavioral runs used the executing session's own login (`BL_NO_BARE=1`), not an isolated session; they are not part of the clean-room evidence.
