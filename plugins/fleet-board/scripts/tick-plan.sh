@@ -216,7 +216,11 @@
 # reconciled (no round bump) or from a person; fixing again would redo the
 # work, while the manager's review action reviews exactly those commits
 # (prev_sha is last_review.sha, or base when there is no previous review).
-# This comes before the max_rounds block.
+# This comes before the max_rounds block. Exception: when every commit since
+# last_review.sha is a clean merge of the base or a version-only change
+# (review-drift.sh prints reviewed; the drift allowance the merge rows use), the
+# card falls through to the rows below (normally fix): reviewing those commits
+# again would only repeat the findings.
 # A note's accepted entry (accept.sh) moved last_review.sha to the accepted
 # head, so commits before it are not flagged and later ones are. It counts only
 # when accepted.login is the authenticated gh login; otherwise a current review
@@ -1016,7 +1020,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                and ($n.last_fix.round // $round) == $round
             then act($ra; "the round \($round) fixer could not reproduce the finding; review PR head \($c.pr_info.headRefOid[0:7]) again before fixing")
           elif $ci_eff > 0 and $n.state == "blocked"
-            then act($ra; "moved back from Blocked with PR head unchanged since the round \($round) review; review it again before fixing")
+            then act($ra; "moved back from Blocked; review PR head \($c.pr_info.headRefOid[0:7]) again before fixing")
           # A clean review covers a later head only when every commit since is a
           # clean merge of main (review-drift.sh); a lookup that failed reads as not covered
           elif $ci_eff == 0 and head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
