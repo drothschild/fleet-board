@@ -70,6 +70,18 @@ class Auth(lc.LoopCase):
         self.sup.request_stop('drain')
         self.finished()
 
+    def test_an_auth_failure_pauses_admissions_until_resume(self):
+        self.b.plans(FAIL, {'report': 'implementor-ok'})
+        self.start()
+        self.until(self.health, what='the provider to be marked unhealthy')
+        self.until(lambda: self.mode() == 'paused', what='admissions paused')
+        self.assertIn('Failed to authenticate', self.b.state.snapshot().get('pause_reason', MSG))
+        self.b.state.resume()
+        self.sup.wake('test')
+        self.until(lambda: self.b.note().get('pr') == 12, what='the card to finish')
+        self.sup.request_stop('drain')
+        self.finished()
+
 
 class Status(unittest.TestCase):
     def test_supervisor_status_prints_the_unhealthy_provider_with_the_message(self):
