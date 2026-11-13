@@ -58,7 +58,14 @@ check "README does not mention settle.sh outside its upgrade notes" "$r"
 r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
 check "gates.md does not mention settle.sh" "$r"
 
-# The merger docs: persona, ignore_checks, clearing an attention, and the order of after-merge steps.
+# The README lists the /fleet-board:qa skill.
+if grep -qF '/fleet-board:qa' "$README"; then
+  PASS=$((PASS + 1)); echo "ok - README lists /fleet-board:qa"
+else
+  FAIL=$((FAIL + 1)); echo "FAIL - README lists /fleet-board:qa"
+fi
+
+# The merger docs: persona,ignore_checks, clearing an attention, and the order of after-merge steps.
 CONFIG_MD="${CONFIG_FILE:-${DOCS_DIR}/config.md}"
 OVERNIGHT="${OVERNIGHT_FILE:-${DOCS_DIR}/overnight.md}"
 r=bad; [ "$(grep -c 'merge\.persona' "$README")" -ge 1 ] && r=ok
