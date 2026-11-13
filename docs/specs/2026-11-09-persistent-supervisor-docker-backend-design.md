@@ -1,6 +1,6 @@
 # Persistent supervisor Docker Desktop backend
 
-> **Superseded (2026-11-11)** by [`docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
+> **Superseded (2026-11-11)** by [`docs/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
 
 ## Goal
 
