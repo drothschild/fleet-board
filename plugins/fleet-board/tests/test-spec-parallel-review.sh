@@ -11,7 +11,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-DOC="$SCRIPT_DIR/../../../docs/superpowers/specs/2026-11-06-review-stages-design.md"
+DOC="$SCRIPT_DIR/../../../docs/specs/2026-11-06-review-stages-design.md"
 PASS=0
 FAIL=0
 
