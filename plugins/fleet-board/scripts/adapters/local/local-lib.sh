@@ -98,7 +98,8 @@ fl_next_number() {
 # sit outside code fences (a section runs to the next heading); a repeat of
 # either heading, or one inside a fence, stays in the body as prose. Bullets
 # lose their "- " and are trimmed; "#n" and "<repo>#n" (repo defaults to board.repo) become numbers in
-# blocked_by, any other dependency entry goes to outside. A body with neither
+# blocked_by, any other dependency entry goes to outside, except an entry that
+# starts with "#n" or "<repo>#n" and has more text after it: that goes to bad. A body with neither
 # section comes back byte for byte.
 fl_split_body() {
   jq -n --rawfile b "$1" --arg repo "${2:-$(fb_cfg board.repo)}" '
@@ -116,6 +117,10 @@ fl_split_body() {
            and ((split("#")[0] | ascii_downcase) == ($repo | ascii_downcase))
         then {n: (split("#")[1] | tonumber)}
       else {o: .} end;
+    def badref:
+      (test("^#[0-9]+[^0-9]") and (test("^#[0-9]+$") | not))
+      or (test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+[^0-9]")
+          and ((split("#")[0] | ascii_downcase) == ($repo | ascii_downcase)));
     ($b | split("\n")) as $lines
     | reduce $lines[] as $l ({fence: false, sec: null, sa: false, sd: false, hit: false, body: [], acc: [], dep: []};
         if ($l | test("^[ ]{0,3}(```|~~~)")) then
@@ -134,7 +139,18 @@ fl_split_body() {
     | {body: (if $s.hit then ($s.body | join("\n") | sub("\n+$"; "") | if . == "" then "" else . + "\n" end) else $b end),
        acceptance: ($s.acc | map(select(. != ""))),
        blocked_by: ([$refs[] | select(.n != null) | .n] | reduce .[] as $x ([]; if index($x) then . else . + [$x] end)),
-       outside: [$refs[] | select(.o != null) | .o]}'
+       outside: [$refs[] | select(.o != null) | .o],
+       bad: [$s.dep[] | select(. != "" and badref)]}'
+}
+
+# fl_check_bad_deps <split-json>: exits 2 naming every dependency entry that
+# starts with a reference of this board but carries more text after it.
+fl_check_bad_deps() {
+  local bad
+  bad="$(jq -r '.bad[]' <<<"$1")"
+  [ -z "$bad" ] && return 0
+  while IFS= read -r l; do printf 'bad dependency line: %s\n' "$l" >&2; done <<<"$bad"
+  exit 2
 }
 
 # fl_acceptance_json <file>: the bullets (a leading "- " or "* " is optional)
@@ -195,6 +211,10 @@ fl_check_blocked_by() {
 # such heading outside a code fence; an existing section leaves it byte for byte.
 fl_add_qa_section() {
   jq -nj --arg b "$1" '
+    def badref:
+      (test("^#[0-9]+[^0-9]") and (test("^#[0-9]+$") | not))
+      or (test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+#[0-9]+[^0-9]")
+          and ((split("#")[0] | ascii_downcase) == ($repo | ascii_downcase)));
     ($b | split("\n")) as $lines
     | (reduce $lines[] as $l ({fence: false, has: false};
         if ($l | test("^[ ]{0,3}(```|~~~)")) then .fence = (.fence | not)
