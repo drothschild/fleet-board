@@ -400,6 +400,28 @@ class MergerFlow(unittest.TestCase):
         self.assertEqual(argv[argv.index('--model') + 1], 'sonnet')
         self.assertEqual([(l['action'], l['role'], l['input']) for l in self.ledger], [('after_merge', 'merger', 10)])
 
+    def test_after_merge_done_runs_cleanup_done_once_after_the_move(self):
+        self.b.stubs['cleanup-done.sh'] = dc.ok()
+        self.merger('merged', MERGED, 'merger-after-merge-done')
+        names = [c[0] for c in self.b.calls]
+        self.assertEqual(self.b.card(12)['state'], 'done')
+        self.assertEqual(names.count('cleanup-done.sh'), 1, self.b.calls)
+        self.assertGreater(names.index('cleanup-done.sh'), names.index('board-move.sh'))
+
+    def test_after_merge_done_cleanup_failure_is_only_a_warning(self):
+        self.b.stubs['cleanup-done.sh'] = dc.fail_with('boom', 1)
+        outcome = self.merger('merged', MERGED, 'merger-after-merge-done')
+        self.assertTrue(outcome.progressed)
+        self.assertEqual(self.b.card(12)['state'], 'done')
+        warns = [e for e in self.b.state.events if e['type'] == 'warning'
+                 and 'cleanup-done.sh' in e['payload']['message']]
+        self.assertTrue(warns, list(self.b.state.events))
+
+    def test_after_merge_attention_does_not_run_cleanup_done(self):
+        self.b.stubs['cleanup-done.sh'] = dc.ok()
+        self.merger('merged', MERGED, 'merger-after-merge-attention')
+        self.assertNotIn('cleanup-done.sh', [c[0] for c in self.b.calls])
+
     def test_after_merge_attention_keeps_the_card_in_merging(self):
         self.merger('merged', MERGED, 'merger-after-merge-attention')
         self.assertEqual(self.b.card(12)['state'], 'merging')

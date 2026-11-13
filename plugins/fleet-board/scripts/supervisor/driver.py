@@ -151,6 +151,7 @@ class _Ctx:
         self.attempts_before = None   # implementor_attempts before this dispatch charged one
         self._files = 0
         self._released = False
+        self.reached_done = False
 
     # values -------------------------------------------------------------------------------------------
     def states(self):
@@ -511,6 +512,7 @@ class CardDriver:
         self.state.begin(action)
         outcome = None
         tmp = None
+        ctx = None
         try:
             tmp = tempfile.mkdtemp(prefix='fleet-driver-')
             ctx = _Ctx(self, row, config, tmp)
@@ -528,7 +530,21 @@ class CardDriver:
         if outcome == 'session':
             return Started('session', action)
         self.state.end(number)
+        if ctx is not None and ctx.reached_done:
+            self._cleanup_done()
         return Started('done', action)
+
+    def _cleanup_done(self):
+        """Remove the worktrees of done cards, once, after the card's marker is released. A failure is only a
+        warning: the card is already done."""
+        try:
+            result = self.run(self.root, 'cleanup-done.sh')
+        except Exception as exc:  # noqa: BLE001
+            self.state.event('warning', message='cleanup-done.sh failed: ' + str(exc))
+            return
+        if result.timed_out or result.rc != 0:
+            self.state.event('warning', message='cleanup-done.sh failed: ' + (
+                'timed out' if result.timed_out else _first_line(result.stderr) or 'exited %d' % result.rc))
 
     def _failed(self, ctx, action_name, message):
         self.state.event('action_failed', card=ctx.n, action=action_name, error=message)
@@ -781,6 +797,8 @@ class CardDriver:
             raise
         if not outcome.redispatch:
             self._release(run)
+            if c.reached_done:
+                self._cleanup_done()
         return outcome
 
     def _release(self, run):
@@ -1168,6 +1186,7 @@ class CardDriver:
             if merged['outcome'] == 'blocked':
                 return self._after_merge_blocked(c, merged, came_from)
         c.move('done')
+        c.reached_done = True
         c.merge_soft(dict(_RESET, state='done', **(_LEFT_MERGING if merging else {})))
 
     def _after_merge_steps(self, c, body, extra=None):
@@ -1392,6 +1411,7 @@ class CardDriver:
         if mode == 'after_merge' and status == 'done':
             c.merge(dict(_RESET, merger=record, last_verified=verified))
             c.move('done')
+            c.reached_done = True
             c.merge_soft(dict(left, state='done'))
             return
         if mode == 'refusal' and status == 'retry':
