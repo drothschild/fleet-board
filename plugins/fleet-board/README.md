@@ -81,6 +81,8 @@ Each entry in `review.stages` adds a column after In Review. Merging is used onl
 
 **Lint command.** `/fleet-board:lint [card...]` (`scripts/lint.sh`) runs `card-lint.sh` on Ready and Backlog cards, or on the cards you name, and adds `untestable-bullet`, `dependency-cycle`, `unresolved-dependency` and `missing-file`. It exits 1 when any card fails. `/fleet-board:import-plan` runs it on its generated cards and creates nothing while one fails.
 
+**QA command.** `/fleet-board:qa <card>` rebuilds a card for human QA: it creates a detached worktree of the card's PR head merged with its base, runs `commands.qa_build` there, and prints the card's QA checks, the built commit and the build's exit status. Each piece of feedback you give becomes a Backlog card made with `board-create.sh <title> <body> --blocked-by <card>`. It never moves the QA card.
+
 **Card lint.** Before a Ready card is dispatched, `scripts/card-lint.sh` checks its acceptance items. A failing card stays in Ready, the supervisor posts one comment naming the rule and the item (again only when the lint result changes), and no implementor runs until you fix the card. The rules:
 
 - [`no-heading`](#card-lint-no-heading): a body has no `## Acceptance` heading.
