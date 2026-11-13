@@ -20,7 +20,8 @@ RoleResult = namedtuple('RoleResult', 'exit_code report_text usage failure reaso
 
 _UNKNOWN = Usage(None, None, None, None, None)
 _PROVIDER_RE = re.compile(r'rate.?limit|429|overloaded|529|authentication|invalid api key|401|usage limit|'
-                          r'resets? at', re.I)
+                          r'resets? at|authenticat|login reached its time limit|please run /login', re.I)
+AUTH_RE = re.compile(r'authenticat|invalid api key|login reached its time limit|run /login', re.I)
 _STAGE_RE = re.compile(r'provider: HTTP (429|5\d\d)|curl failed|usage limit', re.I)
 _STAGE_SCRIPTS = ('stage-review.sh', 'evidence-review.sh')
 _USAGE_FIELDS = (('input_tokens', 'inputTokens'), ('output_tokens', 'outputTokens'),
