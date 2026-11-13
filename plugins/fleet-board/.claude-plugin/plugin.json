@@ -1,6 +1,6 @@
 {
   "name": "fleet-board",
-  "version": "0.28.4",
+  "version": "0.29.1",
   "description": "Turns a local card board into a work queue for a fleet of coding agents: a command-line supervisor plans and dispatches each card's next action, role agents implement, review, fix and merge in isolated worktrees, and hooks enforce the human-QA and merge gates.",
   "author": {
     "name": "David Rothschild"
