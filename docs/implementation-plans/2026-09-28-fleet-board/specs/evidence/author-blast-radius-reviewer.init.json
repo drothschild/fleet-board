@@ -1,0 +1,1 @@
+{"plugins":[{"name":"cc-plugin-agents-md","path":"builtin"},{"name":"cc-plugin-telemetry","path":"builtin"},{"name":"cc-plugin-privacy","path":"builtin"},{"name":"cc-plugin-plugin-authoring","path":"builtin"}],"tools":["Edit","Read"],"apiKeySource":"apiKeyHelper","claude_code_version":"2.1.323"}
