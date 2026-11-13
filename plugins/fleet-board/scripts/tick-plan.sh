@@ -151,10 +151,14 @@
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
 # Exit 2 when --settle-merge has no card or a non-numeric card.
 #
-# Pending follow-ups (note.pending_followups) hold a card in file_pending only
-# when a PR is known to file them against: pending_followups.pr, else note.pr,
-# else the PR this plan found. Without one, the card goes through the table as
-# usual and the plan warns "pending follow-ups on #<n> wait for a PR".
+# Pending follow-ups (note.pending_followups) hold a card in file_pending when a
+# PR is known to file them against (pending_followups.pr, else note.pr, else the
+# PR this plan found), and always for a blocked card: without a PR they are
+# filed with no PR comment (file-followups.sh takes an empty PR). Any other
+# column with no PR goes through the table as usual and the plan warns
+# "pending follow-ups on #<n> wait for a PR". A card in Done or Won't Do that
+# still holds pending items gets the warning "pending follow-ups on #<n> were
+# never filed (card is <state>): <titles>".
 # Action failures: note.action_failures is the number of the manager's
 # actions on the card, in a row, that failed to make progress, as the
 # manager records them: any action (start, continue_implementor,
@@ -703,6 +707,25 @@ for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_
   done
 done
 
+# Cards in Done or Won't Do that still hold pending follow-ups: nothing will
+# file them now, so the plan warns, naming each title. A card that cannot be
+# read or parsed is left out (these columns are not planned).
+CLOSED_PENDING='[]'
+if [ "$SETTLE" != true ] && [ "$CANDIDATES" != true ]; then
+  for st in done wont_do; do
+    LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || continue
+    for n in $(jq -r 'if type == "array" then .[].number else empty end' <<<"$LIST" 2>/dev/null); do
+      fb_valid_number "$n" || continue
+      READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" 2>/dev/null)" || continue
+      case "$READ" in *pending_followups*) ;; *) continue ;; esac
+      pnote="$(bash "$FLEET_SCRIPTS/note.sh" parse "$n" <<<"$READ" 2>/dev/null)" || continue
+      CLOSED_PENDING="$(jq -c --argjson note "$pnote" --arg st "$st" --argjson n "$n" '
+        ([($note.pending_followups.out_of_scope // [])[]?, ($note.pending_followups.bugs // [])[]?] | map(.title? | strings)) as $t
+        | if ($t | length) == 0 then . else . + ["pending follow-ups on #\($n) were never filed (card is \($st)): \($t | join("; "))"] end' <<<"$CLOSED_PENDING")" || CLOSED_PENDING='[]'
+    done
+  done
+fi
+
 # A lookup that failed on a GitHub rate limit fails the plan, so the wrapper
 # waits out the reset (finish adds "resets at") instead of skipping the cards
 if grep -qi 'rate limit' "$ERR_FILE" && jq -se 'any(.[]; .lookup_failed != null)' "$CARDS_FILE" >/dev/null 2>&1; then
@@ -752,7 +775,7 @@ done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
 TODAY="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
 IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot read ignore-checks.jq"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --arg today "$TODAY" "$IGNORE_CHECKS_JQ"'
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ"'
   # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
   def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
   def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
@@ -808,7 +831,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
         # of review, where the headless recovery pass can still find it.
         elif (is_review($c) or is_merging($c)) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
           then act("verify_main"; "PR #\($c.pr) merged; successful main verification required")
-        elif $n.pending_followups != null and ($n.pending_followups.pr // $n.pr // $c.pr) != null
+        elif $n.pending_followups != null and ($c.state == "blocked" or ($n.pending_followups.pr // $n.pr // $c.pr) != null)
           then act("file_pending"; "pending follow-ups")
         elif ($c.state == "ready" or $c.state == "in_progress" or is_review($c) or is_merging($c))
              and $fails >= 2 * $max
@@ -1074,6 +1097,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
        + [$cards[] | select(.outside_warning != null) | .outside_warning]
        + [$cards[] | .deps_warnings[]]
        + [$cards[] | select(.pending_wait) | "pending follow-ups on #\(.number) wait for a PR"]
+       + $closed_pending
        # Once per provider stage acted on whose key is unset: a held review_stage,
        # fix in it, or advance_stage into it (the following review_stage waits)
        + ([$cards[] | select((.key_held or .action == "fix" or .action == "advance_stage")
