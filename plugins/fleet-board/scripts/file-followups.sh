@@ -36,7 +36,9 @@
 # Follow-up cards carry an acceptance field drafted from the finding (a bug:
 # its repro and expected result; an out-of-scope item: the first backticked
 # command in its detail) and, when the detail says "depends on this card",
-# blocked_by naming the spawning card. They are created in the
+# blocked_by naming the spawning card; so does a detail naming a backticked path
+# that is not on the default branch and is in the spawning PR's file list (the
+# work needs code only the unmerged PR adds). They are created in the
 # followups.status column (default ready). The command is the first backticked span
 # with a non-blank character, spans being paired single backticks (an even number of
 # them, none adjacent). An out-of-scope item with no such span, or whose detail holds
@@ -148,6 +150,35 @@ pr_comment() {
     || printf 'fleet-board: warning: PR comment failed for #%s\n' "$2" >&2
 }
 
+# fl_names_unmerged_path <item>: succeeds when the detail names a backticked
+# path that is not on the default branch and is in the spawning PR's file list
+# (the follow-up targets code only the unmerged PR adds). Any lookup failure
+# means no.
+PR_FILES="" PR_FILES_DONE=0 FL_DEFBR=""
+fl_names_unmerged_path() {
+  [ -n "$PR" ] || return 1
+  local paths p
+  paths="$(jq -r '.detail | split("`") | to_entries[] | select(.key % 2 == 1) | .value' <<<"$1" 2>/dev/null)" || return 1
+  [ -n "$paths" ] || return 1
+  if [ "$PR_FILES_DONE" -eq 0 ]; then
+    PR_FILES_DONE=1
+    PR_FILES="$(gh pr view "$PR" --repo "$FLEET_REPO" --json files </dev/null 2>/dev/null | jq -r '.files[]?.path' 2>/dev/null)" || PR_FILES=""
+    FL_DEFBR="$(git -C "$FLEET_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || FL_DEFBR=""
+    if [ -z "$FL_DEFBR" ]; then
+      local b
+      for b in main master; do git -C "$FLEET_ROOT" rev-parse --verify -q "$b" >/dev/null 2>&1 && { FL_DEFBR="$b"; break; }; done
+    fi
+  fi
+  [ -n "$PR_FILES" ] && [ -n "$FL_DEFBR" ] || return 1
+  while IFS= read -r p; do
+    grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
+    case "$p" in *..*) continue ;; esac
+    grep -Fxq -- "$p" <<<"$PR_FILES" || continue
+    git -C "$FLEET_ROOT" cat-file -e "$FL_DEFBR:$p" 2>/dev/null || return 0
+  done <<<"$paths"
+  return 1
+}
+
 # Pass two: file
 i=0
 while IFS= read -r item; do
@@ -190,7 +221,7 @@ while IFS= read -r item; do
       : > "$ACC"
     fi
     cargs=(--acceptance-file "$ACC")
-    if jq -e '.detail | test("depends on this card"; "i")' <<<"$item" >/dev/null 2>&1; then cargs+=(--blocked-by "$CARD"); fi
+    if jq -e '.detail | test("depends on this card"; "i")' <<<"$item" >/dev/null 2>&1 || fl_names_unmerged_path "$item"; then cargs+=(--blocked-by "$CARD"); fi
     state="$STATUS"
     [ -n "$cmd" ] || state=backlog
     created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --state "$state" "${cargs[@]}" </dev/null)" || stop "cannot create the card for: $title"
