@@ -14,6 +14,7 @@ Every value handed to a script is validated first (numbers are positive ints, a 
 starts with "-"). A failed step ends the action; earlier steps stand. A failure that is not an
 uncounted action merges `action_failures + 1` and the first stderr line into the card's manager note.
 """
+import hashlib
 import json
 import os
 import posixpath
@@ -286,14 +287,15 @@ _SECTIONS = {
     'fixer': ('number', 'title', 'body', 'acceptance', 'pr', 'worktree', 'findings', 'config', 'scripts'),
     'stage-reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'stage_name',
                        'brief', 'round', 'prev_sha', 'findings', 'scripts', 'post'),
-    'merger': ('number', 'title', 'pr', 'mode', 'merged_head', 'refusal', 'persona', 'config', 'scripts'),
+    'merger': ('number', 'title', 'pr', 'mode', 'pr_head', 'merge_commit', 'refusal', 'persona', 'config', 'scripts'),
 }
 _LABELS = {
     'number': 'Card number', 'title': 'Card title', 'body': 'Card body', 'acceptance': 'Acceptance',
     'worktree': 'Worktree', 'branch': 'Branch', 'note': 'Manager note', 'config': 'Config', 'scripts': 'Scripts dir',
     'pr': 'PR number', 'diff': 'PR diff', 'report': 'Latest implementor or fixer report', 'round': 'Round',
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
-    'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'merged_head': 'Merged head',
+    'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'pr_head': 'PR head (pr_head)',
+    'merge_commit': 'Merge commit (merge_commit)',
     'refusal': 'Refusal', 'persona': 'Persona',
 }
 DIFF_FILE_LINES = 1500
@@ -799,6 +801,10 @@ class CardDriver:
 
     def _reconcile(self, run, result, allow):
         c = run.c
+        if run.role == 'merger':
+            tripped = self._guard_tripped(run)
+            if tripped is not None:
+                return tripped
         if result.cancelled:
             return Outcome(c.n, False, False, None)
         if result.failure == 'provider':
@@ -1182,7 +1188,17 @@ class CardDriver:
             if merged['outcome'] == 'blocked':
                 c.merge_soft({'after_merge_head': None})
                 return self._after_merge_blocked(c, merged, 'merging')
-        return self._dispatch_merger(c, 'after_merge', pr, head, card, {'merged_head': head})
+        return self._dispatch_merger(c, 'after_merge', pr, head, card,
+                                     {'pr_head': head, 'merge_commit': self._merge_commit(c, pr)})
+
+    def _merge_commit(self, c, pr):
+        """The commit the merge put on the base branch (`gh pr view --json mergeCommit`); under a squash merge
+        it is not the PR head. 'unknown' when gh cannot say."""
+        result = self.gh(self.root, 'pr', 'view', str(pr), '--repo', c.repo(), '--json', 'mergeCommit')
+        data = _json(result.stdout) if result.rc == 0 and not result.timed_out else None
+        commit = data.get('mergeCommit') if isinstance(data, dict) else None
+        oid = commit.get('oid') if isinstance(commit, dict) else None
+        return oid if isinstance(oid, str) and _HEAD.fullmatch(oid) else 'unknown'
 
     def _do_merge_refusal(self, c):
         detail = c.row.get('merger_detail')
@@ -1214,13 +1230,57 @@ class CardDriver:
             if value is not None and not (isinstance(value, str) and _NAME.fullmatch(value)):
                 raise _Invalid(field, value)
         run = _Run(c, c.action, dispatch, 'merger', '', prior='merging', mode=mode, head=head, pr_number=pr,
-                   refusal=extra.get('refusal'))
+                   refusal=extra.get('refusal'), guard=self._guard_snapshot(c, card))
         inputs = dict(extra, number=c.n, title=card.get('title'), pr=pr, mode=mode, persona=persona,
                       config=json.dumps(c.config, indent=2, sort_keys=True), scripts=str(self.plugin_dir / 'scripts'))
         run.prompt = run.base_prompt = role_prompt('merger', inputs, c.tmp)
         run.attempts_before = None
         self._launch(run)
         return 'session'
+
+    def _guard_snapshot(self, c, card):
+        """What a merger session must leave alone: .fleet-board.yml, the resolved persona file and the card's state."""
+        return {'.fleet-board.yml': self._hash(self.root / '.fleet-board.yml'),
+                self._persona_label(c): self._hash(self._persona_file(c)),
+                'card state': card.get('state')}
+
+    @staticmethod
+    def _hash(path):
+        try:
+            return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    def _persona_file(self, c):
+        merge = c.config.get('merge') if isinstance(c.config.get('merge'), dict) else {}
+        configured = merge.get('persona')
+        if isinstance(configured, str) and configured:
+            return self.root / configured
+        local = self.root / '.fleet-board' / 'merger.md'
+        return local if local.is_file() else DEFAULT_PERSONA
+
+    def _persona_label(self, c):
+        path = self._persona_file(c)
+        try:
+            return str(path.relative_to(self.root))
+        except ValueError:
+            return 'persona file ' + path.name
+
+    def _guard_tripped(self, run):
+        """After a merger session: pause the board and set the card's attention when it changed a guarded thing."""
+        c = run.c
+        try:
+            state = self._read_card(c).get('state')
+        except _Fail:
+            state = None
+        now = self._guard_snapshot(c, {'state': state})
+        changed = [name for name, value in run.guard.items() if now[name] != value]
+        if not changed:
+            return None
+        reason = 'merger session changed %s' % ', '.join(changed)
+        self.state.pause(reason)
+        self._merger_attention(c, run.mode, reason, run.head)
+        return Outcome(c.n, False, False, None)
 
     def _persona(self, c, pr):
         """The persona text (spec section 6): merge.persona null -> .fleet-board/merger.md when present, else the
