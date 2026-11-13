@@ -1043,7 +1043,7 @@ class CardDriver:
             return
         pr = note.get('pr') or parsed.get('pr') or pending.get('pr') or c.row.get('pr')
         if pr is None:
-            c.warn('follow-ups on #%d wait for a PR' % c.n)
+            c.warn('follow-ups on #%d are held until a PR is known' % c.n)
             c.merge_soft({'pending_followups': {'out_of_scope': oos, 'bugs': bugs, 'pr': None}})
             return
         if not _posint(pr):
@@ -1497,10 +1497,12 @@ class CardDriver:
         if not isinstance(pending, dict):
             return
         pr = pending.get('pr') or note.get('pr') or c.row.get('pr')
+        if pr is None and c.row.get('state') == 'blocked':
+            pr = ''  # a blocked card has no PR to comment on: file-followups.sh takes an empty one
         if pr is None:
-            c.warn('pending follow-ups on #%d wait for a PR' % c.n)
+            c.warn('pending follow-ups on #%d are held until a PR is known' % c.n)
             return
-        if not _posint(pr):
+        if pr != '' and not _posint(pr):
             raise _Invalid('pr', pr)
         stored = {'out_of_scope': list(pending.get('out_of_scope') or []), 'bugs': list(pending.get('bugs') or []),
                   'pr': pending.get('pr')}
