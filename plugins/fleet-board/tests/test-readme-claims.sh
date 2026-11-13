@@ -77,6 +77,12 @@ check "README has the attention-clearing step with \"merger\": null" "$r"
 r=bad; grep -qF 'steps run before the merger' "$OVERNIGHT" && r=ok
 check "overnight.md says the after-merge steps run before the merger" "$r"
 
+# The local-board spec's adapter table: comment removes the active marker only for a validated role report.
+SPEC="${SPEC_FILE:-${SCRIPT_DIR}/../../../docs/superpowers/specs/2026-11-06-local-board-design.md}"
+r=bad
+grep -E '^\| `comment <n> <body-file>` \|' "$SPEC" | grep -qF 'removes `active/<n>` only for a validated role report' && r=ok
+check "spec comment row says the marker is removed only for a validated role report" "$r"
+
 # The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
