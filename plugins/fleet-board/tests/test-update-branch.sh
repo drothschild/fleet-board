@@ -70,9 +70,10 @@ if [ "${1:-}" = "-C" ] && [ "${2:-}" = "$STUB_WT" ]; then
     fetch) exit 0 ;;
     symbolic-ref) echo "${STUB_HEAD_BRANCH:-fleet/12-add-subtract}"; exit 0 ;;
     merge-base) echo 0000000000000000000000000000000000000000; exit 0 ;;
-    reset) rm -f "$STUB_STATE/merged"; exit 0 ;;
+    reset) [ "${STUB_RESET_RC:-0}" -eq 0 ] || exit "$STUB_RESET_RC"; rm -f "$STUB_STATE/merged"; exit 0 ;;
     rev-parse)
       case "$*" in
+        *MERGE_HEAD*) exit 1 ;;
         *origin/*) # the remote-tracking branch: what the last successful push left
           if [ -f "$STUB_STATE/pushed" ]; then echo "$STUB_AFTER"; else echo "${STUB_REMOTE:-$STUB_BEFORE}"; fi
           exit 0 ;;
@@ -80,7 +81,7 @@ if [ "${1:-}" = "-C" ] && [ "${2:-}" = "$STUB_WT" ]; then
       if [ -f "$STUB_STATE/merged" ]; then echo "$STUB_AFTER"; else echo "$STUB_BEFORE"; fi
       exit 0 ;;
     merge)
-      if [ "${2:-}" = "--abort" ]; then exit 0; fi
+      if [ "${2:-}" = "--abort" ]; then rm -f "$STUB_STATE/merged"; exit 0; fi
       touch "$STUB_STATE/merged"
       exit "$STUB_MERGE_RC" ;;
     diff)
@@ -110,7 +111,7 @@ issue edit 12 *	0	-
 issue comment 12 *	0	-
 ROUTES
 
-  unset CDPATH FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG STUB_HEAD_BRANCH STUB_REMOTE STUB_PUSH_RC STUB_PUSH_LIES || true
+  unset CDPATH FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG STUB_HEAD_BRANCH STUB_REMOTE STUB_PUSH_RC STUB_PUSH_LIES STUB_RESET_RC || true
   PATH="$BIN:$ORIG_PATH"
   FAKE_GH_ROUTES="$FAKE_GH_DIR/routes"
   STUB_WT="$WT"; STUB_STATE="$FAKE_GH_DIR/state"; mkdir -p "$STUB_STATE"
@@ -469,8 +470,16 @@ setup "" "" 0
 STUB_PUSH_RC=1; export STUB_PUSH_RC
 run_update
 assert_exit "rejected push: exit 1" 1
-assert_eq "rejected push: the branch is reset to where it was" "$(count_lines '^reset (-q )?--hard 1111111111111111111111111111111111111111$' "$GIT_LOG")" 1
+assert_eq "rejected push: the branch is reset to where it was" "$(count_lines '^reset (-q )?--keep 1111111111111111111111111111111111111111$' "$GIT_LOG")" 1
+assert_eq "rejected push: never reset --hard" "$(count_lines -- '--hard' "$GIT_LOG")" 0
 assert_eq "rejected push: no last_update in the note" "$(written_note | jq -c '.last_update // null')" 'null'
+
+setup "" "" 0
+STUB_PUSH_RC=1; STUB_RESET_RC=1; export STUB_PUSH_RC STUB_RESET_RC
+run_update
+assert_exit "rejected push and a refused reset --keep: exit 1" 1
+assert_eq "rejected push and a refused reset --keep: the error says so" \
+  "$(printf '%s\n' "$LAST_ERR" | grep -c 'git reset --keep .* refused')" 1
 
 setup "" "" 0
 STUB_PUSH_LIES=1; export STUB_PUSH_LIES
@@ -520,6 +529,8 @@ rg_main() { # <a> <b> [src/y content]: a commit on main
   [ -z "${3:-}" ] || echo "$3" > "$RG/seed/src/y.txt"
   rg_git -C "$RG/seed" commit -q -am "main $1"; rg_git -C "$RG/seed" push -q origin HEAD:main
 }
+rg_market_inline() { printf '{\n  "name": "m",\n  "plugins": [\n    {\n      "name": "a",\n      "version": "%s"\n    },\n    { "name": "b", "version": "%s" }\n  ]\n}\n' "$2" "$3" > "$1"; }
+rg_main_other() { echo "$1" > "$RG/seed/src/y.txt"; rg_git -C "$RG/seed" commit -q -am "main other $1"; rg_git -C "$RG/seed" push -q origin HEAD:main; }
 rg_branch() { # <a> <b>: a commit on the branch (also touches src/x.txt), pushed
   rg_plugin "$RG/wt/plugins/a/.claude-plugin/plugin.json" a "$1"
   rg_plugin "$RG/wt/plugins/b/.claude-plugin/plugin.json" b "$2"
@@ -565,6 +576,55 @@ assert_eq "real git identical bump: marketplace a raised too" "$(rg_ver .claude-
 assert_eq "real git identical bump: b, which the branch did not change, is untouched" "$(rg_ver .claude-plugin/marketplace.json '.plugins[1].version')" 1.0.0
 assert_eq "real git identical bump: the remote equals local" "$(rg_remote)" "$(rg_local)"
 assert_eq "real git identical bump: a clean tree" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+
+# N1: run 1 fails after the merge (the raise refuses an inline "version" key); the
+# merge is undone, and run 2 fails too instead of pushing the duplicate version
+real_setup
+rg_market_inline "$RG/seed/.claude-plugin/marketplace.json" 0.1.0 1.0.0
+rg_git -C "$RG/seed" commit -q -am inline; rg_git -C "$RG/seed" push -q origin HEAD:main
+git -C "$RG/wt" pull -q --no-rebase origin main 2>/dev/null; git -C "$RG/wt" push -q origin fleet/12-x
+rg_plugin "$RG/seed/plugins/a/.claude-plugin/plugin.json" a 0.1.1
+rg_market_inline "$RG/seed/.claude-plugin/marketplace.json" 0.1.1 1.0.0
+rg_git -C "$RG/seed" commit -q -am "main 0.1.1"; rg_git -C "$RG/seed" push -q origin HEAD:main
+rg_plugin "$RG/wt/plugins/a/.claude-plugin/plugin.json" a 0.1.1
+rg_market_inline "$RG/wt/.claude-plugin/marketplace.json" 0.1.1 1.0.0
+echo "branch" > "$RG/wt/src/x.txt"
+git -C "$RG/wt" commit -q -am "branch 0.1.1"; git -C "$RG/wt" push -q origin fleet/12-x
+BEFORE_SHA="$(rg_local)"; REMOTE_SHA="$(rg_remote)"
+real_run
+assert_exit "real git failed raise, run 1: exit 1" 1
+assert_eq "real git failed raise, run 1: the error says why" "$(printf '%s\n' "$LAST_ERR" | grep -c 'not each on a line of their own')" 1
+assert_eq "real git failed raise, run 1: the merge is undone" "$(rg_local)" "$BEFORE_SHA"
+assert_eq "real git failed raise, run 1: a clean tree" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+assert_eq "real git failed raise, run 1: nothing pushed" "$(rg_remote)" "$REMOTE_SHA"
+real_run
+assert_exit "real git failed raise, run 2: still exit 1" 1
+assert_eq "real git failed raise, run 2: the duplicate version is not pushed" "$(rg_remote)" "$REMOTE_SHA"
+
+# N1(b): the branch merged the base (with the same bump) earlier and pushed it; the
+# base then moved on. The branch's own bump is still raised above the base.
+real_setup
+rg_branch 0.1.1 1.0.0
+rg_main 0.1.1 1.0.0
+git -C "$RG/wt" fetch -q origin; git -C "$RG/wt" merge -q --no-edit origin/main; git -C "$RG/wt" push -q origin fleet/12-x
+rg_main_other "later"
+real_run
+assert_exit "real git earlier merge: exit 0" 0
+assert_eq "real git earlier merge: plugin a raised above base" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.2
+assert_eq "real git earlier merge: marketplace a raised too" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.1.2
+assert_eq "real git earlier merge: b untouched" "$(rg_ver .claude-plugin/marketplace.json '.plugins[1].version')" 1.0.0
+assert_eq "real git earlier merge: the remote equals local" "$(rg_remote)" "$(rg_local)"
+
+# A lingering local merge commit (as a failed run without the reset would leave):
+# the raise still sees the branch's own bump
+real_setup
+rg_branch 0.1.1 1.0.0
+rg_main 0.1.1 1.0.0
+git -C "$RG/wt" fetch -q origin; git -C "$RG/wt" merge -q --no-edit origin/main
+real_run
+assert_exit "real git lingering merge: exit 0" 0
+assert_eq "real git lingering merge: plugin a raised above base" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.2
+assert_eq "real git lingering merge: the remote equals local" "$(rg_remote)" "$(rg_local)"
 
 # A rejected push: exit 1, the branch is reset, and the next run is not a success either
 real_setup

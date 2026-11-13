@@ -843,6 +843,10 @@ done
 for v in '"*"' '"**"' '"*/*"' '"?"' '"./"' '"."' '"/"' '"**/"'; do
   invalid_field_case "supervisor scope_ignore wildcard-only rejects $v" "supervisor: { scope_ignore: [$v] }" 'supervisor.scope_ignore entries must name a path, not only wildcards or separators'
 done
+for k in scope_ignore version_files; do
+  invalid_field_case "supervisor $k rejects [z-a].json" "supervisor: { $k: [\"ok.json\", \"[z-a].json\"] }" "supervisor.$k entry \"[z-a].json\" is not a valid glob"
+  invalid_field_case "supervisor $k rejects x/[b-a]" "supervisor: { $k: [\"x/[b-a]\"] }" "supervisor.$k entry \"x/[b-a]\" is not a valid glob"
+done
 # supervisor.version_files: the same glob rules
 REPO="$(printf 'board: { repo: a/b }\nsupervisor: { version_files: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json", "**/package.json"] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"

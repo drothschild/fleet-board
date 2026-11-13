@@ -1085,11 +1085,18 @@ assert_jq "scope-ignore: * does not cross /, so nested manifests still overlap" 
 # supervisor.version_files: a review or merge candidate whose PR head version is not
 # strictly above the same line on the base plans update_branch
 VERSION_YAML="$(printf 'supervisor:\n  version_files: ["plugins/*/.claude-plugin/plugin.json"]')"
-# plan_version <main version after the branch was cut> <extra YAML>
+# plan_version <base version after the branch was cut> <extra YAML>
+# env: PV_BASE_BRANCH (the PR's baseRefName, default main), PV_HEAD (a headRefOid to
+# report instead of the branch head), PV_EARLY_MERGE (the branch merged the base,
+# with the same bump, before the base moved on). A git wrapper logs fetches.
 plan_version() {
   setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto\n%s' "$2")"
-  local dir="$FAKE_GH_DIR/scope" remote="$FAKE_GH_DIR/remote.git" head base
+  local dir="$FAKE_GH_DIR/scope" remote="$FAKE_GH_DIR/remote.git" head base bb="${PV_BASE_BRANCH:-main}" real_git
   mkdir -p "$dir"
+  real_git="$(PATH="$ORIG_PATH" command -v git)"
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = fetch ] && { printf "%%s\\n" "$*" >> "%s/git-fetch.log"; break; }; done\nexec "%s" "$@"\n' \
+    "$FAKE_GH_DIR" "$real_git" > "$BIN/git"
+  chmod +x "$BIN/git"
   git init -q --bare "$remote"
   git -C "$REPO" remote add origin "$remote"
   mkdir -p "$REPO/plugins/fb/.claude-plugin"
@@ -1097,26 +1104,40 @@ plan_version() {
   git -C "$REPO" add -A; git -C "$REPO" commit -q -m base
   base="$(git -C "$REPO" rev-parse HEAD)"
   git -C "$REPO" push -q origin HEAD:refs/heads/main
+  [ "$bb" = main ] || git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
   git -C "$REPO" checkout -q -b fleet/12-card
   printf '{\n  "name": "fb",\n  "version": "0.28.4"\n}\n' > "$REPO/plugins/fb/.claude-plugin/plugin.json"
   printf 'x\n' > "$REPO/src.txt"
   git -C "$REPO" add -A; git -C "$REPO" commit -q -m branch
-  head="$(git -C "$REPO" rev-parse HEAD)"
   git -C "$REPO" push -q origin fleet/12-card
   git -C "$REPO" checkout -q -b base-work "$base"
   if [ "$1" != 0.28.3 ]; then
     printf '{\n  "name": "fb",\n  "version": "%s"\n}\n' "$1" > "$REPO/plugins/fb/.claude-plugin/plugin.json"
-    git -C "$REPO" commit -q -am main-bump
-    git -C "$REPO" push -q origin HEAD:refs/heads/main
+    git -C "$REPO" commit -q -am base-bump
+    git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
   fi
+  if [ -n "${PV_EARLY_MERGE:-}" ]; then
+    git -C "$REPO" checkout -q fleet/12-card
+    git -C "$REPO" merge -q --no-edit base-work
+    git -C "$REPO" push -q origin fleet/12-card
+    git -C "$REPO" checkout -q base-work
+    printf 'later\n' > "$REPO/later.txt"
+    git -C "$REPO" add -A; git -C "$REPO" commit -q -m later
+    git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
+  fi
+  head="${PV_HEAD:-$(git -C "$REPO" rev-parse fleet/12-card)}"
   scope_issue "$dir" 12 in_review NONE
   scope_review_note "$dir" 12
   scope_routes "$dir" "" "12"
   jq -c --arg h "$head" '.headRefOid = $h' "$TICK/common/pr-34-open-green.json" > "$dir/pr-34.json"
-  { printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr-34.json\n' "$dir"; cat "$dir/routes"; } > "$dir/routes.new"
+  printf '%s\n' "$bb" > "$dir/base-34.txt"
+  { printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr-34.json\n' "$dir"
+    printf 'pr view 34 --repo acme/toy --json baseRefName*\t0\t%s/base-34.txt\n' "$dir"
+    cat "$dir/routes"; } > "$dir/routes.new"
   mv "$dir/routes.new" "$dir/routes"
   run_check "$SCRIPT"
 }
+fetch_count() { if [ -f "$FAKE_GH_DIR/git-fetch.log" ]; then grep -c -- "$1" "$FAKE_GH_DIR/git-fetch.log"; else echo 0; fi; }
 plan_version 0.28.4 "$VERSION_YAML"
 assert_exit "version-stale: exit" 0
 assert_jq "version-stale: an equal version on the base plans update_branch" "$(card 12 action)" '"update_branch"'
@@ -1128,6 +1149,38 @@ assert_exit "version-above: exit" 0
 assert_jq "version-above: a head version above the base is not held" "$(card 12 action) | . != \"update_branch\"" 'true'
 plan_version 0.28.4 ""
 assert_jq "version-stale without version_files: not checked" "$(card 12 action) | . != \"update_branch\"" 'true'
+assert_eq "version-stale without version_files: no fetch" "$(fetch_count fetch)" 0
+
+# The base is the PR's baseRefName, not origin's default branch
+PV_BASE_BRANCH=release; export PV_BASE_BRANCH
+plan_version 0.28.4 "$VERSION_YAML"
+assert_jq "version-base: an equal version on the PR's base branch plans update_branch" "$(card 12 action)" '"update_branch"'
+plan_version 0.28.3 "$VERSION_YAML"
+assert_jq "version-base: above the PR's base branch is not held" "$(card 12 action) | . != \"update_branch\"" 'true'
+unset PV_BASE_BRANCH
+
+# An earlier merge of the base (with the same bump) does not hide the stale version
+PV_EARLY_MERGE=1; export PV_EARLY_MERGE
+plan_version 0.28.4 "$VERSION_YAML"
+assert_jq "version-early-merge: the branch's own bump equal to the base plans update_branch" "$(card 12 action)" '"update_branch"'
+unset PV_EARLY_MERGE
+
+# A head that cannot be read holds the card (fail closed)
+PV_HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; export PV_HEAD
+plan_version 0.28.3 "$VERSION_YAML"
+assert_exit "version-unreadable head: exit" 0
+assert_jq "version-unreadable head: the card waits" "$(card 12 action)" '"wait"'
+assert_jq "version-unreadable head: the reason names what is missing" "$(card 12 reason) | startswith(\"version check needs \")" 'true'
+unset PV_HEAD
+
+# The base fetch: only origin <base>, at most once per 60 s
+plan_version 0.28.4 "$VERSION_YAML"
+assert_eq "version-fetch: the first plan fetches the base" "$(fetch_count '^fetch -q origin main')" 1
+assert_eq "version-fetch: it fetches only origin <base>" "$(fetch_count '^fetch -q origin$')" 0
+run_check "$SCRIPT"
+assert_exit "version-fetch: second plan: exit" 0
+assert_jq "version-fetch: second plan still holds the card" "$(card 12 action)" '"update_branch"'
+assert_eq "version-fetch: two plans within 60 s fetch once" "$(fetch_count '^fetch -q origin main')" 1
 
 # Three cards eligible to merge: exactly one merge, lowest number first
 setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto')"

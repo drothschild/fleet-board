@@ -441,7 +441,7 @@ def test_scope_ignore_drops_version_manifests():
 
 
 def test_scope_ignore_validated_in_limits():
-    for bad in ('x', [''], [3], None):
+    for bad in ('x', [''], [3], None, ['[z-a].json'], ['x/[b-a]']):
         result = Scheduler(clock=lambda: 0).admit([candidate(1)], limits=dict(LIMITS, scope_ignore=bad))
         assert result['stop_reason'] == 'invalid limits', bad
 
