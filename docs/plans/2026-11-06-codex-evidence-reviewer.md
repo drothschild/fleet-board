@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash 3.2, jq, git, the Codex CLI; plain-bash test suites.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-codex-evidence-reviewer-design.md`
+**Spec:** `docs/specs/2026-11-06-codex-evidence-reviewer-design.md`
 
 ## Global Constraints
 

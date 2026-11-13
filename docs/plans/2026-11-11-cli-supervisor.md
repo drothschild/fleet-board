@@ -15,7 +15,7 @@ board page.
 **Tech Stack:** Python 3 standard library only (no new dependencies); bash 3.2-compatible shell scripts; `jq`; `gh`;
 plain-bash test wrappers running `unittest` case files, as the existing supervisor suites do.
 
-**Spec:** `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`. Executors read it with this plan; section
+**Spec:** `docs/specs/2026-11-11-cli-supervisor-design.md`. Executors read it with this plan; section
 numbers below (§N) refer to it.
 
 **Reference notes** (git-ignored, in the main checkout `.superpowers/sdd/2026-11-07-persistent-supervisor/`):
@@ -553,7 +553,7 @@ provider "claude"`.
 
 ### Task 3.4: Live smoke of one headless role — USER GATE
 
-**Files:** Create `docs/superpowers/evidence/2026-11-cli-supervisor-smoke.md` (result only, no secrets).
+**Files:** Create `docs/evidence/2026-11-cli-supervisor-smoke.md` (result only, no secrets).
 
 - [ ] **Step 1:** Ask the user before spending tokens. On yes: run one `claude -p --agent fleet-board:reviewer` through
   `roles.launch` against a throwaway fixture repo with a one-line PR (fake `gh`), and record: the argv, the init
@@ -775,7 +775,7 @@ tail; a stuck refusal surfaces exit 4 and the stuck list).
 
 - [ ] **Step 1:** With the user, pick one small Ready card and confirm the deploy commands and the persona text.
 - [ ] **Step 2:** On the user's go-ahead, run `supervisor start` in that repo and let it take the card Ready → merged →
-  deployed. Record in `docs/superpowers/evidence/2026-11-cli-supervisor-e2e.md`: card, PR, each action with its role,
+  deployed. Record in `docs/evidence/2026-11-cli-supervisor-e2e.md`: card, PR, each action with its role,
   model and token counts (from `supervisor usage --card N --json`), the merge and verification result, the deploy
   outcome, total tokens, and anything that needed a person.
 - [ ] **Step 3:** Fix any defect found, each through its own test-first change, before Task 7.2.
