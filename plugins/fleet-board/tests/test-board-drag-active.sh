@@ -77,6 +77,23 @@ const dt = () => ({dataTransfer: {setData() {}, effectAllowed: ""}});
     const other = tile(2).title || (tile(2).attrs && tile(2).attrs.title) || "";
     assert.equal(other, "");
   });
+  await test("A drop with an active, non-stuck card forced as S.dragging never calls /move", async () => {
+    const {h, moves} = await setup();
+    h.ctx.__test.S.dragging = 1;
+    const col = h.$("board").all().find(x => x.listeners.drop && x.dataset.state === "in_progress");
+    assert.ok(col, "found a drop column");
+    await col.fire("drop", dt());
+    await h.flush();
+    assert.equal(moves.length, 0);
+  });
+  await test("A drop with an active, stuck card forced as S.dragging still calls /move", async () => {
+    const {h, moves} = await setup();
+    h.ctx.__test.S.dragging = 3;
+    const col = h.$("board").all().find(x => x.listeners.drop && x.dataset.state === "in_progress");
+    await col.fire("drop", dt());
+    await h.flush();
+    assert.equal(moves.length, 1);
+  });
   console.log(fails + " failing");
   process.exitCode = fails ? 1 : 0;
 })();
