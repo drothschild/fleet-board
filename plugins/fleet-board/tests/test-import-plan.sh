@@ -352,15 +352,16 @@ cat > "$SB/cards-bare.json" <<'EOF'
   "acceptance":["E works"],"consumes":[],"produces":[]}
 ]}
 EOF
-reset_gh
+seed_five() { printf '%s' '{"number":5,"title":"Existing five","state":"Ready","body":"","blocked_by":[]}' > "$ROOT/.fleet-board/cards/5.json"; echo 6 > "$ROOT/.fleet-board/next"; }
+reset_gh; seed_five
 run_import "" "$SB/cards-bare.json" --dry-run
 check "import-plan.sh --dry-run on a card with depends_on [\"#5\"] exits 0" "$RC" "0"
 check "depends_on [\"#5\"] prints no unknown dependency error" "$(grep -c 'unknown dependency' "$SB/err")" "0"
-reset_gh
+reset_gh; seed_five
 run_import "y" "$SB/cards-bare.json" --status ready
 check "creating a card with depends_on [\"#5\"] exits 0" "$RC" "0"
 check "creating a card with depends_on [\"#5\"] sets its blocked_by to [5]" "$(jq -c .blocked_by "$ROOT/.fleet-board/cards/$(card_of "Depends on five").json" 2>/dev/null)" "[5]"
-check "a card with depends_on [\"#5\"] is created even when listed before cards it does not depend on" "$(cards_created)" "2"
+check "a card with depends_on [\"#5\"] is created even when listed before cards it does not depend on" "$(cards_created)" "3"
 printf '%s' '{"cards":[{"key":"a","title":"A","repo":"x/y","depends_on":["nosuchkey"]}]}' > "$SB/nosuch.json"
 reset_gh
 run_import "" "$SB/nosuch.json" --dry-run
