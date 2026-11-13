@@ -96,6 +96,16 @@ class DriverLeavesCardInReview(unittest.TestCase):
         self.assertEqual(b.card()['state'], 'in_review')
         self.assertEqual(b.note()['pr'], 12)
 
+    def test_start_clears_a_stale_cancelled_marker_so_a_dead_session_stays_in_flight(self):
+        import tempfile
+        base = tempfile.mkdtemp(dir=BASE)
+        b = dc.board_for(base)
+        b.put_note({'cancelled': {'action': 'start', 'at': '2026-01-01T00:00:00Z'}})
+        b.stubs['worktree.sh'] = dc.ok(b.worktree + '\n')
+        dc.begin(b, 'start')
+        self.assertEqual(b.card()['state'], 'in_progress')
+        self.assertFalse(b.note().get('cancelled'), b.note())
+
 
 if __name__ == '__main__':
     unittest.main(argv=[sys.argv[0]], verbosity=1)
