@@ -204,7 +204,16 @@ case "$cmd" in
     bpid=$!
     trap 'got_signal=1' INT TERM HUP
     wait "$bpid"; brc=$?
-    if [ "$got_signal" -eq 0 ]; then trap - INT TERM HUP; exit "$brc"; fi
+    if [ "$got_signal" -eq 0 ]; then
+      # The board server exited on its own (for example the port is in use): drain
+      # a supervisor up started, so no command is left owning it, and keep the code.
+      trap - INT TERM HUP
+      if [ "$owned" -eq 1 ]; then
+        (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --drain >/dev/null 2>&1)
+        while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do sleep 0.2; done
+      fi
+      exit "$brc"
+    fi
     kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
     if [ "$owned" -eq 1 ]; then
       printf 'fleet-board: draining the supervisor; waiting for it to exit (Ctrl-C again to cancel)\n'

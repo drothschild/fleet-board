@@ -580,6 +580,24 @@ else pass "up: a second SIGINT during the drain: exits only once the supervisor 
 if [ "${CRES##* }" -lt 5 ] 2>/dev/null; then pass "up: a second SIGINT during the drain: does not wait for the drain to finish"
 else fail "up: a second SIGINT during the drain: does not wait for the drain to finish" "result: $CRES"; fi
 
+# --- up: a board server that exits early drains the supervisor up started ---
+# The port is already in use, so board-web.sh exits at once with a nonzero code.
+BF_STATE="$TMP/busy-state"; mkdir -p "$BF_STATE"
+BREPO="$TMP/work/repo-busy"; make_repo "$BREPO"
+BPORT="$(free_port)"
+python3 -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(60)' "$BPORT" &
+BUSY_PID=$!
+sleep 0.5
+BOUT="$(cd "$BREPO" && HOME="$HD" UP_STATE="$BF_STATE" bash "$LAUNCHER" up --port "$BPORT" 2>&1)"; rc=$?
+kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null
+check "up with the port in use: exits with the board server's exit code (1)" 1 "$rc"
+check "up with the port in use: asks the supervisor to drain (stop --drain)" "stop --drain" "$(cat "$BF_STATE/stop-calls" 2>/dev/null)"
+(cd "$BREPO" && HOME="$HD" UP_STATE="$BF_STATE" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
+check "up with the port in use: supervisor status reports not running afterwards (exit 1)" 1 "$src"
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
