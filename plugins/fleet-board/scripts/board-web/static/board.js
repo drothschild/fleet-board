@@ -2279,6 +2279,15 @@ function closePlanner() {
   if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
 }
 
+// requestClosePlanner(): the user's close (button, Escape). A running reply would be lost, so ask first.
+function requestClosePlanner() {
+  const pl = S.pl;
+  if (!pl) return;
+  if (pl.busy && plannerHasUserTurn() &&
+      !confirm("A planner reply is still running. If you close now the reply will be lost. Close anyway?")) return;
+  closePlanner();
+}
+
 async function sendPlanner() {
   const pl = S.pl;
   const text = $("pl-input").value.trim();
@@ -2351,7 +2360,7 @@ async function draftPlanner() {
 function bindPlanner() {
   $("pl-send").addEventListener("click", sendPlanner);
   $("pl-draft").addEventListener("click", draftPlanner);
-  $("pl-close").addEventListener("click", closePlanner);
+  $("pl-close").addEventListener("click", requestClosePlanner);
   $("pl-input").addEventListener("keydown", function (e) {
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -2361,7 +2370,7 @@ function bindPlanner() {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.pl && !S.imp && !S.drawer && !e.defaultPrevented) {
       e.preventDefault();
-      closePlanner();
+      requestClosePlanner();
     }
   });
 }
