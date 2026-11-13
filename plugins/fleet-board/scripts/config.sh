@@ -153,6 +153,7 @@ STAGE_DEFAULTS='
                     else null end),
             advisory: (if $s | has("advisory") then $s.advisory else false end),
             max_rounds: (if $s | has("max_rounds") then $s.max_rounds else $root.review.max_rounds end),
+            required_passes: (if $s | has("required_passes") then $s.required_passes else 1 end),
             brief: (if $s | has("brief") then $s.brief else null end),
             timeout: ($s.timeout // 600),
             max_output_tokens: ($s.max_output_tokens // 16000),
@@ -254,6 +255,7 @@ VALIDATION_SCRIPT='
                 (if ($s | has("default")) and ($s.default | type) != "boolean" then "review.stages[\($i)].default must be boolean" else empty end),
                 (if ($s.advisory | type) != "boolean" then "review.stages[\($i)].advisory must be boolean" else empty end),
                 (if ($s.max_rounds | type) != "number" or ($s.max_rounds | floor) != $s.max_rounds or $s.max_rounds <= 0 then "review.stages[\($i)].max_rounds must be a positive integer" else empty end),
+                (if ($s.required_passes | type) != "number" or ($s.required_passes | floor) != $s.required_passes or $s.required_passes < 1 or $s.required_passes > 5 then "review.stages[\($i)].required_passes must be an integer from 1 to 5" else empty end),
                 (if ($s.brief | type) != "null" and ($s.brief | type) != "string" then "review.stages[\($i)].brief must be a string" else empty end)
               end)
          end)

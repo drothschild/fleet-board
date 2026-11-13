@@ -551,12 +551,12 @@ assert_stdout_exact_jq() { # NAME JQ_FILTER EXPECTED (against LAST_OUT)
   if [ "$got" = "$3" ]; then pass "$1"; else fail "$1" "expected: '$3', got: '$got'"; fi
 }
 assert_stdout_exact_jq "stages: defaults filled" '.review.stages[0]' \
-  '{"name":"security","agent":"acme:sec","provider":null,"model":"opus","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":4,"brief":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+  '{"name":"security","agent":"acme:sec","provider":null,"model":"opus","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":4,"required_passes":1,"brief":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 # explicit values kept
 REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: ux, agent: ux-reviewer, model: sonnet, paths: ["src/ui/**"], label: ux-pls, advisory: true, max_rounds: 1, brief: "Check copy." } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stdout_exact_jq "stages: explicit values kept" '.review.stages[0]' \
-  '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"brief":"Check copy.","timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+  '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"required_passes":1,"brief":"Check copy.","timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stdout_exact_jq "stages: empty by default" '.review.stages' '[]'
@@ -573,6 +573,17 @@ invalid_field_case "stage advisory" 'review: { stages: [ { name: s, agent: a, ad
 invalid_field_case "stage default" 'review: { stages: [ { name: s, agent: a, default: yes_please } ] }' "review.stages[0].default must be boolean"
 invalid_field_case "stage max_rounds" 'review: { stages: [ { name: s, agent: a, max_rounds: 0 } ] }' "review.stages[0].max_rounds must be a positive integer"
 invalid_field_case "stage brief" 'review: { stages: [ { name: s, agent: a, brief: 7 } ] }' "review.stages[0].brief must be a string"
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, agent: a } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "stage without required_passes gets 1" '.review.stages[0].required_passes' '1'
+invalid_field_case "stage required_passes 0" 'review: { stages: [ { name: s, agent: a, required_passes: 0 } ] }' "review.stages[0].required_passes must be an integer from 1 to 5"
+invalid_field_case "stage required_passes 6" 'review: { stages: [ { name: s, agent: a, required_passes: 6 } ] }' "review.stages[0].required_passes must be an integer from 1 to 5"
+invalid_field_case "stage required_passes 1.5" 'review: { stages: [ { name: s, agent: a, required_passes: 1.5 } ] }' "review.stages[0].required_passes must be an integer from 1 to 5"
+invalid_field_case "stage required_passes string" 'review: { stages: [ { name: s, agent: a, required_passes: many } ] }' "review.stages[0].required_passes must be an integer from 1 to 5"
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, agent: a, required_passes: 5 } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stage required_passes 5 is valid" 0
+assert_stdout_exact_jq "stage required_passes 5 kept" '.review.stages[0].required_passes' '5'
 # (board is already a key in invalid_field_case's base, so this one builds its own repo)
 REPO="$(printf 'board:\n  repo: a/b\n  states: { review_x: "X Review" }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
@@ -593,7 +604,7 @@ assert_exit "provider stage: valid" 0
 assert_stdout_exact_jq "provider stage merges preset" '.providers.openai' \
   '{"base_url":"https://api.openai.com/v1","api_key_env":"OPENAI_API_KEY","max_tokens_param":"max_completion_tokens"}'
 assert_stdout_exact_jq "provider stage: filled stage object" '.review.stages[0]' \
-  '{"name":"security","agent":null,"provider":"openai","model":"gpt-test","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":3,"brief":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+  '{"name":"security","agent":null,"provider":"openai","model":"gpt-test","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":3,"required_passes":1,"brief":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 SP='{ name: s, provider: PROV, model: m, price: { input: 1, output: 2 } }'
 for prov in gemini openrouter ollama; do
   REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ %s ] }\n' "${SP/PROV/$prov}" | make_inline_repo)"
