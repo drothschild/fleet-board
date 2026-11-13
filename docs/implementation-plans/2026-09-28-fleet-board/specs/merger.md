@@ -10,7 +10,7 @@ This agent file is hand-written by the owner's decision of 2026-11-11; no isolat
 
 - **Card number, title and PR number.**
 - **Mode:** `after_merge` or `refusal`.
-- **Merged head** (`after_merge`) or **refusal** `{pr, head, reason, required_check?}` (`refusal`).
+- **PR head SHA, for reference only** (`after_merge`; under a squash merge it is not an ancestor of the default branch, so never run an ancestry check against it) or **refusal** `{pr, head, reason, required_check?}` (`refusal`).
 - **Persona text**, resolved from the repository root. `merge.persona` null or unset means `.fleet-board/merger.md` if that file exists, else the plugin default (`scripts/supervisor/defaults/merger-persona.md`). A `merge.persona` path that is set but does not exist is an error: the supervisor reports it (`attention`, reason `merge.persona not found: <path>`), never a silent fallback. `merge.persona_append` is appended after whichever persona was chosen.
 - The driver's modes `merged` and `refused` map to the report modes `after_merge` and `refusal`.
 - **Config JSON** and the **scripts directory** (`board-comment.sh`, `parse-report.sh`).
