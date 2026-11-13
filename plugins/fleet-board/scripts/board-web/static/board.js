@@ -932,6 +932,15 @@ function showDrawer() {
   $("top").inert = true;
 }
 
+// requestCloseDrawer(): the user's close (button, backdrop, Escape). Unsaved
+// edits ask first; a save in flight finishes on its own, so it does not.
+function requestCloseDrawer() {
+  const d = S.drawer;
+  if (d && !d.busy && d.n !== null && isDirty() &&
+      !confirm("Discard your unsaved changes to #" + d.n + "?")) return;
+  closeDrawer();
+}
+
 // closeDrawer(): hides the drawer and returns focus to what opened it.
 function closeDrawer() {
   const d = S.drawer;
@@ -1392,10 +1401,15 @@ function formatTime(iso) {
 }
 
 // noteCommentIndex(card): the index in card.comments of the manager note the
-// server trusts (the last marker comment whose body matches manager_note), or -1.
+// server trusts: the comment whose id is manager_note_id (older servers send no
+// id: the last marker comment whose body matches manager_note), or -1.
 function noteCommentIndex(card) {
   const list = card.comments || [];
   if (card.manager_note == null) return -1;
+  if (card.manager_note_id != null) {
+    for (let i = 0; i < list.length; i++) if (list[i] && list[i].id === card.manager_note_id) return i;
+    return -1;
+  }
   for (let i = list.length - 1; i >= 0; i--) {
     const b = list[i] && list[i].body;
     if (typeof b !== "string" || b.indexOf(NOTE_MARKER) !== 0) continue;
@@ -1541,9 +1555,14 @@ async function saveDrawer() {
       openDrawer(r.data.number);
       return;
     }
+    const made = /^created card #(\d+) in (\S+?), but the move to (\S+) failed: ([\s\S]*)$/.exec(errorText(r));
+    if (made) {
+      showToast("Created #" + made[1] + " in " + stateName(made[2]) + ". The move to " +
+        stateName(made[3]) + " was refused: " + made[4], "error");
+      openDrawer(Number(made[1]));
+      return;
+    }
     showToast("Card not created: " + errorText(r), "error");
-    const made = /created card #(\d+)/.exec(errorText(r));
-    if (made) openDrawer(Number(made[1]));
     return;
   }
 
@@ -1557,19 +1576,24 @@ async function saveDrawer() {
   if (e.pr_url !== d.base.pr_url) patch.pr_url = e.pr_url;
   if (Object.keys(patch).length) {
     const r = await writeApi("PATCH", "/api/cards/" + n, patch);
-    if (S.drawer !== d) return;
     if (!r.ok) {
-      setDrawerBusy(false);
+      if (S.drawer === d) setDrawerBusy(false);
+      fetchBoard(true);
       showToast("#" + n + " not saved: " + errorText(r), "error");
       return;
     }
   }
+  // The drawer may have been closed while a write was in flight: the rest of
+  // the save and the board refresh still happen, only the drawer is left alone.
   if (e.state !== d.base.state) {
     const r = await writeApi("POST", "/api/cards/" + n + "/move", { state: e.state });
-    if (S.drawer !== d) return;
     if (!r.ok) {
       showToast("#" + n + " stayed in " + stateName(d.base.state) + ": " + errorText(r), "error");
     }
+  }
+  if (S.drawer !== d) {
+    fetchBoard(true);
+    return;
   }
   const card = await fetchCard(n);
   fetchBoard(true);
@@ -1630,8 +1654,8 @@ function syncDrawer() {
 }
 
 function bindDrawer() {
-  $("dr-close").addEventListener("click", closeDrawer);
-  $("drawer-dim").addEventListener("click", closeDrawer);
+  $("dr-close").addEventListener("click", requestCloseDrawer);
+  $("drawer-dim").addEventListener("click", requestCloseDrawer);
   $("dr-save").addEventListener("click", saveDrawer);
   $("dr-comment-btn").addEventListener("click", submitComment);
   $("dr-title").addEventListener("input", updateDirty);
@@ -1693,7 +1717,7 @@ function bindDrawer() {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.drawer && !e.defaultPrevented) {
       e.preventDefault();
-      closeDrawer();
+      requestCloseDrawer();
     }
   });
 }
@@ -1815,10 +1839,13 @@ async function pollImport(id) {
       showImportFailed(errorText(r));
       return;
     }
-    // A blip: keep the last progress and ask again.
+    // A blip: keep the last progress and ask again; say so after three misses.
+    imp.misses = (imp.misses || 0) + 1;
+    if (imp.misses >= 3) setImportStatus("board server not answering");
     imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
     return;
   }
+  imp.misses = 0;
   const d = r.data;
   const elapsed = Number.isInteger(d.elapsed_s) ? d.elapsed_s : 0;
   if (d.state === "running") {
