@@ -540,12 +540,48 @@ assert_jq "pending-followups-hold-card: dispatchable" '.dispatchable' 'false'
 plan pending-followups-none
 assert_jq "pending-followups-hold-card: null pending -> mark_ready" "$(card 12 action)" '"mark_ready"'
 assert_jq "pending-followups-hold-card: with a PR, no wait-for-PR warning" '[.warnings[] | select(contains("wait for a PR"))] | length' 0
-# Pending follow-ups with no PR anywhere (pending.pr, note.pr, the plan's own
-# lookup) cannot be filed: the card is not held; it falls through with a warning
+# A blocked card with pending follow-ups and no PR anywhere (pending.pr, note.pr,
+# the plan's own lookup) files them without a PR: file_pending, no warning
 plan pending-followups-blocked
-assert_jq "pending-followups-no-pr: blocked with merged blocker -> unblock" "$(card 20 action)" '"unblock"'
-assert_jq "pending-followups-no-pr: blocked warning" '.warnings' '["pending follow-ups on #20 wait for a PR"]'
-assert_jq "pending-followups-no-pr: blocked dispatchable" '.dispatchable' 'true'
+assert_jq "pending-followups-no-pr: blocked -> file_pending" "$(card 20 action)" '"file_pending"'
+assert_jq "pending-followups-no-pr: blocked has no wait-for-PR warning" '.warnings' '[]'
+assert_jq "pending-followups-no-pr: blocked dispatchable" '.dispatchable' 'false'
+# Other columns with no PR still wait
+# A done card that still holds pending items warns, naming each title.
+# done_case <dir-name> <n> <state> <titles json>: writes a routes file (absolute
+# paths, in a temp dir) for one card in <state> holding those pending items
+done_case() {
+  local d n st t body c
+  d="$(mktemp -d)"; CLEANUP_DIRS+=("$d"); n="$2"; st="$3"; t="$4"
+  jq -nc --argjson n "$n" --arg st "$st" '{number:$n,title:"Old card",html_url:"u",body:"Done.\n\n## Acceptance\n- it works\n",labels:[{name:("fleet:"+$st)}]}' > "$d/issue.json"
+  jq -nc --argjson n "$n" --arg st "$st" '[{number:$n,title:"Old card",url:"u",labels:[{name:("fleet:"+$st)}]}]' > "$d/list.json"
+  body="$(printf '<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: %s\n\n```json\n%s\n```\n' "$st" \
+    "$(jq -nc --arg st "$st" --argjson t "$t" '{state:$st,branch:"x",pr:null,round:null,pending_followups:{out_of_scope:$t,bugs:[],pr:null}}')")"
+  jq -nc --arg b "$body" '[{id:555,user:{login:"fleet-bot"},body:$b,created_at:"2026-09-28T00:01:00Z"}]' > "$d/comments.json"
+  {
+    printf 'api user\t0\t%s/labels/user.json\n' "$TICK/.."
+    printf 'api repos/acme/toy/issues/%s\t0\t%s/issue.json\n' "$n" "$d"
+    printf 'api --paginate repos/acme/toy/issues/%s/comments\t0\t%s/comments.json\n' "$n" "$d"
+    for c in ready in_progress in_review blocked; do printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s/common/empty.json\n' "$c" "$TICK"; done
+    printf 'issue list --repo acme/toy --label fleet:%s *\t0\t%s/list.json\n' "$st" "$d"
+  } > "$d/routes"
+  DONE_CASE_DIR="$d"
+}
+plan_routes() {
+  # like plan, with the routes file at "$1/routes"
+  setup_case ready-start
+  FAKE_GH_ROUTES="$1/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+done_case pending-followups-done 30 done '[{"title":"extract math utils"},{"title":"add CLI help"}]'
+plan_routes "$DONE_CASE_DIR"
+assert_exit "pending-followups-done: exit" 0
+assert_jq "pending-followups-done: warning names each title" '[.warnings[] | select(contains("#30"))]' \
+  '["pending follow-ups on #30 were never filed (card is done): extract math utils; add CLI help"]'
+done_case pending-followups-wont-do 31 wont_do '[{"title":"retry flaky test"}]'
+plan_routes "$DONE_CASE_DIR"
+assert_jq "pending-followups-wont-do: warning names the title" '[.warnings[] | select(contains("#31"))]' \
+  '["pending follow-ups on #31 were never filed (card is wont_do): retry flaky test"]'
 plan pending-followups-no-pr-in-progress
 assert_exit "pending-followups-no-pr: in_progress exit" 0
 assert_jq "pending-followups-no-pr: in_progress -> continue_implementor" "$(card 12 action)" '"continue_implementor"'
