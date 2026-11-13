@@ -8,7 +8,8 @@
 #   review-stages.sh next [--labels <json>] [--after <state>] [--done <json>] <card-n>
 #   review-stages.sh setup
 #
-# route: a stage applies when the card carries its label, or when a file the
+# route: a stage applies when the card carries its label, when its default key
+# is true (it routes every card), or when a file the
 # PR changes matches one of its paths globs (same rule as needs-human-qa.sh).
 # Adds each missing routing label (never removes one) and prints the JSON list
 # of stage names whose label the card carries afterwards. When gh lists fewer
@@ -125,7 +126,8 @@ case "$MODE" in
       HAVE="$(jq -r --arg l "$LABEL" 'index($l) != null' <<<"$LABELS")"
       # route's truncation rule is wider than match's: a truncated list routes
       # every stage, a label-only one too
-      if [ "$HAVE" = true ] || [ "$TRUNCATED" = true ] || paths_match "$i"; then
+      DEFAULT="$(jq -r ".[$i].default // false" <<<"$STAGES")"
+      if [ "$HAVE" = true ] || [ "$TRUNCATED" = true ] || [ "$DEFAULT" = true ] || paths_match "$i"; then
         if [ "$HAVE" != true ]; then
           # the card file holds the label
           bash "$FB_SCRIPTS/adapters/local/label.sh" "$CARD" add "$LABEL" >/dev/null \
