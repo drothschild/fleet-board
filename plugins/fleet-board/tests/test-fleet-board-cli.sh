@@ -12,7 +12,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 SCRIPTS="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 LAUNCHER="$SCRIPTS/fleet-board"
 INSTALL="$SCRIPTS/install-cli.sh"
-unset FLEET_BOARD_PLUGIN_ROOT FLEET_BOARD_BIN_DIR || true
+unset FLEET_BOARD_PLUGIN_ROOT FLEET_BOARD_BIN_DIR CLAUDE_CONFIG_DIR FLEET_BOARD_LAUNCHER_HANDOFF || true
 
 PASS=0
 FAIL=0
@@ -276,12 +276,26 @@ awk '{print} /^unset CDPATH$/ && !d {print "printf \"handoff %s %s\\n\" \"${FLEE
 H9="$TMP/home-9"
 make_home "$H9" "user||$R2|0.27.1" "user||$RH|0.29.0"
 out="$(cd "$REPO_A" && HOME="$H9" "$BIN/fleet-board" board --port 9 2>&1)"
-check "handoff: an old copy runs the plugin's launcher once, with the root passed through" \
-  "handoff 1 $RH
+check "handoff: an old copy runs the plugin's launcher once, with the root passed privately" \
+  "handoff $RH 
 board-web.sh 0.29.0 --repo $REPO_A --port 9" "$out"
-out="$(cd "$REPO_A" && HOME="$H9" FLEET_BOARD_LAUNCHER_HANDOFF=1 "$BIN/fleet-board" board 2>&1)"
-check "handoff: never repeats once FLEET_BOARD_LAUNCHER_HANDOFF is set" \
+out="$(cd "$REPO_A" && HOME="$H9" FLEET_BOARD_LAUNCHER_HANDOFF="$RH" "$BIN/fleet-board" board 2>&1)"
+check "handoff: never repeats once FLEET_BOARD_LAUNCHER_HANDOFF names a root" \
   "board-web.sh 0.29.0 --repo $REPO_A" "$out"
+
+# Nothing the launcher starts inherits the handoff: board-web.sh and supervisor.sh
+# (and every agent session a supervisor starts) see neither variable.
+RL="$TMP/roots/0.31.0"; mkdir -p "$RL/scripts"
+for s in board-web.sh supervisor.sh; do
+  printf '#!/usr/bin/env bash\nprintf "%s env %%s %%s\\n" "${FLEET_BOARD_LAUNCHER_HANDOFF:-none}" "${FLEET_BOARD_PLUGIN_ROOT:-none}"\n' "$s" > "$RL/scripts/$s"
+done
+{ cat "$LAUNCHER"; printf '# a newer launcher\n'; } > "$RL/scripts/fleet-board"
+H10="$TMP/home-10"; make_home "$H10" "user||$RL|0.31.0"
+out="$(cd "$REPO_A" && HOME="$H10" "$BIN/fleet-board" board 2>&1)"
+check "handoff: board-web.sh inherits neither FLEET_BOARD_LAUNCHER_HANDOFF nor FLEET_BOARD_PLUGIN_ROOT" \
+  "board-web.sh env none none" "$out"
+out="$(cd "$REPO_A" && HOME="$H10" "$BIN/fleet-board" supervisor status 2>&1)"
+check "handoff: supervisor.sh inherits neither variable" "supervisor.sh env none none" "$out"
 cp "$LAUNCHER" "$R2/scripts/fleet-board"
 out="$(cd "$REPO_A" && HOME="$H" "$BIN/fleet-board" board 2>&1)"
 check "handoff: none when the plugin's launcher is the same file" "board-web.sh 0.27.1 --repo $REPO_A" "$out"

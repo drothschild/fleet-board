@@ -253,7 +253,7 @@ PATH="$OLDPATH"
 assert_exit "no-yq: exit 0" 0
 # init also prints where it installed the fleet-board command, under a random temp
 # directory that can itself contain "yq": leave those path lines out of the check.
-NOYQ_ERR="$(printf '%s\n' "$LAST_ERR" | grep -v -e '^installed: ' -e 'is not on your PATH' -e '^  export PATH=')"
+NOYQ_ERR="$(printf '%s\n' "$LAST_ERR" | grep -v -e '^installed: /' -e '^/.* is not on your PATH\. Add this line' -e '^  export PATH="')"
 case "$NOYQ_ERR" in
   *yq*) fail "no-yq: yq never named" "stderr names yq: $NOYQ_ERR" ;;
   *) pass "no-yq: yq never named" ;;
