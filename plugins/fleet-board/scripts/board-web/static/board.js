@@ -635,9 +635,12 @@ function renderCard(c, repo) {
   const li = el("li", "card");
   li.dataset.n = String(n);
   li.tabIndex = 0;
-  li.draggable = true;
   if (c.active) li.classList.add("active");
   const stuck = c.stuck && typeof c.stuck === "object" ? c.stuck : null;
+  // an agent is working on it: no drag, unless it is stuck so a person can free it
+  const locked = !!c.active && !stuck;
+  li.draggable = !locked;
+  if (locked) li.title = "Can't be moved while an agent is working on it";
   if (stuck) li.classList.add("card--stuck");
   if (S.pendingMove === n) li.classList.add("pending");
 
@@ -713,6 +716,7 @@ function renderCard(c, repo) {
     openCard(n);
   });
   li.addEventListener("dragstart", function (e) {
+    if (locked) { e.preventDefault(); return; }
     S.dragging = n;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", "#" + n);
@@ -738,7 +742,8 @@ function bindDrop(col, key) {
   col.addEventListener("drop", function (e) {
     e.preventDefault();
     const n = S.dragging;
-    const card = n !== null && S.board && S.board.cards.find(function (c) { return c.number === n; });
+    let card = n !== null && S.board && S.board.cards.find(function (c) { return c.number === n; });
+    if (card && card.active && !(card.stuck && typeof card.stuck === "object")) card = null;
     // only a real move fetches a fresher board; otherwise keep the held poll
     if (card && card.state !== key) S.pendingBoard = null;
     endDrag();
