@@ -291,7 +291,7 @@ finish() {
       [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) printf 'resets at %s\n' "$reset" >&2 ;;
     esac
   fi
-  rm -f "$ERR_FILE" "${CARDS_FILE:-}" "${NOTE_ERR:-}" "${DEPS_FILE:-}" "${LINT_FILE:-}" "${SCOPE_FILE:-}"
+  rm -f "$ERR_FILE" "${CARDS_FILE:-}" "${NOTE_ERR:-}" "${DEPS_FILE:-}" "${LINT_FILE:-}" "${SCOPE_FILE:-}" "${VERSION_FILE:-}"
   exit "$rc"
 }
 trap finish EXIT
@@ -760,6 +760,77 @@ if [ "$SETTLE" != true ] && { [ "$CANDIDATES" = true ] || jq -es 'any(.[]; .stat
   done <<<"$(jq -c 'select(.state == "in_progress" or .state == "in_review" or .state == "merging" or .state == "human_qa" or .stage != null)' "$CARDS_FILE")"
 fi
 
+# supervisor.version_files: for each open PR in progress, in review or merging,
+# the version files whose "version" keys the PR's own non-merge commits changed
+# to a value not strictly above origin/<baseRefName> (version-lib.sh, the rule
+# update-branch.sh uses). A card whose base, base ref or head commit cannot be
+# read is held ("version check needs <ref>"), never read as current.
+# Cost: one `gh pr view --json baseRefName` per such PR, and at most one
+# `git fetch origin <bases> [refs/pull/<pr>/head...]` per 60 s, stamped in
+# <git common dir>/fleet-board-version-fetch. A failed fetch does not fail the
+# plan: it goes on with the local refs. Then local git log and git show per file.
+VERSION_FILE="$(mktemp)" || fb_die 1 "cannot create version input"
+VFILES="$(jq -c '.supervisor.version_files // []' <<<"$FLEET_CFG")" || fb_die 1 "cannot read supervisor.version_files"
+if [ "$VFILES" != '[]' ]; then
+  . "$FLEET_SCRIPTS/version-lib.sh"
+  VL_JQ="$(cat "$FLEET_SCRIPTS/path-glob.jq" "$FLEET_SCRIPTS/versions.jq")" || fb_die 1 "cannot read path-glob.jq or versions.jq"
+  VROWS="$(jq -c 'select((.state == "in_progress" or .state == "in_review" or .state == "merging" or .stage != null)
+      and .pr != null and .pr_info.state == "OPEN" and (.pr_info.headRefOid | type) == "string")
+      | {number, pr, head: .pr_info.headRefOid}' "$CARDS_FILE")" || fb_die 1 "cannot read the plan input"
+  if [ -n "$VROWS" ]; then
+    VTMP="$(mktemp -d)" || fb_die 1 "cannot create version scratch"
+    : > "$VTMP/rows"
+    VBASES=""; VPULLS=""
+    while IFS= read -r vrow; do
+      [ -n "$vrow" ] || continue
+      vn="$(jq -r .number <<<"$vrow")"; vpr="$(jq -r .pr <<<"$vrow")"; vhead="$(jq -r .head <<<"$vrow")"
+      vbase="$(gh pr view "$vpr" --repo "$FLEET_REPO" --json baseRefName --jq .baseRefName 2>/dev/null)" || vbase=""
+      case "$vbase" in ''|*[!A-Za-z0-9/._-]*|-*) vbase="" ;; esac
+      case "$vhead" in ''|*[!0-9a-f]*) vhead="" ;; esac
+      printf '%s %s %s %s\n' "$vn" "$vpr" "${vhead:--}" "${vbase:--}" >> "$VTMP/rows"
+      if [ -n "$vbase" ]; then case " $VBASES " in *" $vbase "*) ;; *) VBASES="$VBASES $vbase" ;; esac; fi
+      if [ -n "$vhead" ] && ! git cat-file -e "$vhead^{commit}" 2>/dev/null; then VPULLS="$VPULLS refs/pull/$vpr/head"; fi
+    done <<<"$VROWS"
+    # At most one fetch per 60 s; a failed fetch leaves the local refs in use
+    VSTAMP="$(fb_git_common_dir .)/fleet-board-version-fetch"
+    vnow="$(date +%s)"; vlast="$(cat "$VSTAMP" 2>/dev/null)" || vlast=0
+    case "$vlast" in ''|*[!0-9]*) vlast=0 ;; esac
+    if [ -n "$VBASES$VPULLS" ] && [ $((vnow - vlast)) -ge 60 ]; then
+      printf '%s\n' "$vnow" > "$VSTAMP" 2>/dev/null || true
+      # shellcheck disable=SC2086 # the lists are validated words
+      [ -z "$VBASES" ] || git fetch -q origin $VBASES >/dev/null 2>&1 || true
+      # A missing pull ref fails its own fetch only, never the base fetch
+      [ -z "$VPULLS" ] || git fetch -q origin $VPULLS >/dev/null 2>&1 || true
+    fi
+    while read -r vn vpr vhead vbase; do
+      vneeds=""; vstale='[]'
+      if [ "$vbase" = - ]; then vneeds="the base branch of PR #$vpr"
+      elif ! git rev-parse -q --verify "refs/remotes/origin/$vbase^{commit}" >/dev/null 2>&1; then vneeds="origin/$vbase"
+      elif [ "$vhead" = - ] || ! git cat-file -e "$vhead^{commit}" 2>/dev/null; then vneeds="the head commit of PR #$vpr"
+      elif ! vlist="$(vl_files . "origin/$vbase" "$vhead" 2>/dev/null)"; then vneeds="the history of PR #$vpr"
+      else
+        while IFS= read -r vf; do
+          [ -n "$vf" ] || continue
+          case "$vf" in *.json) ;; *) continue ;; esac
+          [ "$(jq -rn --arg p "$vf" --argjson g "$VFILES" "$VL_JQ"' $p | pg_match($g)')" = true ] || continue
+          if [ "$(git cat-file -t "$vhead:$vf" 2>/dev/null)" != blob ] \
+             || [ "$(git ls-tree "$vhead" -- "$vf" 2>/dev/null | cut -c1-6)" = 120000 ]; then
+            vneeds="$vf at the head of PR #$vpr (the branch changed it, and it is missing)"; break
+          fi
+          if ! vch="$(vl_changes . "origin/$vbase" "$vhead" "$vf" "$VTMP" 2>/dev/null)"; then vneeds="the history of $vf"; break; fi
+          [ -n "$vch" ] && [ "$vch" != '[]' ] || continue
+          vstale="$(jq -c --arg f "$vf" '. + [$f]' <<<"$vstale")"
+        done <<<"$vlist"
+      fi
+      jq -cn --argjson n "$vn" --argjson stale "$vstale" --arg needs "$vneeds" \
+        '{number: $n, stale: $stale, needs: (if $needs == "" then null else $needs end)}' >> "$VERSION_FILE" \
+        || fb_die 1 "cannot record version input"
+    done < "$VTMP/rows"
+    rm -rf "$VTMP"
+  fi
+fi
+PATH_GLOB_JQ="$(cat "$FLEET_SCRIPTS/path-glob.jq")" || fb_die 1 "cannot read path-glob.jq"
+
 # Provider stages whose API key variable is unset or empty (checked here, so
 # jq never reads the environment); a provider with a null api_key_env is skipped
 UNSET='[]'
@@ -775,7 +846,7 @@ done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
 TODAY="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
 IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot read ignore-checks.jq"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ"'
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERSION_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ$PATH_GLOB_JQ"'
   # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
   def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
   def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
@@ -810,6 +881,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   def reset_cmd($n): "bash \($note_sh | if test("\\A[A-Za-z0-9/._+:@-]+\\z") then . else @sh end) reset-failures \($n)";
 
   $cfg.review.max_rounds as $max
+  # supervisor.scope_ignore: dropped from both sides of every overlap check (pg_drop,
+  # the same rule as scopes.drop_ignored: a scope wholly ignored is kept)
+  | ($cfg.supervisor.scope_ignore // []) as $ign
   | $cfg.models as $m
   | ($m.reviewer | if type == "object" then .model else . end) as $reviewer_model
 
@@ -957,14 +1031,18 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
 
   map(. as $c | (first($actual_scope[] | select(.number == $c.number)) // {paths:[],unknown:false}) as $actual
     | .scope_paths = ((.scope_paths // []) + $actual.paths | unique)
-    | .scope_unknown = $actual.unknown) as $all
+    | .scope_unknown = $actual.unknown
+    # version files whose PR head version is not above the base (supervisor.version_files)
+    | (first($version_scope[] | select(.number == $c.number)) // {stale: [], needs: null}) as $vs
+    | .version_stale = ($vs.stale // []) | .version_needs = $vs.needs) as $all
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick
   | [$all[] | select(.state == "in_progress" or is_review(.) or is_merging(.))] as $open
   | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
   | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
-  | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge") | .number] | min) as $merger
+  | ([$all[] | select(decide(.; (.note // {}); ((.note // {}).round // 0)).action == "merge" and (.version_stale | length) == 0 and .version_needs == null)
+      | .number] | min) as $merger
   | [ .[] | . as $c | ($c.note // {}) as $n
     | ($n.round // 0) as $round
     # Models (AC6.2): from escalate_after_rounds on, implementor and fixer use
@@ -979,11 +1057,15 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
     # A ready card that would start waits when an open card names one of its Scope paths
     | (if $d00.action == "start"
         then (first($open[] | select(.number != $c.number) | . as $o
-                | overlap(($c.scope_paths // []); ($o.scope_paths // [])) as $p
+                | overlap(($c.scope_paths // [] | pg_drop($ign)); ($o.scope_paths // [] | pg_drop($ign))) as $p
                 | select($p != null) | {num: $o.number, path: $p}) // null)
         else null end) as $ov
     | (if $d00.action == "start" and $unknown_scope != null then act("wait"; "Scope unknown for #\($unknown_scope.number): PR file lookup failed or incomplete")
        elif $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
+       elif ($d00.action == "review" or $d00.action == "review_stage" or $d00.action == "merge") and $c.version_needs != null
+         then act("wait"; "version check needs \($c.version_needs)")
+       elif ($d00.action == "review" or $d00.action == "review_stage" or $d00.action == "merge") and ($c.version_stale | length) > 0
+         then act("update_branch"; "version not above base: \($c.version_stale | join(", "))")
        elif $d00.action == "merge" and $verify_pending
          then act("wait"; "successful main verification required before another merge")
        elif $d00.action == "merge" and $merger != $c.number
@@ -1038,7 +1120,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --argjson settle "$SETTLE" --arg
   # Reserve only starts that actually survived every gate. A waiting card
   # contributes no reservation, so it cannot unnecessarily serialize others.
   | (if $candidates then {cards:$planned} else reduce ($planned | sort_by(.number)[]) as $card ({cards:[], reserved:[]};
-      (first($all[] | select(.number == $card.number)).scope_paths // []) as $paths
+      (first($all[] | select(.number == $card.number)).scope_paths // [] | pg_drop($ign)) as $paths
       | (if $card.action == "start" then
           first(.reserved[] | . as $r | overlap($paths; $r.paths) as $p
             | select($p != null) | {number:$r.number,path:$p}) // null
