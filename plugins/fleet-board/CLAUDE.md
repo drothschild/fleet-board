@@ -79,10 +79,12 @@ no file here. The gate's residual bypasses and false positives are listed in the
   removed in 0.27.0 (run beside a supervisor, it wrote the board outside the gate and the run lock).
   Reviewed heads only: an in_review PR whose head moved past `last_review.sha` plans
   `review`, not `mark_ready`, `to_human_qa` or `merge`, unless every commit since
-  is a merge of the base whose tree equals the `git merge-tree` result for its parents,
-  or, with `supervisor.version_files` set, a version-only change (a single-parent commit
-  that changes only whole-line `"version"` values in version files, or a merge of the
-  base that differs from the automatic merge only that way; the files stay valid JSON)
+  is a merge of the base (second parent on `origin/HEAD`, else `origin/main`) whose tree
+  equals the `git merge-tree` result for its parents, or, with `supervisor.version_files`
+  set, a version-only change: a single-parent commit that changes only whole-line
+  `"version"` values in version files, or a merge of the base that differs from the
+  automatic merge only that way. Only the top-level `version` and `plugins[].version` may
+  change, each to semver strictly above the old value (a merge: one side's, or above both)
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
 - **Scope reservations.** A normal plan supplements open cards' declared Scope paths

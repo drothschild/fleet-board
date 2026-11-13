@@ -73,7 +73,7 @@ setv() { sed -i.bak -E 's/^([[:blank:]]*"version"[[:blank:]]*:[[:blank:]]*)"[^"]
 drift() {
   local h; h="$(git rev-parse "${1:-HEAD}")"
   git push -q origin main 2>/dev/null; git fetch -q origin 2>/dev/null
-  PATH="$BIN:$PATH" bash "$SCRIPT" "$R" "$h" 2>/dev/null
+  PATH="$BIN:$PATH" ${RD_BASH:-bash} "$SCRIPT" "$R" "$h" 2>/dev/null
 }
 
 make_gh
