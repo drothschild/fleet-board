@@ -512,6 +512,7 @@ class Supervisor:
             return
         if config is None or self.state.mode != 'running':
             return
+        self.state.set_global_cap(self._limit('concurrency', 6))
         now = self.clock()
         if self._hold_until is not None:
             if now < self._hold_until:
@@ -562,7 +563,9 @@ class Supervisor:
         self.last_cycle = {'admitted': [r.get('number') for r in result['admitted']],
                            'waits': result['waits'] + limit_waits, 'attention': result['attention'],
                            'ignored': result['ignored']}
-        self.state.set_holds(self._holds(result, limit_waits))
+        holds = self._holds(result, limit_waits)
+        self.state.set_holds(holds)
+        self.state.set_queue(len(result['admitted']), len(holds))
         attention = sorted((a.get('number'), a.get('reason')) for a in result['attention'])
         if attention != self._last_attention:
             self._last_attention = attention
