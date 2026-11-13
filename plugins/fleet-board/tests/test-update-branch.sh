@@ -493,7 +493,7 @@ RG_SCRIPTS=""
 real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging to $RG/log
   RG_SCRIPTS="$(mktemp -d)"; CLEANUP_DIRS+=("$RG_SCRIPTS")
   cp -R "$SCRIPT_DIR/../scripts/." "$RG_SCRIPTS/"
-  printf '#!/usr/bin/env bash\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\n' > "$RG_SCRIPTS/note.sh"
+  printf '#!/usr/bin/env bash\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
   printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
   mkdir -p "$RG_SCRIPTS/.bin"
   printf '#!/usr/bin/env bash\necho main\n' > "$RG_SCRIPTS/.bin/gh"
@@ -644,6 +644,71 @@ real_run
 assert_exit "real git lingering merge: exit 0" 0
 assert_eq "real git lingering merge: plugin a raised above base" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.2
 assert_eq "real git lingering merge: the remote equals local" "$(rg_remote)" "$(rg_local)"
+
+# G1: the fixer merged main and took main's side, hiding the branch's own bump from a
+# simplified history; the head equals the base and is still raised
+real_setup
+rg_branch 0.1.1 1.0.0
+rg_main 0.2.0 1.0.0
+git -C "$RG/wt" fetch -q origin
+git -C "$RG/wt" merge -q --no-edit origin/main >/dev/null 2>&1
+git -C "$RG/wt" checkout -q --theirs -- plugins/a/.claude-plugin/plugin.json .claude-plugin/marketplace.json
+git -C "$RG/wt" add -A; git -C "$RG/wt" commit -q --no-edit; git -C "$RG/wt" push -q origin fleet/12-x
+real_run
+assert_exit "real git take-theirs merge: exit 0" 0
+assert_eq "real git take-theirs merge: plugin a raised above base" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.2.1
+assert_eq "real git take-theirs merge: marketplace a raised too" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.2.1
+assert_eq "real git take-theirs merge: the remote equals local" "$(rg_remote)" "$(rg_local)"
+
+# A bump the branch reverted is not raised
+real_setup
+rg_branch 0.1.1 1.0.0
+git -C "$RG/wt" revert -q --no-edit HEAD >/dev/null; git -C "$RG/wt" push -q origin fleet/12-x
+rg_main_other "later"
+real_run
+assert_exit "real git reverted bump: exit 0" 0
+assert_eq "real git reverted bump: version left at the base's" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.0
+assert_eq "real git reverted bump: marketplace left too" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.1.0
+
+# A bump cherry-picked from the base is not the branch's own: not raised
+real_setup
+rg_main 0.1.1 1.0.0
+echo "branch work" > "$RG/wt/src/x.txt"; git -C "$RG/wt" commit -q -am "branch work"
+git -C "$RG/wt" fetch -q origin; git -C "$RG/wt" cherry-pick origin/main >/dev/null; git -C "$RG/wt" push -q origin fleet/12-x
+assert_eq "real git cherry-picked bump: the pick is a new commit" "$(git -C "$RG/wt" merge-base --is-ancestor origin/main HEAD && echo ancestor || echo picked)" picked
+rg_main_other "later"
+real_run
+assert_exit "real git cherry-picked bump: exit 0" 0
+assert_eq "real git cherry-picked bump: version left at the base's" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.1
+
+# A version file the branch touched but removed: fail closed, nothing pushed
+real_setup
+git -C "$RG/wt" rm -q plugins/b/.claude-plugin/plugin.json; git -C "$RG/wt" commit -q -m "drop b"; git -C "$RG/wt" push -q origin fleet/12-x
+rg_main_other "later"
+REMOTE_SHA="$(rg_remote)"
+real_run
+assert_exit "real git missing version file: exit 1" 1
+assert_eq "real git missing version file: the error names it" "$(printf '%s\n' "$LAST_ERR" | grep -c 'plugins/b/.claude-plugin/plugin.json.*missing')" 1
+assert_eq "real git missing version file: nothing pushed" "$(rg_remote)" "$REMOTE_SHA"
+
+# G2: a failure after a verified push does not rewind the branch
+real_setup
+rg_main 0.1.0 1.0.0 "main change"
+rg_branch 0.1.1 1.0.0
+RG_NOTE_RC=1; export RG_NOTE_RC
+real_run
+assert_exit "real git note fails after the push: exit 1" 1
+assert_eq "real git note fails after the push: local stays equal to the remote" "$(rg_local)" "$(rg_remote)"
+assert_eq "real git note fails after the push: the merge was pushed" "$(git -C "$RG/wt" log -1 --format=%P | wc -w | tr -d ' ')" 2
+RG_NOTE_RC=0
+# a later commit date: a re-made merge cannot reuse the pushed merge's hash
+GIT_AUTHOR_DATE="2030-01-01T00:00:00Z" GIT_COMMITTER_DATE="2030-01-01T00:00:00Z"; export GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+real_run
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
+assert_exit "real git note fails after the push: the next run succeeds" 0
+assert_eq "real git note fails after the push: the next run is not rejected" "$(printf '%s\n' "$LAST_ERR" | grep -c 'rejected')" 0
+assert_eq "real git note fails after the push: still equal to the remote" "$(rg_local)" "$(rg_remote)"
+unset RG_NOTE_RC
 
 # A rejected push: exit 1, the branch is reset, and the next run is not a success either
 real_setup

@@ -1116,6 +1116,20 @@ plan_version() {
     git -C "$REPO" commit -q -am base-bump
     git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
   fi
+  if [ -n "${PV_TAKE_THEIRS:-}" ]; then
+    git -C "$REPO" checkout -q fleet/12-card
+    git -C "$REPO" merge -q --no-edit base-work >/dev/null 2>&1
+    git -C "$REPO" checkout -q --theirs -- plugins/fb/.claude-plugin/plugin.json
+    git -C "$REPO" add -A; git -C "$REPO" commit -q --no-edit
+    git -C "$REPO" push -q origin fleet/12-card
+    git -C "$REPO" checkout -q base-work
+  fi
+  if [ -n "${PV_DELETE:-}" ]; then
+    git -C "$REPO" checkout -q fleet/12-card
+    git -C "$REPO" rm -q plugins/fb/.claude-plugin/plugin.json; git -C "$REPO" commit -q -m drop
+    git -C "$REPO" push -q origin fleet/12-card
+    git -C "$REPO" checkout -q base-work
+  fi
   if [ -n "${PV_EARLY_MERGE:-}" ]; then
     git -C "$REPO" checkout -q fleet/12-card
     git -C "$REPO" merge -q --no-edit base-work
@@ -1164,6 +1178,19 @@ PV_EARLY_MERGE=1; export PV_EARLY_MERGE
 plan_version 0.28.4 "$VERSION_YAML"
 assert_jq "version-early-merge: the branch's own bump equal to the base plans update_branch" "$(card 12 action)" '"update_branch"'
 unset PV_EARLY_MERGE
+
+# A merge that took the base's side does not hide the branch's own bump
+PV_TAKE_THEIRS=1; export PV_TAKE_THEIRS
+plan_version 0.29.0 "$VERSION_YAML"
+assert_jq "version-take-theirs: the head equal to the base plans update_branch" "$(card 12 action)" '"update_branch"'
+unset PV_TAKE_THEIRS
+
+# A version file the branch touched but removed holds the card (fail closed)
+PV_DELETE=1; export PV_DELETE
+plan_version 0.28.3 "$VERSION_YAML"
+assert_jq "version-deleted file: the card waits" "$(card 12 action)" '"wait"'
+assert_jq "version-deleted file: the reason names it" "$(card 12 reason) | contains(\"plugins/fb/.claude-plugin/plugin.json\")" 'true'
+unset PV_DELETE
 
 # A head that cannot be read holds the card (fail closed)
 PV_HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; export PV_HEAD
