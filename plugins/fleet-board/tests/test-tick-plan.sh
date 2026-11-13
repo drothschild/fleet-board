@@ -1096,6 +1096,46 @@ plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
 assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
 
+# Plain-text paths in a card's Scope (candidate mode exposes declared_paths).
+# cand_scope <scope text>: ready card 14 alone; run --candidates
+cand_scope() {
+  setup_case ready-start
+  local dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+  scope_issue "$dir" 14 ready "$1"
+  scope_routes "$dir" "14" ""
+  candidate_empty_human_qa_route
+  run_check "$SCRIPT" --candidates
+}
+declared_14() { printf '(.candidates[] | select(.number == 14)).declared_paths'; }
+
+cand_scope "$(printf -- '- plugins/fleet-board/scripts/a.sh\n- New plugins/fleet-board/tests/test-a.sh (runs the harness)')"
+assert_exit "plain-scope: exit" 0
+assert_jq "plain-scope: bullet lines with plain-text paths plan both declared_paths" "$(declared_14)" '["plugins/fleet-board/scripts/a.sh","plugins/fleet-board/tests/test-a.sh"]'
+
+cand_scope 'plugins/x/a.sh, plugins/x/b.json'
+assert_jq "plain-scope: a comma-separated line without a bullet yields both paths, no trailing comma" "$(declared_14)" '["plugins/x/a.sh","plugins/x/b.json"]'
+
+cand_scope '- Version bump in plugins/fleet-board/.claude-plugin/plugin.json and .claude-plugin/marketplace.json'
+assert_jq "plain-scope: a prose line yields exactly its two paths and no prose word" "$(declared_14)" '[".claude-plugin/marketplace.json","plugins/fleet-board/.claude-plugin/plugin.json"]'
+
+cand_scope '- docs/x/specs/ (new spec)'
+assert_jq "plain-scope: a token ending in / is a directory scope" "$(declared_14)" '["docs/x/specs/"]'
+
+cand_scope '- Modify `src/a.sh`: the change
+- Also `src/b.sh` and `docs/`'
+assert_jq "plain-scope: a card with only backticked paths yields the same declared_paths" "$(declared_14)" '["docs/","src/a.sh","src/b.sh"]'
+
+# Two Ready cards naming the same file in plain text: one start, one wait
+setup_case ready-start
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+scope_issue "$dir" 14 ready '- src/shared.sh'
+scope_issue "$dir" 15 ready '- Modify src/shared.sh (again)'
+scope_routes "$dir" "14 15" ""
+run_check "$SCRIPT"
+assert_jq "plain-scope: the lower card starts" "$(card 14 action)" '"start"'
+assert_jq "plain-scope: the other card with the same plain-text file waits" "$(card 15 action)" '"wait"'
+assert_jq "plain-scope: the wait reason names the overlap" "$(card 15 reason | sed 's/^/(/; s/$/ | contains("#14") and contains("src\/shared.sh"))/')" 'true'
+
 # supervisor.scope_ignore: a Ready card naming a manifest is not held back by an
 # open PR that also touches the manifests (the same rule as scopes.drop_ignored)
 # plan_scope_ignore <extra YAML>: card 12 in review, its PR touching src/a.sh and both manifests

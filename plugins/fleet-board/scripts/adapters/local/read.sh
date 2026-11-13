@@ -16,7 +16,7 @@ fi
 
 jq -c --arg m "$FB_MARKER" --arg me "$ME" --arg s "$STATE" --arg url "$(fl_url "$1")" '
   def find_note:
-    [(.comments // [])[] | select(.body | startswith($m)) | select(.author == $me)] | last;
+    [(.comments // [])[] | select((.body | type) == "string" and (.body | startswith($m))) | select(.author == $me)] | last;
   (find_note) as $n |
   {
     number: .number,
