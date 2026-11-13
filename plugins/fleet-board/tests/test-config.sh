@@ -957,6 +957,18 @@ for m in auto acceptEdits default plan; do
   check_case "config.sh --check accepts permission_mode $m" "headless: { permission_mode: $m }" 0
 done
 
+# Test 32: board.terminal_command is a list of strings containing {dir}; default opens macOS Terminal
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.terminal_command
+assert_stdout_exact "With no setting, board.terminal_command resolves to open -a Terminal {dir}" '["open","-a","Terminal","{dir}"]'
+REPO="$(printf 'board:\n  repo: a/b\n  terminal_command: ["open", "-a", "iTerm", "{dir}"]\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.terminal_command
+assert_stdout_exact "A .fleet-board.yml board.terminal_command of open -a iTerm {dir} replaces the default as given" '["open","-a","iTerm","{dir}"]'
+TC_MSG="board.terminal_command"
+invalid_field_case "board.terminal_command not a list" '  terminal_command: "open -a Terminal {dir}"' "$TC_MSG"
+invalid_field_case "board.terminal_command list of non-strings" '  terminal_command: ["open", 5, "{dir}"]' "$TC_MSG"
+invalid_field_case "board.terminal_command list with no {dir}" '  terminal_command: ["open", "-a", "iTerm"]' "$TC_MSG"
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

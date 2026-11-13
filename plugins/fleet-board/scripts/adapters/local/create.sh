@@ -26,6 +26,7 @@ done
 
 fl_require_store
 SPLIT="$(fl_split_body "$BODY_FILE")" || exit 1
+fl_check_bad_deps "$SPLIT"
 if [ -n "$ACC_FILE" ]; then ACC="$(fl_acceptance_json "$ACC_FILE")" || exit 1; else ACC="$(jq -c .acceptance <<<"$SPLIT")"; fi
 if [ ${#blocked[@]} -gt 0 ]; then
   BLOCKED="$(jq -nc '$ARGS.positional | map(tonumber? // .)' --args "${blocked[@]}" | fl_uniq_json)"

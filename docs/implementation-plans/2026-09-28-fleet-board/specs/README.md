@@ -2135,3 +2135,27 @@ Isolation: the init event lists only the four built-in `cc-plugin-*@builtin` plu
 ### Revision 29 (2026-11-12, after retiring ticks): the supervisor dispatches the roles
 
 **Hand edit, named exceptions (owner decision "Hand edit, exception").** `agents/implementor.md`, `agents/reviewer.md`, `agents/fixer.md` and `skills/reporting/SKILL.md` were edited by the executing session, with no isolated author run. Each frontmatter `description` now says the fleet-board supervisor, not the manager, dispatches the role (for the reporting skill: the supervisor is the reader that checks a role report). In the bodies, "the manager" became "the supervisor" wherever it named the one who dispatches the role, runs `parse-report.sh`, re-dispatches it, files bugs or reads the reviewed head; the reporting skill's title reads "(supervisor side)". In the three agents, "the manager note" became "the card's manager note" (review round 2 of PR 271), so no agent or skill says "the manager" except the quoted text below. Kept as they were: the name "manager note" (the note's marker and every script still use it) and the quoted re-dispatch text "Your previous report was rejected by the manager: ...", which is the driver's exact wording. No rule, shape or behavior changed. The behavior specs (`implementor.md`, `reviewer.md`, `fixer.md`, `reporting.md`) still call the dispatcher the manager; the supervisor's driver plays that part. The four manifest lines carry `exception:` notes. Cost: none (no model session).
+
+### Revision 30 (2026-11-13, card 291): the documentation reviewer agent
+
+**New.** `specs/documentation-reviewer.md` (hand-written by the executing session), `briefs/author-req-documentation-reviewer.md` (the author's brief) and `plugins/fleet-board/agents/documentation-reviewer.md`, authored clean-room by one isolated process: `claude -p --bare --settings "$FB_BARE_SETTINGS" --model opus --tools "Read,Edit" --permission-mode acceptEdits --strict-mcp-config --max-turns 30 --max-budget-usd 1.50`, with a fresh empty `CLAUDE_CONFIG_DIR`, reading only the staged brief and spec and editing only its output file.
+
+| Output | Isolation | Path audit | Turns | Cost (USD) |
+|---|---|---|---|---|
+| `agents/documentation-reviewer.md` | PASS: tools exactly `Edit` and `Read`, no MCP servers, `apiKeySource: apiKeyHelper` | PASS (3 reads, 1 edit) | 5 | 0.1275 |
+
+Evidence: `evidence/author-documentation-reviewer.init.json`. The manifest line is a clean-room output (no `exception:` note). The `plugins` list in the init event holds four built-in `cc-plugin-*` entries.
+
+**Behavioral check.** `tests/test-documentation-reviewer-behavior.sh` (run with `FB_BEHAVIORAL=1`) drives the agent on two fixture PRs. The isolated API key had no credit left after the authoring run, so the behavioral runs used the executing session's own login (`BL_NO_BARE=1`), not an isolated session; they are not part of the clean-room evidence.
+
+### Revision 31 (2026-11-13, card 292): the blast-radius reviewer agent
+
+**New.** `specs/blast-radius-reviewer.md` (hand-written by the executing session) and `plugins/fleet-board/agents/blast-radius-reviewer.md`, authored clean-room by one isolated process: `claude -p --bare --settings "$FB_BARE_SETTINGS" --model opus --tools "Read,Edit" --permission-mode acceptEdits --strict-mcp-config --max-turns 30 --max-budget-usd 1.50`, with a fresh empty `CLAUDE_CONFIG_DIR`, reading only the staged spec copy and editing only its output file (a frontmatter skeleton with two placeholders, which the run filled in). The owner approved the spend, under the plan's ceiling.
+
+| Output | Isolation | Path audit | Turns | Cost (USD) |
+|---|---|---|---|---|
+| `agents/blast-radius-reviewer.md` | PASS: tools exactly `Edit` and `Read`, no MCP servers, `apiKeySource: apiKeyHelper` | PASS (1 read of the spec, 1 read of the target, 2 edits) | 5 | 0.1479 |
+
+Evidence: `evidence/author-blast-radius-reviewer.init.json`. The manifest line is a clean-room output (no `exception:` note).
+
+**Behavioral check.** `tests/behavioral-blast-radius.sh` (run with `FLEET_BOARD_BEHAVIORAL=1`, one sonnet session, cost $0.0314 over 9 turns) runs the agent on a fixture PR that renames `compute_total` to `calculate_total` in two files while `report.sh`, outside the diff, still calls the old name. Result: 5 checks passed, 0 failed: the init event shows no user plugin, a report was posted, `parse-report.sh --role stage-reviewer` accepts it, a `[Critical]` finding names `report.sh:4` (quoting the failed read-only run), and the review worktree stayed clean. The session runs without `--bare`: on Claude Code 2.1.323 `--bare` does not load plugin agents (`--agent fleet-board:merger` is also not found with it), so the fresh empty `CLAUDE_CONFIG_DIR` is what keeps user plugins out.

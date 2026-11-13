@@ -83,6 +83,8 @@ class State:
                 return
             self.mode = 'running'
             self.pause_reason = None
+            for name in [n for n, h in self.provider_health.items() if h.get('auth')]:
+                del self.provider_health[name]
             self._bump()
 
     def stop(self):

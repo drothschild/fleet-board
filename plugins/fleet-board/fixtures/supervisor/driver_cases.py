@@ -49,7 +49,7 @@ class Board:
         self.config = config or CONFIG
         self.calls = []
         self.gh_calls = []
-        self.stubs = {}
+        self.stubs = {'review-stages.sh': ok('[]\n')}
         self.gh_result = ok()
         self.git_calls = []
         self.git_result = ok('abc1234\n')
