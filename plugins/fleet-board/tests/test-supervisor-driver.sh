@@ -50,6 +50,30 @@ def case_human_qa_does_not_run_cleanup(sub):
     assert 'cleanup-done.sh' not in [c[0] for c in b.calls], b.calls
 
 
+def case_file_pending_files_a_blocked_card_with_an_empty_pr(sub):
+    b = dc.board_for(sub, 'blocked', body='plain body')
+    b.put_note({'pending_followups': dc.PENDING})
+    seen = {}
+
+    def files(*args):
+        seen['pr'] = str(args[1])
+        return dc.ok(dc.json.dumps({'out_of_scope_created': [{'title': 'Docs', 'number': 5, 'existing': False},
+                                                             {'title': 'Cache', 'number': 6, 'existing': False}],
+                                    'bugs_filed': [{'title': 'Crash', 'number': 7, 'existing': False}]}))
+    b.stubs['file-followups.sh'] = files
+    assert dc.begin(b, 'file_pending', state='blocked', pr=None).kind == 'done'
+    assert seen.get('pr') == '', seen
+    assert b.note()['pending_followups'] is None, b.note()
+
+
+def case_file_pending_still_holds_a_non_blocked_card_with_no_pr(sub):
+    b = dc.board_for(sub, 'in_review', body='plain body')
+    b.put_note({'pending_followups': dc.PENDING})
+    assert dc.begin(b, 'file_pending', state='in_review', pr=None).kind == 'done'
+    assert 'file-followups.sh' not in b.scripts_called()
+    assert b.note()['pending_followups'] is not None
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):
