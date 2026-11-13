@@ -481,9 +481,9 @@ HD="$TMP/home-drain"; make_home "$HD" "user||$RD|0.43.0"
 up_signal() {
   local sig="$1" state="$2" pre="$3" repo port
   repo="$TMP/work/repo-sig-$sig-$pre"; make_repo "$repo"
-  port="$(free_port)"; SIG_PORT="$port"; SIG_OUT="$TMP/sig-out-$sig-$pre"
+  port="$(free_port)"; echo "$port" > "$TMP/sig-port-$sig-$pre"
   [ "$pre" = 1 ] && echo 4242 > "$state/pid"
-  python3 - "$sig" "$port" "$repo" "$state" "$HD" "$LAUNCHER" "$SIG_OUT" <<'EOPY'
+  python3 - "$sig" "$port" "$repo" "$state" "$HD" "$LAUNCHER" "$TMP/sig-out-$sig-$pre" <<'EOPY'
 import os, signal, subprocess, sys, time, urllib.request
 sig, port, repo, state, home, launcher, out = sys.argv[1:]
 env = dict(os.environ, HOME=home, UP_STATE=state)
@@ -503,7 +503,9 @@ EOPY
 
 for SIG in INT TERM HUP; do
   DS="$TMP/drain-state-$SIG"; mkdir -p "$DS"
+  SIG_OUT="$TMP/sig-out-$SIG-0"
   rc="$(up_signal "$SIG" "$DS" 0)"
+  SIG_PORT="$(cat "$TMP/sig-port-$SIG-0")"
   check "up on SIG$SIG: exits 0" 0 "$rc"
   check "up on SIG$SIG: asks the supervisor to drain (stop --drain)" "stop --drain" "$(cat "$DS/stop-calls" 2>/dev/null)"
   if [ -f "$DS/pid" ]; then fail "up on SIG$SIG: exits only once the supervisor is not running" "supervisor still running when up exited"
