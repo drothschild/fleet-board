@@ -371,6 +371,21 @@ assert_stdout_exact "wont_do-list-failure: nothing printed" ""
 assert_true "wont_do-list-failure: #30 worktree untouched" test -d "$BASE/30-x"
 assert_true "wont_do-list-failure: done #12 worktree untouched" test -d "$BASE/12-x"
 
+# only the wont_do listing fails (the done listing succeeds): exit 1, nothing
+# removed. A `bash` shim ahead on PATH fails board-list.sh for wont_do alone.
+wont_do_case
+mkdir -p "$FAKE_GH_DIR/shim"
+REAL_BASH="$(command -v bash)"
+printf '#!/bin/sh\ncase "$*" in *board-list.sh*wont_do*) echo "shim: wont_do listing failed" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$REAL_BASH" > "$FAKE_GH_DIR/shim/bash"
+chmod +x "$FAKE_GH_DIR/shim/bash"
+done_only 12 13 17
+PATH="$FAKE_GH_DIR/shim:$PATH" run_check
+assert_exit "wont_do-only-list-failure: exit 1" 1
+assert_stdout_exact "wont_do-only-list-failure: nothing printed" ""
+assert_stderr_contains "wont_do-only-list-failure: names the wont_do column" "cannot list the wont_do column"
+assert_true "wont_do-only-list-failure: #30 worktree untouched" test -d "$BASE/30-x"
+assert_true "wont_do-only-list-failure: done #12 worktree untouched" test -d "$BASE/12-x"
+
 # Usage
 run_check --bogus
 assert_exit "unknown argument: exit 2" 2
