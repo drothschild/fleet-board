@@ -2279,12 +2279,16 @@ function closePlanner() {
   if (inside || document.activeElement === document.body) $("plan-btn").focus({ preventScroll: true });
 }
 
-// requestClosePlanner(): the user's close (button, Escape). A running reply would be lost, so ask first.
+// requestClosePlanner(): the user's close (button, Escape). A chat with messages would be lost, so ask first.
 function requestClosePlanner() {
   const pl = S.pl;
   if (!pl) return;
-  if (pl.busy && plannerHasUserTurn() &&
-      !confirm("A planner reply is still running. If you close now the reply will be lost. Close anyway?")) return;
+  if (plannerHasUserTurn()) {
+    const msg = pl.busy
+      ? "A planner reply is still running. If you close now the reply will be lost. Close anyway?"
+      : "If you close the planner now, this conversation will be lost. Close anyway?";
+    if (!confirm(msg)) return;
+  }
   closePlanner();
 }
 
