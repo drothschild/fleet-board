@@ -28,7 +28,8 @@
 #                          branch of the card's own repo (with --bodies, the
 #                          <dir>/<id>.repo file names it). Lines under a
 #                          "## Creates" heading are skipped: they name files
-#                          the card makes.
+#                          the card makes. A path that the open PR (pr_url) of a
+#                          card in the linted card's blocked_by adds is not flagged.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 a card could not be read.
 
@@ -164,6 +165,25 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     elif [ "$rdone" -eq 0 ]; then rdone=1; rbr="$(gh repo view "$crepo" --json defaultBranchRef --jq .defaultBranchRef.name 2>/dev/null)" || rbr=""; fi
     [ -n "$rbr" ]
   }
+  # dep_pr_adds <path>: a card in this card's blocked_by has an open PR (its
+  # pr_url, read with gh pr view --json files,state) that adds the path
+  DEP_FILES="" DEP_DONE=0
+  dep_pr_adds() {
+    if [ "$DEP_DONE" -eq 0 ]; then
+      DEP_DONE=1
+      [ -f "$WORK/$id.read" ] || return 1
+      local d url view
+      for d in $(jq -r '(.blocked_by // [])[] | tostring' "$WORK/$id.read"); do
+        [ -n "$LCARDS" ] && [ -f "$LCARDS/$d.json" ] || continue
+        url="$(jq -r '.pr_url // empty' "$LCARDS/$d.json" 2>/dev/null)"
+        [ -n "$url" ] || continue
+        view="$(gh pr view "$url" --json files,state 2>/dev/null)" || continue
+        DEP_FILES="$DEP_FILES
+$(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
+      done
+    fi
+    [ -n "$DEP_FILES" ] && grep -Fxq -- "$1" <<<"$DEP_FILES"
+  }
   if [ "$FILECHECK" -eq 1 ]; then
     inc=0
     while IFS= read -r line; do
@@ -176,6 +196,7 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
         grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
         case "$p" in http*|*..*) continue ;; esac
         rbranch || continue
+        dep_pr_adds "$p" && continue
         where="$rbr"; [ "$remote" -eq 1 ] && where="$rbr of $crepo"
         if [ "$remote" -eq 1 ]; then
           gh api "repos/$crepo/contents/$p?ref=$rbr" >/dev/null 2>&1 || emit "$id" missing-file "$p is not on $where"

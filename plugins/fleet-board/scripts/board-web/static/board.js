@@ -635,9 +635,12 @@ function renderCard(c, repo) {
   const li = el("li", "card");
   li.dataset.n = String(n);
   li.tabIndex = 0;
-  li.draggable = true;
   if (c.active) li.classList.add("active");
   const stuck = c.stuck && typeof c.stuck === "object" ? c.stuck : null;
+  // an agent is working on it: no drag, unless it is stuck so a person can free it
+  const locked = !!c.active && !stuck;
+  li.draggable = !locked;
+  if (locked) li.title = "Can't be moved while an agent is working on it";
   if (stuck) li.classList.add("card--stuck");
   if (S.pendingMove === n) li.classList.add("pending");
 
@@ -713,6 +716,7 @@ function renderCard(c, repo) {
     openCard(n);
   });
   li.addEventListener("dragstart", function (e) {
+    if (locked) { e.preventDefault(); return; }
     S.dragging = n;
     e.dataTransfer.effectAllowed = "move";
     e.dataTransfer.setData("text/plain", "#" + n);
@@ -738,7 +742,8 @@ function bindDrop(col, key) {
   col.addEventListener("drop", function (e) {
     e.preventDefault();
     const n = S.dragging;
-    const card = n !== null && S.board && S.board.cards.find(function (c) { return c.number === n; });
+    let card = n !== null && S.board && S.board.cards.find(function (c) { return c.number === n; });
+    if (card && card.active && !(card.stuck && typeof card.stuck === "object")) card = null;
     // only a real move fetches a fresher board; otherwise keep the held poll
     if (card && card.state !== key) S.pendingBoard = null;
     endDrag();
@@ -925,6 +930,15 @@ function showDrawer() {
   $("import").inert = true;
   $("planner").inert = true;
   $("top").inert = true;
+}
+
+// requestCloseDrawer(): the user's close (button, backdrop, Escape). Unsaved
+// edits ask first; a save in flight finishes on its own, so it does not.
+function requestCloseDrawer() {
+  const d = S.drawer;
+  if (d && !d.busy && d.n !== null && isDirty() &&
+      !confirm("Discard your unsaved changes to #" + d.n + "?")) return;
+  closeDrawer();
 }
 
 // closeDrawer(): hides the drawer and returns focus to what opened it.
@@ -1345,10 +1359,28 @@ function noteJson(text) {
   }
 }
 
+// drawerStateLocked(): an agent works on the open card and it is not stuck, so
+// the state picker (like the tile drag) stays still. A stuck card stays movable.
+function drawerStateLocked() {
+  const d = S.drawer;
+  if (!d || d.n === null || !d.card) return false;
+  const src = boardCard(d.n) || d.card;
+  return !!src.active && !(src.stuck && typeof src.stuck === "object");
+}
+
+function syncStateLock() {
+  const sel = $("dr-state");
+  const locked = drawerStateLocked();
+  sel.disabled = locked;
+  if (locked) sel.title = "Can't be moved while an agent is working on it";
+  else sel.removeAttribute("title");
+}
+
 // renderDrawerMeta(): `round r · models (escalated) · agent working now`. Called on render and after every board poll (the active part is live).
 function renderDrawerMeta() {
   const d = S.drawer;
   const meta = $("dr-meta");
+  syncStateLock();
   if (!d || d.n === null || !d.card) {
     meta.replaceChildren(document.createTextNode(d && d.n === null ? "Not created yet" : ""));
     return;
@@ -1387,10 +1419,15 @@ function formatTime(iso) {
 }
 
 // noteCommentIndex(card): the index in card.comments of the manager note the
-// server trusts (the last marker comment whose body matches manager_note), or -1.
+// server trusts: the comment whose id is manager_note_id (older servers send no
+// id: the last marker comment whose body matches manager_note), or -1.
 function noteCommentIndex(card) {
   const list = card.comments || [];
   if (card.manager_note == null) return -1;
+  if (card.manager_note_id != null) {
+    for (let i = 0; i < list.length; i++) if (list[i] && list[i].id === card.manager_note_id) return i;
+    return -1;
+  }
   for (let i = list.length - 1; i >= 0; i--) {
     const b = list[i] && list[i].body;
     if (typeof b !== "string" || b.indexOf(NOTE_MARKER) !== 0) continue;
@@ -1536,9 +1573,14 @@ async function saveDrawer() {
       openDrawer(r.data.number);
       return;
     }
+    const made = /^created card #(\d+) in (\S+?), but the move to (\S+) failed: ([\s\S]*)$/.exec(errorText(r));
+    if (made) {
+      showToast("Created #" + made[1] + " in " + stateName(made[2]) + ". The move to " +
+        stateName(made[3]) + " was refused: " + made[4], "error");
+      openDrawer(Number(made[1]));
+      return;
+    }
     showToast("Card not created: " + errorText(r), "error");
-    const made = /created card #(\d+)/.exec(errorText(r));
-    if (made) openDrawer(Number(made[1]));
     return;
   }
 
@@ -1552,19 +1594,24 @@ async function saveDrawer() {
   if (e.pr_url !== d.base.pr_url) patch.pr_url = e.pr_url;
   if (Object.keys(patch).length) {
     const r = await writeApi("PATCH", "/api/cards/" + n, patch);
-    if (S.drawer !== d) return;
     if (!r.ok) {
-      setDrawerBusy(false);
+      if (S.drawer === d) setDrawerBusy(false);
+      fetchBoard(true);
       showToast("#" + n + " not saved: " + errorText(r), "error");
       return;
     }
   }
-  if (e.state !== d.base.state) {
+  // The drawer may have been closed while a write was in flight: the rest of
+  // the save and the board refresh still happen, only the drawer is left alone.
+  if (e.state !== d.base.state && !drawerStateLocked()) {
     const r = await writeApi("POST", "/api/cards/" + n + "/move", { state: e.state });
-    if (S.drawer !== d) return;
     if (!r.ok) {
       showToast("#" + n + " stayed in " + stateName(d.base.state) + ": " + errorText(r), "error");
     }
+  }
+  if (S.drawer !== d) {
+    fetchBoard(true);
+    return;
   }
   const card = await fetchCard(n);
   fetchBoard(true);
@@ -1625,8 +1672,8 @@ function syncDrawer() {
 }
 
 function bindDrawer() {
-  $("dr-close").addEventListener("click", closeDrawer);
-  $("drawer-dim").addEventListener("click", closeDrawer);
+  $("dr-close").addEventListener("click", requestCloseDrawer);
+  $("drawer-dim").addEventListener("click", requestCloseDrawer);
   $("dr-save").addEventListener("click", saveDrawer);
   $("dr-comment-btn").addEventListener("click", submitComment);
   $("dr-title").addEventListener("input", updateDirty);
@@ -1688,7 +1735,7 @@ function bindDrawer() {
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.drawer && !e.defaultPrevented) {
       e.preventDefault();
-      closeDrawer();
+      requestCloseDrawer();
     }
   });
 }
@@ -1810,10 +1857,13 @@ async function pollImport(id) {
       showImportFailed(errorText(r));
       return;
     }
-    // A blip: keep the last progress and ask again.
+    // A blip: keep the last progress and ask again; say so after three misses.
+    imp.misses = (imp.misses || 0) + 1;
+    if (imp.misses >= 3) setImportStatus("board server not answering");
     imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
     return;
   }
+  imp.misses = 0;
   const d = r.data;
   const elapsed = Number.isInteger(d.elapsed_s) ? d.elapsed_s : 0;
   if (d.state === "running") {

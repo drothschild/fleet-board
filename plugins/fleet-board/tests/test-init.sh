@@ -801,6 +801,44 @@ assert_exit "usage-errors: --dir that does not exist" 2
 assert_count "usage-errors: no gh calls" "$(all_calls | count_lines)" 0
 assert_dir_listing "usage-errors: nothing written" ""
 
+# ---------------------------------------------------------------------------
+# python3: the supervisor and the board page need python3 3.9+; init checks it.
+mini_path() {
+  local d t
+  d="$(mktemp -d)"; CLEANUP_DIRS+=("$d")
+  for t in gh jq git dirname cat sed grep tr mktemp rm mkdir date head awk uname basename env bash cp seq sleep sort wc cut ls ln chmod tee mv tail; do
+    command -v "$t" >/dev/null 2>&1 && ln -s "$(command -v "$t")" "$d/$t"
+  done
+  rm -f "$d/gh"; ln -s "$SCRIPT_DIR/fake-gh.sh" "$d/gh"
+  printf '%s' "$d"
+}
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+NOPY="$(mini_path)"
+OLDPATH="$PATH"; PATH="$NOPY"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
+PATH="$OLDPATH"
+assert_exit "python3 missing: exit 1" 1
+assert_stderr_contains "python3 missing: named on stderr" "python3 is not on PATH"
+assert_no_config "python3 missing: no config written"
+
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+OLDPY="$(mini_path)"
+printf '#!/bin/sh\necho "Python 3.8.0"\n' > "$OLDPY/python3"; chmod +x "$OLDPY/python3"
+OLDPATH="$PATH"; PATH="$OLDPY"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
+PATH="$OLDPATH"
+assert_exit "python3 3.8: exit 1" 1
+assert_stderr_contains "python3 3.8: names python3 3.9" "python3 3.9"
+assert_no_config "python3 3.8: no config written"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

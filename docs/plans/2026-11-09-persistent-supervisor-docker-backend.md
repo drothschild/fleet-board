@@ -1,6 +1,6 @@
 # Persistent supervisor Docker backend Implementation Plan
 
-> **Superseded (2026-11-11)** by [`docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
+> **Superseded (2026-11-11)** by [`docs/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -10,7 +10,7 @@
 
 **Tech Stack:** Python 3, Docker CLI/Desktop Engine, Bash fixture suite, JSON length framing, Unix sockets inside the Linux container.
 
-**Spec:** `docs/superpowers/specs/2026-11-09-persistent-supervisor-docker-backend-design.md`
+**Spec:** `docs/specs/2026-11-09-persistent-supervisor-docker-backend-design.md`
 
 ## Global Constraints
 

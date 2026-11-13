@@ -479,6 +479,58 @@ assert_exit "local corrupt card: exit" 1
 assert_eq "local corrupt card: nothing created" "$(cat "$REPO/.fleet-board/next")" 13
 assert_eq "local corrupt card: no stdout" "$LAST_OUT" ""
 
+# local: no PR (empty PR argument): the card is filed, no gh pr comment, no PR number, the note's pending items cleared
+setup_local
+printf '%s\n' '{"pending_followups":{"out_of_scope":[{"title":"Add CLI help","detail":"`bash cli.sh --help` should exit 0"}],"bugs":[],"pr":null}}' > "$FAKE_GH_DIR/patch.json"
+bash "$SCRIPT_DIR/../scripts/note.sh" merge 12 "$FAKE_GH_DIR/patch.json" >/dev/null 2>&1
+report '[{"title":"Add CLI help","detail":"`bash cli.sh --help` should exit 0"}]' '[]'
+assert_eq "no PR: setup holds one pending item" "$(bash "$SCRIPT_DIR/../scripts/note.sh" get 12 2>/dev/null | jq -c '.pending_followups.out_of_scope | length')" 1
+run_check "$SCRIPT" 12 "" "$REPORT"
+assert_exit "no PR: exit" 0
+assert_eq "no PR: follow-up card filed" "$(jqc .out_of_scope_created)" '[{"title":"Add CLI help","number":13,"existing":false}]'
+assert_eq "no PR: card 13 exists in ready" "$(jq -r .state "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" ready
+assert_eq "no PR: no gh pr comment ran" "$(calls_starting pr comment)" 0
+case "$(jq -r .body "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" in
+  *"PR #"*|*"(PR"*) fail "no PR: body omits a PR number" "$(jq -r .body "$REPO/.fleet-board/cards/13.json")" ;;
+  *"Found while working #12."*) pass "no PR: body omits a PR number" ;;
+  *) fail "no PR: body omits a PR number" "$(jq -r .body "$REPO/.fleet-board/cards/13.json" 2>&1)" ;;
+esac
+assert_eq "no PR: note pending_followups cleared" "$(bash "$SCRIPT_DIR/../scripts/note.sh" get 12 2>/dev/null | jq -c .pending_followups)" null
+
+# local: no PR, an existing card matches: it is commented without a PR number, no gh pr comment
+setup_local
+local_card 5 "Add CLI help" ready
+report '[{"title":"Add CLI help","detail":"d"}]' '[]'
+run_check "$SCRIPT" 12 "" "$REPORT"
+assert_exit "no PR existing match: exit" 0
+assert_eq "no PR existing match: comment without a PR" "$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/5.json")" "Also seen while working #12."
+assert_eq "no PR existing match: no gh pr comment ran" "$(calls_starting pr comment)" 0
+
+# ---------------------------------------------------------------------------
+# a follow-up whose detail names a path only the spawning PR adds depends on the spawning card
+setup_local
+git -C "$REPO" checkout -q -b main 2>/dev/null || git -C "$REPO" checkout -q main
+mkdir -p "$REPO/src"; echo x > "$REPO/src/calc.js"
+git -C "$REPO" add src/calc.js; git -C "$REPO" commit -q -m "add calc"
+printf '{"files":[{"path":"src/new-page.js"},{"path":"src/calc.js"}],"state":"OPEN"}\n' > "$FAKE_GH_DIR/pr34.json"
+printf 'pr view 34 *\t0\t%s\npr comment 34 *\t0\t-\n' "$FAKE_GH_DIR/pr34.json" > "$ROUTES"
+report '[{"title":"Test the new page","detail":"`bash src/new-page.js` should exit 0 but `src/new-page.js` only exists in the PR"}]' '[]'
+run_ff
+assert_exit "unmerged path: exit" 0
+assert_eq "unmerged path: blocked_by is the spawning card" "$(jq -c .blocked_by "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" '[12]'
+
+# a path already on the default branch does not block the follow-up
+setup_local
+git -C "$REPO" checkout -q -b main 2>/dev/null || git -C "$REPO" checkout -q main
+mkdir -p "$REPO/src"; echo x > "$REPO/src/calc.js"
+git -C "$REPO" add src/calc.js; git -C "$REPO" commit -q -m "add calc"
+printf '{"files":[{"path":"src/new-page.js"},{"path":"src/calc.js"}],"state":"OPEN"}\n' > "$FAKE_GH_DIR/pr34.json"
+printf 'pr view 34 *\t0\t%s\npr comment 34 *\t0\t-\n' "$FAKE_GH_DIR/pr34.json" > "$ROUTES"
+report '[{"title":"Test calc more","detail":"`bash src/calc.js` should exit 0; `src/calc.js` is already merged"}]' '[]'
+run_ff
+assert_exit "merged path: exit" 0
+assert_eq "merged path: blocked_by is empty" "$(jq -c .blocked_by "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" '[]'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -446,6 +446,33 @@ run_wt remove 12
 assert_exit "marker-local-remove: exit" 0
 assert_true "remove leaves the active marker alone" test -f "$REPO/.fleet-board/active/12"
 
+# ---------------------------------------------------------------------------
+# fb_mark_active: an unwritable active/ is one clean warning, a writable one is silent
+
+# run_mark_active <n>: runs fb_mark_active in a subshell of REPO, capturing exit and stderr
+run_mark_active() {
+  local tmperr; tmperr="$(mktemp)"
+  ( . "$SCRIPT_DIR/../scripts/board-lib.sh"; fb_load_config; fb_mark_active "$1" ) >/dev/null 2>"$tmperr"
+  LAST_EXIT=$?
+  LAST_ERR="$(cat "$tmperr")"
+  rm -f "$tmperr"
+}
+
+setup_case false local
+mkdir -p "$REPO/.fleet-board/active"
+chmod 500 "$REPO/.fleet-board/active"
+run_mark_active 12
+chmod 700 "$REPO/.fleet-board/active"
+assert_exit "mark-active-unwritable: fb_mark_active exits 0 when active/ is mode 500" 0
+assert_eq "mark-active-unwritable: stderr is exactly the one warning line" "$LAST_ERR" \
+  "fleet-board: warning: cannot write the active marker for #12"
+assert_stderr_not_contains "mark-active-unwritable: stderr holds no Permission denied" "Permission denied"
+
+setup_case false local
+run_mark_active 12
+assert_true "mark-active-writable: the marker file exists" test -f "$REPO/.fleet-board/active/12"
+assert_eq "mark-active-writable: stderr is empty" "$LAST_ERR" ""
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
