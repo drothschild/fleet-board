@@ -357,6 +357,11 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" then
         (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
+      (if (.board | type) == "object" then
+        (if (.board.terminal_command | type) != "array" or (.board.terminal_command | map(type != "string") | any) then "board.terminal_command must be a list of strings"
+         elif (.board.terminal_command | map(contains("{dir}")) | any | not) then "board.terminal_command must contain {dir}"
+         else empty end)
+      else empty end),
       (if (.headless | type) == "object" then
         (if .headless.permission_mode == "bypassPermissions" then "headless.permission_mode bypassPermissions is refused: it runs every role with no permission checks; use one of auto, acceptEdits, default, plan"
          elif (.headless.permission_mode | type) != "string" or (.headless.permission_mode as $m | ["auto","acceptEdits","default","plan"] | index($m) | not) then "headless.permission_mode must be one of auto, acceptEdits, default, plan"

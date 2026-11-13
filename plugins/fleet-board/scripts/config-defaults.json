@@ -1,5 +1,5 @@
 {
-  "board": { "states": {}, "dir": ".fleet-board", "port": 8765 },
+  "board": { "states": {}, "dir": ".fleet-board", "port": 8765, "terminal_command": ["open", "-a", "Terminal", "{dir}"] },
   "commands": {},
   "worktrees": { "dir": "../.fleet-worktrees", "mutate_on_copy": false },
   "test_paths": ["test/**", "tests/**", "__tests__/**", "**/*.test.*", "**/*.spec.*", "**/*_test.*", "**/test_*"],
