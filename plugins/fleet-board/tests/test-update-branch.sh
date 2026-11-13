@@ -252,6 +252,13 @@ assert_resolved() { # <label> <expected-version> <files...>
   done
 }
 
+# The comment and the error say why a version-only resolution was refused
+comment_body() { cat "$(ls "$FAKE_GH_DIR"/bodies/* 2>/dev/null | head -1)" 2>/dev/null; }
+assert_why() { # <label> <fixed text>
+  assert_eq "$1: the comment says why" "$(comment_body | grep -cF -- "$2")" 1
+  assert_eq "$1: the error says why" "$(printf '%s\n' "$LAST_ERR" | grep -cF -- "$2")" 1
+}
+
 assert_to_fixer() { # <label> <files...>: today's conflict path, nothing auto-committed
   local label="$1"; shift
   assert_exit "$label: exit 1" 1
@@ -311,6 +318,14 @@ printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n  "de
 run_update
 assert_to_fixer "a JSON conflict that also touches another line" "$PLUGIN_JSON"
 
+# A hunk whose sides also share an identical non-version line: not version-only
+setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n  "main": "a.js",\n=======\n  "version": "0.28.4",\n  "main": "a.js",\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_to_fixer "a hunk with an identical non-version line on both sides" "$PLUGIN_JSON"
+assert_why "a hunk with an identical non-version line on both sides" "changes lines other than"
+
 # One side drops the version line: not version-only
 setup "" "$PLUGIN_JSON" 1
 mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
@@ -340,12 +355,6 @@ assert_to_fixer "a version-only file mixed with a real conflict" "$PLUGIN_JSON" 
 assert_eq "a version-only file mixed with a real conflict: the version-only file is not rewritten" \
   "$(count_lines '^<<<<<<<' "$WT/$PLUGIN_JSON")" 1
 
-# The comment and the error say why a version-only resolution was refused
-comment_body() { cat "$(ls "$FAKE_GH_DIR"/bodies/* 2>/dev/null | head -1)" 2>/dev/null; }
-assert_why() { # <label> <fixed text>
-  assert_eq "$1: the comment says why" "$(comment_body | grep -cF -- "$2")" 1
-  assert_eq "$1: the error says why" "$(printf '%s\n' "$LAST_ERR" | grep -cF -- "$2")" 1
-}
 
 # C1: each conflicted version line is resolved from its own two sides
 two_plugin_market() { # <file> <a ours> <a theirs> <b ours> <b theirs>

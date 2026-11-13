@@ -669,7 +669,7 @@ class Supervisor:
             except ValueError as exc:
                 self.state.event('action_failed', card=number, action=name, error='scope: %s' % exc)
                 return
-            if self.state.reserve(number, scope) is not None:
+            if self.state.reserve(number, scope, ignore=ignore) is not None:
                 return
             reserved = True
             self.state.event('admitted', card=number, action=name, provider=row.get('provider'))

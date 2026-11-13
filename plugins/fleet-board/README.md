@@ -146,7 +146,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `limits.max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns` | `8`, `20000000`, none, `200` | supervisor limits: hours before it drains and exits, run tokens before admissions pause, tokens per card, `--max-turns` per session; both token limits count input, output and cache-write tokens, and cache reads are shown but not counted ([details](docs/overnight.md#limits)) |
 | `limits.rate_limit_max_wait`, `rate_limit_margin` | `3600`, `5` | seconds: the longest rate-limit wait before the supervisor pauses, margin after a reset |
 | `headless.permission_mode` | `auto` | `--permission-mode` for each role session |
-| `supervisor.*` | see [config.md](docs/config.md#supervisor) | timeouts, retry backoff, per-provider concurrency, `scope_ignore` (paths every PR touches, left out of scope overlap) |
+| `supervisor.*` | see [config.md](docs/config.md#supervisor) | the reconcile interval, timeouts, retry backoff, aging, per-provider concurrency, `scope_ignore` (paths left out of scope overlap) and `version_files` (JSON files whose version conflicts are resolved and kept above the base) |
 
 The config file is `.fleet-board.yml`, any valid YAML. `board.backend`, `board.project_number` and `board.project_owner` are gone, and so are the tick system's `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager`: `config.sh` exits 5 on any of them (see [Upgrading](#upgrading-from-an-earlier-version)). Tokens are the only unit; an old `price` key is ignored.
 

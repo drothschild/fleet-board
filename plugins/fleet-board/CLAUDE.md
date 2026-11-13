@@ -87,9 +87,20 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. Settle plans do
-  not fetch scope files or start workers. The supervisor's scheduler and its
-  reservations drop paths matching `supervisor.scope_ignore` globs
-  (`scopes.drop_ignored`; a scope wholly ignored is kept) before any overlap check.
+  not fetch scope files or start workers. Every overlap check (the scheduler,
+  `state.reserve`, and tick-plan's Ready-card checks) first drops paths matching
+  `supervisor.scope_ignore`; a scope wholly ignored is kept. Globs are
+  segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
+  language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
+  parity test over `fixtures/glob-cases.json`.
+- **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`).
+  Off when empty. `update-branch.sh` resolves conflicts in matching JSON files whose
+  hunks hold only pairwise-identical `"version"` lines, each line from its own sides;
+  after any merge it raises branch-changed version keys not above the base to base +
+  1 patch. `tick-plan.sh` plans `update_branch` ("version not above base") for such a
+  review or merge candidate. `update-branch.sh` refuses a worktree not on the branch,
+  pushes whenever local differs from `origin/<branch>`, verifies the push, and on a
+  rejected push resets to the pre-run head and exits 1.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs

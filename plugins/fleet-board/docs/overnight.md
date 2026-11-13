@@ -53,7 +53,7 @@ fleet-board supervisor stop --cancel    # end every session now and return each 
 | `limits.rate_limit_max_wait`, `rate_limit_margin` | `3600`, `5` | a GitHub rate limit holds new work until its reset plus the margin; a reset further away than the cap pauses the supervisor |
 | `headless.permission_mode` | `auto` | `--permission-mode` of each role session |
 
-Tokens are the only unit: nothing is priced, and a count the ledger could not read is `unknown`, never 0. The other `supervisor.*` keys (timeouts, retry backoff, aging, the reconcile interval) are in [config.md](config.md).
+Tokens are the only unit: nothing is priced, and a count the ledger could not read is `unknown`, never 0. The other `supervisor.*` keys (the reconcile interval, timeouts, retry backoff, aging, `scope_ignore` and `version_files`) are in [config.md](config.md#supervisor).
 
 ## Permissions
 

@@ -184,6 +184,8 @@ class Lifecycle(unittest.TestCase):
         # A wholly-ignored scope is kept, but it no longer meets the others' manifests.
         self.assertIsNone(s.reserve(4, [manifest], ignore=ignore))
         self.assertEqual(s.reserve(5, ['src/a/x'], ignore=ignore), 1)
+        # The mirror needs the own-side filter: card 4 holds only the manifest.
+        self.assertIsNone(s.reserve(6, ['src/z', manifest], ignore=ignore))
 
     def test_reserve_unions_with_the_held_scope(self):
         s = self.state

@@ -305,10 +305,16 @@ VALIDATION_SCRIPT='
            (if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.provider_concurrency.\($k) must be a positive integer" else empty end),
            (if $k != "claude" and (($root.providers | type) != "object" or ($root.providers | has($k) | not)) then "supervisor.provider_concurrency.\($k) names no provider" else empty end)
          end),
-        (if ($sup.scope_ignore | type) != "array" then "supervisor.scope_ignore must be a list of strings"
-         elif any($sup.scope_ignore[]; (type != "string") or . == "") then "supervisor.scope_ignore entries must be non-empty strings"
-         elif any($sup.scope_ignore[]; startswith("/") or (split("/") | index("..") != null))
-         then "supervisor.scope_ignore entries must be repo-relative, without a leading / or .." else empty end)
+        # Path globs (path-glob.jq): checked on the text after `\` -> `/`, and again
+        # cleaned (no leading ./, no trailing /) for the empty and wildcard-only rules
+        (("scope_ignore", "version_files") as $k | $sup[$k] as $v
+          | if ($v | type) != "array" then "supervisor.\($k) must be a list of strings"
+            elif any($v[]; (type != "string") or . == "") then "supervisor.\($k) entries must be non-empty strings"
+            elif any($v[]; gsub("\\\\"; "/") | sub("^(\\./)+"; "") | sub("/+$"; "") | . == "" or . == "." or test("^[*?/]+$"))
+            then "supervisor.\($k) entries must name a path, not only wildcards or separators"
+            elif any($v[]; gsub("\\\\"; "/") | startswith("/") or (split("/") | any(. == ".." or . == ".")))
+            then "supervisor.\($k) entries must be repo-relative, without a leading / or .."
+            else empty end)
       else empty end),
       (if (.merge | type) == "object" then
         (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end),
