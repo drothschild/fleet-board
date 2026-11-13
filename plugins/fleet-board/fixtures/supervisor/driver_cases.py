@@ -1019,6 +1019,59 @@ def test_commits_since_review_counts_only_the_prs_own_commits(base):
     g('commit', '-q', '-m', 'fix')
     assert count() == '1', 'the fixer commit after the merge counts: %s' % count()
 
+def _version_repo(base):
+    """A repo with a reviewed head on `feat`, then a merge of main; returns (g, repo, reviewed)."""
+    repo = Path(base) / 'vrepo'
+    repo.mkdir()
+
+    def g(*args):
+        out = subprocess.run(['git', '-C', str(repo)] + list(args), capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    g('init', '-q', '-b', 'main')
+    g('config', 'user.email', 't@example.invalid')
+    g('config', 'user.name', 't')
+    (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "1.0.0"\n}\n')
+    (repo / 'f.txt').write_text('base\n')
+    g('add', '.')
+    g('commit', '-q', '-m', 'base')
+    g('checkout', '-q', '-b', 'feat')
+    (repo / 'f.txt').write_text('feature\n')
+    g('commit', '-q', '-am', 'feature')
+    reviewed = g('rev-parse', 'HEAD')
+    g('checkout', '-q', 'main')
+    (repo / 'm.txt').write_text('main\n')
+    g('add', 'm.txt')
+    g('commit', '-q', '-m', 'main 1')
+    g('checkout', '-q', 'feat')
+    g('merge', '-q', '--no-edit', '-m', 'Merge origin/main into feat', 'main')
+    return g, repo, reviewed
+
+
+def _count_since(repo, reviewed):
+    return driver.commits_since_review(driver._git, str(repo), reviewed, ['plugin.json'])
+
+
+def test_commits_since_review_leaves_out_a_version_only_commit(base):
+    """A merge of main followed by update-branch.sh's one-parent version raise is not a fixer commit."""
+    g, repo, reviewed = _version_repo(base)
+    (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "1.0.1"\n}\n')
+    g('commit', '-q', '-am', 'Raise versions above origin/main')
+    assert _count_since(repo, reviewed) == '0', _count_since(repo, reviewed)
+
+
+def test_commits_since_review_counts_a_commit_that_changes_another_line(base):
+    """A one-parent commit that changes any other line after the reviewed head still counts."""
+    g, repo, reviewed = _version_repo(base)
+    (repo / 'plugin.json').write_text('{\n  "name": "y",\n  "version": "1.0.1"\n}\n')
+    g('commit', '-q', '-am', 'rename and raise')
+    assert _count_since(repo, reviewed) == '1', _count_since(repo, reviewed)
+    (repo / 'g.txt').write_text('fix\n')
+    g('add', 'g.txt')
+    g('commit', '-q', '-m', 'fix')
+    assert _count_since(repo, reviewed) == '2', _count_since(repo, reviewed)
+
+
 def test_provider_failure_does_not_charge_the_card(base):
     b = board_for(base)
     b.plans({'report': '', 'post': False, 'exit': 1, 'is_error': True, 'stderr': 'rate limit exceeded (429)'})
