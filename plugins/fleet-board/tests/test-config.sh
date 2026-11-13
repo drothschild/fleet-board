@@ -926,9 +926,9 @@ REPO="$(printf 'board:\n  repo: a/b\n  terminal_command: ["open", "-a", "iTerm",
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.terminal_command
 assert_stdout_exact "A .fleet-board.yml board.terminal_command of open -a iTerm {dir} replaces the default as given" '["open","-a","iTerm","{dir}"]'
 TC_MSG="board.terminal_command"
-invalid_field_case "board.terminal_command not a list" $'board:\n  terminal_command: "open -a Terminal {dir}"' "$TC_MSG"
-invalid_field_case "board.terminal_command list of non-strings" $'board:\n  terminal_command: ["open", 5, "{dir}"]' "$TC_MSG"
-invalid_field_case "board.terminal_command list with no {dir}" $'board:\n  terminal_command: ["open", "-a", "iTerm"]' "$TC_MSG"
+invalid_field_case "board.terminal_command not a list" '  terminal_command: "open -a Terminal {dir}"' "$TC_MSG"
+invalid_field_case "board.terminal_command list of non-strings" '  terminal_command: ["open", 5, "{dir}"]' "$TC_MSG"
+invalid_field_case "board.terminal_command list with no {dir}" '  terminal_command: ["open", "-a", "iTerm"]' "$TC_MSG"
 
 echo ""
 echo "-----------------------------------"
