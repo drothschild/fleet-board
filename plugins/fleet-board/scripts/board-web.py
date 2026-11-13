@@ -564,8 +564,8 @@ def import_status(id: str) -> dict:
     return status
 
 
-def create_import(id: str, embed: bool) -> dict:
-    """Creates the previewed cards through import-plan.sh; once per import."""
+def create_import(id: str, embed: bool, status: str | None = None) -> dict:
+    """Creates the previewed cards through import-plan.sh, in the status column; once per import."""
     idir = import_dir(id)
     with import_lock(id):
         meta = read_json_file(idir / "meta.json") or {}
@@ -575,7 +575,7 @@ def create_import(id: str, embed: bool) -> dict:
         if state["state"] != "ready":
             raise ApiError(409, "import %s is %s, not ready" % (id, state["state"]))
         argv = ["bash", script("import-plan.sh"), str(idir / "cards.json")]
-        if meta.get("status") == "ready":
+        if (status or meta.get("status")) == "ready":
             argv += ["--status", "ready"]
         rc, out, err = run_script(APP["root"], argv, stdin="y\n" + ("e\n" if embed else "m\n"))
         created = [int(n) for n in CREATED_RE.findall(out)]
@@ -1563,7 +1563,10 @@ def create_import_cards(params, body):
     embed = body.get("embed_docs", False)
     if not isinstance(embed, bool):
         raise ApiError(400, "embed_docs must be a boolean")
-    return 200, create_import(params["id"], embed)
+    status = body.get("status")
+    if status is not None and status not in ("backlog", "ready"):
+        raise ApiError(400, "status must be backlog or ready")
+    return 200, create_import(params["id"], embed, status)
 
 
 def edit_import_card_route(params, body):
