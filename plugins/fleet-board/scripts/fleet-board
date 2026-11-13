@@ -183,7 +183,10 @@ case "$cmd" in
     handoff "$root" "$cmd" "$@"
     sroot="$(plugin_root supervisor.sh)" || exit 1
     dir="$(main_checkout)" || dir="$top"
-    (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach) || die 1 "the supervisor did not start"
+    if ! (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach); then
+      # An already-running supervisor is fine: serve the board against it.
+      (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1) || die 1 "the supervisor did not start"
+    fi
     exec bash "$root/scripts/board-web.sh" --repo "$top" "$@" ;;
   supervisor)
     root="$(plugin_root supervisor.sh)" || exit 1

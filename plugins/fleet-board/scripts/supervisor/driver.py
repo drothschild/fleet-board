@@ -670,6 +670,7 @@ class CardDriver:
         if not run.script:
             run.prompt = run.base_prompt = role_prompt(role, inputs, c.tmp)
         run.attempts_before = c.attempts_before if role == 'implementor' else None
+        run.guard = self._role_snapshot(card)
         self._launch(run)
         return 'session'
 
@@ -830,10 +831,9 @@ class CardDriver:
 
     def _reconcile(self, run, result, allow):
         c = run.c
-        if run.role == 'merger':
-            tripped = self._guard_tripped(run)
-            if tripped is not None:
-                return tripped
+        tripped = self._guard_tripped(run)
+        if tripped is not None:
+            return tripped
         if result.cancelled:
             return Outcome(c.n, False, False, None)
         if result.failure == 'provider':
@@ -1280,6 +1280,10 @@ class CardDriver:
                 self._persona_label(c): self._hash(self._persona_file(c)),
                 'card state': card.get('state')}
 
+    def _role_snapshot(self, card):
+        """What an implementor, reviewer or fixer session must leave alone: .fleet-board.yml and the card's state."""
+        return {'.fleet-board.yml': self._hash(self.root / '.fleet-board.yml'), 'card state': card.get('state')}
+
     @staticmethod
     def _hash(path):
         try:
@@ -1305,17 +1309,25 @@ class CardDriver:
     def _guard_tripped(self, run):
         """After a merger session: pause the board and set the card's attention when it changed a guarded thing."""
         c = run.c
+        guard = getattr(run, 'guard', None)
+        if not guard:
+            return None
         try:
             state = self._read_card(c).get('state')
         except _Fail:
             state = None
-        now = self._guard_snapshot(c, {'state': state})
-        changed = [name for name, value in run.guard.items() if now[name] != value]
+        now = (self._guard_snapshot(c, {'state': state}) if run.role == 'merger'
+               else self._role_snapshot({'state': state}))
+        changed = [name for name, value in guard.items() if now[name] != value]
         if not changed:
             return None
-        reason = 'merger session changed %s' % ', '.join(changed)
+        reason = '%s session changed %s' % (run.role, ', '.join(changed))
         self.state.pause(reason)
-        self._merger_attention(c, run.mode, reason, run.head)
+        if run.role == 'merger':
+            self._merger_attention(c, run.mode, reason, run.head)
+        else:
+            c.merge(dict(_RESET, role_guard={'role': run.role, 'status': 'attention', 'reason': reason}))
+            self.state.event('attention', card=c.n, role=run.role, reason=reason)
         return Outcome(c.n, False, False, None)
 
     def _persona(self, c, pr):
