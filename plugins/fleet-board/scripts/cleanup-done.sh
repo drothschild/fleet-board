@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# cleanup-done.sh - removes the worktrees of cards that reached done.
+# cleanup-done.sh - removes the worktrees of cards that reached done or wont_do.
 #
 # Usage: cleanup-done.sh
 #
-# Lists the done column (board-list.sh --allow-truncated done: a listing at
+# Lists the wont_do column too (same handling as done; if either column cannot
+# be listed nothing is removed). Lists the done column (board-list.sh --allow-truncated done: a listing at
 # the list limit is used with a warning, not refused). It then lists the
 # entries directly under the worktrees base once, locally, and keeps only the
 # done cards <n> with an entry named <n>-* there (<n>-<slug>, <n>-review,
@@ -56,6 +57,12 @@ BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resol
 LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" --allow-truncated done </dev/null)" || fb_die 1 "cannot list the done column; nothing removed"
 NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
   || fb_die 1 "cannot parse the done column; nothing removed"
+# Cards moved to Won't Do are finished too: their worktrees are cleaned the same way.
+WLIST="$(bash "$FLEET_SCRIPTS/board-list.sh" --allow-truncated wont_do </dev/null)" || fb_die 1 "cannot list the wont_do column; nothing removed"
+WNUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$WLIST" 2>/dev/null)" \
+  || fb_die 1 "cannot parse the wont_do column; nothing removed"
+NUMS="$NUMS
+$WNUMS"
 
 warn() { printf 'fleet-board: warning: %s\n' "$1" >&2; }
 exists() { [ -L "$1" ] || [ -e "$1" ]; }
@@ -76,7 +83,7 @@ done
 has_local() { case "$LOCAL" in *"$NL$1-"*) return 0 ;; esac; return 1; }
 
 RC=0
-for n in $NUMS; do
+for n in $NUMS; do # unquoted: word-splits the numbers
   if ! fb_valid_number "$n"; then
     warn "the done column lists a non-numeric card: $n"
     RC=1
