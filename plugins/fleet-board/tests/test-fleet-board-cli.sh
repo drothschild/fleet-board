@@ -402,6 +402,35 @@ contains "up outside a git repository: says so" "not inside a git repository" "$
 if [ -e "$UP_STATE2/started" ]; then fail "up outside a git repository: starts no supervisor" "supervisor was started"
 else pass "up outside a git repository: starts no supervisor"; fi
 
+# --- up: reuses a supervisor that is already running -----------------------
+# This fake behaves like the real one: start exits 1 "supervisor already running"
+# when a pid is recorded; status answers from the same record.
+RR="$TMP/roots/0.41.0"; mkdir -p "$RR/scripts"
+cp "$RU/scripts/board-web.sh" "$RR/scripts/board-web.sh"
+cat > "$RR/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start)
+    printf '%s\n' "$*" >> "$UP_STATE/supervisor-calls"
+    if [ -f "$UP_STATE/pid" ]; then echo "supervisor already running (pid $(cat "$UP_STATE/pid"))" >&2; exit 1; fi
+    echo 4242 > "$UP_STATE/pid"; exit 0 ;;
+  status) [ -f "$UP_STATE/pid" ]; exit $? ;;
+esac
+exit 0
+EOS
+HR="$TMP/home-reuse"; make_home "$HR" "user||$RR|0.41.0"
+REPO_RE="$TMP/work/repo-reuse"; make_repo "$REPO_RE"
+RE_STATE="$TMP/re-state"; mkdir -p "$RE_STATE"; echo 4242 > "$RE_STATE/pid"
+PORT_RE="$(free_port)"
+(cd "$REPO_RE" && HOME="$HR" UP_STATE="$RE_STATE" bash "$LAUNCHER" up --port "$PORT_RE" >/dev/null 2>&1) &
+RE_PID=$!
+wait_port "$PORT_RE"
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_RE/api/board")"
+check "up with a supervisor already running: serves the board (GET /api/board returns 200)" 200 "$code"
+check "up with a supervisor already running: the supervisor's pid is unchanged" 4242 "$(cat "$RE_STATE/pid")"
+check "up with a supervisor already running: starts no second supervisor (pid file written once)" 1 "$(grep -c . "$RE_STATE/pid")"
+pkill -P "$RE_PID" 2>/dev/null; kill "$RE_PID" 2>/dev/null; wait "$RE_PID" 2>/dev/null
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
