@@ -131,6 +131,8 @@ prepare() {
 
   # Step 4: init, with the throwaway config written elsewhere
   local initdir; initdir="$(mktemp -d)"
+  # init installs the fleet-board command: keep it out of the real ~/.local/bin
+  export FLEET_BOARD_BIN_DIR="$WORK/bin"
   bash "$S/init.sh" --repo "$SANDBOX_REPO" --test-one "node --test {file}" \
     --dir "$initdir" >/dev/null 2>"$WORK/init.err" || bl_die "init.sh failed: $(cat "$WORK/init.err")"
   rm -rf "$initdir"

@@ -46,7 +46,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
 
 4. **Write one small card** on the board page (see [Local board](#local-board)): a title, a body, and testable acceptance items (see [Writing a card](#writing-a-card)). Add the `needs-human-qa` label to check the result by hand before any PR is marked ready.
 5. **Move it to Ready.**
-6. **Start the supervisor**: press Start on the board page, or run `supervisor.sh start --detach` (see [Running the supervisor](#running-the-supervisor)).
+6. **Start the supervisor**: press Start on the board page, or run `fleet-board supervisor start --detach` (see [Running the supervisor](#running-the-supervisor)).
 7. **Watch it move.** With a clean review:
 
    | Step | Card | What appears |
@@ -158,13 +158,15 @@ The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `
 
 ## Running the supervisor
 
-The supervisor dispatches the board's work until you stop it. Find its path on the last line of `/fleet-board:status`, then from the repo root:
+The supervisor dispatches the board's work until you stop it. Run it from anywhere in the repo; it runs from the repo root (the main checkout, even from a worktree):
 
 ```bash
-bash <path from /fleet-board:status> start --detach   # or Start on the board page
-bash <path> status
-bash <path> stop                                     # finish running sessions, then exit
+fleet-board supervisor start --detach   # or Start on the board page
+fleet-board supervisor status
+fleet-board supervisor stop             # finish running sessions, then exit
 ```
+
+`fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version that has the script it needs, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. When that version ships a newer launcher, the copy runs it instead. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository, or pins a version; when a per-project install record names a different version, the launcher says so on stderr.
 
 Before it starts, it checks for cards a crashed run left behind and refuses to start (exit 4) until you resolve them (`stuck`, `stuck --release N`). It stops on its own after `limits.max_hours`, pauses admissions at `limits.max_tokens` (cache reads are shown but not counted), and counts tokens only. Under `merge.policy: auto` it merges reviewed, non-draft, green PRs that need no Human QA, one at a time, and moves their cards to Done; under `human` (the default) it merges nothing. Pause, resume, limits, the startup check and scheduling are in [docs/overnight.md](docs/overnight.md).
 
@@ -182,16 +184,16 @@ The board is always local: cards are JSON files under `<repo>/.fleet-board/`, wh
 
 `board-read.sh <n>` prints them next to the prose body. `pr_url` follows the manager note's `pr`: when the note records a PR, the card gets its URL; a URL you set yourself in the drawer is kept until a note names a different PR. A body you give `board-create.sh` or import with `## Acceptance` and `## Depends on` sections is split into the fields, so plans written the old way still import.
 
-Open the page from the repo root with the `board-web.sh` beside the supervisor (its path is the last line of `/fleet-board:status`):
+Open the page from anywhere in the repo:
 
 ```bash
-bash <directory of that path>/board-web.sh --repo .
+fleet-board board
 ```
 
 It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 - **Cards.** Drag a card to another column, or click it to open the drawer and edit its title, body, labels, state, Acceptance list, Blocked by chips and PR link. The state select in the drawer is the keyboard path. A card shows `blocked by #n` in amber while a blocker is open, and its PR link. A card lights up while a role works on it.
-- **Start and Stop.** The board page's Start, Pause, Resume and Stop drive the command-line supervisor (`scripts/supervisor.sh`). Start launches one in the background, the same as `supervisor.sh start --detach`, or resumes a paused one; Stop offers Drain and Cancel. A supervisor started from a terminal shows up too. The token strip shows tokens for this run, all time, and the planner. A card's drawer breaks its tokens down by column and action. Cards a crashed run left behind get a red border and a STUCK label, with a line that says how to resolve each (`supervisor.sh stuck --release N`). A banner gives the count, and Start stays disabled until they are resolved. The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it).
+- **Start and Stop.** The board page's Start, Pause, Resume and Stop drive the command-line supervisor (`fleet-board supervisor`, which runs `scripts/supervisor.sh`). Start launches one in the background, the same as `fleet-board supervisor start --detach`, or resumes a paused one; Stop offers Drain and Cancel. A supervisor started from a terminal shows up too. The token strip shows tokens for this run, all time, and the planner. A card's drawer breaks its tokens down by column and action. Cards a crashed run left behind get a red border and a STUCK label, with a line that says how to resolve each (`fleet-board supervisor stuck --release N`). A banner gives the count, and Start stays disabled until they are resolved. The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it).
 - **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
 - **Who you are.** The author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
 - **Rate limits.** The board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain; a GitHub rate limit holds new work until it resets (`limits.rate_limit_max_wait`).
@@ -202,7 +204,7 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaults to `github-labels`, so deleting the key before updating would quietly switch a local board to GitHub labels.
 
-0. Stop a running supervisor first (`supervisor.sh stop`, and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
+0. Stop a running supervisor first (`fleet-board supervisor stop`, and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
 1. Update the plugin (`/plugin marketplace update fleet-board`, then update or reinstall it) and start a new session.
 2. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 naming the key until you do.
 3. Run `migrate-card-fields.sh` on the local store. If your cards are GitHub issues (`backend: github-labels`, `github-projects`, or no `backend` key: the old default was labels), skip this step and follow "Moving an existing GitHub board" below instead.

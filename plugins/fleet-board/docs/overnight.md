@@ -2,23 +2,15 @@
 
 Run the supervisor with `--detach`. The supervisor (`scripts/supervisor.sh`) is a process you start yourself. It plans with `tick-plan.sh --candidates`, starts each role (implementor, reviewer, fixer, merger) as a headless `claude -p --agent` session, runs provider review stages and the merge lane, and keeps going until you stop it. It keeps all of its state in memory: no database, no OS service, no boot registration.
 
-## Finding the supervisor
-
-Run `/fleet-board:status`. Its last line is:
-
-```
-Supervisor: <absolute path to supervisor.sh>
-```
-
-Use that path. The install location depends on the machine and the plugin version, so these docs do not write it down.
-
 ## Starting it
 
-From the repo root:
+From the repo:
 
 ```bash
-bash <path from /fleet-board:status> start --detach
+fleet-board supervisor start --detach
 ```
+
+`fleet-board` is the launcher `/fleet-board:init` installs in `~/.local/bin`; it runs the plugin's newest installed `supervisor.sh` with the arguments you give it. Without it, `/fleet-board:status` ends with `Supervisor: <absolute path to supervisor.sh>`, and `bash <that path> start --detach` does the same.
 
 `--detach` starts the supervisor in the background, writes its output to `supervisor.log` in the log directory (`$HOME/.fleet-board/runs/`, or `$FLEET_BOARD_LOG_DIR`), and returns once the new process reports that its startup check is done, within 30 seconds. Without `--detach` it runs in the foreground until Ctrl-C, `kill` or `stop`.
 
@@ -29,8 +21,8 @@ The board page's Start does the same as `start --detach`, and resumes a paused s
 Before it admits any work, `start` looks for cards a crashed run left behind: a card in `in_progress` or `merging` that no session owns, an active marker, a worktree with uncommitted changes, a lock whose holder is gone, or an unreadable note. It prints each one (`#<n> <kind>: <detail>`), notes it on the card, and exits 4 without starting. Resolve each card by moving it, or with `stuck --release N`, which returns the card to its last stable column and clears its marker without touching its branch or PR. `start --ignore-stuck` starts anyway and keeps those cards out of admission.
 
 ```bash
-bash <path> stuck            # list them (--json for JSON)
-bash <path> stuck --release 12
+fleet-board supervisor stuck            # list them (--json for JSON)
+fleet-board supervisor stuck --release 12
 ```
 
 ### One supervisor per repository
@@ -40,12 +32,12 @@ bash <path> stuck --release 12
 ## While it runs
 
 ```bash
-bash <path> status           # mode, phase, active sessions, tokens (--json for JSON)
-bash <path> pause            # admit nothing new; running sessions finish
-bash <path> resume
-bash <path> usage            # token totals from the usage ledger (--card N for one card)
-bash <path> stop             # --drain (the default): finish running sessions, then exit
-bash <path> stop --cancel    # end every session now and return each card to its column
+fleet-board supervisor status           # mode, phase, active sessions, tokens (--json for JSON)
+fleet-board supervisor pause            # admit nothing new; running sessions finish
+fleet-board supervisor resume
+fleet-board supervisor usage            # token totals from the usage ledger (--card N for one card)
+fleet-board supervisor stop             # --drain (the default): finish running sessions, then exit
+fleet-board supervisor stop --cancel    # end every session now and return each card to its column
 ```
 
 ## Limits
@@ -96,6 +88,6 @@ It first lists the worktrees directory locally and reads the board only for done
 
 ## Scheduling
 
-The plugin ships no service file and registers nothing at boot. To start the supervisor on a schedule, have your own scheduler (launchd, cron, a terminal multiplexer) run `bash <path> start --detach` from the repo root, with a `PATH` that has `claude`, `gh`, `jq` and `python3`. The plugin path changes when the plugin updates: after an update, run `/fleet-board:status` again and fix the path.
+The plugin ships no service file and registers nothing at boot. To start the supervisor on a schedule, have your own scheduler (launchd, cron, a terminal multiplexer) run `fleet-board supervisor start --detach` from the repo root, with a `PATH` that has `fleet-board`, `claude`, `gh`, `jq` and `python3`. The launcher finds the newest installed plugin on every run, so plugin updates need no change to the scheduler.
 
 The design is in `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md` in the fleet-board repository.
