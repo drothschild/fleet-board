@@ -15,8 +15,9 @@
 # automatic merge only in version files, each of which, with its "version" values
 # masked, is the clean three-way merge of the masked parents. Only the top-level
 # "version" and a marketplace's plugins[].version may change, each to a semver
-# value strictly above the old one (for a merge: one side's value, or above
-# both); any other "version", such as a nested source pin, is content to review.
+# value strictly above the old one (for a merge: the three-way result of the two
+# sides, or above both); any other "version", such as a nested source pin, must
+# stay as it was (a merge: the three-way result). A repeated key is refused.
 # Prints "unreviewed" for anything else:
 # a non-merge commit, a merge that needed conflict resolution or carries extra
 # changes, a chain that does not lead back to <reviewed-sha>, or commits git
@@ -54,7 +55,7 @@ need() {
   local s
   for s in "$@"; do
     have "$s" && continue
-    [ "$FETCHED" = 1 ] || { FETCHED=1; git fetch -q origin >/dev/null 2>&1 || true; }
+    [ "$FETCHED" = 1 ] || { FETCHED=1; git fetch -q origin </dev/null >/dev/null 2>&1 || true; }
     have "$s" || return 1
   done
 }
@@ -95,18 +96,28 @@ raise_ok() {
       | all(vk_all([$a, $b])[]; . as $p | vk_get($a; $p) as $x | vk_get($b; $p) as $y
           | $x == $y or (vk_ok($p) and ($x | sv_valid) and ($y | sv_valid) and sv_cmp($y; $x) > 0)))' >/dev/null 2>&1
 }
-# resolve_ok <ours> <theirs> <result>: exit 0 when the three parse and every
-# "version" value in the result is one side's value, or an allowed key whose value
-# is semver and strictly above both sides' values
+# resolve_ok <ours> <theirs> <base> <result>: exit 0 when the four parse and every
+# "version" value in the result is the three-way merge of the two sides over the
+# base (the side that changed it, or both when they agree), or an allowed key whose
+# value is semver and strictly above both sides' values
 resolve_ok() {
-  jq -e -n --slurpfile o "$1" --slurpfile t "$2" --slurpfile r "$3" "$VJQ $VKEYS"'
-    ($o | length) == 1 and ($t | length) == 1 and ($r | length) == 1
-    and ($o[0] as $a | $t[0] as $b | $r[0] as $c
-      | all(vk_all([$a, $b, $c])[]; . as $p
-          | vk_get($a; $p) as $x | vk_get($b; $p) as $y | vk_get($c; $p) as $z
-          | $z == $x or $z == $y
+  jq -e -n --slurpfile o "$1" --slurpfile t "$2" --slurpfile w "$3" --slurpfile r "$4" "$VJQ $VKEYS"'
+    ($o | length) == 1 and ($t | length) == 1 and ($w | length) == 1 and ($r | length) == 1
+    and ($o[0] as $a | $t[0] as $b | $w[0] as $m | $r[0] as $c
+      | all(vk_all([$a, $b, $m, $c])[]; . as $p
+          | vk_get($a; $p) as $x | vk_get($b; $p) as $y | vk_get($m; $p) as $v | vk_get($c; $p) as $z
+          | (if $x == $y then [$x] elif $x == $v then [$y] elif $y == $v then [$x] else [] end) as $e
+          | ($e | length == 1 and .[0] == $z)
             or (vk_ok($p) and ($z | sv_valid) and ($x | sv_valid) and ($y | sv_valid)
                 and sv_cmp($z; $x) > 0 and sv_cmp($z; $y) > 0)))' >/dev/null 2>&1
+}
+# vcount_ok <file>: exit 0 when every "version" string key jq sees is on a line of
+# its own and no key is repeated (jq keeps only the last of duplicate keys)
+vcount_ok() {
+  local lines keys
+  lines="$(grep -cE '^[[:blank:]]*"version"[[:blank:]]*:[[:blank:]]*"[^"]*"[[:blank:]]*,?[[:blank:]]*'"$(printf '\r')"'?$' "$1")"
+  keys="$(jq '[paths(type == "string") | select(length > 0 and .[-1] == "version")] | length' "$1" 2>/dev/null)" || return 1
+  [ "$lines" = "$keys" ]
 }
 
 # version_raise <sha> <parent>: exit 0 when the commit modified only version files,
@@ -119,7 +130,7 @@ version_raise() {
     [ "$st" = M ] && vf_one "$p" || return 1
     blob "$c" "$p" "$VT/new" && blob "$par" "$p" "$VT/old" || return 1
     [ "$(mask < "$VT/new")" = "$(mask < "$VT/old")" ] || return 1
-    raise_ok "$VT/old" "$VT/new" || return 1
+    vcount_ok "$VT/new" && raise_ok "$VT/old" "$VT/new" || return 1
   done <<<"$list"
 }
 
@@ -145,23 +156,28 @@ $(sed -n '2,/^$/p' <<<"$mt")"
     mask < "$VT/o" > "$VT/om"; mask < "$VT/b" > "$VT/bm"; mask < "$VT/t" > "$VT/tm"
     git merge-file -p "$VT/om" "$VT/bm" "$VT/tm" > "$VT/mm" 2>/dev/null || return 1
     [ "$(mask < "$VT/res")" = "$(cat "$VT/mm")" ] || return 1
-    resolve_ok "$VT/o" "$VT/t" "$VT/res" || return 1
+    vcount_ok "$VT/res" && resolve_ok "$VT/o" "$VT/t" "$VT/b" "$VT/res" || return 1
   done <<<"$paths"
 }
 
-# on_base <sha>: exit 0 when the commit is on the base branch the PR merges into
-# (origin/HEAD, else origin/main, else origin/master), fetching once if needed
-on_base() {
-  local ref try
-  for try in 1 2; do
-    for ref in refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master; do
-      git rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1 || continue
-      git merge-base --is-ancestor "$1" "$ref" 2>/dev/null && return 0
-    done
-    [ "$FETCHED" = 1 ] && return 1
-    FETCHED=1; git fetch -q origin >/dev/null 2>&1 || return 1
+# base_ref: the one base branch ref: origin/HEAD when it exists, else origin/main,
+# else origin/master. Never more than one, so a pushed branch that only shares a
+# fallback name (a "master" in a main repository) is not a base.
+base_ref() {
+  local ref
+  for ref in refs/remotes/origin/HEAD refs/remotes/origin/main refs/remotes/origin/master; do
+    git rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1 && { echo "$ref"; return 0; }
   done
   return 1
+}
+# on_base <sha>: exit 0 when the commit is on the base branch (base_ref), fetching
+# once if it is not there yet
+on_base() {
+  local ref
+  ref="$(base_ref)" && git merge-base --is-ancestor "$1" "$ref" 2>/dev/null && return 0
+  [ "$FETCHED" = 1 ] && return 1
+  FETCHED=1; git fetch -q origin </dev/null >/dev/null 2>&1 || return 1
+  ref="$(base_ref)" && git merge-base --is-ancestor "$1" "$ref" 2>/dev/null
 }
 
 oldest_parent=""

@@ -84,7 +84,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   set, a version-only change: a single-parent commit that changes only whole-line
   `"version"` values in version files, or a merge of the base that differs from the
   automatic merge only that way. Only the top-level `version` and `plugins[].version` may
-  change, each to semver strictly above the old value (a merge: one side's, or above both)
+  change, each to semver strictly above the old value (a merge: the three-way result, or above both sides);
+  every other `"version"` must equal the three-way result, and no key may be repeated
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
 - **Scope reservations.** A normal plan supplements open cards' declared Scope paths
