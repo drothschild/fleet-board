@@ -559,7 +559,23 @@ assert_stdout_exact_jq "stages: explicit values kept" '.review.stages[0]' \
   '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"required_passes":1,"brief":"Check copy.","timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_stdout_exact_jq "stages: empty by default" '.review.stages' '[]'
+assert_stdout_exact_jq "stages: with no review.stages, documentation and blast_radius are built in with default true and the shipped agents" \
+  '.review.stages | map({name, agent, default})' \
+  '[{"name":"documentation","agent":"fleet-board:documentation-reviewer","default":true},{"name":"blast_radius","agent":"fleet-board:blast-radius-reviewer","default":true}]'
+# a project stage named documentation replaces the built-in one
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: documentation, agent: "acme:docs", model: sonnet } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: project documentation stage is valid" 0
+assert_stdout_exact_jq "stages: a project stage named documentation replaces the built-in one" \
+  '[.review.stages[] | select(.name == "documentation") | .agent]' '["acme:docs"]'
+assert_stdout_exact_jq "stages: replacing documentation keeps the blast_radius built-in" \
+  '.review.stages | map(.name) | sort' '["blast_radius","documentation"]'
+# a stage entry with enabled: false removes the built-in
+REPO="$(printf 'board:\n  repo: a/b\nreview:\n  stages:\n    - name: blast_radius\n      enabled: false\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: enabled false entry is valid" 0
+assert_stdout_exact_jq "stages: a stage entry name blast_radius with enabled false removes that stage from the printed config" \
+  '.review.stages | map(.name)' '["documentation"]'
 invalid_field_case "stages not a list" 'review: { stages: 3 }' "review.stages must be a list"
 invalid_field_case "stage bad name" 'review: { stages: [ { name: "Sec-1", agent: a } ] }' "review.stages[0].name must match ^[a-z][a-z0-9_]*$"
 invalid_field_case "stage duplicate name" 'review: { stages: [ { name: s, agent: a }, { name: s, agent: b } ] }' "review.stages[1].name s is not unique"
