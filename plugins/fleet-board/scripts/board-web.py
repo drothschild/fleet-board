@@ -25,6 +25,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socketserver
 import subprocess
 import sys
@@ -545,6 +546,10 @@ def record_import_usage(idir: Path):
 def import_status(id: str) -> dict:
     """running while the session lives; ready when cards.json parses; failed otherwise."""
     idir = import_dir(id)
+    if (read_json_file(idir / "meta.json") or {}).get("cancelled"):
+        return {"state": "cancelled", "elapsed_s": import_elapsed(idir, False),
+                "last_text": last_session_text(idir / "session.jsonl"),
+                "cards": None, "table": None, "error": None}
     with _IMPORT_LOCK:
         proc = _IMPORTS.get(id)
         if proc is not None:
@@ -573,6 +578,46 @@ def import_status(id: str) -> dict:
         return status
     status.update(state="ready", cards=cards, table=table)
     return status
+
+
+def cancel_import(id: str) -> dict:
+    """TERMs the session's process group (KILL after 5 s) and marks the import cancelled."""
+    idir = import_dir(id)
+    with _IMPORT_LOCK:
+        state = import_status(id)["state"]
+        if state != "running":
+            raise ApiError(409, "import %s is %s, not running" % (id, state))
+        meta = read_json_file(idir / "meta.json") or {}
+        pid = meta.get("pid")
+        meta["cancelled"] = True
+        write_private(idir / "meta.json", json.dumps(meta))
+        proc = _IMPORTS.get(id)
+    if isinstance(pid, int) and pid > 1:
+        def gone():
+            if proc is not None:
+                return proc.poll() is not None
+            return not pid_alive(pid, meta.get("pid_start") or "")
+        errors = []
+        for sig, wait in ((signal.SIGTERM, 5.0), (signal.SIGKILL, 2.0)):
+            try:
+                os.killpg(pid, sig)
+            except OSError as exc:
+                # No such group (or refused): signal the session leader itself.
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+                except OSError as exc2:
+                    errors.append("%s: %s / %s" % (sig.name, exc.strerror, exc2.strerror))
+            deadline = time.time() + wait
+            while not gone() and time.time() < deadline:
+                time.sleep(0.05)
+            if gone():
+                break
+        if not gone():
+            raise ApiError(500, "import %s session pid %d did not stop%s"
+                           % (id, pid, (" (" + "; ".join(errors) + ")") if errors else ""))
+    return {"state": "cancelled"}
 
 
 def create_import(id: str, embed: bool, status: str | None = None) -> dict:
@@ -1590,6 +1635,10 @@ def edit_import_card_route(params, body):
     return 200, edit_import_card(params["id"], params["key"], body)
 
 
+def cancel_import_session(params, body):
+    return 200, cancel_import(params["id"])
+
+
 # --- handler and route dispatch -----------------------------------------------
 
 # (method, path regex, controller); the n group becomes an int, id stays a string.
@@ -1612,6 +1661,7 @@ ROUTES = [
     ("POST", r"/api/import", post_import),
     ("GET", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_import),
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
+    ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cancel", cancel_import_session),
     ("PATCH", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cards/(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)", edit_import_card_route),
 ]
 PAGE_ROUTES = [r"/", r"/cards/\d+"]

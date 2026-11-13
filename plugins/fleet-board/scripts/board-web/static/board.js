@@ -1784,8 +1784,25 @@ function openDraft(id, text) {
   imp.timer = setTimeout(function () { pollImport(id); }, IMPORT_POLL_MS);
 }
 
+// cancelImportSession(id): asks the server to stop a grouping session; errors are ignored.
+function cancelImportSession(id) {
+  return writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/cancel", {}).catch(function () {});
+}
+
+// discardImport(): Discard / Escape. While grouping, cancels the server session
+// first, then closes.
+async function discardImport() {
+  const imp = S.imp;
+  if (imp && imp.phase === "running" && imp.id && !imp.cancelling) {
+    imp.cancelling = true;
+    clearTimeout(imp.timer);
+    await cancelImportSession(imp.id);
+  }
+  if (S.imp === imp) closeImport();
+}
+
 // closeImport(): back to the chat the draft came from, or to the board. Nothing
-// is created; a session still running on the server is left to finish.
+// is created; it does not cancel a session (discardImport does that).
 function closeImport() {
   const imp = S.imp;
   if (!imp) return;
@@ -2169,7 +2186,13 @@ function bindImport() {
   $("imp-detail").addEventListener("keydown", function (e) {
     if (e.key === "Escape") closeImportDetail();
   });
-  $("imp-discard").addEventListener("click", closeImport);
+  $("imp-discard").addEventListener("click", discardImport);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && S.imp && S.imp.phase === "running" && !S.drawer && !e.defaultPrevented) {
+      e.preventDefault();
+      discardImport();
+    }
+  });
   $("imp-create").addEventListener("click", function () {
     if (S.imp) createImport(S.imp.id);
   });
