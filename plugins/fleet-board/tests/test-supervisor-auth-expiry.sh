@@ -44,13 +44,15 @@ class Auth(lc.LoopCase):
             self.until(lambda: self.count() == n, what='session %d' % n)
             self.until(self.health, what='unhealthy after session %d' % n)
             self.until(lambda: self.mode() == 'paused', what='admissions paused')
-            self.b.state.resume()
-            self.sup.wake('test')
-        self.until(lambda: self.count() == 3 and self.mode() == 'paused', what='the third pause')
+            if n < 3:
+                self.b.state.resume()
+                self.sup.wake('test')
+        time.sleep(1.5)
+        self.assertEqual((self.count(), self.mode()), (3, 'paused'), 'nothing starts again before resume')
         note = self.b.note()
         self.assertEqual(note.get('implementor_attempts') or 0, 0)
         self.assertEqual(note.get('action_failures') or 0, 0)
-        self.assertEqual(self.b.card(12)['state'], 'ready')
+        self.assertEqual(self.b.card(12)['state'], 'in_progress', 'the card is not moved to Blocked')
 
     def test_the_provider_is_unhealthy_with_the_message_and_nothing_starts_until_resume(self):
         self.b.plans(FAIL, {'report': 'implementor-ok'})
