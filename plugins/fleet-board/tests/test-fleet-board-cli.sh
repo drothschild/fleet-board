@@ -525,6 +525,61 @@ check "up on SIGINT with a supervisor already running: it is still running (stat
 if [ -f "$DK/stop-calls" ]; then fail "up on SIGINT with a supervisor already running: no stop requested" "$(cat "$DK/stop-calls")"
 else pass "up on SIGINT with a supervisor already running: no stop requested"; fi
 
+# --- up: a second SIGINT during the drain cancels instead of waiting ---------
+# This fake supervisor's drain takes about 8 seconds; stop --cancel ends it at once.
+RC="$TMP/roots/0.44.0"; mkdir -p "$RC/scripts"
+cp "$RU/scripts/board-web.sh" "$RC/scripts/board-web.sh"
+cat > "$RC/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start)
+    if [ -f "$UP_STATE/pid" ]; then echo "supervisor already running" >&2; exit 1; fi
+    echo 4242 > "$UP_STATE/pid"; exit 0 ;;
+  status) [ -f "$UP_STATE/pid" ]; exit $? ;;
+  stop)
+    printf '%s\n' "$*" >> "$UP_STATE/stop-calls"
+    case "$*" in
+      *--cancel*) rm -f "$UP_STATE/pid" ;;
+      *) ( sleep 8; rm -f "$UP_STATE/pid" ) >/dev/null 2>&1 & ;;
+    esac
+    exit 0 ;;
+esac
+exit 0
+EOS
+HC="$TMP/home-cancel"; make_home "$HC" "user||$RC|0.44.0"
+CS="$TMP/cancel-state"; mkdir -p "$CS"
+CREPO="$TMP/work/repo-cancel"; make_repo "$CREPO"
+CPORT="$(free_port)"
+CRES="$(python3 - "$CPORT" "$CREPO" "$CS" "$HC" "$LAUNCHER" "$TMP/cancel-out" <<'EOPY'
+import os, signal, subprocess, sys, time, urllib.request
+port, repo, state, home, launcher, out = sys.argv[1:]
+env = dict(os.environ, HOME=home, UP_STATE=state)
+p = subprocess.Popen(["bash", launcher, "up", "--port", port], cwd=repo, env=env,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT,
+                     preexec_fn=lambda: [signal.signal(s, signal.SIG_DFL) for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)])
+for _ in range(100):
+    try: urllib.request.urlopen("http://127.0.0.1:%s/api/board" % port); break
+    except Exception: time.sleep(0.1)
+time.sleep(0.3)
+p.send_signal(signal.SIGINT)
+for _ in range(100):
+    if "draining" in open(out).read(): break
+    time.sleep(0.1)
+time.sleep(0.5)
+t0 = time.time()
+p.send_signal(signal.SIGINT)
+try: rc = p.wait(timeout=20)
+except subprocess.TimeoutExpired: p.kill(); rc = "timeout"
+print("%s %d" % (rc, int(time.time() - t0)))
+EOPY
+)"
+check "up: a second SIGINT during the drain: exits 0" 0 "${CRES%% *}"
+check "up: a second SIGINT during the drain: sends a cancel stop to the supervisor" 1 "$(grep -c -- '--cancel' "$CS/stop-calls" 2>/dev/null)"
+if [ -f "$CS/pid" ]; then fail "up: a second SIGINT during the drain: exits only once the supervisor is not running" "supervisor still running when up exited"
+else pass "up: a second SIGINT during the drain: exits only once the supervisor is not running"; fi
+if [ "${CRES##* }" -lt 5 ] 2>/dev/null; then pass "up: a second SIGINT during the drain: does not wait for the drain to finish"
+else fail "up: a second SIGINT during the drain: does not wait for the drain to finish" "result: $CRES"; fi
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
