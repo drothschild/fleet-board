@@ -551,7 +551,8 @@ class CardDriver:
         branch, worktree = c.branch(), c.worktree()
         attempts = c.note().get('implementor_attempts')
         c.attempts_before = attempts if isinstance(attempts, int) else 0
-        patch = {'implementor_attempts': c.attempts_before + 1, 'branch': branch, 'worktree': worktree}
+        patch = {'implementor_attempts': c.attempts_before + 1, 'branch': branch, 'worktree': worktree,
+                 'cancelled': None}
         patch.update(c.models_patch(strict=False))
         c.merge(patch)
         c.step('worktree.sh', 'create', c.n, branch, worktree)
@@ -933,6 +934,12 @@ class CardDriver:
         if role == 'implementor' and _posint(parsed.get('pr')):
             patch['pr'] = parsed['pr']
         c.merge(patch)
+        if role == 'implementor' and status != 'blocked' and _posint(parsed.get('pr')):
+            # The session ended normally with a PR: the card leaves In Progress now, since a stop means no later
+            # cycle plans start_review.
+            c.step('review-stages.sh', 'route', c.n, parsed['pr'])
+            c.move('in_review')
+            c.merge({'state': 'in_review', 'round': 1})
         if status == 'blocked':
             self._blocked(run, parsed, final)
         self._followups(run, parsed, note)
