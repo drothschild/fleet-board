@@ -328,6 +328,49 @@ assert_stdout_exact "review-only: #22 cleaned" "cleaned #22 $BASE/22-x"
 assert_false "review-only: 22-review gone" test -e "$BASE/22-review"
 assert_true "review-only: dirs with spaces untouched" test -d "$BASE/2 22-x"
 
+# ---------------------------------------------------------------------------
+# wont_do cards: their worktrees are removed the same way a done card's is.
+
+# wont_do_case: #30 is wont_do with a card worktree, a review worktree and a
+# review copy; the done column holds only #13 (clean). #14 stays in_review.
+wont_do_case() {
+  setup_case "${1:-}"
+  worktrees 30
+  card 30 fleet:wont_do "$(note_wt "$BASE/30-x")"
+  list_route wont_do all "[$(item 30 fleet:wont_do)]"
+  done_only 13 17
+}
+
+wont_do_case
+run_check
+assert_exit "wont_do-card: exit 0" 0
+assert_stdout_exact "wont_do-card: #30 cleaned like a done card" "cleaned #30 $BASE/30-x"
+assert_false "wont_do-card: card worktree gone" test -e "$BASE/30-x"
+assert_false "wont_do-card: review worktree gone" test -e "$BASE/30-review"
+assert_false "wont_do-card: review copy gone" test -e "$BASE/30-review-copy"
+assert_false "wont_do-card: git no longer lists the card worktree" wt_listed "$BASE/30-x"
+assert_true "wont_do-card: the branch survives" git -C "$REPO" rev-parse -q --verify refs/heads/fleet/30-x
+run_check
+assert_stdout_exact "wont_do-card: second run cleans nothing" ""
+
+# a card in any other column keeps its worktree (#14 in_review, #12 not listed)
+wont_do_case
+run_check
+assert_true "other-column: in_review worktree untouched" test -d "$BASE/14-x"
+assert_true "other-column: in_review review worktree untouched" test -d "$BASE/14-review"
+assert_true "other-column: in_review copy untouched" test -f "$BASE/14-review-copy/file"
+assert_true "other-column: unlisted #12 worktree untouched" test -d "$BASE/12-x"
+
+# the wont_do column cannot be listed: exit 1, nothing removed (done cards too)
+wont_do_case "$(printf 'issue list --repo acme/toy --label fleet:wont_do *\t1\t-\n')
+"
+done_only 12 13 17
+run_check
+assert_exit "wont_do-list-failure: exit 1" 1
+assert_stdout_exact "wont_do-list-failure: nothing printed" ""
+assert_true "wont_do-list-failure: #30 worktree untouched" test -d "$BASE/30-x"
+assert_true "wont_do-list-failure: done #12 worktree untouched" test -d "$BASE/12-x"
+
 # Usage
 run_check --bogus
 assert_exit "unknown argument: exit 2" 2
