@@ -27,9 +27,9 @@ read them rather than relying on this summary.
 
 ## Plans
 
-Implementation plans are in `docs/superpowers/plans/`, each with its design spec in
-`docs/superpowers/specs/`. Read both. Work a plan task by task, in order, ticking each
+Implementation plans are in `docs/plans/`, each with its design spec in
+`docs/specs/`. Read both. Work a plan task by task, in order, ticking each
 step's checkbox in the plan file as you finish it, and commit after each task.
 
-Current plan: `docs/superpowers/plans/2026-11-06-codex-evidence-reviewer.md`
-(spec: `docs/superpowers/specs/2026-11-06-codex-evidence-reviewer-design.md`).
+Current plan: `docs/plans/2026-11-06-codex-evidence-reviewer.md`
+(spec: `docs/specs/2026-11-06-codex-evidence-reviewer-design.md`).

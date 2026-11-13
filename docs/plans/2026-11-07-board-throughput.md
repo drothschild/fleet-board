@@ -6,7 +6,7 @@
 
 **Tech Stack:** Bash 3.2, jq, plain-bash offline tests.
 
-**Spec:** `docs/superpowers/specs/2026-11-07-board-throughput-design.md`
+**Spec:** `docs/specs/2026-11-07-board-throughput-design.md`
 
 ## Task 1: Merge draining and verification
 - [x] Add failing regressions to tests/test-merge-reviewed.sh and focused planner tests; run and commit tests.
