@@ -46,7 +46,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
 
 4. **Write one small card** on the board page (see [Local board](#local-board)): a title, a body, and testable acceptance items (see [Writing a card](#writing-a-card)). Add the `needs-human-qa` label to check the result by hand before any PR is marked ready.
 5. **Move it to Ready.**
-6. **Start the supervisor**: press Start on the board page, or run `fleet-board supervisor start --detach` (see [Running the supervisor](#running-the-supervisor)).
+6. **Start the supervisor**: run `fleet-board up` (it starts the supervisor and serves the board page), press Start on the board page, or run `fleet-board supervisor start --detach` (see [Running the supervisor](#running-the-supervisor)).
 7. **Watch it move.** With a clean review:
 
    | Step | Card | What appears |
@@ -199,10 +199,13 @@ The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `
 The supervisor dispatches the board's work until you stop it. Run it from anywhere in the repo; it runs from the repo root (the main checkout, even from a worktree):
 
 ```bash
+fleet-board up                          # start the supervisor and serve the board page
 fleet-board supervisor start --detach   # or Start on the board page
 fleet-board supervisor status
 fleet-board supervisor stop             # finish running sessions, then exit
 ```
+
+`fleet-board up [--port N]` starts the supervisor in the background, then serves the board page. Ctrl-C drains the supervisor it started: running sessions finish, then both exit, and a second Ctrl-C cancels instead of waiting. A supervisor that was already running is left alone.
 
 `fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version that has the script it needs, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. When that version ships a newer launcher, the copy runs it instead. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository, or pins a version; when a per-project install record names a different version, the launcher says so on stderr.
 
@@ -227,6 +230,8 @@ Open the page from anywhere in the repo:
 ```bash
 fleet-board board
 ```
+
+`fleet-board up` serves the same page after starting the supervisor (see [Running the supervisor](#running-the-supervisor)).
 
 It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
