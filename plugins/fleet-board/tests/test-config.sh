@@ -798,7 +798,7 @@ assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"
 REPO="$(make_test_repo supervisor-default.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor defaults accepted" 0
-assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{},"scope_ignore":[],"version_files":[]}'
 assert_stdout_exact_jq "supervisor defaults carry no enabled, start_on_boot or heartbeat key" '.supervisor | [has("enabled"), has("start_on_boot"), has("heartbeat_interval_seconds"), has("heartbeat_timeout_seconds")]' '[false,false,false,false]'
 REPO="$(make_test_repo supervisor-caps.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
@@ -825,6 +825,44 @@ invalid_field_case "supervisor caps type" 'supervisor: { provider_concurrency: [
 invalid_field_case "supervisor unknown cap" 'supervisor: { provider_concurrency: { unknown: 1 } }' 'supervisor.provider_concurrency.unknown names no provider'
 for v in 0 -1 1.5 null '"1"' '[]'; do
   invalid_field_case "supervisor cap rejects $v" "supervisor: { provider_concurrency: { claude: $v } }" 'supervisor.provider_concurrency.claude must be a positive integer'
+done
+# supervisor.scope_ignore: repo-relative globs the scheduler leaves out of scope overlap
+REPO="$(printf 'board: { repo: a/b }\nsupervisor: { scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor scope_ignore list accepted" 0
+assert_stdout_exact_jq "supervisor scope_ignore preserved" '.supervisor.scope_ignore' '[".claude-plugin/marketplace.json","plugins/*/.claude-plugin/plugin.json"]'
+for v in '"x.json"' 3 null '{ a: 1 }'; do
+  invalid_field_case "supervisor scope_ignore rejects $v" "supervisor: { scope_ignore: $v }" 'supervisor.scope_ignore must be a list of strings'
+done
+for v in '[""]' '[3]' '[null]'; do
+  invalid_field_case "supervisor scope_ignore entry rejects $v" "supervisor: { scope_ignore: $v }" 'supervisor.scope_ignore entries must be non-empty strings'
+done
+for v in '"/etc/x.json"' '"../x.json"' '"a/../b.json"' '".."' '"a/./b.json"' '"\\\\etc\\\\x.json"'; do
+  invalid_field_case "supervisor scope_ignore path rejects $v" "supervisor: { scope_ignore: [$v] }" 'supervisor.scope_ignore entries must be repo-relative, without a leading / or ..'
+done
+for v in '"*"' '"**"' '"*/*"' '"?"' '"./"' '"."' '"/"' '"**/"'; do
+  invalid_field_case "supervisor scope_ignore wildcard-only rejects $v" "supervisor: { scope_ignore: [$v] }" 'supervisor.scope_ignore entries must name a path, not only wildcards or separators'
+done
+for k in scope_ignore version_files; do
+  invalid_field_case "supervisor $k rejects [z-a].json" "supervisor: { $k: [\"ok.json\", \"[z-a].json\"] }" "supervisor.$k entry \"[z-a].json\" is not a valid glob"
+  invalid_field_case "supervisor $k rejects x/[b-a]" "supervisor: { $k: [\"x/[b-a]\"] }" "supervisor.$k entry \"x/[b-a]\" is not a valid glob"
+done
+# supervisor.version_files: the same glob rules
+REPO="$(printf 'board: { repo: a/b }\nsupervisor: { version_files: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json", "**/package.json"] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor version_files list accepted" 0
+assert_stdout_exact_jq "supervisor version_files preserved" '.supervisor.version_files' '[".claude-plugin/marketplace.json","plugins/*/.claude-plugin/plugin.json","**/package.json"]'
+for v in '"x.json"' 3 null '{ a: 1 }'; do
+  invalid_field_case "supervisor version_files rejects $v" "supervisor: { version_files: $v }" 'supervisor.version_files must be a list of strings'
+done
+for v in '[""]' '[3]'; do
+  invalid_field_case "supervisor version_files entry rejects $v" "supervisor: { version_files: $v }" 'supervisor.version_files entries must be non-empty strings'
+done
+for v in '"/x.json"' '"../x.json"'; do
+  invalid_field_case "supervisor version_files path rejects $v" "supervisor: { version_files: [$v] }" 'supervisor.version_files entries must be repo-relative, without a leading / or ..'
+done
+for v in '"*"' '"**/*"' '"."'; do
+  invalid_field_case "supervisor version_files wildcard-only rejects $v" "supervisor: { version_files: [$v] }" 'supervisor.version_files entries must name a path, not only wildcards or separators'
 done
 invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
@@ -901,6 +939,22 @@ for d in 2026-13-01 2026-02-30 20261231 2026-1-5 soon 2026-12-31T00:00; do
 done
 invalid_field_case "ignore_checks not a list" $'merge:\n  ignore_checks: lint' "merge.ignore_checks must be a list"
 invalid_field_case "ignore_checks entry not a map" $'merge:\n  ignore_checks:\n    - lint' "$IGN_MSG"
+
+# Test 31: headless.permission_mode, limits.max_turns and limits.max_hours are validated by --check
+check_case() { # NAME YAML_BODY EXPECTED_EXIT [EXPECTED_STDERR]
+  REPO="$(printf 'board:\n  repo: a/b\n%s\n' "$2" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO")
+  run_config "$REPO" --check
+  assert_exit "$1: exit $3" "$3"
+  [ -z "${4:-}" ] || assert_stderr_contains "$1: message" "$4"
+}
+check_case "config.sh --check refuses permission_mode bypassPermissions and names the allowed values" $'headless:\n  permission_mode: bypassPermissions' 5 "auto, acceptEdits, default, plan"
+check_case "bypassPermissions message says why" $'headless:\n  permission_mode: bypassPermissions' 5 "no permission checks"
+check_case "config.sh --check refuses limits.max_turns ten" $'limits:\n  max_turns: ten' 5 "limits.max_turns must be a positive integer"
+check_case "config.sh --check refuses limits.max_hours 0" $'limits:\n  max_hours: 0' 5 "limits.max_hours must be a positive integer"
+for m in auto acceptEdits default plan; do
+  check_case "config.sh --check accepts permission_mode $m" "headless: { permission_mode: $m }" 0
+done
 
 echo ""
 echo "-----------------------------------"
