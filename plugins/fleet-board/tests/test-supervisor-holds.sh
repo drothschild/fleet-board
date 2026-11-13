@@ -53,6 +53,9 @@ class Holds(lc.LoopCase):
     def test_a_card_admitted_in_the_next_cycle_no_longer_appears_in_holds(self):
         self.b.plans({'report': 'implementor-ok', 'post': False, 'sleep': 6})
         self.b.state.reserve(4, ['p12'])
+        # the planner no longer plans a card that is already running
+        self.rows = lambda: [] if 12 in self.b.state.snapshot()['active'] else [
+            dc.candidate('start', number=12, state='ready', declared_paths=['p12'])]
         self.start()
         self.until(lambda: '12' in self.holds(), what='the hold')
         self.b.state.reservations.pop(4)
