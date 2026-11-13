@@ -64,7 +64,7 @@ setup() {
 }
 
 # setv <file> <version>: sets every whole-line "version" value in the file
-setv() { sed -i.bak -E 's/^([ \t]*"version"[ \t]*:[ \t]*)"[^"]*"/\1"'"$2"'"/' "$1"; rm -f "$1.bak"; }
+setv() { sed -i.bak -E 's/^([[:blank:]]*"version"[[:blank:]]*:[[:blank:]]*)"[^"]*"/\1"'"$2"'"/' "$1"; rm -f "$1.bak"; }
 drift() { PATH="$BIN:$PATH" bash "$SCRIPT" "$R" "$(git rev-parse HEAD)" 2>/dev/null; }
 
 make_gh
@@ -107,6 +107,13 @@ sed -i.bak -E 's/("version": )"0.1.0",/\1"0.1.1"/' .claude-plugin/marketplace.js
 git commit -q -am "Raise versions above origin/main"
 assert_eq "a raise that breaks the JSON is unreviewed" "$(drift)" unreviewed
 
+echo "== a raise to a value that is not valid JSON text"
+setup "$VF"
+setv plugins/a/.claude-plugin/plugin.json '0.1.1\\q'
+assert_eq "setup: the manifest no longer parses" "$(jq -e . plugins/a/.claude-plugin/plugin.json >/dev/null 2>&1; echo $?)" 5
+git commit -q -am "Raise versions above origin/main"
+assert_eq "a version value with a bad escape is unreviewed" "$(drift)" unreviewed
+
 echo "== a raise that adds a version line"
 setup "$VF"
 awk '{print} /"name": "a",/ && !d {print "  \"version\": \"9.9.9\","; d=1}' plugins/a/.claude-plugin/plugin.json > p.tmp && mv p.tmp plugins/a/.claude-plugin/plugin.json
@@ -134,6 +141,8 @@ printf 'zero\n' > other.txt; setv plugins/a/.claude-plugin/plugin.json 0.2.0; se
 git add -A; git commit -q -m "main moves"
 git checkout -q feat
 git merge -q --no-edit main >/dev/null 2>&1
+assert_eq "setup: the merge conflicts in both manifests" "$(git diff --name-only --diff-filter=U | sort | tr '\n' ' ')" ".claude-plugin/marketplace.json plugins/a/.claude-plugin/plugin.json "
+git checkout -q --theirs -- plugins/a/.claude-plugin/plugin.json .claude-plugin/marketplace.json
 setv plugins/a/.claude-plugin/plugin.json 0.2.1; setv .claude-plugin/marketplace.json 0.2.1
 git add -A; git commit -q -m "Merge branch 'main' into feat: resolve version-only conflicts"
 assert_eq "version-only conflict resolution counts as reviewed" "$(drift)" reviewed
@@ -148,6 +157,7 @@ setv plugins/a/.claude-plugin/plugin.json 0.2.0
 git commit -q -am "main moves"
 git checkout -q feat
 git merge -q --no-edit main >/dev/null 2>&1
+git checkout -q --theirs -- plugins/a/.claude-plugin/plugin.json
 setv plugins/a/.claude-plugin/plugin.json 0.2.1
 sed -i.bak 's/plugin a/plugin A/' plugins/a/.claude-plugin/plugin.json; rm -f plugins/a/.claude-plugin/plugin.json.bak
 git add -A; git commit -q -m "Merge branch 'main' into feat"
