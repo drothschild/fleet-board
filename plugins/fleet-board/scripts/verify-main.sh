@@ -86,10 +86,12 @@ matches() {
   return 1
 }
 
-# run_cmd <command>: runs it in main-check and records {cmd, exit}
+# run_cmd <command>: runs it in main-check, without the FLEET_* variables of the
+# real board (a test that builds its own board must not act on this one), and
+# records {cmd, exit}
 run_cmd() {
   local ec
-  (cd "$MC" && bash -c "$1") </dev/null >&2
+  (cd "$MC" && env -u FLEET_CFG -u FLEET_ROOT -u FLEET_REPO -u FLEET_SCRIPTS -u FLEET_BOARD_DOMAIN bash -c "$1") </dev/null >&2
   ec=$?
   jq -nc --arg c "$1" --argjson e "$ec" '{cmd: $c, exit: $e}' >> "$RES" || fb_die 1 "cannot record a result"
 }
