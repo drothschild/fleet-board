@@ -207,9 +207,19 @@ case "$cmd" in
     if [ "$got_signal" -eq 0 ]; then trap - INT TERM HUP; exit "$brc"; fi
     kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
     if [ "$owned" -eq 1 ]; then
-      printf 'fleet-board: draining the supervisor; waiting for it to exit\n'
+      printf 'fleet-board: draining the supervisor; waiting for it to exit (Ctrl-C again to cancel)\n'
+      # A second SIGINT during the drain cancels instead of waiting.
+      cancel_req=0; cancel_sent=0
+      trap 'cancel_req=1' INT
       (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --drain >/dev/null 2>&1)
-      while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do sleep 0.2; done
+      while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do
+        if [ "$cancel_req" -eq 1 ] && [ "$cancel_sent" -eq 0 ]; then
+          cancel_sent=1
+          printf 'fleet-board: cancelling the supervisor\n'
+          (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --cancel >/dev/null 2>&1)
+        fi
+        sleep 0.2
+      done
     fi
     exit 0 ;;
   supervisor)
