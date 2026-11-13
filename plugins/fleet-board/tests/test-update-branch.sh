@@ -670,7 +670,7 @@ assert_exit "real git reverted bump: exit 0" 0
 assert_eq "real git reverted bump: version left at the base's" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.0
 assert_eq "real git reverted bump: marketplace left too" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.1.0
 
-# A bump cherry-picked from the base is not the branch's own: not raised
+# A bump cherry-picked from the base counts as the branch's own (a harmless extra raise)
 real_setup
 rg_main 0.1.1 1.0.0
 echo "branch work" > "$RG/wt/src/x.txt"; git -C "$RG/wt" commit -q -am "branch work"
@@ -679,7 +679,25 @@ assert_eq "real git cherry-picked bump: the pick is a new commit" "$(git -C "$RG
 rg_main_other "later"
 real_run
 assert_exit "real git cherry-picked bump: exit 0" 0
-assert_eq "real git cherry-picked bump: version left at the base's" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.1
+assert_eq "real git cherry-picked bump: a picked base bump is raised again, which is harmless" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.2
+
+# The reviewer's patch-id case: the branch's only bump is a manifest-only commit and
+# main has a version-only squash with the identical change. It is the branch's own
+# bump, so the duplicate version is raised.
+real_setup
+echo "branch work" > "$RG/wt/src/x.txt"; git -C "$RG/wt" commit -q -am "branch work"
+rg_plugin "$RG/wt/plugins/a/.claude-plugin/plugin.json" a 0.1.1
+rg_market "$RG/wt/.claude-plugin/marketplace.json" 0.1.1 1.0.0
+git -C "$RG/wt" commit -q -am "bump a"; git -C "$RG/wt" push -q origin fleet/12-x
+rg_main 0.1.1 1.0.0
+assert_eq "real git identical manifest-only bump: the two bumps have one patch id" \
+  "$( (git -C "$RG/wt" show HEAD | git patch-id --stable; git -C "$RG/seed" show HEAD | git patch-id --stable) | cut -d' ' -f1 | sort -u | wc -l | tr -d ' ')" 1
+rg_main_other "later"
+real_run
+assert_exit "real git identical manifest-only bump: exit 0" 0
+assert_eq "real git identical manifest-only bump: plugin a raised above base" "$(rg_ver plugins/a/.claude-plugin/plugin.json .version)" 0.1.2
+assert_eq "real git identical manifest-only bump: marketplace a raised too" "$(rg_ver .claude-plugin/marketplace.json '.plugins[0].version')" 0.1.2
+assert_eq "real git identical manifest-only bump: the remote equals local" "$(rg_remote)" "$(rg_local)"
 
 # A version file the branch touched but removed: fail closed, nothing pushed
 real_setup
