@@ -89,6 +89,8 @@ it, so the default applies:
 Give each `--state` key once, with a non-empty column name; init.sh rejects a repeated key
 or an empty name. Never pass `--force` unless the user has confirmed the overwrite.
 
+When you offer `--merge auto`, tell the user that after each merge the merger follows a persona (`merge.persona`, or `.fleet-board/merger.md`), which is where a deploy step goes; the README's "Merger and deploys" section has an example.
+
 Show its output to the user verbatim.
 
 init.sh also installs the `fleet-board` command in `~/.local/bin` (or `FLEET_BOARD_BIN_DIR`),
