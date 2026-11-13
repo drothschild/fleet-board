@@ -9,9 +9,9 @@
 **Tech Stack:** bash 3.2, jq, curl, gh, plain-bash suites; `claude -p --bare` for the re-author.
 
 **Specs and plans:**
-- Review stages design: `docs/superpowers/specs/2026-11-06-review-stages-design.md`
-- Review stages plan (**RS**): `docs/superpowers/plans/2026-11-06-review-stages.md` — Task 1 is done on this branch (commits `fb70dd6`..`a935836`).
-- Provider stages plan (**P**): `docs/superpowers/plans/2026-11-06-provider-review-stages.md` — its design decisions are in its header; its Prerequisite section is satisfied by this ordering.
+- Review stages design: `docs/specs/2026-11-06-review-stages-design.md`
+- Review stages plan (**RS**): `docs/plans/2026-11-06-review-stages.md` — Task 1 is done on this branch (commits `fb70dd6`..`a935836`).
+- Provider stages plan (**P**): `docs/plans/2026-11-06-provider-review-stages.md` — its design decisions are in its header; its Prerequisite section is satisfied by this ordering.
 
 ## Global Constraints
 

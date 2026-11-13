@@ -90,4 +90,4 @@ It first lists the worktrees directory locally and reads the board only for done
 
 The plugin ships no service file and registers nothing at boot. To start the supervisor on a schedule, have your own scheduler (launchd, cron, a terminal multiplexer) run `fleet-board supervisor start --detach` from the repo root, with a `PATH` that has `fleet-board`, `claude`, `gh`, `jq` and `python3`. The launcher finds the newest installed plugin on every run, so plugin updates need no change to the scheduler.
 
-The design is in `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md` in the fleet-board repository.
+The design is in `docs/specs/2026-11-11-cli-supervisor-design.md` in the fleet-board repository.
