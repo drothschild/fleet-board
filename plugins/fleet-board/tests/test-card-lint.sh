@@ -14,7 +14,6 @@ LINT="$SCRIPT_DIR/../scripts/card-lint.sh"
 PLAN="$SCRIPT_DIR/../scripts/tick-plan.sh"
 FIX="$SCRIPT_DIR/lint-fixtures"
 README="$SCRIPT_DIR/../README.md"
-MANAGER="$SCRIPT_DIR/../agents/manager.md"
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
 
 PASS=0
@@ -193,7 +192,7 @@ for rule in no-heading no-bullets empty-acceptance manual-check; do
   assert_contains "README Writing a card links $rule" "$section" "(#card-lint-$rule)"
   assert_contains "README has an anchor heading for $rule" "$(cat "$README")" "card-lint-$rule"
 done
-assert_contains "manager.md handles skip_card_lint" "$(cat "$MANAGER")" "skip_card_lint"
+# manager.md check removed with the tick system: driver_cases.py test_skip_card_lint_uses_the_marker_and_lists_the_lines covers skip_card_lint.
 
 echo ""
 echo "Test: stderr stays empty (a bash 4 construct under /bin/bash 3.2 fails only on stderr)"

@@ -96,8 +96,8 @@ for n in $NUMBERS; do
     migrate_one "$n"
   else
     fb_lock "$n"
-    trap 'rm -f "$BODYF" "$OUTF"; rm -rf "$FB_LOCK"' EXIT
+    trap 'rm -f "$BODYF" "$OUTF"; fb_lock_release "$FB_LOCK"' EXIT
     migrate_one "$n"
-    rm -rf "$FB_LOCK"
+    fb_lock_release "$FB_LOCK"
   fi
 done

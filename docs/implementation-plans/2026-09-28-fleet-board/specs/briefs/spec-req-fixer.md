@@ -280,3 +280,29 @@ unchanged.
      `gh issue edit` and `gh project item-edit` names go.
    - Run any board script other than `board-comment.sh` and `board-read.sh`. `board-read.sh`
      only reads the card. `parse-report.sh` stays allowed as a local checker.
+
+## Revision 27 requirements (2026-11-12, no closing keyword in a fixer commit message; these win over anything above)
+
+Card numbers on the local board are not GitHub issue numbers. A squash merge copies the
+branch's commit messages onto the default branch, where GitHub closes the issue or PR a
+closing keyword names (PR 252, local card 253, closed the open PR 253). Revision 26 made the
+implementor check its commit messages; the fixer commits to the same branch and is checked the
+same way. Change only what the items below name; keep the frontmatter and every other line
+unchanged.
+
+1. Step 8 (commit and push) gains the rule: no commit message holds a GitHub closing keyword
+   (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved, any case, with or
+   without a colon) before an issue reference such as `#` and digits, `<owner>/<repo>#<digits>`
+   or a GitHub issue or pull URL, with the reason above. A commit message names a finding by
+   its text, never by a closing keyword before a number.
+2. Step 8, before every `git push` (the merge commit of the conflict step included):
+   `git -C <worktree> log --format=%B HEAD --not --remotes=origin | bash <scripts dir>/pr-body-check.sh -`.
+   On a failure: no push (this wins over "still commit and push any finished fixes"), Status
+   `blocked`, an `[Important]` line under `## Findings` naming the commit and the offending
+   text, and each finding whose fix is only in an unpushed commit reads
+   `not fixed: not pushed, commit <short sha> holds a closing keyword`. Never rewrite a
+   published commit to get past the check.
+3. The scripts-directory input names `pr-body-check.sh` beside `board-comment.sh`,
+   `board-read.sh` and `parse-report.sh`.
+4. Must never gains: write a commit message with a GitHub closing keyword before an issue
+   reference, or push commits whose messages `pr-body-check.sh` rejected.

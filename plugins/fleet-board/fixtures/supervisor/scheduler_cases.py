@@ -185,53 +185,215 @@ def run():
     assert running_plan.result(timeout=2) is True and queued_plan.result(timeout=2) == 'queued'
     running_control.result(timeout=2); assert queued_control.result(timeout=2) == 'queued'
     saturated.close()
-    # Session accounting survives a scheduler restart and keeps unknown spend unknown.
-    persisted = {}
-    account = Scheduler(state_writer=lambda state: persisted.update(state))
-    account.begin_session('session-3', started_at=1, deadline=50, max_cost=2)
-    account.record_spend(0.75)
-    restarted_account = Scheduler(clock=lambda: 10, state=persisted,
-                                  state_writer=lambda state: persisted.update(state))
-    assert restarted_account.session_snapshot() == {'id': 'session-3', 'started_at': 1, 'deadline': 50,
-        'max_cost': 2, 'known_spend': 0.75, 'unknown_spend': False}
-    restarted_account.record_spend(None)
-    restored_unknown = Scheduler(clock=lambda: 10, state=persisted)
-    held = restored_unknown.admit([candidate(27)], limits={'global': 1, 'providers': {'claude': 1}, 'per_card': 1})
-    assert held['stop_reason'] == 'provider spend is unknown'
-    expiring = Scheduler(clock=lambda: 50, state={'session': {'id': 'session-4', 'started_at': 1,
-        'deadline': 50, 'max_cost': 2, 'known_spend': 1, 'unknown_spend': False}})
-    assert expiring.admit([candidate(28)], limits={'global': 1, 'providers': {'claude': 1}, 'per_card': 1})['stop_reason'] == 'session deadline reached'
     # Unknown workflow state never normalizes or admits and reports attention; active claims remain.
     unknown = scheduler.admit([candidate(12, action='unknown_state')], active=[{'number':12,'provider':'claude','paths':[]}],
         limits={'global':2,'providers':{'claude':2},'per_card':1})
     assert not unknown['admitted'] and unknown['attention'][0]['number'] == 12 and unknown['active'][0]['number'] == 12
-    # Fake-time guards: retry/backoff, launch spacing, rate wait, deadline/cost, unknown spend, invalid reload.
+    # Fake-time guards: retry/backoff, launch spacing, rate wait, deadline, invalid reload.
     clock = {'now': 10}
     timed = Scheduler(clock=lambda: clock['now'])
     wait = timed.admit([candidate(20)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'retry_at':{'20':15},'min_launch_gap':3,'last_launch_at':9,'rate_limit_wait':100,'max_rate_wait':8,
-        'session_deadline':20,'max_cost':1,'known_spend':0.5,'unknown_spend':False})
+        'retry_at':{'20':15},'min_launch_gap':3,'last_launch_at':9,'rate_limit_wait':100,'max_rate_wait':8})
     assert not wait['admitted'] and wait['waits']
     assert wait['waits'][0]['reason'] == 'retry backoff' and wait['waits'][0]['until'] == 15
     rate = timed.admit([candidate(22)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'rate_limit_wait':{'claude':100},'max_rate_wait':8,'session_deadline':20})
+        'rate_limit_wait':{'claude':100},'max_rate_wait':8})
     assert rate['waits'][0]['reason'] == 'provider rate limit' and rate['waits'][0]['until'] == 18
     capped = timed.admit([candidate(23)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'rate_limit_wait':{'claude':100},'max_rate_wait':8,'session_deadline':20}, now=18)
+        'rate_limit_wait':{'claude':100},'max_rate_wait':8}, now=18)
     assert not capped['admitted'] and (capped['stop_reason'] == 'provider rate-limit wait cap reached'
         or any(item['reason'] == 'provider rate-limit wait cap reached' for item in capped['attention']))
-    blocked = timed.admit([candidate(21)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'session_deadline':9,'max_cost':2,'known_spend':0,'unknown_spend':True})
-    assert not blocked['admitted'] and blocked['stop_reason']
-    deadline = timed.admit([candidate(24)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'session_deadline':10,'known_spend':0,'unknown_spend':False}, now=10)
-    assert deadline['stop_reason'] == 'session deadline reached'
-    cost = timed.admit([candidate(25)], limits={'global':2,'providers':{'claude':2},'per_card':1,
-        'session_deadline':20,'max_cost':1,'known_spend':1,'unknown_spend':False}, now=10)
-    assert cost['stop_reason'] == 'session cost limit reached'
     assert timed.reload({'global':0}) is False
     assert timed.admit([candidate(26)])['stop_reason'] == 'invalid limits'
+    test_every_planned_action_is_classified()
+    test_skip_and_wait_are_ignored_not_attention()
+    test_wait_with_a_new_dependency_list_is_admitted()
+    test_provider_cap_applies_per_resolved_provider()
+    test_merge_waits_for_the_lane()
+    test_unknown_scope_serialises_starts()
+    test_aging_promotes_a_starved_start()
+    test_removed_limits_are_ignored()
+    test_an_unscoped_role_does_not_block_another_cards_finish()
+    test_script_actions_ignore_rate_limit_and_global_cap()
+    test_script_action_still_waits_for_its_own_active_card()
+    test_update_branch_still_scope_checked()
+    test_has_work_tolerates_mixed_dependency_types()
     print('scheduler cases passed')
+
+
+LIMITS = {'global': 8, 'providers': {'*': 8}, 'per_card': 1}
+
+
+def admit_one(scheduler, row, **kw):
+    limits = kw.pop('limits', LIMITS)
+    return scheduler.admit([row], limits=limits, **kw)
+
+
+def test_every_planned_action_is_classified():
+    from supervisor.scheduler import _ACTION_CLASS
+    expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
+                1: ['start_review', 'unblock', 'update_branch', 'advance_stage', 'to_human_qa', 'mark_ready',
+                    'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal'],
+                2: ['start']}
+    for klass, actions in expected.items():
+        for action in actions:
+            assert _ACTION_CLASS.get(action) == klass, action
+    assert len(_ACTION_CLASS) == 18
+    for number, action in enumerate(expected[0] + expected[1] + expected[2], 1):
+        result = admit_one(Scheduler(clock=lambda: 0), candidate(number, action), lane_free=True)
+        assert [x['number'] for x in result['admitted']] == [number], action
+        assert not result['attention'], action
+
+
+def test_skip_and_wait_are_ignored_not_attention():
+    scheduler = Scheduler(clock=lambda: 0)
+    rows = [dict(candidate(n, a), reason='r' + str(n)) for n, a in
+            enumerate(['skip', 'skip_no_acceptance', 'skip_card_lint', 'wait'], 1)]
+    result = scheduler.admit(rows, limits=LIMITS)
+    assert result['admitted'] == [] and result['attention'] == [] and result['waits'] == []
+    assert result['ignored'] == [{'number': n, 'action': a, 'reason': 'r' + str(n)} for n, a in
+                                 enumerate(['skip', 'skip_no_acceptance', 'skip_card_lint', 'wait'], 1)]
+    # With work to do, the skip_* rows are class 1; plain skip never is.
+    rows = [dict(candidate(1, 'skip_no_acceptance'), comment_needed=True),
+            dict(candidate(2, 'skip_card_lint'), comment_needed=True),
+            dict(candidate(3, 'skip'), comment_needed=True)]
+    result = scheduler.admit(rows, limits=LIMITS)
+    assert sorted(x['number'] for x in result['admitted']) == [1, 2]
+    assert [x['number'] for x in result['ignored']] == [3] and result['attention'] == []
+    assert 'ignored' in scheduler.admit([], limits={'global': 0})  # invalid limits keep the shape
+
+
+def test_wait_with_a_new_dependency_list_is_admitted():
+    scheduler = Scheduler(clock=lambda: 0)
+    changed = dict(candidate(1, 'wait'), waiting_on=[5, 6], deps_commented=[5])
+    missing = dict(candidate(2, 'wait'), waiting_on=[5])
+    same = dict(candidate(3, 'wait'), waiting_on=[5], deps_commented=[5])
+    empty = dict(candidate(4, 'wait'), waiting_on=[])
+    comment = dict(candidate(5, 'wait'), waiting_on=[], comment_needed=True)
+    result = scheduler.admit([changed, missing, same, empty, comment], limits=LIMITS)
+    assert sorted(x['number'] for x in result['admitted']) == [1, 2, 5]
+    assert sorted(x['number'] for x in result['ignored']) == [3, 4]
+
+
+def test_provider_cap_applies_per_resolved_provider():
+    limits = {'global': 8, 'providers': {'codex': 1, '*': 8}, 'per_card': 1}
+    result = Scheduler(clock=lambda: 0).admit(
+        [candidate(1, 'review', 'codex'), candidate(2, 'review', 'codex'), candidate(3, 'review', 'claude')],
+        limits=limits)
+    assert sorted(x['number'] for x in result['admitted']) == [1, 3]
+    assert result['waits'] == [{'number': 2, 'reason': 'provider capacity'}]
+    # No provider key counts as "default" (falls back to '*'); "scripts" is never capped.
+    row = candidate(4, 'review'); del row['provider']
+    row7 = candidate(7, 'finish'); del row7['provider']
+    limits = {'global': 8, 'providers': {'*': 1, 'scripts': 1}, 'per_card': 1}
+    result = Scheduler(clock=lambda: 0).admit(
+        [row, candidate(5, 'finish', 'scripts'), candidate(6, 'finish', 'scripts'), row7], limits=limits)
+    assert sorted(x['number'] for x in result['admitted']) == [4, 5, 6]
+    assert result['waits'] == [{'number': 7, 'reason': 'provider capacity'}]
+    # Scripts do not count against global.
+    result = Scheduler(clock=lambda: 0).admit(
+        [candidate(8, 'finish', 'scripts'), candidate(9, 'finish', 'scripts')],
+        limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
+    assert [x['number'] for x in result['admitted']] == [8, 9]
+    assert result['active'] == []
+
+
+def test_merge_waits_for_the_lane():
+    merge = candidate(1, 'merge')
+    busy = admit_one(Scheduler(clock=lambda: 0), merge)
+    assert busy['admitted'] == [] and busy['waits'][0]['reason'] == 'merge lane busy'
+    busy = admit_one(Scheduler(clock=lambda: 0), merge, lane_free=False)
+    assert busy['admitted'] == []
+    free = admit_one(Scheduler(clock=lambda: 0), merge, lane_free=True)
+    assert [x['number'] for x in free['admitted']] == [1]
+    # Only one merge per call; a merge counts against the global cap.
+    two = Scheduler(clock=lambda: 0).admit([candidate(1, 'merge'), candidate(2, 'merge')], limits=LIMITS, lane_free=True)
+    assert [x['number'] for x in two['admitted']] == [1]
+    capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'merge')], limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1},
+        active=[{'number': 9, 'provider': 'claude', 'paths': ['z']}], lane_free=True)
+    assert capped['admitted'] == [] and capped['waits'][0]['reason'] == 'global capacity'
+
+
+def test_unknown_scope_serialises_starts():
+    unknown = dict(candidate(1), declared_paths=[], actual_paths=[])
+    other = candidate(2, paths=['docs/x'])
+    result = Scheduler(clock=lambda: 0).admit([unknown, other], limits=LIMITS)
+    assert [x['number'] for x in result['admitted']] == [1]
+    assert result['waits'][0]['number'] == 2
+    result = Scheduler(clock=lambda: 0).admit([unknown], limits=LIMITS,
+        active=[{'number': 9, 'provider': 'claude', 'paths': ['src/a']}])
+    assert result['admitted'] == [] and result['waits'][0]['number'] == 1
+    two = Scheduler(clock=lambda: 0).admit([unknown, dict(unknown, number=3)], limits=LIMITS)
+    assert [x['number'] for x in two['admitted']] == [1]
+
+
+def test_aging_promotes_a_starved_start():
+    limits = {'global': 1, 'providers': {'*': 1}, 'per_card': 1, 'aging_seconds': 10}
+    scheduler = Scheduler(clock=lambda: 0)
+    for now in range(0, 121, 10):
+        wave = [candidate(30, 'start', priority='low', eligible_since=0)] + [
+            candidate(100 + now + i, 'finish', priority='high', eligible_since=now) for i in range(2)]
+        winner = scheduler.admit(wave, limits=limits, now=now)
+        number = winner['admitted'][0]['number']
+        if now < 50:
+            assert number != 30, now
+        if now >= 50:
+            assert number == 30, now
+            break
+
+
+def test_removed_limits_are_ignored():
+    # Cost and session deadline limits no longer exist; the loop enforces token limits.
+    result = admit_one(Scheduler(clock=lambda: 50), candidate(1), limits=dict(LIMITS, session_deadline=10, max_cost=0))
+    assert [x['number'] for x in result['admitted']] == [1] and result['stop_reason'] is None
+
+
+def test_an_unscoped_role_does_not_block_another_cards_finish():
+    unscoped = {'number': 1, 'provider': 'claude', 'paths': []}
+    rows = [dict(candidate(n, a, 'scripts'), declared_paths=[]) for n, a in
+            ((2, 'finish'), (3, 'block'), (4, 'to_human_qa'), (5, 'mark_ready'), (6, 'file_pending'))]
+    result = Scheduler(clock=lambda: 0).admit(rows, active=[unscoped], limits=LIMITS,
+        reservations=[{'card': 1, 'paths': ['']}])
+    assert [x['number'] for x in result['admitted']] == [2, 3, 4, 5, 6] and result['waits'] == []
+    assert result['active'] == [unscoped]
+    # Nor do they block a later role start in the same call.
+    both = Scheduler(clock=lambda: 0).admit([candidate(7, 'finish', 'scripts', paths=[]), candidate(8, 'start', paths=['a'])],
+        limits=LIMITS)
+    assert sorted(x['number'] for x in both['admitted']) == [7, 8]
+
+
+def test_script_actions_ignore_rate_limit_and_global_cap():
+    limits = {'global': 1, 'providers': {'*': 1}, 'per_card': 1, 'rate_limit_wait': {'scripts': 100, 'claude': 100}}
+    result = Scheduler(clock=lambda: 0).admit([candidate(1, 'finish', 'scripts'), candidate(2, 'start')],
+        active=[{'number': 9, 'provider': 'claude', 'paths': ['z']}], limits=limits)
+    assert [x['number'] for x in result['admitted']] == [1]
+    assert result['waits'][0]['reason'] == 'provider rate limit'
+
+
+def test_script_action_still_waits_for_its_own_active_card():
+    result = Scheduler(clock=lambda: 0).admit([candidate(1, 'finish', 'scripts')],
+        active=[{'number': 1, 'provider': 'claude', 'paths': ['z']}], limits=LIMITS)
+    assert result['admitted'] == [] and result['waits'][0]['reason'] == 'card already has an active claim'
+
+
+def test_update_branch_still_scope_checked():
+    row = dict(candidate(2, 'update_branch', 'scripts'), declared_paths=[])
+    active = [{'number': 1, 'provider': 'claude', 'paths': ['src']}]
+    result = Scheduler(clock=lambda: 0).admit([row], active=active, limits=LIMITS)
+    assert result['admitted'] == [] and result['waits'][0]['reason'] == 'scope or card conflict'
+    capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])],
+        active=active, limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
+    assert capped['waits'][0]['reason'] == 'global capacity'
+    ok = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])], active=active, limits=LIMITS)
+    assert [x['number'] for x in ok['admitted']] == [3] and len(ok['active']) == 2
+
+
+def test_has_work_tolerates_mixed_dependency_types():
+    row = dict(candidate(1, 'wait'), waiting_on=[5, 'org/repo#6'], deps_commented=['5', 'org/repo#6'])
+    result = Scheduler(clock=lambda: 0).admit([row], limits=LIMITS)
+    assert result['admitted'] == [] and len(result['ignored']) == 1
+    result = Scheduler(clock=lambda: 0).admit([dict(row, deps_commented=[5])], limits=LIMITS)
+    assert len(result['admitted']) == 1
 
 
 if __name__ == '__main__':

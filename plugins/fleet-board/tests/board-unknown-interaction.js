@@ -12,7 +12,6 @@ const loadBoard = require("./board-interaction-harness");
     calls.push({url, method: opts.method, body});
     let data;
     if (url === "/api/board") data = board();
-    else if (url === "/api/run") data = {state: "idle"};
     else if (url === "/api/cards/4" && opts.method === "GET") data = {...card};
     else if (url === "/api/cards/4/move" && opts.method === "POST") {
       assert.equal(body.state, "ready"); card.state = body.state; card.known = true; data = {...card};

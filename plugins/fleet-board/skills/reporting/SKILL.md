@@ -1,14 +1,14 @@
 ---
 name: reporting
-description: Use when the fleet-board manager checks a role report (implementor, reviewer or fixer) with parse-report.sh, quotes a report rule to a role, or re-dispatches a role whose report parse-report.sh rejected. Gives the manager the check-and-re-dispatch method (exit 0 accept from the JSON, exit 1 re-dispatch once with the stderr quoted exactly, exit 2 fix its own call), the exact report shape with its line rules and per-role rules, every parse-report.sh rejection message paired with the rule to quote, and the role-specific points.
+description: Use when the fleet-board supervisor checks a role report (implementor, reviewer or fixer) with parse-report.sh, quotes a report rule to a role, or re-dispatches a role whose report parse-report.sh rejected. Gives the supervisor the check-and-re-dispatch method (exit 0 accept from the JSON, exit 1 re-dispatch once with the stderr quoted exactly, exit 2 fix its own call), the exact report shape with its line rules and per-role rules, every parse-report.sh rejection message paired with the rule to quote, and the role-specific points.
 user-invocable: false
 ---
 
-# Reporting (manager side)
+# Reporting (supervisor side)
 
 ## Principle
 
-Every role agent (implementor, reviewer, fixer, and a review stage's reviewer, checked as the role `stage-reviewer`) ends with one report in a fixed shape. It posts the report on the card and returns the same text as its final reply. `parse-report.sh --role <role>` is the enforced definition of that shape. You, the manager, run the checker on the report text exactly as the role returned it. You act only on reports the checker accepts, and only on the values in its JSON. When the checker rejects a report you re-dispatch the same role once, quoting the checker's stderr exactly along with the rule each line enforces. You never repair a report yourself. Role agents have no `Skill` tool and cannot load this skill. Each role's own prompt carries the report shape, so this skill is for you alone.
+Every role agent (implementor, reviewer, fixer, and a review stage's reviewer, checked as the role `stage-reviewer`) ends with one report in a fixed shape. It posts the report on the card and returns the same text as its final reply. `parse-report.sh --role <role>` is the enforced definition of that shape. You, the supervisor, run the checker on the report text exactly as the role returned it. You act only on reports the checker accepts, and only on the values in its JSON. When the checker rejects a report you re-dispatch the same role once, quoting the checker's stderr exactly along with the rule each line enforces. You never repair a report yourself. Role agents have no `Skill` tool and cannot load this skill. Each role's own prompt carries the report shape, so this skill is for you alone.
 
 ## Method
 
@@ -32,7 +32,7 @@ In every example below, `commands.test_one` is `node --test {file}` and one conc
 7. **Nothing acts on a rejected report.** Until a report exits 0, don't move the card and don't open or mark a PR because of it. Don't file its Out of scope or Bugs found entries, and don't copy its VERIFIED line into the note.
 8. **Exit 2 (usage error).** The messages are `unknown flag: <flag>`, `unknown role: <role>`, `cannot read file: <file>` or the usage line. The fault is in your call, not in the report. Correct the flag, role name or file path and run the checker again. Never re-dispatch a role because of exit 2, and never count it as a rejection.
 9. **Never repair or overrule.** Never edit, complete or rewrite a role's report to make it pass, and never accept a report the checker rejected.
-10. **Judge content with the report rules.** A report must meet all of these (the checker enforces the shape; the manager relies on the rest):
+10. **Judge content with the report rules.** A report must meet all of these (the checker enforces the shape; the supervisor relies on the rest):
     - **Required sections:** `## Status`, `## Findings`, `## For the card`, exactly one `VERIFIED:` line, and the role sections for its role.
     - **Findings, Out of scope and Bugs found stay apart.** Findings are defects in this card's own diff or in its Acceptance. Out of scope is work worth doing that this card does not cover. Bugs found are defects the role *observed* outside this card's diff, such as a pre-existing failing behavior it ran into. A defect caused by the card's own change is a Finding, never a Bug found, even when it shows up far from the edited lines. A defect that existed before the card and was only discovered while working on it is a Bug found.
     - **Bugs found entries** have all four parts: title, repro, expected, observed. The repro is a command the role actually ran, between backticks. `observed` is what that command printed, not a paraphrase. Example: ``- parse drops trailing zero :: repro: `node --test test/parse.test.js` :: expected: ok 2 - keeps trailing zero :: observed: not ok 2 - keeps trailing zero``.

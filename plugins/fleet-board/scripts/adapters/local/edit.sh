@@ -43,7 +43,7 @@ fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 BODYTMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
-trap 'rm -f "$TMP" "$BODYTMP"; rm -rf "$FB_LOCK"' EXIT
+trap 'rm -f "$TMP" "$BODYTMP"; fb_lock_release "$FB_LOCK"' EXIT
 
 ACC=null
 if [ -n "$ACC_FILE" ]; then ACC="$(fl_acceptance_json "$ACC_FILE")" || exit 1; fi
