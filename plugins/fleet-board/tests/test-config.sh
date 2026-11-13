@@ -887,6 +887,12 @@ assert_stdout_exact_jq "ignore_checks entry kept as strings" '.merge.ignore_chec
 IGN_MSG="merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
 invalid_field_case "ignore_checks missing until" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r' "$IGN_MSG"
 invalid_field_case "ignore_checks missing reason" $'merge:\n  ignore_checks:\n    - name: lint\n      until: 2026-12-31' "$IGN_MSG"
+# pending: an optional boolean; true lets a matching check that is still running count as green
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  ignore_checks:\n    - name: "*"\n      reason: CI is asynchronous\n      until: 2026-12-31\n      pending: true\n' | make_inline_repo)"
+run_config "$REPO"
+assert_exit "ignore_checks entry with pending: true accepted" 0
+assert_stdout_exact_jq "ignore_checks pending kept as a boolean" '.merge.ignore_checks[0].pending' 'true'
+invalid_field_case "ignore_checks pending must be a boolean" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: 2026-12-31\n      pending: "yes"' "merge.ignore_checks pending must be true or false"
 invalid_field_case "ignore_checks missing name" $'merge:\n  ignore_checks:\n    - reason: r\n      until: 2026-12-31' "$IGN_MSG"
 invalid_field_case "ignore_checks empty reason" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: ""\n      until: 2026-12-31' "$IGN_MSG"
 for d in 2026-13-01 2026-02-30 20261231 2026-1-5 soon 2026-12-31T00:00; do

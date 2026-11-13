@@ -1658,6 +1658,30 @@ run_hook bash.json "gh pr merge 14 --squash"
 assert_blocked "ignore_checks: an unreadable today fails closed" "PR #14 checks are not green"
 export FB_TEST_TODAY=2026-11-12
 export FLEET_BOARD_TODAY=2026-11-11
+
+# pending: true lets the gate merge while a check the entry names is still running
+cat > "$REPO/.fleet-board.yml" << YML
+board:
+  repo: acme/toy
+merge:
+  policy: auto
+  ignore_checks:
+    - name: "lint-*"
+      reason: "CI is asynchronous"
+      until: 2026-12-31
+      pending: true
+worktrees:
+  dir: .fw
+YML
+export FB_TEST_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 15 --squash"
+assert_silent_allow "ignore_checks pending: true: merge while the named check is still running"
+run_hook bash.json "gh pr merge 16 --squash"
+assert_blocked "ignore_checks pending: true: a red check no entry names still blocks" "PR #16 checks are not green"
+export FB_TEST_TODAY=2027-01-01
+run_hook bash.json "gh pr merge 15 --squash"
+assert_blocked "ignore_checks pending: true: an expired entry no longer counts" "PR #15 checks are not green"
+export FB_TEST_TODAY=2026-11-12
 run_hook bash.json "gh pr merge 14 --squash"
 assert_blocked "ignore_checks: the gate ignores FLEET_BOARD_TODAY" "PR #14 checks are not green"
 unset FLEET_BOARD_TODAY FB_TEST_TODAY
