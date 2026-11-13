@@ -709,6 +709,54 @@ run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; 
 if [ "$LAST_EXIT" -ne 0 ]; then pass "fl_write_card with a different number exits non-zero"; else fail "fl_write_card with a different number exits non-zero" "exit 0"; fi
 if [ "$(cksum < "$REPO/.fleet-board/cards/1.json")" = "$before" ]; then pass "different-number write leaves the card file byte-for-byte unchanged"; else fail "different-number write leaves the card file byte-for-byte unchanged" "file changed"; fi
 
+# --- hardening: non-string comment bodies ---
+setup_case; seed_card 1 backlog 'Nullbody' 'x'
+jq '.comments = [{id: 1, author: "someone", body: null, created_at: "2026-01-01T00:00:00Z"}, {id: 2, author: "someone", body: "plain", created_at: "2026-01-02T00:00:00Z"}] | .next_comment_id = 3' \
+  "$REPO/.fleet-board/cards/1.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/1.json"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 1
+assert_exit "read exits 0 on a card with a comment whose body is null" 0
+assert_json "read returns the other comments of a card with a null-body comment" '[.comments[] | select(.body == "plain")] | length' 1
+nb="$(mktemp)"; CLEANUP_DIRS+=("$nb"); printf '```json\n{"round":1}\n```\n' > "$nb"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$nb"
+assert_exit "note exits 0 on a card with a comment whose body is null" 0
+assert_card_json 1 '[.comments[] | select((.body | type) == "string" and (.body | startswith("<!-- fleet-board:manager-note -->")))] | length' 1
+
+# --- hardening: list over a 500-card store ---
+setup_case
+for i in $(seq 1 500); do
+  if [ $((i % 3)) -eq 0 ]; then st=ready; else st=backlog; fi
+  printf '{"number":%d,"title":"Card %d","state":"%s"}\n' "$i" "$i" "$st" > "$REPO/.fleet-board/cards/$i.json"
+done
+expected500="$(jq -nc '[range(1; 501) | select(. % 3 == 0) | {number: ., title: "Card \(.)", url: "http://127.0.0.1:8765/cards/\(.)"}]')"
+t0="$(date +%s)"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
+t1="$(date +%s)"
+assert_stdout_exact "list of a 500-card store equals the expected listing" "$expected500"
+if [ $((t1 - t0)) -lt 3 ]; then pass "list of a 500-card store finishes in under 3 seconds"; else fail "list of a 500-card store finishes in under 3 seconds" "took $((t1 - t0))s"; fi
+
+# --- hardening: list with an empty cards directory and with a null card ---
+setup_case
+run_check_in "$REPO" "$BASH_EXE" -c '"$1" ready < <(sleep 4)' _ "$SCRIPTS/board-list.sh"
+assert_exit "list of an empty cards directory exits 0 with stdin held open" 0
+assert_stdout_exact "list of an empty cards directory prints []" '[]'
+setup_case; seed_card 1 ready 'Real' 'x'; echo 'null' > "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
+assert_exit "list fails closed on a null card" 1
+assert_stderr_contains "list names the null card file" "2.json"
+
+# --- hardening: one next-comment-id helper ---
+for s in comment note; do
+  f="$SCRIPTS/adapters/local/$s.sh"
+  code="$(grep -v '^[[:space:]]*#' "$f")"
+  calls="$(printf '%s\n' "$code" | grep -c 'fl_next_comment_id')"
+  if [ "$calls" = 1 ]; then pass "$s.sh calls fl_next_comment_id once"; else fail "$s.sh calls fl_next_comment_id once" "found $calls calls"; fi
+  case "$code" in
+    *"max // 0"*) fail "$s.sh holds no max // 0 expression outside comments" "found one" ;;
+    *) pass "$s.sh holds no max // 0 expression outside comments" ;;
+  esac
+done
+if grep -q '^fl_next_comment_id()' "$SCRIPTS/adapters/local/local-lib.sh"; then pass "local-lib.sh defines fl_next_comment_id"; else fail "local-lib.sh defines fl_next_comment_id" "missing"; fi
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

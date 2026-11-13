@@ -570,6 +570,7 @@ invalid_field_case "stage paths" 'review: { stages: [ { name: s, agent: a, paths
 invalid_field_case "stage label reserved" 'review: { stages: [ { name: s, agent: a, label: needs-human-qa } ] }' "review.stages[0].label must be a non-empty string"
 invalid_field_case "stage label duplicate" 'review: { stages: [ { name: s, agent: a, label: x }, { name: t, agent: a, label: x } ] }' "review.stages[1].label must be a non-empty string"
 invalid_field_case "stage advisory" 'review: { stages: [ { name: s, agent: a, advisory: yes_please } ] }' "review.stages[0].advisory must be boolean"
+invalid_field_case "stage default" 'review: { stages: [ { name: s, agent: a, default: yes_please } ] }' "review.stages[0].default must be boolean"
 invalid_field_case "stage max_rounds" 'review: { stages: [ { name: s, agent: a, max_rounds: 0 } ] }' "review.stages[0].max_rounds must be a positive integer"
 invalid_field_case "stage brief" 'review: { stages: [ { name: s, agent: a, brief: 7 } ] }' "review.stages[0].brief must be a string"
 # (board is already a key in invalid_field_case's base, so this one builds its own repo)
@@ -955,6 +956,18 @@ check_case "config.sh --check refuses limits.max_hours 0" $'limits:\n  max_hours
 for m in auto acceptEdits default plan; do
   check_case "config.sh --check accepts permission_mode $m" "headless: { permission_mode: $m }" 0
 done
+
+# Test 32: board.terminal_command is a list of strings containing {dir}; default opens macOS Terminal
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.terminal_command
+assert_stdout_exact "With no setting, board.terminal_command resolves to open -a Terminal {dir}" '["open","-a","Terminal","{dir}"]'
+REPO="$(printf 'board:\n  repo: a/b\n  terminal_command: ["open", "-a", "iTerm", "{dir}"]\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.terminal_command
+assert_stdout_exact "A .fleet-board.yml board.terminal_command of open -a iTerm {dir} replaces the default as given" '["open","-a","iTerm","{dir}"]'
+TC_MSG="board.terminal_command"
+invalid_field_case "board.terminal_command not a list" '  terminal_command: "open -a Terminal {dir}"' "$TC_MSG"
+invalid_field_case "board.terminal_command list of non-strings" '  terminal_command: ["open", 5, "{dir}"]' "$TC_MSG"
+invalid_field_case "board.terminal_command list with no {dir}" '  terminal_command: ["open", "-a", "iTerm"]' "$TC_MSG"
 
 echo ""
 echo "-----------------------------------"

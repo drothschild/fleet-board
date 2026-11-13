@@ -114,6 +114,12 @@ $STAGES_YML"
   [ "$backend" = labelonly ] && stages="$stages
     - name: copy
       agent: copy-reviewer"
+  # defaultstage: a third stage with default: true and paths that match nothing
+  [ "$backend" = defaultstage ] && stages="$stages
+    - name: everyone
+      agent: all-reviewer
+      paths: [\"nothing/**\"]
+      default: true"
   REPO="$(mktemp -d)"
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
@@ -190,6 +196,17 @@ assert_eq "route: no edit for a person's label" "$(cnt_prefix issue edit)" 0
 setup_case labels "$CARD_PLAIN" "README.md"
 run_stages route 12 34
 assert_stdout_exact "route: no match prints []" '[]'
+
+# route: a default: true stage routes a card with no label and no path match
+setup_case defaultstage "$CARD_PLAIN" "README.md"
+run_stages route 12 34
+assert_exit "route default: exit 0" 0
+assert_stdout_exact "route default: a default true stage is printed for an unlabelled card with no path match" '["everyone"]'
+
+# route: a stage without default is routed as before
+setup_case defaultstage "$CARD_PLAIN" "src/auth/login.js"
+run_stages route 12 34
+assert_stdout_exact "route default: a stage without default is routed by paths only" '["security","everyone"]'
 
 # route: truncated file list
 setup_case labels "$CARD_PLAIN" "README.md" 400

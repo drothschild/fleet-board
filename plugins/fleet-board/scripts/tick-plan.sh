@@ -130,8 +130,9 @@
 # "## Scope" also names. Active PR paths supplement declared scope, and
 # selected starts reserve their scopes in card-number order within the plan.
 # Directory scopes cover descendants; incomplete PR file lookups hold starts.
-# Paths are backticked spans in that section with no
-# whitespace and a "/" or an extension; a card naming none starts as usual.
+# Paths are backticked spans or plain-text tokens in that section with no
+# whitespace and a "/" or an extension (leading "(" and trailing . , : ; )
+# stripped); a card naming none starts as usual.
 # At most one merge is planned per tick: the lowest card number; the other
 # cards that would merge wait ("one merge per tick: #<n> merges first").
 #
@@ -622,15 +623,19 @@ card_input() {
     fi
   fi
 
-  # Backticked file paths in the body's "## Scope" section: a span with no
+  # File paths in the body's "## Scope" section: a backticked span, or a
+  # plain-text token (leading "(" and trailing . , : ; ) stripped), with no
   # whitespace that holds a "/" or ends in an extension
   if [ -z "$failed" ]; then
     scope="$(jq -cn --arg b "$body" '
       $b | split("\n") | reduce .[] as $l ({in: false, paths: []};
         if ($l | test("^##[ \t]+Scope[ \t]*$")) then .in = true
         elif ($l | test("^##[ \t]")) then .in = false
-        elif .in then .paths += [$l | scan("`([^`]+)`") | .[0]
+        elif .in then .paths += ([$l | scan("`([^`]+)`") | .[0]
               | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))]
+            + [$l | gsub("`[^`]*`"; " ") | split("[ \t]+"; null)[]
+              | sub("^[(]+"; "") | sub("[.,:;)]+$"; "")
+              | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))])
         else . end)
       | .paths | unique' 2>/dev/null)" || scope='[]'
   fi

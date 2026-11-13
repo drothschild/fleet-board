@@ -22,6 +22,12 @@ fl_read_card() {
   cat "$f"
 }
 
+# fl_next_comment_id <card-json>: prints the id the card's next comment gets:
+# its next_comment_id, else one more than the highest numeric comment id.
+fl_next_comment_id() {
+  jq -r '.next_comment_id // (([(.comments // [])[] | .id | numbers] | max // 0) + 1)' <<<"$1"
+}
+
 # fl_find_title <title> open|closed [days]: the local stand-in for a GitHub
 # title search. Prints the lowest-numbered card whose title equals <title>
 # case-insensitively, or "none". "open" is any state but done and wont_do;
