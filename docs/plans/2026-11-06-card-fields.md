@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash 3.2 + jq, Python 3.9 stdlib (server), vanilla JS (page), plain-bash suites; clean-room re-authoring with `claude -p --bare` for the role prompts.
 
-**Supersedes:** the earlier draft of this file (render-into-body, GitHub kept). **Updates:** `docs/superpowers/specs/2026-11-06-local-board-design.md` (Task 8).
+**Supersedes:** the earlier draft of this file (render-into-body, GitHub kept). **Updates:** `docs/specs/2026-11-06-local-board-design.md` (Task 8).
 
 ## Decisions taken in this plan (confirm before execution)
 

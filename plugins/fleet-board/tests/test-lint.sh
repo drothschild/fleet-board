@@ -282,6 +282,27 @@ newset; card 1 "$GOOD\n## Depends on\n- #2\n"
 OUT="$(cd "$LR" && PATH="$LSTUB:$PATH" bash "$SCRIPT" --bodies "$BODIES" 2>"$SB/err")"; RC=$?
 check "local --bodies: #2 resolves from the card file" "$RC" "0"
 
+# ---------------------------------------------------------------- dependency PR adds the path
+echo "# missing-file: a path the blocked_by card's open PR adds"
+DR="$SB/deproot"; DSTUB="$SB/depstub"; mkdir -p "$DR/.fleet-board/cards" "$DSTUB"
+git -C "$DR" init -q -b main
+git -C "$DR" config user.email t@example.com
+git -C "$DR" config user.name T
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$DR/.fleet-board.yml"
+git -C "$DR" add .fleet-board.yml; git -C "$DR" commit -q -m initial
+echo 4 > "$DR/.fleet-board/next"
+printf '{"files":[{"path":"src/page.js"}],"state":"OPEN"}\n' > "$DSTUB/pr.json"
+printf '#!/usr/bin/env bash\nif [ "$1 $2" = "pr view" ]; then cat "%s/pr.json"; exit 0; fi\nexit 99\n' "$DSTUB" > "$DSTUB/gh"
+chmod +x "$DSTUB/gh"
+jq -n '{number: 2, title: "dep", body: "", acceptance: ["x"], blocked_by: [], state: "in_review", labels: [], next_comment_id: 1, comments: [], pr_url: "https://github.com/acme/toy/pull/50"}' > "$DR/.fleet-board/cards/2.json"
+dcard() { jq -n --argjson d "$1" '{number: 3, title: "t", body: "", acceptance: ["`src/page.js` exports Page"], blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: []}' > "$DR/.fleet-board/cards/3.json"; }
+dcard '[2]'
+DOUT="$(cd "$DR" && PATH="$DSTUB:$PATH" bash "$SCRIPT" 3 2>"$SB/err")"
+check "dep PR adds the path: no missing-file line" "$(printf '%s\n' "$DOUT" | grep -c missing-file)" "0"
+dcard '[]'
+DOUT="$(cd "$DR" && PATH="$DSTUB:$PATH" bash "$SCRIPT" 3 2>"$SB/err")"
+has "no dependency adds the path: missing-file names it" "$DOUT" "missing-file: src/page.js is not on main"
+
 echo
 echo "passed: $PASS failed: $FAIL"
 [ "$FAIL" -eq 0 ]

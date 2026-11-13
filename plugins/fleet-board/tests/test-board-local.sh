@@ -661,6 +661,28 @@ run_check_in "$REPO" "$SCRIPTS/board-comment.sh" 1 "$nc"
 jq -j '.comments[0].body' "$REPO/.fleet-board/cards/1.json" > "$REPO/out.bin"
 if cmp -s "$nc" "$REPO/out.bin"; then pass "comment without trailing newline round-trips byte for byte"; else fail "comment without trailing newline round-trips byte for byte" "bytes differ"; fi
 
+# --- a comment file of /dev/stdin reads the caller's input ---
+setup_case; seed_card 1 backlog 'Stdin title' 'stdin body'
+run_check_in "$REPO" bash -c 'printf hello | bash "$SCRIPTS/board-comment.sh" 1 /dev/stdin'
+assert_exit "board-comment.sh 1 /dev/stdin exits 0" 0
+assert_card_json 1 '.title' 'Stdin title'
+assert_card_json 1 '.body' 'stdin body'
+assert_card_json 1 '.comments[-1].body' 'hello'
+
+# --- fl_write_card refuses output that is not the same card ---
+setup_case; seed_card 1 backlog 'Keep' 'body'
+before="$(cksum < "$REPO/.fleet-board/cards/1.json")"
+empty="$REPO/empty.json"; : > "$empty"
+run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; fl_write_card 1 "$1"' _ "$empty"
+if [ "$LAST_EXIT" -ne 0 ]; then pass "fl_write_card with empty output exits non-zero"; else fail "fl_write_card with empty output exits non-zero" "exit 0"; fi
+assert_stderr_contains "fl_write_card refusal names the card" "1"
+if [ "$(cksum < "$REPO/.fleet-board/cards/1.json")" = "$before" ]; then pass "empty write leaves the card file byte-for-byte unchanged"; else fail "empty write leaves the card file byte-for-byte unchanged" "file changed"; fi
+
+other="$REPO/other.json"; jq '.number = 2' "$REPO/.fleet-board/cards/1.json" > "$other"
+run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; . "$SCRIPTS/adapters/local/local-lib.sh"; fl_write_card 1 "$1"' _ "$other"
+if [ "$LAST_EXIT" -ne 0 ]; then pass "fl_write_card with a different number exits non-zero"; else fail "fl_write_card with a different number exits non-zero" "exit 0"; fi
+if [ "$(cksum < "$REPO/.fleet-board/cards/1.json")" = "$before" ]; then pass "different-number write leaves the card file byte-for-byte unchanged"; else fail "different-number write leaves the card file byte-for-byte unchanged" "file changed"; fi
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
