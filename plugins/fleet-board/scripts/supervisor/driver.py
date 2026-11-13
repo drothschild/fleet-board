@@ -25,7 +25,7 @@ import time
 from collections import namedtuple
 from pathlib import Path
 
-from . import markers as _markers, paths, resolver, roles as _roles, scripts, usage as _usage
+from . import markers as _markers, paths, resolver, roles as _roles, scopes, scripts, usage as _usage
 from .state import Action, ledger_column
 
 Started = namedtuple('Started', 'kind action')
@@ -81,6 +81,47 @@ def commits_since_review_args(sha):
     """The git arguments that count the PR's own commits after the reviewed `sha`: first-parent and non-merge,
     so a merge of main (update-branch.sh) and main's commits behind it are not counted as the fixer's."""
     return ('rev-list', '--count', '--first-parent', '--no-merges', sha + '..HEAD')
+
+
+_VERSION_LINE = re.compile(r'^([ \t]*"version"[ \t]*:[ \t]*)"[^"]*"([ \t]*,?[ \t]*\r?)$')
+
+
+def _mask_versions(text):
+    """The text with every whole-line "version" string value replaced by "@"."""
+    return [_VERSION_LINE.sub(r'\1"@"\2', line) for line in text.split('\n')]
+
+
+def _version_only(git, cwd, sha, version_files):
+    """True when the one-parent commit `sha` modifies only files `version_files` matches, and only in whole-line
+    "version" values (what update-branch.sh's "Raise versions above origin/<base>" commit does)."""
+    if not version_files:
+        return False
+    listing = git(cwd, 'diff-tree', '--no-commit-id', '--no-renames', '-r', '--name-status', sha + '^', sha)
+    if listing.rc != 0 or not listing.stdout.strip():
+        return False
+    for line in listing.stdout.splitlines():
+        status, _, path = line.partition('\t')
+        if status != 'M' or not any(scopes.glob_match(g, path) for g in version_files):
+            return False
+        old = git(cwd, 'show', sha + '^:' + path)
+        new = git(cwd, 'show', sha + ':' + path)
+        if old.rc != 0 or new.rc != 0 or _mask_versions(old.stdout) != _mask_versions(new.stdout):
+            return False
+    return True
+
+
+def commits_since_review(git, cwd, sha, version_files=()):
+    """The PR's own commits after the reviewed `sha`, as a digit string (or None when git fails): first-parent
+    and non-merge (a merge of the base is not the fixer's), and not a version-only commit."""
+    counted = git(cwd, *commits_since_review_args(sha))
+    if counted.rc != 0 or not counted.stdout.strip().isdigit():
+        return None
+    if counted.stdout.strip() == '0':
+        return '0'
+    listing = git(cwd, 'rev-list', '--first-parent', '--no-merges', sha + '..HEAD')
+    if listing.rc != 0:
+        return None
+    return str(sum(1 for c in listing.stdout.split() if not _version_only(git, cwd, c, version_files)))
 
 
 class _Fail(Exception):
@@ -895,9 +936,9 @@ class CardDriver:
         sha = (run.c.note().get('last_review') or {}).get('sha')
         if not (isinstance(sha, str) and _SHA.fullmatch(sha)):
             return []
-        result = self.git(run.c.worktree(), *commits_since_review_args(sha))
-        count = result.stdout.strip()
-        return ['--commits-since-review', count] if result.rc == 0 and count.isdigit() else []
+        files = [g for g in ((run.c.config.get('supervisor') or {}).get('version_files') or []) if isinstance(g, str)]
+        count = commits_since_review(self.git, run.c.worktree(), sha, files)
+        return ['--commits-since-review', count] if count is not None else []
 
     def _check(self, run, report, allow, script=None):
         c = run.c
