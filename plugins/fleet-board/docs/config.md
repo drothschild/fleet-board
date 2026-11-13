@@ -18,6 +18,24 @@ Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is uns
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the supervisor merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA: the card moves to `merging` and `scripts/merge-reviewed.sh` merges it outside any Claude session (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
 
+## `merge.persona`, `merge.persona_append` and `merge.ignore_checks`
+
+`merge.persona` is a path relative to the repo root, with no `..`. `null` (the default) uses `.fleet-board/merger.md` when that file exists, else the plugin's default persona. A path that is set but missing is an attention, never a silent fallback. `merge.persona_append` is a string added after whichever persona was chosen. See [the README](../README.md#merger-and-deploys) for an example persona.
+
+`merge.ignore_checks` lists red checks the planner and the gate treat as green:
+
+```yaml
+merge:
+  ignore_checks:
+    - name: "lint-*"
+      reason: "flaky runner, tracked in the team tracker"
+      until: "2026-12-01"
+```
+
+Each entry needs a non-empty `name` (a shell-style glob, case-sensitive: `*` is any run of characters, `?` one character), a non-empty `reason` and an `until` date (`YYYY-MM-DD`, UTC). An entry counts through its `until` date; after it the entry is ignored and a warning names it. Only a red check (failure, error, cancelled, timed out, action required) is ignored; a pending check is never green. A `*` entry ignores every red check.
+
+Limit: this changes only what fleet-board treats as green. A check that GitHub branch protection lists as required still blocks `gh pr merge` while it is red, so the merge is refused and the merger decides what to do. Remove the check from the required list in GitHub if it should not block.
+
 ## `after_merge.allow` and the `## After merge` section
 
 A card body may hold a `## After merge` section (heading in any case, ending at the next heading) with one command per `-` bullet, for example `- git tag v1.2.3` and `- git push origin v1.2.3`. After the card's PR merges, the supervisor runs `after-merge.sh run <body-file>`, which runs the commands in order and prints the outcome. Release steps no agent can do by hand need no Human QA step this way.
