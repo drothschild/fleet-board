@@ -1377,6 +1377,21 @@ def test_record_ignored_checks_appends_to_the_note_with_a_timestamp(base):
     assert len(b.note()['ignored_checks']) == 2, b.note()
 
 
+def test_record_ignored_checks_records_the_state(base):
+    b = board_for(base, 'merging')
+    b.driver.clock = lambda: 1794398400  # 2026-11-11T12:00:00Z
+    at = '2026-11-11T12:00:00Z'
+    red = {'name': 'lint-docs', 'reason': 'flaky', 'until': '2026-12-31', 'state': 'red'}
+    pending = {'name': 'e2e', 'reason': 'async', 'until': '2026-12-31', 'state': 'pending'}
+    stateless = {'name': 'legacy', 'reason': 'old', 'until': '2026-12-31'}
+    odd = {'name': 'deploy', 'reason': 'odd', 'until': '2026-12-31', 'state': 'green'}
+    b.driver.record_ignored_checks(12, [red, pending, stateless, odd])
+    assert b.note()['ignored_checks'] == [
+        dict(red, at=at), dict(pending, at=at),
+        {'name': 'legacy', 'reason': 'old', 'until': '2026-12-31', 'at': at},
+        {'name': 'deploy', 'reason': 'odd', 'until': '2026-12-31', 'at': at}], b.note()
+
+
 def test_record_ignored_checks_refuses_a_malformed_entry(base):
     b = board_for(base, 'merging')
     for bad in ([{'name': 'x'}], [{'name': '', 'reason': 'r', 'until': '2026-12-31'}], ['lint'],

@@ -95,6 +95,7 @@ class Supervisor:
         self._last_errors = {}
         self._last_attention = None
         self._warned = set()       # planner warnings already recorded (one that goes away may return)
+        self._merger_hold = set()  # cards merged whose after_merge merger has not begun: they keep the merge lane
         self._sched_pause = None   # the pause reason set because the scheduler reported a stop_reason
 
     # --- the service's side --------------------------------------------------------------------------
@@ -386,6 +387,7 @@ class Supervisor:
             self.wake('merge not attempted')
             return
         if kind == 'merged':
+            self._merger_hold.add(card)   # the lane stays held until this card's after_merge merger session ends
             try:
                 self.driver.record_ignored_checks(card, detail.get('ignored_checks'))
             except Exception as exc:  # noqa: BLE001 - a malformed entry or a failed note write must not end the loop
@@ -394,12 +396,29 @@ class Supervisor:
             self.state.event('merger_deferred', card=card, mode=kind, message='stopping')
         elif self.state.mode == 'paused':   # nothing starts while paused: after resume the planner plans it
             self.state.event('merger_deferred', card=card, mode=kind, message='paused')
+        elif self._at_capacity():   # the merger counts toward limits.concurrency: the planner plans it later
+            self.state.event('merger_deferred', card=card, mode=kind, message='capacity')
         else:
+            self._merger_hold.discard(card)
             try:
                 self.driver.begin_merger(card, kind, detail)
             except Exception as exc:  # noqa: BLE001
                 self._count_exception(card, 'merger', exc)
         self.wake('merge ended')
+
+    def _at_capacity(self):
+        config = self.config
+        if not isinstance(config, dict):
+            return False
+        return len(self.state.active) >= self._limits(config)['global']
+
+    def _lane_free(self, candidate_rows):
+        """The merge lane is free when no merge runs and no merged card still has its after_merge merger to
+        begin or running (two deploys must not race on one host)."""
+        planned = {r.get('number') for r in candidate_rows if r.get('action') == 'after_merge'}
+        active = {a.card for a in list(self.state.active.values()) if a.action == 'after_merge'}
+        self._merger_hold &= planned | active   # a card the planner no longer plans a merger for releases it
+        return self.state.lane is None and not self._merger_hold and not active
 
     def _count_exception(self, card, action_name, exc):
         """An exception that escaped the driver is one no-progress failure of the card (best effort)."""
@@ -473,6 +492,7 @@ class Supervisor:
         sup, lim = config.get('supervisor') or {}, config.get('limits') or {}
         return {'global': lim.get('concurrency', 6), 'providers': dict(sup.get('provider_concurrency') or {}),
                 'per_card': 1, 'aging_seconds': sup.get('aging_seconds', 900),
+                'scope_ignore': list(sup.get('scope_ignore') or []),
                 'max_rate_wait': lim.get('rate_limit_max_wait', 3600),
                 'rate_limit_wait': {name: health['until'] for name, health in
                                     self.state.provider_health.items() if 'until' in health}}
@@ -525,7 +545,7 @@ class Supervisor:
                   for a in list(self.state.active.values())]
         reservations = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
-                                      now=now, lane_free=self.state.lane is None)
+                                      now=now, lane_free=self._lane_free(rows))
         if result.get('stop_reason'):
             self._sched_pause = result['stop_reason']
             self.state.pause(result['stop_reason'])
@@ -637,16 +657,19 @@ class Supervisor:
             except Exception as exc:  # noqa: BLE001 - one card's failure must not stop the others
                 self._count_exception(number, name, exc)
             return
+        if name == 'after_merge':
+            self._merger_hold.discard(number)   # its session (an active action) holds the lane from here
         free = row.get('provider') == 'scripts' and name != 'update_branch'
         reserved = False
         if not free:
             try:
-                scope = scopes.normalize(list(row.get('declared_paths') or []) + list(row.get('actual_paths') or []),
-                                         self.root)
+                ignore = ((self.config or {}).get('supervisor') or {}).get('scope_ignore') or []
+                scope = scopes.normalize(scopes.drop_ignored(list(row.get('declared_paths') or [])
+                                                             + list(row.get('actual_paths') or []), ignore), self.root)
             except ValueError as exc:
                 self.state.event('action_failed', card=number, action=name, error='scope: %s' % exc)
                 return
-            if self.state.reserve(number, scope) is not None:
+            if self.state.reserve(number, scope, ignore=ignore) is not None:
                 return
             reserved = True
             self.state.event('admitted', card=number, action=name, provider=row.get('provider'))

@@ -250,5 +250,54 @@ bash "$SCRIPT" "$card" 7 --round 1 --diff-file "$TMP/diff" --impl-report "$TMP/i
 check "an unrenderable card exits non-zero" test "$rc" != 0
 check "an unrenderable card dispatches no reviewer" test ! -e "$FAKE_REVIEWER_DIR/attempt"
 
+# codex token usage: `codex exec --json` prints JSONL events. A fixture codex on
+# PATH answers plain without --json and as JSONL with it; no live codex call.
+cat > "$TMP/bin/codex" <<'CODEX'
+#!/bin/bash
+json=0 dir="" model=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json=1; shift ;;
+    -C) dir="$2"; shift 2 ;;
+    -m) model="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+text="$(bash "$FAKE_CODEX_REPLY_CMD" "$dir" "$model"; printf x)"
+text="${text%x}"
+if [ "$json" -eq 0 ]; then printf '%s' "$text"; exit 0; fi
+printf '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.started"}\n'
+jq -cn --arg t "$text" '{type: "item.completed", item: {id: "item_0", type: "agent_message", text: $t}}'
+if [ -n "${FAKE_CODEX_USAGE:-}" ]; then
+  jq -cn --argjson u "$FAKE_CODEX_USAGE" '{type: "turn.completed", usage: $u}'
+else
+  printf '{"type":"turn.completed"}\n'
+fi
+CODEX
+chmod +x "$TMP/bin/codex"
+# the mid-review push test above moved the PR head; reports must name the new one
+head="$(git --git-dir="$TMP/origin" rev-parse refs/pull/7/head)"
+export FAKE_CODEX_REPLY_CMD="$HERE/fake-reviewer-cmd.sh"
+codex_command="codex exec --ephemeral -C {dir} -m {model}"
+
+setup
+config "$reviewer" "$codex_command"
+FAKE_CODEX_USAGE='{"input_tokens":1234,"cached_input_tokens":100,"output_tokens":56}' run --no-post
+check "codex fixture with usage: ledger input_tokens equals the fixture" jq -e '.input_tokens == 1234' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+check "codex fixture with usage: ledger output_tokens equals the fixture" jq -e '.output_tokens == 56' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+check "codex fixture with usage: output reports the same tokens" output '.status == "checked" and .input_tokens == 1234 and .output_tokens == 56'
+json_report="$(jq -r .report_file "$TMP/out")"
+cp "$json_report" "$TMP/report.json-mode"
+
+setup
+config "$reviewer" "$codex_command"
+run --no-post
+check "codex fixture without usage: review still passes" output '.status == "checked"'
+check "codex fixture without usage: ledger tokens are null" jq -e '.input_tokens == null and .output_tokens == null' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+
+setup
+run --no-post
+check "review text is byte-identical with and without JSON output" cmp -s "$TMP/report.json-mode" "$(jq -r .report_file "$TMP/out")"
+
 printf 'passed: %d   failed: %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

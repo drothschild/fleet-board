@@ -79,6 +79,11 @@ fl_next_number() {
   case "$n" in
     ''|*[!0-9]*|0|0[0-9]*) fb_lock_release "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
   esac
+  # Belt and braces: the lock alone is not trusted (a stale-lock takeover can let
+  # two holders in). A number is only issued once mkdir of its claim succeeds, and
+  # never when its card file already exists, so a stale counter skips ahead.
+  mkdir -p "$d/.claims" || { rm -rf "$lock"; fb_die 1 "cannot create $d/.claims"; }
+  while [ -e "$(fl_card_file "$n")" ] || ! mkdir "$d/.claims/$n" 2>/dev/null; do n=$((n + 1)); done
   if ! printf '%s\n' $((n + 1)) > "$f.tmp.$$" || ! mv -f "$f.tmp.$$" "$f"; then
     rm -f "$f.tmp.$$"; fb_lock_release "$lock"; fb_die 1 "cannot update $f"
   fi
@@ -181,4 +186,20 @@ fl_check_blocked_by() {
     [ "$b" != "$self" ] || fb_die 2 "blocked_by names #$b, the card itself"
     [ -f "$(fl_card_file "$b")" ] || fb_die 2 "blocked_by names #$b, which does not exist in $(fl_cards_dir)"
   done
+}
+
+# fl_add_qa_section <body-string>:
+# prints the body with an empty "## Human QA" section appended when it has no
+# such heading outside a code fence; an existing section leaves it byte for byte.
+fl_add_qa_section() {
+  jq -nj --arg b "$1" '
+    ($b | split("\n")) as $lines
+    | (reduce $lines[] as $l ({fence: false, has: false};
+        if ($l | test("^[ ]{0,3}(```|~~~)")) then .fence = (.fence | not)
+        elif .fence then .
+        elif ($l | test("^##[ \t]+Human[ \t]+QA[ \t]*$"; "i")) then .has = true
+        else . end)).has as $has
+    | if $has then $b
+      else ($b | sub("\n+$"; "")) as $t
+        | (if $t == "" then "" else $t + "\n\n" end) + "## Human QA\n" end'
 }

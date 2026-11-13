@@ -87,7 +87,24 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. Settle plans do
-  not fetch scope files or start workers.
+  not fetch scope files or start workers. Every overlap check (the scheduler,
+  `state.reserve`, and tick-plan's Ready-card checks) first drops paths matching
+  `supervisor.scope_ignore`; a scope wholly ignored is kept. Globs are
+  segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
+  language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
+  parity test over `fixtures/glob-cases.json`.
+- **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
+  `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
+  matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
+  line from its own sides; after any merge it raises keys the branch bumped (changed by
+  its own non-merge commits with full history, and differing from the fork point, `vl_changes`) that are not above the base to base + 1 patch.
+  `tick-plan.sh` uses the same rule against the PR's `baseRefName`: `update_branch`
+  ("version not above base"), or `wait` ("version check needs <ref>") when a ref cannot
+  be read; its `git fetch origin <bases>` runs at most once per 60 s. `update-branch.sh`
+  refuses a worktree not on the branch, pushes whenever local differs from
+  `origin/<branch>` and verifies the push; after the merge starts and until the push is
+  verified, any non-zero exit aborts or resets (`git reset --keep`) to the pre-run head,
+  never past a head origin already has.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
@@ -274,7 +291,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
     plugin default; a set path that is missing, or a tracked persona this PR changed, is attention.
   - Checks: one rule, `scripts/ignore-checks.jq`, shared by the planner and the gate: an unexpired
     `merge.ignore_checks` entry ignores the red checks its glob matches (a `*` entry ignores every
-    red check); a pending check is never green.
+    red check); a pending check is green only when an unexpired entry with `pending: true` matches it
+    (merge without waiting for that check). config.sh refuses a non-boolean `pending`. Passed, red
+    and pending are explicit sets of check-run conclusions/statuses and status-context states; any
+    other state is never green, and a check with no name is never ignored.
 
 ## Invariants
 
