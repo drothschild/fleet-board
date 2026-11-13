@@ -354,6 +354,54 @@ if command -v zsh >/dev/null 2>&1; then
 still-here" "$out"
 fi
 
+# --- up: starts the supervisor, then serves the board ----------------------
+# A fake root: supervisor.sh records "start" in $UP_STATE and answers status from
+# that record; board-web.sh serves GET /api/board with 200 on its --port.
+RU="$TMP/roots/0.40.0"; mkdir -p "$RU/scripts"
+cat > "$RU/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start) printf '%s\n' "$*" >> "$UP_STATE/supervisor-calls"; touch "$UP_STATE/started"; exit 0 ;;
+  status) [ -f "$UP_STATE/started" ]; exit $? ;;
+esac
+exit 0
+EOS
+cat > "$RU/scripts/board-web.sh" <<'EOS'
+#!/usr/bin/env bash
+port=""; while [ $# -gt 0 ]; do case "$1" in --port) port="$2"; shift 2 ;; *) shift ;; esac; done
+exec python3 -c '
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200 if self.path == "/api/board" else 404); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self, *a): pass
+HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()' "${port:-8765}"
+EOS
+HU="$TMP/home-up"; make_home "$HU" "user||$RU|0.40.0"
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])'; }
+wait_port() { local i; for i in $(seq 1 50); do curl -s -o /dev/null "http://127.0.0.1:$1/api/board" && return 0; sleep 0.1; done; return 1; }
+
+REPO_UP="$TMP/work/repo-up"; make_repo "$REPO_UP"
+UP_STATE="$TMP/up-state"; mkdir -p "$UP_STATE"
+PORT_UP="$(free_port)"
+(cd "$REPO_UP" && HOME="$HU" UP_STATE="$UP_STATE" bash "$LAUNCHER" up --port "$PORT_UP" >/dev/null 2>&1) &
+UP_PID=$!
+wait_port "$PORT_UP"; up_ready=$?
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_UP/api/board")"
+check "up --port N: serves on port N (GET /api/board returns 200)" 200 "$code"
+(cd "$REPO_UP" && HOME="$HU" UP_STATE="$UP_STATE" bash "$RU/scripts/supervisor.sh" status >/dev/null 2>&1); rc=$?
+check "up: the supervisor is running in the background while up runs (status exits 0)" 0 "$rc"
+check "up: started the supervisor detached" "start --detach" "$(cat "$UP_STATE/supervisor-calls" 2>/dev/null)"
+pkill -P "$UP_PID" 2>/dev/null; kill "$UP_PID" 2>/dev/null; wait "$UP_PID" 2>/dev/null
+
+UP_STATE2="$TMP/up-state2"; mkdir -p "$UP_STATE2"
+out="$(cd "$NOTREPO" && HOME="$HU" UP_STATE="$UP_STATE2" bash "$LAUNCHER" up 2>&1)"; rc=$?
+check "up outside a git repository: exits 1" 1 "$rc"
+contains "up outside a git repository: says so" "not inside a git repository" "$out"
+if [ -e "$UP_STATE2/started" ]; then fail "up outside a git repository: starts no supervisor" "supervisor was started"
+else pass "up outside a git repository: starts no supervisor"; fi
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
