@@ -1669,7 +1669,7 @@ assert_exit "candidate mode: exit" 0
 assert_jq "candidate mode: schema version" '.schema_version' '2'
 assert_jq "candidate mode: action parity" '.candidates[0].action' '"start"'
 assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | [has("preconditions"), has("declared_paths"), has("actual_paths"), has("scope_complete"), has("dependencies"), has("stage"), has("head_sha"), has("round"), has("priority"), has("state_revision")])' '[true,true,true,true,true,true,true,true,true,true]'
-assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
+assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '["src/subtract.js"]'
 assert_jq "candidate mode: empty actual paths are complete" '(.candidates[0] | [.actual_paths, .scope_complete])' '[[],true]'
 
 # A malformed labels payload from the board-read contract must not silently clear priority metadata.

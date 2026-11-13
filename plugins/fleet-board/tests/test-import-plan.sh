@@ -229,7 +229,7 @@ case "$(cat "$SB/err")" in *"unknown dependency: zzz"*) pass "unknown dependency
 
 # ---------------------------------------------------------------- card linter
 echo "# card linter"
-printf '%s' '{"cards":[{"key":"a","title":"Good card","repo":"acme/api","acceptance":["POST /limits returns 201"]},{"key":"b","title":"Bad card","repo":"acme/api","acceptance":["The panel looks right"]}]}' > "$SB/badcards.json"
+printf '%s' '{"cards":[{"key":"a","title":"Good card","repo":"acme/api","scope":["src/limits.js"],"acceptance":["POST /limits returns 201"]},{"key":"b","title":"Bad card","repo":"acme/api","scope":["src/limits.js"],"acceptance":["The panel looks right"]}]}' > "$SB/badcards.json"
 reset_gh
 run_import "y" "$SB/badcards.json"
 check "a failing card makes the import exit 1" "$RC" "1"
@@ -238,7 +238,7 @@ case "$(cat "$SB/err") $OUT" in *untestable-bullet*) pass "the import names the 
 case "$(cat "$SKILL")" in *lint*) pass "SKILL.md mentions the linter" ;; *) fail "SKILL.md mentions the linter" "missing" ;; esac
 # ---------------------------------------------------------------- cross-repo file check
 echo "# cross-repo file check"
-printf '%s' '{"cards":[{"key":"b","title":"Web card","repo":"acme/web","acceptance":["`src/web-only.js` exports a limits panel"]}]}' > "$SB/webfile.json"
+printf '%s' '{"cards":[{"key":"b","title":"Web card","repo":"acme/web","scope":["src/web-only.js"],"acceptance":["`src/web-only.js` exports a limits panel"]}]}' > "$SB/webfile.json"
 reset_gh
 mkdir -p "$D/files/acme_web/src"; : > "$D/files/acme_web/src/web-only.js"
 run_import "" "$SB/webfile.json" --dry-run
