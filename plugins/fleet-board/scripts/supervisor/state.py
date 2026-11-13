@@ -117,11 +117,15 @@ class State:
         markers.clear(action.marker, action.pgid)
         return action
 
-    def reserve(self, card, paths):
-        """Reserve `paths` for `card`; they must already be `scopes.normalize()` output."""
+    def reserve(self, card, paths, ignore=None):
+        """Reserve `paths` for `card`; they must already be `scopes.normalize()` output.
+
+        `ignore` is `supervisor.scope_ignore`: matching paths are dropped from both sides
+        before the overlap check, as the scheduler does."""
         with self._lock:
+            mine = scopes.drop_ignored(paths, ignore)
             for owner, held in self.reservations.items():
-                if owner != card and scopes.overlap(paths, held):
+                if owner != card and scopes.overlap(mine, scopes.drop_ignored(held, ignore)):
                     return owner
             held = set(self.reservations.get(card, ())) | set(paths)
             # Union like the store did; '' (whole repo) absorbs everything.

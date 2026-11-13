@@ -129,6 +129,8 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `test_paths` | common test globs | globs that identify test files |
 | `human_qa_paths` | `[]` | a PR touching any of these globs sends its card to Human QA |
 | `merge.policy` | `human` | `human` or `auto` ([details](docs/config.md#mergepolicy)) |
+| `merge.persona` / `merge.persona_append` | `null` / `null` | the merger's instructions: a path relative to the repo root (default `.fleet-board/merger.md` when present), and text added after it ([details](#merger-and-deploys)) |
+| `merge.ignore_checks` | `[]` | red checks treated as green, each with `name`, `reason` and `until` ([details](docs/config.md#mergepersona-mergepersona_append-and-mergeignore_checks)) |
 | `review.mutation` | `true` | the reviewer runs mutation testing against the diff |
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
@@ -144,9 +146,43 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `limits.max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns` | `8`, `20000000`, none, `200` | supervisor limits: hours before it drains and exits, run tokens before admissions pause, tokens per card, `--max-turns` per session; both token limits count input, output and cache-write tokens, and cache reads are shown but not counted ([details](docs/overnight.md#limits)) |
 | `limits.rate_limit_max_wait`, `rate_limit_margin` | `3600`, `5` | seconds: the longest rate-limit wait before the supervisor pauses, margin after a reset |
 | `headless.permission_mode` | `auto` | `--permission-mode` for each role session |
-| `supervisor.*` | see [config.md](docs/config.md) | timeouts, retry backoff, per-provider concurrency |
+| `supervisor.*` | see [config.md](docs/config.md#supervisor) | the reconcile interval, timeouts, retry backoff, aging, per-provider concurrency, `scope_ignore` (paths left out of scope overlap) and `version_files` (JSON files whose version conflicts are resolved and kept above the base) |
 
 The config file is `.fleet-board.yml`, any valid YAML. `board.backend`, `board.project_number` and `board.project_owner` are gone, and so are the tick system's `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager`: `config.sh` exits 5 on any of them (see [Upgrading](#upgrading-from-an-earlier-version)). Tokens are the only unit; an old `price` key is ignored.
+
+## Merger and deploys
+
+Under `merge.policy: auto` the supervisor merges a reviewed PR, runs the card's `## After merge` steps, then runs the **merger**: a role that follows a persona to do project-specific work after a merge, such as a deploy, and to judge a refused merge. It never merges and never moves a card.
+
+The persona is chosen like this:
+
+- `merge.persona: null` (the default) uses `.fleet-board/merger.md` in the board directory when it exists, else the plugin's default.
+- `merge.persona: <relative path>` uses that file; a missing file is an attention.
+- `merge.persona_append: "<text>"` is added after the chosen persona.
+
+A persona for a repo that deploys after each merge and squash-merges (so the PR's head commit never reaches `main`):
+
+```markdown
+# Merger persona
+
+After a merge:
+1. Run `gh pr view <pr> --json state,mergeCommit` and confirm the state is MERGED. Take the merge commit from `mergeCommit.oid`.
+2. Fetch `origin` and confirm that merge commit is an ancestor of `origin/main`. Never check the PR's head commit: a squash merge never puts it on `main`.
+3. Deploy from a fresh detached worktree of that commit with `deploy/deploy.sh`, then check the health URL answers 200.
+4. Remove the worktree. Report `attention` if any step fails.
+```
+
+On a refused merge the merger can ask for a retry (the supervisor holds the card until the retry time; a second refusal after a retry is an attention) or report `attention` when a person must decide. On attention the card stays in Merging and nothing else runs for it.
+
+**Clearing an attention.** Fix the cause, then write a file holding `{"merger": null}` and run:
+
+```bash
+bash <scripts dir>/note.sh merge <n> <file>
+```
+
+Add `"merge_refusal": null` and `"merge_retry": null` to the file to let the card try the merge again. Moving the card by hand to another column also clears the records.
+
+`merge.ignore_checks` lists red checks to treat as green, each with a `reason` and an `until` date; see [docs/config.md](docs/config.md#mergepersona-mergepersona_append-and-mergeignore_checks). A check GitHub requires still blocks the merge while it is red.
 
 ## Gates
 
