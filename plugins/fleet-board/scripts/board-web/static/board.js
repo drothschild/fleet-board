@@ -2369,10 +2369,10 @@ function bindPlanner() {
   $("pl-draft").addEventListener("click", draftPlanner);
   $("pl-close").addEventListener("click", requestClosePlanner);
   $("pl-input").addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      sendPlanner();
-    }
+    // Enter (and Cmd/Ctrl+Enter) sends; Shift+Enter keeps the newline; IME confirm never sends.
+    if (e.key !== "Enter" || e.isComposing || (e.shiftKey && !e.metaKey && !e.ctrlKey)) return;
+    e.preventDefault();
+    sendPlanner();
   });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.pl && !S.imp && !S.drawer && !e.defaultPrevented) {
