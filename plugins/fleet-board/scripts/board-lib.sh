@@ -190,6 +190,31 @@ fb_card_has_acceptance() {
   jq -e '(.acceptance | type) == "array" and (.acceptance | length) > 0' <<<"$1" >/dev/null 2>&1
 }
 
+# fb_card_scope_paths <body>: the file paths a card's body declares in its
+# "## Scope" section, as a sorted unique compact JSON array (the one Scope
+# parser: tick-plan.sh, the local move verb, the gate and import-plan.sh use it).
+# A path is a backticked span, or a plain-text token (leading "(" and trailing
+# . , : ; ) stripped), with no whitespace that holds a "/" or ends in a file
+# extension. Prints [] when there is none or the body cannot be parsed.
+fb_card_scope_paths() {
+  jq -cn --arg b "$1" '
+    $b | split("\n") | reduce .[] as $l ({in: false, paths: []};
+      if ($l | test("^##[ \t]+Scope[ \t]*$")) then .in = true
+      elif ($l | test("^##[ \t]")) then .in = false
+      elif .in then .paths += ([$l | scan("`([^`]+)`") | .[0]
+            | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))]
+          + [$l | gsub("`[^`]*`"; " ") | split("[ \t]+"; null)[]
+            | sub("^[(]+"; "") | sub("[.,:;)]+$"; "")
+            | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))])
+      else . end)
+    | .paths | unique' 2>/dev/null || echo '[]'
+}
+
+# fb_card_has_scope_paths <body>: succeeds when fb_card_scope_paths finds one
+fb_card_has_scope_paths() {
+  [ "$(fb_card_scope_paths "$1" | jq 'length' 2>/dev/null)" -gt 0 ] 2>/dev/null
+}
+
 # fb_card_text <board-read-json>: the card as text for a reader that scans
 # prose (the reviewers, lint's missing-file scan): the body with its trailing
 # newlines trimmed, then "## Acceptance" and one "- " line per acceptance item
