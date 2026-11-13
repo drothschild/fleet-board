@@ -1786,7 +1786,7 @@ function openDraft(id, text) {
 
 // cancelImportSession(id): asks the server to stop a grouping session; errors are ignored.
 function cancelImportSession(id) {
-  return writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/cancel").catch(function () {});
+  return writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/cancel", {}).catch(function () {});
 }
 
 // discardImport(): Discard / Escape. While grouping, cancels the server session

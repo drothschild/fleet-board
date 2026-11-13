@@ -1664,7 +1664,6 @@ ROUTES = [
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cancel", cancel_import_session),
     ("PATCH", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cards/(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)", edit_import_card_route),
 ]
-NO_BODY = (start_run, stop_run, cancel_import_session)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
 
 

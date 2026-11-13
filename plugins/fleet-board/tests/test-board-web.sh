@@ -700,8 +700,8 @@ if setup_case; then
   wait_for 'api GET /api/import/fixed4; body_is .state ready'
   rm -f "$FAKE_CLAUDE_DIR/slow"
   # Cancel: a ready or failed import cannot be cancelled.
-  api POST /api/import/fixed4/cancel;  assert_code 409
-  api POST /api/import/fixed2/cancel;  assert_code 409
+  api POST /api/import/fixed4/cancel "{}";  assert_code 409
+  api POST /api/import/fixed2/cancel "{}";  assert_code 409
 
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
@@ -738,16 +738,17 @@ if setup_case; then
   wait_for '[ -s "$FAKE_CLAUDE_DIR/pid" ]'
   HANG_PID="$(cat "$FAKE_CLAUDE_DIR/pid")"
   api GET /api/import/cancel1;      assert_body "hanging import is running" '.state' running
-  api POST /api/import/cancel1/cancel; assert_code 200
+  api POST /api/import/cancel1/cancel "{}"; assert_code 200
   wait_for '! kill -0 "$HANG_PID" 2>/dev/null'
   if ! kill -0 "$HANG_PID" 2>/dev/null; then pass "cancel kills the session pid"; else fail "cancel kills the session pid" "pid $HANG_PID alive"; fi
   api GET /api/import/cancel1;      assert_body "cancelled import reports cancelled" '.state' cancelled
   # A valid cards.json must not let a cancelled import be created.
+  api GET /api/board; CARDS_BEFORE="$(jq '.cards|length' "$BODY_FILE")"
   cp "$IMPORT_FIXTURE" "$TMP/logs/web/acme-toy/imports/cancel1/cards.json"
   api POST /api/import/cancel1/create '{}'; assert_code 409
   assert_body "create on a cancelled import says cancelled" '.error' '*cancelled*'
-  api GET /api/board;               assert_body "create on a cancelled import adds no cards" '.cards|length' 6
-  api POST /api/import/cancel1/cancel; assert_code 409
+  api GET /api/board;               assert_body "create on a cancelled import adds no cards" '.cards|length' "$CARDS_BEFORE"
+  api POST /api/import/cancel1/cancel "{}"; assert_code 409
   rm -f "$FAKE_CLAUDE_DIR/hang"
   if [ "$(pgrep -f "$FAKE_IMPORT_CLAUDE" | wc -l | tr -d ' ')" = 0 ]; then pass "no fake claude process left running"; else fail "no fake claude process left running" "$(pgrep -fl "$FAKE_IMPORT_CLAUDE")"; fi
 
