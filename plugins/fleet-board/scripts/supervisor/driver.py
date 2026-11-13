@@ -437,8 +437,9 @@ class CardDriver:
     def record_ignored_checks(self, card, entries):
         """Append the checks a merge went past (merge.ignore_checks) to the card's note.
 
-        Each entry is {name, reason, until} as the planner's ignored_checks lists it; the note keeps
-        {name, reason, until, at}. A malformed entry raises ValueError and nothing is written.
+        Each entry is {name, reason, until, state?} as the planner's ignored_checks lists it; the note
+        keeps {name, reason, until, at}, plus `state` when the entry carries a valid one ("red" or
+        "pending"). A malformed entry raises ValueError and nothing is written.
         """
         if not _posint(card):
             raise ValueError('invalid card number: %r' % (card,))
@@ -456,7 +457,10 @@ class CardDriver:
                 time.strptime(entry['until'], '%Y-%m-%d')
             except ValueError:
                 raise ValueError('invalid ignored check until: %r' % (entry['until'],))
-            added.append({'name': entry['name'], 'reason': entry['reason'], 'until': entry['until'], 'at': at})
+            kept_entry = {'name': entry['name'], 'reason': entry['reason'], 'until': entry['until'], 'at': at}
+            if entry.get('state') in ('red', 'pending'):
+                kept_entry['state'] = entry['state']
+            added.append(kept_entry)
         if not added:
             return
         tmp = tempfile.mkdtemp(prefix='fleet-driver-')

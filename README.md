@@ -66,7 +66,8 @@ agents do the rest, and hooks stop them from skipping a step.
 - **Guardrails enforced by hooks.** A hook checks every shell command an agent runs. It blocks:
   - moving a card out of Human QA;
   - any merge under `merge.policy: human`;
-  - merging a draft PR, a PR with red or pending checks, or one with unreviewed commits;
+  - merging a draft PR, a PR with red or pending checks unless a `merge.ignore_checks` entry covers them, or one
+    with unreviewed commits;
   - moving a card to Ready without acceptance items.
 
   It is a text check with known blind spots ([docs/gates.md](plugins/fleet-board/docs/gates.md)); keep branch
@@ -237,7 +238,7 @@ Everything lives in `.fleet-board.yml`. Set only what differs from the defaults.
 | `commands.lint` | none | run by the agents |
 | `worktrees.setup` | none | run once in each new worktree, for example `npm ci` |
 | `merge.policy` | `human` | `auto` merges clean, green PRs for you |
-| `merge.ignore_checks` | `[]` | dated, reasoned exceptions for flaky checks |
+| `merge.ignore_checks` | `[]` | dated, reasoned exceptions for flaky checks; `pending: true` also merges without waiting for them |
 | `review.stages` | `[]` | extra review stages after the main review |
 | `review.max_rounds` | `3` | review/fix rounds before a card is blocked |
 | `followups.status` | `ready` | where follow-up cards are filed (`ready` or `backlog`) |
