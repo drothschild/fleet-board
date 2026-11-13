@@ -455,6 +455,76 @@ check "up with stuck cards (exit 4): prints exactly one stderr line" 1 "$(grep -
 contains "up with stuck cards (exit 4): the stderr line names fleet-board supervisor stuck" "fleet-board supervisor stuck" "$(cat "$ST_ERR")"
 pkill -P "$ST_PID" 2>/dev/null; kill "$ST_PID" 2>/dev/null; wait "$ST_PID" 2>/dev/null
 
+# --- up: a signal stops the board and drains the supervisor up started ------
+# The fake supervisor's stop returns at once (like the real one) and the supervisor
+# keeps running for about a second more; status exits 1 once it is gone.
+RD="$TMP/roots/0.43.0"; mkdir -p "$RD/scripts"
+cp "$RU/scripts/board-web.sh" "$RD/scripts/board-web.sh"
+cat > "$RD/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start)
+    if [ -f "$UP_STATE/pid" ]; then echo "supervisor already running" >&2; exit 1; fi
+    echo 4242 > "$UP_STATE/pid"; exit 0 ;;
+  status) [ -f "$UP_STATE/pid" ]; exit $? ;;
+  stop)
+    printf '%s\n' "$*" >> "$UP_STATE/stop-calls"
+    ( sleep 1; rm -f "$UP_STATE/pid" ) >/dev/null 2>&1 &
+    exit 0 ;;
+esac
+exit 0
+EOS
+HD="$TMP/home-drain"; make_home "$HD" "user||$RD|0.43.0"
+
+# up_signal SIGNAL STATE_DIR PRESTART: run up in its own session with default signal
+# handling, send SIGNAL once the board answers, then print up's exit code.
+up_signal() {
+  local sig="$1" state="$2" pre="$3" repo port
+  repo="$TMP/work/repo-sig-$sig-$pre"; make_repo "$repo"
+  port="$(free_port)"; echo "$port" > "$TMP/sig-port-$sig-$pre"
+  [ "$pre" = 1 ] && echo 4242 > "$state/pid"
+  python3 - "$sig" "$port" "$repo" "$state" "$HD" "$LAUNCHER" "$TMP/sig-out-$sig-$pre" <<'EOPY'
+import os, signal, subprocess, sys, time, urllib.request
+sig, port, repo, state, home, launcher, out = sys.argv[1:]
+env = dict(os.environ, HOME=home, UP_STATE=state)
+p = subprocess.Popen(["bash", launcher, "up", "--port", port], cwd=repo, env=env,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT,
+                     preexec_fn=lambda: [signal.signal(s, signal.SIG_DFL) for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)])
+for _ in range(100):
+    try: urllib.request.urlopen("http://127.0.0.1:%s/api/board" % port); break
+    except Exception: time.sleep(0.1)
+time.sleep(0.3)
+p.send_signal(getattr(signal, "SIG" + sig))
+try: rc = p.wait(timeout=20)
+except subprocess.TimeoutExpired: p.kill(); rc = "timeout"
+print(rc)
+EOPY
+}
+
+for SIG in INT TERM HUP; do
+  DS="$TMP/drain-state-$SIG"; mkdir -p "$DS"
+  SIG_OUT="$TMP/sig-out-$SIG-0"
+  rc="$(up_signal "$SIG" "$DS" 0)"
+  SIG_PORT="$(cat "$TMP/sig-port-$SIG-0")"
+  check "up on SIG$SIG: exits 0" 0 "$rc"
+  check "up on SIG$SIG: asks the supervisor to drain (stop --drain)" "stop --drain" "$(cat "$DS/stop-calls" 2>/dev/null)"
+  if [ -f "$DS/pid" ]; then fail "up on SIG$SIG: exits only once the supervisor is not running" "supervisor still running when up exited"
+  else pass "up on SIG$SIG: exits only once the supervisor is not running"; fi
+  (cd "$REPO_UP" && HOME="$HD" UP_STATE="$DS" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
+  check "up on SIG$SIG: status reports not running afterwards (exit 1)" 1 "$src"
+  check "up on SIG$SIG: prints one line saying it is draining" 1 "$(grep -ci 'draining' "$SIG_OUT")"
+  code="$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:$SIG_PORT/api/board")"
+  check "up on SIG$SIG: the board is no longer served" 000 "$code"
+done
+
+DK="$TMP/drain-state-keep"; mkdir -p "$DK"
+rc="$(up_signal INT "$DK" 1)"
+check "up on SIGINT with a supervisor already running: exits 0" 0 "$rc"
+(cd "$REPO_UP" && HOME="$HD" UP_STATE="$DK" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
+check "up on SIGINT with a supervisor already running: it is still running (status exits 0)" 0 "$src"
+if [ -f "$DK/stop-calls" ]; then fail "up on SIGINT with a supervisor already running: no stop requested" "$(cat "$DK/stop-calls")"
+else pass "up on SIGINT with a supervisor already running: no stop requested"; fi
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
