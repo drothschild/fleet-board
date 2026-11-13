@@ -1327,6 +1327,7 @@ class CardDriver:
             self._merger_attention(c, run.mode, reason, run.head)
         else:
             c.merge(dict(_RESET, role_guard={'role': run.role, 'status': 'attention', 'reason': reason}))
+            self.state.set_attention(c.n, reason)
             self.state.event('attention', card=c.n, role=run.role, reason=reason)
         return Outcome(c.n, False, False, None)
 
@@ -1406,7 +1407,9 @@ class CardDriver:
         if verified is not None:
             patch['last_verified'] = verified
         c.merge(patch)
+        self.state.set_attention(c.n, reason)
         self.state.event('attention', card=c.n, mode=mode, reason=reason)
+        c.comment_soft('Merger needs attention (%s): %s' % (mode, reason))
 
     @staticmethod
     def _merger_reason(parsed):
