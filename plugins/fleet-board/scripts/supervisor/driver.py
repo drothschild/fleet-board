@@ -791,6 +791,8 @@ class CardDriver:
             raise
         if not outcome.redispatch:
             self._release(run)
+            if c.reached_done:
+                self._cleanup_done()
         return outcome
 
     def _release(self, run):
@@ -1403,6 +1405,7 @@ class CardDriver:
         if mode == 'after_merge' and status == 'done':
             c.merge(dict(_RESET, merger=record, last_verified=verified))
             c.move('done')
+            c.reached_done = True
             c.merge_soft(dict(left, state='done'))
             return
         if mode == 'refusal' and status == 'retry':
