@@ -7,7 +7,8 @@ fleet-board is a Claude Code plugin that runs a team of AI coding agents from a 
 You write cards on a local board page. Each card has a title and a list of testable acceptance items. A supervisor you
 start from the command line works through the board. For each card it:
 
-- has one agent write failing tests first and open a pull request;
+- has one agent, in its own git worktree and branch, write failing tests first, then make them pass and open a pull
+  request;
 - has a second agent review that PR on evidence;
 - has a third agent fix what the review found.
 
@@ -21,13 +22,16 @@ agents do the rest, and hooks stop them from skipping a step.
 
   ```
   Backlog → Ready → In Progress → In Review → [review stages] → Merging → Done
-                        ↘ Blocked                              ↘ Human QA
+                        ↘ Blocked      ↘ Blocked               ↘ Human QA → Done
   ```
 
-  You move cards from Backlog to Ready, and out of Human QA. Everything else moves on its own.
+  Human QA is where a card waits for you to check it by hand. Merging is used only with `merge.policy: auto`. You move
+  cards from Backlog to Ready, and out of Human QA. Everything else moves on its own.
 - **Extra review stages.** You can add your own stages after the main review, such as security, UX or performance. Each
   stage runs its own agent or a model from another provider, and can be limited to the files it cares about.
-- **Processes new issues into cards.** When a bug or side issue is found in the implementation of one card, a new card is created in the backlog to resolve it.**
+- **Follow-up cards.** When an agent working on one card finds a bug or work outside that card, the supervisor files
+  it as a new card, in Ready by default so the fleet picks it up. Set `followups.status: backlog` to triage them
+  yourself first. A follow-up that matches an open card is added to that card as a comment instead.
 - **Evidence-based review.** The reviewer does not take the implementor's word for anything. It:
   - maps every acceptance item to a test;
   - breaks the code on purpose (mutation testing) to prove the tests catch it;
@@ -36,15 +40,15 @@ agents do the rest, and hooks stop them from skipping a step.
 
   Findings go to a fixer. Review and fix rounds repeat until the review is clean or the card is blocked. Each blocked
   card gets a comment saying why.
-- **Optional Merges and deploys.** With `merge.policy: auto`, a card with a clean review and green checks is
-  merged for you, one at a time per repository.
+- **Optional merges and deploys.** With `merge.policy: auto`, a card with a clean review, green checks, a non-draft PR
+  and no Human QA need is merged for you, one at a time per repository.
 
-  After the merge, a **merger** agent follows a short persona file you write in plain English. A typical persona says to
+  After the merge, a **merger** agent follows a short persona file you can write in plain English. A typical persona says to
   deploy the API and the web client, then check that the health URL answers.
 
   The merger can retry a refused merge once, send a merge conflict back for a fix, or stop and wait for you. It never
   loosens a merge rule. The only way to merge past a known-flaky check is a dated entry in your config.
-- **A supervisor.** One `supervisor start` process per repository runs the board:
+- **A supervisor.** One `supervisor.sh start` process per repository runs the board:
   - it plans each card's next step and runs several cards at once, up to the limits you set;
   - it keeps two cards from editing the same files at the same time;
   - it backs off when a provider is rate-limited.
@@ -59,11 +63,14 @@ agents do the rest, and hooks stop them from skipping a step.
   - for each card, a breakdown by column and by action.
 
   A token budget pauses the supervisor when it is reached. Cache reads are shown but don't count toward the budget.
-- **Guardrails enforced by hooks.** A hook checks every agent command before it runs. It blocks:
-  - releasing Human QA;
-  - merging a draft PR, or merging with red or pending checks;
-  - force-pushing;
-  - starting a card that has no acceptance items;
+- **Guardrails enforced by hooks.** A hook checks every shell command an agent runs. It blocks:
+  - moving a card out of Human QA;
+  - any merge under `merge.policy: human`;
+  - merging a draft PR, a PR with red or pending checks, or one with unreviewed commits;
+  - moving a card to Ready without acceptance items.
+
+  It is a text check with known blind spots ([docs/gates.md](plugins/fleet-board/docs/gates.md)); keep branch
+  protection on as the backstop. Agents are also told never to force-push or rewrite history.
 - **Planning help.** A chat on the board page drafts cards with you. `/fleet-board:import-plan` turns a written plan
   into PR-sized cards. It works out the dependencies between them and shows you a preview before it creates anything.
 
@@ -84,7 +91,7 @@ To install by hand instead, run these in Claude Code and start a new session:
 
 **Requirements:**
 - Claude Code 2.1 or later.
-- `git` and `jq`. Both ship with macOS 15 and later.
+- `git` (from the Xcode Command Line Tools on macOS) and `jq` (ships with macOS 15 and later).
 - `python3` 3.9 or later. It needs only the standard library.
 - `gh`, logged in with the `repo` scope. The pull requests live on GitHub.
 
@@ -135,7 +142,8 @@ section shows how.
 bash <plugin scripts>/board-web.sh --repo .
 ```
 
-`/fleet-board:status` prints the scripts directory on its last line. The page opens on `board.port` (8765 by default).
+`/fleet-board:status` ends with a `Supervisor: …/supervisor.sh` line; `<plugin scripts>` is that file's directory. The
+page is served at http://127.0.0.1:8765 (`board.port`); keep this command running.
 
 **2. Write a card.** Give it a title, a short body and testable acceptance items, one behavior per item. For example:
 
@@ -144,17 +152,20 @@ bash <plugin scripts>/board-web.sh --repo .
 > - `node -p "require('./apps/server/package.json').version"` prints `0.1.0`
 
 Put checks that need a person ("looks right on a phone") under a `## Human QA` heading in the body, not in the
-acceptance list. Move the card to **Ready**.
+acceptance list, and add the `needs-human-qa` label so the card stops in Human QA before its PR is merged.
+Move the card to **Ready**.
 
 **3. Start the supervisor.** Press **Start** on the board page, or run it from a terminal in the repository:
 
 ```bash
 bash <plugin scripts>/supervisor.sh start            # in the foreground; Ctrl-C cancels cleanly
-bash <plugin scripts>/supervisor.sh start --detach   # in the background, logging to ~/.fleet-board/runs/
+bash <plugin scripts>/supervisor.sh start --detach   # in the background, logging to ~/.fleet-board/runs/supervisor.log
 ```
 
-**4. Watch it move.** The card goes to In Progress, then In Review, then Merging (or Human QA), and finally Done. Its
-drawer shows each agent's report and the tokens it used.
+**4. Watch it move.** The card goes to In Progress, then In Review. By default (`merge.policy: human`) it then waits
+for you: in Human QA if it needs a person, otherwise in In Review with its PR marked ready. Merge the PR and the card
+moves to Done. Under `merge.policy: auto` it goes through Merging to Done instead. Its drawer shows each agent's report
+and the tokens it used.
 
 **5. Control it.**
 
@@ -163,7 +174,7 @@ drawer shows each agent's report and the tokens it used.
 | `supervisor.sh status` | what's running, and on which cards |
 | `supervisor.sh pause` / `resume` | stop starting new work / start again |
 | `supervisor.sh stop --drain` | finish the work in flight, then exit |
-| `supervisor.sh stop --cancel` | end every agent session now, return each card to its column, then exit |
+| `supervisor.sh stop --cancel` | end every agent session after a short grace period (a merge in progress finishes), return each card to its column, then exit |
 | `supervisor.sh usage [--card N]` | tokens for this run and all time, or one card's breakdown |
 | `supervisor.sh stuck [--release N]` | list the cards a crashed run left half done, or return one to its column |
 
@@ -185,8 +196,8 @@ Stop at the first failure and report `attention`.
 A conflict: report `fix`. A pending check: report `retry`. Anything else: report `attention`.
 ```
 
-When something fails, the card waits in Merging with the merger's report, and nothing else is deployed. To skip a known
-flaky check until a date, add an entry to `merge.ignore_checks` in `.fleet-board.yml` with a reason; the persona can't
+When an after-merge step fails, the card waits in Merging with the merger's report until you decide. If `main` fails
+its check after a merge, the supervisor pauses. To skip a known flaky check until a date, add an entry to `merge.ignore_checks` in `.fleet-board.yml` with a reason; the persona can't
 do this.
 
 ## Configuration
@@ -196,12 +207,14 @@ Everything lives in `.fleet-board.yml`. Set only what differs from the defaults.
 | Key | Default | What it does |
 |---|---|---|
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
-| `commands.typecheck`, `commands.lint` | none | run by the agents, and on `main` after a merge |
+| `commands.typecheck` | none | run by the agents, and on `main` after a merge |
+| `commands.lint` | none | run by the agents |
 | `worktrees.setup` | none | run once in each new worktree, for example `npm ci` |
 | `merge.policy` | `human` | `auto` merges clean, green PRs for you |
 | `merge.ignore_checks` | `[]` | dated, reasoned exceptions for flaky checks |
 | `review.stages` | `[]` | extra review stages after the main review |
 | `review.max_rounds` | `3` | review/fix rounds before a card is blocked |
+| `followups.status` | `ready` | where follow-up cards are filed (`ready` or `backlog`) |
 | `human_qa_paths` | `[]` | globs whose changes always go to Human QA (for example `deploy/**`) |
 | `models.implementor` / `reviewer` / `fixer` / `merger` | `sonnet` / `opus` / `sonnet` / `sonnet` | the model each role runs on |
 | `limits.concurrency` | `6` | agent sessions running at once |
