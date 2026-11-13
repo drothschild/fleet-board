@@ -46,7 +46,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
 
 4. **Write one small card** on the board page (see [Local board](#local-board)): a title, a body, and testable acceptance items (see [Writing a card](#writing-a-card)). Add the `needs-human-qa` label to check the result by hand before any PR is marked ready.
 5. **Move it to Ready.**
-6. **Start the supervisor**: press Start on the board page, or run `supervisor.sh start --detach` (see [Running the supervisor](#running-the-supervisor)).
+6. **Start the supervisor**: press Start on the board page, or run `fleet-board supervisor start --detach` (see [Running the supervisor](#running-the-supervisor)).
 7. **Watch it move.** With a clean review:
 
    | Step | Card | What appears |
@@ -158,13 +158,15 @@ The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `
 
 ## Running the supervisor
 
-The supervisor dispatches the board's work until you stop it. Find its path on the last line of `/fleet-board:status`, then from the repo root:
+The supervisor dispatches the board's work until you stop it. From the repo:
 
 ```bash
-bash <path from /fleet-board:status> start --detach   # or Start on the board page
-bash <path> status
-bash <path> stop                                     # finish running sessions, then exit
+fleet-board supervisor start --detach   # or Start on the board page
+fleet-board supervisor status
+fleet-board supervisor stop             # finish running sessions, then exit
 ```
+
+`fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version each time, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository.
 
 Before it starts, it checks for cards a crashed run left behind and refuses to start (exit 4) until you resolve them (`stuck`, `stuck --release N`). It stops on its own after `limits.max_hours`, pauses admissions at `limits.max_tokens` (cache reads are shown but not counted), and counts tokens only. Under `merge.policy: auto` it merges reviewed, non-draft, green PRs that need no Human QA, one at a time, and moves their cards to Done; under `human` (the default) it merges nothing. Pause, resume, limits, the startup check and scheduling are in [docs/overnight.md](docs/overnight.md).
 
@@ -182,10 +184,10 @@ The board is always local: cards are JSON files under `<repo>/.fleet-board/`, wh
 
 `board-read.sh <n>` prints them next to the prose body. `pr_url` follows the manager note's `pr`: when the note records a PR, the card gets its URL; a URL you set yourself in the drawer is kept until a note names a different PR. A body you give `board-create.sh` or import with `## Acceptance` and `## Depends on` sections is split into the fields, so plans written the old way still import.
 
-Open the page from the repo root with the `board-web.sh` beside the supervisor (its path is the last line of `/fleet-board:status`):
+Open the page from anywhere in the repo:
 
 ```bash
-bash <directory of that path>/board-web.sh --repo .
+fleet-board board
 ```
 
 It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
@@ -202,7 +204,7 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaults to `github-labels`, so deleting the key before updating would quietly switch a local board to GitHub labels.
 
-0. Stop a running supervisor first (`supervisor.sh stop`, and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
+0. Stop a running supervisor first (`fleet-board supervisor stop`, and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
 1. Update the plugin (`/plugin marketplace update fleet-board`, then update or reinstall it) and start a new session.
 2. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 naming the key until you do.
 3. Run `migrate-card-fields.sh` on the local store. If your cards are GitHub issues (`backend: github-labels`, `github-projects`, or no `backend` key: the old default was labels), skip this step and follow "Moving an existing GitHub board" below instead.

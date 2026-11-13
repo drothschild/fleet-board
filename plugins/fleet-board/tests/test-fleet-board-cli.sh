@@ -90,11 +90,13 @@ if [ -x "$TMP/home-default/.local/bin/fleet-board" ]; then pass "install: wrote 
 else fail "install: wrote ~/.local/bin/fleet-board" "$out"; fi
 
 # --- choosing the install --------------------------------------------------
+# The newest version whose directory exists wins, wherever it is registered: old
+# per-project records can point at versions that predate a script.
 H="$TMP/home-1"
 make_home "$H" "user||$R1|0.25.0" "project|$REPO_A|$R2|0.27.1"
 
 out="$(cd "$REPO_A" && HOME="$H" bash "$LAUNCHER" board 2>&1)"
-check "board: in a repo with its own install, runs that version with --repo set to the repo" \
+check "board: runs the newest install with --repo set to the repo" \
   "board-web.sh 0.27.1 --repo $REPO_A" "$out"
 
 mkdir -p "$REPO_A/sub/dir"
@@ -103,13 +105,22 @@ check "board: from a subdirectory, uses the repo root and passes extra arguments
   "board-web.sh 0.27.1 --repo $REPO_A --port 9001" "$out"
 
 out="$(cd "$REPO_B" && HOME="$H" bash "$LAUNCHER" board 2>&1)"
-check "board: in another repo, falls back to the user-wide install" "board-web.sh 0.25.0 --repo $REPO_B" "$out"
+check "board: in a repo the newest install was not registered for, still uses the newest" \
+  "board-web.sh 0.27.1 --repo $REPO_B" "$out"
 
 H2="$TMP/home-2"
-make_home "$H2" "local|/elsewhere|$R3|0.26.0" "project|/other|$TMP/roots/0.30.0|0.30.0" "local|/x|$R1|0.25.0"
+make_home "$H2" "local|/elsewhere|$R3|0.26.0" "project|/other|$TMP/roots/0.30.0|0.30.0" "user||$R1|0.25.0"
 out="$(cd "$REPO_B" && HOME="$H2" bash "$LAUNCHER" board 2>&1)"
-check "board: with no user-wide install, picks the newest version that still exists" \
+check "board: skips a newer version whose directory is gone, and beats the user-wide record" \
   "board-web.sh 0.26.0 --repo $REPO_B" "$out"
+
+H3="$TMP/home-3"
+make_root "$TMP/roots/0.9.0" 0.9.0
+make_root "$TMP/roots/0.10.0" 0.10.0
+make_home "$H3" "user||$TMP/roots/0.9.0|0.9.0" "local|/x|$TMP/roots/0.10.0|0.10.0"
+out="$(cd "$REPO_B" && HOME="$H3" bash "$LAUNCHER" board 2>&1)"
+check "board: version order is numeric, not text (0.10.0 beats 0.9.0)" \
+  "board-web.sh 0.10.0 --repo $REPO_B" "$out"
 
 out="$(cd "$REPO_A" && HOME="$H" bash "$LAUNCHER" supervisor start --detach 2>&1)"
 check "supervisor: passes its arguments to supervisor.sh" "supervisor.sh 0.27.1 start --detach" "$out"

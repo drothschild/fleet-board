@@ -236,4 +236,7 @@ fi
 # --- Step 7: write ---------------------------------------------------------
 mv -f "$TMP" "$TARGET" || die 1 "cannot write $TARGET"
 printf 'wrote %s\n' "$TARGET"
+# Put the `fleet-board` command on PATH (FLEET_BOARD_BIN_DIR, default ~/.local/bin).
+# Best effort: its messages go to stderr, and a refusal never fails init.
+bash "$HERE/install-cli.sh" >&2 || printf 'fleet-board init: the fleet-board command was not installed; run: bash %s/install-cli.sh\n' "$HERE" >&2
 printf 'fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash %s/review-stages.sh setup\n' "$HERE"

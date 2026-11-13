@@ -48,7 +48,7 @@ agents do the rest, and hooks stop them from skipping a step.
 
   The merger can retry a refused merge once, send a merge conflict back for a fix, or stop and wait for you. It never
   loosens a merge rule. The only way to merge past a known-flaky check is a dated entry in your config.
-- **A supervisor.** One `supervisor.sh start` process per repository runs the board:
+- **A supervisor.** One `fleet-board supervisor start` process per repository runs the board:
   - it plans each card's next step and runs several cards at once, up to the limits you set;
   - it keeps two cards from editing the same files at the same time;
   - it backs off when a provider is rate-limited.
@@ -112,10 +112,18 @@ and `gh`; do not install anything else.
    ```
 
    If the marketplace is already added, run `claude plugin marketplace update fleet-board` and continue.
-3. **Check the GitHub login.** Run `gh auth status`. If it reports no login, ask the user to run `gh auth login` in a
+3. **Put the `fleet-board` command on the PATH.** Run the plugin's installer, which copies a small launcher to
+   `~/.local/bin/fleet-board`:
+
+   ```bash
+   bash "$(jq -r '.plugins["fleet-board@fleet-board"] | sort_by(.version | split(".") | map(tonumber? // 0)) | last | .installPath' ~/.claude/plugins/installed_plugins.json)/scripts/install-cli.sh"
+   ```
+
+   If it prints an `export PATH=...` line, add that line to the user's shell profile (`~/.zshrc` or `~/.bashrc`).
+4. **Check the GitHub login.** Run `gh auth status`. If it reports no login, ask the user to run `gh auth login` in a
    terminal and choose the browser login. It is interactive, so do not run it yourself. `/fleet-board:init` checks the
    scopes later.
-4. **Finish.** Tell the user three things:
+5. **Finish.** Tell the user three things:
    - fleet-board is installed;
    - it loads in a **new** Claude Code session;
    - the next step is to open that session in the repository they want to manage and run `/fleet-board:init`.
@@ -136,14 +144,16 @@ section shows how.
 
 ## Run it
 
-**1. Open the board page.**
+`/fleet-board:init` also installs the `fleet-board` command in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it). It runs
+the plugin's newest installed version, so plugin updates never break it.
+
+**1. Open the board page.** In a terminal in your repository:
 
 ```bash
-bash <plugin scripts>/board-web.sh --repo .
+fleet-board board
 ```
 
-`/fleet-board:status` ends with a `Supervisor: …/supervisor.sh` line; `<plugin scripts>` is that file's directory. The
-page is served at http://127.0.0.1:8765 (`board.port`); keep this command running.
+The page is served at http://127.0.0.1:8765 (`board.port`); keep this command running.
 
 **2. Write a card.** Give it a title, a short body and testable acceptance items, one behavior per item. For example:
 
@@ -158,8 +168,8 @@ Move the card to **Ready**.
 **3. Start the supervisor.** Press **Start** on the board page, or run it from a terminal in the repository:
 
 ```bash
-bash <plugin scripts>/supervisor.sh start            # in the foreground; Ctrl-C cancels cleanly
-bash <plugin scripts>/supervisor.sh start --detach   # in the background, logging to ~/.fleet-board/runs/supervisor.log
+fleet-board supervisor start            # in the foreground; Ctrl-C cancels cleanly
+fleet-board supervisor start --detach   # in the background, logging to ~/.fleet-board/runs/supervisor.log
 ```
 
 **4. Watch it move.** The card goes to In Progress, then In Review. By default (`merge.policy: human`) it then waits
@@ -171,12 +181,12 @@ and the tokens it used.
 
 | Command | What it does |
 |---|---|
-| `supervisor.sh status` | what's running, and on which cards |
-| `supervisor.sh pause` / `resume` | stop starting new work / start again |
-| `supervisor.sh stop --drain` | finish the work in flight, then exit |
-| `supervisor.sh stop --cancel` | end every agent session after a short grace period (a merge in progress finishes), return each card to its column, then exit |
-| `supervisor.sh usage [--card N]` | tokens for this run and all time, or one card's breakdown |
-| `supervisor.sh stuck [--release N]` | list the cards a crashed run left half done, or return one to its column |
+| `fleet-board supervisor status` | what's running, and on which cards |
+| `fleet-board supervisor pause` / `resume` | stop starting new work / start again |
+| `fleet-board supervisor stop --drain` | finish the work in flight, then exit |
+| `fleet-board supervisor stop --cancel` | end every agent session after a short grace period (a merge in progress finishes), return each card to its column, then exit |
+| `fleet-board supervisor usage [--card N]` | tokens for this run and all time, or one card's breakdown |
+| `fleet-board supervisor stuck [--release N]` | list the cards a crashed run left half done, or return one to its column |
 
 The board page has the same Start, Pause, Resume and Stop buttons.
 

@@ -212,7 +212,9 @@ setup_case() {
   # Reset environment between cases
   unset FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG || true
   PATH="$BIN:$ORIG_PATH"
-  export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH
+  # init installs the fleet-board command: keep it out of the real ~/.local/bin
+  FLEET_BOARD_BIN_DIR="$FAKE_GH_DIR/userbin"
+  export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH FLEET_BOARD_BIN_DIR
 
   # Run from a neutral directory, so a script that ignores --dir writes elsewhere
   cd "$FAKE_GH_DIR"
@@ -293,6 +295,12 @@ HINT_LINE="fleet-board init: to add review stages, set review.stages in .fleet-b
 assert_stdout_exact "labels-writes-valid-config: stdout" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml
 $HINT_LINE"
 assert_stdout_contains "labels-writes-valid-config: stage hint names review-stages.sh setup" "then run: bash "
+if [ -x "$FLEET_BOARD_BIN_DIR/fleet-board" ] && grep -qxF '# fleet-board command-line launcher' "$FLEET_BOARD_BIN_DIR/fleet-board"; then
+  pass "labels-writes-valid-config: installs the fleet-board command in FLEET_BOARD_BIN_DIR"
+else
+  fail "labels-writes-valid-config: installs the fleet-board command in FLEET_BOARD_BIN_DIR" "no launcher at $FLEET_BOARD_BIN_DIR/fleet-board"
+fi
+assert_stderr_contains "labels-writes-valid-config: names the installed command" "installed: $FLEET_BOARD_BIN_DIR/fleet-board"
 assert_stdout_contains "labels-writes-valid-config: stage hint script path" "/review-stages.sh setup"
 assert_dir_listing "labels-writes-valid-config: no stray temp files" "$WRITTEN"
 
