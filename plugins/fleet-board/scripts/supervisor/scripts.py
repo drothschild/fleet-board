@@ -12,7 +12,7 @@ ALLOWED = frozenset((
     'tick-plan.sh', 'board-read.sh', 'board-list.sh', 'board-move.sh', 'board-comment.sh', 'note.sh', 'worktree.sh',
     'update-branch.sh', 'review-stages.sh', 'merge-reviewed.sh', 'verify-main.sh', 'after-merge.sh',
     'parse-report.sh', 'file-followups.sh', 'human-qa-handoff.sh', 'stage-review.sh',
-    'evidence-review.sh', 'config.sh', 'deps.sh',
+    'evidence-review.sh', 'config.sh', 'deps.sh', 'cleanup-done.sh',
 ))
 
 POST_KILL_WAIT = 5
