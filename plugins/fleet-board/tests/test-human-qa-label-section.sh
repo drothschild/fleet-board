@@ -99,6 +99,47 @@ seed_card 1 "$QA_BODY"
 out="$( cd "$REPO" && bash "$SCRIPTS/needs-human-qa.sh" 1 5 2>/dev/null )"
 if [ "$out" = false ]; then pass "QA section alone reports false"; else fail "QA section alone reports false" "got: '$out'"; fi
 
+EDIT="$SCRIPTS/adapters/local/edit.sh"
+
+echo "edit.sh --labels-json adding needs-human-qa to a card whose body has no QA section appends the old body trimmed, a blank line and the QA heading"
+setup_case
+seed_card 1 "$PROSE"
+in_repo bash "$EDIT" 1 --labels-json '["needs-human-qa"]'
+got="$(raw_body_of 1)"
+want=$'## Why\nBecause.\n\n## Human QA\n'
+if [ "$got" = "$(enc "$want")" ]; then pass "edit.sh adding the label appends the QA heading"; else fail "edit.sh adding the label appends the QA heading" "got: $(printf '%s' "$got" | jq -Rs .)"; fi
+
+echo "edit.sh --labels-json adding needs-human-qa to a card whose body already has a QA section with a bullet leaves the body unchanged and sets the label"
+setup_case
+seed_card 1 "$QA_BODY"
+in_repo bash "$EDIT" 1 --labels-json '["needs-human-qa"]'
+got="$(raw_body_of 1)"
+labels="$(jq -c '.labels' "$REPO/.fleet-board/cards/1.json")"
+if [ "$got" = "$(enc "$QA_BODY")" ] && [ "$labels" = '["needs-human-qa"]' ]; then pass "edit.sh with an existing QA section leaves the body unchanged"; else fail "edit.sh with an existing QA section leaves the body unchanged" "labels $labels body: $(printf '%s' "$got" | jq -Rs .)"; fi
+
+echo "edit.sh on a card that already carries needs-human-qa, passing needs-human-qa and other, leaves the body unchanged"
+setup_case
+seed_card 1 "$PROSE" '["needs-human-qa"]'
+in_repo bash "$EDIT" 1 --labels-json '["needs-human-qa","other"]'
+got="$(raw_body_of 1)"
+if [ "$got" = "$(enc "$PROSE")" ]; then pass "edit.sh on a card already carrying the label leaves the body unchanged"; else fail "edit.sh on a card already carrying the label leaves the body unchanged" "got: $(printf '%s' "$got" | jq -Rs .)"; fi
+
+echo "edit.sh passing other to a card without the label leaves the body unchanged"
+setup_case
+seed_card 1 "$PROSE"
+in_repo bash "$EDIT" 1 --labels-json '["other"]'
+got="$(raw_body_of 1)"
+if [ "$got" = "$(enc "$PROSE")" ]; then pass "edit.sh with another label leaves the body unchanged"; else fail "edit.sh with another label leaves the body unchanged" "got: $(printf '%s' "$got" | jq -Rs .)"; fi
+
+echo "edit.sh with --body-file and --labels-json needs-human-qa together writes the file's body followed by the QA heading"
+setup_case
+seed_card 1 "$PROSE"
+printf '## Why\nNew reason.\n' > "$REPO/new-body.md"
+in_repo bash "$EDIT" 1 --body-file "$REPO/new-body.md" --labels-json '["needs-human-qa"]'
+got="$(raw_body_of 1)"
+want=$'## Why\nNew reason.\n\n## Human QA\n'
+if [ "$got" = "$(enc "$want")" ]; then pass "edit.sh --body-file with the label appends the QA heading"; else fail "edit.sh --body-file with the label appends the QA heading" "got: $(printf '%s' "$got" | jq -Rs .)"; fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
