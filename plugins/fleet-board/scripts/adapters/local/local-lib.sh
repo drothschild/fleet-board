@@ -92,6 +92,15 @@ fl_next_number() {
   # never when its card file already exists, so a stale counter skips ahead.
   mkdir -p "$d/.claims" || { rm -rf "$lock"; fb_die 1 "cannot create $d/.claims"; }
   while [ -e "$(fl_card_file "$n")" ] || ! mkdir "$d/.claims/$n" 2>/dev/null; do n=$((n + 1)); done
+  # Prune claims below the number just issued: the counter is past them, and the
+  # card-file check above still stops a reset counter from reissuing them.
+  local c cn
+  for c in "$d/.claims"/*; do
+    [ -d "$c" ] || continue
+    cn="${c##*/}"
+    case "$cn" in ''|*[!0-9]*) continue ;; esac
+    [ "$cn" -lt "$n" ] && rmdir "$c" 2>/dev/null
+  done
   if ! printf '%s\n' $((n + 1)) > "$f.tmp.$$" || ! mv -f "$f.tmp.$$" "$f"; then
     rm -f "$f.tmp.$$"; fb_lock_release "$lock"; fb_die 1 "cannot update $f"
   fi

@@ -664,6 +664,18 @@ if [ "$dup_out" = "4" ]; then pass "eight concurrent creates give numbers 1 thro
 dup_title="$(jq -r .title "$REPO/.fleet-board/cards/2.json")"
 if [ "$dup_title" = "D2" ]; then pass "a reset counter does not overwrite card 2"; else fail "a reset counter does not overwrite card 2" "title: $dup_title"; fi
 
+# --- stale number claims are pruned (card #275) ---
+setup_case
+for i in 1 2 3 4 5; do (cd "$REPO" && bash "$SCRIPTS/board-create.sh" "P$i" "$body" >/dev/null 2>&1); done
+next_n="$(tr -d '[:space:]' < "$REPO/.fleet-board/next")"
+stale=""
+for c in "$REPO"/.fleet-board/.claims/*; do
+  [ -e "$c" ] || continue
+  cn="$(basename "$c")"
+  if [ "$cn" -lt $((next_n - 1)) ]; then stale="$stale $cn"; fi
+done
+if [ -z "$stale" ]; then pass "after five creates .claims holds no entry for a number below the next number minus one"; else fail "after five creates .claims holds no entry for a number below the next number minus one" "stale claims:$stale (next is $next_n)"; fi
+
 # --- racing notes ---
 racing_note_case
 
