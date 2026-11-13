@@ -187,3 +187,19 @@ fl_check_blocked_by() {
     [ -f "$(fl_card_file "$b")" ] || fb_die 2 "blocked_by names #$b, which does not exist in $(fl_cards_dir)"
   done
 }
+
+# fl_add_qa_section <body-string>:
+# prints the body with an empty "## Human QA" section appended when it has no
+# such heading outside a code fence; an existing section leaves it byte for byte.
+fl_add_qa_section() {
+  jq -nj --arg b "$1" '
+    ($b | split("\n")) as $lines
+    | (reduce $lines[] as $l ({fence: false, has: false};
+        if ($l | test("^[ ]{0,3}(```|~~~)")) then .fence = (.fence | not)
+        elif .fence then .
+        elif ($l | test("^##[ \t]+Human[ \t]+QA[ \t]*$"; "i")) then .has = true
+        else . end)).has as $has
+    | if $has then $b
+      else ($b | sub("\n+$"; "")) as $t
+        | (if $t == "" then "" else $t + "\n\n" end) + "## Human QA\n" end'
+}
