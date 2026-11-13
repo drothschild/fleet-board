@@ -97,8 +97,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
   line from its own sides; after any merge it raises keys the branch bumped (changed by
-  its own non-merge commits with full history, less base patch ids, and differing from the
-  fork point, `vl_changes`) that are not above the base to base + 1 patch.
+  its own non-merge commits with full history, and differing from the fork point, `vl_changes`) that are not above the base to base + 1 patch.
   `tick-plan.sh` uses the same rule against the PR's `baseRefName`: `update_branch`
   ("version not above base"), or `wait` ("version check needs <ref>") when a ref cannot
   be read; its `git fetch origin <bases>` runs at most once per 60 s. `update-branch.sh`

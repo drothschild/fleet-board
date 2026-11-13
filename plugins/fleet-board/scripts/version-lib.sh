@@ -6,8 +6,9 @@
 #   - one of the branch's own non-merge commits on F changed K against that
 #     commit's parent. "Own" is git log --no-merges --full-history <base>..<head>
 #     -- F (full history, so a merge that took the base's side of F cannot hide
-#     the commit), less any commit whose patch id equals one of the base's own
-#     commits on F since the fork (a bump cherry-picked from the base);
+#     the commit). A bump cherry-picked from the base counts too: raising it again
+#     is harmless, while dropping patch-identical commits would let a real
+#     duplicate through;
 #   - the head value differs from the value at the fork point, the merge base of
 #     <base> and the oldest such commit (a bump the branch reverted is not one).
 # Merges of the base, earlier or lingering, never count by themselves.
@@ -22,29 +23,13 @@ vl_files() {
 # is not strictly above <base-ref>'s), or [] when the file is missing on either side
 # or is not JSON. Exit 1 when git cannot list the commits.
 vl_changes() {
-  local d="$1" b="$2" h="$3" f="$4" t="$5" own commits="" c oldest fork pid basepids=" "
-  own="$(git -C "$d" log --no-merges --full-history --topo-order --format=%H "$b..$h" -- "$f")" || return 1
-  [ -n "$own" ] || { echo '[]'; return 0; }
-  # Drop a commit whose patch is one of the base's own commits on F since the fork
-  # (a bump cherry-picked from the base). Patch ids, so it holds after a merge too.
-  fork="$(git -C "$d" merge-base "$b" "$(printf '%s\n' "$own" | tail -n 1)" 2>/dev/null)" || fork=""
-  if [ -n "$fork" ]; then
-    for c in $(git -C "$d" log --no-merges --full-history --format=%H "$fork..$b" -- "$f"); do
-      pid="$(git -C "$d" show "$c" | git patch-id --stable | cut -d' ' -f1)"
-      [ -z "$pid" ] || basepids="$basepids$pid "
-    done
-  fi
-  for c in $own; do
-    pid="$(git -C "$d" show "$c" | git patch-id --stable | cut -d' ' -f1)"
-    case "$basepids" in *" $pid "*) [ -n "$pid" ] && continue ;; esac
-    commits="$commits$c
-"
-  done
+  local d="$1" b="$2" h="$3" f="$4" t="$5" commits c oldest fork
+  commits="$(git -C "$d" log --no-merges --full-history --topo-order --format=%H "$b..$h" -- "$f")" || return 1
   [ -n "$commits" ] || { echo '[]'; return 0; }
   git -C "$d" show "$h:$f" > "$t/vl-head.json" 2>/dev/null || { echo '[]'; return 0; }
   git -C "$d" show "$b:$f" > "$t/vl-base.json" 2>/dev/null || { echo '[]'; return 0; }
   jq -e 'type == "object" or type == "array"' "$t/vl-head.json" "$t/vl-base.json" >/dev/null 2>&1 || { echo '[]'; return 0; }
-  oldest="$(printf "%s" "$commits" | tail -n 1)"
+  oldest="$(printf '%s\n' "$commits" | tail -n 1)"
   fork="$(git -C "$d" merge-base "$b" "$oldest" 2>/dev/null)" || fork=""
   if [ -z "$fork" ] || ! git -C "$d" show "$fork:$f" > "$t/vl-fork.json" 2>/dev/null \
      || ! jq -e . "$t/vl-fork.json" >/dev/null 2>&1; then
