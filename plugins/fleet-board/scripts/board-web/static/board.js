@@ -1359,10 +1359,28 @@ function noteJson(text) {
   }
 }
 
+// drawerStateLocked(): an agent works on the open card and it is not stuck, so
+// the state picker (like the tile drag) stays still. A stuck card stays movable.
+function drawerStateLocked() {
+  const d = S.drawer;
+  if (!d || d.n === null || !d.card) return false;
+  const src = boardCard(d.n) || d.card;
+  return !!src.active && !(src.stuck && typeof src.stuck === "object");
+}
+
+function syncStateLock() {
+  const sel = $("dr-state");
+  const locked = drawerStateLocked();
+  sel.disabled = locked;
+  if (locked) sel.title = "Can't be moved while an agent is working on it";
+  else sel.removeAttribute("title");
+}
+
 // renderDrawerMeta(): `round r · models (escalated) · agent working now`. Called on render and after every board poll (the active part is live).
 function renderDrawerMeta() {
   const d = S.drawer;
   const meta = $("dr-meta");
+  syncStateLock();
   if (!d || d.n === null || !d.card) {
     meta.replaceChildren(document.createTextNode(d && d.n === null ? "Not created yet" : ""));
     return;
@@ -1585,7 +1603,7 @@ async function saveDrawer() {
   }
   // The drawer may have been closed while a write was in flight: the rest of
   // the save and the board refresh still happen, only the drawer is left alone.
-  if (e.state !== d.base.state) {
+  if (e.state !== d.base.state && !drawerStateLocked()) {
     const r = await writeApi("POST", "/api/cards/" + n + "/move", { state: e.state });
     if (!r.ok) {
       showToast("#" + n + " stayed in " + stateName(d.base.state) + ": " + errorText(r), "error");
