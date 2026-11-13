@@ -12,7 +12,8 @@
 #
 # Env: FB_BEHAVIORAL=1 to run; FB_ISOLATE_SETTINGS (auth settings, default
 # ~/.config/fleet-board/bare-settings.json); BL_MODEL (default sonnet);
-# BL_MAX_TURNS (default 40).
+# BL_MAX_TURNS (default 40); BL_NO_BARE=1 runs with the caller's own login
+# instead of the isolated --bare session; BL_KEEP=1 keeps the work dir.
 #
 # Usage: FB_BEHAVIORAL=1 bash plugins/fleet-board/tests/test-documentation-reviewer-behavior.sh
 
@@ -43,7 +44,7 @@ if [ ! -f "$AGENT" ]; then
 fi
 
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap '[ -n "${BL_KEEP:-}" ] && echo "kept: $WORK" || rm -rf "$WORK"' EXIT
 
 # Stub scripts dir: the real parse-report.sh, a board-comment.sh that saves the
 # report instead of posting it.
@@ -109,8 +110,9 @@ Scripts directory: $STUBS
 EOF
   (
     cd "$repo" || exit 1
-    POSTED_REPORT="$REPORT" CLAUDE_CONFIG_DIR="$(mktemp -d)" claude -p --bare \
-      --settings "$SETTINGS" --model "$MODEL" \
+    if [ "${BL_NO_BARE:-}" = 1 ]; then ISO=(); else ISO=(--bare --settings "$SETTINGS"); export CLAUDE_CONFIG_DIR="$(mktemp -d)"; fi
+    POSTED_REPORT="$REPORT" claude -p ${ISO[@]+"${ISO[@]}"} \
+      --model "$MODEL" \
       --tools "Read,Write,Bash,Grep,Glob" --permission-mode bypassPermissions \
       --add-dir "$WORK" --max-turns "${BL_MAX_TURNS:-40}" \
       --append-system-prompt-file "$body" \
