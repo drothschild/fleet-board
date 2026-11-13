@@ -31,6 +31,9 @@ unset CDPATH
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 PLUGIN_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Build caches (git-ignored __pycache__ and *.pyc files) are not source: every grep below skips them.
+grep() { command grep --exclude-dir=__pycache__ --exclude='*.pyc' "$@"; }
+
 PASS=0
 FAIL=0
 pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
