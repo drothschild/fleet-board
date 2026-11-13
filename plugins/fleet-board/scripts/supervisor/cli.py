@@ -391,6 +391,10 @@ def _human_status(status):
     lines.append("active: %d" % len(active))
     for action in active:
         lines.append("  card %s: %s (%s)" % (action.get("card"), action.get("action"), action.get("provider")))
+    health = status.get("provider_health")
+    for name, entry in sorted(health.items()) if isinstance(health, dict) else []:
+        reason = entry.get("reason") if isinstance(entry, dict) else None
+        lines.append("unhealthy provider %s: %s" % (name, reason or "no reason given"))
     budget = status.get("run_budget")
     if isinstance(budget, dict) and isinstance(budget.get("tokens"), int):
         label = budget.get("label") or "counted toward limits.max_tokens"
