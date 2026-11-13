@@ -52,6 +52,8 @@ fl_find_title() {
 # fl_write_card <n> <json-file>: atomic replace of the card file.
 fl_write_card() {
   local cards tmp
+  jq -e --argjson n "$1" 'type == "object" and .number == $n' "$2" >/dev/null 2>&1 \
+    || fb_die 1 "refusing to write card #$1: the new content is not a JSON object with number $1; the stored card is unchanged"
   cards="$(fl_cards_dir)"; mkdir -p "$cards" || fb_die 1 "cannot create $cards"
   tmp="$(mktemp "$cards/.tmp.XXXXXX")" || fb_die 1 "cannot write a temporary file in $cards"
   if ! cat "$2" > "$tmp"; then rm -f "$tmp"; fb_die 1 "cannot write card #$1"; fi
