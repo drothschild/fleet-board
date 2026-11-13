@@ -1142,6 +1142,12 @@ def move_card(params, body):
     n = params["n"]
     state = require_str(body, "state")
     read_card(dir, n)
+    status = supervisor_status()
+    if run_alive(status) and is_active(dir, n, True):
+        stuck_of, _ = board_extras(status, {}, refresh=False)
+        if n not in stuck_of:
+            raise ApiError(409, "an agent is working on card #%s; it cannot be moved until the agent is done "
+                                "(or the card is stuck)" % n)
     board_write(["bash", script("board-move.sh"), str(n), state])
     return 200, card_detail(cfg, dir, n)
 
