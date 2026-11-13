@@ -431,6 +431,30 @@ check "up with a supervisor already running: the supervisor's pid is unchanged" 
 check "up with a supervisor already running: starts no second supervisor (pid file written once)" 1 "$(grep -c . "$RE_STATE/pid")"
 pkill -P "$RE_PID" 2>/dev/null; kill "$RE_PID" 2>/dev/null; wait "$RE_PID" 2>/dev/null
 
+# --- up: a supervisor refused for stuck cards (exit 4) still opens the board ---
+RS="$TMP/roots/0.42.0"; mkdir -p "$RS/scripts"
+cp "$RU/scripts/board-web.sh" "$RS/scripts/board-web.sh"
+cat > "$RS/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start) exit 4 ;;
+  status) exit 1 ;;
+esac
+exit 0
+EOS
+HS="$TMP/home-stuck"; make_home "$HS" "user||$RS|0.42.0"
+REPO_ST="$TMP/work/repo-stuck"; make_repo "$REPO_ST"
+PORT_ST="$(free_port)"
+ST_ERR="$TMP/stuck-stderr"
+(cd "$REPO_ST" && HOME="$HS" bash "$LAUNCHER" up --port "$PORT_ST" >/dev/null 2>"$ST_ERR") &
+ST_PID=$!
+wait_port "$PORT_ST"
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_ST/api/board")"
+check "up with stuck cards (exit 4): the board is still served (GET /api/board returns 200)" 200 "$code"
+check "up with stuck cards (exit 4): prints exactly one stderr line" 1 "$(grep -c . "$ST_ERR")"
+contains "up with stuck cards (exit 4): the stderr line names fleet-board supervisor stuck" "fleet-board supervisor stuck" "$(cat "$ST_ERR")"
+pkill -P "$ST_PID" 2>/dev/null; kill "$ST_PID" 2>/dev/null; wait "$ST_PID" 2>/dev/null
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"

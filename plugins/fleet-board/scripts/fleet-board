@@ -183,7 +183,11 @@ case "$cmd" in
     handoff "$root" "$cmd" "$@"
     sroot="$(plugin_root supervisor.sh)" || exit 1
     dir="$(main_checkout)" || dir="$top"
-    if ! (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach); then
+    (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach); src=$?
+    if [ "$src" -eq 4 ]; then
+      # Stuck cards block the supervisor; the board is where the user releases them.
+      printf 'fleet-board: fleet-board supervisor stuck: stuck cards block the supervisor; release them on the board\n' >&2
+    elif [ "$src" -ne 0 ]; then
       # An already-running supervisor is fine: serve the board against it.
       (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1) || die 1 "the supervisor did not start"
     fi
