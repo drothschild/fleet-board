@@ -59,6 +59,7 @@ function setup() {
     h.ctx.setImportPhase("ready");
     assert.equal(h.$("imp-status-select").value, "backlog");
     h.$("imp-status-select").value = "ready";
+    h.$("imp-fly").remove = () => {};
     h.ctx.closeImport();
     h.ctx.openDraft("def", "plan");
     assert.equal(h.$("imp-status-select").value, "backlog");
