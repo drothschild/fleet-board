@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash 3.2 + jq (adapters, tests), Python 3.9+ standard library (server), vanilla HTML/CSS/JS (page), plain-bash assertion suites with `curl` and the existing `fake-claude.sh`.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-local-board-design.md`
+**Spec:** `docs/specs/2026-11-06-local-board-design.md`
 
 ## Global constraints
 
@@ -534,14 +534,14 @@ git commit -m "feat(web): import a plan through a headless import-plan session"
 
 - [ ] **Step 1: Build the board view and header** to the mockups approved in conversation: columns from `board.states` in order, Done and Won't Do collapsed to counts with a toggle, cards with `#n`, title, labels as pills, `round r · PR #p` (PR linked to `https://github.com/<board.repo>/pull/<p>`; the server adds `repo` to `/api/board`), models, an accent border plus a pulsing dot when `active`; HTML5 drag and drop between columns calling `moveCard`, a `Move to` `<select>` on each card; header with the run pill (`idle`, `running · tick n`, `stopping`, `stopped: <reason>`), Start, Stop, cost and hours, a Log toggle showing `log_tail` in a `<pre>`, and `Import plan` and `New card` buttons. Poll `/api/board` every 3 s and `/api/run` every 3 s while alive, else every 15 s. A failed write shows the server's `error` in the toast and re-renders from the server (snap back).
 
-- [ ] **Step 2: Verify by hand.** Start `board-web.sh` against a seeded temp repo (reuse `test-board-web.sh`'s `setup_case` with `KEEP=1` to leave the repo and server up), open the URL in the built-in browser, and check: eight columns in order; drag card 1 to Ready succeeds; drag card 3 (no Acceptance) to Ready shows the toast and snaps back; Start flips the pill to running and card 2 pulses; Stop flips to stopping then stopped with the reason. Save screenshots of the board, the toast and the running state under `docs/superpowers/plans/screenshots/` and commit them as PR evidence, each under 300 KB.
+- [ ] **Step 2: Verify by hand.** Start `board-web.sh` against a seeded temp repo (reuse `test-board-web.sh`'s `setup_case` with `KEEP=1` to leave the repo and server up), open the URL in the built-in browser, and check: eight columns in order; drag card 1 to Ready succeeds; drag card 3 (no Acceptance) to Ready shows the toast and snaps back; Start flips the pill to running and card 2 pulses; Stop flips to stopping then stopped with the reason. Save screenshots of the board, the toast and the running state under `docs/plans/screenshots/` and commit them as PR evidence, each under 300 KB.
 
 - [ ] **Step 3: Run `bash tests/test-board-web.sh`** (the `GET /` case now serves the real page); expect PASS.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add scripts/board-web/static docs/superpowers/plans/screenshots
+git add scripts/board-web/static docs/plans/screenshots
 git commit -m "feat(web): the board page with drag and drop and run controls"
 ```
 
@@ -563,7 +563,7 @@ git commit -m "feat(web): the board page with drag and drop and run controls"
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/board-web/static docs/superpowers/plans/screenshots
+git add scripts/board-web/static docs/plans/screenshots
 git commit -m "feat(web): card drawer with editing, comments and the note"
 ```
 
@@ -585,7 +585,7 @@ git commit -m "feat(web): card drawer with editing, comments and the note"
 - [ ] **Step 3: Commit**
 
 ```bash
-git add scripts/board-web/static docs/superpowers/plans/screenshots
+git add scripts/board-web/static docs/plans/screenshots
 git commit -m "feat(web): import a plan and watch it split into cards"
 ```
 

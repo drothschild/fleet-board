@@ -8,7 +8,7 @@
 
 **Tech Stack:** bash 3.2 (macOS `/bin/bash`), jq, `gh`, plain-bash test suites with `fake-gh.sh`; clean-room re-authoring via `claude -p --bare`.
 
-**Spec:** `docs/superpowers/specs/2026-11-06-review-stages-design.md`
+**Spec:** `docs/specs/2026-11-06-review-stages-design.md`
 
 ## Global Constraints
 
@@ -43,7 +43,7 @@ Run from the repo root:
 ```bash
 git switch -c fleet/review-stages 2>/dev/null || git switch fleet/review-stages
 git push -u origin HEAD
-gh pr create --draft --title "Review stages: per-column reviewer agents and models" --body "Implements docs/superpowers/specs/2026-11-06-review-stages-design.md. Plan: docs/superpowers/plans/2026-11-06-review-stages.md.
+gh pr create --draft --title "Review stages: per-column reviewer agents and models" --body "Implements docs/specs/2026-11-06-review-stages-design.md. Plan: docs/plans/2026-11-06-review-stages.md.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 ```

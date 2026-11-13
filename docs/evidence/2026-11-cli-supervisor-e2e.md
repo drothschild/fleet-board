@@ -1,6 +1,6 @@
 # Evidence: command-line supervisor, end to end on HMB Workout Server
 
-Phase 7.1 of `docs/superpowers/plans/2026-11-11-cli-supervisor.md`. On 2026-11-12, one card went from Ready to merged to
+Phase 7.1 of `docs/plans/2026-11-11-cli-supervisor.md`. On 2026-11-12, one card went from Ready to merged to
 deployed with no tick system involved.
 
 ## Setup
