@@ -530,6 +530,24 @@ assert_no_config "invalid-config-rejected: no .fleet-board.yml written"
 assert_dir_listing "invalid-config-rejected: no stray temp files" ""
 
 # ---------------------------------------------------------------------------
+# install-cli-refused: a fleet-board file init did not write is left alone; init
+# still succeeds, stdout is unchanged, and stderr says how to install the command
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+mkdir -p "$FLEET_BOARD_BIN_DIR"
+printf '#!/bin/sh\necho mine\n' > "$FLEET_BOARD_BIN_DIR/fleet-board"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
+assert_exit "install-cli-refused: exit 0" 0
+assert_stdout_exact "install-cli-refused: stdout unchanged" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml
+$HINT_LINE"
+assert_stderr_contains "install-cli-refused: fallback line" "fleet-board init: the fleet-board command was not installed; run: bash "
+assert_stderr_contains "install-cli-refused: fallback names install-cli.sh" "/install-cli.sh"
+assert_count "install-cli-refused: the other file is untouched" "$(sed -n 2p "$FLEET_BOARD_BIN_DIR/fleet-board")" "echo mine"
+
+# ---------------------------------------------------------------------------
 # refuses-overwrite
 setup_case
 { cat << ROUTESEOF
@@ -547,6 +565,13 @@ else
   fail "refuses-overwrite: file byte-identical" "file changed"
 fi
 assert_dir_listing "refuses-overwrite: no stray temp files" ".fleet-board.yml "
+assert_stderr_contains "refuses-overwrite: the refusal message is unchanged" "already exists; re-run with --force to replace it"
+if [ -x "$FLEET_BOARD_BIN_DIR/fleet-board" ] && grep -qxF '# fleet-board command-line launcher' "$FLEET_BOARD_BIN_DIR/fleet-board"; then
+  pass "refuses-overwrite: still installs the fleet-board command"
+else
+  fail "refuses-overwrite: still installs the fleet-board command" "no launcher at $FLEET_BOARD_BIN_DIR/fleet-board"
+fi
+assert_stderr_contains "refuses-overwrite: names the installed command" "installed: $FLEET_BOARD_BIN_DIR/fleet-board"
 run_init "${INIT_CMD[@]}" --dir "$TARGET" --force
 assert_exit "refuses-overwrite: exit with --force" 0
 assert_cfg "refuses-overwrite: --force replaced the file" board.repo "acme/toy"
