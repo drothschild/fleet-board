@@ -243,6 +243,14 @@ assert_exit "check: local, a missing card exits 1" 1
 assert_eq "check: local, a missing card prints nothing on stdout" "$LAST_OUT" ""
 assert_eq "check: local, a missing card names the lookup on stderr" "$LAST_ERR" "deps-lookup-failed: local card #25"
 
+# a dependency's card file with no state key fails closed
+mkdir -p "$REPO/.fleet-board/cards"
+jq -n '{number: 26, title: "t", body: "", labels: [], next_comment_id: 1, comments: []}' > "$REPO/.fleet-board/cards/26.json"
+run_check "$SCRIPT" check 12 '[{"repo":"acme/toy","number":26,"ref":"acme/toy#26"}]'
+assert_exit "check: local, a card file with no state exits 1" 1
+assert_eq "check: local, a card file with no state prints nothing on stdout" "$LAST_OUT" ""
+assert_eq "check: local, a card file with no state names the lookup on stderr" "$LAST_ERR" "deps-lookup-failed: local card #26"
+
 # a ref in another repo is outside this board: not looked up, met, warned about
 setup_check "$LOCAL_YML"
 run_check "$SCRIPT" check 12 '[{"repo":"acme/other","number":3,"ref":"acme/other#3"}]'
