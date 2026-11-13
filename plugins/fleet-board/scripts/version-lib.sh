@@ -2,14 +2,19 @@
 # Sourced by tick-plan.sh and update-branch.sh so both use one rule. Needs jq,
 # git and the text of path-glob.jq + versions.jq in $VL_JQ.
 #
-# A key K of file F counts as changed by the branch when one of the branch's own
-# non-merge commits (git log --no-merges <base>..<head> -- F) changed K against
-# that commit's first parent. Merges of the base, earlier or lingering, never
-# count, and no merge base is needed, so a merge cannot hide the branch's bump.
+# A key K of file F counts as changed by the branch when both hold:
+#   - one of the branch's own non-merge commits on F changed K against that
+#     commit's parent. "Own" is git log --no-merges --full-history <base>..<head>
+#     -- F (full history, so a merge that took the base's side of F cannot hide
+#     the commit), less any commit whose patch id equals one of the base's own
+#     commits on F since the fork (a bump cherry-picked from the base);
+#   - the head value differs from the value at the fork point, the merge base of
+#     <base> and the oldest such commit (a bump the branch reverted is not one).
+# Merges of the base, earlier or lingering, never count by themselves.
 
 # vl_files <dir> <base-ref> <head-rev>: the files the branch's own non-merge commits touch
 vl_files() {
-  git -C "$1" log --no-merges --format= --name-only "$2..$3" -- | sort -u
+  git -C "$1" log --no-merges --full-history --format= --name-only "$2..$3" -- | sort -u
 }
 
 # vl_changes <dir> <base-ref> <head-rev> <file> <tmpdir>: prints the versions.jq
@@ -17,12 +22,34 @@ vl_files() {
 # is not strictly above <base-ref>'s), or [] when the file is missing on either side
 # or is not JSON. Exit 1 when git cannot list the commits.
 vl_changes() {
-  local d="$1" b="$2" h="$3" f="$4" t="$5" commits c
-  commits="$(git -C "$d" log --no-merges --format=%H "$b..$h" -- "$f")" || return 1
+  local d="$1" b="$2" h="$3" f="$4" t="$5" own commits="" c oldest fork pid basepids=" "
+  own="$(git -C "$d" log --no-merges --full-history --topo-order --format=%H "$b..$h" -- "$f")" || return 1
+  [ -n "$own" ] || { echo '[]'; return 0; }
+  # Drop a commit whose patch is one of the base's own commits on F since the fork
+  # (a bump cherry-picked from the base). Patch ids, so it holds after a merge too.
+  fork="$(git -C "$d" merge-base "$b" "$(printf '%s\n' "$own" | tail -n 1)" 2>/dev/null)" || fork=""
+  if [ -n "$fork" ]; then
+    for c in $(git -C "$d" log --no-merges --full-history --format=%H "$fork..$b" -- "$f"); do
+      pid="$(git -C "$d" show "$c" | git patch-id --stable | cut -d' ' -f1)"
+      [ -z "$pid" ] || basepids="$basepids$pid "
+    done
+  fi
+  for c in $own; do
+    pid="$(git -C "$d" show "$c" | git patch-id --stable | cut -d' ' -f1)"
+    case "$basepids" in *" $pid "*) [ -n "$pid" ] && continue ;; esac
+    commits="$commits$c
+"
+  done
   [ -n "$commits" ] || { echo '[]'; return 0; }
   git -C "$d" show "$h:$f" > "$t/vl-head.json" 2>/dev/null || { echo '[]'; return 0; }
   git -C "$d" show "$b:$f" > "$t/vl-base.json" 2>/dev/null || { echo '[]'; return 0; }
   jq -e 'type == "object" or type == "array"' "$t/vl-head.json" "$t/vl-base.json" >/dev/null 2>&1 || { echo '[]'; return 0; }
+  oldest="$(printf "%s" "$commits" | tail -n 1)"
+  fork="$(git -C "$d" merge-base "$b" "$oldest" 2>/dev/null)" || fork=""
+  if [ -z "$fork" ] || ! git -C "$d" show "$fork:$f" > "$t/vl-fork.json" 2>/dev/null \
+     || ! jq -e . "$t/vl-fork.json" >/dev/null 2>&1; then
+    printf 'null\n' > "$t/vl-fork.json"
+  fi
   printf '[]\n' > "$t/vl-changed.json"
   for c in $commits; do
     git -C "$d" show "$c:$f" > "$t/vl-after.json" 2>/dev/null || printf 'null\n' > "$t/vl-after.json"
@@ -33,5 +60,6 @@ vl_changes() {
       "$VL_JQ"' (. + vr_diff_paths($a[0]; $p[0])) | unique' "$t/vl-changed.json" > "$t/vl-changed.new" || return 1
     mv "$t/vl-changed.new" "$t/vl-changed.json"
   done
-  jq -c --slurpfile k "$t/vl-changed.json" --slurpfile s "$t/vl-base.json" "$VL_JQ"' vr_raise($k[0]; $s[0])' "$t/vl-head.json"
+  jq -c --slurpfile k "$t/vl-changed.json" --slurpfile o "$t/vl-fork.json" --slurpfile s "$t/vl-base.json" \
+    "$VL_JQ"' vr_raise($k[0]; $o[0]; $s[0])' "$t/vl-head.json"
 }

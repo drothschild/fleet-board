@@ -99,14 +99,16 @@ def vr_diff_paths($a; $b):
   | map(select(. as $p | ($a | vr_get($p)) != ($b | vr_get($p))));
 
 # input: the head JSON. Of the version keys in $changed (the paths the branch's own
-# commits changed, version-lib.sh vl_changes), those whose head value is not strictly
-# above the base branch's ($base): [{path, from, to}] with to = sv_above(base). A key
-# missing or not semver on either side is left alone.
-def vr_raise($changed; $base):
+# commits changed, version-lib.sh vl_changes) whose head value differs from the fork
+# point's ($fork, null when unknown), those whose head value is not strictly above the
+# base branch's ($base): [{path, from, to}] with to = sv_above(base). A key missing or
+# not semver on either side is left alone.
+def vr_raise($changed; $fork; $base):
   . as $head
   | [vr_paths[] as $p
      | select(any($changed[]; . == $p))
      | ($head | vr_get($p)) as $h | ($base | vr_get($p)) as $t
+     | select($h != ($fork | vr_get($p)))
      | select(($h | sv_valid) and ($t | sv_valid) and sv_cmp($h; $t) <= 0)
      | {path: $p, from: $h, to: sv_above($t)}];
 

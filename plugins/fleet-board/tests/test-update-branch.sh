@@ -663,7 +663,7 @@ assert_eq "real git take-theirs merge: the remote equals local" "$(rg_remote)" "
 # A bump the branch reverted is not raised
 real_setup
 rg_branch 0.1.1 1.0.0
-git -C "$RG/wt" revert -q --no-edit HEAD >/dev/null; git -C "$RG/wt" push -q origin fleet/12-x
+git -C "$RG/wt" revert --no-edit HEAD >/dev/null; git -C "$RG/wt" push -q origin fleet/12-x
 rg_main_other "later"
 real_run
 assert_exit "real git reverted bump: exit 0" 0

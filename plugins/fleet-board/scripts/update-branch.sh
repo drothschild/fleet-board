@@ -86,7 +86,7 @@ BEFORE=""
 # on_exit: after the merge has started, a non-zero exit puts the branch back where it
 # was: abort a merge in progress, restore the files this run wrote, git reset --keep
 on_exit() {
-  local rc=$? now f
+  local rc=$? now remote f
   if [ "$rc" -ne 0 ] && [ -n "$MERGE_STARTED" ] && [ -n "$BEFORE" ]; then
     if git -C "$WT" rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
       git -C "$WT" merge --abort >/dev/null 2>&1 || true
@@ -95,7 +95,9 @@ on_exit() {
       [ -n "$f" ] && git -C "$WT" checkout -q HEAD -- "$f" 2>/dev/null
     done < "$TMPD/written"
     now="$(git -C "$WT" rev-parse HEAD 2>/dev/null)" || now=""
-    if [ -n "$now" ] && [ "$now" != "$BEFORE" ]; then
+    remote="$(git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$BRANCH" 2>/dev/null)" || remote=""
+    # A head origin already has is never rewound (that would leave local behind it)
+    if [ -n "$now" ] && [ "$now" != "$BEFORE" ] && [ "$now" != "$remote" ]; then
       if git -C "$WT" reset -q --keep "$BEFORE"; then
         printf 'update-branch: reset %s from %s back to %s\n' "$BRANCH" "$now" "$BEFORE" >&2
       else
@@ -176,7 +178,9 @@ vr_raise() {
     [ -n "$f" ] || continue
     case "$f" in *.json) ;; *) continue ;; esac
     vf_match "$f" || continue
-    [ -f "$WT/$f" ] && [ ! -L "$WT/$f" ] || continue
+    if [ ! -f "$WT/$f" ] || [ -L "$WT/$f" ]; then
+      fb_die 1 "version file $f, which the branch changed, is missing in $WT or is not a regular file"
+    fi
     changes="$(vl_changes "$WT" "origin/$BASE" HEAD "$f" "$TMPD")" \
       || fb_die 1 "cannot read the history of $f against origin/$BASE"
     [ -n "$changes" ] && [ "$changes" != '[]' ] || continue
@@ -260,6 +264,8 @@ if [ "$AFTER" != "$REMOTE" ]; then
   PUSHED="$(git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$BRANCH")" || PUSHED=""
   [ "$PUSHED" = "$AFTER" ] || fb_die 1 "after the push origin/$BRANCH is ${PUSHED:-missing}, not $AFTER"
 fi
+# origin has this head now: nothing after this point may rewind the branch
+MERGE_STARTED=""
 
 jq -n --arg sha "$AFTER" --arg base "$BASE" --argjson changed "$CHANGED" \
   '{last_update: {sha: $sha, base: $base, changed: $changed}}' > "$TMP"

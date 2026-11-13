@@ -790,6 +790,10 @@ if [ "$VFILES" != '[]' ]; then
           [ -n "$vf" ] || continue
           case "$vf" in *.json) ;; *) continue ;; esac
           [ "$(jq -rn --arg p "$vf" --argjson g "$VFILES" "$VL_JQ"' $p | pg_match($g)')" = true ] || continue
+          if [ "$(git cat-file -t "$vhead:$vf" 2>/dev/null)" != blob ] \
+             || [ "$(git ls-tree "$vhead" -- "$vf" 2>/dev/null | cut -c1-6)" = 120000 ]; then
+            vneeds="$vf at the head of PR #$vpr (the branch changed it, and it is missing)"; break
+          fi
           if ! vch="$(vl_changes . "origin/$vbase" "$vhead" "$vf" "$VTMP" 2>/dev/null)"; then vneeds="the history of $vf"; break; fi
           [ -n "$vch" ] && [ "$vch" != '[]' ] || continue
           vstale="$(jq -c --arg f "$vf" '. + [$f]' <<<"$vstale")"
