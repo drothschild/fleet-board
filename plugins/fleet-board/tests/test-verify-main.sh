@@ -348,6 +348,28 @@ setup_case true
 run_check "$SCRIPT" 12 7
 assert_eq "green: no issue search" "$(calls_starting issue list)" 0
 
+# ---------------------------------------------------------------------------
+# env-clean: the checks run without the real board's environment
+export FLEET_BOARD_DOMAIN="real-domain"
+setup_case true
+push_main tests/check.sh 'printf "[%s][%s][%s][%s][%s]\n" "${FLEET_CFG-}" "${FLEET_ROOT-}" "${FLEET_REPO-}" "${FLEET_SCRIPTS-}" "${FLEET_BOARD_DOMAIN-}" > envdump' >/dev/null
+run_check "$SCRIPT" 12 7
+assert_exit "env-clean: exit" 0
+assert_eq "env-clean: FLEET_CFG, FLEET_ROOT, FLEET_REPO, FLEET_SCRIPTS and FLEET_BOARD_DOMAIN are all empty in test_one" \
+  "$(cat "$MC/envdump" 2>/dev/null)" "[][][][][]"
+
+# a touched test that passes only when FLEET_ROOT is unset is green
+setup_case true
+push_main tests/check.sh '[ -z "${FLEET_ROOT-}" ]' >/dev/null
+run_check "$SCRIPT" 12 7
+assert_eq "env-unset-root: ok true" "$(jqc .ok)" "true"
+
+# the typecheck runs without them too
+setup_case '! env | grep -q ^FLEET_ROOT='
+run_check "$SCRIPT" 12 7
+assert_eq "env-typecheck: FLEET_ROOT unset in typecheck, ok true" "$(jqc .ok)" "true"
+unset FLEET_BOARD_DOMAIN
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
