@@ -779,12 +779,35 @@ assert_exit "after-merge-results: an entry without a command is refused" 1
 assert_eq "after-merge-results: that refused merge writes nothing" "$(input_count)" "0"
 
 # ---------------------------------------------------------------------------
+# ignored_checks: the checks a merge went past (merge.ignore_checks), appended by the supervisor
+setup_case
+set_note_json '{"state":"merging","pr":34}'
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky","until":"2026-12-31","at":"2026-11-11T12:00:00Z"}]}\n' > "$FAKE_GH_DIR/ic.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic.json"
+assert_exit "ignored-checks: merge accepts the field" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "ignored-checks: the entries are stored" "$(jq -c '.ignored_checks | map(.name)' <<<"$N" 2>/dev/null)" '["lint-docs"]'
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky"}]}\n' > "$FAKE_GH_DIR/ic-bad.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad.json"
+assert_exit "ignored-checks: an entry without until and at is refused" 1
+assert_eq "ignored-checks: a refused merge writes nothing" "$(input_count)" "0"
+printf '{"ignored_checks":"lint"}\n' > "$FAKE_GH_DIR/ic-bad2.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad2.json"
+assert_exit "ignored-checks: a non-list is refused" 1
+
+# ---------------------------------------------------------------------------
 # blocked-from: the state a card was blocked from
 setup_case
 set_note_json '{"state":"blocked","blocked_from":"in_review"}'
 run_note get 12
 assert_eq "blocked-from: get returns a note with blocked_from in_review unchanged" \
   "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"in_review"'
+
+setup_case
+set_note_json '{"state":"blocked","blocked_from":"merging"}'
+run_note get 12
+assert_eq "blocked-from: a note with blocked_from merging is accepted" \
+  "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"merging"'
 
 setup_case
 set_note_json '{"state":"blocked","blocked_from":"banana"}'

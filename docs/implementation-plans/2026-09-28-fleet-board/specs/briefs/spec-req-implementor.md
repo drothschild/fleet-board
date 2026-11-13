@@ -280,3 +280,36 @@ frontmatter and every other line unchanged.
    - File issues or bug cards itself (`board-create.sh`) in place of `gh issue create`.
 8. The scripts-directory input names `board-read.sh` beside `board-comment.sh` and
    `parse-report.sh`.
+
+## Revision 26 requirements (2026-11-12, no closing keyword for a local card; these win over anything above)
+
+Card numbers on the local board are not GitHub issue numbers. A fleet PR body with
+`Closes #<card number>` closes whatever GitHub issue or PR has that number when the PR
+merges (PR 252, card 253, closed the open PR 253). A squash merge also copies the branch's
+commit messages onto the default branch, where GitHub reads closing keywords too. The spec
+now says:
+
+1. Step 9 opens with the rule: no PR body, PR title or commit message holds a GitHub
+   closing keyword (close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved,
+   any case, with or without a colon) before an issue reference such as `#` and digits,
+   with the reason above.
+2. Step 9, before the push: `git -C <worktree> log --format=%B HEAD --not --remotes=origin | bash <scripts dir>/pr-body-check.sh -`;
+   on a failure, no push, and Status `blocked` with an `[Important]` finding naming the commit.
+3. Step 9: the PR body is written with the Write tool to a path `mktemp` printed, never
+   inside a Bash command and never as an inline `--body`; if the Write tool refuses the
+   file because it has not been read, read it once with the Read tool and write it again at
+   the same path. The body names the card with the line `Local board card <card number>`.
+4. Step 9: the PR title is taken from the card, leaving out any closing-keyword reference
+   the card title holds.
+5. Step 9: check and open in ONE Bash call:
+   `bash <scripts dir>/pr-body-check.sh <path> && gh pr create --draft --head <branch> --title <title> --body-file <path>`.
+   A failed check is fixed in the file and the call repeated.
+6. Step 6: the test-first commit message, like every commit message, holds no closing
+   keyword before an issue reference.
+7. The `## PR` rule says the card number goes in the PR body as
+   `Local board card <card number>`, never in `## PR`.
+8. The scripts-directory input names `pr-body-check.sh` beside `board-comment.sh`,
+   `board-read.sh` and `parse-report.sh`.
+9. Implementor requirements item 7, at the top of this brief ("open a draft PR ... whose
+   body contains `Closes #<card number>`"), is replaced by items 1 to 5. No other rule
+   changes.

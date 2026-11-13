@@ -14,12 +14,9 @@ test_paths: ["test/**", "**/*.test.js"]
 human_qa_paths: ["src/components/**"]
 merge: { policy: human }           # or auto
 review: { mutation: true, verify_claim: true, max_rounds: 3 }
-models: { manager: sonnet, implementor: sonnet, reviewer: opus, fixer: sonnet, escalate_after_rounds: 2 }
+models: { implementor: sonnet, reviewer: opus, fixer: sonnet, escalate_after_rounds: 2 }
 limits:
   concurrency: 6
   max_hours: 8
-  max_cost_usd: 40
-  tick_interval: 300
-  max_consecutive_failures: 3
   max_turns: 150
 headless: { permission_mode: auto }

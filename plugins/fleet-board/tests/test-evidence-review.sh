@@ -124,7 +124,7 @@ setup
 run
 check "good report posts the expected head and model" output '.status == "posted" and .sha == $head and .provider == "fake" and .model == "test-model" and .attempts == 1'
 check "good report was posted" test "$(comments)" = 1
-check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == null and .cost_usd == 0' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == null and (has("cost_usd") | not)' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
 check "provider receives the working directory as dir" test "$(cat "$FAKE_REVIEWER_DIR/cwd")" = "$(cat "$FAKE_REVIEWER_DIR/clone")"
 check "round 1 reference is the merge-base" grep -Fq "Review round 1. Reference SHA $base." "$FAKE_REVIEWER_DIR/prompt.1"
 check "review prompt requires non-login command tools" grep -Fq 'login=false on every call' "$FAKE_REVIEWER_DIR/prompt.1"

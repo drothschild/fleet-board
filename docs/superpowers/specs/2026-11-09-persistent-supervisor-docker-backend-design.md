@@ -1,5 +1,7 @@
 # Persistent supervisor Docker Desktop backend
 
+> **Superseded (2026-11-11)** by [`docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
+
 ## Goal
 
 Qualify this Mac using its already-installed Docker Desktop Linux VM, while keeping the controller trusted on macOS, the worker isolated, external network access disabled, and no image pulls or service/package installations in this task.

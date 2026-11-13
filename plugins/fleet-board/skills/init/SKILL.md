@@ -91,6 +91,12 @@ or an empty name. Never pass `--force` unless the user has confirmed the overwri
 
 Show its output to the user verbatim.
 
+init.sh also installs the `fleet-board` command in `~/.local/bin` (or `FLEET_BOARD_BIN_DIR`),
+even when it refuses an existing config, so the user can run `fleet-board board` and
+`fleet-board supervisor ...` from the repo. Its messages are on stderr and never change the
+exit code. If they include an `export PATH=...` line, tell the user to add it to their shell
+profile; if init says the command was not installed, show the `install-cli.sh` command it names.
+
 - If the user has already confirmed replacing an existing `.fleet-board.yml`, add `--force`.
   Otherwise, when init.sh refuses because the file exists, ask before re-running with
   `--force`.

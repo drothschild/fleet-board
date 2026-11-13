@@ -160,7 +160,7 @@ write_ledger() {
     --arg run "${FLEET_BOARD_RUN_ID:-}" --arg repo "$FLEET_REPO" --argjson card "$N" \
     --arg provider "$PROVIDER" --arg model "$MODEL" \
     '{ts: $ts, run_id: (if $run == "" then null else $run end), repo: $repo, card: $card,
-      role: "reviewer", provider: $provider, model: $model, input_tokens: $in, output_tokens: $out, cost_usd: 0}' \
+      role: "reviewer", provider: $provider, model: $model, input_tokens: $in, output_tokens: $out}' \
     >> "$LOG_DIR/provider-spend.jsonl" || die "cannot write provider spend ledger"
 }
 
@@ -256,4 +256,4 @@ fi
 jq -cn --arg status "$STATUS" --arg file "$REPORT_FILE" --slurpfile parsed <(printf '%s\n' "$PARSED") \
   --arg provider "$PROVIDER" --arg model "$MODEL" --arg sha "$SHA" --argjson attempts "$ATTEMPTS" --argjson in "$IN_TOKENS" --argjson out "$OUT_TOKENS" \
   '{status: $status, report_file: $file, parsed: $parsed[0], provider: $provider, model: $model,
-    sha: $sha, input_tokens: $in, output_tokens: $out, cost_usd: 0, attempts: $attempts}'
+    sha: $sha, input_tokens: $in, output_tokens: $out, attempts: $attempts}'

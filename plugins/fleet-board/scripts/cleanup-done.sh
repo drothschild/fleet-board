@@ -29,8 +29,8 @@
 # failure. A failure on one card does not stop the others. Running it again is
 # a no-op.
 #
-# Run it outside any Claude session (the headless wrapper runs it after each
-# successful tick), or by hand; the manager never removes worktrees.
+# Run it by hand from the repo root, outside any Claude session; the supervisor
+# never removes worktrees.
 #
 # Exit codes:
 #   0 - every done card is clean (or was cleaned)

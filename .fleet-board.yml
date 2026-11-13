@@ -7,5 +7,3 @@ commands:
   lint: "bash plugins/fleet-board/tests/test-version-bumped.sh"
 merge:
   policy: "auto"
-limits:
-  max_cost_usd: 80

@@ -3,18 +3,18 @@
 # headless runs.
 #
 # Usage: merge-reviewed.sh      (no arguments; run from the repo root)
-#        merge-reviewed.sh --card <n>
-#        merge-reviewed.sh --card <n> --operation-key <key> --pr <pr> --head <sha>
+#        merge-reviewed.sh --card <n> [--no-finish]
+#        merge-reviewed.sh --card <n> --operation-key <key> --pr <pr> --head <sha> [--no-finish]
 #        merge-reviewed.sh --inspect --card <n> --operation-key <key> --pr <pr> --head <sha>
 #
 # Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge`
 # inside a headless session, so the merge runs here instead: a plain shell
-# step outside any Claude session, like settle.sh and cleanup-done.sh. The
+# step outside any Claude session, like cleanup-done.sh. The
 # wrapper adds no permission rule and never uses --dangerously-skip-permissions.
 #
 # What it does:
 #   1. merge.policy other than auto: exits 0 and makes no call at all.
-#   2. Lists the in_review column and every review stage column (a card in
+#   2. Lists the in_review column, every review stage column and merging (a card in
 #      Human QA is never listed). A
 #      listing that fails ends the run with exit 1 before anything is written.
 #   3. Repeatedly runs tick-plan.sh --settle-merge on remaining cards. The planner plans
@@ -33,6 +33,18 @@
 # A failure on one card ends that card's steps; the next tick plans what is
 # left (a merged PR is planned verify_main, then finish).
 #
+# --no-finish (with --card, also the keyed form): merges, notes merged_pr (and
+# merge_operation), verifies main and notes main_check, then stops. The card is
+# not moved to done and no done note is written (the supervisor finishes it
+# after the merger); exit codes are unchanged (3 on a failed verification).
+# A card in merging is always handled as --no-finish, in every form (the
+# legacy no-argument one included): only the supervisor finishes it.
+#
+# --inspect prints {status:"observed", ...} when the note's marker matches the
+# key, PR and head; {status:"unmatched"} for another operation's marker; and
+# {status:"absent", pr, planned_head, observed_head, state} when the note has
+# no marker at all (nothing was attempted).
+#
 # Exit codes:
 #   0 - nothing to do, or every planned merge succeeded
 #   1 - the column or the plan could not be read, or some step failed
@@ -48,6 +60,14 @@
 set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
+
+NO_FINISH=0
+ARGS=()
+for a in "$@"; do
+  if [ "$a" = --no-finish ]; then NO_FINISH=1; else ARGS+=("$a"); fi
+done
+set -- ${ARGS[@]+"${ARGS[@]}"}
+[ "$NO_FINISH" = 0 ] || [ "$#" -gt 0 ] || fb_die 2 "--no-finish requires --card"
 
 INSPECT=0
 CARD_ONLY=""
@@ -78,8 +98,11 @@ if [ "$INSPECT" = 1 ]; then
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$CARD_ONLY" </dev/null)" || fb_die 3 "cannot read merge recovery note"
   info="$(gh pr view "$EXPECTED_PR" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid)" || fb_die 3 "cannot inspect merge recovery PR"
   jq -nc --arg key "$OPERATION_KEY" --argjson pr "$EXPECTED_PR" --arg head "$EXPECTED_HEAD" --argjson note "$note" --argjson info "$info" '
-    ($note.merge_operation // $note.pending_merge // {}) as $marker
-    | if ($marker.operation_key != $key or $marker.pr != $pr or $marker.head_sha != $head) then
+    ($note.merge_operation // $note.pending_merge // null) as $marker
+    | if $marker == null then
+        # no marker at all: no merge was attempted (the fresh plan skipped the card); the PR as it is now
+        {status:"absent", pr:$pr, planned_head:$head, observed_head:$info.headRefOid, state:$info.state}
+      elif ($marker.operation_key != $key or $marker.pr != $pr or $marker.head_sha != $head) then
         {status:"unmatched"}
       else
         {status:"observed", operation_key:$marker.operation_key, note_operation_key:$marker.operation_key,
@@ -109,7 +132,7 @@ TMPD="$(mktemp -d)" || fb_die 1 "mktemp failed"
 
 
 NUMS=""
-for st in in_review $(fb_stage_states); do
+for st in in_review $(fb_stage_states) merging; do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st" </dev/null)" || fb_die 1 "cannot list the $st column; nothing merged"
   COL="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column; nothing merged"
@@ -167,7 +190,7 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
   REST=""
   for candidate in $NUMS; do [ "$candidate" = "$n" ] || REST="$REST $candidate"; done
   NUMS="$REST"
-  case "$(jq -r '.state' <<<"$card")" in in_review|review_*) ;; *) continue ;; esac
+  case "$(jq -r '.state' <<<"$card")" in in_review|review_*|merging) ;; *) continue ;; esac
 
   if [ "$(jq -r '.action' <<<"$card")" = merge ]; then
     case "$head" in ''|*[!0-9a-fA-F]*) fb_die 3 "missing or invalid planned head for #$n" ;; esac
@@ -177,6 +200,18 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
         || fb_die 3 "#$n: cannot persist merge recovery intent"
     fi
     ATTEMPTS=$((ATTEMPTS + 1))
+    # Card numbers are not GitHub numbers: a closing keyword in the title, body or
+    # a commit message would close an unrelated issue or PR. After the marker, so
+    # the keyed form's refusal is observed on the open PR at the planned head.
+    if ! bash "$FLEET_SCRIPTS/pr-closing-check.sh" "$pr" --repo "$FLEET_REPO" </dev/null 2>"$TMPD/closing.err"; then
+      if grep -q 'closing keyword' "$TMPD/closing.err"; then
+        fail "$n" "PR #$pr holds a GitHub closing keyword before an issue reference (title, body or a commit message); not merged"
+      else
+        fail "$n" "PR #$pr could not be checked for closing keywords; not merged"
+      fi
+      cat "$TMPD/closing.err" >&2
+      continue
+    fi
     merge_rc=0
     gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$head" </dev/null >/dev/null || merge_rc=$?
     # Both exit paths are ambiguous: success may mean queued, while a lost
@@ -218,6 +253,9 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     merge_note "$n" "$(jq -c '{main_check: .}' <<<"$main_check")" || fb_die 3 "#$n: cannot record main verification"
   fi
   [ "$(jq -r '.ok' <<<"$main_check")" = true ] || fb_die 3 "#$n: main verification failed; stopping merge drain"
+  [ "$NO_FINISH" = 0 ] || continue # --no-finish: the card stays where it is
+  # A merging card is finished only by the supervisor, after the merger: every form is --no-finish for it
+  [ "$(jq -r '.state' <<<"$card")" != merging ] || continue
 
   note="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null)" || { fail "$n" "cannot read pending follow-ups"; continue; }
   if jq -e '.pending_followups != null' <<<"$note" >/dev/null; then

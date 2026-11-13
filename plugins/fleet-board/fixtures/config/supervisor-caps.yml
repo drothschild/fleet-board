@@ -1,0 +1,3 @@
+board: { repo: a/b }
+providers: { codex: {} }
+supervisor: { provider_concurrency: { claude: 2, codex: 1 } }

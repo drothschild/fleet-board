@@ -50,7 +50,6 @@ const ok = (name, cond, info) => console.log((cond ? "ok   " : "FAIL ") + name +
     calls.push({url, method: opts.method, body});
     let data;
     if (url === "/api/board") data = {repo: "acme/toy", states, cards: [], run: {state: "idle"}};
-    else if (url === "/api/run") data = {state: "idle"};
     else if (url === "/api/planner" && opts.method === "POST") data = {id: "c1"};
     else if (url === "/api/planner/c1/messages") data = {ok: true};
     else if (url === "/api/planner/c1/draft") data = {import_id: "imp7"};
