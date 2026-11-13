@@ -18,6 +18,10 @@ Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is uns
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the supervisor merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA: the card moves to `merging` and `scripts/merge-reviewed.sh` merges it outside any Claude session (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
 
+## `merge.persona` and `merge.persona_append`
+
+`merge.persona` is a path relative to the repo root, with no `..`. `null` (the default) uses `.fleet-board/merger.md` when that file exists, else the plugin's default persona. A path that is set but missing is an attention, never a silent fallback. `merge.persona_append` is a string added after whichever persona was chosen. See [the README](../README.md#merger-and-deploys) for an example persona.
+
 ## `merge.ignore_checks`
 
 A list of dated, reasoned exceptions for checks that should not hold up a merge. Each entry has a `name` (a case-sensitive shell glob: `*` is any run of characters, `?` one character), a `reason`, and an `until` date (`YYYY-MM-DD`, valid through that day, UTC). A red check whose name matches an unexpired entry counts as green. An entry that also says `pending: true` covers a matching check that is still running, so the supervisor merges without waiting for it to finish; without it, a pending check is never green. A `pending: true` entry also covers a red check of the same name: it means "don't wait for this check, whatever it says". A check with no name or context is never covered by any entry.
@@ -40,7 +44,7 @@ merge:
       pending: true
 ```
 
-`gh pr merge` still refuses a merge while a check that branch protection marks as required is failing or pending, and fleet-board never uses `--admin`. On a branch with a merge queue, gh queues the PR instead of refusing it; `merge-reviewed.sh` then finds the PR still open, treats it as possibly queued, and stops until the remote state resolves.
+`gh pr merge` still refuses a merge while a check that branch protection marks as required is failing or pending, and fleet-board never uses `--admin`. On a branch with a merge queue, gh queues the PR instead of refusing it; `merge-reviewed.sh` then finds the PR still open, treats it as possibly queued, and stops until the remote state resolves. Remove the check from the required list in GitHub if it should not block.
 
 ## `after_merge.allow` and the `## After merge` section
 

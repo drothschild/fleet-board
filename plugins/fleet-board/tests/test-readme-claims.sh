@@ -58,6 +58,18 @@ check "README does not mention settle.sh outside its upgrade notes" "$r"
 r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
 check "gates.md does not mention settle.sh" "$r"
 
+# The merger docs: persona, ignore_checks, clearing an attention, and the order of after-merge steps.
+CONFIG_MD="${CONFIG_FILE:-${DOCS_DIR}/config.md}"
+OVERNIGHT="${OVERNIGHT_FILE:-${DOCS_DIR}/overnight.md}"
+r=bad; [ "$(grep -c 'merge\.persona' "$README")" -ge 1 ] && r=ok
+check "README mentions merge.persona" "$r"
+r=bad; [ "$(grep -c 'merge\.ignore_checks' "$CONFIG_MD")" -ge 1 ] && r=ok
+check "config.md mentions merge.ignore_checks" "$r"
+r=bad; grep -qF '"merger": null' "$README" && r=ok
+check "README has the attention-clearing step with \"merger\": null" "$r"
+r=bad; grep -qF 'steps run before the merger' "$OVERNIGHT" && r=ok
+check "overnight.md says the after-merge steps run before the merger" "$r"
+
 # The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
