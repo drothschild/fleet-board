@@ -61,7 +61,13 @@ PROVIDER="$(jq -r .provider <<<"$REVIEWER")"
 MODEL="$(jq -r .model <<<"$REVIEWER")"
 TIMEOUT="$(jq -r .timeout <<<"$REVIEWER")"
 REVIEW_COMMAND="$(jq -r --arg p "$PROVIDER" '.providers[$p].review_command' <<<"$FLEET_CFG")"
-read -r PROGRAM _ <<<"$REVIEW_COMMAND"
+read -r PROGRAM SUBCOMMAND _ <<<"$REVIEW_COMMAND"
+# codex prints token usage only in its JSON event stream.
+CHAT_JSON=""
+if [ "${PROGRAM##*/}" = codex ] && [ "$SUBCOMMAND" = exec ]; then
+  REVIEW_COMMAND="${REVIEW_COMMAND/codex exec/codex exec --json}"
+  CHAT_JSON="--json-events"
+fi
 command -v "$PROGRAM" >/dev/null 2>&1 || die "$PROGRAM is not on PATH" 3
 
 umask 077
@@ -97,7 +103,8 @@ fi
 if [ -n "$CARD_FILE" ]; then
   cp "$CARD_FILE" "$TMP/card" || die "cannot read card file"
 else
-  bash "$HERE/board-read.sh" "$N" | jq -r '.body // ""' > "$TMP/card" || die "cannot read card #$N"
+  CARD_READ="$(bash "$HERE/board-read.sh" "$N")" || die "cannot read card #$N"
+  fb_card_text "$CARD_READ" > "$TMP/card" || die "cannot render the text of card #$N"
 fi
 if [ -n "$DIFF_FILE" ]; then
   cp "$DIFF_FILE" "$TMP/diff" || die "cannot read diff file"
@@ -144,12 +151,16 @@ snapshot() {
 ROOT_BEFORE="$(snapshot "$FLEET_ROOT")" || die "cannot inspect $FLEET_ROOT"
 REVIEW_BEFORE="$(snapshot "$REVIEW_DIR")" || die "cannot inspect $REVIEW_DIR"
 
+IN_TOKENS=null OUT_TOKENS=null
+add_tokens() { # <current|null> <reply value|null>
+  jq -cn --argjson a "$1" --argjson b "$2" 'if $b == null then $a else ($a // 0) + $b end'
+}
 write_ledger() {
-  jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  jq -cn --argjson in "$IN_TOKENS" --argjson out "$OUT_TOKENS" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg run "${FLEET_BOARD_RUN_ID:-}" --arg repo "$FLEET_REPO" --argjson card "$N" \
     --arg provider "$PROVIDER" --arg model "$MODEL" \
     '{ts: $ts, run_id: (if $run == "" then null else $run end), repo: $repo, card: $card,
-      role: "reviewer", provider: $provider, model: $model, input_tokens: null, output_tokens: null, cost_usd: 0}' \
+      role: "reviewer", provider: $provider, model: $model, input_tokens: $in, output_tokens: $out}' \
     >> "$LOG_DIR/provider-spend.jsonl" || die "cannot write provider spend ledger"
 }
 
@@ -179,9 +190,13 @@ while :; do
   ATTEMPTS=$((ATTEMPTS + 1))
   rc=0
   jq -c '{messages: .}' "$TMP/messages.json" | bash "$HERE/providers/chat.sh" \
-    --command "$REVIEW_COMMAND" --model "$MODEL" --timeout "$remaining" --dir "$CLONE" \
+    ${CHAT_JSON:+"$CHAT_JSON"} --command "$REVIEW_COMMAND" --model "$MODEL" --timeout "$remaining" --dir "$CLONE" \
     > "$TMP/reply.json" 2> "$TMP/chat.err" || rc=$?
-  if [ "$rc" -eq 0 ]; then REPLIED=1; fi
+  if [ "$rc" -eq 0 ]; then
+    REPLIED=1
+    IN_TOKENS="$(add_tokens "$IN_TOKENS" "$(jq -c '.input_tokens' "$TMP/reply.json")")" || die "cannot read provider usage"
+    OUT_TOKENS="$(add_tokens "$OUT_TOKENS" "$(jq -c '.output_tokens' "$TMP/reply.json")")" || die "cannot read provider usage"
+  fi
   if ! after="$(snapshot "$FLEET_ROOT")" || [ "$after" != "$ROOT_BEFORE" ]; then
     [ "$REPLIED" -eq 0 ] || write_ledger
     die "$FLEET_ROOT changed during the review"
@@ -239,6 +254,6 @@ if [ "$NO_POST" -eq 0 ]; then
   STATUS=posted
 fi
 jq -cn --arg status "$STATUS" --arg file "$REPORT_FILE" --slurpfile parsed <(printf '%s\n' "$PARSED") \
-  --arg provider "$PROVIDER" --arg model "$MODEL" --arg sha "$SHA" --argjson attempts "$ATTEMPTS" \
+  --arg provider "$PROVIDER" --arg model "$MODEL" --arg sha "$SHA" --argjson attempts "$ATTEMPTS" --argjson in "$IN_TOKENS" --argjson out "$OUT_TOKENS" \
   '{status: $status, report_file: $file, parsed: $parsed[0], provider: $provider, model: $model,
-    sha: $sha, input_tokens: null, output_tokens: null, cost_usd: 0, attempts: $attempts}'
+    sha: $sha, input_tokens: $in, output_tokens: $out, attempts: $attempts}'

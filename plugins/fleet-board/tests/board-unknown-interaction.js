@@ -1,0 +1,42 @@
+"use strict";
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const loadBoard = require("./board-interaction-harness");
+(async () => {
+  const card = {number: 4, title: "Unknown card", body: "", labels: [], comments: [], state: "bogus", known: false};
+  const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+  const calls = [];
+  const board = () => ({repo: "acme/toy", states, cards: [{...card}], run: {state: "idle"}});
+  const h = loadBoard(process.argv[2] || path.join(__dirname, "../scripts/board-web/static/board.js"), async (url, opts) => {
+    const body = opts.body && JSON.parse(opts.body);
+    calls.push({url, method: opts.method, body});
+    let data;
+    if (url === "/api/board") data = board();
+    else if (url === "/api/cards/4" && opts.method === "GET") data = {...card};
+    else if (url === "/api/cards/4/move" && opts.method === "POST") {
+      assert.equal(body.state, "ready"); card.state = body.state; card.known = true; data = {...card};
+    } else throw new Error("Unexpected request: " + opts.method + " " + url);
+    return {ok: true, status: 200, json: async () => data};
+  });
+  await h.flush();
+  assert.equal(h.ctx.__test.S.offline, false);
+  const unknown = h.$("board").all().find(n => n.classList.contains("card") && n.dataset.n === "4");
+  assert.ok(unknown, "unknown card rendered");
+  assert.match(unknown.textContent, /bogus/);
+  assert.match(unknown.closest("section").textContent, /Unknown state/);
+  await unknown.fire("click");
+  assert.equal(h.$("drawer").hidden, false);
+  assert.equal(h.$("dr-state").value, "bogus");
+  h.$("dr-state").value = "ready";
+  await h.$("dr-state").fire("change");
+  assert.equal(h.$("dr-save").disabled, false, "change enables Save");
+  await h.$("dr-save").fire("click");
+  const move = calls.findIndex(c => c.url === "/api/cards/4/move" && c.method === "POST");
+  assert.ok(move >= 0, "drawer Save sends move POST");
+  assert.ok(calls.slice(move + 1).some(c => c.url === "/api/board"), "move refreshes board");
+  assert.equal(h.ctx.__test.S.board.cards[0].known, true);
+  const moved = h.$("board").all().find(n => n.classList.contains("card") && n.dataset.n === "4");
+  assert.equal(moved.closest("section").dataset.state, "ready");
+  assert.equal(h.$("dr-state").value, "ready");
+  console.log("PASS unknown card click -> drawer change -> Save -> move POST -> refreshed Ready column");
+})().catch(e => { console.error(e); process.exitCode = 1; });

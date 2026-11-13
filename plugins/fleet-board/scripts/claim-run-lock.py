@@ -1,5 +1,8 @@
-"""Publish the run owner while holding an advisory lock on a stable inode."""
+"""Publish the supervisor that owns a repository's run lock, while holding an advisory lock on a stable inode.
 
+The supervisor (supervisor/service.py) runs this at startup; nothing else takes the lock."""
+
+import argparse
 import fcntl
 import os
 from pathlib import Path
@@ -19,7 +22,7 @@ def start_time(pid):
     return " ".join(result.stdout.split())
 
 
-def claim(path, pid):
+def claim(path, pid, kind="run"):
     # Never unlink the guard. Another process may already have opened its inode.
     with open(str(path) + ".guard", "a") as guard:
         try:
@@ -45,6 +48,8 @@ def claim(path, pid):
         try:
             with os.fdopen(fd, "w") as out:
                 out.write(f"{pid}\n{started}\n")
+                if kind == "service":
+                    out.write("service\n")
             os.replace(temp, path)
         finally:
             if os.path.exists(temp):
@@ -53,7 +58,12 @@ def claim(path, pid):
 
 if __name__ == "__main__":
     os.umask(0o077)
+    parser = argparse.ArgumentParser()
+    parser.add_argument("path")
+    parser.add_argument("pid")
+    parser.add_argument("--kind", choices=("service",), default="run")
+    args = parser.parse_args()
     try:
-        claim(Path(sys.argv[1]), sys.argv[2])
+        claim(Path(args.path), args.pid, args.kind)
     except (OSError, RuntimeError) as exc:
-        sys.exit(f"fleet-board-run: {exc}")
+        sys.exit(f"claim-run-lock: {exc}")

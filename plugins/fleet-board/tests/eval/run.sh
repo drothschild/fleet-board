@@ -123,7 +123,6 @@ write_prompt() {
 write_stage_config() {
   {
     echo "board:"
-    echo "  backend: github-labels"
     echo "  repo: eval/eval"
     echo "review:"
     echo "  stages:"
@@ -131,7 +130,6 @@ write_stage_config() {
     echo "      provider: $PROVIDER"
     echo "      model: \"$MODEL\""
     echo "      advisory: false"
-    echo "      price: { input: $PRICE_IN, output: $PRICE_OUT }"
     echo "      brief: \"Judge whether the tests prove the Acceptance bullets.\""
   } > "$1"
 }
@@ -189,7 +187,10 @@ while IFS="$(printf '\t')" read -r id class pr patch pattern; do
              --card-file "$FIX/$pr/card.md" --diff-file "$WORK/$id-$n.diff" --no-post \
              > "$WORK/$id-$n.result.json" 2> "$WORK/$id-$n.stderr" </dev/null; then
           rf="$(jq -r '.report_file // empty' "$WORK/$id-$n.result.json" 2>/dev/null)"
-          cost="$(jq -r '.cost_usd // 0' "$WORK/$id-$n.result.json" 2>/dev/null)"
+          # stage-review.sh reports tokens only; the eval prices them itself (--price-in/--price-out).
+          tin="$(jq -r '.input_tokens // 0' "$WORK/$id-$n.result.json" 2>/dev/null)"
+          tout="$(jq -r '.output_tokens // 0' "$WORK/$id-$n.result.json" 2>/dev/null)"
+          cost="$(LC_ALL=C awk -v i="${tin:-0}" -v o="${tout:-0}" -v pi="$PRICE_IN" -v po="$PRICE_OUT" 'BEGIN { printf "%.6f", (i * pi + o * po) / 1000000 }')"
           if [ -n "$rf" ] && [ -f "$rf" ]; then
             cp "$rf" "$WORK/$id-$n.report.md"
             verdict="$(bash "$HERE/parse-result.sh" "$WORK/$id-$n.report.md" "$id")"

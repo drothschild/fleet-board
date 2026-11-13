@@ -3,28 +3,28 @@
 #
 # Usage: status.sh [--all | --forecast]
 #
-# Sections, in order: ready, in_progress, in_review, human_qa, blocked; with
+# Sections, in order: ready, in_progress, in_review, merging, human_qa, blocked; with
 # --all also backlog, done and wont_do. Each section is the state name on
 # its own line, then one line per card:
 #   #<n> <title> · round <r> · PR #<pr> · <implementor>/<reviewer>
 # with the values from the card's manager note and "—" for a missing one
 # ("PR —" when there is no PR). An empty section prints "(none)". A card
 # whose note cannot be read prints "#<n> <title> · note unreadable".
-# A ready card with an Acceptance section and unmet dependencies (deps.sh)
-# ends its line with " · waits for <ref> (<state or column>)[, ...]", the
+# A ready card with acceptance items and unmet blockers (deps.sh)
+# ends its line with " · waits for <ref> (<state>)[, ...]", the
 # reason tick-plan.sh plans wait with; if they cannot be looked up, with
 # " · dependencies unreadable" (exit 1).
 # When any ready card waits, a dependency graph follows the sections, built
 # from the same lookups (no extra listing calls):
 #   dependency graph
 #   blocker <ref>          one section per blocker, then its waiting cards
-#     #<n>                 (refs in another repo keep their owner/repo prefix)
+#     #<n>                 (blockers are cards on this board, shown as #<n>)
 #   critical path: <ref> -> ... -> <ref>   the longest chain of unmet deps
 #   can start now: #<n>, ...               ready cards with no unmet dep
 # A board with no waiting card prints no graph.
 #
 # --forecast prints an overnight preflight instead of the board (not with
-# --all). It reads every card in ready, in_progress, in_review, human_qa,
+# --all). It reads every card in ready, in_progress, in_review, merging, human_qa,
 # blocked and backlog, and writes nothing. Its sections, each only when it has
 # entries:
 #   critical-path human gates         needs-human-qa cards another ready or
@@ -61,9 +61,9 @@ esac
 
 fb_load_config
 
-# The review stage columns (config order) sit between in_review and human_qa.
+# The review stage columns (config order) sit between in_review and merging.
 STAGE_STATES="$(fb_stage_states | tr '\n' ' ')"
-STATES="ready in_progress in_review ${STAGE_STATES}human_qa blocked"
+STATES="ready in_progress in_review ${STAGE_STATES}merging human_qa blocked"
 [ -z "$ALL" ] || STATES="$STATES backlog done wont_do"
 
 DEPS_FILE="$(mktemp)" || fb_die 1 "cannot create a temp file"
@@ -75,14 +75,12 @@ trap 'rm -f "$DEPS_FILE" "$EDGES_FILE" "$START_FILE" "$FC_FILE"' EXIT
 # waits_for <n>: prints the waiting reason of a ready card ("waits for ..."),
 # nothing when it has no unmet dependency; fails when they cannot be looked up
 waits_for() {
-  local card body refs out
+  local card refs out
   card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$1" </dev/null)" || return 1
-  body="$(jq -r '.body // ""' <<<"$card" 2>/dev/null)" || return 1
-  fb_has_acceptance "$body" || return 0
-  printf '%s\n' "$body" > "$DEPS_FILE" || return 1
-  grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"
-  case $? in 0) ;; 1) return 0 ;; *) return 1 ;; esac
-  refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1
+  fb_card_has_acceptance "$card" || return 0
+  # the blocked_by field is the dependency list
+  printf '%s\n' "$card" > "$DEPS_FILE" || return 1
+  refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse-card "$DEPS_FILE" | jq -c .refs)" || return 1
   [ "$refs" != '[]' ] || return 0
   out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$1" "$refs" 2>/dev/null)" || return 1
   jq -c --arg c "$1" --arg r "$FLEET_REPO" \
@@ -95,19 +93,13 @@ waits_for() {
 # forecast_card <state> <n> <title>: appends one JSON line for the card to
 # FC_FILE: number, title, column, labels, dependency refs, unmet dependencies
 forecast_card() {
-  local st="$1" n="$2" title="$3" card body labels refs="[]" unmet="[]" out
+  local st="$1" n="$2" title="$3" card labels refs="[]" unmet="[]" out
   card="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null)" || return 1
-  body="$(jq -r '.body // ""' <<<"$card" 2>/dev/null)" || return 1
   labels="$(jq -c '.labels // []' <<<"$card" 2>/dev/null)" || return 1
   if [ "$st" = ready ] || [ "$st" = backlog ]; then
-    printf '%s\n' "$body" > "$DEPS_FILE" || return 1
-    grep -Eiq '^##[[:space:]]+depends[[:space:]]+on[[:space:]]*$' "$DEPS_FILE"
-    case $? in
-      0) refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse "$DEPS_FILE" | jq -c .refs)" || return 1 ;;
-      1) ;;
-      *) return 1 ;;
-    esac
-    if [ "$st" = ready ] && [ "$refs" != '[]' ] && fb_has_acceptance "$body"; then
+    printf '%s\n' "$card" > "$DEPS_FILE" || return 1
+    refs="$(bash "$FLEET_SCRIPTS/deps.sh" parse-card "$DEPS_FILE" | jq -c .refs)" || return 1
+    if [ "$st" = ready ] && [ "$refs" != '[]' ] && fb_card_has_acceptance "$card"; then
       out="$(bash "$FLEET_SCRIPTS/deps.sh" check "$n" "$refs" 2>/dev/null)" || return 1
       unmet="$(jq -c .unmet <<<"$out")" || return 1
     fi
@@ -120,7 +112,7 @@ forecast_card() {
 }
 
 if [ -n "$FORECAST" ]; then
-  for st in ready in_progress in_review $STAGE_STATES human_qa blocked backlog; do
+  for st in ready in_progress in_review $STAGE_STATES merging human_qa blocked backlog; do
     LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
     ROWS="$(jq -c 'if type == "array" then .[] | {number, title} else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
       || fb_die 1 "cannot parse the $st column"

@@ -9,6 +9,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/needs-human-qa.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 
@@ -58,6 +59,7 @@ assert_eq() {
 }
 
 run_check() {
+  store_sync
   local script="$1"
   shift
   local tmpout tmperr

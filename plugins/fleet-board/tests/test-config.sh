@@ -129,7 +129,6 @@ echo ""
 # Test 1: minimal.yml defaults merge
 REPO="$(make_test_repo minimal.yml)"
 CLEANUP_DIRS+=("$REPO")
-assert_key "$REPO" "board.backend" "github-labels" "minimal defaults backend"
 assert_key "$REPO" "review.max_rounds" "3" "minimal defaults max_rounds"
 assert_key "$REPO" "models.reviewer" "opus" "minimal defaults reviewer model"
 run_config "$REPO"
@@ -144,7 +143,7 @@ REPO="$(make_test_repo full.yml)"
 CLEANUP_DIRS+=("$REPO")
 assert_key "$REPO" "board.states.human_qa" "Require Human Inteteraction" "full human_qa state"
 assert_key "$REPO" "commands.test_one" "npm test -- --runTestsByPath {file}" "full test_one command"
-assert_key "$REPO" "limits.max_cost_usd" "40" "full max_cost_usd"
+assert_key "$REPO" "limits.max_hours" "8" "full max_hours"
 assert_key "$REPO" "human_qa_paths" '["src/components/**"]' "full human_qa_paths"
 assert_key "$REPO" "merge.policy" "human" "full merge policy (comment stripped)"
 rm -rf "$REPO"
@@ -283,21 +282,14 @@ run_config "$REPO"
 assert_exit "anchor exit 4" "4"
 assert_stderr_contains "anchor names file and line" ".fleet-board.yml: line 2: anchors, aliases and tags are not supported"
 
-# Test 11: bad-backend.yml
-REPO="$(make_test_repo bad-backend.yml)"
+# Test 11: removed-backend-key.yml (a backend key the board no longer has)
+REPO="$(make_test_repo removed-backend-key.yml)"
 CLEANUP_DIRS+=("$REPO")
 run_config "$REPO"
-assert_exit "bad backend exit 5" "5"
-assert_stderr_contains "bad backend stderr mentions backend" "board.backend"
+assert_exit "removed-backend-key.yml fixture: exit 5" "5"
+assert_stderr_contains "removed-backend-key.yml fixture: names the removed key" "board.backend is no longer a setting"
 rm -rf "$REPO"
 
-# Test 12: bad-projects-no-number.yml
-REPO="$(make_test_repo bad-projects-no-number.yml)"
-CLEANUP_DIRS+=("$REPO")
-run_config "$REPO"
-assert_exit "projects no number exit 5" "5"
-assert_stderr_contains "projects no number mentions project_number" "project_number"
-rm -rf "$REPO"
 
 # Test 13: Invalid merge policy
 REPO="$(mktemp -d)"
@@ -387,7 +379,7 @@ fi
 # Test 18: Missing repo in board section (validation)
 REPO="$(make_inline_repo <<'YML'
 board:
-  backend: github-labels
+  states: {}
 YML
 )"
 CLEANUP_DIRS+=("$REPO")
@@ -447,6 +439,18 @@ run_config "$REPO"
 assert_exit "board.states string exit 5" "5"
 assert_stderr_contains "board.states string gives specific reason" "config.sh: invalid config: board.states must be a map"
 
+# Test 23b: merging is a canonical board.states key
+REPO="$(make_inline_repo <<'YML'
+board:
+  repo: a/b
+  states: { merging: "Landing" }
+YML
+)"
+CLEANUP_DIRS+=("$REPO")
+run_config "$REPO" "board.states.merging"
+assert_exit "board.states.merging exit 0" "0"
+assert_stdout_exact "board.states.merging is read back" "Landing"
+
 # Test 24: KEY lookup that jq cannot evaluate (index into an array by name) exits 2
 REPO="$(make_inline_repo <<'YML'
 board:
@@ -477,24 +481,6 @@ for section in test_paths human_qa_paths; do
   assert_stderr_contains "$section scalar gives specific reason" "config.sh: invalid config: $section must be a list"
 done
 
-# Test 27: board.project_owner must be null or a string
-REPO="$(printf 'board:\n  repo: a/b\n  project_owner: someone\n' | make_inline_repo)"
-CLEANUP_DIRS+=("$REPO")
-assert_key "$REPO" "board.project_owner" "someone" "project_owner string accepted"
-REPO="$(printf 'board:\n  repo: a/b\n  project_owner: 42\n' | make_inline_repo)"
-CLEANUP_DIRS+=("$REPO")
-run_config "$REPO"
-assert_exit "project_owner number exit 5" "5"
-assert_stderr_contains "project_owner number reason" "config.sh: invalid config: board.project_owner must be null or a string"
-REPO="$(make_test_repo minimal.yml)"
-CLEANUP_DIRS+=("$REPO")
-run_config "$REPO"
-if printf '%s' "$LAST_OUT" | jq -e '.board | has("project_owner") and .project_owner == null' >/dev/null; then
-  pass "project_owner defaults to null"
-else
-  fail "project_owner defaults to null" "got $(printf '%s' "$LAST_OUT" | jq -c .board)"
-fi
-
 # Test 28: cdpath-relative-script. With CDPATH exported and a same-named
 # "scripts" directory in it, config.sh run by a relative path must still find
 # its own directory (cd would go to the CDPATH one and echo its path).
@@ -516,7 +502,7 @@ assert_stdout_exact "cdpath-relative-script: board.repo" "acme/toy"
 
 
 # Test 29: field-validation. limits.concurrency is a positive integer,
-# models.manager/implementor/reviewer/fixer are non-empty strings, and
+# models.implementor/reviewer/fixer/merger are non-empty strings, and
 # worktrees.dir is a non-empty relative path (it is joined onto the repo root,
 # so an absolute one would silently land inside the repo). '..' stays allowed:
 # the default ../.fleet-worktrees sits beside the repo on purpose.
@@ -530,7 +516,7 @@ invalid_field_case() { # NAME YAML_BODY EXPECTED_STDERR
 invalid_field_case "concurrency 0" 'limits: { concurrency: 0 }' "limits.concurrency must be a positive integer"
 invalid_field_case "concurrency 1.5" 'limits: { concurrency: 1.5 }' "limits.concurrency must be a positive integer"
 invalid_field_case "concurrency string" 'limits: { concurrency: many }' "limits.concurrency must be a positive integer"
-for role in manager implementor reviewer fixer; do
+for role in implementor reviewer fixer merger; do
   invalid_field_case "models.$role empty" "models: { $role: \"\" }" "models.$role must be a non-empty string"
   invalid_field_case "models.$role number" "models: { $role: 5 }" "models.$role must be a non-empty string"
 done
@@ -565,12 +551,12 @@ assert_stdout_exact_jq() { # NAME JQ_FILTER EXPECTED (against LAST_OUT)
   if [ "$got" = "$3" ]; then pass "$1"; else fail "$1" "expected: '$3', got: '$got'"; fi
 }
 assert_stdout_exact_jq "stages: defaults filled" '.review.stages[0]' \
-  '{"name":"security","agent":"acme:sec","provider":null,"model":"opus","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":4,"brief":null,"price":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+  '{"name":"security","agent":"acme:sec","provider":null,"model":"opus","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":4,"brief":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 # explicit values kept
 REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: ux, agent: ux-reviewer, model: sonnet, paths: ["src/ui/**"], label: ux-pls, advisory: true, max_rounds: 1, brief: "Check copy." } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stdout_exact_jq "stages: explicit values kept" '.review.stages[0]' \
-  '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"brief":"Check copy.","price":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+  '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"brief":"Check copy.","timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stdout_exact_jq "stages: empty by default" '.review.stages' '[]'
@@ -606,7 +592,7 @@ assert_exit "provider stage: valid" 0
 assert_stdout_exact_jq "provider stage merges preset" '.providers.openai' \
   '{"base_url":"https://api.openai.com/v1","api_key_env":"OPENAI_API_KEY","max_tokens_param":"max_completion_tokens"}'
 assert_stdout_exact_jq "provider stage: filled stage object" '.review.stages[0]' \
-  '{"name":"security","agent":null,"provider":"openai","model":"gpt-test","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":3,"brief":null,"price":{"input":1.25,"output":10},"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
+  '{"name":"security","agent":null,"provider":"openai","model":"gpt-test","paths":[],"label":"needs-security-review","advisory":false,"max_rounds":3,"brief":null,"timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 SP='{ name: s, provider: PROV, model: m, price: { input: 1, output: 2 } }'
 for prov in gemini openrouter ollama; do
   REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ %s ] }\n' "${SP/PROV/$prov}" | make_inline_repo)"
@@ -630,12 +616,12 @@ assert_stdout_exact_jq "custom provider: max_tokens_param defaults" '.providers.
 REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, agent: a } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_stdout_exact_jq "agent stage: providers stays empty" '.providers' '{}'
-assert_stdout_exact_jq "agent stage: provider null, price null" '.review.stages[0] | [.provider, .price]' '[null,null]'
+assert_stdout_exact_jq "agent stage: provider null, no price" '.review.stages[0] | [.provider, has("price")]' '[null,false]'
 REPO="$(make_test_repo stages.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages.yml fixture: valid" 0
 assert_stdout_exact_jq "stages.yml: three stages" '.review.stages | map(.name)' '["security","ux","compliance"]'
-assert_stdout_exact_jq "stages.yml: compliance is a provider stage" '.review.stages[2] | [.agent, .provider, .model, .price]' '[null,"openai","gpt-test",{"input":1,"output":2}]'
+assert_stdout_exact_jq "stages.yml: compliance is a provider stage" '.review.stages[2] | [.agent, .provider, .model, has("price")]' '[null,"openai","gpt-test",false]'
 
 BASE_CORP='providers: { corp: { base_url: "https://llm.corp.example/v1", api_key_env: CORP_KEY } }'
 CORP_STAGE='review: { stages: [ { name: s, provider: corp, model: m, price: { input: 1, output: 2 } } ] }'
@@ -643,9 +629,14 @@ invalid_field_case "stage both agent and provider" 'review: { stages: [ { name: 
 invalid_field_case "stage bad provider name" 'review: { stages: [ { name: s, provider: "Open AI", model: m, price: { input: 1, output: 2 } } ] }' "review.stages[0].provider must match ^[a-z][a-z0-9_-]*\$"
 invalid_field_case "stage unknown provider" 'review: { stages: [ { name: s, provider: foo, model: m, price: { input: 1, output: 2 } } ] }' "review.stages[0].provider foo names no provider"
 invalid_field_case "provider stage no model" 'review: { stages: [ { name: s, provider: openai, price: { input: 1, output: 2 } } ] }' "review.stages[0].model must be set when provider is set"
-invalid_field_case "provider stage no price" 'review: { stages: [ { name: s, provider: openai, model: m } ] }' "review.stages[0].price is required when provider is set"
-invalid_field_case "provider stage price input" 'review: { stages: [ { name: s, provider: openai, model: m, price: { input: -1, output: 2 } } ] }' "review.stages[0].price.input must be a non-negative number"
-invalid_field_case "provider stage price output" 'review: { stages: [ { name: s, provider: openai, model: m, price: { input: 1, output: cheap } } ] }' "review.stages[0].price.output must be a non-negative number"
+# Tokens only: a provider stage needs no price, and an old price key is ignored (dropped from the stage).
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, provider: openai, model: m } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "provider stage with no price: valid" 0
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, provider: openai, model: m, price: { input: -1, output: cheap } } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "provider stage with an old price key: valid" 0
+assert_stdout_exact_jq "provider stage with an old price key: price dropped" '.review.stages[0] | has("price")' 'false'
 for k in timeout max_output_tokens max_diff_bytes; do
   invalid_field_case "stage $k" "review: { stages: [ { name: s, provider: openai, model: m, price: { input: 1, output: 2 }, $k: 0 } ] }" "review.stages[0].$k must be a positive integer"
 done
@@ -706,34 +697,71 @@ invalid_field_case "command with api_key_env" "providers: { codex: { api_key_env
 invalid_field_case "command not a string" "providers: { mycmd: { command: 5 } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
 invalid_field_case "command empty" "providers: { mycmd: { command: \"\" } }"$'\n''review: { stages: [ { name: s, provider: mycmd, model: m, price: { input: 0, output: 0 } } ] }' "providers.mycmd.command must be a non-empty string"
 
-# local backend: accepted, defaults filled, board.dir and board.port validated
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n' | make_inline_repo)"
+# a local board: accepted, defaults filled, board.dir and board.port validated
+REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_exit "local backend exit 0" "0"
-assert_key "$REPO" "board.backend" "local" "local backend kept"
+assert_exit "a local board config: exit 0" "0"
 assert_key "$REPO" "board.dir" ".fleet-board" "board.dir default"
 assert_key "$REPO" "board.port" "8765" "board.port default"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: /tmp/x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: /tmp/x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "absolute board.dir exit 5" "5"; assert_stderr_contains "absolute board.dir named" "board.dir"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: ../x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: ../x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "dotdot board.dir exit 5" "5"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: a/../x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: a/../x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "embedded dotdot board.dir exit 5" "5"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  dir: a..b/x\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  dir: a..b/x\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "dots inside a segment name are fine" "0"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  port: 80\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  port: 80\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "low port exit 5" "5"; assert_stderr_contains "port named" "board.port"
-REPO="$(printf 'board:\n  backend: local\n  repo: acme/toy\n  port: 70000\n' | make_inline_repo)"
+REPO="$(printf 'board:\n  repo: acme/toy\n  port: 70000\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
 assert_exit "high port exit 5" "5"
-REPO="$(make_test_repo bad-backend.yml)"
+
+# The board is always local: the backend keys are refused with a pointer at the importer
+for kv in "backend: local" "backend: github-labels" "backend: github-projects" "project_number: 1" "project_owner: someone"; do
+  k="${kv%%:*}"
+  REPO="$(printf 'board:\n  repo: acme/toy\n  %s\n' "$kv" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+  assert_exit "removed key board.$kv: exit 5" "5"
+  assert_stderr_contains "removed key board.$kv: names the key" "board.$k is no longer a setting"
+  assert_stderr_contains "removed key board.$kv: says the board is always local" "the board is now always local"
+  assert_stderr_contains "removed key board.$kv: names the importer" "import-github.sh"
+done
+REPO="$(printf 'board:\n  repo: acme/toy\n  backend: local\n  project_number: 1\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
-assert_stderr_contains "backend list names all three" "github-labels, github-projects or local"
+assert_eq_count() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected $3, got $2"; fi; }
+assert_eq_count "removed keys: one message per key" "$(printf '%s\n' "$LAST_ERR" | grep -c 'is no longer a setting')" "2"
+
+# The tick system is gone: its keys are refused, one message per key
+for kv in "limits: { max_cost_usd: 40 }" "limits: { tick_interval: 60 }" "limits: { min_tick_gap: 0 }" \
+  "limits: { max_consecutive_failures: 3 }" "models: { manager: sonnet }"; do
+  sect="${kv%%:*}"; k="${kv#*\{ }"; k="${k%%:*}"
+  REPO="$(printf 'board:\n  repo: acme/toy\n%s\n' "$kv" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+  assert_exit "removed tick key $sect.$k: exit 5" "5"
+  assert_stderr_contains "removed tick key $sect.$k: names the key" "$sect.$k is no longer a setting"
+  assert_stderr_contains "removed tick key $sect.$k: points at the supervisor" "supervisor"
+done
+REPO="$(printf 'board:\n  repo: acme/toy\nlimits: { max_cost_usd: 40, tick_interval: 60 }\nmodels: { manager: sonnet }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" --check
+assert_eq_count "removed tick keys: one message per key" "$(printf '%s\n' "$LAST_ERR" | grep -c 'is no longer a setting')" "3"
+REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_eq_count "defaults carry no tick key" \
+  "$(printf '%s' "$LAST_OUT" | jq -c '[(.limits | has("max_cost_usd"), has("tick_interval"), has("min_tick_gap"), has("max_consecutive_failures")), (.models | has("manager"))]')" '[false,false,false,false,false]'
+REPO="$(printf 'board:\n  repo: acme/toy\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "no backend key: exit 0" "0"
+assert_eq_count "no backend key: the merged config has no backend or project keys" \
+  "$(printf '%s' "$LAST_OUT" | jq -c '.board | [has("backend"), has("project_number"), has("project_owner")]')" '[false,false,false]'
+assert_key "$REPO" "board.dir" ".fleet-board" "no backend key: board.dir default stays"
+assert_key "$REPO" "board.port" "8765" "no backend key: board.port default stays"
+assert_key "$REPO" "board.repo" "acme/toy" "no backend key: board.repo stays"
 
 reviewer='{ provider: codex, model: gpt-6-astra, price: { input: 0, output: 0 } }'
 reviewer_cfg="models: { reviewer: $reviewer, escalation: opus }"
@@ -741,7 +769,12 @@ invalid_field_case "reviewer invalid type" 'models: { reviewer: [] }' "models.re
 invalid_field_case "reviewer unknown provider" "${reviewer_cfg/codex/unknown}" "models.reviewer.provider unknown names no provider"
 invalid_field_case "reviewer HTTP provider" "${reviewer_cfg/codex/openai}" "models.reviewer.provider openai has no review_command"
 invalid_field_case "reviewer invalid model" "${reviewer_cfg/gpt-6-astra/123}" "models.reviewer.model must be a non-empty string"
-invalid_field_case "reviewer invalid price" "${reviewer_cfg/input: 0/input: -1}" "models.reviewer.price must have non-negative input and output"
+REPO="$(printf 'board: { repo: a/b }\n%s\n' "${reviewer_cfg/input: 0/input: -1}" | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "reviewer with an old price key: valid (price is ignored)" 0
+REPO="$(printf 'board: { repo: a/b }\nmodels: { reviewer: { provider: codex, model: gpt-6-astra }, escalation: opus }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "reviewer provider with no price: valid" 0
 invalid_field_case "reviewer invalid timeout" "${reviewer_cfg/model: gpt-6-astra/model: gpt-6-astra, timeout: 1501}" "models.reviewer.timeout must be an integer from 1 to 1500"
 invalid_field_case "reviewer missing escalation" "models: { reviewer: $reviewer }" "models.escalation must be set when models.reviewer is a provider"
 invalid_field_case "agent stage missing model" "$reviewer_cfg"$'\n''review: { stages: [{name: s, agent: reviewer}] }' "review.stages[0].model must be set when models.reviewer is a provider"
@@ -760,6 +793,168 @@ REPO="$(printf 'board: { repo: a/b }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "default reviewer is accepted" 0
 assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"'
+
+# Supervisor configuration is validated before the launcher can use it.
+REPO="$(make_test_repo supervisor-default.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor defaults accepted" 0
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{},"scope_ignore":[],"version_files":[]}'
+assert_stdout_exact_jq "supervisor defaults carry no enabled, start_on_boot or heartbeat key" '.supervisor | [has("enabled"), has("start_on_boot"), has("heartbeat_interval_seconds"), has("heartbeat_timeout_seconds")]' '[false,false,false,false]'
+REPO="$(make_test_repo supervisor-caps.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor with configured caps" 0
+assert_stdout_exact_jq "supervisor provider caps preserved" '.supervisor.provider_concurrency' '{"claude":2,"codex":1}'
+# config.sh checks only the supervisor keys it knows: a stale enabled or start_on_boot is ignored, not rejected.
+for k in enabled start_on_boot heartbeat_interval_seconds; do
+  for v in null 1 '"true"' 0; do
+    REPO="$(printf 'board: { repo: a/b }\nsupervisor: { %s: %s }\n' "$k" "$v" | make_inline_repo)"
+    CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+    assert_exit "supervisor $k: $v is ignored, not validated" 0
+  done
+done
+REPO="$(make_test_repo supervisor-invalid.yml)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor invalid fixture rejected" 5
+for k in reconcile_interval_seconds progress_timeout_seconds attempt_timeout_seconds shutdown_grace_seconds retry_backoff_seconds aging_seconds; do
+  for v in 0 -1 1.5 null '"5"' '[]'; do
+    invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be a positive integer"
+  done
+done
+invalid_field_case "supervisor section type" 'supervisor: []' 'supervisor must be an object'
+invalid_field_case "supervisor caps type" 'supervisor: { provider_concurrency: [] }' 'supervisor.provider_concurrency must be an object'
+invalid_field_case "supervisor unknown cap" 'supervisor: { provider_concurrency: { unknown: 1 } }' 'supervisor.provider_concurrency.unknown names no provider'
+for v in 0 -1 1.5 null '"1"' '[]'; do
+  invalid_field_case "supervisor cap rejects $v" "supervisor: { provider_concurrency: { claude: $v } }" 'supervisor.provider_concurrency.claude must be a positive integer'
+done
+# supervisor.scope_ignore: repo-relative globs the scheduler leaves out of scope overlap
+REPO="$(printf 'board: { repo: a/b }\nsupervisor: { scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor scope_ignore list accepted" 0
+assert_stdout_exact_jq "supervisor scope_ignore preserved" '.supervisor.scope_ignore' '[".claude-plugin/marketplace.json","plugins/*/.claude-plugin/plugin.json"]'
+for v in '"x.json"' 3 null '{ a: 1 }'; do
+  invalid_field_case "supervisor scope_ignore rejects $v" "supervisor: { scope_ignore: $v }" 'supervisor.scope_ignore must be a list of strings'
+done
+for v in '[""]' '[3]' '[null]'; do
+  invalid_field_case "supervisor scope_ignore entry rejects $v" "supervisor: { scope_ignore: $v }" 'supervisor.scope_ignore entries must be non-empty strings'
+done
+for v in '"/etc/x.json"' '"../x.json"' '"a/../b.json"' '".."' '"a/./b.json"' '"\\\\etc\\\\x.json"'; do
+  invalid_field_case "supervisor scope_ignore path rejects $v" "supervisor: { scope_ignore: [$v] }" 'supervisor.scope_ignore entries must be repo-relative, without a leading / or ..'
+done
+for v in '"*"' '"**"' '"*/*"' '"?"' '"./"' '"."' '"/"' '"**/"'; do
+  invalid_field_case "supervisor scope_ignore wildcard-only rejects $v" "supervisor: { scope_ignore: [$v] }" 'supervisor.scope_ignore entries must name a path, not only wildcards or separators'
+done
+for k in scope_ignore version_files; do
+  invalid_field_case "supervisor $k rejects [z-a].json" "supervisor: { $k: [\"ok.json\", \"[z-a].json\"] }" "supervisor.$k entry \"[z-a].json\" is not a valid glob"
+  invalid_field_case "supervisor $k rejects x/[b-a]" "supervisor: { $k: [\"x/[b-a]\"] }" "supervisor.$k entry \"x/[b-a]\" is not a valid glob"
+done
+# supervisor.version_files: the same glob rules
+REPO="$(printf 'board: { repo: a/b }\nsupervisor: { version_files: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json", "**/package.json"] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor version_files list accepted" 0
+assert_stdout_exact_jq "supervisor version_files preserved" '.supervisor.version_files' '[".claude-plugin/marketplace.json","plugins/*/.claude-plugin/plugin.json","**/package.json"]'
+for v in '"x.json"' 3 null '{ a: 1 }'; do
+  invalid_field_case "supervisor version_files rejects $v" "supervisor: { version_files: $v }" 'supervisor.version_files must be a list of strings'
+done
+for v in '[""]' '[3]'; do
+  invalid_field_case "supervisor version_files entry rejects $v" "supervisor: { version_files: $v }" 'supervisor.version_files entries must be non-empty strings'
+done
+for v in '"/x.json"' '"../x.json"'; do
+  invalid_field_case "supervisor version_files path rejects $v" "supervisor: { version_files: [$v] }" 'supervisor.version_files entries must be repo-relative, without a leading / or ..'
+done
+for v in '"*"' '"**/*"' '"."'; do
+  invalid_field_case "supervisor version_files wildcard-only rejects $v" "supervisor: { version_files: [$v] }" 'supervisor.version_files entries must name a path, not only wildcards or separators'
+done
+invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
+invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
+
+# Test 30: token limits. limits.max_tokens is a positive integer (default 20000000);
+# limits.max_tokens_per_card is null or a positive integer (default null).
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "token limits defaults accepted" 0
+assert_stdout_exact_jq "limits.max_tokens defaults to 20000000" '.limits.max_tokens' '20000000'
+assert_stdout_exact_jq "limits.max_tokens_per_card defaults to null" '.limits.max_tokens_per_card' 'null'
+REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens: 500000, max_tokens_per_card: 90000 }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "token limits set accepted" 0
+assert_stdout_exact_jq "limits.max_tokens set" '.limits.max_tokens' '500000'
+assert_stdout_exact_jq "limits.max_tokens_per_card set" '.limits.max_tokens_per_card' '90000'
+for v in 0 -1 1.5 null '"5"' '[]'; do
+  invalid_field_case "max_tokens rejects $v" "limits: { max_tokens: $v }" "limits.max_tokens must be a positive integer"
+done
+for v in 0 -1 1.5 '"5"' '[]'; do
+  invalid_field_case "max_tokens_per_card rejects $v" "limits: { max_tokens_per_card: $v }" "limits.max_tokens_per_card must be null or a positive integer"
+done
+REPO="$(printf 'board:\n  repo: a/b\nlimits: { max_tokens_per_card: null }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "max_tokens_per_card null accepted" 0
+
+# merge.persona (null or a non-empty relative path), merge.persona_append (null or string), models.merger
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+# null: the driver uses .fleet-board/merger.md when present, else the plugin default (a set path is explicit)
+assert_stdout_exact_jq "merge.persona defaults to null" '.merge.persona' 'null'
+assert_stdout_exact_jq "merge.persona_append defaults to null" '.merge.persona_append' 'null'
+assert_stdout_exact_jq "models.merger defaults to sonnet" '.models.merger' '"sonnet"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: null\n  persona_append: "Also run make deploy."\nmodels: { merger: opus }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "merge.persona null with an append accepted" 0
+assert_stdout_exact_jq "merge.persona null kept" '.merge.persona' 'null'
+assert_stdout_exact_jq "merge.persona_append kept" '.merge.persona_append' '"Also run make deploy."'
+assert_stdout_exact_jq "models.merger overridden" '.models.merger' '"opus"'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  persona: docs/merger.md\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.persona relative path kept" '.merge.persona' '"docs/merger.md"'
+for v in '""' '/etc/merger.md' '../merger.md' 'a/../b.md' '5' '[x]'; do
+  invalid_field_case "merge.persona rejects $v" $'merge:\n  persona: '"$v" "merge.persona must be null or a non-empty relative path without .."
+done
+for v in '5' '[x]'; do
+  invalid_field_case "merge.persona_append rejects $v" $'merge:\n  persona_append: '"$v" "merge.persona_append must be null or a string"
+done
+invalid_field_case "models.merger empty" 'models: { merger: "" }' "models.merger must be a non-empty string"
+invalid_field_case "models.merger number" 'models: { merger: 5 }' "models.merger must be a non-empty string"
+
+# merge.ignore_checks: a list of {name, reason, until}; every field required, until a real YYYY-MM-DD
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_stdout_exact_jq "merge.ignore_checks defaults to []" '.merge.ignore_checks' '[]'
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  ignore_checks:\n    - name: "lint-*"\n      reason: flaky docs lint\n      until: 2026-12-31\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "ignore_checks entry accepted" 0
+assert_stdout_exact_jq "ignore_checks entry kept as strings" '.merge.ignore_checks' '[{"name":"lint-*","reason":"flaky docs lint","until":"2026-12-31"}]'
+IGN_MSG="merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+invalid_field_case "ignore_checks missing until" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r' "$IGN_MSG"
+invalid_field_case "ignore_checks missing reason" $'merge:\n  ignore_checks:\n    - name: lint\n      until: 2026-12-31' "$IGN_MSG"
+# pending: an optional boolean; true lets a matching check that is still running count as green
+REPO="$(printf 'board:\n  repo: a/b\nmerge:\n  ignore_checks:\n    - name: "*"\n      reason: CI is asynchronous\n      until: 2026-12-31\n      pending: true\n' | make_inline_repo)"
+run_config "$REPO"
+assert_exit "ignore_checks entry with pending: true accepted" 0
+assert_stdout_exact_jq "ignore_checks pending kept as a boolean" '.merge.ignore_checks[0].pending' 'true'
+invalid_field_case "ignore_checks pending must be a boolean" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: 2026-12-31\n      pending: "yes"' "merge.ignore_checks pending must be true or false"
+invalid_field_case "ignore_checks pending: null is refused" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: 2026-12-31\n      pending: null' "merge.ignore_checks pending must be true or false"
+invalid_field_case "ignore_checks missing name" $'merge:\n  ignore_checks:\n    - reason: r\n      until: 2026-12-31' "$IGN_MSG"
+invalid_field_case "ignore_checks empty reason" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: ""\n      until: 2026-12-31' "$IGN_MSG"
+for d in 2026-13-01 2026-02-30 20261231 2026-1-5 soon 2026-12-31T00:00; do
+  invalid_field_case "ignore_checks bad date $d" $'merge:\n  ignore_checks:\n    - name: lint\n      reason: r\n      until: "'"$d"$'"' "$IGN_MSG"
+done
+invalid_field_case "ignore_checks not a list" $'merge:\n  ignore_checks: lint' "merge.ignore_checks must be a list"
+invalid_field_case "ignore_checks entry not a map" $'merge:\n  ignore_checks:\n    - lint' "$IGN_MSG"
+
+# Test 31: headless.permission_mode, limits.max_turns and limits.max_hours are validated by --check
+check_case() { # NAME YAML_BODY EXPECTED_EXIT [EXPECTED_STDERR]
+  REPO="$(printf 'board:\n  repo: a/b\n%s\n' "$2" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO")
+  run_config "$REPO" --check
+  assert_exit "$1: exit $3" "$3"
+  [ -z "${4:-}" ] || assert_stderr_contains "$1: message" "$4"
+}
+check_case "config.sh --check refuses permission_mode bypassPermissions and names the allowed values" $'headless:\n  permission_mode: bypassPermissions' 5 "auto, acceptEdits, default, plan"
+check_case "bypassPermissions message says why" $'headless:\n  permission_mode: bypassPermissions' 5 "no permission checks"
+check_case "config.sh --check refuses limits.max_turns ten" $'limits:\n  max_turns: ten' 5 "limits.max_turns must be a positive integer"
+check_case "config.sh --check refuses limits.max_hours 0" $'limits:\n  max_hours: 0' 5 "limits.max_hours must be a positive integer"
+for m in auto acceptEdits default plan; do
+  check_case "config.sh --check accepts permission_mode $m" "headless: { permission_mode: $m }" 0
+done
 
 echo ""
 echo "-----------------------------------"

@@ -24,6 +24,8 @@ LAST_PAYLOAD=""
 CLEANUP_DIRS=()
 ORIG_PATH="$PATH"
 REAL_JQ="$(command -v jq)"
+# the local login (fb_login) is the author the fixtures write the manager note as
+export FLEET_BOARD_USER=fleet-bot
 
 # Choose a bash executable for consistent invocation.
 # Prefer /bin/bash if available (standard on macOS/BSD), else use bash from PATH.
@@ -141,25 +143,28 @@ local_card() {
 }
 
 # setup_case CONFIG: a fresh repo (the payload's cwd) and a fresh fake gh.
-# CONFIG is one of: none, labels-human, labels-auto, local-auto, hmb, bad-backend.
+# CONFIG is one of: none, human, auto, local-auto, hmb, invalid (a config config.sh refuses).
+# human, auto, stages and hmb: a local store whose cards 12 (ready, with
+# acceptance), 13 (ready, none) and 14 (human_qa) come from the issue fixtures
+# card_routes names (tests/routes-store.sh); human and auto set merge.policy.
 setup_case() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
   case "$1" in
     none) ;;
-    labels-human|labels-auto)
+    human|auto)
       cat > "$REPO/.fleet-board.yml" << YML
 board:
-  backend: github-labels
   repo: acme/toy
 merge:
-  policy: ${1#labels-}
+  policy: $1
+worktrees:
+  dir: .fw
 YML
       ;;
     local-auto)
       cat > "$REPO/.fleet-board.yml" << YML
 board:
-  backend: local
   repo: acme/toy
 merge:
   policy: auto
@@ -173,11 +178,27 @@ YML
       local_card 13 backlog "just a body"
       local_card 14 human_qa "## Acceptance
 - works"
+      # a card read on local carries the fields: #12 and #14 store their bullet as acceptance
+      for c in 12 14; do
+        jq '.acceptance = ["works"] | .blocked_by = []' "$REPO/.fleet-board/cards/$c.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/$c.json"
+      done
+      # card fields: acceptance [] with a body that still has the heading; items with no heading
+      jq -n '{number: 15, title: "card 15", body: "## Acceptance\n- works\n", acceptance: [], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+        > "$REPO/.fleet-board/cards/15.json"
+      jq -n '{number: 16, title: "card 16", body: "", acceptance: ["works"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+        > "$REPO/.fleet-board/cards/16.json"
       ;;
     stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
-    bad-backend) cp "$CONFIG_FIXTURES/bad-backend.yml" "$REPO/.fleet-board.yml" ;;
+    invalid) cp "$CONFIG_FIXTURES/removed-backend-key.yml" "$REPO/.fleet-board.yml" ;;
     *) echo "setup_case: unknown config $1" >&2; exit 1 ;;
+  esac
+  case "$1" in
+    human|auto|stages|hmb)
+      card_routes > "$REPO/.store-routes"
+      bash "$SCRIPT_DIR/routes-store.sh" "$REPO/.store-routes" "$REPO" >/dev/null \
+        || { echo "setup_case: cannot seed the store" >&2; exit 1; }
+      rm -f "$REPO/.store-routes" ;;
   esac
 
   FAKE_GH_DIR="$(mktemp -d)"
@@ -186,9 +207,12 @@ YML
   mkdir -p "$BIN"
   ln -s "$SCRIPT_DIR/fake-gh.sh" "$BIN/gh"
   : > "$ROUTES"
+  ln -s "$SCRIPT_DIR/fake-date.sh" "$BIN/date"
+  REAL_DATE="$(PATH="$ORIG_PATH" command -v date)"
+  export REAL_DATE
 
   # Reset environment between cases
-  unset FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG FLEET_BOARD_GATE_TIMEOUT CDPATH RUN_CWD HOOK_PATH HOOK_LIMIT PAYLOAD_EDIT || true
+  unset FB_TEST_TODAY FLEET_BOARD_TODAY FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG FLEET_BOARD_GATE_TIMEOUT CDPATH RUN_CWD HOOK_PATH HOOK_LIMIT PAYLOAD_EDIT || true
   PATH="$BIN:$ORIG_PATH"
   export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH
 
@@ -236,6 +260,17 @@ STALLEOF
   chmod +x "$BIN/gh"
 }
 
+# stall_read SECS: the local card read (board-read.sh, the jq call that finds
+# the note) answers SECS seconds late; every other jq call is real jq
+stall_read() {
+  cat > "$BIN/jq" << JQEOF
+#!/usr/bin/env bash
+case "\$*" in *find_note*) sleep $1 ;; esac
+exec "$REAL_JQ" "\$@"
+JQEOF
+  chmod +x "$BIN/jq"
+}
+
 # jq_fault MODE: the config read of merge.policy (fb_cfg merge.policy) fails
 # (MODE fail) or prints nothing (MODE empty); every other jq call is real jq
 jq_fault() {
@@ -264,7 +299,7 @@ assert_no_calls "inert-no-config: calls.log does not exist"
 # ---------------------------------------------------------------------------
 # AC4.5 non-bash-tool (config present, merge.policy human, and a command that
 # would be blocked if the tool were Bash)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook edit.json "gh pr merge 4"
 assert_equal "non-bash-tool: payload tool_name is Edit" "$(jq -r .tool_name <<<"$LAST_PAYLOAD")" "Edit"
@@ -276,9 +311,9 @@ assert_no_calls "non-bash-tool: no gh calls"
 # FLEET_BOARD_CONFIG points at an invalid config: a hook that read the config
 # for an ordinary command would block it. The gated command shows the
 # sentinel is live.
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
-export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/bad-backend.yml"
+export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/removed-backend-key.yml"
 run_hook bash.json "npm test -- --runTestsByPath a.test.ts"
 assert_silent_allow "ordinary-command-fast-path"
 assert_no_calls "ordinary-command-fast-path: no gh calls"
@@ -292,7 +327,7 @@ unset FLEET_BOARD_CONFIG
 # became "cd sub && ...". The hook now evaluates a command in the directory a
 # literal cd moves it to, and /tmp has no .fleet-board.yml, so board-move.sh
 # could not move anything there. sub is inside the configured repo.)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 mkdir -p "$REPO/sub"
 for c in "bash /x/scripts/board-move.sh 14 ready" \
@@ -308,7 +343,7 @@ assert_silent_allow "move-out-of-human-qa: board-move.sh 14 human_qa"
 
 # ---------------------------------------------------------------------------
 # AC4.1 + AC4.3 shell-syntax-cannot-bypass
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in "X=1 gh pr merge 4" \
          "if true; then gh pr merge 4; fi" \
@@ -336,73 +371,30 @@ done
 
 # ---------------------------------------------------------------------------
 # read-only-api-allowed
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook bash.json "gh api repos/acme/toy/issues/14/labels"
 assert_silent_allow "read-only-api-allowed"
 
 # ---------------------------------------------------------------------------
 # merge-repo-passthrough
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh pr merge 4 -R other/repo"
 assert_log_has "merge-repo-passthrough: pr view carries -R other/repo" "pr view 4 -R other/repo --json"
 assert_exit "merge-repo-passthrough: exit 0" 0
 
 # ---------------------------------------------------------------------------
-# AC4.1 issue-edit-state-label-on-qa-card
-setup_case labels-human
-card_routes > "$ROUTES"
-run_hook bash.json "gh issue edit 14 --remove-label fleet:human_qa"
-assert_blocked "issue-edit-state-label-on-qa-card: remove fleet:human_qa" "Human QA"
-run_hook bash.json "gh issue edit 14 --add-label bug"
-assert_silent_allow "issue-edit-state-label-on-qa-card: add bug"
-run_hook bash.json "gh -R acme/toy issue edit 14 --add-label fleet:done,bug"
-assert_blocked "issue-edit-state-label-on-qa-card: -R, add fleet:done,bug" "Human QA"
-
-# ---------------------------------------------------------------------------
-# AC4.1 project-item-edit-on-qa-item
-ITEM_EDIT="gh project item-edit --id PVTI_14 --project-id P --field-id F --single-select-option-id O"
-setup_case hmb
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-api graphql*	0	$FIXTURES/pr/item-status-qa.json
-ROUTESEOF
-card_routes; } > "$ROUTES"
-run_hook bash.json "$ITEM_EDIT"
-assert_blocked "project-item-edit-on-qa-item: QA item" "project item PVTI_14 is in Human QA"
-assert_log_has "project-item-edit-on-qa-item: item status read by id" "PVTI_14"
-
-setup_case hmb
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-api graphql*	0	$FIXTURES/pr/item-status-ready.json
-ROUTESEOF
-card_routes; } > "$ROUTES"
-run_hook bash.json "$ITEM_EDIT"
-assert_silent_allow "project-item-edit-on-qa-item: Ready item"
-
-# ---------------------------------------------------------------------------
-# AC4.1 raw-writes-blocked
-setup_case labels-human
-card_routes > "$ROUTES"
-for c in "gh api graphql -f query='mutation{updateProjectV2ItemFieldValue(input:{})}'" \
-         "gh api -X POST repos/acme/toy/issues/14/labels -f labels[]=fleet:done"; do
-  run_hook bash.json "$c"
-  assert_blocked "raw-writes-blocked: $c" "bypass the board adapter"
-done
-
-# ---------------------------------------------------------------------------
 # AC4.1 read-failure-fails-closed
-setup_case labels-human
-{ printf 'api repos/acme/toy/issues/14\t1\t-\n'; card_routes; } > "$ROUTES"
+setup_case human
+card_routes > "$ROUTES"
+printf 'not a card\n' > "$REPO/.fleet-board/cards/14.json"
 run_hook bash.json "board-move.sh 14 done"
 assert_blocked "read-failure-fails-closed" "blocking to be safe"
-assert_log_has "read-failure-fails-closed: the card read was attempted" "api repos/acme/toy/issues/14"
 
 # ---------------------------------------------------------------------------
 # AC4.3 human-policy-blocks-all-merges
-setup_case labels-human
+setup_case human
 { card_routes; pr_routes; } > "$ROUTES"
 for c in "gh pr merge 4 --squash" \
          "gh pr merge" \
@@ -415,7 +407,7 @@ assert_log_lacks "human-policy-blocks-all-merges: no pr view" "pr view"
 
 # ---------------------------------------------------------------------------
 # AC4.2 draft-blocked
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh pr merge 3 --squash"
 assert_blocked "draft-blocked" "draft"
@@ -424,7 +416,7 @@ assert_log_has "draft-blocked: pr view 3 --json" "pr view 3 --json number,isDraf
 
 # ---------------------------------------------------------------------------
 # AC4.4 auto-green-allowed
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh pr merge 4 --squash --delete-branch"
 assert_silent_allow "auto-green-allowed: pr 4 green"
@@ -434,7 +426,7 @@ assert_silent_allow "auto-green-allowed: pr 6 no checks"
 
 # ---------------------------------------------------------------------------
 # AC4.4 auto-red-blocked
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh pr merge 5"
 assert_blocked "auto-red-blocked" "not green"
@@ -442,43 +434,41 @@ assert_stderr_contains "auto-red-blocked: names PR #5" "PR #5"
 
 # ---------------------------------------------------------------------------
 # admin-blocked
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh pr merge 4 --admin"
 assert_blocked "admin-blocked" "--admin bypasses branch protection"
 
 # ---------------------------------------------------------------------------
 # ready-needs-acceptance
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook bash.json "board-move.sh 13 ready"
-assert_blocked "ready-needs-acceptance: #13" "## Acceptance"
+assert_blocked "ready-needs-acceptance: #13" "no acceptance criteria"
 assert_stderr_contains "ready-needs-acceptance: names #13" "#13"
 run_hook bash.json "board-move.sh 12 ready"
 assert_silent_allow "ready-needs-acceptance: #12"
 
 # ---------------------------------------------------------------------------
-# local backend: the gate accepts it and enforces the same rules
+# a store seeded with the card fields: the same rules, read from the fields
 setup_case local-auto
 pr_routes > "$ROUTES"
 run_hook bash.json "board-move.sh 14 done"
 assert_blocked "local: board-move.sh 14 done on a human_qa card" "card #14 is in Human QA"
 run_hook bash.json "board-move.sh 13 ready"
-assert_blocked "local: ready needs Acceptance (#13)" "## Acceptance"
+assert_blocked "local: ready needs Acceptance (#13)" "no acceptance criteria"
 run_hook bash.json "board-move.sh 12 ready"
 assert_silent_allow "local: ready with Acceptance (#12)"
+run_hook bash.json "board-move.sh 15 ready"
+assert_blocked "local: ready refused when acceptance is [] whatever the body says (#15)" "no acceptance criteria"
+run_hook bash.json "board-move.sh 16 ready"
+assert_silent_allow "local: ready allowed when acceptance has items and the body has no heading (#16)"
 run_hook bash.json "gh pr merge 5"
 assert_blocked "local: auto policy blocks a red PR" "not green"
 run_hook bash.json "gh pr merge 4"
 assert_silent_allow "local: auto policy allows a green PR"
 run_hook bash.json "gh pr merge 3"
 assert_blocked "local: auto policy blocks a draft PR" "draft"
-run_hook bash.json "gh issue edit 14 --add-label bug"
-if printf '%s' "$LAST_ERR" | grep -Fq "could not verify the board config"; then
-  fail "local: backend local is not 'could not verify the board config'" "$LAST_ERR"
-else
-  pass "local: backend local is not 'could not verify the board config'"
-fi
 
 # ---------------------------------------------------------------------------
 # AC4.6 subagent-payload-gated-identically: the same command from a subagent
@@ -494,17 +484,17 @@ subagent_same() {
   assert_equal "subagent-payload-gated-identically: $name: same exit as main" "$LAST_EXIT" "$main_exit"
   assert_equal "subagent-payload-gated-identically: $name: same stderr as main" "$LAST_ERR" "$main_err"
 }
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 subagent_same "move-out-of-human-qa" "bash /x/scripts/board-move.sh 14 ready" "Human QA"
 subagent_same "human-policy" "gh pr merge 4 --squash" "merge.policy is human"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 subagent_same "draft" "gh pr merge 3 --squash" "draft"
 
 # ---------------------------------------------------------------------------
 # invalid-config-fails-closed
-setup_case bad-backend
+setup_case invalid
 { card_routes; pr_routes; } > "$ROUTES"
 run_hook bash.json "gh pr merge 4"
 assert_blocked "invalid-config-fails-closed: gh pr merge 4" "invalid"
@@ -517,7 +507,7 @@ assert_silent_allow "invalid-config-fails-closed: ls"
 
 # quoting-cannot-hide-command-word: quote and backslash characters inside a
 # word vanish in the shell, so they must not hide the keyword or the command word
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in "g''h pr merge 4" 'g\h pr merge 4' 'board-mo""ve.sh 14 done'; do
   run_hook bash.json "$c"
@@ -526,44 +516,25 @@ done
 assert_stderr_contains "quoting-cannot-hide-command-word: board-move reason" "Human QA"
 
 # raw-merge-graphql-blocked: the GraphQL merge mutations are raw merges
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook bash.json "gh api graphql -f query='mutation{mergePullRequest(input:{})}'"
 assert_blocked "raw-merge-graphql-blocked: mergePullRequest" "merge.policy is human"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh api graphql -f query='mutation{enablePullRequestAutoMerge(input:{})}'"
 assert_blocked "raw-merge-graphql-blocked: enablePullRequestAutoMerge under auto" "use gh pr merge"
 
-# raw-label-patch-blocked: PATCH on the issue itself with a labels field
-setup_case labels-human
-card_routes > "$ROUTES"
-run_hook bash.json "gh api -X PATCH repos/acme/toy/issues/14 -f labels[]=fleet:done"
-assert_blocked "raw-label-patch-blocked" "bypass the board adapter"
-run_hook bash.json "gh api repos/acme/toy/issues/14"
-assert_silent_allow "raw-label-patch-blocked: a read of the issue is allowed"
-
 # variable-card-number-fails-closed: the hook cannot know what $N expands to
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook bash.json 'board-move.sh $N done'
 assert_blocked "variable-card-number-fails-closed" "blocking to be safe"
 run_hook bash.json 'grep -n x scripts/board-move.sh'
 assert_silent_allow "variable-card-number-fails-closed: a path mention is not a move"
 
-# issue-edit-label-forms: a quoted list that quote stripping splits apart,
-# flags before the number, and a state label on a card that is not in Human QA
-setup_case labels-human
-card_routes > "$ROUTES"
-run_hook bash.json 'gh issue edit 14 --add-label "bug, fleet:done"'
-assert_blocked "issue-edit-label-forms: quoted list split by stripping" "Human QA"
-run_hook bash.json "gh issue edit --add-label fleet:done 14"
-assert_blocked "issue-edit-label-forms: flags before the number" "#14"
-run_hook bash.json "gh issue edit 12 --add-label fleet:done"
-assert_silent_allow "issue-edit-label-forms: state label on a ready card"
-
 # merge-body-cannot-stand-in: a split --body must not replace the real PR
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json 'gh pr merge --body "ok 6" 5'
 assert_blocked "merge-body-cannot-stand-in" "not green"
@@ -580,21 +551,12 @@ current_branch_green() {
 # C1 continuation-and-multiline: a backslash-newline, or a newline inside a
 # quoted argument, must not split a shape across segments; neither may a
 # separator character inside quotes
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in $'board-move.sh \\\n 14 done' \
-         $'gh issue edit 14 --title x \\\n --remove-label fleet:human_qa' \
-         'gh issue edit 14 --title "a; b" --remove-label fleet:human_qa' \
-         'gh issue edit 14 --title "a (b)" --remove-label fleet:human_qa' \
          $'b\\\noard-move.sh 14 done'; do
   run_hook bash.json "$c"
   assert_blocked "continuation-and-multiline: $c" "Human QA"
-done
-for c in $'gh api graphql -f query=\'\n mutation {\n updateProjectV2ItemFieldValue(input:{}) { clientMutationId }\n}\'' \
-         "gh api graphql -f query='mutation(\$id:ID!){updateProjectV2ItemFieldValue(input:{})}'" \
-         $'gh api \\\n -X POST repos/acme/toy/issues/14/labels -f labels[]=fleet:done'; do
-  run_hook bash.json "$c"
-  assert_blocked "continuation-and-multiline: $c" "bypass the board adapter"
 done
 for c in $'gh api graphql -f query=\'\n mutation {\n mergePullRequest(input:{}) { clientMutationId }\n}\'' \
          $'gh api -X PUT \\\n repos/acme/toy/pulls/5/merge' \
@@ -602,7 +564,7 @@ for c in $'gh api graphql -f query=\'\n mutation {\n mergePullRequest(input:{}) 
   run_hook bash.json "$c"
   assert_blocked "continuation-and-multiline: $c" "merge.policy is human"
 done
-setup_case labels-auto
+setup_case auto
 { pr_routes; current_branch_green; } > "$ROUTES"
 run_hook bash.json $'gh pr merge \\\n 5'
 assert_blocked "continuation-and-multiline: auto merge ARG on the next line" "not green"
@@ -611,19 +573,18 @@ assert_stderr_contains "continuation-and-multiline: names PR #5" "PR #5"
 # C2 substitution-keeps-arguments: a command substitution stands in for an
 # argument (and the hook cannot know its value); it must not drop the
 # arguments after it, and its own text is still checked
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in 'board-move.sh $(echo 14) done' \
          'board-move.sh `echo 14` done' \
          'board-move.sh 14 $(echo done)' \
-         'board-move.sh "$(echo 14)" done' \
-         'gh issue edit $(echo 14) --remove-label fleet:human_qa'; do
+         'board-move.sh "$(echo 14)" done'; do
   run_hook bash.json "$c"
   assert_blocked "substitution-keeps-arguments: $c" "blocking to be safe"
 done
 run_hook bash.json 'echo "$(gh pr merge 4)"'
 assert_blocked "substitution-keeps-arguments: shape inside a substitution" "merge.policy is human"
-setup_case labels-auto
+setup_case auto
 { pr_routes; current_branch_green; } > "$ROUTES"
 run_hook bash.json 'gh pr merge `echo 5`'
 assert_blocked "substitution-keeps-arguments: auto merge ARG from backquotes" "blocking to be safe"
@@ -631,7 +592,7 @@ run_hook bash.json 'gh pr merge $(echo 5)'
 assert_blocked "substitution-keeps-arguments: auto merge ARG from \$()" "blocking to be safe"
 
 # C3 repo-flag-before-verb: gh accepts -R between the group word and the verb
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in "gh pr -R acme/toy merge 4" \
          "gh pr --repo=acme/toy merge 4" \
@@ -640,33 +601,15 @@ for c in "gh pr -R acme/toy merge 4" \
   run_hook bash.json "$c"
   assert_blocked "repo-flag-before-verb: $c" "merge.policy is human"
 done
-run_hook bash.json "gh issue -R acme/toy edit 14 --remove-label fleet:human_qa"
-assert_blocked "repo-flag-before-verb: issue -R X edit" "Human QA"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh pr -R other/repo merge 4"
 assert_log_has "repo-flag-before-verb: the repo reaches pr view" "pr view 4 -R other/repo --json"
 assert_silent_allow "repo-flag-before-verb: auto, green PR in other/repo"
 
-# C4 variable-label-values: a label the hook cannot read counts as a state label
-setup_case labels-human
-card_routes > "$ROUTES"
-for c in 'gh issue edit 14 --remove-label $L' \
-         'P=fleet; gh issue edit 14 --remove-label $P:human_qa' \
-         'gh issue edit 14 --add-label=$L' \
-         'gh issue edit 14 --remove-label "$(printf fleet:human_qa)"'; do
-  run_hook bash.json "$c"
-  assert_blocked "variable-label-values: $c" "Human QA"
-done
-run_hook bash.json 'gh issue edit $N --remove-label $L'
-assert_blocked "variable-label-values: unknown card too" "blocking to be safe"
-run_hook bash.json 'gh issue edit 12 --remove-label $L'
-assert_silent_allow "variable-label-values: card 12 is not in Human QA"
-assert_log_has "variable-label-values: card 12 was read" "api repos/acme/toy/issues/12"
-
 # Shapes the old tokenizer mis-read: a redirection is not an argument, and a
 # brace expansion or glob in the card number can expand to a real number
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in 'board-move.sh >/dev/null 14 done' \
          'board-move.sh 2>&1 14 done' \
@@ -684,7 +627,7 @@ done
 
 # I1 merge-needs-explicit-pr: under auto, a merge without ARG would check
 # whatever PR the hook's cwd resolves to, not the one the command merges
-setup_case labels-auto
+setup_case auto
 { pr_routes; current_branch_green; } > "$ROUTES"
 for c in "gh pr merge" \
          "gh pr merge --squash --delete-branch" \
@@ -697,12 +640,11 @@ done
 assert_log_lacks "merge-needs-explicit-pr: no pr view" "pr view"
 
 # I2 gh-repo-env: GH_REPO/GH_HOST in the command change the repo gh acts on
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 for c in "GH_REPO=evil/repo gh pr merge 4" \
          "export GH_REPO=evil/repo; gh pr merge 4" \
-         "env GH_HOST=evil.example gh pr merge 4" \
-         "GH_REPO=evil/repo gh issue edit 14 --add-label bug"; do
+         "env GH_HOST=evil.example gh pr merge 4"; do
   run_hook bash.json "$c"
   assert_blocked "gh-repo-env: $c" "GH_REPO/GH_HOST in the command; blocking to be safe"
 done
@@ -710,7 +652,7 @@ assert_log_lacks "gh-repo-env: no pr view" "pr view"
 
 # config-env-in-command: FLEET_BOARD_CONFIG, GIT_DIR and GIT_WORK_TREE change
 # which config applies, so a no-config cwd does not make the command inert
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -724,7 +666,7 @@ assert_silent_allow "config-env-in-command: GH_REPO in a no-config cwd is inert,
 
 # I3 cd-target-decides-config: the hook evaluates a command in the directory
 # it will run in
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 mkdir -p "$CFG_REPO/sub"
@@ -783,7 +725,7 @@ for c in "(cd $NOCFG && true); gh pr merge 4" \
 done
 
 # M6 missing-cwd: a payload cwd that does not exist gets its own reason
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 RUN_CWD=/nonexistent-fleet-gate-cwd
 run_hook bash.json "gh pr merge 4"
@@ -795,7 +737,7 @@ assert_silent_allow "missing-cwd: ls -la"
 # (past it the call proceeds), whatever the command's size, and a stalled
 # lookup blocks
 WORDS="$(awk 'BEGIN { for (i = 1; i <= 10000; i++) printf "w%d ", i }')"
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 # An ordinary command full of quotes takes the fast path, and fast
 run_hook bash.json "printf '%s\\n' $(awk 'BEGIN { for (i = 1; i <= 8000; i++) printf "\"w%d\" '"'"'x'"'"' ", i }') > notes.txt"
@@ -807,19 +749,16 @@ assert_fast "bounded-time: 10000 unquoted words: fast" 15
 run_hook bash.json "gh pr merge 4 --body \"$WORDS\""
 assert_blocked "bounded-time: 10000 quoted words" "merge.policy is human"
 assert_fast "bounded-time: 10000 quoted words: fast" 15
-run_hook bash.json "gh issue edit 14 --body \"$WORDS\" --remove-label fleet:human_qa"
-assert_blocked "bounded-time: 10000-word body on an issue edit" "Human QA"
-assert_fast "bounded-time: 10000-word body on an issue edit: fast" 15
 run_hook bash.json "gh pr merge 4 # $(awk 'BEGIN { for (i = 0; i < 70000; i++) printf "x" }')"
 assert_blocked "bounded-time: over 64 KiB" "too long to check"
 assert_fast "bounded-time: over 64 KiB: fast" 15
 run_hook bash.json "$(awk 'BEGIN { for (i = 0; i < 40; i++) printf "echo $("; printf "gh pr merge 4"; for (i = 0; i < 40; i++) printf ")" }')"
 assert_blocked "bounded-time: nesting too deep" "nests too deeply"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "$(awk 'BEGIN { for (i = 0; i < 33; i++) printf "gh pr merge 4; " }')"
 assert_blocked "bounded-time: too many shapes" "too many"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 stall_gh "pr view*" 6
 # 2 s: $SECONDS counts whole seconds, so a 1 s budget can be spent before the lookup starts
@@ -828,68 +767,28 @@ run_hook bash.json "gh pr merge 4"
 assert_blocked "bounded-time: stalled pr view" "could not verify PR 4"
 assert_fast "bounded-time: stalled pr view: fast" 15
 assert_log_has "bounded-time: the pr view was made" "pr view 4 --json"
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
-stall_gh "api repos/acme/toy/issues/14" 6
+stall_read 6
 export FLEET_BOARD_GATE_TIMEOUT=2
 run_hook bash.json "board-move.sh 14 done"
 assert_blocked "bounded-time: stalled card read" "could not verify card #14"
 assert_fast "bounded-time: stalled card read: fast" 15
 unset FLEET_BOARD_GATE_TIMEOUT
 
-# I5 label-case: GitHub label names are case-insensitive
-setup_case labels-human
-card_routes > "$ROUTES"
-run_hook bash.json "gh issue edit 14 --remove-label FLEET:HUMAN_QA"
-assert_blocked "label-case: FLEET:HUMAN_QA" "Human QA"
-
 # I6 more-raw-writes: other writes that change a card's state or merge
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
-for c in "gh api graphql -f query='mutation{updateIssue(input:{id:\"I_1\",labelIds:[\"L_1\"]}){issue{id}}}'" \
-         "gh api -X PATCH repos/acme/toy/labels/fleet:human_qa -f new_name=x" \
-         "gh api -X DELETE repos/acme/toy/labels/fleet:done"; do
-  run_hook bash.json "$c"
-  assert_blocked "more-raw-writes: $c" "bypass the board adapter"
-done
-for c in "gh label edit fleet:human_qa --name fleet:qa_old" \
-         "gh label delete FLEET:HUMAN_QA --yes" \
-         "gh label edit bug --name fleet:done" \
-         'gh label edit $L --name x'; do
-  run_hook bash.json "$c"
-  assert_blocked "more-raw-writes: $c" "state label"
-done
-for c in "gh label edit bug --color ff0000" "gh api repos/acme/toy/labels"; do
-  run_hook bash.json "$c"
-  assert_silent_allow "more-raw-writes: allowed: $c"
-done
 run_hook bash.json "gh api -X POST repos/acme/toy/merges -f base=main -f head=feature"
 assert_blocked "more-raw-writes: merges endpoint under human" "merge.policy is human"
-run_hook bash.json "FLEET_ROOT=. bash plugins/fleet-board/scripts/adapters/github-labels/move.sh 14 done"
+run_hook bash.json "FLEET_ROOT=. bash plugins/fleet-board/scripts/adapters/local/move.sh 14 done"
 assert_blocked "more-raw-writes: an adapter's move.sh" "Human QA"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json "gh api -X POST repos/acme/toy/merges -f base=main -f head=feature"
 assert_blocked "more-raw-writes: merges endpoint under auto" "use gh pr merge"
-setup_case hmb
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-api graphql*	0	$FIXTURES/pr/item-status-qa.json
-ROUTESEOF
-card_routes; } > "$ROUTES"
-for c in "gh project item-archive 1 --owner acme --id PVTI_14" \
-         "gh project item-delete 1 --owner acme --id PVTI_14"; do
-  run_hook bash.json "$c"
-  assert_blocked "more-raw-writes: $c" "project item PVTI_14 is in Human QA"
-done
-for c in 'gh project item-edit --id $ID --project-id P --field-id F --single-select-option-id O' \
-         "gh project item-edit --project-id P --field-id F --single-select-option-id O"; do
-  run_hook bash.json "$c"
-  assert_blocked "more-raw-writes: unknown item: $c" "could not verify project item"
-done
-
 # I7 lookup-failures-fail-closed: every unreadable answer blocks
-setup_case labels-auto
+setup_case auto
 { printf 'pr view 7 --json*\t1\t-\n'
   printf 'pr view 8 --json*\t0\t%s\n' "$FIXTURES/projects/auth-status-ok.txt"
   printf 'pr view 9 --json*\t0\t%s\n' "$FIXTURES/pr/pr-9-no-isdraft.json"
@@ -910,18 +809,8 @@ for n in 10 11 13; do
   run_hook bash.json "gh pr merge $n"
   assert_blocked "lookup-failures-fail-closed: pending checks on PR $n" "PR #$n checks are not green"
 done
-setup_case hmb
-{ printf 'auth status\t0\t%s\n' "$FIXTURES/projects/auth-status-ok.txt"
-  printf 'api graphql*\t1\t-\n'; card_routes; } > "$ROUTES"
-run_hook bash.json "$ITEM_EDIT"
-assert_blocked "lookup-failures-fail-closed: item status query exits 1" "could not verify project item PVTI_14; blocking to be safe"
-setup_case hmb
-{ printf 'auth status\t0\t%s\n' "$FIXTURES/projects/auth-status-ok.txt"
-  printf 'api graphql*\t0\t%s\n' "$FIXTURES/pr/item-status-null.json"; card_routes; } > "$ROUTES"
-run_hook bash.json "$ITEM_EDIT"
-assert_blocked "lookup-failures-fail-closed: item node is null" "could not verify project item PVTI_14; blocking to be safe"
 for mode in fail empty; do
-  setup_case labels-human
+  setup_case human
   card_routes > "$ROUTES"
   jq_fault "$mode"
   run_hook bash.json "gh pr merge 4"
@@ -930,7 +819,7 @@ done
 
 # M3 no-jq-or-bad-payload: without jq, or with a payload that is not JSON,
 # there is no Bash command to read; the hook stays silent (exit 0)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 NOJQ_BIN="$(mktemp -d)"; CLEANUP_DIRS+=("$NOJQ_BIN")
 ln -s "$(command -v cat)" "$NOJQ_BIN/cat"
@@ -944,7 +833,7 @@ LAST_ERR="$(cat "$tmperr")"; rm -f "$tmperr"
 assert_silent_allow "no-jq-or-bad-payload: payload is not JSON"
 
 # M5 obfuscated-command-word: forms that name gh without writing gh
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in "\$'\\x67h' pr merge 5" \
          'G=gh; $G pr merge 5' \
@@ -963,15 +852,6 @@ done
 # ---------------------------------------------------------------------------
 # Review cycle 1 re-check: holes left in the cycle 1 fixes
 
-# empty-argument-keeps-position: "" and '' are words; dropping them lets a
-# flag take the next word as its value and hides the flag after it
-setup_case labels-human
-card_routes > "$ROUTES"
-for c in 'gh issue edit 14 --title "" --remove-label fleet:human_qa' \
-         "gh issue edit 14 --body '' --add-label fleet:done"; do
-  run_hook bash.json "$c"
-  assert_blocked "empty-argument-keeps-position: $c" "card #14 is in Human QA"
-done
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
 HOME_SAVE="$HOME"
@@ -980,7 +860,7 @@ HOME="$NOCFG"
 run_hook bash.json 'cd "" && gh pr merge 4'
 assert_blocked "empty-argument-keeps-position: cd \"\" stays in the board repo" "merge.policy is human"
 HOME="$HOME_SAVE"
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json 'gh pr merge --subject "" 5'
 assert_blocked "empty-argument-keeps-position: merge --subject \"\" 5" "PR #5 checks are not green"
@@ -988,7 +868,7 @@ assert_blocked "empty-argument-keeps-position: merge --subject \"\" 5" "PR #5 ch
 # conditional-cd-keeps-old-directory: a cd inside if/while/until/for/select,
 # a { } group or a function body may not run, so the old directory stays
 # possible; after the compound command closes, a cd is definite again
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
 HOME_SAVE="$HOME"
@@ -1019,7 +899,7 @@ assert_no_calls "conditional-cd-keeps-old-directory: nothing read after a defini
 
 # cd-environment-in-command: CDPATH and HOME in the command change where a
 # relative, bare or ~ cd goes, so the hook cannot tell the directory
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1040,7 +920,7 @@ HOME="$HOME_SAVE"
 RUN_CWD=""
 
 # substitution-in-parameter-expansion: ${x:-$(...)} runs the substitution
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in 'echo ${x:-$(gh pr merge 4)}' \
          'echo ${x:-`gh pr merge 4`}' \
@@ -1053,7 +933,7 @@ assert_blocked "substitution-in-parameter-expansion: board-move" "card #14 is in
 
 # pattern-command-word: a glob or brace in the command word can expand to gh
 # or board-move.sh
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in '/usr/bin/g? pr merge 4' 'g[h] pr merge 4' '{gh,} pr merge 4'; do
   run_hook bash.json "$c"
@@ -1068,7 +948,7 @@ assert_silent_allow "pattern-command-word: a glob argument is not a command word
 # Review cycle 1 re-check, part 2: holes found while fixing the five above
 
 # a directory really named "" is not an empty word: cd '""' goes there
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1079,14 +959,14 @@ assert_blocked "empty-argument-keeps-position: cd '\"\"' is a directory named \"
 RUN_CWD=""
 
 # gh pr merge "" is a merge of the current branch's PR, like no ARG
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 run_hook bash.json 'gh pr merge "" --squash'
 assert_blocked "empty-argument-keeps-position: gh pr merge \"\"" "name the PR explicitly"
 
 # pattern-command-word: a brace or bracket that splits the keyword, so the
 # text never spells board-move or move.sh
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in 'bash scripts/board-{m,}ove.sh 14 done' 'bash scripts/board-mo[v]e.sh 14 done'; do
   run_hook bash.json "$c"
@@ -1095,9 +975,9 @@ done
 
 # pattern-command-word: a glob that cannot expand to a gated command word is
 # an ordinary command (the invalid-config sentinel is never read)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
-export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/bad-backend.yml"
+export FLEET_BOARD_CONFIG="$CONFIG_FIXTURES/removed-backend-key.yml"
 for c in 'ls *.md && [ -f x ] && echo {a,b}.txt' 'ls scripts/*.sh tests/*.sh' 'wc -l *.sh *.md'; do
   run_hook bash.json "$c"
   assert_silent_allow "pattern-command-word: ordinary globs: $c"
@@ -1111,7 +991,7 @@ assert_blocked "pattern-command-word: board-mov?.sh ? done" "could not verify ca
 
 # pattern-command-word: board-move reached through a substitution or a
 # variable in the command word, with a card number
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in '"$(command -v board-move.sh)" 14 done' '${D}board-mov?.sh 14 done' '`which board-move.sh` 14 done'; do
   run_hook bash.json "$c"
@@ -1121,7 +1001,7 @@ done
 # word-in-pieces-is-a-script: a word written in pieces (escaped blanks,
 # adjacent quoted parts) is one script for bash -c or sh; lexing the pieces
 # alone misses the command or the cd before it
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1140,7 +1020,7 @@ RUN_CWD=""
 # compound-closer-must-be-real: only a real, unquoted closer ends an if/while/
 # case/{ } in the hook's reading, so a cd after a word that merely looks like
 # one is still conditional (the old directory stays possible)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
 for c in "if false; then \"fi\"; cd $NOCFG; fi; gh pr merge 4" \
@@ -1157,7 +1037,7 @@ done
 
 # compound-closer-must-be-real: a comment, here-document or [[ spelled with
 # $'...' escapes is a comment for the bash -c that runs it
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
 for c in "bash -c \$'if false; then : \\x23 ; fi\\ncd $NOCFG; fi; gh pr merge 4'" \
@@ -1169,7 +1049,7 @@ done
 # repeated-cd: a relative cd in a loop, or anywhere once a function is
 # defined, can run any number of times; a function or trap body runs later,
 # after the cds that follow it. The directory is unknown.
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1189,7 +1069,7 @@ RUN_CWD=""
 
 # cd-command-word: cd reached through a prefix the hook must skip, or through
 # a command word it cannot read
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1218,7 +1098,7 @@ RUN_CWD=""
 # possible-directories-are-bounded: each cd that may or may not run doubles
 # the possible directories; past a limit the hook blocks at once instead of
 # running into the 60 s hook timeout (past which the call would proceed)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
 mkdir -p "$NOCFG/a"
@@ -1233,7 +1113,7 @@ HOOK_LIMIT=""
 
 # cd-environment-outside-command: CDPATH from the session, HOME unset, and
 # BASH_ENV (a file bash runs first, which may cd)
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1255,7 +1135,7 @@ RUN_CWD=""
 
 # cd-environment-in-command: HOME set under a name the hook cannot read, or
 # spelled with $'...'
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 CFG_REPO="$REPO"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
@@ -1272,7 +1152,7 @@ RUN_CWD=""
 
 # cd-environment-in-command: a value the hook cannot read is not a name, so
 # export PATH="$PATH:..." and printf "$x" do not make a relative cd unknown
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 NOCFG="$(mktemp -d)"; CLEANUP_DIRS+=("$NOCFG")
 mkdir -p "$NOCFG/sub"
@@ -1285,7 +1165,7 @@ RUN_CWD=""
 
 # default-value-as-command: the text of ${x:-...} is a command when the
 # expansion is a command word or a bash -c script
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in 'echo; ${x:-gh pr merge 4}' 'bash -c "${x:-gh pr merge 4}"' 'eval ${x:+board-move.sh 14 done}'; do
   run_hook bash.json "$c"
@@ -1294,9 +1174,9 @@ done
 
 # ---------------------------------------------------------------------------
 # Review cycle 2
-# xargs-supplies-move-and-label-words: xargs may supply the card, the state or
-# the label name, so the hook cannot read them
-setup_case labels-human
+# xargs-supplies-move-and-label-words: xargs may supply the card or the state,
+# so the hook cannot read them
+setup_case human
 card_routes > "$ROUTES"
 for c in 'echo 14 | xargs -I% board-move.sh % done' \
          'xargs -I CARD board-move.sh CARD done' \
@@ -1306,27 +1186,12 @@ for c in 'echo 14 | xargs -I% board-move.sh % done' \
   run_hook bash.json "$c"
   assert_blocked "xargs-supplies-move-and-label-words: $c" "could not verify"
 done
-for c in 'echo fleet:human_qa | xargs gh label delete' \
-         'xargs -I% gh label edit % --name x' \
-         'gh label list | xargs -n1 gh label delete --yes'; do
-  run_hook bash.json "$c"
-  assert_blocked "xargs-supplies-move-and-label-words: $c" "state label"
-done
 run_hook bash.json 'echo x | xargs -I% board-move.sh 14 human_qa'
 assert_blocked "xargs-supplies-move-and-label-words: even a literal card and state" "could not verify"
 
-# xargs-supplies-issue-edit-words: the label or the flag comes from xargs
-setup_case labels-human
-card_routes > "$ROUTES"
-for c in 'echo fleet:human_qa | xargs gh issue edit 14 --remove-label' \
-         'xargs gh issue edit 14 <<< "--remove-label fleet:human_qa"'; do
-  run_hook bash.json "$c"
-  assert_blocked "xargs-supplies-issue-edit-words: $c" "could not verify the card gh issue edit changes"
-done
-
 # xargs-supplies-merge-words: under auto, xargs may name or append the PR,
 # so the PR the hook would check is not the PR that gets merged
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 for c in 'echo 14 | xargs -I 4 gh pr merge 4' \
          'echo --admin | xargs gh pr merge 4' \
@@ -1334,13 +1199,13 @@ for c in 'echo 14 | xargs -I 4 gh pr merge 4' \
   run_hook bash.json "$c"
   assert_blocked "xargs-supplies-merge-words: $c" "under xargs"
 done
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook bash.json 'echo 14 | xargs -I 4 gh pr merge 4'
 assert_blocked "xargs-supplies-merge-words: human policy keeps its reason" "merge.policy is human"
 
 # missing-cwd: a payload without an absolute cwd cannot place a gated command
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for e in 'del(.cwd)' '.cwd=null' '.cwd="."' '.cwd="sub"'; do
   PAYLOAD_EDIT="$e"
@@ -1360,7 +1225,7 @@ unset PAYLOAD_EDIT
 # of a 50 s budget: a lookup stalled for 6 s times out at once, where a 999 s
 # budget would wait for it and let the merge through.
 SECS_BASH="$(mktemp -d)"; CLEANUP_DIRS+=("$SECS_BASH")
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 stall_gh "pr view*" 6
 for v in "999 48" "59 48" "99999999999999999999 48" "abc 43" "0 43"; do
@@ -1375,7 +1240,7 @@ for v in "999 48" "59 48" "99999999999999999999 48" "abc 43" "0 43"; do
 done
 # a leading zero is not octal: 08 once made the budget arithmetic fail and
 # the hook exit 0 before any check
-setup_case labels-auto
+setup_case auto
 pr_routes > "$ROUTES"
 export FLEET_BOARD_GATE_TIMEOUT=08
 run_hook bash.json "gh pr merge 5"
@@ -1385,7 +1250,7 @@ unset FLEET_BOARD_GATE_TIMEOUT
 # heredoc-body-opaque: the body of a quoted-delimiter here-document is text, not
 # commands. Words in it (HOME=, cd .., a stray backtick) once set the cwd-unknown
 # flags and failed the command closed; an absolute cd after it sets the cwd.
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 run_hook bash.json "$(sed "s|__REPO__|$REPO|" "$HOOK_FIXTURES/heredoc-cards-then-cd.sh")"
 assert_silent_allow "heredoc-body-opaque: heredocs, then an absolute cd and a ready move"
@@ -1583,63 +1448,10 @@ for pre in 'echo ${BASH_CMDS[cat]:=/bin/bash}' 'echo "${BASH_CMDS[cat]:=/bin/bas
   assert_blocked "heredoc-param-assign: $pre" "merge.policy"
 done
 
-# ---------------------------------------------------------------------------
-# cards.sh: the helper the gate recognizes (create | add | move)
-setup_case labels-human
-card_routes > "$ROUTES"
-for c in "bash scripts/cards.sh move 12 ready" \
-         "scripts/cards.sh move 13 backlog" \
-         "bash scripts/cards.sh create 'New card' body.md --label bug" \
-         "bash scripts/cards.sh create 'New card' body.md --repo acme/toy" \
-         "bash scripts/cards.sh add 12" \
-         "bash scripts/cards.sh add 12 --repo=acme/toy"; do
-  run_hook bash.json "$c"
-  assert_silent_allow "cards-helper: allowed: $c"
-done
-for c in "bash scripts/cards.sh move 14 done" \
-         "bash scripts/cards.sh move 14 ready" \
-         "bash scripts/cards.sh add 14" \
-         "cards.sh move 14 backlog"; do
-  run_hook bash.json "$c"
-  assert_blocked "cards-helper: out of Human QA: $c" "Human QA"
-done
-run_hook bash.json "bash scripts/cards.sh move 13 ready"
-assert_blocked "cards-helper: ready needs Acceptance" "no '## Acceptance' section"
-run_hook bash.json "bash scripts/cards.sh move 14 human_qa"
-assert_silent_allow "cards-helper: a move into human_qa is allowed"
-for c in "bash scripts/cards.sh create T body.md --repo other/repo" \
-         "bash scripts/cards.sh add 12 --repo other/repo" \
-         "bash scripts/cards.sh add 12 -R other/repo" \
-         'bash scripts/cards.sh create T body.md --repo "$R"'; do
-  run_hook bash.json "$c"
-  assert_blocked "cards-helper: another repo is refused: $c" "repo"
-done
-# a loop over a visible list is allowed through cards.sh
-for c in 'for n in 12 13; do bash scripts/cards.sh move $n backlog; done' \
-         'for n in 12 13; do bash scripts/cards.sh add $n; done' \
-         'while read -r n; do bash scripts/cards.sh move "$n" backlog; done < ids.txt'; do
-  run_hook bash.json "$c"
-  assert_silent_allow "cards-helper: loop allowed: $c"
-done
-run_hook bash.json 'for n in 14; do bash scripts/cards.sh move 14 done; done'
-assert_blocked "cards-helper: a literal card in QA is refused inside a loop" "Human QA"
-
-# the same work through gh project item-edit with a variable item id is refused
-setup_case hmb
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-api graphql*	0	$FIXTURES/pr/item-status-qa.json
-ROUTESEOF
-card_routes; } > "$ROUTES"
-run_hook bash.json 'for i in PVTI_1 PVTI_2; do gh project item-edit --id $i --project-id P --field-id F --single-select-option-id O; done'
-assert_blocked "cards-helper: item-edit loop with a variable id is refused" "could not verify project item"
-run_hook bash.json 'for n in 12 13; do bash scripts/cards.sh move $n backlog; done'
-assert_silent_allow "cards-helper: the same loop through cards.sh is allowed"
-
 # The compound command from the card: cd, a heredoc, git commit and gh pr
 # create. None of its commands is gated, so the gate allows it, silently,
 # without reading the directory the cd goes to.
-setup_case labels-auto
+setup_case auto
 card_routes > "$ROUTES"
 pr_routes >> "$ROUTES"
 mkdir -p "$REPO/sub"
@@ -1664,7 +1476,7 @@ case "$HOOK_CMD" in
   *'"${CLAUDE_PLUGIN_ROOT}/hooks/gate.sh"'*) pass "hooks.json: the gate path is double-quoted" ;;
   *) fail "hooks.json: the gate path is double-quoted" "command is: $HOOK_CMD" ;;
 esac
-setup_case labels-human
+setup_case human
 SPACE_ROOT="$(mktemp -d)"
 CLEANUP_DIRS+=("$SPACE_ROOT")
 mkdir -p "$SPACE_ROOT/plugin cache"
@@ -1675,19 +1487,9 @@ LAST_EXIT=$?
 LAST_ERR="$(cat "$FAKE_GH_DIR/space.err")"
 assert_blocked "hooks.json: command blocks from a plugin root containing a space" "merge.policy"
 
-# docs/gates.md describes the cards.sh helper and the commands it replaces
-GATES_DOC="$SCRIPT_DIR/../docs/gates.md"
-for needle in 'cards.sh create' 'cards.sh add' 'cards.sh move' 'gh issue create' 'gh project item-add' 'gh project item-edit' 'board-move.sh'; do
-  if grep -qF -- "$needle" "$GATES_DOC"; then
-    pass "docs/gates.md: describes $needle"
-  else
-    fail "docs/gates.md: describes $needle" "not found in $GATES_DOC"
-  fi
-done
-
 # accept.sh now moves the card itself; the gate must still refuse an agent
 # moving a card out of Human QA (the accept move is a person's action).
-setup_case labels-human
+setup_case human
 card_routes > "$ROUTES"
 for c in "bash /x/scripts/board-move.sh 14 in_review" \
          "bash /x/scripts/board-move.sh 14 in_progress"; do
@@ -1704,7 +1506,7 @@ done
 # on card 12 whose last_review.sha is the pre-merge commit, PR 4 on that head.
 reviewed_head_case() {
   local kind="$1" b0 r m h dir
-  setup_case labels-auto
+  setup_case auto
   dir="$FAKE_GH_DIR/rh"; mkdir -p "$dir"
   git -C "$REPO" config user.email t@example.com; git -C "$REPO" config user.name T
   printf 'base\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt; git -C "$REPO" commit -q -m base
@@ -1716,6 +1518,8 @@ reviewed_head_case() {
   if [ "$kind" = conflict ]; then printf 'mainline\n' > "$REPO/f.txt"; else printf 'o\n' > "$REPO/g.txt"; git -C "$REPO" add g.txt; fi
   git -C "$REPO" commit -q -am "change on main"
   m="$(git -C "$REPO" rev-parse HEAD)"
+  # mainline is the base branch: publish it as origin/main, as GitHub would have it
+  git -C "$REPO" update-ref refs/remotes/origin/main "$m"
   git -C "$REPO" checkout -q fleet/12-add-subtract
   if [ "$kind" = clean ]; then
     git -C "$REPO" merge -q --no-edit -m "Merge branch 'main' into fleet/12-add-subtract" mainline
@@ -1734,9 +1538,11 @@ reviewed_head_case() {
       + ({state: "in_review", branch: "fleet/12-add-subtract", pr: 4, round: 1,
           last_review: {round: 1, sha: $r, critical: 0, important: 0, findings: []}} | tojson)
       + "\n```\n"), created_at: "2026-09-28T00:01:00Z"}]' > "$dir/comments.json"
+  # the note is a comment on the local card 12, by the local login
+  jq --slurpfile cs "$dir/comments.json" '.comments = [$cs[0][] | {id, author: .user.login, body, created_at}] | .next_comment_id = 556' \
+    "$REPO/.fleet-board/cards/12.json" > "$dir/c12.json" && mv "$dir/c12.json" "$REPO/.fleet-board/cards/12.json"
   {
-    card_routes | grep -v 'issues/\*/comments'
-    printf 'api --paginate repos/acme/toy/issues/*/comments\t0\t%s/comments.json\n' "$dir"
+    card_routes
     printf 'pr view 4 --json headRefName,headRefOid\t0\t%s/head.json\n' "$dir"
     printf 'api repos/acme/toy/compare/%s...%s\t0\t%s/compare.json\n' "$r" "$h" "$dir"
     pr_routes
@@ -1752,10 +1558,8 @@ run_hook bash.json "gh pr merge 4 --squash"
 assert_silent_allow "merge-only-reviewed: gh pr merge allowed for a clean merge of main after last_review"
 
 # ---------------------------------------------------------------------------
-# review stage columns under the existing rules. The gate's state list comes
-# from the config (STATE_NAMES), so a stage's label is a state label only with
-# the stages config: label edits on the human_qa card 14 prove it (G1), and a
-# routing label (needs-security-review) is no state.
+# review stage columns under the existing rules: a move to a stage column is
+# an ordinary move (G1 still holds for the human_qa card 14).
 setup_case stages
 card_routes > "$ROUTES"
 # gate_move never checks the target name; card 12 is ready in the fixture
@@ -1763,14 +1567,150 @@ run_hook bash.json "board-move.sh 12 review_security"
 assert_silent_allow "stage-move: board-move.sh 12 (ready) review_security"
 run_hook bash.json "board-move.sh 14 review_security"
 assert_blocked "stage-move: board-move.sh 14 review_security from human_qa" "Human QA"
-run_hook bash.json "gh issue edit 14 --add-label fleet:review_security"
-assert_blocked "stage-label: add fleet:review_security on the human_qa card" "Human QA"
-run_hook bash.json "gh issue edit 14 --add-label needs-security-review"
-assert_silent_allow "stage-label: routing label needs-security-review is no state move"
-run_hook bash.json "gh label delete fleet:review_security"
-assert_blocked "stage-label: deleting fleet:review_security" "state label"
-run_hook bash.json "gh label delete needs-security-review"
-assert_silent_allow "stage-label: deleting a routing label"
+# ---------------------------------------------------------------------------
+# no-closing-keyword: under auto, a fleet PR (head fleet/<n>-*) whose title,
+# body or a commit message holds a GitHub closing keyword before an issue
+# reference is not merged (card numbers are not GitHub numbers); a PR on
+# another branch is not checked; an unreadable PR blocks.
+# closing_pr <pr> <branch> <title> <body> [<headline> <commit body>]: PR <pr>,
+# green and not a draft, with that head branch, title, body and commits.
+closing_pr() {
+  local p="$1" b="$2" t="$3" body="$4" c='[]'
+  [ $# -ge 6 ] && c="$(jq -cn --arg h "$5" --arg m "$6" '[{oid: "abc1234def", messageHeadline: $h, messageBody: $m}]')"
+  jq -n --argjson n "$p" --arg b "$b" --arg t "$t" --arg body "$body" --argjson c "$c" \
+    '{number: $n, isDraft: false, statusCheckRollup: [{conclusion: "SUCCESS"}], headRefName: $b, headRefOid: "abc1234def",
+      title: $t, body: $body, commits: $c}' > "$FAKE_GH_DIR/pr-$p.json"
+  printf 'pr view %s --json*\t0\t%s/pr-%s.json\n' "$p" "$FAKE_GH_DIR" "$p" >> "$ROUTES"
+  printf 'pr view %s -R acme/toy --json*\t0\t%s/pr-%s.json\n' "$p" "$FAKE_GH_DIR" "$p" >> "$ROUTES"
+}
+setup_case auto
+card_routes > "$ROUTES"
+closing_pr 40 fleet/12-add-subtract "Add subtract" "Local board card 12" "feat: subtract" "Local board card 12"
+closing_pr 41 fleet/12-add-subtract "Add subtract" "Summary. Closes #253"
+closing_pr 42 fleet/12-add-subtract "Closes #253" "Local board card 12"
+closing_pr 43 fleet/12-add-subtract "Add subtract" "Local board card 12" "feat: subtract" "Fixes owner/repo#4"
+closing_pr 44 feature/by-hand "Add subtract" "Fixes #3"
+closing_pr 45 fleet/12-add-subtract "Add subtract" "Local board card 12"
+jq 'del(.commits)' "$FAKE_GH_DIR/pr-45.json" > "$FAKE_GH_DIR/pr-45.tmp" && mv "$FAKE_GH_DIR/pr-45.tmp" "$FAKE_GH_DIR/pr-45.json"
+run_hook bash.json "gh pr merge 40 --squash"
+assert_silent_allow "no-closing-keyword: a clean fleet PR merges"
+assert_log_has "no-closing-keyword: title, body and commits were read" "pr view 40 --json headRefName,title,body,commits"
+run_hook bash.json "gh pr merge 41 --squash"
+assert_blocked "no-closing-keyword: a closing keyword in the body blocks" "closing keyword"
+assert_stderr_contains "no-closing-keyword: names PR #41" "PR #41"
+assert_stderr_contains "no-closing-keyword: quotes the offending text" "Closes #253"
+run_hook bash.json "gh pr merge 42 --squash"
+assert_blocked "no-closing-keyword: a closing keyword in the title blocks" "closing keyword"
+run_hook bash.json "gh pr merge 43 --repo acme/toy --squash"
+assert_blocked "no-closing-keyword: a closing keyword in a commit message blocks" "closing keyword"
+assert_log_has "no-closing-keyword: the lookup carries the repo" "pr view 43 -R acme/toy --json headRefName,title,body,commits"
+run_hook bash.json "gh pr merge 44 --squash"
+assert_silent_allow "no-closing-keyword: a PR on a non-fleet branch is not checked"
+run_hook bash.json "gh pr merge 45 --squash"
+assert_blocked "no-closing-keyword: a fleet PR whose commits cannot be read blocks" "could not verify"
+
+# ---------------------------------------------------------------------------
+# merge.ignore_checks: the gate lets a merge through a red check an unexpired
+# entry names; pending, expired and unnamed red checks still block
+ignore_cfg() { # ignore_cfg <until-lint> <until-legacy>
+  cat > "$REPO/.fleet-board.yml" << YML
+board:
+  repo: acme/toy
+merge:
+  policy: auto
+  ignore_checks:
+    - name: "lint-*"
+      reason: "docs lint is flaky"
+      until: $1
+    - name: "ci/legacy-?int"
+      reason: "legacy status"
+      until: $2
+worktrees:
+  dir: .fw
+YML
+}
+ignore_routes() {
+  card_routes
+  for n in 14:ignored-red 15:ignored-pending 16:ignored-other-red 17:ignored-startup 18:ignored-weird \
+           19:ignored-noconclusion 20:ignored-nameless 21:ignored-red-named; do
+    printf 'pr view %s --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
+    printf 'pr view %s -R acme/toy --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
+  done
+}
+setup_case auto
+export FB_TEST_TODAY=2026-11-11
+ignore_cfg 2026-12-31 2026-11-11
+ignore_routes > "$ROUTES"
+run_hook bash.json "gh pr merge 14 --repo acme/toy --squash"
+assert_silent_allow "ignore_checks: merge past red checks named by unexpired entries"
+run_hook bash.json "gh pr merge 14 --squash"
+assert_silent_allow "ignore_checks: same without --repo"
+run_hook bash.json "gh pr merge 15 --squash"
+assert_blocked "ignore_checks: a pending ignored check still blocks" "PR #15 checks are not green"
+run_hook bash.json "gh pr merge 16 --squash"
+assert_blocked "ignore_checks: a red check no entry names still blocks" "PR #16 checks are not green"
+ignore_cfg 2026-12-31 2026-11-10
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: an expired entry no longer counts" "PR #14 checks are not green"
+ignore_cfg 2026-12-31 2026-11-11
+export FB_TEST_TODAY=2026-11-12
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: today comes from date (stubbed on PATH), valid through the until day only" "PR #14 checks are not green"
+export FB_TEST_TODAY=bogus
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: an unreadable today fails closed" "PR #14 checks are not green"
+export FB_TEST_TODAY=2026-11-12
+export FLEET_BOARD_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: the gate ignores FLEET_BOARD_TODAY" "PR #14 checks are not green"
+
+# pending: true lets the gate merge while a check the entry names is still running
+cat > "$REPO/.fleet-board.yml" << YML
+board:
+  repo: acme/toy
+merge:
+  policy: auto
+  ignore_checks:
+    - name: "lint-*"
+      reason: "CI is asynchronous"
+      until: 2026-12-31
+      pending: true
+worktrees:
+  dir: .fw
+YML
+export FB_TEST_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 15 --squash"
+assert_silent_allow "ignore_checks pending: true: merge while the named check is still running"
+run_hook bash.json "gh pr merge 16 --squash"
+assert_blocked "ignore_checks pending: true: a red check no entry names still blocks" "PR #16 checks are not green"
+export FB_TEST_TODAY=2027-01-01
+run_hook bash.json "gh pr merge 15 --squash"
+assert_blocked "ignore_checks pending: true: an expired entry no longer counts" "PR #15 checks are not green"
+export FB_TEST_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 21 --squash"
+assert_silent_allow "ignore_checks pending: true: the entry also covers a red check of the same name"
+
+# the check states are explicit sets: under a "*" entry with pending: true, STARTUP_FAILURE and
+# STALE merge as red; an unknown conclusion, COMPLETED with no conclusion and a nameless check never do
+star_cfg() { # star_cfg [pending]
+  { printf 'board:\n  repo: acme/toy\nmerge:\n  policy: auto\n  ignore_checks:\n'
+    printf '    - name: "*"\n      reason: "CI is asynchronous"\n      until: 2026-12-31\n'
+    [ "${1:-}" = pending ] && printf '      pending: true\n'
+    printf 'worktrees:\n  dir: .fw\n'; } > "$REPO/.fleet-board.yml"
+}
+star_cfg
+run_hook bash.json "gh pr merge 17 --squash"
+assert_silent_allow "check-states: a red-only * entry covers STARTUP_FAILURE and STALE"
+star_cfg pending
+run_hook bash.json "gh pr merge 17 --squash"
+assert_silent_allow "check-states: under pending: true, STARTUP_FAILURE and STALE merge as red"
+run_hook bash.json "gh pr merge 18 --squash"
+assert_blocked "check-states: an unknown conclusion never merges" "PR #18 checks are not green"
+run_hook bash.json "gh pr merge 19 --squash"
+assert_blocked "check-states: COMPLETED with a null conclusion never merges" "PR #19 checks are not green"
+run_hook bash.json "gh pr merge 20 --squash"
+assert_blocked "check-states: a red check with no name is never ignored" "PR #20 checks are not green"
+unset FLEET_BOARD_TODAY FB_TEST_TODAY
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

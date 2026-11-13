@@ -20,10 +20,12 @@
 #
 #   Clean-room files are every agents/*.md, plus skills/<name>/SKILL.md for
 #   each <name> in CLEAN_ROOM_SKILLS. The set lists the skills authored from a
-#   spec by an isolated author process: reporting (Phase 5); Phase 6 adds tick,
-#   run and status. skills/init is not in it: it was written directly in
-#   Phase 3, has no behavior spec, and is covered by checks 1 and 4 only. A
-#   listed skill that does not exist yet is reported as info, not a failure.
+#   spec by an isolated author process: reporting (Phase 5) and status (Phase
+#   6). The tick and run skills and the manager agent were removed with the
+#   tick system (supervisor Phase 7.2). skills/init is not in it: it was written
+#   directly in Phase 3, has no behavior spec, and is covered by checks 1 and 4
+#   only. A listed skill that does not exist yet is reported as info, not a
+#   failure.
 #   4. Every SKILL.md and agent file opens with frontmatter that has a
 #      non-empty name: and description:.
 #   5. Every *.sh under scripts/ and hooks/ is executable in git's index
@@ -33,7 +35,9 @@
 #      next to specs/README.md), and every clean-room file has a manifest
 #      line, so a hand edit fails. Skipped, and says so, when the specs
 #      directory is absent. A manifest note starting "exception:" names a file
-#      that is not a clean-room output; it is still hash-checked.
+#      that is not a clean-room output; it is still hash-checked. Every
+#      manifest line names a clean-room file that exists, so a removed
+#      primitive cannot leave a stale line behind.
 #
 # Usage: bash plugins/fleet-board/tests/test-clean-room.sh
 #        SPECS_DIR=<dir> bash plugins/fleet-board/tests/test-clean-room.sh
@@ -49,7 +53,7 @@ SPECS_DIR="${SPECS_DIR:-$PLUGIN_DIR/../../docs/implementation-plans/2026-09-28-f
 W="$(printf 'ed%s' 3d)"
 
 # Skills authored clean-room from a spec (see the header).
-CLEAN_ROOM_SKILLS="reporting tick run status"
+CLEAN_ROOM_SKILLS="reporting status"
 
 PASS=0
 FAIL=0
@@ -199,6 +203,20 @@ else
       fail "$rel: hash matches manifest" "manifest $want, file $got: clean-room files are never hand-edited; change the spec and re-author, then update the manifest"
     fi
   done
+  # every manifest line names a clean-room file that exists
+  CR_RELS=" "
+  for f in ${CR_FILES[@]+"${CR_FILES[@]}"}; do
+    CR_RELS="$CR_RELS${f#"$PLUGIN_DIR"/} "
+  done
+  while read -r _ mpath _; do
+    [ -n "$mpath" ] || continue
+    case "$CR_RELS" in
+      *" $mpath "*) pass "manifest line $mpath names a clean-room file" ;;
+      *) fail "manifest line $mpath names a clean-room file" "no such clean-room file; delete the stale line from $MANIFEST" ;;
+    esac
+  done <<EOF_MANIFEST
+$(awk '$1 !~ /^#/ && NF >= 2' "$MANIFEST")
+EOF_MANIFEST
 fi
 
 # 5. shipped shell scripts are executable in git's index

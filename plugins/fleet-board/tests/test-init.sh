@@ -212,7 +212,9 @@ setup_case() {
   # Reset environment between cases
   unset FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT FLEET_BOARD_CONFIG || true
   PATH="$BIN:$ORIG_PATH"
-  export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH
+  # init installs the fleet-board command: keep it out of the real ~/.local/bin
+  FLEET_BOARD_BIN_DIR="$FAKE_GH_DIR/userbin"
+  export FAKE_GH_DIR FAKE_GH_ROUTES="$ROUTES" PATH FLEET_BOARD_BIN_DIR
 
   # Run from a neutral directory, so a script that ignores --dir writes elsewhere
   cd "$FAKE_GH_DIR"
@@ -221,10 +223,13 @@ setup_case() {
   CLEANUP_DIRS+=("$FAKE_GH_DIR")
 }
 
-LABELS_CMD=(--backend github-labels --repo acme/toy --test-one "node --test {file}" --lint "npm run lint" --human-qa-path "src/ui/**")
-PROJ_CMD=(--backend github-projects --repo drothschild/HMBWorkout --project 1
+INIT_CMD=(--repo acme/toy --test-one "node --test {file}" --lint "npm run lint" --human-qa-path "src/ui/**")
+# the column names of HMB Workout's old Projects board
+STATES_CMD=(--repo drothschild/HMBWorkout
   --state "in_progress=In progress" --state "in_review=In review"
   --state "human_qa=Require Human Inteteraction" --state "wont_do=Won't Do")
+# what init leaves in the target on success: the config, the local store and .gitignore
+WRITTEN=".fleet-board .fleet-board.yml .gitignore "
 HEADER='# fleet-board config. See the fleet-board README.'
 
 echo "Test: init.sh"
@@ -243,10 +248,16 @@ NOYQ="$(mktemp -d)"; CLEANUP_DIRS+=("$NOYQ")
 for t in gh jq git; do ln -s "$(command -v $t)" "$NOYQ/$t"; done
 printf '#!/bin/sh\necho "yq must not be called" >&2; exit 99\n' > "$NOYQ/yq"; chmod +x "$NOYQ/yq"
 OLDPATH="$PATH"; PATH="$NOYQ:/usr/bin:/bin"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 PATH="$OLDPATH"
 assert_exit "no-yq: exit 0" 0
-assert_stderr_not_contains "no-yq: yq never named" "yq"
+# init also prints where it installed the fleet-board command, under a random temp
+# directory that can itself contain "yq": leave those path lines out of the check.
+NOYQ_ERR="$(printf '%s\n' "$LAST_ERR" | grep -v -e '^installed: /' -e '^/.* is not on your PATH\. Add this line' -e '^  export PATH="')"
+case "$NOYQ_ERR" in
+  *yq*) fail "no-yq: yq never named" "stderr names yq: $NOYQ_ERR" ;;
+  *) pass "no-yq: yq never named" ;;
+esac
 if [ -f "$TARGET/.fleet-board.yml" ]; then pass "no-yq: config written"; else fail "no-yq: config written" "no file"; fi
 
 # ---------------------------------------------------------------------------
@@ -257,7 +268,7 @@ auth status	0	$FIXTURES/projects/auth-status-ok.txt
 label create*	0	-
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "labels-writes-valid-config: exit" 0
 if [ -f "$TARGET/.fleet-board.yml" ]; then
   pass "labels-writes-valid-config: file exists"
@@ -270,7 +281,6 @@ assert_count "labels-writes-valid-config: config.sh --check exits 0" "$rc" 0
 assert_cfg "labels-writes-valid-config: commands.test_one" commands.test_one "node --test {file}"
 assert_cfg "labels-writes-valid-config: human_qa_paths" human_qa_paths '["src/ui/**"]'
 assert_cfg "labels-writes-valid-config: omitted flags left out (commands)" commands '{"test_one":"node --test {file}","lint":"npm run lint"}'
-assert_cfg "labels-writes-valid-config: board.backend" board.backend "github-labels"
 assert_cfg "labels-writes-valid-config: board.repo" board.repo "acme/toy"
 first_line="$(sed -n 1p "$TARGET/.fleet-board.yml" 2>/dev/null)"
 assert_count "labels-writes-valid-config: header comment" "$first_line" "$HEADER"
@@ -291,303 +301,14 @@ HINT_LINE="fleet-board init: to add review stages, set review.stages in .fleet-b
 assert_stdout_exact "labels-writes-valid-config: stdout" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml
 $HINT_LINE"
 assert_stdout_contains "labels-writes-valid-config: stage hint names review-stages.sh setup" "then run: bash "
+if [ -x "$FLEET_BOARD_BIN_DIR/fleet-board" ] && grep -qxF '# fleet-board command-line launcher' "$FLEET_BOARD_BIN_DIR/fleet-board"; then
+  pass "labels-writes-valid-config: installs the fleet-board command in FLEET_BOARD_BIN_DIR"
+else
+  fail "labels-writes-valid-config: installs the fleet-board command in FLEET_BOARD_BIN_DIR" "no launcher at $FLEET_BOARD_BIN_DIR/fleet-board"
+fi
+assert_stderr_contains "labels-writes-valid-config: names the installed command" "installed: $FLEET_BOARD_BIN_DIR/fleet-board"
 assert_stdout_contains "labels-writes-valid-config: stage hint script path" "/review-stages.sh setup"
-assert_dir_listing "labels-writes-valid-config: no stray temp files" ".fleet-board.yml "
-
-# ---------------------------------------------------------------------------
-# AC7.2 labels-creates-all
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-label list --repo acme/toy --search bug --json name*	0	$FAKE_GH_DIR/label-list-empty.json
-label create*	0	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
-assert_exit "labels-creates-all: exit" 0
-
-forced="$(calls_of label create | with_arg --force)"
-assert_count "labels-creates-all: exactly 10 label create calls with --force" "$(printf '%s\n' "$forced" | count_lines)" 10
-
-n_repo=0
-for f in $forced; do file_has_pair "$f" --repo acme/toy && n_repo=$((n_repo + 1)); done
-assert_count "labels-creates-all: all 10 --force creates carry --repo acme/toy" "$n_repo" 10
-
-got_names="$(for f in $forced; do sed -n 3p "$f"; done | sort | tr '\n' ' ')"
-want_names="$(printf '%s\n' fleet:backlog fleet:ready fleet:in_progress fleet:in_review fleet:human_qa fleet:blocked fleet:done fleet:wont_do needs-human-qa needs-manual-step | sort | tr '\n' ' ')"
-assert_count "labels-creates-all: names are the 8 fleet:<state> labels plus needs-human-qa and needs-manual-step" "$got_names" "$want_names"
-
-bad=""
-for pair in backlog:cfd3d7 ready:0e8a16 in_progress:1d76db in_review:5319e7 human_qa:fbca04 blocked:b60205 done:0e8a16 wont_do:ffffff; do
-  s="${pair%%:*}"; c="${pair#*:}"
-  f="$(label_creates_named "fleet:$s" | head -n 1)"
-  if [ -z "$f" ] || ! file_has_pair "$f" --color "$c" || ! file_has_pair "$f" --description "fleet-board state: $s"; then
-    bad="$bad fleet:$s"
-  fi
-done
-f="$(label_creates_named needs-human-qa | head -n 1)"
-if [ -z "$f" ] || ! file_has_pair "$f" --color d93f0b || ! file_has_pair "$f" --description "fleet-board: route to Human QA"; then
-  bad="$bad needs-human-qa"
-fi
-assert_count "labels-creates-all: colors and descriptions" "$bad" ""
-
-bug_creates="$(label_creates_named bug)"
-assert_count "labels-creates-all: exactly one label create bug" "$(printf '%s\n' "$bug_creates" | count_lines)" 1
-assert_count "labels-creates-all: label create bug has no --force" "$(printf '%s\n' "$bug_creates" | with_arg --force | count_lines)" 0
-f="$(printf '%s\n' "$bug_creates" | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --repo acme/toy && file_has_pair "$f" --color d73a4a \
-   && file_has_pair "$f" --description "Something isn't working"; then
-  pass "labels-creates-all: label create bug --repo acme/toy, color and description"
-else
-  fail "labels-creates-all: label create bug --repo acme/toy, color and description" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-lists="$(calls_of label list)"
-assert_count "labels-creates-all: one bug label check" "$(printf '%s\n' "$lists" | count_lines)" 1
-f="$(printf '%s\n' "$lists" | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --repo acme/toy && file_has_pair "$f" --search bug && file_has_pair "$f" --json name \
-   && file_has_pair "$f" --limit 1000; then
-  pass "labels-creates-all: bug check is label list --repo acme/toy --search bug --json name --limit 1000"
-else
-  fail "labels-creates-all: bug check is label list --repo acme/toy --search bug --json name --limit 1000" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-last_forced="$(printf '%s\n' "$forced" | tail -n 1)"
-if [ -n "$f" ] && [ -n "$last_forced" ] && [ "$(seq_of "$f")" -gt "$(seq_of "$last_forced")" ]; then
-  pass "labels-creates-all: bug check runs after the state labels"
-else
-  fail "labels-creates-all: bug check runs after the state labels" "list=$f last forced create=$last_forced"
-fi
-
-# ---------------------------------------------------------------------------
-# AC3.10 bug-label-kept-if-present
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-label list --repo acme/toy --search bug --json name*	0	$FAKE_GH_DIR/label-list-bug.json
-label create*	0	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
-assert_exit "bug-label-kept-if-present: exit" 0
-assert_count "bug-label-kept-if-present: bug label was checked" "$(calls_of label list | count_lines)" 1
-assert_count "bug-label-kept-if-present: no label create bug" "$(label_creates_named bug | count_lines)" 0
-assert_count "bug-label-kept-if-present: no label edit" "$(calls_of label edit | count_lines)" 0
-assert_count "bug-label-kept-if-present: state labels still created" "$(calls_of label create | with_arg --force | count_lines)" 10
-if [ -f "$TARGET/.fleet-board.yml" ]; then
-  pass "bug-label-kept-if-present: config written"
-else
-  fail "bug-label-kept-if-present: config written" "no file"
-fi
-
-# AC3.10 bug-label-near-miss: labels merely matching the search are not "bug"
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-label list --repo acme/toy --search bug --json name*	0	$FAKE_GH_DIR/label-list-near-miss.json
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
-assert_exit "bug-label-near-miss: exit" 0
-assert_count "bug-label-near-miss: label create bug once" "$(label_creates_named bug | count_lines)" 1
-
-# ---------------------------------------------------------------------------
-# AC3.10 bug-label-list-fails
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-label list*	1	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
-assert_exit "bug-label-list-fails: exit" 1
-assert_stderr_contains "bug-label-list-fails: stderr" "cannot check bug label"
-assert_no_config "bug-label-list-fails: no .fleet-board.yml written"
-assert_dir_listing "bug-label-list-fails: no stray temp files" ""
-assert_count "bug-label-list-fails: no label create bug" "$(label_creates_named bug | count_lines)" 0
-
-# AC3.10 bug-label-create-fails
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-label create bug *	1	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
-assert_exit "bug-label-create-fails: exit" 1
-assert_stderr_contains "bug-label-create-fails: stderr" "cannot check bug label"
-assert_no_config "bug-label-create-fails: no .fleet-board.yml written"
-assert_dir_listing "bug-label-create-fails: no stray temp files" ""
-
-# state-label-create-fails
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-label create fleet:ready *	1	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
-assert_exit "state-label-create-fails: exit" 1
-assert_stderr_contains "state-label-create-fails: stderr names the label" "fleet:ready"
-assert_no_config "state-label-create-fails: no .fleet-board.yml written"
-assert_dir_listing "state-label-create-fails: no stray temp files" ""
-
-# labels-state-override: label names come from board.states
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --state "ready=fleet:todo" --dir "$TARGET"
-assert_exit "labels-state-override: exit" 0
-assert_count "labels-state-override: creates fleet:todo" "$(label_creates_named fleet:todo | with_arg --force | count_lines)" 1
-assert_count "labels-state-override: no fleet:ready" "$(label_creates_named fleet:ready | count_lines)" 0
-f="$(label_creates_named fleet:todo | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --description "fleet-board state: ready" && file_has_pair "$f" --color 0e8a16; then
-  pass "labels-state-override: fleet:todo described as state ready"
-else
-  fail "labels-state-override: fleet:todo described as state ready" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-assert_cfg "labels-state-override: board.states.ready" board.states.ready "fleet:todo"
-
-# ---------------------------------------------------------------------------
-# AC7.2 projects-verifies-options-ok
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
-label create*	0	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "projects-verifies-options-ok: exit" 0
-FLEET_BOARD_CONFIG="$TARGET/.fleet-board.yml" "$BASH_EXE" "$CONFIG_SH" --check >/dev/null 2>&1
-rc=$?
-assert_count "projects-verifies-options-ok: config.sh --check exits 0" "$rc" 0
-assert_cfg "projects-verifies-options-ok: board.backend" board.backend "github-projects"
-assert_cfg "projects-verifies-options-ok: board.project_number" board.project_number "1"
-assert_cfg "projects-verifies-options-ok: board.states" board.states \
-  '{"in_progress":"In progress","in_review":"In review","human_qa":"Require Human Inteteraction","wont_do":"Won'"'"'t Do"}'
-assert_count "projects-verifies-options-ok: field-list called once" "$(calls_of project field-list | count_lines)" 1
-f="$(calls_of project field-list | head -n 1)"
-if [ -n "$f" ] && [ "$(sed -n 3p "$f")" = "1" ] && file_has_pair "$f" --owner drothschild && file_has_pair "$f" --format json; then
-  pass "projects-verifies-options-ok: field-list 1 --owner drothschild --format json"
-else
-  fail "projects-verifies-options-ok: field-list 1 --owner drothschild --format json" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-fl="$f"
-n_fleet=0
-for f in $(calls_of label create); do
-  case "$(sed -n 3p "$f")" in fleet:*) n_fleet=$((n_fleet + 1)) ;; esac
-done
-assert_count "projects-verifies-options-ok: no label create fleet:*" "$n_fleet" 0
-nhq="$(label_creates_named needs-human-qa)"
-assert_count "projects-verifies-options-ok: exactly one label create needs-human-qa" "$(printf '%s\n' "$nhq" | count_lines)" 1
-f="$(printf '%s\n' "$nhq" | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --repo drothschild/HMBWorkout && grep -Fxq -- --force "$f" \
-   && file_has_pair "$f" --color d93f0b && file_has_pair "$f" --description "fleet-board: route to Human QA"; then
-  pass "projects-verifies-options-ok: needs-human-qa create args"
-else
-  fail "projects-verifies-options-ok: needs-human-qa create args" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-if [ -n "$f" ] && [ -n "$fl" ] && [ "$(seq_of "$f")" -gt "$(seq_of "$fl")" ]; then
-  pass "projects-verifies-options-ok: needs-human-qa created after options verify"
-else
-  fail "projects-verifies-options-ok: needs-human-qa created after options verify" "field-list=$fl create=$f"
-fi
-nms="$(label_creates_named needs-manual-step)"
-assert_count "projects-verifies-options-ok: needs-manual-step created exactly once" "$(printf '%s\n' "$nms" | count_lines)" 1
-f="$(printf '%s\n' "$nms" | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --repo drothschild/HMBWorkout && grep -Fxq -- --force "$f"; then
-  pass "projects-verifies-options-ok: needs-manual-step create args"
-else
-  fail "projects-verifies-options-ok: needs-manual-step create args" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-lists="$(calls_of label list)"
-assert_count "projects-verifies-options-ok: one bug label check" "$(printf '%s\n' "$lists" | count_lines)" 1
-f="$(printf '%s\n' "$lists" | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --repo drothschild/HMBWorkout && file_has_pair "$f" --search bug && file_has_pair "$f" --json name \
-   && file_has_pair "$f" --limit 1000; then
-  pass "projects-verifies-options-ok: bug check args"
-else
-  fail "projects-verifies-options-ok: bug check args" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-bug_creates="$(label_creates_named bug)"
-assert_count "projects-verifies-options-ok: exactly one label create bug" "$(printf '%s\n' "$bug_creates" | count_lines)" 1
-assert_count "projects-verifies-options-ok: label create bug has no --force" "$(printf '%s\n' "$bug_creates" | with_arg --force | count_lines)" 0
-assert_count "projects-verifies-options-ok: label creates total" "$(calls_of label create | count_lines)" 3
-
-# projects-owner-flag: --owner overrides the repo owner
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list 1 --owner some-org --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --owner some-org --dir "$TARGET"
-assert_exit "projects-owner-flag: exit" 0
-f="$(calls_of project field-list | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --owner some-org; then
-  pass "projects-owner-flag: field-list --owner some-org"
-else
-  fail "projects-owner-flag: field-list --owner some-org" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-assert_cfg "projects-owner-flag: board.project_owner" board.project_owner "some-org"
-
-# ---------------------------------------------------------------------------
-# AC7.2 projects-missing-option
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list.json
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "projects-missing-option: exit" 1
-assert_stderr_contains "projects-missing-option: stderr names Blocked" "Blocked"
-assert_stderr_contains "projects-missing-option: stderr hint" "add it in the project's Status field or map it with --state blocked=<Name>"
-assert_stderr_line "projects-missing-option: full message" \
-  "fleet-board init: project 1 Status field lacks option(s): Blocked; add it in the project's Status field or map it with --state blocked=<Name>"
-assert_no_config "projects-missing-option: no .fleet-board.yml written"
-assert_dir_listing "projects-missing-option: no stray temp files" ""
-assert_count "projects-missing-option: no label create calls" "$(calls_of label create | count_lines)" 0
-
-# projects-no-status-field
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-no-status.json
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "projects-no-status-field: exit" 1
-assert_stderr_contains "projects-no-status-field: stderr" "has no Status field"
-assert_no_config "projects-no-status-field: no .fleet-board.yml written"
-
-# projects-field-list-fails
-setup_case
-{ cat << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list*	1	-
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "projects-field-list-fails: exit" 1
-assert_stderr_contains "projects-field-list-fails: stderr" "cannot read the fields of project 1"
-assert_no_config "projects-field-list-fails: no .fleet-board.yml written"
-assert_count "projects-field-list-fails: no label create calls" "$(calls_of label create | count_lines)" 0
-
-# ---------------------------------------------------------------------------
-# AC7.3 missing-project-scope
-setup_case
-cat > "$ROUTES" << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-no-project.txt
-ROUTESEOF
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "missing-project-scope: exit" 1
-assert_stderr_line "missing-project-scope: stderr has exactly 'Run: gh auth refresh -s project'" "Run: gh auth refresh -s project"
-assert_stderr_line "missing-project-scope: names the missing scope" "fleet-board init: gh token is missing scope(s): project"
-assert_no_config "missing-project-scope: no .fleet-board.yml written"
-assert_dir_listing "missing-project-scope: no stray temp files" ""
-assert_count "missing-project-scope: only gh auth status was called" "$(all_calls | count_lines)" 1
+assert_dir_listing "labels-writes-valid-config: no stray temp files" "$WRITTEN"
 
 # ---------------------------------------------------------------------------
 # AC7.3 missing-repo-scope
@@ -595,7 +316,7 @@ setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-no-repo.txt
 ROUTESEOF
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "missing-repo-scope: exit" 1
 assert_stderr_contains "missing-repo-scope: stderr" "gh auth refresh -s repo"
 assert_stderr_line "missing-repo-scope: exact refresh line" "Run: gh auth refresh -s repo"
@@ -603,24 +324,13 @@ assert_no_config "missing-repo-scope: no .fleet-board.yml written"
 assert_dir_listing "missing-repo-scope: no stray temp files" ""
 assert_count "missing-repo-scope: only gh auth status was called" "$(all_calls | count_lines)" 1
 
-# missing-both-scopes: comma-joined refresh list
-setup_case
-sed -e "s/'project', //" -e "s/'repo', //" "$FIXTURES/projects/auth-status-ok.txt" > "$FAKE_GH_DIR/auth-none.txt"
-cat > "$ROUTES" << ROUTESEOF
-auth status	0	$FAKE_GH_DIR/auth-none.txt
-ROUTESEOF
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "missing-both-scopes: exit" 1
-assert_stderr_line "missing-both-scopes: refresh line" "Run: gh auth refresh -s repo,project"
-assert_no_config "missing-both-scopes: no .fleet-board.yml written"
-
 # gh-not-logged-in: gh auth status fails with no scopes line; stop with gh's message
 setup_case
 { cat << ROUTESEOF
 auth status	1	$FIXTURES/projects/auth-status-not-logged-in.txt
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "gh-not-logged-in: exit" 1
 assert_stderr_contains "gh-not-logged-in: init message" "fleet-board init:"
 assert_stderr_contains "gh-not-logged-in: gh's message" "You are not logged into any GitHub hosts"
@@ -628,14 +338,16 @@ assert_no_config "gh-not-logged-in: no .fleet-board.yml written"
 assert_count "gh-not-logged-in: only gh auth status was called" "$(all_calls | count_lines)" 1
 
 # multi-account: only the ACTIVE account's scopes count, in either listing order
+# (the active account's scopes lose 'repo'; the inactive one keeps it)
 for fx in auth-status-multi-active-first auth-status-multi-inactive-first; do
   setup_case
+  sed "s/'gist', 'read:org', 'repo', 'workflow'/'gist', 'read:org', 'workflow'/" "$FIXTURES/projects/$fx.txt" > "$FAKE_GH_DIR/auth.txt"
   cat > "$ROUTES" << ROUTESEOF
-auth status	0	$FIXTURES/projects/$fx.txt
+auth status	0	$FAKE_GH_DIR/auth.txt
 ROUTESEOF
-  run_init "${PROJ_CMD[@]}" --dir "$TARGET"
+  run_init "${STATES_CMD[@]}" --dir "$TARGET"
   assert_exit "multi-account $fx: exit" 1
-  assert_stderr_line "multi-account $fx: refresh line" "Run: gh auth refresh -s project"
+  assert_stderr_line "multi-account $fx: refresh line" "Run: gh auth refresh -s repo"
   assert_no_config "multi-account $fx: no .fleet-board.yml written"
   assert_count "multi-account $fx: only gh auth status was called" "$(all_calls | count_lines)" 1
 done
@@ -644,10 +356,9 @@ done
 setup_case
 { cat << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-multi-active-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
+run_init "${STATES_CMD[@]}" --dir "$TARGET"
 assert_exit "multi-account-active-ok: exit" 0
 
 # auth-status-nonzero-but-scoped: gh exits 1 (e.g. another account's token is
@@ -655,68 +366,56 @@ assert_exit "multi-account-active-ok: exit" 0
 setup_case
 { cat << ROUTESEOF
 auth status	1	$FIXTURES/projects/auth-status-multi-active-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
+run_init "${STATES_CMD[@]}" --dir "$TARGET"
 assert_exit "auth-status-nonzero-but-scoped: exit" 0
-assert_cfg "auth-status-nonzero-but-scoped: config written" board.project_number "1"
+assert_cfg "auth-status-nonzero-but-scoped: config written" board.repo "drothschild/HMBWorkout"
 
 # multi-host: only github.com's active account counts. Another host's active
-# account, listed first, has 'project'; github.com's lacks it.
+# account, listed first, has 'repo'; github.com's lacks it.
 setup_case
+sed "s/'gist', 'read:org', 'repo', 'workflow'/'gist', 'read:org', 'workflow'/" "$FIXTURES/projects/auth-status-multi-host.txt" > "$FAKE_GH_DIR/auth.txt"
 cat > "$ROUTES" << ROUTESEOF
-auth status	0	$FIXTURES/projects/auth-status-multi-host.txt
+auth status	0	$FAKE_GH_DIR/auth.txt
 ROUTESEOF
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
+run_init "${STATES_CMD[@]}" --dir "$TARGET"
 assert_exit "multi-host: exit" 1
-assert_stderr_line "multi-host: refresh line" "Run: gh auth refresh -s project"
+assert_stderr_line "multi-host: refresh line" "Run: gh auth refresh -s repo"
 assert_no_config "multi-host: no .fleet-board.yml written"
 assert_count "multi-host: only gh auth status was called" "$(all_calls | count_lines)" 1
 
-# multi-host-ok: github.com's active account has 'project'; the other host's,
+# multi-host-ok: github.com's active account has 'repo'; the other host's,
 # listed first, lacks it
 setup_case
 { cat << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-multi-host-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
+run_init "${STATES_CMD[@]}" --dir "$TARGET"
 assert_exit "multi-host-ok: exit" 0
-assert_cfg "multi-host-ok: config written" board.project_number "1"
+assert_cfg "multi-host-ok: config written" board.repo "drothschild/HMBWorkout"
 
 # legacy-unquoted: older gh lists scopes unquoted (Token scopes: repo, project)
 setup_case
 { cat << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-legacy-unquoted.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
+run_init "${STATES_CMD[@]}" --dir "$TARGET"
 assert_exit "legacy-unquoted: exit" 0
-assert_cfg "legacy-unquoted: config written" board.project_number "1"
+assert_cfg "legacy-unquoted: config written" board.repo "drothschild/HMBWorkout"
 
 # scope-listed-first: gh sorts scopes, so a minimal token lists the required one first
-setup_case
-sed "s/'gist', //" "$FIXTURES/projects/auth-status-ok.txt" > "$FAKE_GH_DIR/auth.txt"
-{ cat << ROUTESEOF
-auth status	0	$FAKE_GH_DIR/auth.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
-ROUTESEOF
-default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "scope-listed-first projects: exit" 0
-assert_cfg "scope-listed-first projects: config written" board.project_number "1"
 setup_case
 sed "s/'gist', 'project', 'read:org', //" "$FIXTURES/projects/auth-status-ok.txt" > "$FAKE_GH_DIR/auth.txt"
 { cat << ROUTESEOF
 auth status	0	$FAKE_GH_DIR/auth.txt
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "scope-listed-first labels: exit" 0
-assert_cfg "scope-listed-first labels: config written" board.backend "github-labels"
+assert_cfg "scope-listed-first labels: config written" board.repo "acme/toy"
 
 # legacy-unquoted-no-repo: unquoted scopes without repo are refused
 setup_case
@@ -724,21 +423,10 @@ sed 's/ repo,//' "$FIXTURES/projects/auth-status-legacy-unquoted.txt" > "$FAKE_G
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FAKE_GH_DIR/auth.txt
 ROUTESEOF
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "legacy-unquoted-no-repo: exit" 1
 assert_stderr_line "legacy-unquoted-no-repo: refresh line" "Run: gh auth refresh -s repo"
 assert_no_config "legacy-unquoted-no-repo: no .fleet-board.yml written"
-
-# legacy-unquoted-read-project: read:project is not project
-setup_case
-sed 's/ project,/ read:project,/' "$FIXTURES/projects/auth-status-legacy-unquoted.txt" > "$FAKE_GH_DIR/auth.txt"
-cat > "$ROUTES" << ROUTESEOF
-auth status	0	$FAKE_GH_DIR/auth.txt
-ROUTESEOF
-run_init "${PROJ_CMD[@]}" --dir "$TARGET"
-assert_exit "legacy-unquoted-read-project: exit" 1
-assert_stderr_line "legacy-unquoted-read-project: refresh line" "Run: gh auth refresh -s project"
-assert_no_config "legacy-unquoted-read-project: no .fleet-board.yml written"
 
 # no-scopes-line: fine-grained tokens print no scopes line; init continues
 setup_case
@@ -747,7 +435,7 @@ grep -v 'Token scopes:' "$FIXTURES/projects/auth-status-ok.txt" > "$FAKE_GH_DIR/
 auth status	0	$FAKE_GH_DIR/auth-noline.txt
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "no-scopes-line: exit" 0
 if [ -f "$TARGET/.fleet-board.yml" ]; then
   pass "no-scopes-line: config written"
@@ -761,7 +449,7 @@ setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
-run_init --backend github-labels --repo acme/toy --test-one "echo \"a\" 'b' {file}" --dir "$TARGET"
+run_init --repo acme/toy --test-one "echo \"a\" 'b' {file}" --dir "$TARGET"
 assert_exit "unrenderable-value: exit" 1
 assert_stderr_contains "unrenderable-value: stderr names --test-one" "--test-one"
 assert_no_config "unrenderable-value: no .fleet-board.yml written"
@@ -773,7 +461,7 @@ setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
-run_init --backend github-labels --repo acme/toy --lint "$(printf 'npm run lint\nrm -rf /')" --dir "$TARGET"
+run_init --repo acme/toy --lint "$(printf 'npm run lint\nrm -rf /')" --dir "$TARGET"
 assert_exit "unrenderable-newline: exit" 1
 assert_stderr_contains "unrenderable-newline: stderr names --lint" "--lint"
 assert_no_config "unrenderable-newline: no .fleet-board.yml written"
@@ -783,7 +471,7 @@ setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
-run_init --backend github-labels --repo acme/toy --state "ready=a\"b'c" --dir "$TARGET"
+run_init --repo acme/toy --state "ready=a\"b'c" --dir "$TARGET"
 assert_exit "unrenderable-state: exit" 1
 assert_stderr_contains "unrenderable-state: check_value names --state" "--state value contains both"
 assert_no_config "unrenderable-state: no .fleet-board.yml written"
@@ -795,7 +483,7 @@ setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
-run_init --backend github-labels --repo acme/toy --human-qa-path "$(printf 'src/ui/**\nsrc/x')" --dir "$TARGET"
+run_init --repo acme/toy --human-qa-path "$(printf 'src/ui/**\nsrc/x')" --dir "$TARGET"
 assert_exit "unrenderable-qa-path: exit" 1
 assert_stderr_contains "unrenderable-qa-path: check_value names --human-qa-path" "--human-qa-path value contains a newline"
 assert_no_config "unrenderable-qa-path: no .fleet-board.yml written"
@@ -808,7 +496,7 @@ setup_case
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init --backend github-labels --repo acme/toy --lint 'npm run lint -- --format "stylish"' --dir "$TARGET"
+run_init --repo acme/toy --lint 'npm run lint -- --format "stylish"' --dir "$TARGET"
 assert_exit "renders-double-quote-value: exit" 0
 assert_cfg "renders-double-quote-value: commands.lint round-trips" commands.lint 'npm run lint -- --format "stylish"'
 if grep -Fxq "  lint: 'npm run lint -- --format \"stylish\"'" "$TARGET/.fleet-board.yml" 2>/dev/null; then
@@ -821,10 +509,9 @@ fi
 setup_case
 { cat << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init "${PROJ_CMD[@]}" --owner drothschild \
+run_init "${STATES_CMD[@]}" \
   --test-one "npm test -- {file}" --typecheck "npx tsc --noEmit" --lint "npm run lint" --qa-build "scripts/qa, build.sh" \
   --worktrees-dir "../.wt #1" --setup "npm ci" --human-qa-path "src/app/**" --human-qa-path "src/{a,b}/**" \
   --merge auto --dir "$TARGET"
@@ -836,19 +523,35 @@ assert_cfg "renders-all-flags: worktrees.setup" worktrees.setup "npm ci"
 assert_cfg "renders-all-flags: worktrees.mutate_on_copy default kept" worktrees.mutate_on_copy "false"
 assert_cfg "renders-all-flags: human_qa_paths" human_qa_paths '["src/app/**","src/{a,b}/**"]'
 assert_cfg "renders-all-flags: merge.policy" merge.policy "auto"
-assert_cfg "renders-all-flags: board.project_owner" board.project_owner "drothschild"
 
 # invalid-config-rejected: a rendered config config.sh --check refuses
 setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
-run_init --backend github-labels --repo acme/toy --merge sometimes --dir "$TARGET"
+run_init --repo acme/toy --merge sometimes --dir "$TARGET"
 assert_exit "invalid-config-rejected: exit" 1
 assert_stderr_contains "invalid-config-rejected: shows config.sh's error" "merge.policy must be human or auto"
 assert_no_config "invalid-config-rejected: no .fleet-board.yml written"
 assert_dir_listing "invalid-config-rejected: no stray temp files" ""
-assert_count "invalid-config-rejected: no label calls" "$(calls_of label create | count_lines)" 0
+
+# ---------------------------------------------------------------------------
+# install-cli-refused: a fleet-board file init did not write is left alone; init
+# still succeeds, stdout is unchanged, and stderr says how to install the command
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+mkdir -p "$FLEET_BOARD_BIN_DIR"
+printf '#!/bin/sh\necho mine\n' > "$FLEET_BOARD_BIN_DIR/fleet-board"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
+assert_exit "install-cli-refused: exit 0" 0
+assert_stdout_exact "install-cli-refused: stdout unchanged" "wrote $(cd "$TARGET" && pwd)/.fleet-board.yml
+$HINT_LINE"
+assert_stderr_contains "install-cli-refused: fallback line" "fleet-board init: the fleet-board command was not installed; run: bash "
+assert_stderr_contains "install-cli-refused: fallback names install-cli.sh" "/install-cli.sh"
+assert_count "install-cli-refused: the other file is untouched" "$(sed -n 2p "$FLEET_BOARD_BIN_DIR/fleet-board")" "echo mine"
 
 # ---------------------------------------------------------------------------
 # refuses-overwrite
@@ -859,7 +562,7 @@ ROUTESEOF
 default_routes; } > "$ROUTES"
 printf 'board:\n  repo: old/repo\n' > "$TARGET/.fleet-board.yml"
 cp "$TARGET/.fleet-board.yml" "$FAKE_GH_DIR/before.yml"
-run_init "${LABELS_CMD[@]}" --dir "$TARGET"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
 assert_exit "refuses-overwrite: exit without --force" 1
 assert_stderr_contains "refuses-overwrite: stderr mentions --force" "--force"
 if cmp -s "$TARGET/.fleet-board.yml" "$FAKE_GH_DIR/before.yml"; then
@@ -868,11 +571,17 @@ else
   fail "refuses-overwrite: file byte-identical" "file changed"
 fi
 assert_dir_listing "refuses-overwrite: no stray temp files" ".fleet-board.yml "
-assert_count "refuses-overwrite: no label calls" "$(calls_of label create | count_lines)" 0
-run_init "${LABELS_CMD[@]}" --dir "$TARGET" --force
+assert_stderr_contains "refuses-overwrite: the refusal message is unchanged" "already exists; re-run with --force to replace it"
+if [ -x "$FLEET_BOARD_BIN_DIR/fleet-board" ] && grep -qxF '# fleet-board command-line launcher' "$FLEET_BOARD_BIN_DIR/fleet-board"; then
+  pass "refuses-overwrite: still installs the fleet-board command"
+else
+  fail "refuses-overwrite: still installs the fleet-board command" "no launcher at $FLEET_BOARD_BIN_DIR/fleet-board"
+fi
+assert_stderr_contains "refuses-overwrite: names the installed command" "installed: $FLEET_BOARD_BIN_DIR/fleet-board"
+run_init "${INIT_CMD[@]}" --dir "$TARGET" --force
 assert_exit "refuses-overwrite: exit with --force" 0
 assert_cfg "refuses-overwrite: --force replaced the file" board.repo "acme/toy"
-assert_dir_listing "refuses-overwrite: no stray temp files after --force" ".fleet-board.yml "
+assert_dir_listing "refuses-overwrite: no stray temp files after --force" "$WRITTEN"
 
 # ---------------------------------------------------------------------------
 # default-dir: without --dir, the config goes to the git root
@@ -884,7 +593,7 @@ auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
 default_routes; } > "$ROUTES"
 cd "$TARGET/sub/dir"
-run_init "${LABELS_CMD[@]}"
+run_init "${INIT_CMD[@]}"
 cd "$FAKE_GH_DIR"
 assert_exit "default-dir: exit" 0
 if [ -f "$TARGET/.fleet-board.yml" ] && [ ! -e "$TARGET/sub/dir/.fleet-board.yml" ]; then
@@ -905,7 +614,7 @@ ROUTESEOF
 default_routes; } > "$ROUTES"
 cd "$TARGET/parent"
 export CDPATH="$TARGET/decoy"
-run_init "${LABELS_CMD[@]}" --dir proj
+run_init "${INIT_CMD[@]}" --dir proj
 unset CDPATH
 cd "$FAKE_GH_DIR"
 assert_exit "cdpath-relative-dir: exit" 0
@@ -928,7 +637,7 @@ ROUTESEOF
 default_routes; } > "$ROUTES"
 cd "$SCRIPT_DIR/.."
 export CDPATH="$FAKE_GH_DIR/decoy"
-run_check scripts/init.sh "${LABELS_CMD[@]}" --dir "$TARGET"
+run_check scripts/init.sh "${INIT_CMD[@]}" --dir "$TARGET"
 unset CDPATH
 cd "$FAKE_GH_DIR"
 assert_exit "cdpath-relative-script: exit" 0
@@ -970,36 +679,37 @@ setup_case
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init_poisoned --backend github-labels --repo acme/toy --dir "$TARGET"
+run_init_poisoned --repo acme/toy --dir "$TARGET"
 assert_exit "env-not-inherited labels: exit" 0
-want="$(printf '%s\n' "$HEADER" 'board:' '  backend: "github-labels"' '  repo: "acme/toy"')"
+want="$(printf '%s\n' "$HEADER" 'board:' '  repo: "acme/toy"')"
 got="$(cat "$TARGET/.fleet-board.yml" 2>/dev/null)"
 assert_count "env-not-inherited labels: file is exactly the flags' config" "$got" "$want"
 assert_count "env-not-inherited labels: no POISON in the file" "$(grep -c POISON "$TARGET/.fleet-board.yml" 2>/dev/null)" 0
-assert_count "env-not-inherited labels: 10 label creates with --force" "$(calls_of label create | with_arg --force | count_lines)" 10
 assert_count "env-not-inherited labels: no POISON in any gh call" "$(cat "$FAKE_GH_DIR"/argv/* 2>/dev/null | grep -c POISON)" 0
 
-# env-not-inherited (projects): field-list uses the repo owner, not $OWNER
+# env-not-inherited (states): the column names come from the flags only
 setup_case
 { cat << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
-project field-list 1 --owner drothschild --format json*	0	$FIXTURES/projects/field-list-with-blocked.json
 ROUTESEOF
 default_routes; } > "$ROUTES"
-run_init_poisoned "${PROJ_CMD[@]}" --dir "$TARGET"
+run_init_poisoned "${STATES_CMD[@]}" --dir "$TARGET"
 assert_exit "env-not-inherited projects: exit" 0
-f="$(calls_of project field-list | head -n 1)"
-if [ -n "$f" ] && file_has_pair "$f" --owner drothschild; then
-  pass "env-not-inherited projects: field-list --owner drothschild"
-else
-  fail "env-not-inherited projects: field-list --owner drothschild" "call: $(tr '\n' ' ' < "${f:-/dev/null}")"
-fi
-assert_cfg "env-not-inherited projects: no board.project_owner" board.project_owner ""
 assert_cfg "env-not-inherited projects: board.states from flags only" board.states \
   '{"in_progress":"In progress","in_review":"In review","human_qa":"Require Human Inteteraction","wont_do":"Won'"'"'t Do"}'
 assert_count "env-not-inherited projects: no POISON in the file" "$(grep -c POISON "$TARGET/.fleet-board.yml" 2>/dev/null)" 0
 assert_count "env-not-inherited projects: no commands, worktrees, merge or human_qa_paths" \
   "$(grep -cE '^(commands|worktrees|merge|human_qa_paths):' "$TARGET/.fleet-board.yml" 2>/dev/null)" 0
+
+# merging is a canonical --state key
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+run_init --repo acme/toy --state "merging=Landing" --dir "$TARGET"
+assert_exit "state-merging: --state merging=Landing is accepted" 0
+assert_cfg "state-merging: board.states.merging written" board.states '{"merging":"Landing"}'
 
 # env-not-inherited (FORCE): FORCE=1 in the environment is not --force
 setup_case
@@ -1009,7 +719,7 @@ ROUTESEOF
 default_routes; } > "$ROUTES"
 printf 'board:\n  repo: old/repo\n' > "$TARGET/.fleet-board.yml"
 cp "$TARGET/.fleet-board.yml" "$FAKE_GH_DIR/before.yml"
-run_init_poisoned --backend github-labels --repo acme/toy --dir "$TARGET"
+run_init_poisoned --repo acme/toy --dir "$TARGET"
 assert_exit "env-not-inherited force: exit" 1
 if cmp -s "$TARGET/.fleet-board.yml" "$FAKE_GH_DIR/before.yml"; then
   pass "env-not-inherited force: file byte-identical"
@@ -1018,15 +728,14 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# local backend: store setup, .gitignore, no labels
+# the local store: setup, .gitignore, no labels
 setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
 default_routes >> "$ROUTES"
-run_init --backend local --repo acme/toy --dir "$TARGET"
+run_init --repo acme/toy --dir "$TARGET"
 assert_exit "local: exit 0" 0
-assert_cfg "local: config has backend local" board.backend "local"
 assert_cfg "local: config has the repo" board.repo "acme/toy"
 assert_count "local: cards dir exists" "$([ -d "$TARGET/.fleet-board/cards" ] && echo 1 || echo 0)" 1
 assert_count "local: next is 1" "$(cat "$TARGET/.fleet-board/next" 2>/dev/null)" 1
@@ -1037,7 +746,7 @@ assert_count "local: no label call at all" "$(calls_of label list | count_lines)
 # a second run keeps one ignore line and never resets an existing store
 echo 7 > "$TARGET/.fleet-board/next"
 echo '{"number":1}' > "$TARGET/.fleet-board/cards/1.json"
-run_init --backend local --repo acme/toy --dir "$TARGET" --force
+run_init --repo acme/toy --dir "$TARGET" --force
 assert_exit "local: second run exit 0" 0
 assert_count "local: second run keeps one .fleet-board/ line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
 assert_count "local: second run does not reset next" "$(cat "$TARGET/.fleet-board/next")" 7
@@ -1050,7 +759,7 @@ auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
 default_routes >> "$ROUTES"
 printf 'node_modules/\n.fleet-board/old\n' > "$TARGET/.gitignore"
-run_init --backend local --repo acme/toy --dir "$TARGET"
+run_init --repo acme/toy --dir "$TARGET"
 assert_exit "local: existing .gitignore, exit 0" 0
 assert_count "local: existing .gitignore keeps its lines" "$(grep -cxF 'node_modules/' "$TARGET/.gitignore")" 1
 assert_count "local: a similar line does not count as present" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
@@ -1062,15 +771,8 @@ cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FAKE_GH_DIR/auth-repo-only.txt
 ROUTESEOF
 default_routes >> "$ROUTES"
-run_init --backend local --repo acme/toy --dir "$TARGET"
+run_init --repo acme/toy --dir "$TARGET"
 assert_exit "local: repo scope alone is enough" 0
-
-# the unknown-backend message names local
-setup_case
-run_init --backend bogus --repo acme/toy --dir "$TARGET"
-assert_exit "local: unknown backend exit 2" 2
-assert_stderr_contains "local: unknown backend message names local" "local"
-assert_stderr_contains "local: usage text names local" "github-labels|github-projects|local"
 
 # ---------------------------------------------------------------------------
 # usage-errors: exit 2, no gh calls, nothing written
@@ -1078,34 +780,64 @@ setup_case
 cat > "$ROUTES" << ROUTESEOF
 auth status	0	$FIXTURES/projects/auth-status-ok.txt
 ROUTESEOF
-run_init --repo acme/toy --dir "$TARGET"
-assert_exit "usage-errors: missing --backend" 2
-run_init --backend github-labels --dir "$TARGET"
+run_init --dir "$TARGET"
 assert_exit "usage-errors: missing --repo" 2
-run_init --backend github-projects --repo acme/toy --dir "$TARGET"
-assert_exit "usage-errors: projects without --project" 2
-run_init --backend jira --repo acme/toy --dir "$TARGET"
-assert_exit "usage-errors: unknown backend" 2
-run_init --backend github-labels --repo acme/toy --bogus --dir "$TARGET"
+run_init --repo acme/toy --bogus --dir "$TARGET"
 assert_exit "usage-errors: unknown flag" 2
-run_init --backend github-labels --repo acme/toy --state "ready" --dir "$TARGET"
+run_init --repo acme/toy --state "ready" --dir "$TARGET"
 assert_exit "usage-errors: --state without =" 2
-run_init --backend github-labels --repo acme/toy --state "ready: \"x\", done=Y" --dir "$TARGET"
+run_init --repo acme/toy --state "ready: \"x\", done=Y" --dir "$TARGET"
 assert_exit "usage-errors: --state with a non-canonical key" 2
-run_init --backend github-projects --repo acme/toy --project one --dir "$TARGET"
-assert_exit "usage-errors: non-numeric --project" 2
-run_init --backend github-labels --repo acme/toy --state "ready=fleet:a" --state "ready=fleet:b" --dir "$TARGET"
+run_init --repo acme/toy --state "ready=fleet:a" --state "ready=fleet:b" --dir "$TARGET"
 assert_exit "usage-errors: duplicate --state key" 2
 assert_stderr_contains "usage-errors: duplicate --state key named" "--state ready given more than once"
-run_init --backend github-labels --repo acme/toy --state "ready=" --dir "$TARGET"
+run_init --repo acme/toy --state "ready=" --dir "$TARGET"
 assert_exit "usage-errors: empty --state value" 2
 assert_stderr_contains "usage-errors: empty --state value named" "--state ready needs a column name"
-run_init --backend github-labels --repo acme/toy --lint
+run_init --repo acme/toy --lint
 assert_exit "usage-errors: flag without a value" 2
-run_init --backend github-labels --repo acme/toy --dir "$TARGET/nope"
+run_init --repo acme/toy --dir "$TARGET/nope"
 assert_exit "usage-errors: --dir that does not exist" 2
 assert_count "usage-errors: no gh calls" "$(all_calls | count_lines)" 0
 assert_dir_listing "usage-errors: nothing written" ""
+
+# ---------------------------------------------------------------------------
+# python3: the supervisor and the board page need python3 3.9+; init checks it.
+mini_path() {
+  local d t
+  d="$(mktemp -d)"; CLEANUP_DIRS+=("$d")
+  for t in gh jq git dirname cat sed grep tr mktemp rm mkdir date head awk uname basename env bash cp seq sleep sort wc cut ls ln chmod tee mv tail; do
+    command -v "$t" >/dev/null 2>&1 && ln -s "$(command -v "$t")" "$d/$t"
+  done
+  rm -f "$d/gh"; ln -s "$SCRIPT_DIR/fake-gh.sh" "$d/gh"
+  printf '%s' "$d"
+}
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+NOPY="$(mini_path)"
+OLDPATH="$PATH"; PATH="$NOPY"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
+PATH="$OLDPATH"
+assert_exit "python3 missing: exit 1" 1
+assert_stderr_contains "python3 missing: named on stderr" "python3 is not on PATH"
+assert_no_config "python3 missing: no config written"
+
+setup_case
+{ cat << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes; } > "$ROUTES"
+OLDPY="$(mini_path)"
+printf '#!/bin/sh\necho "Python 3.8.0"\n' > "$OLDPY/python3"; chmod +x "$OLDPY/python3"
+OLDPATH="$PATH"; PATH="$OLDPY"
+run_init "${INIT_CMD[@]}" --dir "$TARGET"
+PATH="$OLDPATH"
+assert_exit "python3 3.8: exit 1" 1
+assert_stderr_contains "python3 3.8: names python3 3.9" "python3 3.9"
+assert_no_config "python3 3.8: no config written"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

@@ -17,30 +17,15 @@
 #      path. A path outside [A-Za-z0-9._/@+-] is not substituted into a shell
 #      command; it is recorded as a failed result instead.
 #   5. Prints {"commit": <sha>, "ok": bool, "results": [{"cmd", "exit"}]}.
-#   6. When ok is false, files the Backlog card "[P0] main is red after #<pr>"
-#      and adds "p0_card": <n>. It first searches the open issues
-#        gh issue list --state open --search "<terms> in:title"
-#      (<terms> is the title with each character outside [A-Za-z0-9 _-]
-#      turned into a space); a row whose title equals the P0 title,
-#      case-insensitively, is reused (a retry never files a second card).
-#      Otherwise it creates the card through board-create.sh (its body names
-#      the commit, the failing commands, "Merged PR: #<pr>" and the card).
-#      A failed or unexpected search exits 1: it never files blind.
-#      On the local backend the search reads the card files instead (any
-#      state but done and wont_do is open); no issue is searched.
-#      Limits of the reuse:
-#      - GitHub search is eventually consistent. A new issue can take a while
-#        to appear in search results, so a retry within seconds of a run that
-#        filed the card can still file a duplicate.
-#      - On the github-projects backend, filing is two steps (create the
-#        issue, then add it to the project), so a run can leave the issue off
-#        the board. A reused issue is read with board-read.sh; when it is not
-#        an item of the project (item_id null) it is moved to backlog with
-#        board-move.sh, which adds it to the project. An issue already on the
-#        project is left in whatever column it is in. A failed read or move
-#        exits 1.
-#        On github-labels, one gh issue create files and labels the card, so
-#        no board check is made.
+#   6. When ok is false, files the card "[P0] main is red after #<pr>" in the
+#      followups.status column and adds "p0_card": <n>. It first searches the
+#      open cards (any state but done and wont_do, fl_find_title); a card whose
+#      title equals the P0 title, case-insensitively, is reused (a retry never
+#      files a second card). Otherwise it creates the card through
+#      board-create.sh: its body names the commit, the failing commands,
+#      "Merged PR: #<pr>" and the card; its acceptance field holds one item per
+#      failing command ("`<cmd>` exits 0 on main"). A failed search exits 1: it
+#      never files blind.
 # Command output goes to stderr; stdout holds only the JSON.
 #
 # <base> is the normalized worktrees directory (cd <worktrees.dir> && pwd -P).
@@ -74,8 +59,8 @@ COMMON="$(fb_git_common_dir "$FLEET_ROOT")" \
 
 g() { git -C "$FLEET_ROOT" "$@"; }
 
-RES="" BODY=""
-trap 'rm -f ${RES:+"$RES"} ${BODY:+"$BODY"}' EXIT
+RES="" BODY="" ACC=""
+trap 'rm -f ${RES:+"$RES"} ${BODY:+"$BODY"} ${ACC:+"$ACC"}' EXIT
 RES="$(mktemp)" || fb_die 1 "cannot create a temp file"
 
 # is_our_worktree <path>: the path is the top of a worktree of this repository
@@ -101,10 +86,12 @@ matches() {
   return 1
 }
 
-# run_cmd <command>: runs it in main-check and records {cmd, exit}
+# run_cmd <command>: runs it in main-check, without the FLEET_* variables of the
+# real board (a test that builds its own board must not act on this one), and
+# records {cmd, exit}
 run_cmd() {
   local ec
-  (cd "$MC" && bash -c "$1") </dev/null >&2
+  (cd "$MC" && env -u FLEET_CFG -u FLEET_ROOT -u FLEET_REPO -u FLEET_SCRIPTS -u FLEET_BOARD_DOMAIN bash -c "$1") </dev/null >&2
   ec=$?
   jq -nc --arg c "$1" --argjson e "$ec" '{cmd: $c, exit: $e}' >> "$RES" || fb_die 1 "cannot record a result"
 }
@@ -176,21 +163,9 @@ OUT="$(jq -s -c --arg c "$COMMIT" '{commit: $c, ok: all(.[]; .exit == 0), result
 if [ "$(jq -r .ok <<<"$OUT")" != true ]; then
   TITLE="[P0] main is red after #$PR"
   CREATED="" # set only when this run files the card; never inherited
-  if [ "$(fb_cfg board.backend)" = local ]; then
-    # the local P0 card is a card file, never a GitHub issue
-    . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
-    P0="$(fl_find_title "$TITLE" open)" \
-      || fb_die 1 "main is red at $COMMIT, and the search for an open P0 card failed; nothing filed"
-  else
-    TERMS="$(jq -rn --arg t "$TITLE" '$t | gsub("[^A-Za-z0-9 _-]"; " ")')" || fb_die 1 "cannot build the P0 search terms"
-    ROWS="$(gh issue list --repo "$FLEET_REPO" --state open --search "$TERMS in:title" --json number,title --limit 50 </dev/null)" \
-      || fb_die 1 "main is red at $COMMIT, and the search for an open P0 card failed; nothing filed"
-    P0="$(jq -r --arg t "$TITLE" '
-      if type != "array" then error("not a list") else . end
-      | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase))]
-      | .[0].number // "none"' <<<"$ROWS" 2>/dev/null)" \
-      || fb_die 1 "main is red at $COMMIT, and the P0 search returned an unexpected answer; nothing filed"
-  fi
+  . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
+  P0="$(fl_find_title "$TITLE" open)" \
+    || fb_die 1 "main is red at $COMMIT, and the search for an open P0 card failed; nothing filed"
   if [ "$P0" = none ]; then
     BODY="$(mktemp)" || fb_die 1 "cannot create a temp file"
     {
@@ -199,26 +174,16 @@ if [ "$(jq -r .ok <<<"$OUT")" != true ]; then
       jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exited \(.exit)"' <<<"$OUT"
       printf '\nMerged PR: #%s\n' "$PR"
       printf 'Card: #%s\n' "$CARD"
-      printf '\n## Acceptance\n'
-      jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exits 0 on main"' <<<"$OUT"
     } > "$BODY" || fb_die 1 "cannot write the P0 card body"
-    CREATED="$(bash "$FLEET_SCRIPTS/board-create.sh" "$TITLE" "$BODY" --state "$(fb_cfg followups.status)")" \
+    ACC="$(mktemp)" || fb_die 1 "cannot create a temp file"
+    jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exits 0 on main" | gsub("[\r\n]+"; " ")' <<<"$OUT" > "$ACC" \
+      || fb_die 1 "cannot write the P0 card acceptance"
+    CREATED="$(bash "$FLEET_SCRIPTS/board-create.sh" "$TITLE" "$BODY" --state "$(fb_cfg followups.status)" --acceptance-file "$ACC")" \
       || fb_die 1 "main is red at $COMMIT, and the P0 card could not be created"
     P0="$(jq -r '.number' <<<"$CREATED" 2>/dev/null)"
     fb_valid_number "$P0" || fb_die 1 "main is red at $COMMIT, and board-create.sh returned no card number"
   fi
   fb_valid_number "$P0" || fb_die 1 "main is red at $COMMIT, and the P0 search returned an unexpected answer; nothing filed"
-  # A reused card on the projects backend may never have reached the board
-  if [ -z "${CREATED:-}" ] && [ "$(fb_cfg board.backend)" = github-projects ]; then
-    P0READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$P0" </dev/null)" \
-      || fb_die 1 "main is red at $COMMIT, and the open P0 card #$P0 could not be read to check it is on the board"
-    P0ITEM="$(jq -r 'if type == "object" and has("item_id") then (.item_id // "") else error("not a card") end' <<<"$P0READ" 2>/dev/null)" \
-      || fb_die 1 "main is red at $COMMIT, and the open P0 card #$P0 could not be read to check it is on the board"
-    if [ -z "$P0ITEM" ]; then
-      bash "$FLEET_SCRIPTS/board-move.sh" "$P0" backlog </dev/null >&2 \
-        || fb_die 1 "main is red at $COMMIT, and the open P0 card #$P0 is not on the board and could not be added"
-    fi
-  fi
   OUT="$(jq -c --argjson n "$P0" '. + {p0_card: $n}' <<<"$OUT")" || fb_die 1 "cannot build the result"
 fi
 

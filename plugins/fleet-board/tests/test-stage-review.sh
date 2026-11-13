@@ -83,7 +83,7 @@ setup() {
   : > "$CASE/curl.log"
   : > "$CASE/replies"
   {
-    printf 'board:\n  backend: %s\n  repo: acme/toy\nreview:\n  stages:\n' "${SR_BACKEND:-github-labels}"
+    printf 'board:\n  repo: acme/toy\nreview:\n  stages:\n'
     printf '    - name: security\n      agent: "acme:security-reviewer"\n      model: opus\n'
     printf '    - name: compliance\n      provider: openai\n      model: gpt-test\n      price: { input: 1, output: 2 }\n'
     printf '      brief: "%s"\n' "$BRIEF"
@@ -127,15 +127,27 @@ replies() {
 }
 
 # sr <args...>: run stage-review.sh in the case directory
+# (card 12 is a local card built from the routes' issue fixture before each
+# run, unless SR_NO_STORE is set; a comment the run posts on it is copied to
+# gh/bodies/, where the fake gh copied a posted --body-file)
 sr() {
-  local path="$WORK/bin"
+  local path="$WORK/bin" c
   if [ -n "${SR_PATH:-}" ]; then path="$SR_PATH"; fi
+  if [ -z "${SR_NO_STORE:-}" ]; then
+    FLEET_BOARD_CONFIG="$CASE/cfg.yml" bash "$SCRIPT_DIR/routes-store.sh" "$FAKE_GH_ROUTES" "$CASE" >/dev/null || echo "sr: cannot build the store" >&2
+  fi
   ( cd "$CASE" && env PATH="$path" FLEET_BOARD_CONFIG="$CASE/cfg.yml" FLEET_BOARD_LOG_DIR="${SR_LOG:-$CASE/log}" \
       FAKE_CURL_LOG="$CASE/curl.log" FAKE_CURL_REPLIES="$CASE/replies" \
       "$BASH_EXE" "$SCRIPT" "$@" > "$CASE/out" 2> "$CASE/err" )
   LAST_EXIT=$?
   LAST_OUT="$(cat "$CASE/out")"
   LAST_ERR="$(cat "$CASE/err")"
+  if [ -f "$CASE/.fleet-board/cards/12.json" ]; then
+    mkdir -p "$CASE/gh/bodies"
+    for c in $(jq -r '.comments[].id' "$CASE/.fleet-board/cards/12.json"); do
+      jq -j --argjson i "$c" '.comments[] | select(.id == $i) | .body' "$CASE/.fleet-board/cards/12.json" > "$CASE/gh/bodies/comment-$c"
+    done
+  fi
 }
 
 # srf <args...>: file mode, no posting, no gh needed for card and diff
@@ -158,8 +170,7 @@ assert_exit "clean_reply_posts_and_prints_result: exit 0" 0
 assert_eq "clean_reply_posts_and_prints_result: status" "$(jq -r .status <<<"$LAST_OUT")" "posted"
 assert_eq "clean_reply_posts_and_prints_result: parsed status" "$(jq -r .parsed.status <<<"$LAST_OUT")" "clean"
 assert_eq "clean_reply_posts_and_prints_result: exact keys" "$(jq -c 'keys' <<<"$LAST_OUT")" \
-  '["attempts","cost_usd","input_tokens","model","output_tokens","parsed","provider","report_file","status"]'
-assert_eq "clean_reply_posts_and_prints_result: cost" "$(jq -r '.cost_usd == 0.0012' <<<"$LAST_OUT")" "true"
+  '["attempts","input_tokens","model","output_tokens","parsed","provider","report_file","status"]'
 assert_eq "clean_reply_posts_and_prints_result: tokens" "$(jq -c '[.input_tokens,.output_tokens,.attempts,.provider,.model]' <<<"$LAST_OUT")" '[1000,100,1,"openai","gpt-test-2026"]'
 assert_eq "clean_reply_posts_and_prints_result: one comment" "$(posted)" "1"
 assert_eq "clean_reply_posts_and_prints_result: comment is the reply" "$(cat "$CASE/gh/bodies/"*)" "$(cat "$CASE/clean.md")"
@@ -189,10 +200,9 @@ assert_contains "rejected_then_fixed: second request opens with the rejection li
 assert_contains "rejected_then_fixed: second request closes with the instruction" "$second_last" "Reply with the corrected full report only."
 assert_eq "rejected_then_fixed: second request carries the first reply" "$(request_body 2 | jq -r '.messages[-2] | [.role, .content] | @json')" \
   "$(jq -cn --rawfile t "$CASE/nocard.md" '["assistant", $t]')"
-assert_eq "rejected_then_fixed: ledger cost sums both calls" "$(ledger | jq -r '.cost_usd == 0.0036')" "true"
 assert_eq "rejected_then_fixed: ledger tokens sum both calls" "$(ledger | jq -c '[.input_tokens,.output_tokens]')" "[3000,300]"
 assert_eq "rejected_then_fixed: one ledger line" "$(ledger_lines)" "1"
-assert_eq "rejected_then_fixed: result cost sums both calls" "$(jq -r '.cost_usd == 0.0036' <<<"$LAST_OUT")" "true"
+assert_eq "rejected_then_fixed: result tokens sum both calls" "$(jq -c '[.input_tokens,.output_tokens]' <<<"$LAST_OUT")" "[3000,300]"
 assert_eq "rejected_then_fixed: one comment" "$(posted)" "1"
 
 # rejected_twice_exits_6_posts_nothing
@@ -203,7 +213,7 @@ assert_exit "rejected_twice_exits_6_posts_nothing: exit 6" 6
 assert_contains "rejected_twice_exits_6_posts_nothing: stderr is the parse-report message" "$LAST_ERR" "$(cat "$CASE/expected-stderr" 2>/dev/null || bash "$SCRIPT_DIR/../scripts/parse-report.sh" --role stage-reviewer "$CASE/nocard.md" 2>&1 >/dev/null)"
 assert_eq "rejected_twice_exits_6_posts_nothing: nothing posted" "$(posted)" "0"
 assert_eq "rejected_twice_exits_6_posts_nothing: ledger line written" "$(ledger_lines)" "1"
-assert_eq "rejected_twice_exits_6_posts_nothing: ledger sums both calls" "$(ledger | jq -r '.cost_usd == 0.0024')" "true"
+assert_eq "rejected_twice_exits_6_posts_nothing: ledger sums both calls" "$(ledger | jq -c '[.input_tokens,.output_tokens]')" "[2000,200]"
 
 # marker_in_reply_is_refused
 setup
@@ -334,7 +344,7 @@ assert_contains "gh_path_reads_card_and_diff: request holds the diff" "$(request
 setup
 replies "200 r-clean.json"
 FLEET_BOARD_RUN_ID=run-9 sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
-assert_eq "ledger_line_shape: keys" "$(ledger | jq -c 'keys')" '["card","cost_usd","input_tokens","model","output_tokens","provider","repo","run_id","stage","ts"]'
+assert_eq "ledger_line_shape: keys" "$(ledger | jq -c 'keys')" '["card","input_tokens","model","output_tokens","provider","repo","run_id","stage","ts"]'
 assert_eq "ledger_line_shape: values" "$(ledger | jq -c '[.run_id,.repo,.card,.stage,.provider,.model,.input_tokens,.output_tokens]')" '["run-9","acme/toy",12,"compliance","openai","gpt-test-2026",1000,100]'
 assert_eq "ledger_line_shape: ts is UTC ISO" "$(ledger | jq -r '.ts | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")')" "true"
 assert_lacks "ledger_line_shape: no key in the ledger" "$(ledger)" "sk-test-123"
@@ -379,8 +389,7 @@ sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
 assert_contains "placeholder_text_in_diff_is_literal" "$(request_body 1 | jq -r '.messages[-1].content')" '+{{CARD}} {{DIFF}} \1 &'
 
 # ---- command provider (codex): a fake codex on PATH, no HTTP ----
-# The local board backend is not on this branch, so this uses the same offline
-# fakes as above (fake gh, fake curl) with a fake codex beside them.
+# Same offline fakes as above (fake curl, the local store) with a fake codex beside them.
 CODEX_BIN="$WORK/codexbin"
 mkdir -p "$CODEX_BIN"
 cat > "$CODEX_BIN/codex" <<'EOF'
@@ -406,14 +415,14 @@ codex_setup() { # replies-file-names...: the fake codex prints these files in tu
   SR_PATH="$CODEX_BIN:$WORK/bin"
 }
 
-# codex_stage_prints_zero_cost_and_null_tokens
+# codex_stage_prints_null_tokens
 codex_setup clean.md
 FLEET_BOARD_RUN_ID=run-9 sr 12 34 --stage codexrev --round 1 --no-post
 assert_exit "codex_stage: exit 0" 0
-assert_eq "codex_stage: cost_usd 0" "$(jq -c '.cost_usd' <<<"$LAST_OUT")" "0"
+assert_eq "codex_stage: no cost field" "$(jq -c 'has("cost_usd")' <<<"$LAST_OUT")" "false"
 assert_eq "codex_stage: provider, model, tokens" "$(jq -c '[.provider,.model,.input_tokens,.output_tokens,.attempts]' <<<"$LAST_OUT")" '["codex","gpt-6-astra",null,null,1]'
 assert_eq "codex_stage: parsed status" "$(jq -r .parsed.status <<<"$LAST_OUT")" "clean"
-assert_eq "codex_stage: ledger tokens null" "$(ledger | jq -c '[.input_tokens,.output_tokens,.cost_usd,.provider,.model]')" '[null,null,0,"codex","gpt-6-astra"]'
+assert_eq "codex_stage: ledger tokens null" "$(ledger | jq -c '[.input_tokens,.output_tokens,has("cost_usd"),.provider,.model]')" '[null,null,false,"codex","gpt-6-astra"]'
 assert_eq "codex_stage: one ledger line" "$(ledger_lines)" "1"
 assert_contains "codex_stage: -m model in argv" "$(cat "$CASE/codex.argv")" "gpt-6-astra"
 assert_contains "codex_stage: prompt on stdin holds the diff" "$(cat "$CASE/codex.stdin")" "+email = user.email"
@@ -428,16 +437,16 @@ assert_eq "codex_stage_posts: status" "$(jq -r .status <<<"$LAST_OUT")" "posted"
 assert_eq "codex_stage_posts: one comment" "$(posted)" "1"
 unset SR_PATH
 
-# codex_stage_reask_sums_to_zero
+# codex_stage_reask_keeps_tokens_null
 codex_setup nocard.md clean.md
 sr 12 34 --stage codexrev --round 1 --no-post
 assert_exit "codex_reask: exit 0" 0
 assert_eq "codex_reask: attempts 2" "$(jq -r .attempts <<<"$LAST_OUT")" "2"
-assert_eq "codex_reask: cost 0, tokens null" "$(jq -c '[.cost_usd,.input_tokens,.output_tokens]' <<<"$LAST_OUT")" "[0,null,null]"
+assert_eq "codex_reask: tokens null" "$(jq -c '[.input_tokens,.output_tokens]' <<<"$LAST_OUT")" "[null,null]"
 assert_contains "codex_reask: second prompt carries the rejection" "$(cat "$CASE/codex.stdin")" "Your report was rejected by the checker:"
 unset SR_PATH
 
-# active marker: local backend only, present while running, gone on exit.
+# active marker: present while running, gone on exit.
 # The provider call comes only after the marker is written, so a curl that
 # records whether the marker exists when it is called proves it is there while
 # the stage runs (no timing), and "gone after" then proves the trap removed it.
@@ -448,7 +457,7 @@ ln -sf "$WORK/rec-curl" "$WORK/bin-rec/curl"
 assert_true_file() { if [ -f "$2" ]; then pass "$1"; else fail "$1" "missing $2"; fi; }
 active_count() { ls "$CASE/.fleet-board/active" 2>/dev/null | wc -l | tr -d ' '; }
 
-SR_BACKEND=local setup
+setup
 replies "200 r-clean.json"
 SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
 assert_exit "stage-review local: exit 0" 0
@@ -456,7 +465,7 @@ assert_true_file "stage-review has the marker while the provider runs" "$CASE/se
 assert_eq "stage-review removes its marker on exit" "$(active_count)" "0"
 
 # a failing exit after the marker was written (provider failure, exit 1) removes it too
-SR_BACKEND=local setup
+setup
 printf 'curl: (28) timed out\n' > "$CASE/timeout.err"
 replies "exit 28 timeout.err"
 SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
@@ -465,7 +474,7 @@ assert_true_file "stage-review provider failure: the marker was written" "$CASE/
 assert_eq "stage-review provider failure: marker gone after" "$(active_count)" "0"
 
 # exit 3 (key unset) stops before the marker: nothing is left lit
-SR_BACKEND=local setup
+setup
 replies "200 r-clean.json"
 KEEP_KEY="$OPENAI_API_KEY"; unset OPENAI_API_KEY
 SR_PATH="$WORK/bin-rec" sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
@@ -473,11 +482,14 @@ export OPENAI_API_KEY="$KEEP_KEY"
 assert_exit "stage-review local key unset: exit 3" 3
 assert_eq "stage-review key unset: active/ is empty" "$(active_count)" "0"
 
-# a labels config never writes a marker
+# an unrenderable card (fb_card_text fails) stops the run instead of reviewing an empty card
 setup
 replies "200 r-clean.json"
-sr 12 34 --stage compliance --round 1 "${FILES[@]}" --no-post
-assert_eq "stage-review labels config writes no marker" "$(ls -d "$CASE/.fleet-board" 2>/dev/null | wc -l | tr -d ' ')" "0"
+FLEET_BOARD_CONFIG="$CASE/cfg.yml" bash "$SCRIPT_DIR/routes-store.sh" "$FAKE_GH_ROUTES" "$CASE" >/dev/null
+jq '.body = 5' "$CASE/.fleet-board/cards/12.json" > "$CASE/card12.new" && mv "$CASE/card12.new" "$CASE/.fleet-board/cards/12.json"
+SR_NO_STORE=1 sr 12 34 --stage compliance --round 1 --no-post
+assert_eq "stage-review card text failure: exits non-zero" "$([ "$LAST_EXIT" != 0 ] && echo yes)" "yes"
+assert_eq "stage-review card text failure: no provider call" "$(calls)" "0"
 
 echo ""
 echo "Passed: $PASS, Failed: $FAIL"

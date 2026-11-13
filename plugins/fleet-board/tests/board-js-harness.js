@@ -111,12 +111,10 @@ function eq(a, b, what) {
     eq(ctx.md("x _y_ z").find("em").length, 1, "em");
     eq(ctx.md("snake_case_word").find("em").length, 0, "em in word");
   });
-  await test("run: only the second stop reason shows after a new run", function () {
-    ctx.renderHeader({ state: "stopped", stop_reason: "stop-file", cost: 1.5, hours: 2 });
-    ctx.renderHeader({ state: "running", tick: 1 });
-    ctx.renderHeader({ state: "stopped", stop_reason: "nothing-dispatchable" });
-    eq(ids["run-pill-text"].textContent, "stopped: nothing-dispatchable");
-    eq(ids["run-cost"].textContent, "", "stale cost and hours");
+  // The run-pill case went with the tick wrapper's run pill (renderHeader is gone).
+  await test("run: the tick wrapper's run pill and run poll are gone", function () {
+    eq(typeof ctx.renderHeader, "undefined", "renderHeader");
+    eq(typeof ctx.pollRun, "undefined", "pollRun");
   });
   await test("move: a re-rendered poll leaves no pending class", async function () {
     // a screen that rebuilds cards only on a forced render, as the columns do

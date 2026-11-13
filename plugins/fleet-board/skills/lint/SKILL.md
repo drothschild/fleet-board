@@ -7,7 +7,7 @@ user-invocable: true
 # fleet-board: lint
 
 Checks cards before an agent spends a round on them. It only reads; it never edits a card,
-moves one, or files an issue.
+moves one, or files a card.
 
 ## Locating the script
 
@@ -33,7 +33,7 @@ repository.
 |---|---|---|
 | `untestable-bullet` | an Acceptance bullet says "manual", "visually" or "looks" | rewrite as an assertion a test can make, or move it under `## Human QA` |
 | `dependency-cycle` | cards depend on each other; the detail names them | drop one dependency |
-| `unresolved-dependency` | a `## Depends on` reference matches no issue | correct the reference |
+| `unresolved-dependency` | a `blocked_by` entry is not a card on this board | correct the card number |
 | `missing-file` | a backticked path is not on the default branch | fix the path (lines that create or add a file are skipped) |
 
 `/fleet-board:import-plan` runs the same linter on its generated cards and refuses to create

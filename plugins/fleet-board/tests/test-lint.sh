@@ -55,15 +55,12 @@ echo x > "$ROOT/src/real.js"
 git -C "$ROOT" add -A
 git -C "$ROOT" commit -q -m initial
 
-# gh stub: "issue view 404" is not found; any other issue view is open
-cat > "$STUBS/gh" <<'EOF'
-#!/usr/bin/env bash
-case "$1 $2 $3" in
-  "issue view 404") echo "GraphQL: Could not resolve to an Issue" >&2; exit 1 ;;
-  "issue view "*) echo '{"state":"OPEN"}'; exit 0 ;;
-esac
-exit 0
-EOF
+# the board store of ROOT holds card 7 (not 404); gh is never needed
+mkdir -p "$ROOT/.fleet-board/cards"
+echo 8 > "$ROOT/.fleet-board/next"
+jq -n '{number: 7, title: "t", body: "", acceptance: ["x"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+  > "$ROOT/.fleet-board/cards/7.json"
+printf '#!/usr/bin/env bash\necho "gh must not be called: $*" >&2\nexit 99\n' > "$STUBS/gh"
 chmod +x "$STUBS/gh"
 
 newset() { rm -rf "$BODIES"; mkdir -p "$BODIES"; }
@@ -118,6 +115,10 @@ run_lint
 check "unresolved exits 1" "$RC" "1"
 has "unresolved reports the rule" "$OUT" "unresolved-dependency"
 has "unresolved names the reference" "$OUT" "#404"
+newset; card 1 "$GOOD\n## Depends on\n- ACME/Toy#404\n"
+run_lint
+check "a board-repo ref in another case is checked, not skipped as outside" "$RC" "1"
+has "a board-repo ref in another case is unresolved" "$OUT" "ACME/Toy#404"
 newset; card 1 "$GOOD\n## Depends on\n- #7\n"
 run_lint
 check "an existing dependency passes" "$RC" "0"
@@ -135,6 +136,15 @@ hasnt "existing file is not reported" "$OUT" "src/real.js"
 newset; card 1 "$GOOD\n## Scope\n- edit \`src/real.js\`\n"
 run_lint
 check "existing file passes" "$RC" "0"
+
+echo "# missing-file: a path in an acceptance item (board path)"
+jq -n '{number: 9, title: "t", body: "Prose only.\n", acceptance: ["`src/gone.js` exports clamp", "`src/real.js` is untouched"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+  > "$ROOT/.fleet-board/cards/9.json"
+BOUT="$(cd "$ROOT" && PATH="$STUBS:$PATH" bash "$SCRIPT" 9 2>"$SB/err")"; BRC=$?
+check "board card: a missing path in an acceptance item exits 1" "$BRC" "1"
+has "board card: missing-file names the path from the acceptance field" "$BOUT" "src/gone.js"
+hasnt "board card: an existing path in an acceptance item is not reported" "$BOUT" "src/real.js"
+rm -f "$ROOT/.fleet-board/cards/9.json"
 
 echo "# missing-file: ## Creates heading, not create/new/add wording"
 newset; card 1 "$GOOD\n## Creates\n- \`src/fresh.js\`\n"
@@ -162,7 +172,7 @@ run_lint 1
 check "the named bad card fails" "$RC" "1"
 
 # ---------------------------------------------------------------- board mode
-echo "# board mode (labels backend)"
+echo "# board mode (the issue fixtures become local cards: routes-store.sh)"
 FG="$SB/fakegh"; mkdir -p "$FG/bin" "$FG/r"
 ln -s "$SCRIPT_DIR/fake-gh.sh" "$FG/bin/gh"
 mk_issue() { jq -n --arg b "$2" --arg l "$3" --argjson n "$1" '{number:$n,title:"t",html_url:"x",body:$b,labels:[{name:$l}]}' > "$FG/r/issue$1.json"; }
@@ -183,6 +193,7 @@ echo '{"login":"bot"}' > "$FG/r/user.json"
   printf 'issue list --repo acme/toy --label fleet:backlog *\t0\t%s\n' "$FG/r/backlog.json"
 } > "$FG/routes"
 run_board() {
+  FLEET_BOARD_USER="$(bash "$SCRIPT_DIR/routes-store.sh" "$FG/routes" "$ROOT")"; export FLEET_BOARD_USER
   OUT="$(cd "$ROOT" && FAKE_GH_DIR="$FG" FAKE_GH_ROUTES="$FG/routes" PATH="$FG/bin:$PATH" bash "$SCRIPT" "$@" 2>"$SB/err")"
   RC=$?
 }
@@ -211,18 +222,23 @@ has "no arguments: lints a failing Backlog card" "$OUT" "#24"
 hasnt "no arguments: clean Backlog card 22 stays silent" "$OUT" "#22"
 
 # ---------------------------------------------------------------- local backend
-echo "# local backend: board.repo refs read the card files; gh exits 99"
+echo "# local cards: board.repo refs read the card files; gh exits 99"
 LR="$SB/localroot"; LSTUB="$SB/stub99"
 mkdir -p "$LR/.fleet-board/cards" "$LSTUB"
 git -C "$LR" init -q -b main
 git -C "$LR" config user.email t@example.com
 git -C "$LR" config user.name T
-printf 'board:\n  backend: local\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$LR/.fleet-board.yml"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$LR/.fleet-board.yml"
 git -C "$LR" add .fleet-board.yml
 git -C "$LR" commit -q -m initial
 echo 3 > "$LR/.fleet-board/next"
+# lcard <n> <sectioned body>: a local card whose Acceptance bullets and board-repo
+# Depends on refs are stored in the fields (a card read on local always carries them)
 lcard() {
-  jq -n --argjson n "$1" --arg b "$2" '{number: $n, title: "t", body: $b, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+  local acc dep
+  acc="$(printf '%s\n' "$2" | awk '/^## Acceptance/{s=1;next} /^##/{s=0} s&&/^- /{sub(/^- /,"");print}' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  dep="$(printf '%s\n' "$2" | awk '/^## Depends on/{s=1;next} /^##/{s=0} s&&/^- /{sub(/^- /,"");print}' | { grep -E '^(acme/toy)?#[0-9]+$' || true; } | sed 's/.*#//' | jq -R -s -c 'split("\n") | map(select(length > 0) | tonumber) | unique')"
+  jq -n --argjson n "$1" --argjson a "$acc" --argjson d "$dep" '{number: $n, title: "t", body: "", acceptance: $a, blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
     > "$LR/.fleet-board/cards/$1.json"
 }
 lcard 2 "$(printf '## Acceptance\n- clamp returns 3\n')"
@@ -244,10 +260,48 @@ has "local: acme/toy#8 is unresolved" "$OUT" "acme/toy#8 does not exist"
 check "local: no gh call for this repo's refs" "$(cat "$LSTUB/calls" 2>/dev/null)" ""
 lcard 1 "$(printf '## Acceptance\n- clamp returns 3\n\n## Depends on\n- other/repo#5\n')"
 run_local 1
-has "local: another repo's ref still goes through gh" "$(cat "$LSTUB/calls" 2>/dev/null)" "issue view 5 --repo other/repo"
+check "local: an outside ref is not a field, so lint makes no gh call for it" "$(cat "$LSTUB/calls" 2>/dev/null)" ""
+lfcard() { # n acceptance-json blocked_by-json body
+  jq -n --argjson n "$1" --argjson a "$2" --argjson d "$3" --arg b "$4" '{number: $n, title: "t", body: $b, acceptance: $a, blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: [], created_at: "2026-11-06T00:00:00Z"}' \
+    > "$LR/.fleet-board/cards/$1.json"
+}
+lfcard 1 '[]' '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
+run_local 1
+check "local fields: acceptance [] fails whatever the body says" "$RC" "1"
+has "local fields: acceptance [] is reported" "$OUT" "#1: empty-acceptance"
+lfcard 1 '["clamp returns 3"]' '[2]' ""
+run_local 1
+check "local fields: items and blocked_by pass" "$RC" "0"
+lfcard 1 '["clamp returns 3"]' '[2]' ""
+lfcard 2 '["clamp returns 3"]' '[1]' ""
+run_local 1 2
+check "local fields: a blocked_by cycle fails" "$RC" "1"
+has "local fields: the cycle is reported" "$OUT" "dependency-cycle"
+lcard 2 "$(printf '## Acceptance\n- clamp returns 3\n')"
 newset; card 1 "$GOOD\n## Depends on\n- #2\n"
 OUT="$(cd "$LR" && PATH="$LSTUB:$PATH" bash "$SCRIPT" --bodies "$BODIES" 2>"$SB/err")"; RC=$?
 check "local --bodies: #2 resolves from the card file" "$RC" "0"
+
+# ---------------------------------------------------------------- dependency PR adds the path
+echo "# missing-file: a path the blocked_by card's open PR adds"
+DR="$SB/deproot"; DSTUB="$SB/depstub"; mkdir -p "$DR/.fleet-board/cards" "$DSTUB"
+git -C "$DR" init -q -b main
+git -C "$DR" config user.email t@example.com
+git -C "$DR" config user.name T
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$DR/.fleet-board.yml"
+git -C "$DR" add .fleet-board.yml; git -C "$DR" commit -q -m initial
+echo 4 > "$DR/.fleet-board/next"
+printf '{"files":[{"path":"src/page.js"}],"state":"OPEN"}\n' > "$DSTUB/pr.json"
+printf '#!/usr/bin/env bash\nif [ "$1 $2" = "pr view" ]; then cat "%s/pr.json"; exit 0; fi\nexit 99\n' "$DSTUB" > "$DSTUB/gh"
+chmod +x "$DSTUB/gh"
+jq -n '{number: 2, title: "dep", body: "", acceptance: ["x"], blocked_by: [], state: "in_review", labels: [], next_comment_id: 1, comments: [], pr_url: "https://github.com/acme/toy/pull/50"}' > "$DR/.fleet-board/cards/2.json"
+dcard() { jq -n --argjson d "$1" '{number: 3, title: "t", body: "", acceptance: ["`src/page.js` exports Page"], blocked_by: $d, state: "ready", labels: [], next_comment_id: 1, comments: []}' > "$DR/.fleet-board/cards/3.json"; }
+dcard '[2]'
+DOUT="$(cd "$DR" && PATH="$DSTUB:$PATH" bash "$SCRIPT" 3 2>"$SB/err")"
+check "dep PR adds the path: no missing-file line" "$(printf '%s\n' "$DOUT" | grep -c missing-file)" "0"
+dcard '[]'
+DOUT="$(cd "$DR" && PATH="$DSTUB:$PATH" bash "$SCRIPT" 3 2>"$SB/err")"
+has "no dependency adds the path: missing-file names it" "$DOUT" "missing-file: src/page.js is not on main"
 
 echo
 echo "passed: $PASS failed: $FAIL"

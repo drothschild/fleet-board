@@ -3,7 +3,7 @@
 #
 # Hits the REAL sandbox repo named by SANDBOX_REPO: it pushes branches, opens
 # draft PRs, creates card issues and posts comments there. Callers:
-# behavioral-role.sh (Phase 5), behavioral-tick.sh (Phase 6) and the Phase 7
+# behavioral-role.sh (Phase 5) and the Phase 7
 # overnight run.
 #
 # Provides:
@@ -129,12 +129,21 @@ prepare() {
   fi
   git checkout -q -B main origin/main 2>/dev/null || bl_die "cannot check out main"
 
-  # Step 4: labels, with the throwaway config written elsewhere
+  # Step 4: init, with the throwaway config written elsewhere
   local initdir; initdir="$(mktemp -d)"
-  bash "$S/init.sh" --backend github-labels --repo "$SANDBOX_REPO" --test-one "node --test {file}" \
+  # init installs the fleet-board command: keep it out of the real ~/.local/bin
+  export FLEET_BOARD_BIN_DIR="$WORK/bin"
+  bash "$S/init.sh" --repo "$SANDBOX_REPO" --test-one "node --test {file}" \
     --dir "$initdir" >/dev/null 2>"$WORK/init.err" || bl_die "init.sh failed: $(cat "$WORK/init.err")"
   rm -rf "$initdir"
   [ -z "$(git -C "$CLONE" status --porcelain .fleet-board.yml)" ] || bl_die "the committed .fleet-board.yml changed"
+  # the clone's local card store: init above wrote its store into the throwaway dir, and
+  # re-running init in the clone would rewrite the committed config, so make it here
+  local store; store="$CLONE/$(bash "$S/config.sh" board.dir)"
+  [ "$store" != "$CLONE/" ] || bl_die "config.sh board.dir is empty in the clone"
+  rm -rf "$store"
+  mkdir -p "$store/cards" || bl_die "cannot create the local store at $store"
+  echo 1 > "$store/next" || bl_die "cannot write $store/next"
   [ "$(bash "$S/config.sh" commands.test_one)" = "node --test {file}" ] \
     || bl_die "config.sh commands.test_one in the clone is not 'node --test {file}'"
   git -C "$CLONE" config user.name >/dev/null 2>&1 || git -C "$CLONE" config user.name "fleet-board behavioral"
@@ -176,7 +185,7 @@ open_patch_pr() {
   git -C "$WT" push -q -u origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
   local url
   url="$(cd "$WT" && gh pr create --repo "$SANDBOX_REPO" --draft --base main --head "$BRANCH" \
-    --title "Add subtract [behavioral $BL_TS]" --body "Closes #$CARD")" || bl_die "gh pr create failed"
+    --title "Add subtract [behavioral $BL_TS]" --body "Local board card $CARD (behavioral seed)")" || bl_die "gh pr create failed"
   PR="${url##*/}"
   case "$PR" in ''|*[!0-9]*) bl_die "cannot read PR number from: $url" ;; esac
   bl_log "PR #$PR"
@@ -306,8 +315,8 @@ cleanup() {
       fi
     done
     for n in $CARDS; do
-      gh issue close "$n" --repo "$SANDBOX_REPO" --reason "not planned" >/dev/null 2>&1 \
-        || bl_log "cleanup: could not close card #$n"
+      (cd "$CLONE" && bash "$S/board-move.sh" "$n" wont_do) >/dev/null 2>&1 \
+        || bl_log "cleanup: could not move card #$n to wont_do"
     done
   fi
   [ -n "$WORK" ] && rm -rf "$WORK"

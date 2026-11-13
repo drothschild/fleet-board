@@ -15,9 +15,9 @@
 #                         new baseline raises again whatever is still wrong
 #   blocked_findings -> [], blocking_pr, blocked_from -> null: nothing stale
 #                         reaches the Human QA handoff or a later unblock
-#   accepted           -> {"login": <authenticated gh login>, "at": <UTC>, "sha": <head>}
-# tick-plan.sh honors an accepted entry only when its login is the
-# authenticated one (the note itself is only trusted from that login).
+#   accepted           -> {"login": <local login (fb_login)>, "at": <UTC>, "sha": <head>}
+# tick-plan.sh honors an accepted entry only when its login is the local
+# login (the note itself is only trusted from that login).
 #
 # Then the card is moved out of Blocked, back to the state it was blocked from
 # (the note's blocked_from: ready, in_progress or in_review; in_review when
@@ -57,7 +57,7 @@ BACK="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }
     on && $0 == "```" { exit }
     on { print }' | jq -r '.blocked_from // empty' 2>/dev/null)"
-case "$BACK" in ready|in_progress|in_review|review_?*) ;; *) BACK=in_review ;; esac
+case "$BACK" in ready|in_progress|in_review|merging|review_?*) ;; *) BACK=in_review ;; esac
 
 PR="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }

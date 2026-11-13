@@ -107,6 +107,26 @@ case "$(printf '%s' "$PARSED" | jq -r 'type')" in
   *) echo "config.sh: $FILE: the top level must be a map" >&2; exit 4 ;;
 esac
 
+# The board is always local: the keys that chose a GitHub backend are gone.
+REMOVED="$(jq -r '(.board // {}) as $b | if ($b | type) == "object" then (["backend", "project_number", "project_owner"][] | select(. as $k | $b | has($k))) else empty end' <<<"$PARSED")"
+if [ -n "$REMOVED" ]; then
+  while IFS= read -r k; do
+    echo "config.sh: invalid config: board.$k is no longer a setting: the board is now always local. Delete it from $FILE; to move an existing GitHub board onto the local store, run scripts/import-github.sh" >&2
+  done <<<"$REMOVED"
+  exit 5
+fi
+
+# The tick system is gone: the keys only its wrapper and manager read are refused.
+REMOVED="$(jq -r '
+  ((.limits // {}) as $l | if ($l | type) == "object" then (["max_cost_usd", "tick_interval", "min_tick_gap", "max_consecutive_failures"][] | select(. as $k | $l | has($k)) | "limits.\(.)") else empty end),
+  ((.models // {}) as $m | if ($m | type) == "object" and ($m | has("manager")) then "models.manager" else empty end)' <<<"$PARSED")"
+if [ -n "$REMOVED" ]; then
+  while IFS= read -r k; do
+    echo "config.sh: invalid config: $k is no longer a setting: the tick system is gone and the supervisor (scripts/supervisor.sh) does not read it. Delete it from $FILE" >&2
+  done <<<"$REMOVED"
+  exit 5
+fi
+
 # Merge with defaults
 MERGED="$(jq -c -n --slurpfile d "$HERE/config-defaults.json" '$d[0] * input' <(echo "$PARSED"))" || {
   echo "config.sh: invalid config: failed to merge with defaults" >&2
@@ -134,7 +154,6 @@ STAGE_DEFAULTS='
             advisory: (if $s | has("advisory") then $s.advisory else false end),
             max_rounds: (if $s | has("max_rounds") then $s.max_rounds else $root.review.max_rounds end),
             brief: (if $s | has("brief") then $s.brief else null end),
-            price: ($s.price // null),
             timeout: ($s.timeout // 600),
             max_output_tokens: ($s.max_output_tokens // 16000),
             max_diff_bytes: ($s.max_diff_bytes // 400000)
@@ -156,7 +175,8 @@ PROVIDER_DEFAULTS='
     then [.review.stages[] | select(type == "object") | .provider | select(type == "string")]
     else [] end;
   if (.models | type) == "object" and (.models.reviewer | type) == "object" then
-    .models.reviewer |= (if has("timeout") then . else .timeout = 1500 end)
+    # Tokens only: an old models.reviewer.price is dropped, never read.
+    .models.reviewer |= (del(.price) | if has("timeout") then . else .timeout = 1500 end)
   else . end
   | . as $root
   | $presets[0] as $p
@@ -188,7 +208,7 @@ VALIDATION_SCRIPT='
     else [] end;
   def errors:
     [
-      (("board", "commands", "worktrees", "merge", "review", "models", "limits", "headless") as $s
+      (("board", "commands", "worktrees", "merge", "review", "models", "limits", "headless", "supervisor") as $s
         | if (.[$s] | type) != "object" then "\($s) must be an object" else empty end),
       (("test_paths", "human_qa_paths") as $s
         | if (.[$s] | type) != "array" then "\($s) must be a list" else empty end),
@@ -198,19 +218,10 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" then
         (if (.board.repo | type) != "string" or (.board.repo | test("^[^/ ]+/[^/ ]+$") | not) then "board.repo must match ^[^/ ]+/[^/ ]+$" else empty end)
       else empty end),
-      (if (.board | type) == "object" then
-        (if (.board.backend | type) != "string" or (.board.backend as $b | ($b == "github-labels" or $b == "github-projects" or $b == "local") | not) then "board.backend must be github-labels, github-projects or local" else empty end)
-      else empty end),
-      (if (.board | type) == "object" and .board.backend == "github-projects" then
-        (if (.board.project_number | type) != "number" then "github-projects requires numeric board.project_number" else empty end)
-      else empty end),
-      (if (.board | type) == "object" then
-        (if (.board.project_owner | type) as $t | $t != "null" and $t != "string" then "board.project_owner must be null or a string" else empty end)
-      else empty end),
       (if (.board | type) == "object" and (.board.states | type) == "object" then
         (stage_names as $names
           | .board.states | to_entries | map(
-              if (.key | test("^(backlog|ready|in_progress|in_review|human_qa|blocked|done|wont_do)$")) then empty
+              if (.key | test("^(backlog|ready|in_progress|in_review|merging|human_qa|blocked|done|wont_do)$")) then empty
               elif (.key | startswith("review_")) then (.key | ltrimstr("review_")) as $n |
                 (if ($names | index($n)) != null then empty else "board.states key \(.key) names no stage" end)
               else "board.states key \(.key) is not canonical" end)[])
@@ -234,13 +245,6 @@ VALIDATION_SCRIPT='
                 (if $s.provider != null and $s.model == null then "review.stages[\($i)].model must be set when provider is set"
                  elif $s.provider == null and $s.model == null and $reviewer_type == "object" then "review.stages[\($i)].model must be set when models.reviewer is a provider"
                  elif ($s.model | type) != "string" or $s.model == "" then "review.stages[\($i)].model must be a non-empty string" else empty end),
-                (if $s.provider != null then
-                  (if $s.price == null then "review.stages[\($i)].price is required when provider is set"
-                   else
-                    (("input", "output") as $k | ($s.price | if type == "object" then .[$k] else null end) as $v
-                      | if ($v | type) != "number" or $v < 0 then "review.stages[\($i)].price.\($k) must be a non-negative number" else empty end)
-                   end)
-                else empty end),
                 (("timeout", "max_output_tokens", "max_diff_bytes") as $k
                   | if ($s[$k] | type) != "number" or ($s[$k] | floor) != $s[$k] or $s[$k] <= 0 then "review.stages[\($i)].\($k) must be a positive integer" else empty end),
                 (if ($s.paths | type) != "array" or ($s.paths | map(type != "string" or . == "") | any) then "review.stages[\($i)].paths must be a list of non-empty strings" else empty end),
@@ -291,8 +295,43 @@ VALIDATION_SCRIPT='
               else empty end)
             end)
        end),
+      (if (.supervisor | type) == "object" then
+        . as $root | .supervisor as $sup |
+        (("reconcile_interval_seconds", "progress_timeout_seconds", "attempt_timeout_seconds", "shutdown_grace_seconds", "retry_backoff_seconds", "aging_seconds") as $k
+          | $sup[$k] as $v | if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.\($k) must be a positive integer" else empty end),
+        (if ($sup.attempt_timeout_seconds | type) == "number" and ($sup.shutdown_grace_seconds | type) == "number" and $sup.attempt_timeout_seconds <= $sup.shutdown_grace_seconds then "supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds" else empty end),
+        (if ($sup.provider_concurrency | type) != "object" then "supervisor.provider_concurrency must be an object"
+         else $sup.provider_concurrency | to_entries[] | .key as $k | .value as $v |
+           (if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.provider_concurrency.\($k) must be a positive integer" else empty end),
+           (if $k != "claude" and (($root.providers | type) != "object" or ($root.providers | has($k) | not)) then "supervisor.provider_concurrency.\($k) names no provider" else empty end)
+         end),
+        # Path globs (path-glob.jq): checked on the text after `\` -> `/`, and again
+        # cleaned (no leading ./, no trailing /) for the empty and wildcard-only rules
+        (("scope_ignore", "version_files") as $k | $sup[$k] as $v
+          | if ($v | type) != "array" then "supervisor.\($k) must be a list of strings"
+            elif any($v[]; (type != "string") or . == "") then "supervisor.\($k) entries must be non-empty strings"
+            elif any($v[]; gsub("\\\\"; "/") | sub("^(\\./)+"; "") | sub("/+$"; "") | . == "" or . == "." or test("^[*?/]+$"))
+            then "supervisor.\($k) entries must name a path, not only wildcards or separators"
+            elif any($v[]; gsub("\\\\"; "/") | startswith("/") or (split("/") | any(. == ".." or . == ".")))
+            then "supervisor.\($k) entries must be repo-relative, without a leading / or .."
+            else (first($v[] | select(. as $g | try (("" | test("\\A(?:" + ($g | pg_regex) + ")\\z")) | false) catch true)) // null) as $bad
+              | if $bad != null then "supervisor.\($k) entry \($bad | tojson) is not a valid glob" else empty end
+            end)
+      else empty end),
       (if (.merge | type) == "object" then
-        (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end)
+        (if (.merge.policy | type) != "string" or (.merge.policy as $p | ($p == "human" or $p == "auto") | not) then "merge.policy must be human or auto" else empty end),
+        (if (.merge.ignore_checks | type) != "array" then "merge.ignore_checks must be a list"
+         elif any(.merge.ignore_checks[]; (type != "object")
+              or ((.name | type) != "string" or .name == "") or ((.reason | type) != "string" or .reason == "")
+              or ((.until | type) != "string" or ((try (.until | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z") and (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == .) catch false) | not)))
+         then "merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+         elif any(.merge.ignore_checks[]; has("pending") and ((.pending | type) != "boolean"))
+         then "merge.ignore_checks pending must be true or false"
+         else empty end),
+        (if .merge.persona != null and ((.merge.persona | type) != "string" or .merge.persona == "" or (.merge.persona | startswith("/")) or (.merge.persona | split("/") | index("..") != null))
+         then "merge.persona must be null or a non-empty relative path without .." else empty end),
+        (if .merge.persona_append != null and (.merge.persona_append | type) != "string"
+         then "merge.persona_append must be null or a string" else empty end)
       else empty end),
       (if (.review | type) == "object" then
         (if (.review.max_rounds | type) != "number" or (.review.max_rounds | floor) != .review.max_rounds or .review.max_rounds <= 0 then "review.max_rounds must be a positive integer" else empty end)
@@ -308,6 +347,10 @@ VALIDATION_SCRIPT='
       else empty end),
       (if (.models | type) == "object" then
         (if (.models.escalation | type) != "null" and ((.models.escalation | type) != "string" or .models.escalation == "") then "models.escalation must be null or a non-empty string" else empty end)
+      else empty end),
+      (if (.planner | type) == "object" then
+        (if (.planner.provider | type) != "string" or (.planner.provider as $p | ($p == "claude" or $p == "codex") | not) then "planner.provider must be claude or codex" else empty end),
+        (if (.planner.model | type) != "null" and (.planner.model | type) != "string" then "planner.model must be a string or null" else empty end)
       else empty end),
       (if (.followups | type) != "object" then "followups must be an object"
        elif (.followups.status | type) != "string" or (.followups.status as $s | ($s == "ready" or $s == "backlog") | not) then "followups.status must be ready or backlog" else empty end),
@@ -326,8 +369,13 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" then
         (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
+      (if (.headless | type) == "object" then
+        (if .headless.permission_mode == "bypassPermissions" then "headless.permission_mode bypassPermissions is refused: it runs every role with no permission checks; use one of auto, acceptEdits, default, plan"
+         elif (.headless.permission_mode | type) != "string" or (.headless.permission_mode as $m | ["auto","acceptEdits","default","plan"] | index($m) | not) then "headless.permission_mode must be one of auto, acceptEdits, default, plan"
+         else empty end)
+      else empty end),
       (if (.models | type) == "object" then
-        (("manager", "implementor", "fixer") as $r
+        (("implementor", "fixer", "merger") as $r
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end),
         (.models.reviewer as $r
          | if ($r | type) == "object" then
@@ -336,8 +384,6 @@ VALIDATION_SCRIPT='
               elif (.providers[$r.provider].review_command | type) != "string"
               then "models.reviewer.provider \($r.provider) has no review_command" else empty end),
              (if ($r.model | type) != "string" or $r.model == "" then "models.reviewer.model must be a non-empty string" else empty end),
-             (if ($r.price | type) != "object" or ([$r.price.input, $r.price.output] | any(type != "number" or . < 0))
-              then "models.reviewer.price must have non-negative input and output" else empty end),
              (if ($r.timeout | type) != "number" or ($r.timeout | floor) != $r.timeout or $r.timeout < 1 or $r.timeout > 1500
               then "models.reviewer.timeout must be an integer from 1 to 1500" else empty end),
              (if (.models.escalation | type) != "string" or .models.escalation == ""
@@ -346,8 +392,13 @@ VALIDATION_SCRIPT='
            else empty end)
       else empty end),
       (if (.limits | type) == "object" then
+        (("max_turns", "max_hours") as $k
+          | if (.limits[$k] | type) != "number" or (.limits[$k] | floor) != .limits[$k] or .limits[$k] <= 0 then "limits.\($k) must be a positive integer" else empty end),
         (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end),
-        (("rate_limit_max_wait", "rate_limit_margin", "min_tick_gap") as $k
+        (if (.limits.max_tokens | type) != "number" or (.limits.max_tokens | floor) != .limits.max_tokens or .limits.max_tokens <= 0 then "limits.max_tokens must be a positive integer" else empty end),
+        (if .limits.max_tokens_per_card == null then empty
+         elif (.limits.max_tokens_per_card | type) != "number" or (.limits.max_tokens_per_card | floor) != .limits.max_tokens_per_card or .limits.max_tokens_per_card <= 0 then "limits.max_tokens_per_card must be null or a positive integer" else empty end),
+        (("rate_limit_max_wait", "rate_limit_margin") as $k
           | if (.limits[$k] | type) != "number" or .limits[$k] < 0 then "limits.\($k) must be a non-negative number" else empty end)
       else empty end)
     ] | map(select(. != null))
@@ -359,7 +410,7 @@ VALIDATION_SCRIPT='
   (errors | .[]), (warnings | .[])
 '
 
-VALIDATION_ERRORS="$(echo "$MERGED" | jq -r --slurpfile presets "$HERE/providers/presets.json" "$VALIDATION_SCRIPT" 2>&1)" || {
+VALIDATION_ERRORS="$(echo "$MERGED" | jq -r --slurpfile presets "$HERE/providers/presets.json" "$(cat "$HERE/path-glob.jq")$VALIDATION_SCRIPT" 2>&1)" || {
   echo "config.sh: invalid config: validation script failed" >&2
   exit 5
 }

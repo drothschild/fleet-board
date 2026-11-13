@@ -9,21 +9,12 @@ from pathlib import Path
 import sys
 root = Path(sys.argv[1]).resolve()
 spec = root / 'docs/implementation-plans/2026-09-28-fleet-board/specs'
-roles = [('manager spec', spec / 'manager.md'), ('reviewer spec', spec / 'reviewer.md')]
+# The manager contract checks went with the tick system (the manager agent is deleted): the supervisor's
+# driver carries the conflict flow, pinned by driver_cases.py test_conflict_fix_* and test_update_branch_*.
+roles = [('reviewer spec', spec / 'reviewer.md')]
 if sys.argv[2] != '--spec-only':
-    roles += [('manager agent', root / 'plugins/fleet-board/agents/manager.md'), ('reviewer agent', root / 'plugins/fleet-board/agents/reviewer.md')]
+    roles += [('reviewer agent', root / 'plugins/fleet-board/agents/reviewer.md')]
 checks = {
- 'manager': [
-  ('conflict dispatch uses plan findings', "plan card's `findings`"),
-  ('conflict flow overrides ordinary fix flow', 'instead of the ordinary 2.9 steps'),
-  ('blocked metadata precedes the move', 'Before moving, run `note.sh merge`'),
-  ('resolved conflict clears pending files', '`conflicted_files: null`'),
-  ('resolved conflict invalidates review', '`last_review: null`'),
-  ('resolved conflict restarts evidence review', '`round: 1`'),
-  ('resolved conflict repeats stage routing', '`reviewed_stages: []`'),
-  ('success counts as progress without incrementing round', 'clearing `conflicted_files` after a pushed resolution is progress'),
-  ('blocked conflict retains all conflict findings', "`blocked_findings` = the plan card's `findings`"),
- ],
  'reviewer': [
   ('explicit conflict classification', '**Conflict-resolved:**'),
   ('does not skip an unchanged first-parent test', 'even when the first-parent diff is empty'),

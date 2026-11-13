@@ -52,10 +52,39 @@ docs/                              # repo-level documentation
 - `git add`, `git commit`, and `git push` are pre-approved.
 - Never `git push --force`.
 
+### Merge routine
+
+- For contributions to this repository, CI is asynchronous feedback. After merge
+  authorization, required review, and focused local checks pass, merge without waiting
+  for queued or running CI. Keep the CI workflows enabled.
+- Read available CI status once. Investigate any already-reported relevant failure and
+  verify its fix locally; do not watch or poll CI unless the user explicitly asks.
+- After merging, fast-forward local `main` while preserving local changes, then run the
+  focused checks on the merged code. Report the merged commit, local verification, and
+  the observed CI status accurately, including pending checks.
+- This contribution routine does not alter the plugin's merge gates for managed projects.
+
 ## Versioning
 
 Plugins version independently using semver. `marketplace.json` tracks each plugin's current
 version; the two must not drift.
+
+## Fleet agents: version bump
+
+This section applies to this repository only; the shipped plugin does not know about it.
+`plugins/fleet-board/tests/test-version-bumped.sh` fails CI when a change under `plugins/`
+does not bump both manifests above the `origin/main` version. Fleet implementors and fixers
+working on this repo, for any change under `plugins/`:
+
+1. Run `git fetch origin`. If the branch is behind `origin/main`, merge `origin/main` into it
+   (never rebase or force-push) before bumping.
+2. Bump `plugins/fleet-board/.claude-plugin/plugin.json` and the fleet-board entry in
+   `.claude-plugin/marketplace.json` (patch by default) strictly above the `origin/main` version (an equal version fails), in the
+   implementation commit (not the test-first commit).
+3. Collisions: bump at card start against the current `origin/main`. If `origin/main` moves
+   to the same or a higher version before merge, merge it again and re-bump above it.
+4. Run `bash plugins/fleet-board/tests/test-version-bumped.sh` (wired as `commands.lint` in
+   `.fleet-board.yml`) before pushing; it must print no `not ok` line.
 
 ## Primitive Types
 
@@ -116,4 +145,4 @@ Plugin scripts must run under macOS `/bin/bash` 3.2 and with both BSD and GNU to
 A plugin with non-trivial contracts keeps its own `plugins/<name>/CLAUDE.md`
 (currently `fleet-board`). Read it before changing that plugin.
 
-Last verified: 2026-09-29
+Last verified: 2026-11-07

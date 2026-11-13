@@ -26,9 +26,7 @@ ROOT="$SB/root"; mkdir -p "$ROOT/.wt"
 git -C "$ROOT" init -q
 cat > "$ROOT/.fleet-board.yml" <<'EOF'
 board:
-  backend: github-projects
   repo: acme/api
-  project_number: 3
 worktrees:
   dir: ".wt"
 EOF
