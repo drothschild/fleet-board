@@ -9,7 +9,7 @@
 #
 # Exit codes:
 #   0 - config written
-#   1 - refused (gh not logged in or missing the repo scope, existing config
+#   1 - refused (gh, jq, git or python3 3.9+ missing, gh not logged in or missing the repo scope, existing config
 #       without --force, a rendered config that fails config.sh --check, or
 #       the store could not be created)
 #   2 - usage error
@@ -109,9 +109,15 @@ fi
 DIR="$(cd "$DIR" && pwd)" || usage "cannot enter --dir: $DIR"
 TARGET="$DIR/.fleet-board.yml"
 
-for tool in gh jq git; do
+for tool in gh jq git python3; do
   command -v "$tool" >/dev/null 2>&1 || die 1 "$tool is not on PATH"
 done
+# The supervisor and the board page need python3 3.9 or newer.
+PYV="$(python3 --version 2>&1 | sed -n 's/^Python \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')"
+PY_MAJOR="${PYV%% *}"; PY_MINOR="${PYV##* }"
+if [ -z "$PYV" ] || [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; }; then
+  die 1 "python3 3.9 or newer is required (found: $(python3 --version 2>&1 | head -1))"
+fi
 
 # --- Step 2: scopes --------------------------------------------------------
 # The active account's scopes line decides (fb_token_scopes). With none, a
