@@ -99,7 +99,7 @@ check_ref() {
     return 0
   fi
   card="$(fl_read_card "$num" 2>/dev/null)" || lookup_failed "local card #$num"
-  state="$(jq -r '.state // ""' <<<"$card" 2>/dev/null)" || lookup_failed "local card #$num"
+  state="$(jq -er '.state | strings | select(length > 0)' <<<"$card" 2>/dev/null)" || lookup_failed "local card #$num"
   case "$state" in
     done) met=true ;;
     wont_do) np=true; status=wont_do ;;
