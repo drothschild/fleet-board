@@ -794,6 +794,15 @@ assert_eq "ignored-checks: a refused merge writes nothing" "$(input_count)" "0"
 printf '{"ignored_checks":"lint"}\n' > "$FAKE_GH_DIR/ic-bad2.json"
 clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad2.json"
 assert_exit "ignored-checks: a non-list is refused" 1
+# state: the check's state when the merge went past it, "red" or "pending"; optional
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky","until":"2026-12-31","at":"2026-11-11T12:00:00Z","state":"red"},{"name":"e2e","reason":"async","until":"2026-12-31","at":"2026-11-11T12:00:00Z","state":"pending"}]}\n' > "$FAKE_GH_DIR/ic-state.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-state.json"
+assert_exit "ignored-checks: merge accepts a red and a pending state" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "ignored-checks: the states are stored" "$(jq -c '.ignored_checks | map(.state)' <<<"$N" 2>/dev/null)" '["red","pending"]'
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky","until":"2026-12-31","at":"2026-11-11T12:00:00Z","state":"green"}]}\n' > "$FAKE_GH_DIR/ic-bad3.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad3.json"
+assert_exit "ignored-checks: any other state is refused" 1
 
 # ---------------------------------------------------------------------------
 # blocked-from: the state a card was blocked from

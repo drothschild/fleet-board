@@ -18,6 +18,34 @@ Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is uns
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the supervisor merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA: the card moves to `merging` and `scripts/merge-reviewed.sh` merges it outside any Claude session (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
 
+## `merge.persona` and `merge.persona_append`
+
+`merge.persona` is a path relative to the repo root, with no `..`. `null` (the default) uses `.fleet-board/merger.md` when that file exists, else the plugin's default persona. A path that is set but missing is an attention, never a silent fallback. `merge.persona_append` is a string added after whichever persona was chosen. See [the README](../README.md#merger-and-deploys) for an example persona.
+
+## `merge.ignore_checks`
+
+A list of dated, reasoned exceptions for checks that should not hold up a merge. Each entry has a `name` (a case-sensitive shell glob: `*` is any run of characters, `?` one character), a `reason`, and an `until` date (`YYYY-MM-DD`, valid through that day, UTC). A red check whose name matches an unexpired entry counts as green. An entry that also says `pending: true` covers a matching check that is still running, so the supervisor merges without waiting for it to finish; without it, a pending check is never green. A `pending: true` entry also covers a red check of the same name: it means "don't wait for this check, whatever it says". A check with no name or context is never covered by any entry.
+
+Each check is judged by one of three explicit sets, and a check in none of them is never green, whatever the entries say:
+
+- **passed:** a check run whose conclusion is `SUCCESS`, `NEUTRAL` or `SKIPPED`; a status context in state `SUCCESS`.
+- **red:** a check run whose conclusion is `FAILURE`, `CANCELLED`, `TIMED_OUT`, `ACTION_REQUIRED`, `STARTUP_FAILURE` or `STALE`; a status context in state `FAILURE` or `ERROR`. Any entry covers these, so an entry without `pending` also covers `STARTUP_FAILURE` and `STALE`.
+- **pending:** a check run whose status is `QUEUED`, `IN_PROGRESS`, `WAITING`, `PENDING` or `REQUESTED` and that has no conclusion yet; a status context in state `PENDING` or `EXPECTED`. Only a `pending: true` entry covers these.
+
+A completed check run with no conclusion, or any state fleet-board does not know, always blocks the merge. An expired entry counts for nothing and the planner warns about it. The planner, `merge-reviewed.sh` and the gate share one rule (`scripts/ignore-checks.jq`), and each merge records the checks it went past on the card's note, each with the `state` it was in (`red` or `pending`).
+
+```yaml
+merge:
+  policy: auto
+  ignore_checks:
+    - name: "*"
+      reason: "CI is asynchronous feedback for this repository"
+      until: 2026-12-31
+      pending: true
+```
+
+`gh pr merge` still refuses a merge while a check that branch protection marks as required is failing or pending, and fleet-board never uses `--admin`. On a branch with a merge queue, gh queues the PR instead of refusing it; `merge-reviewed.sh` then finds the PR still open, treats it as possibly queued, and stops until the remote state resolves. Remove the check from the required list in GitHub if it should not block.
+
 ## `after_merge.allow` and the `## After merge` section
 
 A card body may hold a `## After merge` section (heading in any case, ending at the next heading) with one command per `-` bullet, for example `- git tag v1.2.3` and `- git push origin v1.2.3`. After the card's PR merges, the supervisor runs `after-merge.sh run <body-file>`, which runs the commands in order and prints the outcome. Release steps no agent can do by hand need no Human QA step this way.
