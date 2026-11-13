@@ -2,6 +2,7 @@
 snapshots and applies `stop` (an immediate mode change), so every method takes one short lock and
 `snapshot()` returns a deep copy that later mutation cannot change."""
 import copy
+import json
 import threading
 import time
 from collections import deque
@@ -40,6 +41,7 @@ def ledger_column(action):
 # The token counts the budget limits count: cache reads are left out (owner decision, 0.27.0).
 BUDGET_KEYS = ('input', 'output', 'cache_write')
 BUDGET_LABEL = 'counted toward limits.max_tokens'
+SNAPSHOT_EVENTS = 50   # the snapshot carries the newest of the 500 events kept
 
 
 class State:
@@ -64,6 +66,10 @@ class State:
         self.budget_cap = None    # limits.max_tokens as the loop last read it (None: no limit)
         self.card_tokens = {}   # card -> known budget tokens spent in this run
         self.events = deque(maxlen=500)
+        self.event_log = None   # path of supervisor.log: each event is appended to it as one JSON line
+        self.attention = {}     # card number (str) -> {reason, at}: cards that wait for a person
+        self.queue = {'ready': None, 'waiting': None}   # the last planning cycle: cards that could start, cards held
+        self.global_cap = None  # limits.concurrency as the loop last read it
         self._sequence = 0
         self._lock = threading.RLock()
 
@@ -75,6 +81,30 @@ class State:
         with self._lock:
             if holds != self.holds:
                 self.holds = holds
+                self._bump()
+
+    def set_queue(self, ready, waiting):
+        with self._lock:
+            queue = {'ready': ready, 'waiting': waiting}
+            if queue != self.queue:
+                self.queue = queue
+                self._bump()
+
+    def set_global_cap(self, cap):
+        with self._lock:
+            if cap != self.global_cap:
+                self.global_cap = cap
+                self._bump()
+
+    def set_attention(self, card, reason):
+        """Mark `card` as needing a person; it stays until an action begins for the card."""
+        with self._lock:
+            self.attention[str(card)] = {'reason': reason, 'at': self.clock()}
+            self._bump()
+
+    def clear_attention(self, card):
+        with self._lock:
+            if self.attention.pop(str(card), None) is not None:
                 self._bump()
 
     def pause(self, reason):
@@ -112,6 +142,7 @@ class State:
             if action.kind == 'merge' and self.lane is not None:
                 raise ValueError('merge lane taken')
             self.active[action.card] = action
+            self.attention.pop(str(action.card), None)
             if action.kind == 'merge':
                 self.lane = action
             self._bump()
@@ -189,8 +220,15 @@ class State:
     def event(self, type, **payload):
         with self._lock:
             self._sequence += 1
-            self.events.append({'sequence': self._sequence, 'type': type, 'at': self.clock(), 'payload': payload})
+            entry = {'sequence': self._sequence, 'type': type, 'at': self.clock(), 'payload': payload}
+            self.events.append(entry)
             self._bump()
+            if self.event_log:
+                try:
+                    with open(self.event_log, 'a') as log:
+                        log.write(json.dumps(entry, default=str) + '\n')
+                except OSError:
+                    pass   # the log is a convenience; an event must never fail the loop
             return self._sequence
 
     @staticmethod
@@ -211,6 +249,10 @@ class State:
                 'lane': self._action_dict(self.lane),
                 'provider_health': self.provider_health,
                 'holds': self.holds,
+                'events': list(self.events)[-SNAPSHOT_EVENTS:],
+                'attention': self.attention,
+                'queue': self.queue,
+                'limits': {'concurrency': self.global_cap},
                 'run_tokens': self.run_tokens,
                 'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,
                                'label': BUDGET_LABEL},

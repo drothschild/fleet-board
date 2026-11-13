@@ -229,6 +229,7 @@ def _start(root, stdout, stderr, ignore_stuck=False):
     """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop, 4 when it
     refuses to start because a previous supervisor left cards half done."""
     state = State(uuid.uuid4().hex, time.time)
+    state.event_log = str(paths.log_dir() / "supervisor.log")
     loader = loop.config_loader(root)
     supervisor = loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
                                  driver=CardDriver(root, loader, state))
@@ -391,6 +392,10 @@ def _human_status(status):
     lines.append("active: %d" % len(active))
     for action in active:
         lines.append("  card %s: %s (%s)" % (action.get("card"), action.get("action"), action.get("provider")))
+    attention = status.get("attention")
+    for card, entry in sorted(attention.items(), key=lambda kv: str(kv[0])) if isinstance(attention, dict) else []:
+        reason = entry.get("reason") if isinstance(entry, dict) else entry
+        lines.append("attention card %s: %s" % (card, reason or "no reason given"))
     health = status.get("provider_health")
     for name, entry in sorted(health.items()) if isinstance(health, dict) else []:
         reason = entry.get("reason") if isinstance(entry, dict) else None

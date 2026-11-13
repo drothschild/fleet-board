@@ -26,10 +26,16 @@ def ui_status(status):
         name = action.get("provider") if isinstance(action, dict) else None
         if isinstance(name, str):
             providers[name] = providers.get(name, 0) + 1
+    queue = status.get("queue") if isinstance(status.get("queue"), dict) else {}
+    limits = status.get("limits") if isinstance(status.get("limits"), dict) else {}
+    attention = status.get("attention") if isinstance(status.get("attention"), dict) else None
+    # The attention count is known once a planning cycle has run, like the rest of the queue.
+    counted = len(attention) if attention is not None and queue.get("ready") is not None else None
     # Ready only once the startup check is done: the socket answers while it still runs ("checking").
     return dict(status, desired_mode=status.get("mode"), phase=status.get("mode"), ready=status.get("startup") == "done",
-                capacity={"slots": len(active), "global_cap": None, "per_provider": providers},
-                queue={"ready": None, "running": len(active), "waiting": None, "attention": None})
+                capacity={"slots": len(active), "global_cap": limits.get("concurrency"), "per_provider": providers},
+                queue={"ready": queue.get("ready"), "running": len(active), "waiting": queue.get("waiting"),
+                       "attention": counted})
 
 
 def socket_path(domain_id):

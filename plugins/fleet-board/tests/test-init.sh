@@ -742,6 +742,7 @@ assert_count "local: next is 1" "$(cat "$TARGET/.fleet-board/next" 2>/dev/null)"
 assert_count "local: .gitignore has one .fleet-board/ line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore" 2>/dev/null)" 1
 assert_count "local: no label create" "$(calls_of label create | count_lines)" 0
 assert_count "local: no label call at all" "$(calls_of label list | count_lines)" 0
+assert_count "local: no gh label invocation of any subcommand" "$(for f in $(all_calls); do [ "$(sed -n 1p "$f")" = "label" ] && echo x; done | count_lines)" 0
 
 # a second run keeps one ignore line and never resets an existing store
 echo 7 > "$TARGET/.fleet-board/next"
@@ -763,6 +764,18 @@ run_init --repo acme/toy --dir "$TARGET"
 assert_exit "local: existing .gitignore, exit 0" 0
 assert_count "local: existing .gitignore keeps its lines" "$(grep -cxF 'node_modules/' "$TARGET/.gitignore")" 1
 assert_count "local: a similar line does not count as present" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
+
+# a .gitignore whose last line has no trailing newline: the entry lands on its own line
+setup_case
+cat > "$ROUTES" << ROUTESEOF
+auth status	0	$FIXTURES/projects/auth-status-ok.txt
+ROUTESEOF
+default_routes >> "$ROUTES"
+printf 'node_modules/' > "$TARGET/.gitignore"
+run_init --repo acme/toy --dir "$TARGET"
+assert_exit "local: no-trailing-newline .gitignore, exit 0" 0
+assert_count "local: no-trailing-newline keeps node_modules/ on its own line" "$(grep -cxF 'node_modules/' "$TARGET/.gitignore")" 1
+assert_count "local: no-trailing-newline puts .fleet-board/ on its own line" "$(grep -cxF '.fleet-board/' "$TARGET/.gitignore")" 1
 
 # only the repo scope is needed (no project scope)
 setup_case

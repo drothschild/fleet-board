@@ -233,7 +233,8 @@ $text
       elif (ascii_downcase | startswith(($repo | ascii_downcase) + "#")) then split("#")[1]
       else empty end' <<<"$card")
   OUT="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" "${cargs[@]}")" || fb_die 1 "failed to create: $title"
-  num="$(jq -r .number <<<"$OUT")"
+  num="$(jq -r '.number | select(type == "number")' <<<"$OUT" 2>/dev/null)"
+  case "$num" in ''|*[!0-9]*) fb_die 1 "failed to create: $title" ;; esac
   CREATED="#$num"
   REFS="$(jq -c --arg k "$(jq -r .key <<<"$card")" --arg r "#$num" '. + {($k): $r}' <<<"$REFS")"
   echo "Created $CREATED: $title"
