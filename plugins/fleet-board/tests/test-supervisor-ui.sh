@@ -10,7 +10,7 @@ fi
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/supervisor-ui.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
-# Drift guard: the status and card-execution payloads a REAL Service produces.
+# Drift guard: the status payloads a REAL Service produces.
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$PLUGIN/scripts" \
   python3 "$PLUGIN/fixtures/supervisor/dump_real_shapes.py" "$TMP/real-shapes.json"
 

@@ -18,6 +18,11 @@
 # never reset, and kept out of git). gh is still needed, logged in with the
 # repo scope, for the PRs.
 #
+# It also installs the `fleet-board` command in ~/.local/bin (or
+# $FLEET_BOARD_BIN_DIR) with install-cli.sh, after writing the config and also
+# when it refuses an existing one. That step is best effort: its messages go to
+# stderr and it never changes the exit code.
+#
 # Nothing is written until the final step. On every non-zero exit the
 # target .fleet-board.yml is unchanged, and it does not exist if it did not
 # exist before.
@@ -31,7 +36,7 @@ unset CDPATH
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=board-lib.sh
 . "$HERE/board-lib.sh"
-CANONICAL="backlog ready in_progress in_review human_qa blocked done wont_do"
+CANONICAL="backlog ready in_progress in_review merging human_qa blocked done wont_do"
 HEADER='# fleet-board config. See the fleet-board README.'
 NL='
 '
@@ -130,8 +135,17 @@ if [ -n "$SCOPES" ]; then
   fi
 fi
 
+# Put the `fleet-board` command on PATH (FLEET_BOARD_BIN_DIR, default ~/.local/bin).
+# Best effort: its messages go to stderr, and a refusal never fails init.
+install_cli() {
+  bash "$HERE/install-cli.sh" >&2 || printf 'fleet-board init: the fleet-board command was not installed; run: bash %s/install-cli.sh\n' "$HERE" >&2
+}
+
 # --- Step 3: existing config -----------------------------------------------
+# Refusing still installs the command, so re-running init on a repo that is
+# already set up gets it.
 if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then
+  install_cli
   die 1 "$TARGET already exists; re-run with --force to replace it"
 fi
 
@@ -236,4 +250,5 @@ fi
 # --- Step 7: write ---------------------------------------------------------
 mv -f "$TMP" "$TARGET" || die 1 "cannot write $TARGET"
 printf 'wrote %s\n' "$TARGET"
+install_cli
 printf 'fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash %s/review-stages.sh setup\n' "$HERE"

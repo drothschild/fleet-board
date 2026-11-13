@@ -1,4 +1,6 @@
-"""Publish the run owner while holding an advisory lock on a stable inode."""
+"""Publish the supervisor that owns a repository's run lock, while holding an advisory lock on a stable inode.
+
+The supervisor (supervisor/service.py) runs this at startup; nothing else takes the lock."""
 
 import argparse
 import fcntl
@@ -64,4 +66,4 @@ if __name__ == "__main__":
     try:
         claim(Path(args.path), args.pid, args.kind)
     except (OSError, RuntimeError) as exc:
-        sys.exit(f"fleet-board-run: {exc}")
+        sys.exit(f"claim-run-lock: {exc}")

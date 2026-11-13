@@ -223,9 +223,9 @@ for n in $(jq -r '.[].number' "$WORK/board.json"); do
   if [ "$DRY" = 0 ]; then
     mkdir -p "$CARDS" || fb_die 1 "cannot create $CARDS"
     fb_lock "$n"
-    trap 'rm -rf "$WORK" "$FB_LOCK"' EXIT
+    trap 'rm -rf "$WORK"; fb_lock_release "$FB_LOCK"' EXIT
     fl_write_card "$n" "$WORK/card-$n.json" || exit 1
-    rm -rf "$FB_LOCK"
+    fb_lock_release "$FB_LOCK"
   fi
   jq -r --arg m "$FB_MARKER" --arg me "$ME" '"imported #\(.number) \(.state) \(.comments | length) comments"
          + (if any(.comments[]; .author == $me and (.body | startswith($m))) then ", manager note" else "" end)

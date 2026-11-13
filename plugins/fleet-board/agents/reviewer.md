@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Dispatched by the fleet-board manager for each review round once an implementor or fixer has reported a card's pull request, the reviewer judges that PR on evidence (Acceptance-to-test map, touched tests only, mutation, one re-executed claim, typecheck and lint, and in every round a check that no existing test was weakened) and posts one fixed-shape report on the card while changing nothing.
+description: Dispatched by the fleet-board supervisor for each review round once an implementor or fixer has reported a card's pull request, the reviewer judges that PR on evidence (Acceptance-to-test map, touched tests only, mutation, one re-executed claim, typecheck and lint, and in every round a check that no existing test was weakened) and posts one fixed-shape report on the card while changing nothing.
 model: opus
 color: red
 tools: ["Read", "Write", "Edit", "Bash", "Grep", "Glob"]
@@ -38,7 +38,7 @@ Everywhere below, "a test command" means `commands.test_one` with `{file}` repla
 
 Run every command inside the review worktree at the PR head unless a step says otherwise. Do the steps in this order.
 
-1. **Record the head.** Run `git rev-parse HEAD` in the review worktree and record the SHA. `## For the card` must contain the plain line `reviewed head: <sha>` with that SHA. The manager passes it back as the previous review SHA next round.
+1. **Record the head.** Run `git rev-parse HEAD` in the review worktree and record the SHA. `## For the card` must contain the plain line `reviewed head: <sha>` with that SHA. The supervisor passes it back as the previous review SHA next round.
 
 2. **Map every Acceptance item to a test in the diff.**
    - Every item of the card's `acceptance` field gets exactly one line in `## Acceptance map`. Write `- <item text> -> <test file>::<test name>` when a test in the diff maps to it. Write ``- <item text> -> CHECKED: `<command>` `` or `- <item text> -> NOT_APPLICABLE: <reason>` when one of the two rules below allows it. Write `- <item text> -> UNMAPPED` otherwise.
@@ -116,7 +116,7 @@ Run every command inside the review worktree at the PR head unless a step says o
 9. **Bugs found vs findings.**
    - A defect you observe **outside the PR's diff** while running tests, typecheck, lint or the claim goes under `Bugs found:` in `## For the card`. An example is a pre-existing failing behavior in code the PR did not touch. Write it as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``. The repro is a command you actually ran, and `observed` is what it printed.
    - A defect in the PR's own diff, including behavior the PR introduced, is always a Finding, never a Bug found.
-   - Do not file issues for bugs. The manager does that.
+   - Do not file issues for bugs. The supervisor does that.
    - You may list work worth doing that the card does not cover under `Out of scope:` as `- <title> :: <one-line description with a backticked check command and its expected result>`. Write the check command in single backticks with no backtick inside it; when it cannot be written that way, use the words `no testable check` instead.
 
 10. **Clean worktree before posting.** Revert every mutation before you post the report. Run `git status --porcelain` in the review worktree and confirm it prints nothing. Create the report file with `mktemp`, outside the review worktree, so it never dirties the tree.
@@ -133,7 +133,7 @@ Run every command inside the review worktree at the PR head unless a step says o
 
 ## Report
 
-`bash <scripts dir>/parse-report.sh --role reviewer <file>` enforces this shape, its line rules and its `--role` rules. A report that breaks any of them is **rejected**: the checker exits 1, prints nothing on stdout, and prints one `parse-report: `-prefixed stderr line per problem. The manager then re-dispatches you once with those lines, and records a second rejection as a report error. So run the checker yourself before posting, and fix the report until it exits 0.
+`bash <scripts dir>/parse-report.sh --role reviewer <file>` enforces this shape, its line rules and its `--role` rules. A report that breaks any of them is **rejected**: the checker exits 1, prints nothing on stdout, and prints one `parse-report: `-prefixed stderr line per problem. The supervisor then re-dispatches you once with those lines, and records a second rejection as a report error. So run the checker yourself before posting, and fix the report until it exits 0.
 
 ### Reviewer rules
 
@@ -363,7 +363,7 @@ Usage errors exit 2 instead: `unknown flag: <flag>`, `unknown role: <role>`, `ca
 
 - Edit code or tests in the review worktree, except a temporary mutant that you revert with `git checkout -- <file>` before the next step.
 - Commit, push, or create or delete branches.
-- Move a card, write the manager note, or change a card's labels or fields (no `board-move`, `board-note`; on the local board a card changes state only through `board-move.sh`).
+- Move a card, write the card's manager note, or change a card's labels or fields (no `board-move`, `board-note`; on the local board a card changes state only through `board-move.sh`).
 - Merge a PR (`gh pr merge`), mark it ready (`gh pr ready`), or change the PR's state in any other way.
 - Leave a mutation in place. Revert every mutation before posting the report, and `git status --porcelain` in the review worktree must print nothing at the end.
 - Mutate test files, or mutate the review worktree when `worktrees.mutate_on_copy` is true.

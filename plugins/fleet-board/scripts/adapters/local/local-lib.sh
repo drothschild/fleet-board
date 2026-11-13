@@ -59,21 +59,15 @@ fl_write_card() {
 }
 
 # fl_lock_next / fl_unlock_next: <dir>/.next.lock, the lock every writer of
-# <dir>/next takes (a lock older than 5 minutes is stale and removed).
+# <dir>/next takes (a lock whose owner process is gone, or that has had no owner
+# pid for longer than the pid-less grace, is stale and removed).
 fl_lock_next() {
-  local d lock wait stale_min=5 waited=0
-  d="$(fl_dir)"; lock="$d/.next.lock"
-  wait="${FLEET_BOARD_LOCK_WAIT:-30}"
+  local d
+  d="$(fl_dir)"
   mkdir -p "$d" || fb_die 1 "cannot create $d"
-  while ! mkdir "$lock" 2>/dev/null; do
-    if [ -n "$(find "$lock" -maxdepth 0 -mmin +$stale_min 2>/dev/null)" ]; then
-      rm -rf "$lock"; continue
-    fi
-    [ "$waited" -ge $((wait * 10)) ] && fb_die 1 "could not take lock $lock after ${wait}s"
-    sleep 0.1; waited=$((waited + 1))
-  done
+  fb_lock_acquire "$d/.next.lock" "${FLEET_BOARD_LOCK_WAIT:-30}"
 }
-fl_unlock_next() { rm -rf "$(fl_dir)/.next.lock"; }
+fl_unlock_next() { fb_lock_release "$(fl_dir)/.next.lock"; }
 
 # fl_next_number: allocates and prints the next card number, under <dir>/.next.lock.
 fl_next_number() {
@@ -83,7 +77,7 @@ fl_next_number() {
   fl_lock_next
   n="$(tr -d '[:space:]' < "$f" 2>/dev/null)"
   case "$n" in
-    ''|*[!0-9]*|0|0[0-9]*) rm -rf "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
+    ''|*[!0-9]*|0|0[0-9]*) fb_lock_release "$lock"; fb_die 1 "$f is not a positive integer: '$n'" ;;
   esac
   # Belt and braces: the lock alone is not trusted (a stale-lock takeover can let
   # two holders in). A number is only issued once mkdir of its claim succeeds, and
@@ -91,9 +85,9 @@ fl_next_number() {
   mkdir -p "$d/.claims" || { rm -rf "$lock"; fb_die 1 "cannot create $d/.claims"; }
   while [ -e "$(fl_card_file "$n")" ] || ! mkdir "$d/.claims/$n" 2>/dev/null; do n=$((n + 1)); done
   if ! printf '%s\n' $((n + 1)) > "$f.tmp.$$" || ! mv -f "$f.tmp.$$" "$f"; then
-    rm -f "$f.tmp.$$"; rm -rf "$lock"; fb_die 1 "cannot update $f"
+    rm -f "$f.tmp.$$"; fb_lock_release "$lock"; fb_die 1 "cannot update $f"
   fi
-  rm -rf "$lock"
+  fb_lock_release "$lock"
   printf '%s\n' "$n"
 }
 

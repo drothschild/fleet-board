@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Card 115 (review fixes): the exit-2 message rules must be in the spec, and the Revision 23 isolation
-# evidence must really show an isolated run (built-in plugins only, tools exactly Edit and Read).
+# Card 115 (review fixes): the Revision 23 isolation evidence must really show an isolated run (built-in
+# plugins only, tools exactly Edit and Read).
 set -u
 unset CDPATH
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -10,19 +10,9 @@ fail=0
 ok() { echo "ok - $1"; }
 bad() { echo "not ok - $1"; fail=1; }
 
-# 3.5 exit 2 rules, in the agent and in the spec
-check_exit2() {
-  local who="$1" f="$2" line
-  line="$(grep -E '^3\.5\. ' "$f")"
-  for need in '`unknown flag: <flag>`' '`unknown role: <role>`' '`cannot read file: <file>`' 'the usage line' 'exit 2 does not count as a rejection'; do
-    if printf '%s\n' "$line" | grep -qF -e "$need"; then ok "$who: 3.5 exit 2 holds $need"; else bad "$who: 3.5 exit 2 holds $need"; fi
-  done
-  if printf '%s\n' "$line" | grep -qiF 'never re-dispatch'; then ok "$who: 3.5 never re-dispatches for exit 2"; else bad "$who: 3.5 never re-dispatches for exit 2"; fi
-}
-check_exit2 agent "$PLUGIN/agents/manager.md"
-if [ -f "$SPECS/manager.md" ]; then
-  check_exit2 spec "$SPECS/manager.md"
-
+# The 3.5 exit-2 rules lived in the manager agent and its spec, which went with the tick system; the
+# supervisor's driver treats a parse-report.sh exit 2 as its own failure (driver.py), never a re-dispatch.
+if [ -d "$SPECS" ]; then
   E="$SPECS/evidence/author-status.r14.init.json"
   if [ -f "$E" ]; then
     # every plugin is built in
