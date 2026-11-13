@@ -12,6 +12,9 @@ SCRIPTS="$SCRIPT_DIR/../scripts"
 export SCRIPTS
 
 unset FLEET_BOARD_CONFIG FLEET_BOARD_USER FLEET_BOARD_LOCK_WAIT || true
+# USER may be unset (cron, containers): fall back to the login name, as fb_login does
+USER="${USER:-$(id -un)}"
+export USER
 
 PASS=0
 FAIL=0
