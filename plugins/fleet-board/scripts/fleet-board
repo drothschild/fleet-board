@@ -8,6 +8,8 @@
 #
 # Usage:
 #   fleet-board board [board-web.sh args...]   serve the board page for this repo
+#   fleet-board up [--port N]                  start the supervisor in the background, then
+#                                              serve the board page in the foreground
 #   fleet-board supervisor <args...>           run supervisor.sh (start, status, stop, ...)
 #                                              from the repo root (the main checkout)
 #   fleet-board path                           print the plugin root in use
@@ -34,6 +36,7 @@ unset CDPATH
 usage() {
   cat <<'EOF'
 usage: fleet-board board [--port N]        serve the board page for the repo you are in
+       fleet-board up [--port N]           start the supervisor, then serve the board page
        fleet-board supervisor <command>    start [--detach] | status | pause | resume |
                                            stop [--drain|--cancel] | usage | stuck
        fleet-board path                    print the fleet-board plugin directory in use
@@ -173,6 +176,14 @@ case "$cmd" in
     top="$(git rev-parse --show-toplevel 2>/dev/null)" || die 1 "not inside a git repository; cd into the repo whose board you want"
     root="$(plugin_root board-web.sh)" || exit 1
     handoff "$root" "$cmd" "$@"
+    exec bash "$root/scripts/board-web.sh" --repo "$top" "$@" ;;
+  up)
+    top="$(git rev-parse --show-toplevel 2>/dev/null)" || die 1 "not inside a git repository; cd into the repo you want to run"
+    root="$(plugin_root board-web.sh)" || exit 1
+    handoff "$root" "$cmd" "$@"
+    sroot="$(plugin_root supervisor.sh)" || exit 1
+    dir="$(main_checkout)" || dir="$top"
+    (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach) || die 1 "the supervisor did not start"
     exec bash "$root/scripts/board-web.sh" --repo "$top" "$@" ;;
   supervisor)
     root="$(plugin_root supervisor.sh)" || exit 1
