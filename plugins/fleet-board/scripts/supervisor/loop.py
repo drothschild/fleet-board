@@ -492,6 +492,7 @@ class Supervisor:
         sup, lim = config.get('supervisor') or {}, config.get('limits') or {}
         return {'global': lim.get('concurrency', 6), 'providers': dict(sup.get('provider_concurrency') or {}),
                 'per_card': 1, 'aging_seconds': sup.get('aging_seconds', 900),
+                'scope_ignore': list(sup.get('scope_ignore') or []),
                 'max_rate_wait': lim.get('rate_limit_max_wait', 3600),
                 'rate_limit_wait': {name: health['until'] for name, health in
                                     self.state.provider_health.items() if 'until' in health}}
@@ -662,8 +663,9 @@ class Supervisor:
         reserved = False
         if not free:
             try:
-                scope = scopes.normalize(list(row.get('declared_paths') or []) + list(row.get('actual_paths') or []),
-                                         self.root)
+                ignore = ((self.config or {}).get('supervisor') or {}).get('scope_ignore') or []
+                scope = scopes.normalize(scopes.drop_ignored(list(row.get('declared_paths') or [])
+                                                             + list(row.get('actual_paths') or []), ignore), self.root)
             except ValueError as exc:
                 self.state.event('action_failed', card=number, action=name, error='scope: %s' % exc)
                 return

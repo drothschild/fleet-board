@@ -309,6 +309,8 @@ class Scheduler:
         for item in occupied:
             provider_counts[item.get('provider')] = provider_counts.get(item.get('provider'), 0) + 1
         last_launch = limits.get('last_launch_at', self._last_launch)
+        # supervisor.scope_ignore: paths every PR touches (version manifests) never overlap
+        ignore = limits.get('scope_ignore') or []
         for c in ordered:
             number = c.get('number')
             provider = c.get('provider') or 'default'
@@ -346,14 +348,14 @@ class Scheduler:
                 waits.append({'number': number, 'reason': 'provider capacity'}); continue
             if sum(str(x.get('number', x.get('card'))) == str(number) for x in occupied) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
-            paths = (c.get('declared_paths') or []) + (c.get('actual_paths') or [])
+            paths = scopes.drop_ignored((c.get('declared_paths') or []) + (c.get('actual_paths') or []), ignore)
             reserved = None if free else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
-                             and scopes.overlap(paths, x.get('paths') or [])), None)
+                             and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
                 continue
             conflict = next((x for x in occupied if str(x.get('number', x.get('card'))) == str(number)
-                             or (not free and scopes.overlap(paths, x.get('paths') or []))), None)
+                             or (not free and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue
             if validate is not None and not validate(dict(c)):
@@ -411,6 +413,9 @@ def _validate_limits(limits):
     for key in ('aging_seconds', 'min_launch_gap', 'max_rate_wait'):
         if key in limits and (type(limits[key]) not in (int, float) or limits[key] < 0):
             raise ValueError('invalid ' + key)
+    if 'scope_ignore' in limits and (not isinstance(limits['scope_ignore'], list)
+                                     or any(not isinstance(g, str) or not g for g in limits['scope_ignore'])):
+        raise ValueError('invalid scope_ignore')
     if 'retry_at' in limits and not isinstance(limits['retry_at'], dict):
         raise ValueError('invalid retry schedule')
     rate_wait = limits.get('rate_limit_wait', {})

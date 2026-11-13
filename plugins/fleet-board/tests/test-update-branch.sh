@@ -298,6 +298,7 @@ assert_to_fixer "a JSON conflict that also touches another line" "$PLUGIN_JSON"
 
 # One side drops the version line: not version-only
 setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
 printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n=======\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
 run_update
 assert_to_fixer "a JSON conflict where one side drops the version line" "$PLUGIN_JSON"

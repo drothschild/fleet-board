@@ -1,5 +1,28 @@
 """Path-scope normalisation and overlap, shared by reservations and admission."""
+from fnmatch import fnmatchcase
 from pathlib import Path
+
+
+def _clean(path):
+    """The textual part of normalize(): `\\` to `/`, no leading `./`, no trailing `/`."""
+    path = path.replace('\\', '/')
+    while path.startswith('./'):
+        path = path[2:]
+    return path.rstrip('/')
+
+
+def drop_ignored(paths, patterns):
+    """Drop the paths matching a `supervisor.scope_ignore` glob (shell-style, case-sensitive).
+
+    Both sides are cleaned like normalize() first. A scope whose every path is ignored is
+    returned unchanged: an empty scope means the whole repository, which would reserve more.
+    """
+    paths = list(paths or [])
+    if not patterns or not paths:
+        return paths
+    globs = [_clean(g) for g in patterns]
+    kept = [p for p in paths if not (isinstance(p, str) and any(fnmatchcase(_clean(p), g) for g in globs))]
+    return kept or paths
 
 
 def normalize(paths, root):

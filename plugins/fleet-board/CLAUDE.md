@@ -87,7 +87,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. Settle plans do
-  not fetch scope files or start workers.
+  not fetch scope files or start workers. The supervisor's scheduler and its
+  reservations drop paths matching `supervisor.scope_ignore` globs
+  (`scopes.drop_ignored`; a scope wholly ignored is kept) before any overlap check.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
