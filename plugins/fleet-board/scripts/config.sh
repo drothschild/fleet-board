@@ -357,6 +357,11 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" then
         (if (.board.port | type) != "number" or (.board.port | floor) != .board.port or .board.port < 1024 or .board.port > 65535 then "board.port must be an integer between 1024 and 65535" else empty end)
       else empty end),
+      (if (.headless | type) == "object" then
+        (if .headless.permission_mode == "bypassPermissions" then "headless.permission_mode bypassPermissions is refused: it runs every role with no permission checks; use one of auto, acceptEdits, default, plan"
+         elif (.headless.permission_mode | type) != "string" or (.headless.permission_mode as $m | ["auto","acceptEdits","default","plan"] | index($m) | not) then "headless.permission_mode must be one of auto, acceptEdits, default, plan"
+         else empty end)
+      else empty end),
       (if (.models | type) == "object" then
         (("implementor", "fixer", "merger") as $r
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end),
@@ -375,6 +380,8 @@ VALIDATION_SCRIPT='
            else empty end)
       else empty end),
       (if (.limits | type) == "object" then
+        (("max_turns", "max_hours") as $k
+          | if (.limits[$k] | type) != "number" or (.limits[$k] | floor) != .limits[$k] or .limits[$k] <= 0 then "limits.\($k) must be a positive integer" else empty end),
         (if (.limits.concurrency | type) != "number" or (.limits.concurrency | floor) != .limits.concurrency or .limits.concurrency <= 0 then "limits.concurrency must be a positive integer" else empty end),
         (if (.limits.max_tokens | type) != "number" or (.limits.max_tokens | floor) != .limits.max_tokens or .limits.max_tokens <= 0 then "limits.max_tokens must be a positive integer" else empty end),
         (if .limits.max_tokens_per_card == null then empty

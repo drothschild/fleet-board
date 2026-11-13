@@ -902,6 +902,22 @@ done
 invalid_field_case "ignore_checks not a list" $'merge:\n  ignore_checks: lint' "merge.ignore_checks must be a list"
 invalid_field_case "ignore_checks entry not a map" $'merge:\n  ignore_checks:\n    - lint' "$IGN_MSG"
 
+# Test 31: headless.permission_mode, limits.max_turns and limits.max_hours are validated by --check
+check_case() { # NAME YAML_BODY EXPECTED_EXIT [EXPECTED_STDERR]
+  REPO="$(printf 'board:\n  repo: a/b\n%s\n' "$2" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO")
+  run_config "$REPO" --check
+  assert_exit "$1: exit $3" "$3"
+  [ -z "${4:-}" ] || assert_stderr_contains "$1: message" "$4"
+}
+check_case "config.sh --check refuses permission_mode bypassPermissions and names the allowed values" $'headless:\n  permission_mode: bypassPermissions' 5 "auto, acceptEdits, default, plan"
+check_case "bypassPermissions message says why" $'headless:\n  permission_mode: bypassPermissions' 5 "no permission checks"
+check_case "config.sh --check refuses limits.max_turns ten" $'limits:\n  max_turns: ten' 5 "limits.max_turns must be a positive integer"
+check_case "config.sh --check refuses limits.max_hours 0" $'limits:\n  max_hours: 0' 5 "limits.max_hours must be a positive integer"
+for m in auto acceptEdits default plan; do
+  check_case "config.sh --check accepts permission_mode $m" "headless: { permission_mode: $m }" 0
+done
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
