@@ -611,7 +611,7 @@ assert_exit "stages: board.states may map a stage" 0
 REPO="$(printf 'board:\n  repo: a/b\nreview:\n  stages:\n    - name: security\n      agent: "acme:sec"\n      paths: ["src/auth/**"]\n    - name: ux\n      agent: ux-reviewer\n      advisory: true\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages: block list of block maps parses" 0
-assert_stdout_exact_jq "stages: block form names" '.review.stages | map(.name)' '["security","ux"]'
+assert_stdout_exact_jq "stages: block form names" '.review.stages | map(.name)' '["security","ux","documentation","blast_radius"]'
 
 # providers map and provider-backed stages
 REPO="$(make_test_repo provider-stage.yml)"
@@ -648,7 +648,7 @@ assert_stdout_exact_jq "agent stage: provider null, no price" '.review.stages[0]
 REPO="$(make_test_repo stages.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages.yml fixture: valid" 0
-assert_stdout_exact_jq "stages.yml: three stages" '.review.stages | map(.name)' '["security","ux","compliance"]'
+assert_stdout_exact_jq "stages.yml: three stages" '.review.stages | map(.name)' '["security","ux","compliance","documentation","blast_radius"]'
 assert_stdout_exact_jq "stages.yml: compliance is a provider stage" '.review.stages[2] | [.agent, .provider, .model, has("price")]' '[null,"openai","gpt-test",false]'
 
 BASE_CORP='providers: { corp: { base_url: "https://llm.corp.example/v1", api_key_env: CORP_KEY } }'
