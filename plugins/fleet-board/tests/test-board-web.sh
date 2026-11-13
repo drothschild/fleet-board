@@ -575,6 +575,8 @@ printf '%s\n' "$*" >> "$FAKE_CLAUDE_DIR/args.log"
 prompt="${!#}"
 if [ -e "$FAKE_CLAUDE_DIR/fail" ]; then echo boom >&2; exit 1; fi
 dest="$(printf '%s' "$prompt" | sed -n 's/.*--preview \([^ ]*\).*/\1/p')"
+# hang: record our pid and sleep until killed
+if [ -e "$FAKE_CLAUDE_DIR/hang" ]; then echo $$ > "$FAKE_CLAUDE_DIR/pid"; while :; do sleep 1; done; fi
 # slow: hold the session until the test creates $FAKE_CLAUDE_DIR/release (30 s at most)
 if [ -e "$FAKE_CLAUDE_DIR/slow" ]; then
   i=0
@@ -697,6 +699,10 @@ if setup_case; then
   : > "$FAKE_CLAUDE_DIR/release"
   wait_for 'api GET /api/import/fixed4; body_is .state ready'
   rm -f "$FAKE_CLAUDE_DIR/slow"
+  # Cancel: a ready or failed import cannot be cancelled.
+  api POST /api/import/fixed4/cancel "{}";  assert_code 409
+  api POST /api/import/fixed2/cancel "{}";  assert_code 409
+
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
 
@@ -722,7 +728,114 @@ if setup_case; then
   assert_body "created numbers are integers" '.created[0]|type' number
   if [ -z "$(sed -n '2,$p' "$TMP/server.out")" ]; then pass "import server stdout holds only the listening line"; else fail "import server stdout holds only the listening line" "$(cat "$TMP/server.out")"; fi
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr (import)" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr (import)"; fi
+  # Cancel a running session: a fake claude that sleeps until killed.
   stop_server
+  : > "$FAKE_CLAUDE_DIR/hang"
+  rm -f "$FAKE_CLAUDE_DIR/pid"
+  export FLEET_BOARD_TEST_IMPORT_ID=cancel1
+  start_server "$REPO"
+  api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+  wait_for '[ -s "$FAKE_CLAUDE_DIR/pid" ]'
+  HANG_PID="$(cat "$FAKE_CLAUDE_DIR/pid")"
+  api GET /api/import/cancel1;      assert_body "hanging import is running" '.state' running
+  api POST /api/import/cancel1/cancel "{}"; assert_code 200
+  wait_for '! kill -0 "$HANG_PID" 2>/dev/null'
+  if ! kill -0 "$HANG_PID" 2>/dev/null; then pass "cancel kills the session pid"; else fail "cancel kills the session pid" "pid $HANG_PID alive"; fi
+  api GET /api/import/cancel1;      assert_body "cancelled import reports cancelled" '.state' cancelled
+  # A valid cards.json must not let a cancelled import be created.
+  api GET /api/board; CARDS_BEFORE="$(jq '.cards|length' "$BODY_FILE")"
+  cp "$IMPORT_FIXTURE" "$TMP/logs/web/acme-toy/imports/cancel1/cards.json"
+  api POST /api/import/cancel1/create '{}'; assert_code 409
+  assert_body "create on a cancelled import says cancelled" '.error' '*cancelled*'
+  api GET /api/board;               assert_body "create on a cancelled import adds no cards" '.cards|length' "$CARDS_BEFORE"
+  api POST /api/import/cancel1/cancel "{}"; assert_code 409
+  rm -f "$FAKE_CLAUDE_DIR/hang"
+  if [ "$(pgrep -f "$FAKE_IMPORT_CLAUDE" | wc -l | tr -d ' ')" = 0 ]; then pass "no fake claude process left running"; else fail "no fake claude process left running" "$(pgrep -fl "$FAKE_IMPORT_CLAUDE")"; fi
+
+  # Discard and Escape in the real board.js cancel the grouping session first.
+  for mode in click escape; do
+    stop_server
+    : > "$FAKE_CLAUDE_DIR/hang"
+    rm -f "$FAKE_CLAUDE_DIR/pid"
+    export FLEET_BOARD_TEST_IMPORT_ID="js-$mode"
+    start_server "$REPO"
+    api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+    wait_for '[ -s "$FAKE_CLAUDE_DIR/pid" ]'
+    JS_OUT="$(node "$(dirname "$0")/board-web-discard.js" "$SCRIPTS/board-web/static/board.js" "http://127.0.0.1:$PORT" "js-$mode" "$mode" 2>&1)"
+    if [ "$JS_OUT" = closed ]; then pass "$mode closes the import view after cancelling"; else fail "$mode closes the import view after cancelling" "$JS_OUT"; fi
+    if [ "$(grep -c "POST /api/import/js-$mode/cancel" "$TMP/server.err")" = 1 ]; then pass "$mode sends exactly one cancel request"; else fail "$mode sends exactly one cancel request" "$(cat "$TMP/server.err")"; fi
+    api GET "/api/import/js-$mode";   assert_body "$mode leaves the import cancelled" '.state' cancelled
+    rm -f "$FAKE_CLAUDE_DIR/hang"
+  done
+  stop_server
+fi
+unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
+
+echo "Case: Discard and Escape end the session process"
+IMPORTS_DIR="$TMP/logs/web/acme-toy/imports"
+# session_pid <import id>: the session pid recorded in the import's meta.json.
+session_pid() { jq -r '.pid // empty' "$IMPORTS_DIR/$1/meta.json" 2>/dev/null; }
+# proc_state <pid> <recorded start>: gone, alive, or unknown: <why>. A kill -0
+# that is refused (EPERM) means the process exists, so it is never read as gone.
+proc_state() {
+  local msg now
+  if msg="$(kill -0 "$1" 2>&1)"; then
+    now="$(LC_ALL=C TZ=UTC ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//')"
+    if [ -n "$2" ] && [ -n "$now" ] && [ "$now" != "$2" ]; then echo gone; else echo alive; fi
+    return
+  fi
+  case "$msg" in
+    *"No such process"*) echo gone ;;
+    *"not permitted"*) echo alive ;;
+    *) echo "unknown: $msg" ;;
+  esac
+}
+# assert_session_gone <desc> <import id>
+assert_session_gone() {
+  local pid start st
+  pid="$(session_pid "$2")"
+  start="$(jq -r '.pid_start // ""' "$IMPORTS_DIR/$2/meta.json" 2>/dev/null)"
+  if [ -z "$pid" ]; then fail "$1" "no pid recorded for import $2"; return; fi
+  st="$(proc_state "$pid" "$start")"
+  if [ "$st" = gone ]; then pass "$1"; else fail "$1" "session pid $pid of import $2: $st"; fi
+}
+export FLEET_BOARD_CLAUDE="$FAKE_IMPORT_CLAUDE" FAKE_CLAUDE_DIR IMPORT_FIXTURE
+if setup_case; then
+  for mode in click escape; do
+    stop_server
+    : > "$FAKE_CLAUDE_DIR/hang"
+    rm -f "$FAKE_CLAUDE_DIR/pid"
+    export FLEET_BOARD_TEST_IMPORT_ID="js2-$mode"
+    start_server "$REPO"
+    api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
+    wait_for '[ -s "$FAKE_CLAUDE_DIR/pid" ]'
+    JS_OUT="$(node "$SCRIPT_DIR/board-web-discard.js" "$SCRIPTS/board-web/static/board.js" "http://127.0.0.1:$PORT" "js2-$mode" "$mode" 2>&1)"
+    if [ "$JS_OUT" = closed ]; then pass "$mode (second run) closes the import view"; else fail "$mode (second run) closes the import view" "$JS_OUT"; fi
+    wait_for '[ "$(proc_state "$(session_pid js2-'"$mode"')" "")" != alive ]'
+    assert_session_gone "$mode ends the grouping session process" "js2-$mode"
+    rm -f "$FAKE_CLAUDE_DIR/hang"
+  done
+  stop_server
+  # Every session the import cases started has ended, the earlier cases' included.
+  for id in cancel1 js-click js-escape js2-click js2-escape; do
+    assert_session_gone "session of import $id is not left running" "$id"
+  done
+  # Enumeration must work for "nothing matched" to mean anything: pgrep exits 1
+  # on no match, 0 on a match and 2 or more when it cannot list processes.
+  PG_OUT="$(pgrep -fl "$FAKE_IMPORT_CLAUDE" 2>&1)"; PG_RC=$?
+  case "$PG_RC" in
+    1) pass "process list shows no fake claude left running" ;;
+    0) fail "process list shows no fake claude left running" "$PG_OUT" ;;
+    *) fail "process list shows no fake claude left running" "cannot list processes (pgrep exit $PG_RC): $PG_OUT" ;;
+  esac
+  # Leave nothing behind even when a case above failed.
+  for id in cancel1 js-click js-escape js2-click js2-escape; do
+    pid="$(session_pid "$id")"
+    [ -n "$pid" ] || continue
+    [ "$(proc_state "$pid" "$(jq -r '.pid_start // ""' "$IMPORTS_DIR/$id/meta.json" 2>/dev/null)")" = alive ] || continue
+    kill -KILL -- "-$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+  done
 fi
 unset FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
 
