@@ -115,9 +115,14 @@ and `gh`; do not install anything else.
 3. **Put the `fleet-board` command on the PATH.** Run the plugin's installer, which copies a small launcher to
    `~/.local/bin/fleet-board`:
 
+   <!-- install-cli-command -->
    ```bash
-   bash "$(jq -r '.plugins["fleet-board@fleet-board"] | sort_by(.version | split(".") | map(tonumber? // 0)) | last | .installPath' ~/.claude/plugins/installed_plugins.json)/scripts/install-cli.sh"
+   jq -r '.plugins["fleet-board@fleet-board"] // [] | if type == "array" then . else [.] end | map(select(.version and .installPath)) | sort_by((.version | tostring | split("-")[0] | split(".") | (. + ["0", "0", "0"])[:3] | map(tonumber? // 0)) + [if (.version | tostring | contains("-")) then 0 else 1 end]) | reverse | .[].installPath' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" 2>/dev/null | (while IFS= read -r p; do [ -f "$p/scripts/install-cli.sh" ] && exec bash "$p/scripts/install-cli.sh"; done; echo "fleet-board is not installed; run /plugin install fleet-board@fleet-board" >&2; exit 1)
    ```
+   <!-- /install-cli-command -->
+
+   It runs `scripts/install-cli.sh` from the newest installed version (a prerelease such as `0.27.1-beta` sorts below
+   `0.27.1`).
 
    If it prints an `export PATH=...` line, add that line to the user's shell profile (`~/.zshrc` or `~/.bashrc`).
 4. **Check the GitHub login.** Run `gh auth status`. If it reports no login, ask the user to run `gh auth login` in a
@@ -145,7 +150,17 @@ section shows how.
 ## Run it
 
 `/fleet-board:init` also installs the `fleet-board` command in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it). It runs
-the plugin's newest installed version, so plugin updates never break it.
+the plugin's newest installed version, so plugin updates never break it. To pin one version, or to run a checkout of
+this repository, set `FLEET_BOARD_PLUGIN_ROOT` to that plugin directory; `fleet-board path` prints the one in use.
+
+**Already set up?** If the repository was set up before the command existed, re-run `/fleet-board:init` (it installs the
+command even when it refuses the existing config), or install it from a terminal:
+
+<!-- install-cli-command -->
+```bash
+jq -r '.plugins["fleet-board@fleet-board"] // [] | if type == "array" then . else [.] end | map(select(.version and .installPath)) | sort_by((.version | tostring | split("-")[0] | split(".") | (. + ["0", "0", "0"])[:3] | map(tonumber? // 0)) + [if (.version | tostring | contains("-")) then 0 else 1 end]) | reverse | .[].installPath' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" 2>/dev/null | (while IFS= read -r p; do [ -f "$p/scripts/install-cli.sh" ] && exec bash "$p/scripts/install-cli.sh"; done; echo "fleet-board is not installed; run /plugin install fleet-board@fleet-board" >&2; exit 1)
+```
+<!-- /install-cli-command -->
 
 **1. Open the board page.** In a terminal in your repository:
 
@@ -165,7 +180,8 @@ Put checks that need a person ("looks right on a phone") under a `## Human QA` h
 acceptance list, and add the `needs-human-qa` label so the card stops in Human QA before its PR is merged.
 Move the card to **Ready**.
 
-**3. Start the supervisor.** Press **Start** on the board page, or run it from a terminal in the repository:
+**3. Start the supervisor.** Press **Start** on the board page, or run it from a terminal anywhere in the repository (it
+runs from the repo root, in the main checkout even from a worktree):
 
 ```bash
 fleet-board supervisor start            # in the foreground; Ctrl-C cancels cleanly

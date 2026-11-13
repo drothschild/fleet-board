@@ -690,7 +690,7 @@ function renderCard(c, repo) {
 
   if (stuck) {
     li.appendChild(el("div", "card-meta card-stuck-detail", "stuck: " + clean(stuck.kind, 60) + (stuck.detail ? " — " + clean(stuck.detail, 300) : "")));
-    li.appendChild(el("div", "card-meta card-stuck-resolve", "resolve with: supervisor.sh stuck --release " + n));
+    li.appendChild(el("div", "card-meta card-stuck-resolve", "resolve with: fleet-board supervisor stuck --release " + n));
   }
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));

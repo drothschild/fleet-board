@@ -255,7 +255,7 @@ async function main() {
     assert.ok(cardOf(h,4).all().some(n=>n.classList.contains("card-stuck-badge")&&n.textContent.trim()==="STUCK"),"STUCK badge missing");
     assert.equal(cardOf(h,6).all().some(n=>n.classList.contains("card-stuck-badge")),false);
     assert.ok(cardOf(h,4).textContent.includes("merge_pending")&&cardOf(h,4).textContent.includes(hostile),"stuck kind/detail missing");
-    assert.ok(cardOf(h,4).textContent.includes("resolve with: supervisor.sh stuck --release 4"),"how to resolve is not said: "+cardOf(h,4).textContent);
+    assert.ok(cardOf(h,4).textContent.includes("resolve with: fleet-board supervisor stuck --release 4"),"how to resolve is not said: "+cardOf(h,4).textContent);
     assert.equal(cardOf(h,6).textContent.includes("resolve with"),false);
     assert.match(cardOf(h,6).textContent,/review/,"activity not shown"); assert.doesNotMatch(cardOf(h,6).textContent,/object Object/);
     const banner=h.$("stuck-banner"); assert.equal(banner.hidden,false); assert.equal(banner.textContent.trim(),"2 stuck cards — the supervisor will not start until they are resolved");

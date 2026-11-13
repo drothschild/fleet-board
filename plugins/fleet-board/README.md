@@ -158,7 +158,7 @@ The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `
 
 ## Running the supervisor
 
-The supervisor dispatches the board's work until you stop it. From the repo:
+The supervisor dispatches the board's work until you stop it. Run it from anywhere in the repo; it runs from the repo root (the main checkout, even from a worktree):
 
 ```bash
 fleet-board supervisor start --detach   # or Start on the board page
@@ -166,7 +166,7 @@ fleet-board supervisor status
 fleet-board supervisor stop             # finish running sessions, then exit
 ```
 
-`fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version each time, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository.
+`fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version that has the script it needs, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. When that version ships a newer launcher, the copy runs it instead. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository, or pins a version; when a per-project install record names a different version, the launcher says so on stderr.
 
 Before it starts, it checks for cards a crashed run left behind and refuses to start (exit 4) until you resolve them (`stuck`, `stuck --release N`). It stops on its own after `limits.max_hours`, pauses admissions at `limits.max_tokens` (cache reads are shown but not counted), and counts tokens only. Under `merge.policy: auto` it merges reviewed, non-draft, green PRs that need no Human QA, one at a time, and moves their cards to Done; under `human` (the default) it merges nothing. Pause, resume, limits, the startup check and scheduling are in [docs/overnight.md](docs/overnight.md).
 
@@ -193,7 +193,7 @@ fleet-board board
 It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 - **Cards.** Drag a card to another column, or click it to open the drawer and edit its title, body, labels, state, Acceptance list, Blocked by chips and PR link. The state select in the drawer is the keyboard path. A card shows `blocked by #n` in amber while a blocker is open, and its PR link. A card lights up while a role works on it.
-- **Start and Stop.** The board page's Start, Pause, Resume and Stop drive the command-line supervisor (`scripts/supervisor.sh`). Start launches one in the background, the same as `supervisor.sh start --detach`, or resumes a paused one; Stop offers Drain and Cancel. A supervisor started from a terminal shows up too. The token strip shows tokens for this run, all time, and the planner. A card's drawer breaks its tokens down by column and action. Cards a crashed run left behind get a red border and a STUCK label, with a line that says how to resolve each (`supervisor.sh stuck --release N`). A banner gives the count, and Start stays disabled until they are resolved. The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it).
+- **Start and Stop.** The board page's Start, Pause, Resume and Stop drive the command-line supervisor (`fleet-board supervisor`, which runs `scripts/supervisor.sh`). Start launches one in the background, the same as `fleet-board supervisor start --detach`, or resumes a paused one; Stop offers Drain and Cancel. A supervisor started from a terminal shows up too. The token strip shows tokens for this run, all time, and the planner. A card's drawer breaks its tokens down by column and action. Cards a crashed run left behind get a red border and a STUCK label, with a line that says how to resolve each (`fleet-board supervisor stuck --release N`). A banner gives the count, and Start stays disabled until they are resolved. The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it).
 - **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
 - **Who you are.** The author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
 - **Rate limits.** The board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain; a GitHub rate limit holds new work until it resets (`limits.rate_limit_max_wait`).
