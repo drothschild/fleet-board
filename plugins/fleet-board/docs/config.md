@@ -18,6 +18,22 @@ Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is uns
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the supervisor merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA: the card moves to `merging` and `scripts/merge-reviewed.sh` merges it outside any Claude session (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
 
+## `merge.ignore_checks`
+
+A list of dated, reasoned exceptions for checks that should not hold up a merge. Each entry has a `name` (a case-sensitive shell glob: `*` is any run of characters, `?` one character), a `reason`, and an `until` date (`YYYY-MM-DD`, valid through that day, UTC). A red check whose name matches an unexpired entry counts as green. An entry that also says `pending: true` covers a matching check that is still running, so the supervisor merges without waiting for it to finish; without it, a pending check is never green. An expired entry counts for nothing and the planner warns about it. The planner, `merge-reviewed.sh` and the gate share one rule (`scripts/ignore-checks.jq`), and each merge records the checks it went past on the card's note.
+
+```yaml
+merge:
+  policy: auto
+  ignore_checks:
+    - name: "*"
+      reason: "CI is asynchronous feedback for this repository"
+      until: 2026-12-31
+      pending: true
+```
+
+GitHub still refuses a merge while a check that branch protection marks as required is failing or pending, and fleet-board never uses `--admin`.
+
 ## `after_merge.allow` and the `## After merge` section
 
 A card body may hold a `## After merge` section (heading in any case, ending at the next heading) with one command per `-` bullet, for example `- git tag v1.2.3` and `- git push origin v1.2.3`. After the card's PR merges, the supervisor runs `after-merge.sh run <body-file>`, which runs the commands in order and prints the outcome. Release steps no agent can do by hand need no Human QA step this way.

@@ -1494,14 +1494,14 @@ for row in in-review merging; do
 done
 # pending: true lets a matching check that is still running count as green
 IGN_PENDING_YAML() { # IGN_PENDING_YAML <until>
-  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: "CI is asynchronous"\n      until: %s\n      pending: true\n' "$1"
+  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: "CI is asynchronous"\n      until: %s\n      pending: true\n    - name: "ci/legacy-?int"\n      reason: "legacy status"\n      until: 2026-12-31\n' "$1"
 }
 export FLEET_BOARD_TODAY=2026-11-11
 for row in in-review merging; do
   plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-12-31)"
   assert_jq "$row-ignore-pending: a pending check an entry with pending: true names counts as green" "$(card 12 action)" '"merge"'
   assert_jq "$row-ignore-pending: the planner lists the pending check it went past" "$(card 12 ignored_checks)" \
-    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31"}]'
+    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-12-31"}]'
   plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-11-10)"
   assert_jq "$row-ignore-pending: an expired pending entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
   plan $row-ignore-other-red "$(IGN_PENDING_YAML 2026-12-31)"

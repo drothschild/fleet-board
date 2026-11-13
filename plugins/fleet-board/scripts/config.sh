@@ -313,6 +313,8 @@ VALIDATION_SCRIPT='
               or ((.name | type) != "string" or .name == "") or ((.reason | type) != "string" or .reason == "")
               or ((.until | type) != "string" or ((try (.until | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z") and (strptime("%Y-%m-%d") | mktime | strftime("%Y-%m-%d")) == .) catch false) | not)))
          then "merge.ignore_checks entries need a non-empty name and reason and an until date (YYYY-MM-DD)"
+         elif any(.merge.ignore_checks[]; has("pending") and ((.pending | type) != "boolean"))
+         then "merge.ignore_checks pending must be true or false"
          else empty end),
         (if .merge.persona != null and ((.merge.persona | type) != "string" or .merge.persona == "" or (.merge.persona | startswith("/")) or (.merge.persona | split("/") | index("..") != null))
          then "merge.persona must be null or a non-empty relative path without .." else empty end),

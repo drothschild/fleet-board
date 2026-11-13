@@ -274,7 +274,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
     plugin default; a set path that is missing, or a tracked persona this PR changed, is attention.
   - Checks: one rule, `scripts/ignore-checks.jq`, shared by the planner and the gate: an unexpired
     `merge.ignore_checks` entry ignores the red checks its glob matches (a `*` entry ignores every
-    red check); a pending check is never green.
+    red check); a pending check is green only when an unexpired entry with `pending: true` matches it
+    (merge without waiting for that check). config.sh refuses a non-boolean `pending`.
 
 ## Invariants
 

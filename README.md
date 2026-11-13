@@ -237,7 +237,7 @@ Everything lives in `.fleet-board.yml`. Set only what differs from the defaults.
 | `commands.lint` | none | run by the agents |
 | `worktrees.setup` | none | run once in each new worktree, for example `npm ci` |
 | `merge.policy` | `human` | `auto` merges clean, green PRs for you |
-| `merge.ignore_checks` | `[]` | dated, reasoned exceptions for flaky checks |
+| `merge.ignore_checks` | `[]` | dated, reasoned exceptions for flaky checks; `pending: true` also merges without waiting for them |
 | `review.stages` | `[]` | extra review stages after the main review |
 | `review.max_rounds` | `3` | review/fix rounds before a card is blocked |
 | `followups.status` | `ready` | where follow-up cards are filed (`ready` or `backlog`) |
