@@ -230,7 +230,7 @@ def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_arg
                                           run_argv)
                 if current and pending.get('head_sha') and current != pending.get('head_sha'):
                     note = dict(note, pending_merge=None)   # a stale marker for an earlier head: not in flight
-            if state == 'in_progress':
+            if state == 'in_progress' and not note.get('cancelled'):   # a cancel returned it here on purpose
                 found.append(Stuck(card, 'in_flight', 'in progress, and no supervisor session owns it'))
             elif state == 'merging' and _merge_in_flight(note):
                 found.append(Stuck(card, 'in_flight', 'in merging with a merge in flight (pending_merge for PR %s) '
