@@ -49,6 +49,7 @@ ACC=null
 if [ -n "$ACC_FILE" ]; then ACC="$(fl_acceptance_json "$ACC_FILE")" || exit 1; fi
 if [ -n "$BODY_FILE" ]; then
   SPLIT="$(fl_split_body "$BODY_FILE")" || exit 1
+  fl_check_bad_deps "$SPLIT"
   fl_fold_outside "$SPLIT" "#$N" > "$BODYTMP" || exit 1
   [ "$ACC" != null ] || ACC="$(jq -c .acceptance <<<"$SPLIT")"
   [ "$BLOCKED" != null ] || BLOCKED="$(jq -c .blocked_by <<<"$SPLIT")"
