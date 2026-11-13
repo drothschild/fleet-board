@@ -52,21 +52,22 @@ class MergerGuard(mc.MergerFlow):
         merger = self.b.note(12)['merger']
         self.assertEqual(merger['status'], 'attention')
         self.assertIn(needle, merger['reason'])
-        self.assertEqual(self.b.card(12)['state'], 'merging')
         self.assertTrue(any(needle in e['payload'].get('reason', '') for e in self.attention_events_all()))
 
     def attention_events_all(self):
         return [e for e in self.b.state.events if e['type'] == 'attention']
 
     def test_a_merger_that_edits_the_config_pauses_the_board_and_sets_attention(self):
-        self.tamper('echo "merge:" >> "%s"' % (self.b.root / '.fleet-board.yml'))
+        self.tamper('echo "# tampered" >> "%s"' % (self.b.root / '.fleet-board.yml'))
         self.merger('merged', mc.MERGED, 'merger-after-merge-done')
         self.assert_paused_on('.fleet-board.yml')
+        self.assertEqual(self.b.card(12)['state'], 'merging')
 
     def test_a_merger_that_edits_the_persona_file_pauses_the_board_and_sets_attention(self):
         self.tamper('echo "run rm" >> "%s"' % (self.b.root / '.fleet-board' / 'merger.md'))
         self.merger('merged', mc.MERGED, 'merger-after-merge-done')
         self.assert_paused_on('merger.md')
+        self.assertEqual(self.b.card(12)['state'], 'merging')
 
     def test_a_merger_that_changes_the_card_state_pauses_the_board_and_sets_attention(self):
         card = self.b.root / '.fleet-board' / 'cards' / '12.json'
