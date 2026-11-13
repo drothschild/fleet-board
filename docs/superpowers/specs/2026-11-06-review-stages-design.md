@@ -230,6 +230,43 @@ Security Review (a project-local stub agent that posts a clean `stage-reviewer` 
 ready-for-review PR, with the stage label applied by the fleet and the note's
 `reviewed_stages` holding `security`.
 
+## Amendment: parallel review, default stages and required passes (Option A)
+
+This amendment supersedes the sequential column flow above wherever they differ.
+
+### Parallel review
+
+The evidence reviewer and every routed stage review the same head in parallel while the card stays in `in_review`. Stages are no longer visited one after another in their own columns:
+routing (`review-stages.sh route`) picks the stage set once, and the manager dispatches the
+evidence reviewer and each routed stage reviewer in the same tick against the same head SHA.
+
+A card leaves In Review only when every routed reviewer has met its required passes at the current head.
+A pass is a clean review (zero Critical and Important findings) recorded for
+that head. A new commit moves the head, so passes at the old head no longer count.
+
+All reviewers' findings go to one fixer dispatch, and the next round re-runs every reviewer.
+The fixer gets the union of the findings from the round; there is no per-stage fixer and no
+per-stage fix loop. The round counter is per card and `review.max_rounds` bounds it.
+
+### Stage keys
+
+Each entry in `review.stages` gains three keys:
+
+- `default`: boolean, default `false`. A `default` stage is routed to every card regardless
+  of `paths` and labels.
+- `required_passes`: positive integer, default `1`. The number of clean reviews at the
+  current head the reviewer needs before it counts as met.
+- `enabled`: boolean, default `true`. A stage with `enabled: false` is never routed and
+  never required.
+
+### Built-in stages
+
+The plugin ships two built-in stages, `documentation` and `blast_radius`. Both are
+`default: true` with `required_passes: 1` and `enabled: true`.
+Existing projects get the built-in stages without editing `.fleet-board.yml`: the built-ins are merged
+into `review.stages` before the project's own entries. A project overrides a built-in by naming a
+stage with the same name, and turns one off with `enabled: false`.
+
 ## Risks and open points
 
 - **Agent name trust.** The stage agent comes only from the repo's own config, validated by
