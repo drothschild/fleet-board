@@ -162,7 +162,8 @@ invalid_field() {
     elif (.ignored_checks | . == null or (type == "array" and all(.[]; type == "object"
             and (.name | type == "string" and clean and length > 0) and (.reason | type == "string" and clean and length > 0)
             and (.until | type == "string" and test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z"))
-            and (.at | type == "string" and clean and length > 0))) | not) then "ignored_checks"
+            and (.at | type == "string" and clean and length > 0)
+            and (.state | . == null or . == "red" or . == "pending"))) | not) then "ignored_checks"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"
     elif (.worktree | . == null or . == $base or startswith($base + "/") | not) then "worktree-outside-base"

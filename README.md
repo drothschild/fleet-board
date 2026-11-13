@@ -66,7 +66,8 @@ agents do the rest, and hooks stop them from skipping a step.
 - **Guardrails enforced by hooks.** A hook checks every shell command an agent runs. It blocks:
   - moving a card out of Human QA;
   - any merge under `merge.policy: human`;
-  - merging a draft PR, a PR with red or pending checks, or one with unreviewed commits;
+  - merging a draft PR, a PR with red or pending checks unless a `merge.ignore_checks` entry covers them, or one
+    with unreviewed commits;
   - moving a card to Ready without acceptance items.
 
   It is a text check with known blind spots ([docs/gates.md](plugins/fleet-board/docs/gates.md)); keep branch
