@@ -1482,7 +1482,7 @@ for row in in-review merging; do
   plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-11)"
   assert_jq "$row-ignore: unexpired entries (through today) plan merge" "$(card 12 action)" '"merge"'
   assert_jq "$row-ignore: the planner lists the checks it ignored" "$(card 12 ignored_checks)" \
-    '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11"}]'
+    '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31","state":"red"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11","state":"red"}]'
   assert_jq "$row-ignore: no expiry warning" '.warnings' '[]'
   plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
   assert_jq "$row-ignore-expired: an expired entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
@@ -1501,12 +1501,36 @@ for row in in-review merging; do
   plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-12-31)"
   assert_jq "$row-ignore-pending: a pending check an entry with pending: true names counts as green" "$(card 12 action)" '"merge"'
   assert_jq "$row-ignore-pending: the planner lists the pending check it went past" "$(card 12 ignored_checks)" \
-    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-12-31"}]'
+    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31","state":"pending"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-12-31","state":"red"}]'
   plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-11-10)"
   assert_jq "$row-ignore-pending: an expired pending entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
   plan $row-ignore-other-red "$(IGN_PENDING_YAML 2026-12-31)"
   assert_jq "$row-ignore-pending: pending: true does not cover a red check it does not name" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  plan $row-ignore-red "$(IGN_PENDING_YAML 2026-12-31)"
+  assert_jq "$row-ignore-pending: a pending: true entry also covers a red check of the same name" "$(card 12 action)" '"merge"'
+  assert_jq "$row-ignore-pending: that red check is recorded as red" "$(card 12 ignored_checks)" \
+    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31","state":"red"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-12-31","state":"red"}]'
 done
+# The check states are explicit sets: passed, red, pending; anything else is never green.
+STAR_YAML() { # STAR_YAML [pending]: one "*" entry, with pending: true when asked
+  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "*"\n      reason: "CI is asynchronous"\n      until: 2026-12-31\n'
+  [ "${1:-}" = pending ] && printf '      pending: true\n'
+  return 0
+}
+plan in-review-ignore-startup "$AUTO"
+assert_jq "check-states: STARTUP_FAILURE and STALE are not green without an entry" "$(card 12 action)" '"wait"'
+plan in-review-ignore-startup "$(STAR_YAML)"
+assert_jq "check-states: a red-only entry covers STARTUP_FAILURE and STALE" "$(card 12 action)" '"merge"'
+plan in-review-ignore-startup "$(STAR_YAML pending)"
+assert_jq "check-states: under pending: true, STARTUP_FAILURE and STALE merge" "$(card 12 action)" '"merge"'
+assert_jq "check-states: under pending: true, STARTUP_FAILURE and STALE are recorded as red" "$(card 12 ignored_checks)" \
+  '[{"name":"e2e","reason":"CI is asynchronous","until":"2026-12-31","state":"red"},{"name":"deploy","reason":"CI is asynchronous","until":"2026-12-31","state":"red"}]'
+plan in-review-ignore-weird "$(STAR_YAML pending)"
+assert_jq "check-states: an unknown conclusion never merges, even under * with pending: true" "$(card 12 action)" '"wait"'
+plan in-review-ignore-noconclusion "$(STAR_YAML pending)"
+assert_jq "check-states: COMPLETED with a null conclusion never merges, even under * with pending: true" "$(card 12 action)" '"wait"'
+plan in-review-ignore-nameless "$(STAR_YAML pending)"
+assert_jq "check-states: a red check with no name is never ignored, even under *" "$(card 12 action)" '"wait"'
 unset FLEET_BOARD_TODAY
 plan in-review-merge-auto "$AUTO"
 assert_jq "ignore_checks: an ordinary merge ignores nothing" "$(card 12 ignored_checks)" '[]'

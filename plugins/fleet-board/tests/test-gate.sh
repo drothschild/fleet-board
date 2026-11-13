@@ -1629,7 +1629,8 @@ YML
 }
 ignore_routes() {
   card_routes
-  for n in 14:ignored-red 15:ignored-pending 16:ignored-other-red; do
+  for n in 14:ignored-red 15:ignored-pending 16:ignored-other-red 17:ignored-startup 18:ignored-weird \
+           19:ignored-noconclusion 20:ignored-nameless 21:ignored-red-named; do
     printf 'pr view %s --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
     printf 'pr view %s -R acme/toy --json*\t0\t%s\n' "${n%%:*}" "$FIXTURES/pr/pr-${n%%:*}-${n#*:}.json"
   done
@@ -1658,6 +1659,8 @@ run_hook bash.json "gh pr merge 14 --squash"
 assert_blocked "ignore_checks: an unreadable today fails closed" "PR #14 checks are not green"
 export FB_TEST_TODAY=2026-11-12
 export FLEET_BOARD_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 14 --squash"
+assert_blocked "ignore_checks: the gate ignores FLEET_BOARD_TODAY" "PR #14 checks are not green"
 
 # pending: true lets the gate merge while a check the entry names is still running
 cat > "$REPO/.fleet-board.yml" << YML
@@ -1681,9 +1684,30 @@ assert_blocked "ignore_checks pending: true: a red check no entry names still bl
 export FB_TEST_TODAY=2027-01-01
 run_hook bash.json "gh pr merge 15 --squash"
 assert_blocked "ignore_checks pending: true: an expired entry no longer counts" "PR #15 checks are not green"
-export FB_TEST_TODAY=2026-11-12
-run_hook bash.json "gh pr merge 14 --squash"
-assert_blocked "ignore_checks: the gate ignores FLEET_BOARD_TODAY" "PR #14 checks are not green"
+export FB_TEST_TODAY=2026-11-11
+run_hook bash.json "gh pr merge 21 --squash"
+assert_silent_allow "ignore_checks pending: true: the entry also covers a red check of the same name"
+
+# the check states are explicit sets: under a "*" entry with pending: true, STARTUP_FAILURE and
+# STALE merge as red; an unknown conclusion, COMPLETED with no conclusion and a nameless check never do
+star_cfg() { # star_cfg [pending]
+  { printf 'board:\n  repo: acme/toy\nmerge:\n  policy: auto\n  ignore_checks:\n'
+    printf '    - name: "*"\n      reason: "CI is asynchronous"\n      until: 2026-12-31\n'
+    [ "${1:-}" = pending ] && printf '      pending: true\n'
+    printf 'worktrees:\n  dir: .fw\n'; } > "$REPO/.fleet-board.yml"
+}
+star_cfg
+run_hook bash.json "gh pr merge 17 --squash"
+assert_silent_allow "check-states: a red-only * entry covers STARTUP_FAILURE and STALE"
+star_cfg pending
+run_hook bash.json "gh pr merge 17 --squash"
+assert_silent_allow "check-states: under pending: true, STARTUP_FAILURE and STALE merge as red"
+run_hook bash.json "gh pr merge 18 --squash"
+assert_blocked "check-states: an unknown conclusion never merges" "PR #18 checks are not green"
+run_hook bash.json "gh pr merge 19 --squash"
+assert_blocked "check-states: COMPLETED with a null conclusion never merges" "PR #19 checks are not green"
+run_hook bash.json "gh pr merge 20 --squash"
+assert_blocked "check-states: a red check with no name is never ignored" "PR #20 checks are not green"
 unset FLEET_BOARD_TODAY FB_TEST_TODAY
 
 echo "-----------------------------------"
