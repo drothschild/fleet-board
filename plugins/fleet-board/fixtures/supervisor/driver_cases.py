@@ -425,7 +425,7 @@ def test_verify_main_failure_pauses_the_board(base):
 def test_finish_without_after_merge_marks_done(base):
     b = board_for(base, 'in_review', body='plain body')
     assert begin(b, 'finish', state='in_review').kind == 'done'
-    assert b.scripts_called() == ['board-read.sh', 'board-move.sh'], b.calls
+    assert b.scripts_called() == ['board-read.sh', 'board-move.sh', 'cleanup-done.sh'], b.calls
     assert b.card()['state'] == 'done'
     note = b.note()
     assert note['state'] == 'done' and note['action_failures'] == 0
