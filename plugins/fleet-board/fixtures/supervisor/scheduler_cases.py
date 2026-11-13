@@ -218,6 +218,8 @@ def run():
     test_script_action_still_waits_for_its_own_active_card()
     test_update_branch_still_scope_checked()
     test_has_work_tolerates_mixed_dependency_types()
+    test_scope_ignore_drops_version_manifests()
+    test_scope_ignore_validated_in_limits()
     print('scheduler cases passed')
 
 
@@ -394,6 +396,51 @@ def test_has_work_tolerates_mixed_dependency_types():
     assert result['admitted'] == [] and len(result['ignored']) == 1
     result = Scheduler(clock=lambda: 0).admit([dict(row, deps_commented=[5])], limits=LIMITS)
     assert len(result['admitted']) == 1
+
+
+MANIFESTS = ['.claude-plugin/marketplace.json', 'plugins/fleet-board/.claude-plugin/plugin.json']
+
+
+def _pr_row(number, action, own, extra=()):
+    return dict(candidate(number, action, paths=[own]), actual_paths=list(MANIFESTS) + list(extra))
+
+
+def test_scope_ignore_drops_version_manifests():
+    ignore = dict(LIMITS, scope_ignore=['.claude-plugin/marketplace.json', 'plugins/*/.claude-plugin/plugin.json'])
+    rows = [_pr_row(1, 'review', 'src/a.py'), _pr_row(2, 'fix', 'src/b.py')]
+    # Both admitted when the only shared paths are ignored manifests.
+    both = Scheduler(clock=lambda: 0).admit(rows, limits=ignore)
+    assert sorted(x['number'] for x in both['admitted']) == [1, 2], both
+    # Empty setting: they conflict as today.
+    empty = Scheduler(clock=lambda: 0).admit(rows, limits=dict(LIMITS, scope_ignore=[]))
+    assert [x['number'] for x in empty['admitted']] == [1] and empty['waits'][0]['reason'] == 'scope or card conflict'
+    unset = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
+    assert [x['number'] for x in unset['admitted']] == [1]
+    # A shared path that is not ignored still conflicts.
+    shared = [_pr_row(1, 'review', 'src/a.py', ['src/shared.py']), _pr_row(2, 'fix', 'src/b.py', ['src/shared.py'])]
+    still = Scheduler(clock=lambda: 0).admit(shared, limits=ignore)
+    assert [x['number'] for x in still['admitted']] == [1] and still['waits'][0]['reason'] == 'scope or card conflict'
+    # Active claims and reservations holding the manifests (normalised forms too) do not block.
+    active = [{'number': 9, 'provider': 'claude', 'paths': ['src/z.py', './.claude-plugin/marketplace.json']}]
+    reserved = [{'card': 8, 'paths': ['src/y.py', 'plugins/fleet-board/.claude-plugin/plugin.json']}]
+    held = Scheduler(clock=lambda: 0).admit([_pr_row(3, 'update_branch', 'src/c.py')], active=active,
+                                            reservations=reserved, limits=ignore)
+    assert [x['number'] for x in held['admitted']] == [3], held
+    assert held['active'][-1]['paths'] == ['src/c.py']
+    blocked = Scheduler(clock=lambda: 0).admit([_pr_row(3, 'update_branch', 'src/c.py')], active=active,
+                                               reservations=reserved, limits=LIMITS)
+    assert blocked['admitted'] == [] and blocked['waits'][0]['reason'] == 'scope reserved by #8'
+    # A card whose every path is ignored keeps its paths: it never turns into a whole-repo scope.
+    only = dict(candidate(4, 'review', paths=[]), actual_paths=list(MANIFESTS))
+    other = candidate(5, 'review', paths=['src/e.py'])
+    kept = Scheduler(clock=lambda: 0).admit([only, other], limits=ignore)
+    assert sorted(x['number'] for x in kept['admitted']) == [4, 5], kept
+
+
+def test_scope_ignore_validated_in_limits():
+    for bad in ('x', [''], [3], None):
+        result = Scheduler(clock=lambda: 0).admit([candidate(1)], limits=dict(LIMITS, scope_ignore=bad))
+        assert result['stop_reason'] == 'invalid limits', bad
 
 
 if __name__ == '__main__':

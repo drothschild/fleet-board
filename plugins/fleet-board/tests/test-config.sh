@@ -798,7 +798,7 @@ assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"
 REPO="$(make_test_repo supervisor-default.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor defaults accepted" 0
-assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{}}'
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"provider_concurrency":{},"scope_ignore":[]}'
 assert_stdout_exact_jq "supervisor defaults carry no enabled, start_on_boot or heartbeat key" '.supervisor | [has("enabled"), has("start_on_boot"), has("heartbeat_interval_seconds"), has("heartbeat_timeout_seconds")]' '[false,false,false,false]'
 REPO="$(make_test_repo supervisor-caps.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
@@ -825,6 +825,20 @@ invalid_field_case "supervisor caps type" 'supervisor: { provider_concurrency: [
 invalid_field_case "supervisor unknown cap" 'supervisor: { provider_concurrency: { unknown: 1 } }' 'supervisor.provider_concurrency.unknown names no provider'
 for v in 0 -1 1.5 null '"1"' '[]'; do
   invalid_field_case "supervisor cap rejects $v" "supervisor: { provider_concurrency: { claude: $v } }" 'supervisor.provider_concurrency.claude must be a positive integer'
+done
+# supervisor.scope_ignore: repo-relative globs the scheduler leaves out of scope overlap
+REPO="$(printf 'board: { repo: a/b }\nsupervisor: { scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor scope_ignore list accepted" 0
+assert_stdout_exact_jq "supervisor scope_ignore preserved" '.supervisor.scope_ignore' '[".claude-plugin/marketplace.json","plugins/*/.claude-plugin/plugin.json"]'
+for v in '"x.json"' 3 null '{ a: 1 }'; do
+  invalid_field_case "supervisor scope_ignore rejects $v" "supervisor: { scope_ignore: $v }" 'supervisor.scope_ignore must be a list of strings'
+done
+for v in '[""]' '[3]' '[null]'; do
+  invalid_field_case "supervisor scope_ignore entry rejects $v" "supervisor: { scope_ignore: $v }" 'supervisor.scope_ignore entries must be non-empty strings'
+done
+for v in '"/etc/x.json"' '"../x.json"' '"a/../b.json"' '".."'; do
+  invalid_field_case "supervisor scope_ignore path rejects $v" "supervisor: { scope_ignore: [$v] }" 'supervisor.scope_ignore entries must be repo-relative, without a leading / or ..'
 done
 invalid_field_case "supervisor deadline equality" 'supervisor: { attempt_timeout_seconds: 30, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'
 invalid_field_case "supervisor deadline less" 'supervisor: { attempt_timeout_seconds: 29, shutdown_grace_seconds: 30 }' 'supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds'

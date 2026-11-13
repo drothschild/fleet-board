@@ -852,5 +852,20 @@ class Markers(LoopCase):
         self.assertIsNone(self.marker())
 
 
+
+class ScopeIgnore(LoopCase):
+    def test_scope_ignore_reaches_the_scheduler_and_the_reservation(self):
+        config = dict(self.b.config, supervisor=dict(SUP, scope_ignore=['plugins/*/.claude-plugin/plugin.json']))
+        self.assertEqual(self.sup._limits(config)['scope_ignore'], ['plugins/*/.claude-plugin/plugin.json'])
+        self.assertEqual(self.sup._limits(self.b.config)['scope_ignore'], [])
+        self.sup.config = config
+        seen = []
+        row = dict(number=12, action='review', provider='claude', declared_paths=['src/a.py'],
+                   actual_paths=['plugins/fleet-board/.claude-plugin/plugin.json'])
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p: seen.append(p) or 99):
+            self.sup._begin(row)
+        self.assertEqual(seen, [['src/a.py']], 'the reservation leaves the ignored manifest out')
+
+
 if __name__ == '__main__':
     unittest.main()

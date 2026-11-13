@@ -197,6 +197,133 @@ setup "" "" 0
 run_update
 assert_eq "clean merge: the note has no conflicted files" "$(written_note | jq -c '.conflicted_files // []')" '[]'
 
+# ---------------------------------------------------------------------------
+# Version-only conflicts: every conflicted file is JSON and every hunk differs
+# only in "version" values. The merge is resolved here, committed and pushed.
+
+# plugin_conflict <file> <branch-version> <base-version>: a plugin.json-shaped conflict
+plugin_conflict() {
+  mkdir -p "$(dirname "$WT/$1")"
+  printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "%s",\n=======\n  "version": "%s",\n>>>>>>> origin/main\n  "description": "x"\n}\n' \
+    "$2" "$3" > "$WT/$1"
+}
+# market_conflict <file> <branch-version> <base-version>: a nested marketplace.json-shaped conflict
+# with a second plugin whose version line does not conflict
+market_conflict() {
+  mkdir -p "$(dirname "$WT/$1")"
+  printf '{\n  "name": "m",\n  "plugins": [\n    {\n      "name": "fleet-board",\n<<<<<<< HEAD\n      "version": "%s",\n=======\n      "version": "%s",\n>>>>>>> origin/main\n      "source": "./plugins/fleet-board"\n    },\n    { "name": "other", "version": "1.0.0" }\n  ]\n}\n' \
+    "$2" "$3" > "$WT/$1"
+}
+PLUGIN_JSON="plugins/fleet-board/.claude-plugin/plugin.json"
+MARKET_JSON=".claude-plugin/marketplace.json"
+
+assert_resolved() { # <label> <expected-version> <files...>
+  local label="$1" want="$2"; shift 2
+  assert_exit "$label: exit 0" 0
+  assert_eq "$label: the merge is not aborted" "$(count_lines '^merge --abort' "$GIT_LOG")" 0
+  assert_eq "$label: the merge is committed" "$(count_lines '^commit ' "$GIT_LOG")" 1
+  assert_eq "$label: pushed with a plain push" "$(count_lines '^push origin fleet/12-add-subtract$' "$GIT_LOG")" 1
+  assert_eq "$label: git log has no rebase" "$(count_lines 'rebase' "$GIT_LOG")" 0
+  assert_eq "$label: git log has no --force" "$(count_lines '--force' "$GIT_LOG")" 0
+  assert_eq "$label: no comment (no fixer)" "$(gh_calls 'issue comment')" 0
+  assert_eq "$label: the note has no conflicted files" "$(written_note | jq -c '.conflicted_files // []')" '[]'
+  assert_eq "$label: the note records the update" "$(written_note | jq -c '.last_update.sha')" '"2222222222222222222222222222222222222222"'
+  local f
+  for f in "$@"; do
+    assert_eq "$label: $f is staged" "$(count_lines "^add .*$f" "$GIT_LOG")" 1
+    assert_eq "$label: $f has no conflict markers" "$(count_lines '^(<<<<<<<|=======|>>>>>>>)' "$WT/$f")" 0
+    assert_eq "$label: $f is valid JSON" "$(jq -e . "$WT/$f" >/dev/null 2>&1 && echo yes || echo no)" yes
+    assert_eq "$label: $f version" "$(jq -r '.version // .plugins[0].version' "$WT/$f")" "$want"
+  done
+}
+
+assert_to_fixer() { # <label> <files...>: today's conflict path, nothing auto-committed
+  local label="$1"; shift
+  assert_exit "$label: exit 1" 1
+  assert_eq "$label: the merge is aborted" "$(count_lines '^merge --abort' "$GIT_LOG")" 1
+  assert_eq "$label: nothing is committed" "$(count_lines '^commit' "$GIT_LOG")" 0
+  assert_eq "$label: nothing is staged" "$(count_lines '^add' "$GIT_LOG")" 0
+  assert_eq "$label: nothing is pushed" "$(count_lines '^push ' "$GIT_LOG")" 0
+  assert_eq "$label: one comment" "$(gh_calls 'issue comment 12')" 1
+  assert_eq "$label: the note records the files for the fixer" "$(written_note | jq -c '.conflicted_files')" \
+    "$(printf '%s\n' "$@" | jq -R . | jq -sc .)"
+}
+
+setup "" "$MARKET_JSON $PLUGIN_JSON" 1
+market_conflict "$MARKET_JSON" 0.28.4 0.28.5
+plugin_conflict "$PLUGIN_JSON" 0.28.4 0.28.5
+run_update
+assert_resolved "version-only conflict in both manifests" 0.28.6 "$MARKET_JSON" "$PLUGIN_JSON"
+assert_eq "version-only conflict in both manifests: the non-conflicting version line is untouched" \
+  "$(jq -r '.plugins[1].version' "$WT/$MARKET_JSON")" 1.0.0
+assert_eq "version-only conflict in both manifests: the commit message says so" \
+  "$(count_lines '^commit .*version' "$GIT_LOG")" 1
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.3 0.28.4
+run_update
+assert_resolved "branch 0.28.3 against base 0.28.4" 0.28.5 "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.29.0 0.28.4
+run_update
+assert_resolved "branch 0.29.0 against base 0.28.4" 0.29.0 "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.10 0.28.9
+run_update
+assert_resolved "branch 0.28.10 against base 0.28.9 (numeric)" 0.28.10 "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.9 0.28.10
+run_update
+assert_resolved "branch 0.28.9 against base 0.28.10 (numeric)" 0.28.11 "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.29.0 0.29.0-rc.1
+run_update
+assert_resolved "branch 0.29.0 against base 0.29.0-rc.1 (release ranks above prerelease)" 0.29.0 "$PLUGIN_JSON"
+
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.29.0-rc.2 0.29.0-rc.10
+run_update
+assert_resolved "branch 0.29.0-rc.2 against base 0.29.0-rc.10 (numeric prerelease)" 0.29.1 "$PLUGIN_JSON"
+
+# A hunk that also changes another line goes to the fixer as today
+setup "" "$PLUGIN_JSON" 1
+mkdir -p "$(dirname "$WT/$PLUGIN_JSON")"
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n  "description": "mine"\n=======\n  "version": "0.28.4",\n  "description": "theirs"\n>>>>>>> origin/main\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_to_fixer "a JSON conflict that also touches another line" "$PLUGIN_JSON"
+
+# One side drops the version line: not version-only
+setup "" "$PLUGIN_JSON" 1
+printf '{\n  "name": "fleet-board",\n<<<<<<< HEAD\n  "version": "0.28.3",\n=======\n>>>>>>> origin/main\n  "description": "x"\n}\n' > "$WT/$PLUGIN_JSON"
+run_update
+assert_to_fixer "a JSON conflict where one side drops the version line" "$PLUGIN_JSON"
+
+# A version that is not semver goes to the fixer
+setup "" "$PLUGIN_JSON" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.3 latest
+run_update
+assert_to_fixer "a version that cannot be parsed" "$PLUGIN_JSON"
+
+# A non-JSON file with a version-shaped hunk goes to the fixer as today
+setup "" "notes.txt" 1
+printf '<<<<<<< HEAD\n  "version": "0.28.3",\n=======\n  "version": "0.28.4",\n>>>>>>> origin/main\n' > "$WT/notes.txt"
+run_update
+assert_to_fixer "a conflict in a non-JSON file" "notes.txt"
+
+# A version-only file next to a real conflict: the fixer gets both, nothing is auto-committed
+setup "" "$PLUGIN_JSON src/calc.js" 1
+plugin_conflict "$PLUGIN_JSON" 0.28.3 0.28.4
+mkdir -p "$WT/src"
+printf '<<<<<<< HEAD\nconst a = 1;\n=======\nconst a = 2;\n>>>>>>> origin/main\n' > "$WT/src/calc.js"
+run_update
+assert_to_fixer "a version-only file mixed with a real conflict" "$PLUGIN_JSON" src/calc.js
+assert_eq "a version-only file mixed with a real conflict: the version-only file is not rewritten" \
+  "$(count_lines '^<<<<<<<' "$WT/$PLUGIN_JSON")" 1
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
