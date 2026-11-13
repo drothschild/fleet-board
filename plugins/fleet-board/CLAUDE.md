@@ -183,7 +183,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
   (Phase 4). Policy: add a residual to that list, do not claim the hook covers it.
 - **Command-line supervisor** (`scripts/supervisor/`, `scripts/supervisor.sh`; design:
-  `docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`). A process you start yourself that
+  `docs/specs/2026-11-11-cli-supervisor-design.md`). A process you start yourself that
   dispatches the board's work: it plans with `tick-plan.sh`, admits actions (`scheduler.py`), runs
   role sessions (`roles.py`, `driver.py`) and the one-merge lane (`merging.py`). `status`, `pause`,
   `resume`, `stop [--drain|--cancel]`, `usage` and `stuck` talk to it or to the board. It keeps
