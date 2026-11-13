@@ -125,6 +125,179 @@ $OUT
 EOF2
 case "$OUT" in *"ok   "*|*"FAIL "*) ;; *) fail "driver produced results" "$OUT" ;; esac
 
+echo "Case: closing while a reply is running asks first"
+DRIVER2="$(mktemp)"
+trap 'rm -f "$DRIVER" "$PATCHED" "$DRIVER2"' EXIT
+cat > "$DRIVER2" <<'JS'
+"use strict";
+const path = require("node:path");
+const loadBoard = require(process.argv[2]);
+const boardJs = path.join(process.argv[3], "board.js");
+process.on("unhandledRejection", () => {});
+const ok = (name, cond, info) => console.log((cond ? "ok   " : "FAIL ") + name + (cond ? "" : "\t" + info));
+const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+async function boot(failStart) {
+  const h = loadBoard(boardJs, async (url, opts) => {
+    let data;
+    if (url === "/api/board") data = {repo: "acme/toy", states, cards: [], run: {state: "idle"}};
+    else if (url === "/api/run") data = {state: "idle"};
+    else if (url === "/api/planner" && opts.method === "POST") {
+      if (failStart) return {ok: false, status: 500, json: async () => ({error: "boom"})};
+      data = {id: "c1"};
+    }
+    else if (url === "/api/planner/c1/messages") data = {ok: true};
+    else if (url === "/api/planner/c1") data = {running: true, turns: []};
+    else throw new Error("Unexpected request: " + opts.method + " " + url);
+    return {ok: true, status: 200, json: async () => data};
+  });
+  h.ctx.matchMedia = () => ({matches: true});
+  h.calls = [];
+  h.answer = false;
+  h.ctx.confirm = (msg) => { h.calls.push(String(msg)); return h.answer; };
+  await h.flush();
+  return h;
+}
+const pressEscape = async (h, target) => {
+  const e = {key: "Escape", target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }};
+  for (const fn of target.listeners.keydown || []) await fn(e);
+  for (const fn of (globalThis.__docL || {}).keydown || []) await fn(e);
+  await h.flush();
+};
+async function running(h) {
+  await h.$("plan-btn").fire("click");
+  h.$("pl-input").value = "a plan";
+  await h.$("pl-send").fire("click");
+  await h.flush();
+}
+(async () => {
+  try {
+    let h = await boot(false);
+    let S = h.ctx.__test.S;
+    await running(h);
+    const before = S.pl;
+    await h.$("pl-close").fire("click");
+    ok("Clicking pl-close while a planner reply is running calls confirm() once with a message saying the reply will be lost",
+      !!before && before.busy === true && h.calls.length === 1 && /lost/i.test(h.calls[0]), "busy=" + (before && before.busy) + " calls=" + JSON.stringify(h.calls));
+    ok("When confirm() returns false, the planner stays open and S.pl is unchanged",
+      S.pl === before && h.$("planner-modal").hidden === false, "same=" + (S.pl === before) + " modal.hidden=" + h.$("planner-modal").hidden);
+    h.answer = true;
+    await h.$("pl-close").fire("click");
+    ok("When confirm() returns true, S.pl is null and the popup is hidden",
+      S.pl === null && h.$("planner-modal").hidden === true && h.$("planner").hidden === true, "pl=" + !!S.pl + " modal.hidden=" + h.$("planner-modal").hidden);
+
+    h = await boot(false);
+    S = h.ctx.__test.S;
+    await running(h);
+    await pressEscape(h, h.document.body);
+    ok("Pressing Escape while a planner reply is running calls confirm() once", h.calls.length === 1 && !!S.pl, "calls=" + h.calls.length + " pl=" + !!S.pl);
+
+    h = await boot(false);
+    S = h.ctx.__test.S;
+    await h.$("plan-btn").fire("click");
+    await h.$("pl-close").fire("click");
+    ok("Clicking pl-close on a chat with no messages closes the planner without calling confirm()", h.calls.length === 0 && S.pl === null && h.$("planner-modal").hidden === true, "calls=" + h.calls.length + " pl=" + !!S.pl);
+
+    h = await boot(true);
+    S = h.ctx.__test.S;
+    await h.$("plan-btn").fire("click");
+    await h.flush();
+    ok("When POST /api/planner fails, the planner closes without calling confirm()", h.calls.length === 0 && S.pl === null && h.$("planner-modal").hidden === true, "calls=" + h.calls.length + " pl=" + !!S.pl);
+  } catch (e) {
+    ok("close confirmation ran without an error", false, String(e && e.message || e));
+  }
+})();
+JS
+OUT2="$(node "$DRIVER2" "$PATCHED" "$STATIC" 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok   "*) pass "${line#ok   }" ;;
+    "FAIL "*) fail "${line#FAIL }" "" ;;
+  esac
+done <<EOF3
+$OUT2
+EOF3
+case "$OUT2" in *"ok   "*|*"FAIL "*) ;; *) fail "close driver produced results" "$OUT2" ;; esac
+
+echo "Case: closing an idle chat with messages asks first"
+DRIVER3="$(mktemp)"
+trap 'rm -f "$DRIVER" "$PATCHED" "$DRIVER2" "$DRIVER3"' EXIT
+cat > "$DRIVER3" <<'JS'
+"use strict";
+const path = require("node:path");
+const loadBoard = require(process.argv[2]);
+const boardJs = path.join(process.argv[3], "board.js");
+process.on("unhandledRejection", () => {});
+const ok = (name, cond, info) => console.log((cond ? "ok   " : "FAIL ") + name + (cond ? "" : "\t" + info));
+const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+async function boot() {
+  const h = loadBoard(boardJs, async (url, opts) => {
+    let data;
+    if (url === "/api/board") data = {repo: "acme/toy", states, cards: [], run: {state: "idle"}};
+    else if (url === "/api/run") data = {state: "idle"};
+    else if (url === "/api/planner" && opts.method === "POST") data = {id: "c1"};
+    else if (url === "/api/planner/c1/messages") data = {ok: true};
+    else if (url === "/api/planner/c1") data = {running: false, turns: [{role: "user", text: "p"}, {role: "assistant", text: "r"}]};
+    else throw new Error("Unexpected request: " + opts.method + " " + url);
+    return {ok: true, status: 200, json: async () => data};
+  });
+  h.ctx.matchMedia = () => ({matches: true});
+  h.calls = [];
+  h.answer = false;
+  h.ctx.confirm = (msg) => { h.calls.push(String(msg)); return h.answer; };
+  await h.flush();
+  return h;
+}
+const pressEscape = async (h, target) => {
+  const e = {key: "Escape", target, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }};
+  for (const fn of target.listeners.keydown || []) await fn(e);
+  for (const fn of (globalThis.__docL || {}).keydown || []) await fn(e);
+  await h.flush();
+};
+async function idle(h) {
+  await h.$("plan-btn").fire("click");
+  h.$("pl-input").value = "a plan";
+  await h.$("pl-send").fire("click");
+  for (let i = 0; i < 3; i++) { const t = h.timers.splice(0); for (const fn of t) { try { await fn(); } catch (e) {} } await h.flush(); }
+}
+(async () => {
+  try {
+    let h = await boot();
+    let S = h.ctx.__test.S;
+    await idle(h);
+    const before = S.pl;
+    const turns = before && before.turns.slice();
+    await h.$("pl-close").fire("click");
+    ok("Clicking pl-close on an idle chat with a user turn calls confirm() once with a message saying the conversation will be lost",
+      !!before && before.busy === false && h.calls.length === 1 && /conversation/i.test(h.calls[0]) && /lost/i.test(h.calls[0]), "busy=" + (before && before.busy) + " calls=" + JSON.stringify(h.calls));
+    ok("When confirm() returns false on an idle chat, the planner stays open and its turns are unchanged",
+      S.pl === before && h.$("planner-modal").hidden === false && JSON.stringify(S.pl.turns) === JSON.stringify(turns), "same=" + (S.pl === before) + " modal.hidden=" + h.$("planner-modal").hidden);
+    h.answer = true;
+    await h.$("pl-close").fire("click");
+    ok("When confirm() returns true on an idle chat, S.pl is null and the popup is hidden",
+      S.pl === null && h.$("planner-modal").hidden === true, "pl=" + !!S.pl + " modal.hidden=" + h.$("planner-modal").hidden);
+
+    h = await boot();
+    S = h.ctx.__test.S;
+    await idle(h);
+    const idleBusy = S.pl && S.pl.busy;
+    await pressEscape(h, h.document.body);
+    ok("Pressing Escape on an idle chat with a user turn calls confirm() once", idleBusy === false && h.calls.length === 1 && !!S.pl, "busy=" + idleBusy + " calls=" + h.calls.length + " pl=" + !!S.pl);
+  } catch (e) {
+    ok("idle close confirmation ran without an error", false, String(e && e.message || e));
+  }
+})();
+JS
+OUT3="$(node "$DRIVER3" "$PATCHED" "$STATIC" 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok   "*) pass "${line#ok   }" ;;
+    "FAIL "*) fail "${line#FAIL }" "" ;;
+  esac
+done <<EOF4
+$OUT3
+EOF4
+case "$OUT3" in *"ok   "*|*"FAIL "*) ;; *) fail "idle close driver produced results" "$OUT3" ;; esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
