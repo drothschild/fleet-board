@@ -1058,6 +1058,157 @@ plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
 assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
 
+# supervisor.scope_ignore: a Ready card naming a manifest is not held back by an
+# open PR that also touches the manifests (the same rule as scopes.drop_ignored)
+# plan_scope_ignore <extra YAML>: card 12 in review, its PR touching src/a.sh and both manifests
+plan_scope_ignore() {
+  setup_case ready-start "$1"
+  local dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+  scope_issue "$dir" 12 in_review '- Modify `src/a.sh`: the change'
+  scope_issue "$dir" 14 ready '- Bump `.claude-plugin/marketplace.json` and `plugins/fleet-board/.claude-plugin/plugin.json`'
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "14" "12"
+  printf '%s\n' '{"files":[{"path":"src/a.sh"},{"path":".claude-plugin/marketplace.json"},{"path":"plugins/fleet-board/.claude-plugin/plugin.json"}],"changedFiles":3}' > "$dir/files-manifests.json"
+  { printf 'pr view 34 --repo acme/toy --json files*\t0\t%s/files-manifests.json\n' "$dir"; cat "$dir/routes"; } > "$dir/routes.new"
+  mv "$dir/routes.new" "$dir/routes"
+  run_check "$SCRIPT"
+}
+plan_scope_ignore ""
+assert_exit "scope-ignore unset: exit" 0
+assert_jq "scope-ignore unset: the Ready card naming a manifest waits" "$(card 14 action)" '"wait"'
+plan_scope_ignore "$(printf 'supervisor:\n  scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]')"
+assert_exit "scope-ignore: exit" 0
+assert_jq "scope-ignore: the Ready card naming only manifests starts" "$(card 14 action)" '"start"'
+plan_scope_ignore "$(printf 'supervisor:\n  scope_ignore: ["*.json"]')"
+assert_jq "scope-ignore: * does not cross /, so nested manifests still overlap" "$(card 14 action)" '"wait"'
+
+# supervisor.version_files: a review or merge candidate whose PR head version is not
+# strictly above the same line on the base plans update_branch
+VERSION_YAML="$(printf 'supervisor:\n  version_files: ["plugins/*/.claude-plugin/plugin.json"]')"
+# plan_version <base version after the branch was cut> <extra YAML>
+# env: PV_BASE_BRANCH (the PR's baseRefName, default main), PV_HEAD (a headRefOid to
+# report instead of the branch head), PV_EARLY_MERGE (the branch merged the base,
+# with the same bump, before the base moved on). A git wrapper logs fetches.
+plan_version() {
+  setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto\n%s' "$2")"
+  local dir="$FAKE_GH_DIR/scope" remote="$FAKE_GH_DIR/remote.git" head base bb="${PV_BASE_BRANCH:-main}" real_git
+  mkdir -p "$dir"
+  real_git="$(PATH="$ORIG_PATH" command -v git)"
+  printf '#!/usr/bin/env bash\nfor a in "$@"; do [ "$a" = fetch ] && { printf "%%s\\n" "$*" >> "%s/git-fetch.log"; break; }; done\nexec "%s" "$@"\n' \
+    "$FAKE_GH_DIR" "$real_git" > "$BIN/git"
+  chmod +x "$BIN/git"
+  git init -q --bare "$remote"
+  git -C "$REPO" remote add origin "$remote"
+  mkdir -p "$REPO/plugins/fb/.claude-plugin"
+  printf '{\n  "name": "fb",\n  "version": "0.28.3"\n}\n' > "$REPO/plugins/fb/.claude-plugin/plugin.json"
+  git -C "$REPO" add -A; git -C "$REPO" commit -q -m base
+  base="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" push -q origin HEAD:refs/heads/main
+  [ "$bb" = main ] || git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
+  git -C "$REPO" checkout -q -b fleet/12-card
+  printf '{\n  "name": "fb",\n  "version": "0.28.4"\n}\n' > "$REPO/plugins/fb/.claude-plugin/plugin.json"
+  printf 'x\n' > "$REPO/src.txt"
+  git -C "$REPO" add -A; git -C "$REPO" commit -q -m branch
+  git -C "$REPO" push -q origin fleet/12-card
+  git -C "$REPO" checkout -q -b base-work "$base"
+  if [ "$1" != 0.28.3 ]; then
+    printf '{\n  "name": "fb",\n  "version": "%s"\n}\n' "$1" > "$REPO/plugins/fb/.claude-plugin/plugin.json"
+    git -C "$REPO" commit -q -am base-bump
+    git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
+  fi
+  if [ -n "${PV_TAKE_THEIRS:-}" ]; then
+    git -C "$REPO" checkout -q fleet/12-card
+    git -C "$REPO" merge -q --no-edit base-work >/dev/null 2>&1
+    git -C "$REPO" checkout -q --theirs -- plugins/fb/.claude-plugin/plugin.json
+    git -C "$REPO" add -A; git -C "$REPO" commit -q --no-edit
+    git -C "$REPO" push -q origin fleet/12-card
+    git -C "$REPO" checkout -q base-work
+  fi
+  if [ -n "${PV_DELETE:-}" ]; then
+    git -C "$REPO" checkout -q fleet/12-card
+    git -C "$REPO" rm -q plugins/fb/.claude-plugin/plugin.json; git -C "$REPO" commit -q -m drop
+    git -C "$REPO" push -q origin fleet/12-card
+    git -C "$REPO" checkout -q base-work
+  fi
+  if [ -n "${PV_EARLY_MERGE:-}" ]; then
+    git -C "$REPO" checkout -q fleet/12-card
+    git -C "$REPO" merge -q --no-edit base-work
+    git -C "$REPO" push -q origin fleet/12-card
+    git -C "$REPO" checkout -q base-work
+    printf 'later\n' > "$REPO/later.txt"
+    git -C "$REPO" add -A; git -C "$REPO" commit -q -m later
+    git -C "$REPO" push -q origin "HEAD:refs/heads/$bb"
+  fi
+  head="${PV_HEAD:-$(git -C "$REPO" rev-parse fleet/12-card)}"
+  scope_issue "$dir" 12 in_review NONE
+  scope_review_note "$dir" 12
+  scope_routes "$dir" "" "12"
+  jq -c --arg h "$head" '.headRefOid = $h' "$TICK/common/pr-34-open-green.json" > "$dir/pr-34.json"
+  printf '%s\n' "$bb" > "$dir/base-34.txt"
+  { printf 'pr view 34 --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/pr-34.json\n' "$dir"
+    printf 'pr view 34 --repo acme/toy --json baseRefName*\t0\t%s/base-34.txt\n' "$dir"
+    cat "$dir/routes"; } > "$dir/routes.new"
+  mv "$dir/routes.new" "$dir/routes"
+  run_check "$SCRIPT"
+}
+fetch_count() { if [ -f "$FAKE_GH_DIR/git-fetch.log" ]; then grep -c -- "$1" "$FAKE_GH_DIR/git-fetch.log"; else echo 0; fi; }
+plan_version 0.28.4 "$VERSION_YAML"
+assert_exit "version-stale: exit" 0
+assert_jq "version-stale: an equal version on the base plans update_branch" "$(card 12 action)" '"update_branch"'
+assert_jq "version-stale: the reason says so" "$(card 12 reason) | startswith(\"version not above base\")" 'true'
+plan_version 0.29.0 "$VERSION_YAML"
+assert_jq "version-stale: a base version above the head plans update_branch" "$(card 12 action)" '"update_branch"'
+plan_version 0.28.3 "$VERSION_YAML"
+assert_exit "version-above: exit" 0
+assert_jq "version-above: a head version above the base is not held" "$(card 12 action) | . != \"update_branch\"" 'true'
+plan_version 0.28.4 ""
+assert_jq "version-stale without version_files: not checked" "$(card 12 action) | . != \"update_branch\"" 'true'
+assert_eq "version-stale without version_files: no fetch" "$(fetch_count fetch)" 0
+
+# The base is the PR's baseRefName, not origin's default branch
+PV_BASE_BRANCH=release; export PV_BASE_BRANCH
+plan_version 0.28.4 "$VERSION_YAML"
+assert_jq "version-base: an equal version on the PR's base branch plans update_branch" "$(card 12 action)" '"update_branch"'
+plan_version 0.28.3 "$VERSION_YAML"
+assert_jq "version-base: above the PR's base branch is not held" "$(card 12 action) | . != \"update_branch\"" 'true'
+unset PV_BASE_BRANCH
+
+# An earlier merge of the base (with the same bump) does not hide the stale version
+PV_EARLY_MERGE=1; export PV_EARLY_MERGE
+plan_version 0.28.4 "$VERSION_YAML"
+assert_jq "version-early-merge: the branch's own bump equal to the base plans update_branch" "$(card 12 action)" '"update_branch"'
+unset PV_EARLY_MERGE
+
+# A merge that took the base's side does not hide the branch's own bump
+PV_TAKE_THEIRS=1; export PV_TAKE_THEIRS
+plan_version 0.29.0 "$VERSION_YAML"
+assert_jq "version-take-theirs: the head equal to the base plans update_branch" "$(card 12 action)" '"update_branch"'
+unset PV_TAKE_THEIRS
+
+# A version file the branch touched but removed holds the card (fail closed)
+PV_DELETE=1; export PV_DELETE
+plan_version 0.28.3 "$VERSION_YAML"
+assert_jq "version-deleted file: the card waits" "$(card 12 action)" '"wait"'
+assert_jq "version-deleted file: the reason names it" "$(card 12 reason) | contains(\"plugins/fb/.claude-plugin/plugin.json\")" 'true'
+unset PV_DELETE
+
+# A head that cannot be read holds the card (fail closed)
+PV_HEAD=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef; export PV_HEAD
+plan_version 0.28.3 "$VERSION_YAML"
+assert_exit "version-unreadable head: exit" 0
+assert_jq "version-unreadable head: the card waits" "$(card 12 action)" '"wait"'
+assert_jq "version-unreadable head: the reason names what is missing" "$(card 12 reason) | startswith(\"version check needs \")" 'true'
+unset PV_HEAD
+
+# The base fetch: only origin <base>, at most once per 60 s
+plan_version 0.28.4 "$VERSION_YAML"
+assert_eq "version-fetch: the first plan fetches the base" "$(fetch_count '^fetch -q origin main')" 1
+assert_eq "version-fetch: it fetches only origin <base>" "$(fetch_count '^fetch -q origin$')" 0
+run_check "$SCRIPT"
+assert_exit "version-fetch: second plan: exit" 0
+assert_jq "version-fetch: second plan still holds the card" "$(card 12 action)" '"update_branch"'
+assert_eq "version-fetch: two plans within 60 s fetch once" "$(fetch_count '^fetch -q origin main')" 1
+
 # Three cards eligible to merge: exactly one merge, lowest number first
 setup_case in-review-merge-auto "$(printf 'merge:\n  policy: auto')"
 dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
@@ -1482,7 +1633,7 @@ for row in in-review merging; do
   plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-11)"
   assert_jq "$row-ignore: unexpired entries (through today) plan merge" "$(card 12 action)" '"merge"'
   assert_jq "$row-ignore: the planner lists the checks it ignored" "$(card 12 ignored_checks)" \
-    '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11"}]'
+    '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31","state":"red"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11","state":"red"}]'
   assert_jq "$row-ignore: no expiry warning" '.warnings' '[]'
   plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
   assert_jq "$row-ignore-expired: an expired entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
@@ -1492,6 +1643,46 @@ for row in in-review merging; do
   plan $row-ignore-other-red "$(IGN_YAML 2026-12-31 2026-12-31)"
   assert_jq "$row-ignore-other-red: a red check no entry matches still blocks" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
 done
+# pending: true lets a matching check that is still running count as green
+IGN_PENDING_YAML() { # IGN_PENDING_YAML <until>
+  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: "CI is asynchronous"\n      until: %s\n      pending: true\n    - name: "ci/legacy-?int"\n      reason: "legacy status"\n      until: 2026-12-31\n' "$1"
+}
+export FLEET_BOARD_TODAY=2026-11-11
+for row in in-review merging; do
+  plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-12-31)"
+  assert_jq "$row-ignore-pending: a pending check an entry with pending: true names counts as green" "$(card 12 action)" '"merge"'
+  assert_jq "$row-ignore-pending: the planner lists the pending check it went past" "$(card 12 ignored_checks)" \
+    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31","state":"pending"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-12-31","state":"red"}]'
+  plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-11-10)"
+  assert_jq "$row-ignore-pending: an expired pending entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  plan $row-ignore-other-red "$(IGN_PENDING_YAML 2026-12-31)"
+  assert_jq "$row-ignore-pending: pending: true does not cover a red check it does not name" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
+  plan $row-ignore-red "$(IGN_PENDING_YAML 2026-12-31)"
+  assert_jq "$row-ignore-pending: a pending: true entry also covers a red check of the same name" "$(card 12 action)" '"merge"'
+  assert_jq "$row-ignore-pending: that red check is recorded as red" "$(card 12 ignored_checks)" \
+    '[{"name":"lint-docs","reason":"CI is asynchronous","until":"2026-12-31","state":"red"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-12-31","state":"red"}]'
+done
+# The check states are explicit sets: passed, red, pending; anything else is never green.
+STAR_YAML() { # STAR_YAML [pending]: one "*" entry, with pending: true when asked
+  printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "*"\n      reason: "CI is asynchronous"\n      until: 2026-12-31\n'
+  [ "${1:-}" = pending ] && printf '      pending: true\n'
+  return 0
+}
+plan in-review-ignore-startup "$AUTO"
+assert_jq "check-states: STARTUP_FAILURE and STALE are not green without an entry" "$(card 12 action)" '"wait"'
+plan in-review-ignore-startup "$(STAR_YAML)"
+assert_jq "check-states: a red-only entry covers STARTUP_FAILURE and STALE" "$(card 12 action)" '"merge"'
+plan in-review-ignore-startup "$(STAR_YAML pending)"
+assert_jq "check-states: under pending: true, STARTUP_FAILURE and STALE merge" "$(card 12 action)" '"merge"'
+assert_jq "check-states: under pending: true, STARTUP_FAILURE and STALE are recorded as red" "$(card 12 ignored_checks)" \
+  '[{"name":"e2e","reason":"CI is asynchronous","until":"2026-12-31","state":"red"},{"name":"deploy","reason":"CI is asynchronous","until":"2026-12-31","state":"red"}]'
+plan in-review-ignore-weird "$(STAR_YAML pending)"
+assert_jq "check-states: an unknown conclusion never merges, even under * with pending: true" "$(card 12 action)" '"wait"'
+plan in-review-ignore-noconclusion "$(STAR_YAML pending)"
+assert_jq "check-states: COMPLETED with a null conclusion never merges, even under * with pending: true" "$(card 12 action)" '"wait"'
+plan in-review-ignore-nameless "$(STAR_YAML pending)"
+assert_jq "check-states: a red check with no name is never ignored, even under *" "$(card 12 action)" '"wait"'
+unset FLEET_BOARD_TODAY
 plan in-review-merge-auto "$AUTO"
 assert_jq "ignore_checks: an ordinary merge ignores nothing" "$(card 12 ignored_checks)" '[]'
 plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)" 

@@ -393,7 +393,7 @@ class MergerFlow(unittest.TestCase):
         self.assertNotIn(12, self.b.state.active)
         prompt = self.b.prompt(1)
         for part in ('## Card number\n12', '## Card title\nAdd subtract', '## PR number\n34', '## Mode\nafter_merge',
-                     '## Merged head\nabc1234', '# Default merger persona', '## Config\n', '## Scripts dir\n'):
+                     '## PR head (pr_head)\nabc1234', '## Merge commit (merge_commit)\n', '# Default merger persona', '## Config\n', '## Scripts dir\n'):
             self.assertIn(part, prompt)
         argv = self.b.fake_calls()[0]['argv']
         self.assertEqual(argv[argv.index('--agent') + 1], 'fleet-board:merger')

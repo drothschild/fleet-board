@@ -27,4 +27,13 @@ jq --arg l "$LABEL" --arg op "$OP" --arg now "$(fl_now)" '
   .labels = (if $op == "add" then (.labels // []) + [$l] else [(.labels // [])[] | select(. != $l)] end)
   | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
+if [ "$OP" = add ] && [ "$LABEL" = needs-human-qa ]; then
+  BODY="$(jq -j '.body // ""' <<<"$CARD"; printf x)"; BODY="${BODY%x}"
+  NEWBODY="$(fl_add_qa_section "$BODY"; printf x)"; NEWBODY="${NEWBODY%x}"
+  if [ "$NEWBODY" != "$BODY" ]; then
+    TMP2="$(mktemp)" || fb_die 1 "cannot create a temporary file"
+    jq --arg b "$NEWBODY" '.body = $b' "$TMP" > "$TMP2" && mv -f "$TMP2" "$TMP" \
+      || { rm -f "$TMP2"; fb_die 1 "cannot update card #$N"; }
+  fi
+fi
 fl_write_card "$N" "$TMP" || exit 1
