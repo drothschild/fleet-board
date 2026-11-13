@@ -626,6 +626,18 @@ for i in 1 2 3 4 5 6 7 8; do (cd "$REPO" && bash "$SCRIPTS/board-create.sh" "C$i
 got="$(cat "$CO"/*.out | jq -r .number | sort -n | tr '\n' ' ')"
 if [ "$got" = "1 2 3 4 5 6 7 8 " ]; then pass "eight concurrent creates give numbers 1 through 8"; else fail "eight concurrent creates give numbers 1 through 8" "got: $got"; fi
 
+# --- a lost lock must not hand out a number twice (card #252) ---
+# Simulates the lock failing: three cards are created, then the counter is put back
+# to 2 as a second holder of the lock would leave it. The next create must skip the
+# numbers already handed out instead of reusing 2.
+setup_case
+for i in 1 2 3; do (cd "$REPO" && bash "$SCRIPTS/board-create.sh" "D$i" "$body" >/dev/null 2>&1); done
+echo 2 > "$REPO/.fleet-board/next"
+dup_out="$(cd "$REPO" && bash "$SCRIPTS/board-create.sh" "D4" "$body" 2>/dev/null | jq -r .number)"
+if [ "$dup_out" = "4" ]; then pass "eight concurrent creates give numbers 1 through 8: a reset counter never reissues a number"; else fail "eight concurrent creates give numbers 1 through 8: a reset counter never reissues a number" "got: $dup_out"; fi
+dup_title="$(jq -r .title "$REPO/.fleet-board/cards/2.json")"
+if [ "$dup_title" = "D2" ]; then pass "a reset counter does not overwrite card 2"; else fail "a reset counter does not overwrite card 2" "title: $dup_title"; fi
+
 # --- racing notes ---
 racing_note_case
 

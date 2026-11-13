@@ -918,6 +918,35 @@ assert_code 200
 assert_body "USER unset: the login name's note is the card's note" '.cards[0].note.round' 3
 stop_server
 
+echo "Case: /api/board says which reviewer runs In Review"
+RV_REPO="$(new_repo "$LOCAL_YML
+models:
+  reviewer: opus")"
+mkdir -p "$RV_REPO/.fleet-board/cards"
+start_server "$RV_REPO"
+api GET /api/board
+assert_code 200
+assert_body "When models.reviewer is the string opus, the in_review state includes reviewer: {provider: claude, model: opus}" '.states[]|select(.key=="in_review")|.reviewer|"\(.provider)/\(.model)"' 'claude/opus'
+stop_server
+
+RV_REPO2="$(new_repo "$LOCAL_YML
+providers:
+  codex:
+    review_command: \"codex exec -C {dir} -m {model}\"
+models:
+  escalation: opus
+  reviewer:
+    provider: codex
+    model: gpt-6-astra
+    price: { input: 1, output: 2 }")"
+mkdir -p "$RV_REPO2/.fleet-board/cards"
+start_server "$RV_REPO2"
+api GET /api/board
+assert_code 200
+assert_body "When models.reviewer is {provider: codex, model: gpt-6-astra}, the in_review state includes reviewer: {provider: codex, model: gpt-6-astra}" '.states[]|select(.key=="in_review")|.reviewer|"\(.provider)/\(.model)"' 'codex/gpt-6-astra'
+assert_body "States that are not review columns (backlog, ready, human_qa, ...) have no reviewer field" '[.states[]|select(.key|startswith("in_review")|not)|select(has("reviewer"))]|length' 0
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
