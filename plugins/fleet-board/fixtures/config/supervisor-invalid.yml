@@ -1,0 +1,2 @@
+board: { repo: a/b }
+supervisor: { reconcile_interval_seconds: 0 }

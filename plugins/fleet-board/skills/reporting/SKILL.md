@@ -1,14 +1,14 @@
 ---
 name: reporting
-description: Use when the fleet-board manager checks a role report (implementor, reviewer or fixer) with parse-report.sh, quotes a report rule to a role, or re-dispatches a role whose report parse-report.sh rejected. Gives the manager the check-and-re-dispatch method (exit 0 accept from the JSON, exit 1 re-dispatch once with the stderr quoted exactly, exit 2 fix its own call), the exact report shape with its line rules and per-role rules, every parse-report.sh rejection message paired with the rule to quote, and the role-specific points.
+description: Use when the fleet-board supervisor checks a role report (implementor, reviewer or fixer) with parse-report.sh, quotes a report rule to a role, or re-dispatches a role whose report parse-report.sh rejected. Gives the supervisor the check-and-re-dispatch method (exit 0 accept from the JSON, exit 1 re-dispatch once with the stderr quoted exactly, exit 2 fix its own call), the exact report shape with its line rules and per-role rules, every parse-report.sh rejection message paired with the rule to quote, and the role-specific points.
 user-invocable: false
 ---
 
-# Reporting (manager side)
+# Reporting (supervisor side)
 
 ## Principle
 
-Every role agent (implementor, reviewer, fixer, and a review stage's reviewer, checked as the role `stage-reviewer`) ends with one report in a fixed shape. It posts the report on the card and returns the same text as its final reply. `parse-report.sh --role <role>` is the enforced definition of that shape. You, the manager, run the checker on the report text exactly as the role returned it. You act only on reports the checker accepts, and only on the values in its JSON. When the checker rejects a report you re-dispatch the same role once, quoting the checker's stderr exactly along with the rule each line enforces. You never repair a report yourself. Role agents have no `Skill` tool and cannot load this skill. Each role's own prompt carries the report shape, so this skill is for you alone.
+Every role agent (implementor, reviewer, fixer, and a review stage's reviewer, checked as the role `stage-reviewer`) ends with one report in a fixed shape. It posts the report on the card and returns the same text as its final reply. `parse-report.sh --role <role>` is the enforced definition of that shape. You, the supervisor, run the checker on the report text exactly as the role returned it. You act only on reports the checker accepts, and only on the values in its JSON. When the checker rejects a report you re-dispatch the same role once, quoting the checker's stderr exactly along with the rule each line enforces. You never repair a report yourself. Role agents have no `Skill` tool and cannot load this skill. Each role's own prompt carries the report shape, so this skill is for you alone.
 
 ## Method
 
@@ -19,7 +19,7 @@ In every example below, `commands.test_one` is `node --test {file}` and one conc
 1. **Know what a role does.** A role runs `mktemp` in a Bash call and notes the absolute path it prints. It writes its report to exactly that path with the Write tool. It never puts the report text inside a Bash command (no heredoc, `echo`, `printf` or `cat`), because the gate reads Bash command text and blocks a report that quotes a gated command. If the Write tool refuses the file because it has not been read, it reads it once with the Read tool and writes it again (still never a heredoc, `echo`, `printf` or `cat`, and never a different path). It then checks and posts the report in ONE Bash call that names that literal path: `bash <scripts dir>/parse-report.sh --role <role> <path> && bash <scripts dir>/board-comment.sh <card number> <path>`. The post runs only when the check exits 0. The role creates the file with `mktemp` only, never at a self-chosen path. It returns exactly the same text as its final reply. Posting that comment is its only board action: it never moves a card and never files an issue. A role has exactly the tools `Read, Write, Edit, Bash, Grep, Glob` and no `Skill` tool. If the check fails, the role fixes the file with Edit or Write and repeats the one Bash call that checks and posts it. Running the checker only reads the report, so it is not a board action. **Must never:** a role must never list, glob, search or sort any temp directory (for example `ls -t $TMPDIR`, `/var/folders/...`, or `find` in a temp directory), and must never post or pass to a board script any file other than the report file it created with `mktemp` in this dispatch.
 2. **Write the report to a temp file exactly as returned.** Don't trim, complete or reformat anything. If the final reply is empty or missing, write and check that empty text. The checker rejects it (missing sections, `found 0` VERIFIED lines), and you handle it like any other rejection.
 3. **Run the checker with the dispatched role:** `bash <scripts dir>/parse-report.sh --role <role> <file>`. `<role>` is always the role you dispatched for this report. Never pass a different role and never leave out `--role`.
-4. **Exit 0 (accepted).** Take every value you act on from the JSON on stdout: status, findings and their severities, Out of scope and Bugs found entries, the PR number, `blocked_by` and the VERIFIED line. Don't re-parse the markdown by hand. Copy the accepted `VERIFIED:` line into the card's manager note as the card's last VERIFIED line. Use `blocked_by`, which comes from a `Blocked by: #N` line in `## For the card`, as the card's blocker. Out of scope entries become Backlog cards. Bugs found entries become `bug`-labelled Backlog cards, deduplicated against open issues. File them only from accepted reports.
+4. **Exit 0 (accepted).** Take every value you act on from the JSON on stdout: status, findings and their severities, Out of scope and Bugs found entries, the PR number, `blocked_by` and the VERIFIED line. Don't re-parse the markdown by hand. Copy the accepted `VERIFIED:` line into the card's manager note as the card's last VERIFIED line. Use `blocked_by`, which comes from a `Blocked by: #N` line in `## For the card`, as the card's blocker. Out of scope entries become Backlog cards. Bugs found entries become `bug`-labelled Backlog cards, deduplicated against open cards on this board. File them only from accepted reports.
 5. **Exit 1 (rejected).** Stdout is empty and stderr has one `parse-report: `-prefixed line per problem. Re-dispatch the same role once, on the same model the rejected report came from, with the same dispatch inputs plus this text. Replace `<parse-report stderr>` with every stderr line, quoted exactly:
 
    ```
@@ -32,13 +32,13 @@ In every example below, `commands.test_one` is `node --test {file}` and one conc
 7. **Nothing acts on a rejected report.** Until a report exits 0, don't move the card and don't open or mark a PR because of it. Don't file its Out of scope or Bugs found entries, and don't copy its VERIFIED line into the note.
 8. **Exit 2 (usage error).** The messages are `unknown flag: <flag>`, `unknown role: <role>`, `cannot read file: <file>` or the usage line. The fault is in your call, not in the report. Correct the flag, role name or file path and run the checker again. Never re-dispatch a role because of exit 2, and never count it as a rejection.
 9. **Never repair or overrule.** Never edit, complete or rewrite a role's report to make it pass, and never accept a report the checker rejected.
-10. **Judge content with the report rules.** A report must meet all of these (the checker enforces the shape; the manager relies on the rest):
+10. **Judge content with the report rules.** A report must meet all of these (the checker enforces the shape; the supervisor relies on the rest):
     - **Required sections:** `## Status`, `## Findings`, `## For the card`, exactly one `VERIFIED:` line, and the role sections for its role.
     - **Findings, Out of scope and Bugs found stay apart.** Findings are defects in this card's own diff or in its Acceptance. Out of scope is work worth doing that this card does not cover. Bugs found are defects the role *observed* outside this card's diff, such as a pre-existing failing behavior it ran into. A defect caused by the card's own change is a Finding, never a Bug found, even when it shows up far from the edited lines. A defect that existed before the card and was only discovered while working on it is a Bug found.
     - **Bugs found entries** have all four parts: title, repro, expected, observed. The repro is a command the role actually ran, between backticks. `observed` is what that command printed, not a paraphrase. Example: ``- parse drops trailing zero :: repro: `node --test test/parse.test.js` :: expected: ok 2 - keeps trailing zero :: observed: not ok 2 - keeps trailing zero``.
-    - **The `VERIFIED:` line.** There is exactly one. It names a real command the role ran, between single backticks, then the arrow (`->` or `→`), then the integer that command's output showed, then what that integer counts. Example: ``VERIFIED: `node --test test/calc.test.js` -> 3 passing tests``. The integer is never invented, estimated, rounded or summed across separate runs. Counts from overlapping runs are not added together. A run that failed to execute contributes nothing, so it never counts as passing or as a killed mutant. The integer ends at whitespace or the line end, so `3abc` and `3.5` are rejected. The command cannot contain a backtick, so a command that would need one must be rewritten. For example, card text that holds backticks is read with `gh issue view <n> --json body --jq .body` instead of being pasted.
+    - **The `VERIFIED:` line.** There is exactly one. It names a real command the role ran, between single backticks, then the arrow (`->` or `→`), then the integer that command's output showed, then what that integer counts. Example: ``VERIFIED: `node --test test/calc.test.js` -> 3 passing tests``. The integer is never invented, estimated, rounded or summed across separate runs. Counts from overlapping runs are not added together. A run that failed to execute contributes nothing, so it never counts as passing or as a killed mutant. The integer ends at whitespace or the line end, so `3abc` and `3.5` are rejected. The command cannot contain a backtick, so a command that would need one must be rewritten. For example, card text that holds backticks is read with `board-read.sh <n> | jq -r '.body'` instead of being pasted.
     - **`## PR`** (implementor and fixer): the first `#` followed by digits is read as the PR number. It holds `#<number>` unless Status is `blocked`, and it contains no other `#<digits>`: no card number and no example.
-    - **Blocked before any work.** An implementor that stopped before writing any test or opening a PR (for example, on a card with no Acceptance section) reports Status `blocked`. Its `## PR` says that no PR exists, with no `#<digits>` in it. Its `VERIFIED:` line counts something it actually checked, such as ``VERIFIED: `gh issue view 12 --json body --jq .body | grep -c '^## Acceptance'` -> 0 Acceptance sections``.
+    - **Blocked before any work.** An implementor that stopped before writing any test or opening a PR (for example, on a card with no acceptance items) reports Status `blocked`. Its `## PR` says that no PR exists, with no `#<digits>` in it. Its `VERIFIED:` line counts something it actually checked, such as ``VERIFIED: `board-read.sh 12 | jq '.acceptance | length'` -> 0 acceptance items``.
     - **Blocked by:** a `Blocked by: #N` line in `## For the card` becomes `blocked_by` in the JSON.
     - **Every Line rule and every With `--role` rule** in the reference holds. The checker rejects each violation with one `parse-report: ` stderr line.
 
@@ -189,9 +189,9 @@ When you re-dispatch, quote the "Rule it enforces" cell for each stderr line. (I
 | stage-reviewer | `clean` (zero Critical and Important), `findings` (at least one Critical or Important) | none | none |
 
 - In `## PR`, the first `#<digits>` is the PR number. Any other `#<digits>` there, such as a card number or an example, would be read as the PR.
-- A blocked implementor that stopped before any test or PR (for example, on a card without an Acceptance section) has a `## PR` saying that no PR exists. Its `VERIFIED:` line counts something it checked, such as `-> 0` Acceptance sections.
+- A blocked implementor that stopped before any test or PR (for example, on a card without acceptance items) has a `## PR` saying that no PR exists. Its `VERIFIED:` line counts something it checked, such as `-> 0` acceptance items.
 - A `Blocked by: #N` line in `## For the card` gives `blocked_by`.
-- Findings are defects in this card's diff or Acceptance. Out of scope is uncovered work and becomes a Backlog card. Bugs found are defects observed outside the diff and become `bug`-labelled Backlog cards, deduplicated against open issues. Filing these cards is your job, and it happens only from accepted reports.
+- Findings are defects in this card's diff or Acceptance. Out of scope is uncovered work and becomes a Backlog card. Bugs found are defects observed outside the diff and become `bug`-labelled Backlog cards, deduplicated against open cards on this board. Filing these cards is your job, and it happens only from accepted reports.
 
 ### Example reports that pass
 
@@ -225,12 +225,12 @@ blocked
 - none
 
 ## For the card
-Stopped before writing a test: the card body has no Acceptance section.
+Stopped before writing a test: the card has no acceptance items.
 
 ## PR
 No PR exists; work stopped before the first commit.
 
-VERIFIED: `gh issue view 12 --json body --jq .body | grep -c '^## Acceptance'` -> 0 Acceptance sections
+VERIFIED: `board-read.sh 12 | jq '.acceptance | length'` -> 0 acceptance items
 ```
 
 Reviewer, `--role reviewer`:

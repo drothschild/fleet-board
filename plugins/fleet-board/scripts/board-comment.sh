@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # board-comment.sh <number> <file> - post <file> as a comment on card <number>
 #
-# Dispatches to adapters/<board.backend>/comment.sh. Refuses (exit 1, nothing
-# posted, before any gh call and for every backend) a body that starts with
+# Dispatches to adapters/local/comment.sh. Refuses (exit 1, nothing
+# posted) a body that starts with
 # the manager-note marker ($FB_MARKER), after optional leading whitespace
 # (CR and LF included) and an optional UTF-8 BOM. The manager reads the newest
 # comment whose body starts with the marker as the card's note, so a role
@@ -18,6 +18,17 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 [ $# -eq 2 ] || fb_die 2 "usage: board-comment.sh <number> <file>"
 fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
+# A comment file of /dev/stdin or - is the caller's input: buffer it once, since
+# the marker check, the adapter and the report check each read the file.
+FB_STDIN_TMP=""
+case "$2" in
+  /dev/stdin|-)
+    FB_STDIN_TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
+    trap 'rm -f "$FB_STDIN_TMP"' EXIT
+    cat > "$FB_STDIN_TMP" || fb_die 1 "cannot read standard input"
+    set -- "$1" "$FB_STDIN_TMP"
+    ;;
+esac
 [ -f "$2" ] || fb_die 2 "file not found: $2"
 # Exit 0 when the body starts with the marker (as above), 1 when it does not,
 # 2 when the file cannot be read. The subshell keeps LC_ALL=C (byte-wise
@@ -40,4 +51,5 @@ case $? in
   *) fb_die 1 "cannot read $2 to check it for the manager-note marker" ;;
 esac
 fb_load_config
-exec bash "$FLEET_SCRIPTS/adapters/$(fb_cfg board.backend)/comment.sh" "$@"
+# No exec: the EXIT trap removes a buffered standard input file.
+bash "$FLEET_SCRIPTS/adapters/local/comment.sh" "$@"

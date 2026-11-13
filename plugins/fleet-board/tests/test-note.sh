@@ -9,6 +9,7 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/note.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
@@ -62,7 +63,46 @@ assert_eq() {
   if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi
 }
 
+# note_snap / note_capture: the local stand-in for the fake gh's --input -
+# copies. note_snap keeps the card files as store_sync built them; after the
+# run, note_capture saves the manager note of each card file the run changed
+# as {"body": ...} under $FAKE_GH_DIR/inputs, as a POST or PATCH of the note
+# was saved on the GitHub board.
+note_snap() {
+  rm -rf "$FAKE_GH_DIR/snap"; mkdir -p "$FAKE_GH_DIR/snap"
+  [ -d "$REPO/.fleet-board/cards" ] && cp "$REPO/.fleet-board/cards/"*.json "$FAKE_GH_DIR/snap/" 2>/dev/null
+  return 0
+}
+note_capture() {
+  local f b
+  for f in "$REPO/.fleet-board/cards/"*.json; do
+    [ -e "$f" ] || continue
+    cmp -s "$f" "$FAKE_GH_DIR/snap/${f##*/}" && continue
+    b="$(jq -c --arg m "$MARK" --arg me "${FLEET_BOARD_USER:-}" \
+      '[(.comments // [])[] | select(.body | startswith($m)) | select(.author == $me)] | last | select(. != null) | {body}' "$f" 2>/dev/null)"
+    [ -n "$b" ] || continue
+    mkdir -p "$FAKE_GH_DIR/inputs"
+    printf '%s\n' "$b" > "$FAKE_GH_DIR/inputs/$(date +%s)-$$-$RANDOM"
+  done
+}
+
+# note_in_place: 1 when card 12's run rewrote the stored note comment 555 and
+# added no comment (the GitHub board's single PATCH of that comment)
+note_in_place() {
+  local f="$REPO/.fleet-board/cards/12.json"
+  if ! cmp -s "$f" "$FAKE_GH_DIR/snap/12.json" \
+     && [ "$(jq '.comments | length' "$f")" = "$(jq '.comments | length' "$FAKE_GH_DIR/snap/12.json")" ] \
+     && [ "$(jq -r --arg m "$MARK" '[.comments[] | select(.id == 555) | .body | startswith($m)] | .[0]' "$f")" = true ] \
+     && [ "$(jq -r '[.comments[] | select(.id == 555) | .body] | .[0]' "$f")" != "$(jq -r '[.comments[] | select(.id == 555) | .body] | .[0]' "$FAKE_GH_DIR/snap/12.json")" ]; then
+    echo 1
+  else
+    echo 0
+  fi
+}
+
 run_check() {
+  store_sync
+  note_snap
   local script="$1"
   shift
   local tmpout tmperr
@@ -73,6 +113,7 @@ run_check() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  note_capture
 }
 
 run_note() { run_check "$SCRIPT" "$@"; }
@@ -298,7 +339,7 @@ printf '{"round":2,"models":{"implementor":"opus"}}\n' > "$FAKE_GH_DIR/patch.jso
 clear_inputs
 run_note merge 12 "$FAKE_GH_DIR/patch.json"
 assert_exit "merge-preserves: exit" 0
-assert_eq "merge-preserves: replaced the stored note in place (one PATCH)" "$(grep -c 'api -X PATCH repos/acme/toy/issues/comments/555' "$FAKE_GH_DIR/calls.log")" 1
+assert_eq "merge-preserves: replaced the stored note in place (one PATCH)" "$(note_in_place)" 1
 assert_eq "merge-preserves: merged note" \
   "$(jq -S -c '{state,branch,pr,round,models}' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" \
   '{"branch":"fleet/12-add-subtract","models":{"fixer":"sonnet","implementor":"opus","reviewer":"opus"},"pr":34,"round":2,"state":"in_review"}'
@@ -336,10 +377,11 @@ assert_eq "merge-dedup-case-insensitive: bugs_filed" "$(jq -c .bugs_filed <<<"$N
 setup_case
 GOOD="{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"worktree\":\"$BASE/12-add-subtract\"}"
 set_note_json "$GOOD"
+store_sync
 READ_JSON="$(bash "${SCRIPT_DIR}/../scripts/board-read.sh" 12)"
 rm -f "$FAKE_GH_DIR/calls.log"
 printf '%s\n' "$READ_JSON" > "$FAKE_GH_DIR/read.json"
-run_check_stdin() { local f="$1"; shift; local o e; o="$(mktemp)"; e="$(mktemp)"; "$BASH_EXE" "$SCRIPT" "$@" < "$f" > "$o" 2> "$e"; LAST_EXIT=$?; LAST_OUT="$(cat "$o")"; LAST_ERR="$(cat "$e")"; rm -f "$o" "$e"; }
+run_check_stdin() { store_sync; local f="$1"; shift; local o e; o="$(mktemp)"; e="$(mktemp)"; "$BASH_EXE" "$SCRIPT" "$@" < "$f" > "$o" 2> "$e"; LAST_EXIT=$?; LAST_OUT="$(cat "$o")"; LAST_ERR="$(cat "$e")"; rm -f "$o" "$e"; }
 run_check_stdin "$FAKE_GH_DIR/read.json" parse 12
 assert_exit "parse: exit" 0
 assert_eq "parse: the note" "$(canon "$LAST_OUT")" "$(canon "$GOOD")"
@@ -566,7 +608,7 @@ set_note_json '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"ro
 clear_inputs
 run_note fail 12 "Write refused: report-12.md"
 assert_exit "fail: exit" 0
-assert_eq "fail: replaced the stored note in place (one PATCH)" "$(grep -c 'api -X PATCH repos/acme/toy/issues/comments/555' "$FAKE_GH_DIR/calls.log")" 1
+assert_eq "fail: replaced the stored note in place (one PATCH)" "$(note_in_place)" 1
 assert_eq "fail: counted, the rest kept" \
   "$(jq -S -c '{action_failures,last_action_error,state,branch,pr,round,bugs_filed}' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" \
   '{"action_failures":2,"branch":"fleet/12-add-subtract","bugs_filed":[{"number":7,"title":"X"}],"last_action_error":"Write refused: report-12.md","pr":34,"round":1,"state":"in_review"}'
@@ -611,7 +653,7 @@ set_note_json '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"ro
 clear_inputs
 run_note reset-failures 12
 assert_exit "reset-failures: exit" 0
-assert_eq "reset-failures: replaced the stored note in place (one PATCH)" "$(grep -c 'api -X PATCH repos/acme/toy/issues/comments/555' "$FAKE_GH_DIR/calls.log")" 1
+assert_eq "reset-failures: replaced the stored note in place (one PATCH)" "$(note_in_place)" 1
 assert_eq "reset-failures: both keys reset, the rest kept" \
   "$(jq -S -c '{action_failures,last_action_error,state,branch,pr,round,blocking_pr,bugs_filed}' <<<"$(block_json "$(posted_body)")" 2>/dev/null)" \
   '{"action_failures":0,"blocking_pr":41,"branch":"fleet/12-add-subtract","bugs_filed":[{"number":7,"title":"X"}],"last_action_error":null,"pr":34,"round":1,"state":"in_review"}'
@@ -737,12 +779,44 @@ assert_exit "after-merge-results: an entry without a command is refused" 1
 assert_eq "after-merge-results: that refused merge writes nothing" "$(input_count)" "0"
 
 # ---------------------------------------------------------------------------
+# ignored_checks: the checks a merge went past (merge.ignore_checks), appended by the supervisor
+setup_case
+set_note_json '{"state":"merging","pr":34}'
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky","until":"2026-12-31","at":"2026-11-11T12:00:00Z"}]}\n' > "$FAKE_GH_DIR/ic.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic.json"
+assert_exit "ignored-checks: merge accepts the field" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "ignored-checks: the entries are stored" "$(jq -c '.ignored_checks | map(.name)' <<<"$N" 2>/dev/null)" '["lint-docs"]'
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky"}]}\n' > "$FAKE_GH_DIR/ic-bad.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad.json"
+assert_exit "ignored-checks: an entry without until and at is refused" 1
+assert_eq "ignored-checks: a refused merge writes nothing" "$(input_count)" "0"
+printf '{"ignored_checks":"lint"}\n' > "$FAKE_GH_DIR/ic-bad2.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad2.json"
+assert_exit "ignored-checks: a non-list is refused" 1
+# state: the check's state when the merge went past it, "red" or "pending"; optional
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky","until":"2026-12-31","at":"2026-11-11T12:00:00Z","state":"red"},{"name":"e2e","reason":"async","until":"2026-12-31","at":"2026-11-11T12:00:00Z","state":"pending"}]}\n' > "$FAKE_GH_DIR/ic-state.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-state.json"
+assert_exit "ignored-checks: merge accepts a red and a pending state" 0
+N="$(block_json "$(posted_body)")"
+assert_eq "ignored-checks: the states are stored" "$(jq -c '.ignored_checks | map(.state)' <<<"$N" 2>/dev/null)" '["red","pending"]'
+printf '{"ignored_checks":[{"name":"lint-docs","reason":"flaky","until":"2026-12-31","at":"2026-11-11T12:00:00Z","state":"green"}]}\n' > "$FAKE_GH_DIR/ic-bad3.json"
+clear_inputs; run_note merge 12 "$FAKE_GH_DIR/ic-bad3.json"
+assert_exit "ignored-checks: any other state is refused" 1
+
+# ---------------------------------------------------------------------------
 # blocked-from: the state a card was blocked from
 setup_case
 set_note_json '{"state":"blocked","blocked_from":"in_review"}'
 run_note get 12
 assert_eq "blocked-from: get returns a note with blocked_from in_review unchanged" \
   "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"in_review"'
+
+setup_case
+set_note_json '{"state":"blocked","blocked_from":"merging"}'
+run_note get 12
+assert_eq "blocked-from: a note with blocked_from merging is accepted" \
+  "$(jq -c .blocked_from <<<"$LAST_OUT" 2>/dev/null)" '"merging"'
 
 setup_case
 set_note_json '{"state":"blocked","blocked_from":"banana"}'

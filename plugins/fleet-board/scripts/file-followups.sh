@@ -3,6 +3,11 @@
 #
 # Usage: file-followups.sh <card-n> <pr> <parsed-report-json-file>
 #
+# <pr> may be the empty string (a card that blocked or closed with no PR): the
+# cards are filed, no PR comment is made, "Found while working" and "Also seen"
+# name no PR, and the items filed are removed from the card note's
+# pending_followups.
+#
 # The report file is parse-report.sh output; its out_of_scope items
 # ({title, detail}) and bugs ({title, repro, expected, observed}) are filed.
 #
@@ -10,14 +15,13 @@
 #      case-insensitively. Items whose title is already in the card's note
 #      (out_of_scope_created for out-of-scope items, bugs_filed for bugs) are
 #      dropped: they were filed before.
-#   1. Pass one searches for every item before anything is written:
-#        gh issue list --state open --search "<terms> in:title"
-#      where <terms> is the title with each character outside [A-Za-z0-9 _-]
-#      turned into a space. A returned row matches when its title equals the
-#      item's title, case-insensitively. Any search failure exits 1 having
-#      filed nothing.
+#   1. Pass one searches the card files for every item before anything is
+#      written (fl_find_title): an open card (any state but done and wont_do)
+#      whose title equals the item's title, case-insensitively, matches; else
+#      a closed card (done or wont_do) updated within RECENT_DAYS (30) does.
+#      Any search failure exits 1 having filed nothing.
 #   2. Pass two files each item:
-#        match      (open or closed) gh issue comment <existing> "Also seen while working #<card> (PR #<pr>).",
+#        match      (open or closed) board-comment.sh <existing> "Also seen while working #<card> (PR #<pr>).",
 #                   then gh pr comment "<Known bug|Out of scope>, already tracked as #<existing>: <title>"
 #        out of scope, no match
 #                   board-create.sh "<title>" (detail + "Found while working #<card> (PR #<pr>).")
@@ -25,33 +29,30 @@
 #        bug, no match
 #                   board-create.sh "<title>" (## Bug/Repro/Expected/Observed body) --label bug
 #                   then gh pr comment "Bug found outside this card, filed as #<new>: <title>"
-#      An item counts as filed once its create or its existing-issue comment
+#      An item counts as filed once its create or its existing-card comment
 #      succeeds. A failed PR comment only warns on stderr:
 #        fleet-board: warning: PR comment failed for #<n>
 #
-# Follow-up cards carry a "## Acceptance" section drafted from the finding (a
-# bug: its repro and expected result; an out-of-scope item: the first backticked
-# command in its detail) and, when the detail says "depends on this card", a
-# "## Depends on" section naming the spawning card. They are created in the
+# Follow-up cards carry an acceptance field drafted from the finding (a bug:
+# its repro and expected result; an out-of-scope item: the first backticked
+# command in its detail) and, when the detail says "depends on this card",
+# blocked_by naming the spawning card; so does a detail naming a backticked path
+# that is not on the default branch and is in the spawning PR's file list (the
+# work needs code only the unmerged PR adds). They are created in the
 # followups.status column (default ready). The command is the first backticked span
 # with a non-blank character, spans being paired single backticks (an even number of
 # them, none adjacent). An out-of-scope item with no such span, or whose detail holds
-# the words "no testable check", is filed in Backlog with an issue comment saying why.
-# Pass one also searches closed issues (closed within RECENT_DAYS, 30): a
-# matching closed card suppresses the item like an open one, and the printed
-# entry gains "matched": "open"|"closed" (existing entries only).
-#
-# On the local backend no issue is searched or commented on: both passes use
-# the card files (fl_find_title: open = not done/wont_do; closed = done/wont_do
-# updated within RECENT_DAYS) and comments go through board-comment.sh. The PR
-# comments still go to GitHub.
+# the words "no testable check", is filed in Backlog with a card comment saying why.
+# A matching closed card suppresses the item like an open one, and the printed
+# entry gains "matched": "open"|"closed" (existing entries only). The PR
+# comments go to GitHub; nothing else does.
 #
 # Prints {"out_of_scope_created":[{title,number,existing}], "bugs_filed":[...]}.
 #
 # Exit codes:
 #   0 - every item filed (or none to file); JSON printed
 #   1 - nothing filed (the note, report, or a search failed; stdout empty), or
-#       a create/existing-issue comment failed partway through pass two
+#       a create/existing-card comment failed partway through pass two
 #       (stdout holds the JSON of the items filed so far)
 #   2 - usage error
 
@@ -61,19 +62,21 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 
 [ $# -eq 3 ] || fb_die 2 "usage: file-followups.sh <card-n> <pr> <parsed-report-json-file>"
 fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
-fb_valid_number "$2" || fb_die 2 "PR number must be numeric, got: $2"
+[ -z "$2" ] || fb_valid_number "$2" || fb_die 2 "PR number must be numeric or empty, got: $2"
 [ -f "$3" ] || fb_die 2 "file not found: $3"
 CARD="$1"
 PR="$2"
 REPORT_FILE="$3"
+# With no PR (a card that blocked or closed without one) there is no PR comment
+# and no PR number in the text; PR_SUFFIX is what follows "#<card>" in it
+PR_SUFFIX=""
+[ -z "$PR" ] || PR_SUFFIX=" (PR #$PR)"
 
 fb_load_config
-BACKEND="$(fb_cfg board.backend)"
-# The local backend searches and comments on card files, never on GitHub issues
-[ "$BACKEND" != local ] || . "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
+. "$FLEET_SCRIPTS/adapters/local/local-lib.sh"
 
-BODY=""
-trap 'rm -f ${BODY:+"$BODY"}' EXIT
+BODY="" ACC=""
+trap 'rm -f ${BODY:+"$BODY"} ${ACC:+"$ACC"}' EXIT
 
 REPORT="$(jq -s -c 'if length == 1 and (.[0] | type) == "object" then .[0] else error("not one object") end' "$REPORT_FILE" 2>/dev/null)" \
   || fb_die 1 "$REPORT_FILE does not hold one JSON object"
@@ -105,41 +108,14 @@ STATUS="$(fb_cfg followups.status)"
 while IFS= read -r item; do
   [ -n "$item" ] || continue
   title="$(jq -r .title <<<"$item")" || fb_die 1 "cannot read an item title; nothing filed"
-  if [ "$BACKEND" = local ]; then
-    m="$(fl_find_title "$title" open)" || fb_die 1 "open-card search failed for: $title; nothing filed"
-    how=open
-    if [ "$m" = none ]; then
-      m="$(fl_find_title "$title" closed "$RECENT_DAYS")" || fb_die 1 "closed-card search failed for: $title; nothing filed"
-      how=closed
-    fi
-    MATCHES+=("$m")
-    MATCHED_AS+=("$how")
-    continue
+  m="$(fl_find_title "$title" open)" || fb_die 1 "open-card search failed for: $title; nothing filed"
+  how=open
+  if [ "$m" = none ]; then
+    m="$(fl_find_title "$title" closed "$RECENT_DAYS")" || fb_die 1 "closed-card search failed for: $title; nothing filed"
+    how=closed
   fi
-  terms="$(jq -r '.title | gsub("[^A-Za-z0-9 _-]"; " ")' <<<"$item")" || fb_die 1 "cannot build search terms; nothing filed"
-  rows="$(gh issue list --repo "$FLEET_REPO" --state open --search "$terms in:title" --json number,title --limit 50 </dev/null)" \
-    || fb_die 1 "open-issue search failed for: $title; nothing filed"
-  m="$(jq -r --arg t "$title" '
-    if type != "array" then error("not a list") else . end
-    | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase))]
-    | .[0].number // "none"' <<<"$rows" 2>/dev/null)" || fb_die 1 "unexpected open-issue search result for: $title; nothing filed"
-  [ "$m" = none ] || fb_valid_number "$m" || fb_die 1 "unexpected open-issue search result for: $title; nothing filed"
-  if [ "$m" != none ]; then
-    MATCHES+=("$m")
-    MATCHED_AS+=(open)
-    continue
-  fi
-  # A card closed in the last RECENT_DAYS days counts as a duplicate too
-  rows="$(gh issue list --repo "$FLEET_REPO" --state closed --search "$terms in:title" --json number,title,closedAt --limit 50 </dev/null)" \
-    || fb_die 1 "closed-issue search failed for: $title; nothing filed"
-  m="$(jq -r --arg t "$title" --argjson d "$RECENT_DAYS" '
-    if type != "array" then error("not a list") else . end
-    | [.[] | select((.title | type) == "string" and (.title | ascii_downcase) == ($t | ascii_downcase)
-                    and (.closedAt | type) == "string" and ((.closedAt | fromdateiso8601) >= (now - $d * 86400)))]
-    | .[0].number // "none"' <<<"$rows" 2>/dev/null)" || fb_die 1 "unexpected closed-issue search result for: $title; nothing filed"
-  [ "$m" = none ] || fb_valid_number "$m" || fb_die 1 "unexpected closed-issue search result for: $title; nothing filed"
   MATCHES+=("$m")
-  MATCHED_AS+=(closed)
+  MATCHED_AS+=("$how")
 done <<<"$ITEMS"
 
 FILED_OOS='[]'
@@ -169,8 +145,38 @@ local_comment() {
 }
 
 pr_comment() {
+  [ -n "$PR" ] || return 0
   gh pr comment "$PR" --repo "$FLEET_REPO" --body "$1" </dev/null >/dev/null \
     || printf 'fleet-board: warning: PR comment failed for #%s\n' "$2" >&2
+}
+
+# fl_names_unmerged_path <item>: succeeds when the detail names a backticked
+# path that is not on the default branch and is in the spawning PR's file list
+# (the follow-up targets code only the unmerged PR adds). Any lookup failure
+# means no.
+PR_FILES="" PR_FILES_DONE=0 FL_DEFBR=""
+fl_names_unmerged_path() {
+  [ -n "$PR" ] || return 1
+  local paths p
+  paths="$(jq -r '.detail | split("`") | to_entries[] | select(.key % 2 == 1) | .value' <<<"$1" 2>/dev/null)" || return 1
+  [ -n "$paths" ] || return 1
+  if [ "$PR_FILES_DONE" -eq 0 ]; then
+    PR_FILES_DONE=1
+    PR_FILES="$(gh pr view "$PR" --repo "$FLEET_REPO" --json files </dev/null 2>/dev/null | jq -r '.files[]?.path' 2>/dev/null)" || PR_FILES=""
+    FL_DEFBR="$(git -C "$FLEET_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || FL_DEFBR=""
+    if [ -z "$FL_DEFBR" ]; then
+      local b
+      for b in main master; do git -C "$FLEET_ROOT" rev-parse --verify -q "$b" >/dev/null 2>&1 && { FL_DEFBR="$b"; break; }; done
+    fi
+  fi
+  [ -n "$PR_FILES" ] && [ -n "$FL_DEFBR" ] || return 1
+  while IFS= read -r p; do
+    grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
+    case "$p" in *..*) continue ;; esac
+    grep -Fxq -- "$p" <<<"$PR_FILES" || continue
+    git -C "$FLEET_ROOT" cat-file -e "$FL_DEFBR:$p" 2>/dev/null || return 0
+  done <<<"$paths"
+  return 1
 }
 
 # Pass two: file
@@ -183,42 +189,45 @@ while IFS= read -r item; do
   kind="$(jq -r .kind <<<"$item")"
   title="$(jq -r .title <<<"$item")"
   if [ "$m" != none ]; then
-    if [ "$BACKEND" = local ]; then
-      local_comment "$m" "Also seen while working #$CARD (PR #$PR)." \
-        || stop "cannot comment on the existing card #$m for: $title"
-    else
-      gh issue comment "$m" --repo "$FLEET_REPO" --body "Also seen while working #$CARD (PR #$PR)." </dev/null >/dev/null \
-        || stop "cannot comment on the existing issue #$m for: $title"
-    fi
+    local_comment "$m" "Also seen while working #$CARD$PR_SUFFIX." \
+      || stop "cannot comment on the existing card #$m for: $title"
     record "$kind" "$title" "$m" true "$how" || stop "cannot record #$m"
     if [ "$kind" = bug ]; then label="Known bug"; else label="Out of scope"; fi
     pr_comment "$label, already tracked as #$m: $title" "$m"
     continue
   fi
   BODY="$(mktemp)" || stop "cannot create a temp file"
+  ACC="$(mktemp)" || stop "cannot create a temp file"
   if [ "$kind" = bug ]; then
-    jq -r --arg c "$CARD" --arg p "$PR" '
-      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\n## Acceptance\n- `\(.repro)` gives the expected result: \(.expected)\n\nFound by fleet-board while working #\($c) (PR #\($p))."' \
+    jq -r --arg c "$CARD" --arg p "$PR_SUFFIX" '
+      "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c)\($p)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
-    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" </dev/null)" || stop "cannot create the card for: $title"
+    jq -r '"- `\(.repro)` gives the expected result: \(.expected)" | gsub("[\r\n]+"; " ")' <<<"$item" > "$ACC" || stop "cannot write the card acceptance for: $title"
+    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" --acceptance-file "$ACC" </dev/null)" || stop "cannot create the card for: $title"
   else
     # Acceptance is drafted from the first backticked command in the detail;
     # without one there is no testable bullet, so the card goes to Backlog
     # The words "no testable check" mean Backlog even when the detail also backticks a path.
     # Spans pair up as in parse-report.sh: an even number of backticks, none adjacent, and the first span with a non-blank character is the command.
     cmd="$(jq -r 'if (.detail | ascii_downcase | test("(^|[^a-z])no testable check([^a-z]|$)")) or (.detail | contains("``")) then empty else (.detail | split("`")) as $p | if ($p | length) % 2 == 0 then empty else ([$p | to_entries[] | select(.key % 2 == 1) | .value | select(gsub("[\u00a0\u200b]"; "") | test("[^ \\t]"))] | first) // empty end end' <<<"$item" 2>/dev/null)"
-    jq -r --arg c "$CARD" --arg p "$PR" --arg cmd "$cmd" '
+    jq -r --arg c "$CARD" --arg p "$PR_SUFFIX" '
       (if .detail == "" then "" else "\(.detail)\n\n" end)
-      + (if $cmd == "" then "" else "## Acceptance\n- `\($cmd)` gives the result the description above expects\n\n" end)
-      + (if (.detail | test("depends on this card"; "i")) then "## Depends on\n- #\($c)\n\n" else "" end)
-      + "Found while working #\($c) (PR #\($p))."' \
+      + "Found while working #\($c)\($p)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
+    if [ -n "$cmd" ]; then
+      jq -rn --arg cmd "$cmd" '"- `\($cmd)` gives the result the description above expects" | gsub("[\r\n]+"; " ")' > "$ACC" \
+        || stop "cannot write the card acceptance for: $title"
+    else
+      : > "$ACC"
+    fi
+    cargs=(--acceptance-file "$ACC")
+    if jq -e '.detail | test("depends on this card"; "i")' <<<"$item" >/dev/null 2>&1 || fl_names_unmerged_path "$item"; then cargs+=(--blocked-by "$CARD"); fi
     state="$STATUS"
     [ -n "$cmd" ] || state=backlog
-    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --state "$state" </dev/null)" || stop "cannot create the card for: $title"
+    created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --state "$state" "${cargs[@]}" </dev/null)" || stop "cannot create the card for: $title"
   fi
-  rm -f "$BODY"
-  BODY=""
+  rm -f "$BODY" "$ACC"
+  BODY="" ACC=""
   new="$(jq -r '.number' <<<"$created" 2>/dev/null)"
   fb_valid_number "$new" || stop "board-create.sh returned no card number for: $title"
   record "$kind" "$title" "$new" false || stop "cannot record #$new"
@@ -231,16 +240,29 @@ while IFS= read -r item; do
       else
         backlog_msg="Filed in Backlog: the finding gave no testable Acceptance bullet (no failing command and expected result), so a person must write criteria and move it to Ready."
       fi
-      if [ "$BACKEND" = local ]; then
-        local_comment "$new" "$backlog_msg" \
-          || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
-      else
-        gh issue comment "$new" --repo "$FLEET_REPO" --body "$backlog_msg" </dev/null >/dev/null \
-          || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
-      fi
+      local_comment "$new" "$backlog_msg" \
+        || printf 'fleet-board: warning: Backlog comment failed for #%s\n' "$new" >&2
     fi
     pr_comment "Out of scope, tracked as #$new: $title" "$new"
   fi
 done <<<"$ITEMS"
+
+# With no PR the supervisor has no later PR step to clear the note, so the items
+# filed here leave note.pending_followups now (the rest stay for another run)
+if [ -z "$PR" ]; then
+  PATCH="$(mktemp)" || fb_die 1 "cannot create a temp file"
+  if jq -n --argjson n "$NOTE" --argjson o "$FILED_OOS" --argjson b "$FILED_BUGS" '
+       def lc: ascii_downcase;
+       def left($items; $filed): [($items // [])[] | select(.title as $t | any($filed[]; (.title | lc) == ($t | lc)) | not)];
+       ($n.pending_followups // null) as $p
+       | if $p == null then empty
+         else (left($p.out_of_scope; $o)) as $os | (left($p.bugs; $b)) as $bs
+           | {pending_followups: (if ($os | length) == 0 and ($bs | length) == 0 then null else ($p + {out_of_scope: $os, bugs: $bs}) end)}
+         end' > "$PATCH" 2>/dev/null && [ -s "$PATCH" ]; then
+    bash "$FLEET_SCRIPTS/note.sh" merge "$CARD" "$PATCH" </dev/null >/dev/null \
+      || printf 'fleet-board: warning: cannot clear the filed follow-ups from the note of #%s\n' "$CARD" >&2
+  fi
+  rm -f "$PATCH"
+fi
 
 emit

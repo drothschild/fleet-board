@@ -10,15 +10,14 @@
 # report, PR diff), calls the stage's provider through providers/chat.sh, checks
 # the reply with parse-report.sh --role stage-reviewer and re-asks the model once
 # when the reply is rejected, then posts the report with board-comment.sh and
-# appends the spend to ${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/provider-spend.jsonl.
+# appends the token counts to ${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board}/provider-spend.jsonl.
 # The card comes from board-read.sh and the diff from gh pr diff unless
 # --card-file / --diff-file name them; --no-post checks the report and posts
 # nothing. With both files and --no-post no gh call is made.
 # --findings is a JSON array of {severity,text} (or an object with .findings).
 #
 # Prints {status: posted|checked, report_file, parsed, provider, model,
-# input_tokens, output_tokens, cost_usd, attempts}. The price is the stage's
-# price.input / price.output in USD per million tokens.
+# input_tokens, output_tokens, attempts}. Tokens only: nothing is priced.
 #
 # Exit codes:
 #   0 - posted (or checked, with --no-post)
@@ -93,13 +92,11 @@ MODEL="$(jq -r .model <<<"$STAGE_JSON")"
 TIMEOUT="$(jq -r .timeout <<<"$STAGE_JSON")"
 MAX_OUT="$(jq -r .max_output_tokens <<<"$STAGE_JSON")"
 MAX_DIFF="$(jq -r .max_diff_bytes <<<"$STAGE_JSON")"
-PRICE_IN="$(jq -r .price.input <<<"$STAGE_JSON")"
-PRICE_OUT="$(jq -r .price.output <<<"$STAGE_JSON")"
 BASE_URL="$(jq -r --arg p "$PROVIDER" '.providers[$p].base_url' <<<"$FLEET_CFG")"
 KEY_ENV="$(jq -r --arg p "$PROVIDER" '.providers[$p].api_key_env // "-"' <<<"$FLEET_CFG")"
 MAX_PARAM="$(jq -r --arg p "$PROVIDER" '.providers[$p].max_tokens_param' <<<"$FLEET_CFG")"
 # A provider entry with `command` runs a local program (chat.sh --command): no
-# key, no token counts, so the stage costs 0 and its ledger tokens are null.
+# key, no token counts, so its ledger tokens are null (unknown, never 0).
 PROVIDER_COMMAND="$(jq -r --arg p "$PROVIDER" '.providers[$p].command // empty' <<<"$FLEET_CFG")"
 if [ -n "$PROVIDER_COMMAND" ]; then KEY_ENV="-"; fi
 TOKENS_NULL=0
@@ -123,7 +120,8 @@ trap 'rm -rf "$TMP"; [ -z "$FB_ACTIVE_FILE" ] || rm -f "$FB_ACTIVE_FILE"' EXIT
 if [ -n "$CARD_FILE" ]; then
   cp "$CARD_FILE" "$TMP/card"
 else
-  bash "$HERE/board-read.sh" "$N" | jq -r '.body // ""' > "$TMP/card" || die "cannot read card #$N" 1
+  CARD_READ="$(bash "$HERE/board-read.sh" "$N")" || die "cannot read card #$N" 1
+  fb_card_text "$CARD_READ" > "$TMP/card" || die "cannot render the text of card #$N" 1
 fi
 if [ -n "$DIFF_FILE" ]; then
   cp "$DIFF_FILE" "$TMP/diff"
@@ -168,19 +166,13 @@ tokens_json() { if [ "$TOKENS_NULL" -eq 1 ]; then printf null; else printf '%s' 
 
 write_ledger() {
   [ "$REPLIED" -eq 1 ] || return 0
-  local cost run
-  if [ "$TOKENS_NULL" -eq 1 ]; then
-    cost=0
-  else
-    cost="$(LC_ALL=C awk -v i="$IN_TOTAL" -v o="$OUT_TOTAL" -v pi="$PRICE_IN" -v po="$PRICE_OUT" 'BEGIN { printf "%.6f", (i * pi + o * po) / 1000000 }')"
-  fi
-  COST="$cost"
+  local run
   run="${FLEET_BOARD_RUN_ID:-}"
   jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg run "$run" --arg repo "$FLEET_REPO" \
     --argjson card "$N" --arg stage "$STAGE" --arg provider "$PROVIDER" --arg model "$RESP_MODEL" \
-    --argjson i "$(tokens_json "$IN_TOTAL")" --argjson o "$(tokens_json "$OUT_TOTAL")" --argjson cost "$cost" \
+    --argjson i "$(tokens_json "$IN_TOTAL")" --argjson o "$(tokens_json "$OUT_TOTAL")" \
     '{ts: $ts, run_id: (if $run == "" then null else $run end), repo: $repo, card: $card, stage: $stage,
-      provider: $provider, model: $model, input_tokens: $i, output_tokens: $o, cost_usd: $cost}' \
+      provider: $provider, model: $model, input_tokens: $i, output_tokens: $o}' \
     >> "$LEDGER" 2>/dev/null || die "cannot write ledger $LEDGER" 1
 }
 
@@ -190,7 +182,6 @@ fail_after_reply() { # message code
 }
 
 REPORT_FILE="$LOG_DIR/stage-reports/card-$N-$STAGE-round$ROUND.md"
-COST=0
 MESSAGES="$(cat "$TMP/messages.json")"
 PARSED=""
 
@@ -262,7 +253,7 @@ if [ "$NO_POST" -eq 0 ]; then
 fi
 
 jq -cn --arg status "$STATUS" --arg file "$REPORT_FILE" --argjson parsed "$PARSED" --arg provider "$PROVIDER" \
-  --arg model "$RESP_MODEL" --argjson i "$(tokens_json "$IN_TOTAL")" --argjson o "$(tokens_json "$OUT_TOTAL")" --argjson cost "$COST" \
+  --arg model "$RESP_MODEL" --argjson i "$(tokens_json "$IN_TOTAL")" --argjson o "$(tokens_json "$OUT_TOTAL")" \
   --argjson attempts "$ATTEMPTS" \
   '{status: $status, report_file: $file, parsed: $parsed, provider: $provider, model: $model,
-    input_tokens: $i, output_tokens: $o, cost_usd: $cost, attempts: $attempts}'
+    input_tokens: $i, output_tokens: $o, attempts: $attempts}'

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fake 'claude' for offline tests of the headless wrapper (fleet-board-run.sh).
+# Fake 'claude' for offline tests of the board page's planner and import sessions.
 # Replays stream-json fixtures instead of running a session.
 #
 # Environment:

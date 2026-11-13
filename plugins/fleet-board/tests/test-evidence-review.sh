@@ -36,7 +36,7 @@ cd "$TMP/repo"
 
 config() {
   cat > .fleet-board.yml <<YAML
-board: { backend: local, repo: test/toy }
+board: { repo: test/toy }
 worktrees: { dir: .trees${3:-} }
 review: { mutation: true }
 models:
@@ -124,9 +124,13 @@ setup
 run
 check "good report posts the expected head and model" output '.status == "posted" and .sha == $head and .provider == "fake" and .model == "test-model" and .attempts == 1'
 check "good report was posted" test "$(comments)" = 1
-check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == null and .cost_usd == 0' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+check "ledger records reviewer" jq -e '.role == "reviewer" and .input_tokens == null and (has("cost_usd") | not)' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
 check "provider receives the working directory as dir" test "$(cat "$FAKE_REVIEWER_DIR/cwd")" = "$(cat "$FAKE_REVIEWER_DIR/clone")"
 check "round 1 reference is the merge-base" grep -Fq "Review round 1. Reference SHA $base." "$FAKE_REVIEWER_DIR/prompt.1"
+check "review prompt requires non-login command tools" grep -Fq 'login=false on every call' "$FAKE_REVIEWER_DIR/prompt.1"
+check "review prompt verifies temp helper resolution" grep -Fq 'command -v mktemp' "$FAKE_REVIEWER_DIR/prompt.1"
+check "review prompt verifies process helper resolution" grep -Fq 'command -v ps' "$FAKE_REVIEWER_DIR/prompt.1"
+check "failed preflight cannot report clean" grep -Fq 'report an Important environment finding and Status findings' "$FAKE_REVIEWER_DIR/prompt.1"
 check "provider temp directory is inside clone" test "$(cat "$FAKE_REVIEWER_DIR/tmpdir")" = "$(cat "$FAKE_REVIEWER_DIR/clone")/.fleet-board-tmp"
 check "provider mktemp file is inside clone" test "$(dirname "$(cat "$FAKE_REVIEWER_DIR/temp-file")")" = "$(cat "$FAKE_REVIEWER_DIR/tmpdir")"
 check "provider mktemp directory is inside clone" test "$(dirname "$(cat "$FAKE_REVIEWER_DIR/temp-dir")")" = "$(cat "$FAKE_REVIEWER_DIR/tmpdir")"
@@ -157,6 +161,15 @@ check "re-ask quotes the rejection" grep -Fq 'is not the PR head' "$FAKE_REVIEWE
 for input in 'CARD BODY' 'PR DIFF' 'IMPLEMENTOR REPORT' 'PRIOR FINDING' "Review round 2. Reference SHA $head."; do
   check "round 2 prompt includes $input" grep -Fq "$input" "$FAKE_REVIEWER_DIR/prompt.1"
 done
+
+# the production path: no --card-file, the card is read from the board and its
+# acceptance field reaches the reviewer as an "## Acceptance" section
+setup
+rc=0
+bash "$SCRIPT" "$card" 7 --round 1 --diff-file "$TMP/diff" --impl-report "$TMP/impl" --no-post > "$TMP/out" 2> "$TMP/err" || rc=$?
+check "board path (no --card-file) exits 0" test "$rc" = 0
+check "board path prompt has the Acceptance heading" grep -Fxq '## Acceptance' "$FAKE_REVIEWER_DIR/prompt.1"
+check "board path prompt has the acceptance item from the field" grep -Fxq -- '- behavior' "$FAKE_REVIEWER_DIR/prompt.1"
 
 setup
 printf 'write %s/feature\nreply good\n' "$PWD" > "$FAKE_REVIEWER_SCRIPT.1"
@@ -228,6 +241,63 @@ printf 'push-pr-head\nreply good\n' > "$FAKE_REVIEWER_SCRIPT.1"
 run --no-post
 check "mid-review push preserves original reviewed sha" output '.sha == $head'
 check "fixture pushed a new head" test "$(git --git-dir="$TMP/origin" rev-parse refs/pull/7/head)" != "$head"
+
+# an unrenderable card (fb_card_text fails) stops the run
+setup
+jq '.body = 5' ".fleet-board/cards/$card.json" > "$TMP/card.new" && mv "$TMP/card.new" ".fleet-board/cards/$card.json"
+rc=0
+bash "$SCRIPT" "$card" 7 --round 1 --diff-file "$TMP/diff" --impl-report "$TMP/impl" --no-post > "$TMP/out" 2> "$TMP/err" || rc=$?
+check "an unrenderable card exits non-zero" test "$rc" != 0
+check "an unrenderable card dispatches no reviewer" test ! -e "$FAKE_REVIEWER_DIR/attempt"
+
+# codex token usage: `codex exec --json` prints JSONL events. A fixture codex on
+# PATH answers plain without --json and as JSONL with it; no live codex call.
+cat > "$TMP/bin/codex" <<'CODEX'
+#!/bin/bash
+json=0 dir="" model=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --json) json=1; shift ;;
+    -C) dir="$2"; shift 2 ;;
+    -m) model="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+text="$(bash "$FAKE_CODEX_REPLY_CMD" "$dir" "$model"; printf x)"
+text="${text%x}"
+if [ "$json" -eq 0 ]; then printf '%s' "$text"; exit 0; fi
+printf '{"type":"thread.started","thread_id":"t"}\n{"type":"turn.started"}\n'
+jq -cn --arg t "$text" '{type: "item.completed", item: {id: "item_0", type: "agent_message", text: $t}}'
+if [ -n "${FAKE_CODEX_USAGE:-}" ]; then
+  jq -cn --argjson u "$FAKE_CODEX_USAGE" '{type: "turn.completed", usage: $u}'
+else
+  printf '{"type":"turn.completed"}\n'
+fi
+CODEX
+chmod +x "$TMP/bin/codex"
+# the mid-review push test above moved the PR head; reports must name the new one
+head="$(git --git-dir="$TMP/origin" rev-parse refs/pull/7/head)"
+export FAKE_CODEX_REPLY_CMD="$HERE/fake-reviewer-cmd.sh"
+codex_command="codex exec --ephemeral -C {dir} -m {model}"
+
+setup
+config "$reviewer" "$codex_command"
+FAKE_CODEX_USAGE='{"input_tokens":1234,"cached_input_tokens":100,"output_tokens":56}' run --no-post
+check "codex fixture with usage: ledger input_tokens equals the fixture" jq -e '.input_tokens == 1234' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+check "codex fixture with usage: ledger output_tokens equals the fixture" jq -e '.output_tokens == 56' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+check "codex fixture with usage: output reports the same tokens" output '.status == "checked" and .input_tokens == 1234 and .output_tokens == 56'
+json_report="$(jq -r .report_file "$TMP/out")"
+cp "$json_report" "$TMP/report.json-mode"
+
+setup
+config "$reviewer" "$codex_command"
+run --no-post
+check "codex fixture without usage: review still passes" output '.status == "checked"'
+check "codex fixture without usage: ledger tokens are null" jq -e '.input_tokens == null and .output_tokens == null' "$FLEET_BOARD_LOG_DIR/provider-spend.jsonl"
+
+setup
+run --no-post
+check "review text is byte-identical with and without JSON output" cmp -s "$TMP/report.json-mode" "$(jq -r .report_file "$TMP/out")"
 
 printf 'passed: %d   failed: %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

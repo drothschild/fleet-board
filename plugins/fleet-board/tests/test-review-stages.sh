@@ -8,6 +8,8 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
+. "$SCRIPT_DIR/store-calls.sh" # its changes, recorded as the gh issue calls they replace
 SCRIPT="${SCRIPT_DIR}/../scripts/review-stages.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 STAGES_FIX="$FIXTURES/stages"
@@ -58,6 +60,8 @@ assert_eq() {
 }
 
 run_stages() {
+  store_sync
+  store_snap
   local tmpout tmperr
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"
@@ -66,6 +70,7 @@ run_stages() {
   LAST_OUT="$(cat "$tmpout")"
   LAST_ERR="$(cat "$tmperr")"
   rm -f "$tmpout" "$tmperr"
+  store_calls
 }
 
 # cnt <argv words...>: how many gh calls had exactly these arguments
@@ -98,24 +103,23 @@ STAGES_YML='  stages:
       paths: ["src/ui/**"]
       advisory: true'
 
-# setup_case <backend: labels|projects|nostages> <issue fixture> <PR file paths> [changedFiles]
+# setup_case <kind: labels|local|nostages|labelonly> <issue fixture> <PR file paths> [changedFiles]
+# (labels: the card comes from the issue fixture through the routes; local: the
+# case seeds the store itself; every kind is a local board)
 setup_case() {
-  local backend="$1" issue="$2" files="$3" changed="${4:-}" board stages=""
-  case "$backend" in
-    projects) board='  backend: github-projects
-  repo: acme/toy
-  project_number: 7' ;;
-    local) board='  backend: local
-  repo: acme/toy' ;;
-    *) board='  backend: github-labels
-  repo: acme/toy' ;;
-  esac
+  local backend="$1" issue="$2" files="$3" changed="${4:-}" board='  repo: acme/toy' stages=""
   [ "$backend" = nostages ] || stages="review:
 $STAGES_YML"
   # labelonly: a third stage with no paths (routed by its label only)
   [ "$backend" = labelonly ] && stages="$stages
     - name: copy
       agent: copy-reviewer"
+  # defaultstage: a third stage with default: true and paths that match nothing
+  [ "$backend" = defaultstage ] && stages="$stages
+    - name: everyone
+      agent: all-reviewer
+      paths: [\"nothing/**\"]
+      default: true"
   REPO="$(mktemp -d)"
   git init -q "$REPO"
   git -C "$REPO" config user.email "test@example.com"
@@ -192,6 +196,17 @@ assert_eq "route: no edit for a person's label" "$(cnt_prefix issue edit)" 0
 setup_case labels "$CARD_PLAIN" "README.md"
 run_stages route 12 34
 assert_stdout_exact "route: no match prints []" '[]'
+
+# route: a default: true stage routes a card with no label and no path match
+setup_case defaultstage "$CARD_PLAIN" "README.md"
+run_stages route 12 34
+assert_exit "route default: exit 0" 0
+assert_stdout_exact "route default: a default true stage is printed for an unlabelled card with no path match" '["everyone"]'
+
+# route: a stage without default is routed as before
+setup_case defaultstage "$CARD_PLAIN" "src/auth/login.js"
+run_stages route 12 34
+assert_stdout_exact "route default: a stage without default is routed by paths only" '["security","everyone"]'
 
 # route: truncated file list
 setup_case labels "$CARD_PLAIN" "README.md" 400
@@ -299,21 +314,6 @@ assert_exit "next: bad --labels -> exit 2" 2
 run_stages next --done '{"a":1}' 12
 assert_exit "next: bad --done -> exit 2" 2
 
-# setup (labels backend)
-setup_case labels "$CARD_PLAIN" "x"
-run_stages setup
-assert_exit "setup: exit 0" 0
-assert_eq "setup: routing label" "$(cnt label create needs-security-review --repo acme/toy --color d93f0b --description 'fleet-board: route to review stage security' --force)" 1
-assert_eq "setup: second routing label" "$(cnt label create needs-ux-review --repo acme/toy --color d93f0b --description 'fleet-board: route to review stage ux' --force)" 1
-assert_eq "setup: state label" "$(cnt label create fleet:review_security --repo acme/toy --color 5319e7 --description 'fleet-board state: review_security' --force)" 1
-assert_eq "setup: second state label" "$(cnt label create fleet:review_ux --repo acme/toy --color 5319e7 --description 'fleet-board state: review_ux' --force)" 1
-
-# setup: a failed gh call
-setup_case labels "$CARD_PLAIN" "x"
-sed -i.bak "s#^label create \*	0	-#label create *	1	-#" "$ROUTES"; rm -f "$ROUTES.bak"
-run_stages setup
-assert_exit "setup: failed label create -> exit 1" 1
-
 # setup (local backend): stage labels are plain strings in card files; no gh call at all
 setup_case local "$CARD_PLAIN" "x"
 run_stages setup
@@ -347,25 +347,11 @@ assert_eq "route local: the only gh call is the PR file list" "$(ls "$FAKE_GH_DI
 
 # route (local backend): a label-only stage's label already on the card routes, no write
 setup_case labelonly "$CARD_PLAIN" "README.md"
-sed -i.bak 's/backend: github-labels/backend: local/' "$REPO/.fleet-board.yml"; rm -f "$REPO/.fleet-board.yml.bak"
 local_store '["needs-copy-review"]'
 run_stages route 12 34
 assert_exit "route local label-only: exit 0" 0
 assert_stdout_exact "route local label-only: routed by the card's label" '["copy"]'
 assert_eq "route local label-only: labels unchanged" "$(jq -c .labels "$REPO/.fleet-board/cards/12.json")" '["needs-copy-review"]'
-
-# setup (projects backend)
-setup_case projects "$CARD_PLAIN" "x"
-cp "$STAGES_FIX/field-list-missing-ux.json" "$FAKE_GH_DIR/field-list.json"
-run_stages setup
-assert_exit "setup projects: missing option exits 1" 1
-assert_stderr_contains "setup projects: names the column" "Status field lacks option(s): Review: ux;"
-setup_case projects "$CARD_PLAIN" "x"
-cp "$STAGES_FIX/field-list-all.json" "$FAKE_GH_DIR/field-list.json"
-run_stages setup
-assert_exit "setup projects: all options present exits 0" 0
-assert_eq "setup projects: no fleet: state label" "$(cnt label create fleet:review_ux --repo acme/toy --color 5319e7 --description 'fleet-board state: review_ux' --force)" 0
-assert_eq "setup projects: routing label created" "$(cnt label create needs-ux-review --repo acme/toy --color d93f0b --description 'fleet-board: route to review stage ux' --force)" 1
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

@@ -9,12 +9,12 @@ fl_require_store
 fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
-trap 'rm -f "$TMP"; rm -rf "$FB_LOCK"' EXIT
-jq --arg me "$ME" --rawfile b "$2" --arg now "$(fl_now)" '
-  (.next_comment_id // ((.comments // []) | map(.id) | max // 0) + 1) as $id
+trap 'rm -f "$TMP"; fb_lock_release "$FB_LOCK"' EXIT
+jq -n --argjson card "$CARD" --arg me "$ME" --rawfile b "$2" --arg now "$(fl_now)" --argjson id "$(fl_next_comment_id "$CARD")" '
+  $card
   | .comments = (.comments // []) + [{id: $id, author: $me, body: $b, created_at: $now}]
   | .next_comment_id = $id + 1
-  | .updated_at = $now' <<<"$CARD" > "$TMP" \
+  | .updated_at = $now' > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
 # Provider stages explicitly mark validated reports. Existing role commands

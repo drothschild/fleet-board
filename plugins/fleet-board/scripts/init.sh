@@ -1,19 +1,27 @@
 #!/usr/bin/env bash
-# init.sh - write .fleet-board.yml and set up the board backend
+# init.sh - write .fleet-board.yml and set up the local card store
 #
 # Usage:
-#   init.sh --backend github-labels|github-projects --repo OWNER/NAME
-#           [--project N] [--owner LOGIN] [--state canonical=Name]...
+#   init.sh --repo OWNER/NAME [--state canonical=Name]...
 #           [--test-one CMD] [--typecheck CMD] [--lint CMD] [--qa-build CMD]
 #           [--worktrees-dir DIR] [--setup CMD] [--human-qa-path GLOB]...
 #           [--merge human|auto] [--dir DIR] [--force]
 #
 # Exit codes:
 #   0 - config written
-#   1 - refused (missing scope, missing Status options, existing config
-#       without --force, a rendered config that fails config.sh --check,
-#       or a gh call that failed)
+#   1 - refused (gh, jq, git or python3 3.9+ missing, gh not logged in or missing the repo scope, existing config
+#       without --force, a rendered config that fails config.sh --check, or
+#       the store could not be created)
 #   2 - usage error
+#
+# The board is always local: cards are files under <DIR>/<board.dir> (created,
+# never reset, and kept out of git). gh is still needed, logged in with the
+# repo scope, for the PRs.
+#
+# It also installs the `fleet-board` command in ~/.local/bin (or
+# $FLEET_BOARD_BIN_DIR) with install-cli.sh, after writing the config and also
+# when it refuses an existing one. That step is best effort: its messages go to
+# stderr and it never changes the exit code.
 #
 # Nothing is written until the final step. On every non-zero exit the
 # target .fleet-board.yml is unchanged, and it does not exist if it did not
@@ -28,7 +36,7 @@ unset CDPATH
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=board-lib.sh
 . "$HERE/board-lib.sh"
-CANONICAL="backlog ready in_progress in_review human_qa blocked done wont_do"
+CANONICAL="backlog ready in_progress in_review merging human_qa blocked done wont_do"
 HEADER='# fleet-board config. See the fleet-board README.'
 NL='
 '
@@ -36,8 +44,7 @@ NL='
 usage() {
   [ -n "${1:-}" ] && printf 'fleet-board init: %s\n' "$1" >&2
   cat >&2 << 'EOF'
-usage: init.sh --backend github-labels|github-projects|local --repo OWNER/NAME
-               [--project N] [--owner LOGIN] [--state canonical=Name]...
+usage: init.sh --repo OWNER/NAME [--state canonical=Name]...
                [--test-one CMD] [--typecheck CMD] [--lint CMD] [--qa-build CMD]
                [--worktrees-dir DIR] [--setup CMD] [--human-qa-path GLOB]...
                [--merge human|auto] [--dir DIR] [--force]
@@ -52,22 +59,19 @@ die() { printf 'fleet-board init: %s\n' "$2" >&2; exit "$1"; }
 # rendered file and config-defaults.json applies. They carry the FBI_ prefix
 # and are unset here, so a caller's environment can never supply one: only a
 # flag sets them. Every other global is assigned before it is read.
-unset FBI_OWNER FBI_TEST_ONE FBI_TYPECHECK FBI_LINT FBI_QA_BUILD FBI_WT_DIR FBI_WT_SETUP FBI_MERGE
-BACKEND=""; REPO=""; PROJECT=""; DIR=""; FORCE=0
+unset FBI_TEST_ONE FBI_TYPECHECK FBI_LINT FBI_QA_BUILD FBI_WT_DIR FBI_WT_SETUP FBI_MERGE
+REPO=""; DIR=""; FORCE=0
 STATE_KEYS=(); STATE_VALS=(); QA_PATHS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --force) FORCE=1; shift; continue ;;
-    --backend|--repo|--project|--owner|--state|--test-one|--typecheck|--lint|--qa-build|--worktrees-dir|--setup|--human-qa-path|--merge|--dir)
+    --repo|--state|--test-one|--typecheck|--lint|--qa-build|--worktrees-dir|--setup|--human-qa-path|--merge|--dir)
       [ $# -ge 2 ] || usage "$1 needs a value" ;;
     *) usage "unknown argument: $1" ;;
   esac
   case "$1" in
-    --backend) BACKEND="$2" ;;
     --repo) REPO="$2" ;;
-    --project) PROJECT="$2" ;;
-    --owner) FBI_OWNER="$2" ;;
     --test-one) FBI_TEST_ONE="$2" ;;
     --typecheck) FBI_TYPECHECK="$2" ;;
     --lint) FBI_LINT="$2" ;;
@@ -94,18 +98,7 @@ while [ $# -gt 0 ]; do
   shift 2
 done
 
-[ -n "$BACKEND" ] || usage "--backend is required"
 [ -n "$REPO" ] || usage "--repo is required"
-case "$BACKEND" in
-  github-labels|github-projects|local) ;;
-  *) usage "--backend must be github-labels, github-projects or local" ;;
-esac
-if [ "$BACKEND" = github-projects ]; then
-  [ -n "$PROJECT" ] || usage "--project is required for github-projects"
-fi
-if [ -n "$PROJECT" ]; then
-  case "$PROJECT" in ''|*[!0-9]*) usage "--project must be a number" ;; esac
-fi
 
 if [ -n "$DIR" ]; then
   [ -d "$DIR" ] || usage "--dir is not a directory: $DIR"
@@ -116,9 +109,15 @@ fi
 DIR="$(cd "$DIR" && pwd)" || usage "cannot enter --dir: $DIR"
 TARGET="$DIR/.fleet-board.yml"
 
-for tool in gh jq git; do
+for tool in gh jq git python3; do
   command -v "$tool" >/dev/null 2>&1 || die 1 "$tool is not on PATH"
 done
+# The supervisor and the board page need python3 3.9 or newer.
+PYV="$(python3 --version 2>&1 | sed -n 's/^Python \([0-9][0-9]*\)\.\([0-9][0-9]*\).*/\1 \2/p')"
+PY_MAJOR="${PYV%% *}"; PY_MINOR="${PYV##* }"
+if [ -z "$PYV" ] || [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 9 ]; }; then
+  die 1 "python3 3.9 or newer is required (found: $(python3 --version 2>&1 | head -1))"
+fi
 
 # --- Step 2: scopes --------------------------------------------------------
 # The active account's scopes line decides (fb_token_scopes). With none, a
@@ -131,7 +130,6 @@ if [ -z "$SCOPES" ] && [ "$RC" -ne 0 ]; then
 fi
 if [ -n "$SCOPES" ]; then
   REQUIRED="repo"
-  [ "$BACKEND" = github-projects ] && REQUIRED="repo project"
   MISSING=""
   for s in $REQUIRED; do
     fb_has_scope "$SCOPES" "$s" || MISSING="${MISSING:+$MISSING,}$s"
@@ -143,8 +141,17 @@ if [ -n "$SCOPES" ]; then
   fi
 fi
 
+# Put the `fleet-board` command on PATH (FLEET_BOARD_BIN_DIR, default ~/.local/bin).
+# Best effort: its messages go to stderr, and a refusal never fails init.
+install_cli() {
+  bash "$HERE/install-cli.sh" >&2 || printf 'fleet-board init: the fleet-board command was not installed; run: bash %s/install-cli.sh\n' "$HERE" >&2
+}
+
 # --- Step 3: existing config -----------------------------------------------
+# Refusing still installs the command, so re-running init on a repo that is
+# already set up gets it.
 if [ -e "$TARGET" ] && [ "$FORCE" -ne 1 ]; then
+  install_cli
   die 1 "$TARGET already exists; re-run with --force to replace it"
 fi
 
@@ -166,9 +173,7 @@ q() {
   esac
 }
 
-check_value --backend "$BACKEND"
 check_value --repo "$REPO"
-[ -n "${FBI_OWNER+x}" ] && check_value --owner "$FBI_OWNER"
 [ -n "${FBI_TEST_ONE+x}" ] && check_value --test-one "$FBI_TEST_ONE"
 [ -n "${FBI_TYPECHECK+x}" ] && check_value --typecheck "$FBI_TYPECHECK"
 [ -n "${FBI_LINT+x}" ] && check_value --lint "$FBI_LINT"
@@ -183,10 +188,7 @@ render() {
   local i sep
   printf '%s\n' "$HEADER"
   printf 'board:\n'
-  printf '  backend: %s\n' "$(q "$BACKEND")"
   printf '  repo: %s\n' "$(q "$REPO")"
-  [ -n "$PROJECT" ] && printf '  project_number: %s\n' "$PROJECT"
-  [ -n "${FBI_OWNER+x}" ] && printf '  project_owner: %s\n' "$(q "$FBI_OWNER")"
   if [ ${#STATE_KEYS[@]} -gt 0 ]; then
     printf '  states: {'
     sep=" "
@@ -238,100 +240,21 @@ ERR="$(FLEET_BOARD_CONFIG="$TMP" bash "$HERE/config.sh" --check 2>&1 >/dev/null)
 FLEET_CFG="$(FLEET_BOARD_CONFIG="$TMP" bash "$HERE/config.sh")" || die 1 "cannot read the rendered config"
 fb_set_states
 
-# --- Step 6: backend setup -------------------------------------------------
-state_color() {
-  case "$1" in
-    backlog) echo cfd3d7 ;;
-    ready) echo 0e8a16 ;;
-    in_progress) echo 1d76db ;;
-    in_review) echo 5319e7 ;;
-    review_*) echo 5319e7 ;;
-    human_qa) echo fbca04 ;;
-    blocked) echo b60205 ;;
-    done) echo 0e8a16 ;;
-    wont_do) echo ffffff ;;
-  esac
-}
-
-create_needs_human_qa() {
-  gh label create needs-human-qa --repo "$REPO" --color d93f0b \
-    --description "fleet-board: route to Human QA" --force >/dev/null \
-    || die 1 "cannot create label needs-human-qa in $REPO"
-}
-
-create_needs_manual_step() {
-  gh label create needs-manual-step --repo "$REPO" --color d93f0b \
-    --description "fleet-board: dependency needs a manual step" --force >/dev/null \
-    || die 1 "cannot create label needs-manual-step in $REPO"
-}
-
-if [ "$BACKEND" = github-labels ]; then
-  for s in $FB_STATES; do
-    name="$(fb_state_name "$s")"
-    gh label create "$name" --repo "$REPO" --color "$(state_color "$s")" \
-      --description "fleet-board state: $s" --force >/dev/null \
-      || die 1 "cannot create label $name in $REPO"
-  done
-elif [ "$BACKEND" = local ]; then
-  # Cards are files in <DIR>/<board.dir>: no labels, no project. An existing
-  # store is never reset, and the directory is kept out of git.
-  LDIR="$(fb_cfg board.dir)"
-  mkdir -p "$DIR/$LDIR/cards" || die 1 "cannot create $DIR/$LDIR/cards"
-  [ -f "$DIR/$LDIR/next" ] || printf '1\n' > "$DIR/$LDIR/next" || die 1 "cannot write $DIR/$LDIR/next"
-  if ! grep -qxF -- "$LDIR/" "$DIR/.gitignore" 2>/dev/null; then
-    if [ -s "$DIR/.gitignore" ] && [ -n "$(tail -c 1 "$DIR/.gitignore")" ]; then
-      printf '\n' >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
-    fi
-    printf '%s/\n' "$LDIR" >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
+# --- Step 6: the local store ----------------------------------------------
+# Cards are files in <DIR>/<board.dir>: no labels, no project. An existing
+# store is never reset, and the directory is kept out of git.
+LDIR="$(fb_cfg board.dir)"
+mkdir -p "$DIR/$LDIR/cards" || die 1 "cannot create $DIR/$LDIR/cards"
+[ -f "$DIR/$LDIR/next" ] || printf '1\n' > "$DIR/$LDIR/next" || die 1 "cannot write $DIR/$LDIR/next"
+if ! grep -qxF -- "$LDIR/" "$DIR/.gitignore" 2>/dev/null; then
+  if [ -s "$DIR/.gitignore" ] && [ -n "$(tail -c 1 "$DIR/.gitignore")" ]; then
+    printf '\n' >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
   fi
-else
-  OWNER_EFF="$(fb_cfg board.project_owner)"
-  [ -n "$OWNER_EFF" ] || OWNER_EFF="${REPO%%/*}"
-  FIELDS="$(gh project field-list "$PROJECT" --owner "$OWNER_EFF" --format json --limit 100)" \
-    || die 1 "cannot read the fields of project $PROJECT (owner $OWNER_EFF)"
-  HAS_STATUS="$(jq -r 'any(.fields[]; .name == "Status")' <<<"$FIELDS" 2>/dev/null)" \
-    || die 1 "cannot parse the fields of project $PROJECT"
-  [ "$HAS_STATUS" = true ] || die 1 "project $PROJECT has no Status field"
-  OPTIONS="$(jq -r 'first(.fields[] | select(.name == "Status")) | .options[].name' <<<"$FIELDS")" \
-    || die 1 "cannot parse the Status options of project $PROJECT"
-  LACKING=""; HINT=""
-  for s in $FB_STATES; do
-    name="$(fb_state_name "$s")"
-    if ! printf '%s\n' "$OPTIONS" | grep -Fxq -- "$name"; then
-      LACKING="${LACKING:+$LACKING, }$name"
-      HINT="${HINT:+$HINT, }--state $s=<Name>"
-    fi
-  done
-  if [ -n "$LACKING" ]; then
-    die 1 "project $PROJECT Status field lacks option(s): $LACKING; add it in the project's Status field or map it with $HINT"
-  fi
-fi
-
-# The routing labels (both backends): needs-human-qa routes a card to Human
-# QA, and needs-manual-step is the label status.sh --forecast reads. One call
-# site, so neither backend can skip them.
-create_routing_labels() {
-  create_needs_human_qa
-  create_needs_manual_step
-}
-[ "$BACKEND" = local ] || create_routing_labels
-
-# The bug label (both GitHub backends; the local backend makes no gh label
-# call): created only when absent, never overwritten.
-# The search is fuzzy (it also returns bugfix, not-a-bug, ...), so list up to
-# 1000 matches rather than gh's default 30, and match the name exactly below.
-if [ "$BACKEND" != local ]; then
-  BUGS="$(gh label list --repo "$REPO" --search bug --json name --limit 1000)" \
-    || die 1 "cannot check bug label in $REPO (gh label list failed)"
-  HAS_BUG="$(jq -r 'if type == "array" then any(.[]; .name == "bug") else error("not a list") end' <<<"$BUGS" 2>/dev/null)" \
-    || die 1 "cannot check bug label in $REPO (unreadable gh label list output)"
-  if [ "$HAS_BUG" != true ]; then
-    gh label create bug --repo "$REPO" --color d73a4a --description "Something isn't working" >/dev/null \
-      || die 1 "cannot check bug label in $REPO (gh label create bug failed)"
-  fi
+  printf '%s/\n' "$LDIR" >> "$DIR/.gitignore" || die 1 "cannot update $DIR/.gitignore"
 fi
 
 # --- Step 7: write ---------------------------------------------------------
 mv -f "$TMP" "$TARGET" || die 1 "cannot write $TARGET"
 printf 'wrote %s\n' "$TARGET"
+install_cli
 printf 'fleet-board init: to add review stages, set review.stages in .fleet-board.yml, then run: bash %s/review-stages.sh setup\n' "$HERE"

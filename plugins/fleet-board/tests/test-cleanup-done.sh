@@ -10,11 +10,14 @@ set -uo pipefail
 unset CDPATH
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+. "$SCRIPT_DIR/store-sync.sh" # the local store, rebuilt from the routes before each run
 SCRIPT="${SCRIPT_DIR}/../scripts/cleanup-done.sh"
 FIXTURES="$SCRIPT_DIR/../fixtures/gh"
 MARK='<!-- fleet-board:manager-note -->'
 
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
+# a done column is what its listing says (done_only narrows it), as on the GitHub board
+export ROUTES_STORE_LISTED_ONLY=1
 
 PASS=0
 FAIL=0
@@ -64,6 +67,8 @@ assert_false() {
 }
 
 run_check() {
+  store_sync
+  rm -f "$FAKE_GH_DIR/cat.log" # only the run's own card reads count
   local tmpout tmperr
   tmpout="$(mktemp)"
   tmperr="$(mktemp)"
@@ -142,6 +147,8 @@ setup_case() {
   BIN="$FAKE_GH_DIR/bin"
   mkdir -p "$BIN"
   ln -s "$SCRIPT_DIR/fake-gh.sh" "$BIN/gh"
+  printf '#!/bin/sh\ncase "$*" in *"/.fleet-board/cards/"*) printf "%%s\\n" "$*" >> "%s/cat.log" ;; esac\nexec /bin/cat "$@"\n' "$FAKE_GH_DIR" > "$BIN/cat"
+  chmod +x "$BIN/cat"
   ROUTES="$FAKE_GH_DIR/routes.txt"
   printf '%s' "${1:-}" > "$ROUTES"
   printf 'api user\t0\t%s\n' "$FIXTURES/labels/user.json" >> "$ROUTES"
@@ -242,7 +249,6 @@ done_only 12 13 17
 FLEET_BOARD_LIST_LIMIT=3 run_check
 assert_exit "done-at-limit: exit 0" 0
 assert_stdout_exact "done-at-limit: #12 still cleaned" "cleaned #12 $BASE/12-x"
-assert_stderr_contains "done-at-limit: warning names the limit" "list limit (3); the list may be truncated, continuing"
 assert_false "done-at-limit: #12 worktree gone" test -e "$BASE/12-x"
 
 # A note that cannot be read: that card is skipped, others still cleaned, exit 1
@@ -262,8 +268,9 @@ assert_stdout_exact "unreadable-note: the next card is still cleaned" "cleaned #
 # named <n>-*. The done column grows without bound; the cost must scale with
 # the local dirs, not with the column.
 
-# card_read <n>: the fake gh was asked for card n's issue or its comments
-card_read() { grep -qE "repos/acme/toy/issues/$1(/| |\$)" "$FAKE_GH_DIR/calls.log" 2>/dev/null; }
+# card_read <n>: card n's file was read (a cat wrapper on PATH logs the card
+# files the scripts read; on the GitHub board this was a gh call for the issue)
+card_read() { grep -qF "/.fleet-board/cards/$1.json" "$FAKE_GH_DIR/cat.log" 2>/dev/null; }
 reset_calls() { rm -f "$FAKE_GH_DIR/calls.log"; }
 
 # (a) several done cards, only #12 has dirs: only #12 is read, and it is cleaned
@@ -302,7 +309,7 @@ reset_calls
 run_check
 assert_exit "empty-base: exit 0" 0
 assert_stdout_exact "empty-base: nothing printed" ""
-assert_false "empty-base: no per-card gh call" grep -qE 'repos/acme/toy/issues/[0-9]' "$FAKE_GH_DIR/calls.log"
+assert_false "empty-base: no per-card gh call" grep -qE '/.fleet-board/cards/[0-9]' "$FAKE_GH_DIR/cat.log"
 assert_true "empty-base: the base is still empty" sh -c '[ -z "$(ls -A "$1")" ]' _ "$BASE"
 
 # (d) a <n>-review dir alone makes n a candidate; names with spaces are harmless
@@ -320,6 +327,64 @@ assert_false "review-only: #2 not read ('2 22-x' is not 2-*)" card_read 2
 assert_stdout_exact "review-only: #22 cleaned" "cleaned #22 $BASE/22-x"
 assert_false "review-only: 22-review gone" test -e "$BASE/22-review"
 assert_true "review-only: dirs with spaces untouched" test -d "$BASE/2 22-x"
+
+# ---------------------------------------------------------------------------
+# wont_do cards: their worktrees are removed the same way a done card's is.
+
+# wont_do_case: #30 is wont_do with a card worktree, a review worktree and a
+# review copy; the done column holds only #13 (clean). #14 stays in_review.
+wont_do_case() {
+  setup_case "${1:-}"
+  worktrees 30
+  card 30 fleet:wont_do "$(note_wt "$BASE/30-x")"
+  list_route wont_do all "[$(item 30 fleet:wont_do)]"
+  done_only 13 17
+}
+
+wont_do_case
+run_check
+assert_exit "wont_do-card: exit 0" 0
+assert_stdout_exact "wont_do-card: #30 cleaned like a done card" "cleaned #30 $BASE/30-x"
+assert_false "wont_do-card: card worktree gone" test -e "$BASE/30-x"
+assert_false "wont_do-card: review worktree gone" test -e "$BASE/30-review"
+assert_false "wont_do-card: review copy gone" test -e "$BASE/30-review-copy"
+assert_false "wont_do-card: git no longer lists the card worktree" wt_listed "$BASE/30-x"
+assert_true "wont_do-card: the branch survives" git -C "$REPO" rev-parse -q --verify refs/heads/fleet/30-x
+run_check
+assert_stdout_exact "wont_do-card: second run cleans nothing" ""
+
+# a card in any other column keeps its worktree (#14 in_review, #12 not listed)
+wont_do_case
+run_check
+assert_true "other-column: in_review worktree untouched" test -d "$BASE/14-x"
+assert_true "other-column: in_review review worktree untouched" test -d "$BASE/14-review"
+assert_true "other-column: in_review copy untouched" test -f "$BASE/14-review-copy/file"
+assert_true "other-column: unlisted #12 worktree untouched" test -d "$BASE/12-x"
+
+# the wont_do column cannot be listed: exit 1, nothing removed (done cards too)
+wont_do_case "$(printf 'issue list --repo acme/toy --label fleet:wont_do *\t1\t-\n')
+"
+done_only 12 13 17
+run_check
+assert_exit "wont_do-list-failure: exit 1" 1
+assert_stdout_exact "wont_do-list-failure: nothing printed" ""
+assert_true "wont_do-list-failure: #30 worktree untouched" test -d "$BASE/30-x"
+assert_true "wont_do-list-failure: done #12 worktree untouched" test -d "$BASE/12-x"
+
+# only the wont_do listing fails (the done listing succeeds): exit 1, nothing
+# removed. A `bash` shim ahead on PATH fails board-list.sh for wont_do alone.
+wont_do_case
+mkdir -p "$FAKE_GH_DIR/shim"
+REAL_BASH="$(command -v bash)"
+printf '#!/bin/sh\ncase "$*" in *board-list.sh*wont_do*) echo "shim: wont_do listing failed" >&2; exit 1 ;; esac\nexec "%s" "$@"\n' "$REAL_BASH" > "$FAKE_GH_DIR/shim/bash"
+chmod +x "$FAKE_GH_DIR/shim/bash"
+done_only 12 13 17
+PATH="$FAKE_GH_DIR/shim:$PATH" run_check
+assert_exit "wont_do-only-list-failure: exit 1" 1
+assert_stdout_exact "wont_do-only-list-failure: nothing printed" ""
+assert_stderr_contains "wont_do-only-list-failure: names the wont_do column" "cannot list the wont_do column"
+assert_true "wont_do-only-list-failure: #30 worktree untouched" test -d "$BASE/30-x"
+assert_true "wont_do-only-list-failure: done #12 worktree untouched" test -d "$BASE/12-x"
 
 # Usage
 run_check --bogus
