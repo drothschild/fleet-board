@@ -956,6 +956,8 @@ plan_real() {
   if [ "$kind" = conflict ]; then printf 'mainline\n' > "$REPO/f.txt"; else printf 'other\n' > "$REPO/g.txt"; git -C "$REPO" add g.txt; fi
   git -C "$REPO" commit -q -am "change on main"
   m="$(git -C "$REPO" rev-parse HEAD)"
+  # mainline is the base branch: publish it as origin/main, as GitHub would have it
+  git -C "$REPO" update-ref refs/remotes/origin/main "$m"
   git -C "$REPO" checkout -q feat
   case "$kind" in
     clean) git -C "$REPO" merge -q --no-edit -m "Merge branch 'main' into feat" mainline ;;

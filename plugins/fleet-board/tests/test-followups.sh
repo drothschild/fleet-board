@@ -506,6 +506,31 @@ assert_exit "no PR existing match: exit" 0
 assert_eq "no PR existing match: comment without a PR" "$(jq -r '.comments[-1].body' "$REPO/.fleet-board/cards/5.json")" "Also seen while working #12."
 assert_eq "no PR existing match: no gh pr comment ran" "$(calls_starting pr comment)" 0
 
+# ---------------------------------------------------------------------------
+# a follow-up whose detail names a path only the spawning PR adds depends on the spawning card
+setup_local
+git -C "$REPO" checkout -q -b main 2>/dev/null || git -C "$REPO" checkout -q main
+mkdir -p "$REPO/src"; echo x > "$REPO/src/calc.js"
+git -C "$REPO" add src/calc.js; git -C "$REPO" commit -q -m "add calc"
+printf '{"files":[{"path":"src/new-page.js"},{"path":"src/calc.js"}],"state":"OPEN"}\n' > "$FAKE_GH_DIR/pr34.json"
+printf 'pr view 34 *\t0\t%s\npr comment 34 *\t0\t-\n' "$FAKE_GH_DIR/pr34.json" > "$ROUTES"
+report '[{"title":"Test the new page","detail":"`bash src/new-page.js` should exit 0 but `src/new-page.js` only exists in the PR"}]' '[]'
+run_ff
+assert_exit "unmerged path: exit" 0
+assert_eq "unmerged path: blocked_by is the spawning card" "$(jq -c .blocked_by "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" '[12]'
+
+# a path already on the default branch does not block the follow-up
+setup_local
+git -C "$REPO" checkout -q -b main 2>/dev/null || git -C "$REPO" checkout -q main
+mkdir -p "$REPO/src"; echo x > "$REPO/src/calc.js"
+git -C "$REPO" add src/calc.js; git -C "$REPO" commit -q -m "add calc"
+printf '{"files":[{"path":"src/new-page.js"},{"path":"src/calc.js"}],"state":"OPEN"}\n' > "$FAKE_GH_DIR/pr34.json"
+printf 'pr view 34 *\t0\t%s\npr comment 34 *\t0\t-\n' "$FAKE_GH_DIR/pr34.json" > "$ROUTES"
+report '[{"title":"Test calc more","detail":"`bash src/calc.js` should exit 0; `src/calc.js` is already merged"}]' '[]'
+run_ff
+assert_exit "merged path: exit" 0
+assert_eq "merged path: blocked_by is empty" "$(jq -c .blocked_by "$REPO/.fleet-board/cards/13.json" 2>/dev/null)" '[]'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
