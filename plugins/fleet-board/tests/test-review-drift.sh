@@ -275,6 +275,55 @@ git checkout -q feat
 git merge -q --no-ff --no-edit -m "Merge remote-tracking branch 'origin/main' into feat" evil
 assert_eq "a merge whose second parent is not on main is unreviewed" "$(drift)" unreviewed
 
+echo "== N1: a clean merge of a pushed branch named master, in a repo whose base is main"
+setup ""
+git checkout -q -b master main
+printf 'payload\n' > evil.sh; git add evil.sh; git commit -q -m evil
+git push -q origin master
+git checkout -q feat; git branch -q -D master; git fetch -q origin
+git merge -q --no-ff --no-edit -m "Merge remote-tracking branch 'origin/main' into feat" origin/master
+assert_eq "a merge of origin/master when origin/HEAD is main is unreviewed" "$(drift)" unreviewed
+
+echo "== N2: a merge of main that undoes main's change to a nested pin"
+setup "$VF"
+git checkout -q main
+printf '{\n  "name": "mk",\n  "plugins": [\n    {\n      "name": "a",\n      "version": "0.1.0",\n      "source": {\n        "source": "npm",\n        "package": "a",\n        "version": "1.2.3"\n      }\n    }\n  ]\n}\n' > .claude-plugin/marketplace.json
+git commit -q -am "main pins a"
+git checkout -q feat; git merge -q --no-edit -m "Merge branch 'main' into feat" main
+R="$(git rev-parse HEAD)"
+git checkout -q main
+sed -i.bak 's/"version": "1.2.3"/"version": "1.2.4"/' .claude-plugin/marketplace.json; rm -f .claude-plugin/marketplace.json.bak
+git commit -q -am "security: bump a to 1.2.4"
+git checkout -q feat
+git merge -q --no-commit --no-edit main >/dev/null 2>&1
+git checkout -q main~1 -- .claude-plugin/marketplace.json
+git commit -q -m "Merge branch 'main' into feat"
+assert_eq "setup: the merge keeps the old pin" "$(grep -c '"version": "1.2.3"' .claude-plugin/marketplace.json)" 1
+assert_eq "a merge that reverts main's pin change is unreviewed" "$(drift)" unreviewed
+
+echo "== m1: a merge of main that keeps a plugin version below main's"
+setup "$VF"
+git checkout -q main
+setv .claude-plugin/marketplace.json 0.2.0
+git commit -q -am "main raises a"
+git checkout -q feat
+git merge -q --no-commit --no-edit main >/dev/null 2>&1
+git checkout -q feat -- .claude-plugin/marketplace.json
+git commit -q -m "Merge branch 'main' into feat"
+assert_eq "setup: the merge keeps 0.1.0" "$(grep -c '"version": "0.1.0"' .claude-plugin/marketplace.json)" 1
+assert_eq "a merge that drops main's version raise is unreviewed" "$(drift)" unreviewed
+
+echo "== m2: a raise in a file with two top-level version keys"
+setup "$VF"
+git checkout -q main
+printf '{\n  "name": "a",\n  "version": "0.1.0",\n  "description": "plugin a",\n  "version": "0.1.0"\n}\n' > plugins/a/.claude-plugin/plugin.json
+git commit -q -am "main has a duplicate key"
+git checkout -q feat; git merge -q --no-edit -m "Merge branch 'main' into feat" main
+R="$(git rev-parse HEAD)"
+awk 'BEGIN{n=0} /"version"/{n++; if(n==1){sub(/"0.1.0"/,"\"../../evil\"")} else {sub(/"0.1.0"/,"\"0.1.1\"")}} {print}' plugins/a/.claude-plugin/plugin.json > p.tmp && mv p.tmp plugins/a/.claude-plugin/plugin.json
+git commit -q -am "Raise versions above origin/main"
+assert_eq "a hidden duplicate version key is unreviewed" "$(drift)" unreviewed
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
