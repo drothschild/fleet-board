@@ -368,5 +368,21 @@ run_import "" "$SB/nosuch.json" --dry-run
 check "depends_on [\"nosuchkey\"] still exits 1" "$RC" "1"
 case "$(cat "$SB/err")" in *"unknown dependency: nosuchkey"*) pass "depends_on [\"nosuchkey\"] still fails with unknown dependency: nosuchkey" ;; *) fail "depends_on [\"nosuchkey\"] still fails with unknown dependency: nosuchkey" "$(cat "$SB/err")" ;; esac
 
+# ---------------------------------------------------------------- empty scope
+echo "# a card whose Scope yields no path"
+printf '%s' '{"cards":[
+ {"key":"a","title":"Fine card","repo":"acme/api","labels":[],"why":"w","scope":["src/a.js"],"acceptance":["A works"]},
+ {"key":"e","title":"Empty scope card","repo":"acme/api","labels":[],"why":"w","scope":[],"acceptance":["E works"]}]}' > "$SB/cards-noscope.json"
+reset_gh
+run_import "y" "$SB/cards-noscope.json" --status ready
+check "a plan card with an empty scope is refused (exit 1)" "$RC" "1"
+case "$(cat "$SB/err")" in *"Empty scope card"*) pass "the refusal names the card" ;; *) fail "the refusal names the card" "$(cat "$SB/err")" ;; esac
+check "a plan card with an empty scope creates no card" "$(cards_created)" "0"
+printf '%s' '{"cards":[{"key":"p","title":"Prose scope card","repo":"acme/api","labels":[],"why":"w","scope":["Everything in the card"],"acceptance":["P works"]}]}' > "$SB/cards-prose.json"
+reset_gh
+run_import "y" "$SB/cards-prose.json" --status ready
+check "a plan card whose scope bullets name no path is refused (exit 1)" "$RC" "1"
+check "a plan card whose scope bullets name no path creates no card" "$(cards_created)" "0"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

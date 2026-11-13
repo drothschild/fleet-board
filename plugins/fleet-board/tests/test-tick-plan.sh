@@ -1094,7 +1094,12 @@ assert_jq "scope-disjoint: cards naming different paths start" "$(card 14 action
 
 plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
-assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
+assert_jq "scope-none: a card in Ready whose Scope yields no paths plans wait" "$(card 14 action)" '"wait"'
+assert_jq "scope-none: the reason is Scope lists no paths" "$(card 14 reason)" '"Scope lists no paths"'
+
+plan_scope NONE
+assert_jq "scope-none: a card in Ready with no Scope section plans wait" "$(card 14 action)" '"wait"'
+assert_jq "scope-none: no Scope section gives the reason Scope lists no paths" "$(card 14 reason)" '"Scope lists no paths"'
 
 # Plain-text paths in a card's Scope (candidate mode exposes declared_paths).
 # cand_scope <scope text>: ready card 14 alone; run --candidates
@@ -1111,6 +1116,12 @@ declared_14() { printf '(.candidates[] | select(.number == 14)).declared_paths';
 cand_scope "$(printf -- '- plugins/fleet-board/scripts/a.sh\n- New plugins/fleet-board/tests/test-a.sh (runs the harness)')"
 assert_exit "plain-scope: exit" 0
 assert_jq "plain-scope: bullet lines with plain-text paths plan both declared_paths" "$(declared_14)" '["plugins/fleet-board/scripts/a.sh","plugins/fleet-board/tests/test-a.sh"]'
+
+cand_scope "$(printf -- '- plugins/a/b.sh\n- c.json (notes)')"
+assert_jq "plain-scope: unbackticked plugins/a/b.sh and c.json (notes) plan declared_paths c.json and plugins/a/b.sh" "$(declared_14)" '["c.json","plugins/a/b.sh"]'
+
+cand_scope "$(printf -- '- `plugins/a/b.sh`\n- c.json (notes)')"
+assert_jq "plain-scope: a Scope mixing a backticked path and a bare path shows both in declared_paths" "$(declared_14)" '["c.json","plugins/a/b.sh"]'
 
 cand_scope 'plugins/x/a.sh, plugins/x/b.json'
 assert_jq "plain-scope: a comma-separated line without a bullet yields both paths, no trailing comma" "$(declared_14)" '["plugins/x/a.sh","plugins/x/b.json"]'
