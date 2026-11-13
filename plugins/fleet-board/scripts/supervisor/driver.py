@@ -670,6 +670,7 @@ class CardDriver:
         if not run.script:
             run.prompt = run.base_prompt = role_prompt(role, inputs, c.tmp)
         run.attempts_before = c.attempts_before if role == 'implementor' else None
+        run.guard = self._role_snapshot(card)
         self._launch(run)
         return 'session'
 
@@ -830,10 +831,9 @@ class CardDriver:
 
     def _reconcile(self, run, result, allow):
         c = run.c
-        if run.role == 'merger':
-            tripped = self._guard_tripped(run)
-            if tripped is not None:
-                return tripped
+        tripped = self._guard_tripped(run)
+        if tripped is not None:
+            return tripped
         if result.cancelled:
             return Outcome(c.n, False, False, None)
         if result.failure == 'provider':
@@ -1043,7 +1043,7 @@ class CardDriver:
             return
         pr = note.get('pr') or parsed.get('pr') or pending.get('pr') or c.row.get('pr')
         if pr is None:
-            c.warn('follow-ups on #%d wait for a PR' % c.n)
+            c.warn('follow-ups on #%d are held until a PR is known' % c.n)
             c.merge_soft({'pending_followups': {'out_of_scope': oos, 'bugs': bugs, 'pr': None}})
             return
         if not _posint(pr):
@@ -1280,6 +1280,10 @@ class CardDriver:
                 self._persona_label(c): self._hash(self._persona_file(c)),
                 'card state': card.get('state')}
 
+    def _role_snapshot(self, card):
+        """What an implementor, reviewer or fixer session must leave alone: .fleet-board.yml and the card's state."""
+        return {'.fleet-board.yml': self._hash(self.root / '.fleet-board.yml'), 'card state': card.get('state')}
+
     @staticmethod
     def _hash(path):
         try:
@@ -1305,17 +1309,26 @@ class CardDriver:
     def _guard_tripped(self, run):
         """After a merger session: pause the board and set the card's attention when it changed a guarded thing."""
         c = run.c
+        guard = getattr(run, 'guard', None)
+        if not guard:
+            return None
         try:
             state = self._read_card(c).get('state')
         except _Fail:
             state = None
-        now = self._guard_snapshot(c, {'state': state})
-        changed = [name for name, value in run.guard.items() if now[name] != value]
+        now = (self._guard_snapshot(c, {'state': state}) if run.role == 'merger'
+               else self._role_snapshot({'state': state}))
+        changed = [name for name, value in guard.items() if now[name] != value]
         if not changed:
             return None
-        reason = 'merger session changed %s' % ', '.join(changed)
+        reason = '%s session changed %s' % (run.role, ', '.join(changed))
         self.state.pause(reason)
-        self._merger_attention(c, run.mode, reason, run.head)
+        if run.role == 'merger':
+            self._merger_attention(c, run.mode, reason, run.head)
+        else:
+            c.merge(dict(_RESET, role_guard={'role': run.role, 'status': 'attention', 'reason': reason}))
+            self.state.set_attention(c.n, reason)
+            self.state.event('attention', card=c.n, role=run.role, reason=reason)
         return Outcome(c.n, False, False, None)
 
     def _persona(self, c, pr):
@@ -1394,7 +1407,9 @@ class CardDriver:
         if verified is not None:
             patch['last_verified'] = verified
         c.merge(patch)
+        self.state.set_attention(c.n, reason)
         self.state.event('attention', card=c.n, mode=mode, reason=reason)
+        c.comment_soft('Merger needs attention (%s): %s' % (mode, reason))
 
     @staticmethod
     def _merger_reason(parsed):
@@ -1482,10 +1497,12 @@ class CardDriver:
         if not isinstance(pending, dict):
             return
         pr = pending.get('pr') or note.get('pr') or c.row.get('pr')
+        if pr is None and c.row.get('state') == 'blocked':
+            pr = ''  # a blocked card has no PR to comment on: file-followups.sh takes an empty one
         if pr is None:
-            c.warn('pending follow-ups on #%d wait for a PR' % c.n)
+            c.warn('pending follow-ups on #%d are held until a PR is known' % c.n)
             return
-        if not _posint(pr):
+        if pr != '' and not _posint(pr):
             raise _Invalid('pr', pr)
         stored = {'out_of_scope': list(pending.get('out_of_scope') or []), 'bugs': list(pending.get('bugs') or []),
                   'pr': pending.get('pr')}

@@ -628,6 +628,14 @@ function restoreFocus(focus) {
   if (card) card.focus({ preventScroll: true });
 }
 
+// The reason a card needs attention: the card's own `attention`, else the running supervisor's per-card map.
+function cardAttention(c) {
+  let a = c.attention;
+  if (a == null && S.supervisor && S.supervisor.attention && typeof S.supervisor.attention === "object") a = S.supervisor.attention[String(c.number)];
+  if (a && typeof a === "object") a = a.reason || "needs attention";
+  return typeof a === "string" && a ? a : null;
+}
+
 // renderCard(card, repo) -> <li>: DOM calls only.
 function renderCard(c, repo) {
   repo = repo || (S.board && S.board.repo);
@@ -652,6 +660,8 @@ function renderCard(c, repo) {
   id.appendChild(document.createTextNode("#" + n));
   if (c.active) id.appendChild(el("span", "sr-only", "an agent is working on it now"));
   if (stuck) id.appendChild(el("span", "card-stuck-badge", "STUCK"));
+  const attn = cardAttention(c);
+  if (attn) id.appendChild(el("span", "card-attention-badge", "ATTENTION"));
   if (c.acceptance_count > 0) id.appendChild(el("span", "card-acc", c.acceptance_count + " acceptance"));
   li.appendChild(id);
 
@@ -695,6 +705,7 @@ function renderCard(c, repo) {
     li.appendChild(el("div", "card-meta card-stuck-detail", "stuck: " + clean(stuck.kind, 60) + (stuck.detail ? " — " + clean(stuck.detail, 300) : "")));
     li.appendChild(el("div", "card-meta card-stuck-resolve", "resolve with: fleet-board supervisor stuck --release " + n));
   }
+  if (attn) li.appendChild(el("div", "card-meta card-attention-reason", clean(attn, 300)));
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
 
@@ -2369,10 +2380,10 @@ function bindPlanner() {
   $("pl-draft").addEventListener("click", draftPlanner);
   $("pl-close").addEventListener("click", requestClosePlanner);
   $("pl-input").addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      sendPlanner();
-    }
+    // Enter (and Cmd/Ctrl+Enter) sends; Shift+Enter keeps the newline; IME confirm never sends.
+    if (e.key !== "Enter" || e.isComposing || (e.shiftKey && !e.metaKey && !e.ctrlKey)) return;
+    e.preventDefault();
+    sendPlanner();
   });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.pl && !S.imp && !S.drawer && !e.defaultPrevented) {

@@ -1037,6 +1037,15 @@ button, select, input, textarea { font: inherit; color: inherit; }
 /* --- stuck cards: the red border is a hard requirement, light and dark alike --- */
 /* Not a theme token and not redefined in the dark block: 4px solid #d00000 everywhere. */
 .card.card--stuck { border: 4px solid #d00000 !important; padding: 6px 7px 5px; }
+.card-attention-badge {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #b35900;
+  color: #ffffff;
+  font: 700 11px/1.4 var(--sans);
+  letter-spacing: 0.06em;
+}
 .card-stuck-badge {
   flex: none;
   padding: 1px 6px;

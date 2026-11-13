@@ -402,6 +402,202 @@ contains "up outside a git repository: says so" "not inside a git repository" "$
 if [ -e "$UP_STATE2/started" ]; then fail "up outside a git repository: starts no supervisor" "supervisor was started"
 else pass "up outside a git repository: starts no supervisor"; fi
 
+# --- up: reuses a supervisor that is already running -----------------------
+# This fake behaves like the real one: start exits 1 "supervisor already running"
+# when a pid is recorded; status answers from the same record.
+RR="$TMP/roots/0.41.0"; mkdir -p "$RR/scripts"
+cp "$RU/scripts/board-web.sh" "$RR/scripts/board-web.sh"
+cat > "$RR/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start)
+    printf '%s\n' "$*" >> "$UP_STATE/supervisor-calls"
+    if [ -f "$UP_STATE/pid" ]; then echo "supervisor already running (pid $(cat "$UP_STATE/pid"))" >&2; exit 1; fi
+    echo 4242 > "$UP_STATE/pid"; exit 0 ;;
+  status) [ -f "$UP_STATE/pid" ]; exit $? ;;
+esac
+exit 0
+EOS
+HR="$TMP/home-reuse"; make_home "$HR" "user||$RR|0.41.0"
+REPO_RE="$TMP/work/repo-reuse"; make_repo "$REPO_RE"
+RE_STATE="$TMP/re-state"; mkdir -p "$RE_STATE"; echo 4242 > "$RE_STATE/pid"
+PORT_RE="$(free_port)"
+(cd "$REPO_RE" && HOME="$HR" UP_STATE="$RE_STATE" bash "$LAUNCHER" up --port "$PORT_RE" >/dev/null 2>&1) &
+RE_PID=$!
+wait_port "$PORT_RE"
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_RE/api/board")"
+check "up with a supervisor already running: serves the board (GET /api/board returns 200)" 200 "$code"
+check "up with a supervisor already running: the supervisor's pid is unchanged" 4242 "$(cat "$RE_STATE/pid")"
+check "up with a supervisor already running: starts no second supervisor (pid file written once)" 1 "$(grep -c . "$RE_STATE/pid")"
+pkill -P "$RE_PID" 2>/dev/null; kill "$RE_PID" 2>/dev/null; wait "$RE_PID" 2>/dev/null
+
+# --- up: a supervisor refused for stuck cards (exit 4) still opens the board ---
+RS="$TMP/roots/0.42.0"; mkdir -p "$RS/scripts"
+cp "$RU/scripts/board-web.sh" "$RS/scripts/board-web.sh"
+cat > "$RS/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start) exit 4 ;;
+  status) exit 1 ;;
+esac
+exit 0
+EOS
+HS="$TMP/home-stuck"; make_home "$HS" "user||$RS|0.42.0"
+REPO_ST="$TMP/work/repo-stuck"; make_repo "$REPO_ST"
+PORT_ST="$(free_port)"
+ST_ERR="$TMP/stuck-stderr"
+(cd "$REPO_ST" && HOME="$HS" bash "$LAUNCHER" up --port "$PORT_ST" >/dev/null 2>"$ST_ERR") &
+ST_PID=$!
+wait_port "$PORT_ST"
+code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT_ST/api/board")"
+check "up with stuck cards (exit 4): the board is still served (GET /api/board returns 200)" 200 "$code"
+check "up with stuck cards (exit 4): prints exactly one stderr line" 1 "$(grep -c . "$ST_ERR")"
+contains "up with stuck cards (exit 4): the stderr line names fleet-board supervisor stuck" "fleet-board supervisor stuck" "$(cat "$ST_ERR")"
+pkill -P "$ST_PID" 2>/dev/null; kill "$ST_PID" 2>/dev/null; wait "$ST_PID" 2>/dev/null
+
+# --- up: a signal stops the board and drains the supervisor up started ------
+# The fake supervisor's stop returns at once (like the real one) and the supervisor
+# keeps running for about a second more; status exits 1 once it is gone.
+RD="$TMP/roots/0.43.0"; mkdir -p "$RD/scripts"
+cp "$RU/scripts/board-web.sh" "$RD/scripts/board-web.sh"
+cat > "$RD/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start)
+    if [ -f "$UP_STATE/pid" ]; then echo "supervisor already running" >&2; exit 1; fi
+    echo 4242 > "$UP_STATE/pid"; exit 0 ;;
+  status) [ -f "$UP_STATE/pid" ]; exit $? ;;
+  stop)
+    printf '%s\n' "$*" >> "$UP_STATE/stop-calls"
+    ( sleep 1; rm -f "$UP_STATE/pid" ) >/dev/null 2>&1 &
+    exit 0 ;;
+esac
+exit 0
+EOS
+HD="$TMP/home-drain"; make_home "$HD" "user||$RD|0.43.0"
+
+# up_signal SIGNAL STATE_DIR PRESTART: run up in its own session with default signal
+# handling, send SIGNAL once the board answers, then print up's exit code.
+up_signal() {
+  local sig="$1" state="$2" pre="$3" repo port
+  repo="$TMP/work/repo-sig-$sig-$pre"; make_repo "$repo"
+  port="$(free_port)"; echo "$port" > "$TMP/sig-port-$sig-$pre"
+  [ "$pre" = 1 ] && echo 4242 > "$state/pid"
+  python3 - "$sig" "$port" "$repo" "$state" "$HD" "$LAUNCHER" "$TMP/sig-out-$sig-$pre" <<'EOPY'
+import os, signal, subprocess, sys, time, urllib.request
+sig, port, repo, state, home, launcher, out = sys.argv[1:]
+env = dict(os.environ, HOME=home, UP_STATE=state)
+p = subprocess.Popen(["bash", launcher, "up", "--port", port], cwd=repo, env=env,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT,
+                     preexec_fn=lambda: [signal.signal(s, signal.SIG_DFL) for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)])
+for _ in range(100):
+    try: urllib.request.urlopen("http://127.0.0.1:%s/api/board" % port); break
+    except Exception: time.sleep(0.1)
+time.sleep(0.3)
+p.send_signal(getattr(signal, "SIG" + sig))
+try: rc = p.wait(timeout=20)
+except subprocess.TimeoutExpired: p.kill(); rc = "timeout"
+print(rc)
+EOPY
+}
+
+for SIG in INT TERM HUP; do
+  DS="$TMP/drain-state-$SIG"; mkdir -p "$DS"
+  SIG_OUT="$TMP/sig-out-$SIG-0"
+  rc="$(up_signal "$SIG" "$DS" 0)"
+  SIG_PORT="$(cat "$TMP/sig-port-$SIG-0")"
+  check "up on SIG$SIG: exits 0" 0 "$rc"
+  check "up on SIG$SIG: asks the supervisor to drain (stop --drain)" "stop --drain" "$(cat "$DS/stop-calls" 2>/dev/null)"
+  if [ -f "$DS/pid" ]; then fail "up on SIG$SIG: exits only once the supervisor is not running" "supervisor still running when up exited"
+  else pass "up on SIG$SIG: exits only once the supervisor is not running"; fi
+  (cd "$REPO_UP" && HOME="$HD" UP_STATE="$DS" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
+  check "up on SIG$SIG: status reports not running afterwards (exit 1)" 1 "$src"
+  check "up on SIG$SIG: prints one line saying it is draining" 1 "$(grep -ci 'draining' "$SIG_OUT")"
+  code="$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://127.0.0.1:$SIG_PORT/api/board")"
+  check "up on SIG$SIG: the board is no longer served" 000 "$code"
+done
+
+DK="$TMP/drain-state-keep"; mkdir -p "$DK"
+rc="$(up_signal INT "$DK" 1)"
+check "up on SIGINT with a supervisor already running: exits 0" 0 "$rc"
+(cd "$REPO_UP" && HOME="$HD" UP_STATE="$DK" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
+check "up on SIGINT with a supervisor already running: it is still running (status exits 0)" 0 "$src"
+if [ -f "$DK/stop-calls" ]; then fail "up on SIGINT with a supervisor already running: no stop requested" "$(cat "$DK/stop-calls")"
+else pass "up on SIGINT with a supervisor already running: no stop requested"; fi
+
+# --- up: a second SIGINT during the drain cancels instead of waiting ---------
+# This fake supervisor's drain takes about 8 seconds; stop --cancel ends it at once.
+RC="$TMP/roots/0.44.0"; mkdir -p "$RC/scripts"
+cp "$RU/scripts/board-web.sh" "$RC/scripts/board-web.sh"
+cat > "$RC/scripts/supervisor.sh" <<'EOS'
+#!/usr/bin/env bash
+case "${1:-}" in
+  start)
+    if [ -f "$UP_STATE/pid" ]; then echo "supervisor already running" >&2; exit 1; fi
+    echo 4242 > "$UP_STATE/pid"; exit 0 ;;
+  status) [ -f "$UP_STATE/pid" ]; exit $? ;;
+  stop)
+    printf '%s\n' "$*" >> "$UP_STATE/stop-calls"
+    case "$*" in
+      *--cancel*) rm -f "$UP_STATE/pid" ;;
+      *) ( sleep 8; rm -f "$UP_STATE/pid" ) >/dev/null 2>&1 & ;;
+    esac
+    exit 0 ;;
+esac
+exit 0
+EOS
+HC="$TMP/home-cancel"; make_home "$HC" "user||$RC|0.44.0"
+CS="$TMP/cancel-state"; mkdir -p "$CS"
+CREPO="$TMP/work/repo-cancel"; make_repo "$CREPO"
+CPORT="$(free_port)"
+CRES="$(python3 - "$CPORT" "$CREPO" "$CS" "$HC" "$LAUNCHER" "$TMP/cancel-out" <<'EOPY'
+import os, signal, subprocess, sys, time, urllib.request
+port, repo, state, home, launcher, out = sys.argv[1:]
+env = dict(os.environ, HOME=home, UP_STATE=state)
+p = subprocess.Popen(["bash", launcher, "up", "--port", port], cwd=repo, env=env,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT,
+                     preexec_fn=lambda: [signal.signal(s, signal.SIG_DFL) for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)])
+for _ in range(100):
+    try: urllib.request.urlopen("http://127.0.0.1:%s/api/board" % port); break
+    except Exception: time.sleep(0.1)
+time.sleep(0.3)
+p.send_signal(signal.SIGINT)
+for _ in range(100):
+    if "draining" in open(out).read(): break
+    time.sleep(0.1)
+time.sleep(0.5)
+t0 = time.time()
+p.send_signal(signal.SIGINT)
+try: rc = p.wait(timeout=20)
+except subprocess.TimeoutExpired: p.kill(); rc = "timeout"
+print("%s %d" % (rc, int(time.time() - t0)))
+EOPY
+)"
+check "up: a second SIGINT during the drain: exits 0" 0 "${CRES%% *}"
+check "up: a second SIGINT during the drain: sends a cancel stop to the supervisor" 1 "$(grep -c -- '--cancel' "$CS/stop-calls" 2>/dev/null)"
+if [ -f "$CS/pid" ]; then fail "up: a second SIGINT during the drain: exits only once the supervisor is not running" "supervisor still running when up exited"
+else pass "up: a second SIGINT during the drain: exits only once the supervisor is not running"; fi
+if [ "${CRES##* }" -lt 5 ] 2>/dev/null; then pass "up: a second SIGINT during the drain: does not wait for the drain to finish"
+else fail "up: a second SIGINT during the drain: does not wait for the drain to finish" "result: $CRES"; fi
+
+# --- up: a board server that exits early drains the supervisor up started ---
+# The port is already in use, so board-web.sh exits at once with a nonzero code.
+BF_STATE="$TMP/busy-state"; mkdir -p "$BF_STATE"
+BREPO="$TMP/work/repo-busy"; make_repo "$BREPO"
+BPORT="$(free_port)"
+python3 -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(60)' "$BPORT" &
+BUSY_PID=$!
+sleep 0.5
+BOUT="$(cd "$BREPO" && HOME="$HD" UP_STATE="$BF_STATE" bash "$LAUNCHER" up --port "$BPORT" 2>&1)"; rc=$?
+kill "$BUSY_PID" 2>/dev/null; wait "$BUSY_PID" 2>/dev/null
+check "up with the port in use: exits with the board server's exit code (1)" 1 "$rc"
+check "up with the port in use: asks the supervisor to drain (stop --drain)" "stop --drain" "$(cat "$BF_STATE/stop-calls" 2>/dev/null)"
+(cd "$BREPO" && HOME="$HD" UP_STATE="$BF_STATE" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
+check "up with the port in use: supervisor status reports not running afterwards (exit 1)" 1 "$src"
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"

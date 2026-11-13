@@ -9,7 +9,8 @@
 # Usage:
 #   fleet-board board [board-web.sh args...]   serve the board page for this repo
 #   fleet-board up [--port N]                  start the supervisor in the background, then
-#                                              serve the board page in the foreground
+#                                              serve the board page in the foreground; Ctrl-C (or
+#                                              SIGTERM/SIGHUP) drains a supervisor it started
 #   fleet-board supervisor <args...>           run supervisor.sh (start, status, stop, ...)
 #                                              from the repo root (the main checkout)
 #   fleet-board path                           print the plugin root in use
@@ -183,8 +184,53 @@ case "$cmd" in
     handoff "$root" "$cmd" "$@"
     sroot="$(plugin_root supervisor.sh)" || exit 1
     dir="$(main_checkout)" || dir="$top"
-    (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach) || die 1 "the supervisor did not start"
-    exec bash "$root/scripts/board-web.sh" --repo "$top" "$@" ;;
+    # Only a supervisor that up itself started is drained when up is stopped.
+    owned=1
+    (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1) && owned=0
+    (cd "$dir" && bash "$sroot/scripts/supervisor.sh" start --detach); src=$?
+    if [ "$src" -eq 4 ]; then
+      # Stuck cards block the supervisor; the board is where the user releases them.
+      printf 'fleet-board: fleet-board supervisor stuck: stuck cards block the supervisor; release them on the board\n' >&2
+      owned=0
+    elif [ "$src" -ne 0 ]; then
+      # An already-running supervisor is fine: serve the board against it.
+      (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1) || die 1 "the supervisor did not start"
+      owned=0
+    fi
+    # Serve in the background so SIGINT, SIGTERM and SIGHUP reach this shell: stop
+    # serving, ask an owned supervisor to drain, and exit once it is not running.
+    got_signal=0
+    bash "$root/scripts/board-web.sh" --repo "$top" "$@" &
+    bpid=$!
+    trap 'got_signal=1' INT TERM HUP
+    wait "$bpid"; brc=$?
+    if [ "$got_signal" -eq 0 ]; then
+      # The board server exited on its own (for example the port is in use): drain
+      # a supervisor up started, so no command is left owning it, and keep the code.
+      trap - INT TERM HUP
+      if [ "$owned" -eq 1 ]; then
+        (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --drain >/dev/null 2>&1)
+        while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do sleep 0.2; done
+      fi
+      exit "$brc"
+    fi
+    kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+    if [ "$owned" -eq 1 ]; then
+      printf 'fleet-board: draining the supervisor; waiting for it to exit (Ctrl-C again to cancel)\n'
+      # A second SIGINT during the drain cancels instead of waiting.
+      cancel_req=0; cancel_sent=0
+      trap 'cancel_req=1' INT
+      (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --drain >/dev/null 2>&1)
+      while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do
+        if [ "$cancel_req" -eq 1 ] && [ "$cancel_sent" -eq 0 ]; then
+          cancel_sent=1
+          printf 'fleet-board: cancelling the supervisor\n'
+          (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --cancel >/dev/null 2>&1)
+        fi
+        sleep 0.2
+      done
+    fi
+    exit 0 ;;
   supervisor)
     root="$(plugin_root supervisor.sh)" || exit 1
     handoff "$root" "$cmd" "$@"
