@@ -50,7 +50,7 @@ printf '%s\037' "$@" | tr '\n' '\036' >> "$ARGV_LOG"; echo >> "$ARGV_LOG"
 while [ -e "$HOLD" ]; do sleep 0.1; done
 printf '{"type":"system","session_id":"sess-%d"}\n' "$n"
 printf '{"type":"assistant","session_id":"sess-%d","message":{"content":[{"type":"text","text":"reply %d"}]}}\n' "$n" "$n"
-printf '{"type":"result","session_id":"sess-%d","result":"reply %d"}\n' "$n" "$n"
+printf '{"type":"result","session_id":"sess-%d","result":"reply %d","usage":{"input_tokens":11,"output_tokens":5,"cache_creation_input_tokens":3,"cache_read_input_tokens":2}}\n' "$n" "$n"
 EOF
 chmod +x "$FAKE_CLAUDE"
 export FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" ARGV_LOG HOLD
@@ -156,6 +156,38 @@ assert_code 404 "POST unknown id"
 echo "Case: the first turn's board context carries the real card data"
 first_argv="$(sed -n 1p "$ARGV_LOG" | tr '\037' '\n')"
 case "$first_argv" in *'"title": "Context card"'*) pass "argv board context holds the created card's title" ;; *) fail "argv board context holds the created card's title" "$first_argv" ;; esac
+
+echo "Case: each planner turn adds one planner line to the token ledger, never a card total"
+LEDGER="$REPO/.fleet-board/usage.jsonl"
+if [ "$(wc -l < "$LEDGER" 2>/dev/null | tr -d ' ')" = 3 ]; then pass "three turns, three ledger lines"; else fail "three turns, three ledger lines" "ledger: $(cat "$LEDGER" 2>/dev/null)"; fi
+first="$(sed -n 1p "$LEDGER" 2>/dev/null)"
+for f in '.kind=="planner"' '.started_at!=null and .started_at<=.ended_at' '.card==null' '.column==null' '.action=="planner"' '.role==null' '.provider=="claude"' \
+         '.input==11' '.output==5' '.cache_write==3' '.cache_read==2'; do
+  if printf '%s' "$first" | jq -e "$f" >/dev/null 2>&1; then pass "planner line: $f"; else fail "planner line: $f" "$first"; fi
+done
+USAGE_JSON="$(FLEET_BOARD_DOMAIN="$REPO" FLEET_BOARD_SUPERVISOR_SOCKET="$TMP/no-such.sock" bash "$SCRIPTS/supervisor.sh" usage --json 2>&1)"
+if printf '%s' "$USAGE_JSON" | jq -e '.planner.input==33 and .planner.output==15 and .all_time.total==0' >/dev/null 2>&1; then pass "supervisor usage shows planner tokens apart from card totals"; else fail "supervisor usage shows planner tokens apart from card totals" "$USAGE_JSON"; fi
+
+echo "Case: a stuck ledger lock never leaves the conversation still replying"
+python3 - "$LEDGER.lock" "$TMP/unlock" <<'PY' &
+import fcntl, os, sys, time
+fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+open(sys.argv[1] + ".held", "w").close()
+while not os.path.exists(sys.argv[2]):
+    time.sleep(0.05)
+PY
+HOLDER=$!
+for _ in $(seq 1 50); do [ -e "$LEDGER.lock.held" ] && break; sleep 0.1; done
+api POST /api/planner/conv1/messages '{"text":"fourth question"}'
+assert_code 200 "message accepted while the ledger lock is held"
+wait_idle conv1
+assert_body "conversation is not still replying" '.running' 'false'
+assert_body "the reply is posted" '.turns[-1].text' 'reply 4'
+touch "$TMP/unlock"
+wait "$HOLDER" 2>/dev/null
+for _ in $(seq 1 50); do [ "$(wc -l < "$LEDGER" | tr -d ' ')" = 4 ] && break; sleep 0.1; done
+if [ "$(wc -l < "$LEDGER" | tr -d ' ')" = 4 ]; then pass "the usage line lands once the lock is released"; else fail "the usage line lands once the lock is released" "ledger: $(cat "$LEDGER")"; fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

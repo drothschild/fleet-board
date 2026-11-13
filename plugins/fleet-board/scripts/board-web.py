@@ -10,7 +10,7 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 `listening on http://127.0.0.1:<port>`; requests are logged to stderr.
 
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
-FLEET_BOARD_RUN (headless wrapper override), FLEET_BOARD_CLAUDE (the claude binary the
+FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
 session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one).
@@ -18,6 +18,7 @@ the import id instead of a generated one).
 from __future__ import annotations
 
 import argparse
+import copy
 import errno
 import getpass
 import json
@@ -31,7 +32,6 @@ import tempfile
 import threading
 import time
 import traceback
-from collections import deque
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -45,6 +45,9 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 from supervisor import launcher as supervisor_launcher
 from supervisor import paths as supervisor_paths
+from supervisor import roles as supervisor_roles
+from supervisor import stuck as supervisor_stuck
+from supervisor import usage as supervisor_usage
 from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
@@ -237,22 +240,7 @@ def is_active(dir: Path, n, alive: bool) -> bool:
     return alive and (Path(dir) / "active" / str(n)).exists()
 
 
-# --- run state ----------------------------------------------------------------
-
-STOP_FILE = ".fleet-board.stop"
-STOPPED_RE = re.compile(
-    r"^fleet-board-run: stopped: (.+?) after \d+ ticks, ([0-9.]+) h, cost_estimate_usd (\S+)",
-    re.M,
-)
-LOG_RE = re.compile(r"^fleet-board-run: log: (.+)$", re.M)
-TICK_RE = re.compile(r"^=== tick (\d+)\b")
-LOG_TAIL_LINES = 200
-
-# proc: the Popen this server spawned (kept so it is reaped); alive: the last
-# observed liveness (None before the first look); holder: the live wrapper's pid.
-_RUN: dict = {"proc": None, "alive": None, "holder": None}
-_RUN_LOCK = threading.RLock()
-
+# --- runtime state -------------------------------------------------------------
 
 def state_dir(root: str, cfg: dict) -> Path:
     """<FLEET_BOARD_LOG_DIR or ~/.fleet-board>/web/<owner>-<name>/, created mode 700."""
@@ -272,31 +260,11 @@ def read_text(path: Path) -> str:
 
 
 def run_lock_path(cfg: dict) -> Path:
-    """The wrapper's run lock, <FLEET_BOARD_LOG_DIR or ~/.fleet-board/runs>/<owner>-<name>.lock."""
+    """The supervisor's repository run lock, <FLEET_BOARD_LOG_DIR or ~/.fleet-board/runs>/<owner>-<name>.lock
+    (supervisor/service.py's default_run_lock_path)."""
     base = os.environ.get("FLEET_BOARD_LOG_DIR") or os.path.join(os.path.expanduser("~"), ".fleet-board", "runs")
     repo = (cfg.get("board") or {}).get("repo") or os.path.basename(APP["root"])
     return Path(os.path.abspath(base)) / (repo.replace("/", "-") + ".lock")
-
-
-def read_pid_file(sdir: Path):
-    """(pid or None, recorded start time or ""). run.pid: line 1 the pid, line 2 its ps lstart."""
-    return read_pid_path(sdir / "run.pid")
-
-
-def read_pid_path(path: Path):
-    """(pid or None, start time or "") from a run.pid-shaped file (the page's, or the wrapper's lock)."""
-    lines = read_text(path).split("\n")
-    try:
-        pid = int(lines[0].strip())
-    except ValueError:
-        return None, ""
-    if pid <= 0:
-        return None, ""
-    return pid, (lines[1].strip() if len(lines) > 1 else "")
-
-
-def read_pid(sdir: Path):
-    return read_pid_file(sdir)[0]
 
 
 def ps_start(pid: int):
@@ -312,10 +280,7 @@ def ps_start(pid: int):
 
 
 def pid_alive(pid: int, started: str = "") -> bool:
-    """Whether pid is our wrapper: the server's own child, else a live pid with the recorded start time."""
-    proc = _RUN["proc"]
-    if proc is not None and proc.pid == pid:
-        return proc.poll() is None
+    """Whether pid is a live process with the recorded start time (an import session this server started)."""
     if started:
         now = ps_start(pid)
         if now is not None and now != started:
@@ -329,138 +294,21 @@ def pid_alive(pid: int, started: str = "") -> bool:
     return True
 
 
-def clear_markers(dir: Path):
-    try:
-        entries = list((Path(dir) / "active").iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        try:
-            if entry.is_file() or entry.is_symlink():
-                entry.unlink()
-        except OSError:
-            pass
+_UNSET = object()  # "the caller did not read the supervisor status"
 
 
-def run_alive() -> bool:
-    """Whether a wrapper is alive: the one this page started (run.pid), else any wrapper
-    holding the repo's run lock (one started from a terminal or launchd). Sets
-    _RUN["holder"] to the live wrapper's pid. The first look after it died clears the markers."""
-    cfg, dir = ctx()
-    if supervisor_enabled(cfg):
-        status = supervisor_snapshot()
-        return (not status.get("unreachable") and status.get("phase") in ("running", "ready")
-                and status.get("desired_mode") == "running")
-    with _RUN_LOCK:
-        pid, started = read_pid_file(state_dir(APP["root"], cfg))
-        alive = pid is not None and pid_alive(pid, started)
-        if not alive:
-            pid, started = read_pid_path(run_lock_path(cfg))
-            alive = pid is not None and bool(started) and pid_alive(pid, started)
-        if _RUN["alive"] and not alive:
-            clear_markers(dir)
-        _RUN["alive"] = alive
-        _RUN["holder"] = pid if alive else None
-        return alive
+def run_alive(status=_UNSET) -> bool:
+    """Whether a supervisor answers for this board and is running (not paused or stopping)."""
+    status = supervisor_status() if status is _UNSET else status
+    return status is not None and status.get("phase") in ("running", "ready") and status.get("desired_mode") == "running"
 
 
-_LOG_CACHE: dict = {}
-
-
-def scan_run_log(path: str):
-    """(last tick number or None, last LOG_TAIL_LINES lines) of the run log; rescanned only
-    when the file's size or mtime changed."""
-    try:
-        st = os.stat(path)
-        sig = (st.st_size, st.st_mtime_ns)
-    except OSError:
-        sig = None
-    hit = _LOG_CACHE.get(path)
-    if sig is not None and hit is not None and hit[0] == sig:
-        return hit[1], list(hit[2])
-    tick, tail = _scan_run_log(path)
-    if sig is not None:
-        _LOG_CACHE.clear()
-        _LOG_CACHE[path] = (sig, tick, tail)
-    return tick, tail
-
-
-def _scan_run_log(path: str):
-    tick, tail = None, deque(maxlen=LOG_TAIL_LINES)
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
-                line = line.rstrip("\n")
-                tail.append(line)
-                m = TICK_RE.match(line)
-                if m:
-                    tick = int(m.group(1))
-    except OSError:
-        pass
-    return tick, list(tail)
-
-
-def to_float(s: str):
-    try:
-        return float(s)
-    except ValueError:
-        return None
-
-
-def run_status(alive=None) -> dict:
-    """The run status; pass alive when the caller already checked liveness this request."""
-    cfg, _ = ctx()
-    if supervisor_enabled(cfg):
-        return supervisor_run_status(cfg)
-    sdir = state_dir(APP["root"], cfg)
-    if alive is None:
-        alive = run_alive()
-    pid = read_pid(sdir)
-    out = read_text(sdir / "run.out")
-    if alive:
-        if _RUN["holder"] and _RUN["holder"] != pid:
-            # a wrapper this page did not start: run.out describes an older run
-            pid, out = _RUN["holder"], ""
-        state = "stopping" if (Path(APP["root"]) / STOP_FILE).exists() else "running"
-    elif pid is None:
-        state = "idle"
-    else:
-        state = "stopped" if out.strip() else "idle"
-    log = LOG_RE.search(out)
-    log_path = log.group(1) if log else None
-    stops = STOPPED_RE.findall(out)
-    tick, tail = scan_run_log(log_path) if log_path else (None, [])
-    return {
-        "state": state,
-        "pid": pid,
-        "tick": tick,
-        "stop_reason": stops[-1][0] if stops else None,
-        "cost": to_float(stops[-1][2]) if stops else None,
-        "hours": to_float(stops[-1][1]) if stops else None,
-        "log_path": log_path,
-        "log_tail": tail,
-        "out_tail": out_tail(out) if state == "stopped" and not stops else None,
-    }
-
-
-OUT_TAIL_LINES = 20
-
-
-def out_tail(out: str) -> list:
-    """The first and last lines of run.out (at most OUT_TAIL_LINES): what a wrapper that
-    exited before its stopped: line printed, such as a config or run-lock error."""
-    lines = [line for line in out.split("\n") if line.strip()]
-    if len(lines) <= OUT_TAIL_LINES:
-        return lines
-    half = OUT_TAIL_LINES // 2
-    return lines[:half] + lines[-half:]
-
-
-def board_run_status(alive: bool) -> dict:
-    """run_status() without the log tail, for /api/board."""
-    status = run_status(alive)
-    del status["log_tail"]
-    return status
+def run_status(status=_UNSET) -> dict:
+    """The board's `run` field: the supervisor's projected state, else idle (no supervisor answers)."""
+    status = supervisor_status() if status is _UNSET else status
+    if status is not None:
+        return supervisor_run_status(status)
+    return {"state": "idle", "supervisor": None}
 
 
 # --- script runner ------------------------------------------------------------
@@ -653,6 +501,36 @@ def import_elapsed(idir: Path, running: bool) -> int:
     return max(0, int(end - start))
 
 
+def record_import_usage(idir: Path):
+    """Record a finished import-preview session's usage once: the first caller to create the marker wins. A
+    failed ledger append removes the marker so the next poll retries. Recording happens only when someone polls
+    the import after it ends (import_status): a finished import nobody polls is never recorded."""
+    stream = idir / "session.jsonl"
+    if not stream.exists():
+        return
+    marker = idir / "usage.recorded"
+    try:
+        fd = os.open(str(marker), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return
+    except OSError as exc:
+        print("warning: planner usage not recorded: %s" % exc, file=sys.stderr)
+        return
+    os.close(fd)
+    meta = read_json_file(idir / "meta.json") or {}
+    created = meta.get("created_at")
+    try:
+        ended = datetime.fromtimestamp(stream.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except OSError:
+        ended = None
+    if not record_planner_usage("import_preview", stream, ended_at=ended,
+                                started_at=created if isinstance(created, str) else None):
+        try:
+            marker.unlink()
+        except OSError:
+            pass
+
+
 def import_status(id: str) -> dict:
     """running while the session lives; ready when cards.json parses; failed otherwise."""
     idir = import_dir(id)
@@ -672,6 +550,7 @@ def import_status(id: str) -> dict:
               "cards": None, "table": None, "error": None, "created": created}
     if running:
         return status
+    record_import_usage(idir)
     cards = read_json_file(idir / "cards.json")
     if cards is None:
         status.update(state="failed", error=session_error(idir, rc))
@@ -805,7 +684,27 @@ def session_id_of(path: Path) -> str:
     return found
 
 
-def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path):
+def record_planner_usage(action: str, stream_path: Path, ended_at: str = None, started_at: str = None) -> bool:
+    """One planner-kind ledger line for a finished planner or import-preview session. Tokens come from the
+    session's result event (unreadable counts stay unknown). A ledger failure is logged, never raised; the return
+    value says whether the line was appended."""
+    try:
+        cfg, _ = ctx()
+        _text, use, _err, _sub, _sid, _mode = supervisor_roles.parse_stream(stream_path)
+        supervisor_usage.append(APP["root"], {
+            "run_id": None, "card": None, "kind": "planner", "column": None, "action": action, "role": None,
+            "provider": "claude", "model": use.model, "input": use.input, "output": use.output,
+            "cache_write": use.cache_write, "cache_read": use.cache_read, "started_at": started_at,
+            "ended_at": ended_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "log": str(stream_path),
+        }, (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR)
+        return True
+    except Exception as exc:  # noqa: BLE001 - usage accounting must never break a planner reply
+        print("warning: planner usage not recorded: %s" % exc, file=sys.stderr)
+        return False
+
+
+def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, started_at: str = None):
     rc = proc.wait()
     reply = last_session_text(out_path)
     if rc != 0 and not reply:
@@ -821,6 +720,8 @@ def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Pat
             meta["session_id"] = sid
             write_private_atomic(pdir / "meta.json", json.dumps(meta))
         _PLANNER_BUSY.discard(id)
+    # last: a ledger append that blocks (a stuck lock) must never leave the conversation "still replying"
+    record_planner_usage("planner", out_path, started_at=started_at)
 
 
 def send_planner_message(id: str, text: str):
@@ -847,6 +748,7 @@ def send_planner_message(id: str, text: str):
         argv.append(prompt)
         n = len(read_turns(pdir))
         out_path, err_path = pdir / ("reply-%d.jsonl" % n), pdir / ("reply-%d.err" % n)
+        started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
             ofd = os.open(str(out_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             efd = os.open(str(err_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -859,7 +761,7 @@ def send_planner_message(id: str, text: str):
         turns.append({"role": "user", "text": text})
         write_private_atomic(pdir / "transcript.json", json.dumps(turns))
         _PLANNER_BUSY.add(id)
-        threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path),
+        threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path, started_at),
                          daemon=True).start()
 
 
@@ -1043,15 +945,20 @@ def board_context(cache: dict = None) -> list:
 
 def get_board(params, body):
     cfg, dir = ctx()
-    alive = run_alive()  # one liveness check per request
+    status = supervisor_status()  # read once: liveness, run state, activity and stuck all agree
+    alive = run_alive(status)
     cards = read_cards(dir)
     state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
     keys = [s["key"] for s in sts]
+    run = run_status(status)
+    stuck_of, activity = board_extras(status, run, refresh=wants_stuck_refresh(params))
     return 200, {
         "states": sts,
-        "cards": [card_summary(cfg, dir, c, alive, state_of, keys) for c in cards],
-        "run": board_run_status(alive),
+        "cards": [dict(card_summary(cfg, dir, c, alive, state_of, keys),
+                       stuck=stuck_of.get(c.get("number")), activity=activity.get(c.get("number")))
+                  for c in cards],
+        "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
     }
 
@@ -1241,70 +1148,54 @@ def comment_card(params, body):
     return 200, card_detail(cfg, dir, n)
 
 
-def get_run(params, body):
-    return 200, run_status()
+SUPERVISOR_PROBE_TIMEOUT = 1.0
 
 
-def compat_run_control(command, body):
-    """/api/run/start and /api/run/stop in supervisor mode.
+def supervisor_running():
+    """True when this board's supervisor socket answers `status` within a second (an error reply
+    from the service counts: it is alive).
 
-    A body with request_id and expected_revision is enforced exactly like the new routes
-    (replay dedupes, a stale revision is a 409 with the current state). With no body the
-    route derives its own binding (Start and drain-stop are idempotent by design) and the
-    answer says unbound: true."""
-    if not body:
-        launched = ensure_service() if command == "start" else False
-        body = {"request_id": "compat-%s-%d" % (command, time.time_ns()),
-                "expected_revision": proxy_call("status").get("revision", 0)}
-        code, result = proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
-        return code, dict(result, unbound=True, **({"launched": True} if launched else {}))
-    return proxy_control(command, dict(body, mode="drain") if command == "stop" else body)
+    There is no configuration switch: a supervisor someone started (`supervisor start`) is the
+    only thing that makes the board supervisor-capable. Nothing is created or launched here."""
+    domain_id = supervisor_domain_id()
+    if domain_id is None and not os.environ.get("FLEET_BOARD_SUPERVISOR_SOCKET"):
+        return False
+    try:
+        path = webproxy.socket_path(domain_id)
+    except (OSError, ValueError, RuntimeError):
+        return False
+    box = {}
 
-
-def start_run(params, body):
-    cfg, dir = ctx()
-    if supervisor_enabled(cfg):
-        return compat_run_control("start", body)
-    sdir = state_dir(APP["root"], cfg)
-    wrapper = os.environ.get("FLEET_BOARD_RUN") or script("fleet-board-run.sh")
-    with _RUN_LOCK:
-        if run_alive():
-            raise ApiError(409, "a run is already alive (pid %s)" % _RUN["holder"])
+    def ask():
         try:
-            os.remove(os.path.join(APP["root"], STOP_FILE))
-        except FileNotFoundError:
-            pass
-        clear_markers(dir)
-        fd = os.open(str(sdir / "run.out"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb") as out:
-            proc = subprocess.Popen(
-                ["bash", wrapper, "--repo", APP["root"]], cwd=APP["root"],
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        pfd = os.open(str(sdir / "run.pid"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        os.fchmod(pfd, 0o600)
-        with os.fdopen(pfd, "w") as f:
-            f.write("%d\n%s\n" % (proc.pid, ps_start(proc.pid) or ""))
-        _RUN["proc"] = proc
-        _RUN["alive"] = True
-    return 200, {"pid": proc.pid}
+            box["answered"] = isinstance(webproxy.request(path, {"command": "status"}), dict)
+        except RuntimeError:
+            box["answered"] = True  # the service replied with an error envelope: it is alive
+        except Exception:
+            box["answered"] = False
+
+    thread = threading.Thread(target=ask, daemon=True)
+    thread.start()
+    thread.join(SUPERVISOR_PROBE_TIMEOUT)
+    return box.get("answered") is True
 
 
-def stop_run(params, body):
-    cfg, _ = ctx()
-    if supervisor_enabled(cfg):
-        return compat_run_control("stop", body)
-    with _RUN_LOCK:
-        if not run_alive():
-            raise ApiError(409, "no run is alive")
-        Path(APP["root"], STOP_FILE).touch()
-    return 200, {"state": "stopping"}
+def supervisor_status():
+    """The page-shaped status of the supervisor that answers for this board, else None (also when it
+    exits between the liveness probe and the status read)."""
+    if not supervisor_running():
+        return None
+    try:
+        return proxy_call("status")
+    except ApiError as exc:
+        if exc.code != 503:
+            raise
+        return None
 
 
-def supervisor_enabled(cfg):
-    return (cfg.get("supervisor") or {}).get("enabled") is True
+def supervisor_stopping(status):
+    """True when a status reply says the supervisor is on its way out."""
+    return isinstance(status, dict) and (status.get("mode") == "stopping" or status.get("phase") == "stopping")
 
 
 def supervisor_domain_id():
@@ -1323,7 +1214,7 @@ def supervisor_domain_id():
 
 
 # One status per service error code (the service classifies by exception type, never by text).
-SUPERVISOR_ERROR_STATUS = {"invalid": 400, "uncertain_writer": 409, "disabled": 409,
+SUPERVISOR_ERROR_STATUS = {"invalid": 400,
                            "unauthenticated": 403, "unavailable": 503, "internal": 500}
 
 
@@ -1352,6 +1243,7 @@ def proxy_call(command, body=None, **extra):
                     current = webproxy.request(webproxy.socket_path(domain_id), {"command": "status"})
                 except Exception:
                     current = None
+            current = webproxy.ui_status(current)
             raise ApiError(409, msg, {"current": current, "code": code})
         if code in SUPERVISOR_ERROR_STATUS:
             # Internal detail never reaches the browser: the service already redacted it.
@@ -1359,52 +1251,57 @@ def proxy_call(command, body=None, **extra):
                            "internal error" if code == "internal" else msg, {"code": code})
         raise ApiError(503, "supervisor unavailable: " + msg, {"code": "unavailable"})
     if command == "status":
-        webproxy.remember(domain_id, result)
+        result = webproxy.ui_status(result)
     return result
 
 
 _LAUNCH_LOCK = threading.Lock()
 
 
-def ensure_service():
-    """Make sure a service answers for this board; True when this call launched it.
+START_STOP_WAIT = 5.0  # how long Start waits for a stopping supervisor to go away
 
-    This is the stopped-state lifecycle adapter path: a missing service is started through the
-    shared launcher (never by editing job tables) and we wait for its readiness before the
-    caller proxies the command. A failure is a 503 with a reason and leaves nothing running."""
-    def answers():
+
+def ensure_service():
+    """Make sure a live, not-stopping supervisor answers for this board; True when this call
+    launched one.
+
+    A supervisor whose status says it is stopping counts as not running: Start waits (bounded)
+    for it to go away and then launches a new one through the shared launcher, so a Start right
+    after a Stop never reports an exiting supervisor as running. A failure is a 503 with a
+    reason and leaves nothing half-started."""
+    def read():
         try:
-            proxy_call("status")
-            return True
+            return proxy_call("status")
         except ApiError as exc:
             if exc.code != 503:
                 raise
-            return False
-    if answers():
+            return None
+
+    def live():
+        status = read()
+        return status is not None and not supervisor_stopping(status)
+
+    if live():
         return False
     with _LAUNCH_LOCK:
-        if answers():  # another request launched it while we waited for the lock
+        if live():  # another request launched it while we waited for the lock
             return False
+        if supervisor_stopping(read()) and not supervisor_launcher.wait_until(
+                lambda: read() is None, timeout=START_STOP_WAIT):
+            raise ApiError(503, "supervisor is still stopping; try Start again in a moment",
+                           {"code": "unavailable"})
         try:
-            supervisor_launcher.launch_service(APP["root"])
+            supervisor_launcher.launch_detached(APP["root"], supervisor_paths.log_dir() / "supervisor.log")
         except (supervisor_launcher.LaunchError, OSError, ValueError) as exc:
+            # A CLI start won the run lock between the probe and the launch: that one runs. Its socket may
+            # take a moment to answer after our child lost the lock (exit 1), so wait briefly for it.
+            if live() or (getattr(exc, "exit_code", None) == 1 and supervisor_launcher.wait_until(live, timeout=2.0)):
+                return False
             raise ApiError(503, "supervisor could not be started: %s" % str(exc)[:300], {"code": "launch_failed"})
-        if not supervisor_launcher.wait_until(answers, timeout=5.0):
+        if not supervisor_launcher.wait_until(live, timeout=5.0):
             raise ApiError(503, "supervisor could not be started: it reported ready but did not answer",
                            {"code": "launch_failed"})
     return True
-
-
-def remember_stopped(result):
-    """A Stop that ended the service leaves nothing listening: remember that it stopped, so the
-    next unreachable answer reads as a deliberate stop and not as an outage."""
-    domain_id = supervisor_domain_id()
-    prior = webproxy.last(domain_id)
-    known = dict(prior[1]) if prior and isinstance(prior[1], dict) else {}
-    known.update({"desired_mode": "stopped", "phase": "stopped", "ready": False, "shutdown": "resolved"})
-    if isinstance(result.get("state_revision"), int):
-        known["revision"] = result["state_revision"]
-    webproxy.remember(domain_id, known)
 
 
 def proxy_control(command, body):
@@ -1414,45 +1311,25 @@ def proxy_control(command, body):
         raise ApiError(400, "request_id and integer expected_revision are required")
     if command == "stop":
         body.setdefault("mode", "drain")
-    launched = False
-    if command == "start" and ensure_service():
-        # The client could not have seen the revision of a service that was not running: bind
-        # the Start to the fresh one. The request id stays the caller's, so a retry dedupes.
-        launched = True
-        body = dict(body, expected_revision=proxy_call("status").get("revision", 0))
-    result = proxy_call(command, body)
-    if command == "stop" and isinstance(result, dict) and result.get("terminated") is True:
-        remember_stopped(result)
-    return 202, (dict(result, launched=True) if launched and isinstance(result, dict) else result)
+    if command == "start":
+        # Start means "a supervisor is running": launch it when nothing answers. The running
+        # supervisor has no start command, so a Start never changes its state.
+        launched = ensure_service()
+        status = proxy_call("status")
+        resumed = False
+        if not launched and status.get("mode") == "paused":
+            # Start on a paused supervisor is a resume, bound exactly like the Resume button.
+            proxy_call("resume", {"request_id": body["request_id"], "expected_revision": body["expected_revision"]})
+            status, resumed = proxy_call("status"), True
+        result = {"command_id": body["request_id"], "state_revision": status.get("revision"),
+                  "desired_mode": status.get("desired_mode"), "phase": status.get("phase")}
+        if resumed:
+            result["resumed"] = True
+        return 202, (dict(result, launched=True) if launched else result)
+    return 202, proxy_call(command, body)
 
 
-def supervisor_snapshot():
-    domain_id = supervisor_domain_id()
-    try:
-        state = proxy_call("status")
-        return dict(state, unreachable=False)
-    except ApiError as exc:
-        if exc.code != 503:
-            raise
-        prior = webproxy.last(domain_id)
-        known = prior[1] if prior else None
-        return {"schema_version": None, "ready": None, "read_only": True, "desired_mode": None,
-                "phase": None, "revision": None, "host_boot_id": None,
-                "execution_available": False, "shutdown": None,
-                "heartbeat": None, "session": None, "capacity": None, "queue": None,
-                "config": None, "boot_registration": None, "last_error": None, "claims": None,
-                "unreachable": True, "last_known": known,
-                "last_known_at": prior[0] if prior else None, "occupancy": None}
-
-
-def supervisor_run_status(cfg):
-    status = supervisor_snapshot()
-    if status.get("unreachable"):
-        known = status.get("last_known") if isinstance(status.get("last_known"), dict) else {}
-        stopped = known.get("phase") == "stopped" and known.get("ready") is False
-        return {"state": "stopped" if stopped else "unreachable", "supervisor": status, "pid": None,
-                "tick": None, "stop_reason": None, "cost": None, "hours": None,
-                "log_path": None, "log_tail": [], "out_tail": None}
+def supervisor_run_status(status):
     phase = status.get("phase", "unknown")
     ready = status.get("ready") is True
     desired = status.get("desired_mode")
@@ -1462,69 +1339,195 @@ def supervisor_run_status(cfg):
              "stopping" if phase in ("draining", "cancelling", "stopping") else
              "starting" if desired == "running" and not ready else
              "stopped" if phase in ("stopped", "idle") else phase)
-    return {"state": state, "pid": None, "tick": None, "stop_reason": None,
-            "cost": None, "hours": None, "log_path": None, "log_tail": [],
-            "out_tail": None, "supervisor": status}
+    return {"state": state, "supervisor": status}
 
 
-def require_supervisor_mode():
-    """The supervisor API exists only when supervisor.enabled is true; a legacy board answers 404."""
+_USAGE_CACHE = {}  # (root, board dir, run_id, card) -> (ledger stat, view): an unchanged ledger is not reparsed
+_USAGE_LOCK = threading.Lock()
+
+
+def usage_view(run_id=None, card=None):
+    """The usage ledger's answer (read here, never through the supervisor); tokens only. Cached on the
+    ledger's (size, mtime), so a poll of an unchanged ledger does not reparse it."""
     cfg, _ = ctx()
-    if not supervisor_enabled(cfg):
-        raise ApiError(404, "not found")
+    board_dir = (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR
+    try:
+        info = os.stat(str(supervisor_usage.ledger_path(APP["root"], board_dir)))
+        stat_key = (info.st_size, info.st_mtime_ns, info.st_ino)
+    except OSError:
+        stat_key = None
+    key = (APP["root"], board_dir, run_id, card)
+    with _USAGE_LOCK:
+        hit = _USAGE_CACHE.get(key)
+    if hit is not None and stat_key is not None and hit[0] == stat_key:
+        return copy.deepcopy(hit[1])
+    try:
+        result = supervisor_usage.view(APP["root"], board_dir, card=card, run_id=run_id)
+    except ValueError as exc:
+        raise ApiError(400, str(exc)[:200])
+    except OSError as exc:
+        raise ApiError(500, "usage ledger unreadable: %s" % str(exc)[:200])
+    if stat_key is not None:
+        with _USAGE_LOCK:
+            if len(_USAGE_CACHE) >= 64:
+                _USAGE_CACHE.clear()
+            _USAGE_CACHE[key] = (stat_key, copy.deepcopy(result))
+    return result
 
 
 def get_supervisor(params, body):
-    require_supervisor_mode()
-    return 200, supervisor_snapshot()
+    status = supervisor_status()
+    if status is None:
+        try:
+            return 200, dict(usage_view(), running=False)
+        except ApiError as exc:  # an unreadable ledger is unknown, never 0
+            return 200, {"running": False, "run": None, "all_time": None, "planner": None, "error": exc.msg}
+    return 200, dict(status, running=True)
 
 
 def supervisor_command(params, body):
-    require_supervisor_mode()
-    return proxy_control(params["action"], body)
-
-
-def supervisor_events(params, body):
-    require_supervisor_mode()
-    query = params.get("query", {})
-    try:
-        after = int(query.get("after", ["0"])[0])
-        limit = int(query.get("limit", ["100"])[0])
-    except ValueError:
-        raise ApiError(400, "invalid event cursor or limit")
-    if after < 0 or not 1 <= limit <= 500:
-        raise ApiError(400, "invalid event cursor or limit")
-    return 200, proxy_call("events", extra={}, after=after, limit=limit)
-
-
-def card_execution(params, body):
-    require_supervisor_mode()
-    return 200, proxy_call("card_execution", card=params["n"])
-
-
-def card_execution_log(params, body):
-    require_supervisor_mode()
-    log_id = params.get("log_id", "")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,200}", log_id) or ".." in log_id:
-        raise ApiError(400, "invalid log id")
-    try:
-        return 200, proxy_call("card_log", card=params["n"], log_id=log_id)
-    except ApiError as exc:
-        if exc.code in (400, 404, 409):
-            raise ApiError(404 if "not found" in str(exc) else 400, "log not found" if "not found" in str(exc) else "invalid log id")
-        raise
-
-
-def card_control(params, body):
-    require_supervisor_mode()
     action = params["action"]
-    if action == "pause": command = "card_pause"
-    elif action == "resume": command = "card_resume"
-    elif action == "release-reservations": command = "release_reservations"
-    else: command = "resolve"
-    if not isinstance(body.get("request_id"), str) or not body.get("request_id") or type(body.get("expected_revision")) is not int:
-        raise ApiError(400, "request_id and integer expected_revision are required")
-    return 202, proxy_call(command, body, card=params["n"])
+    if "actor" in body:
+        raise ApiError(400, "actor must come from authenticated peer")
+    if action != "start" and not supervisor_running():
+        raise ApiError(409, "no supervisor is running", {"code": "not_running"})
+    return proxy_control(action, body)
+
+
+def get_usage(params, body):
+    status = supervisor_status()
+    return 200, usage_view(run_id=status.get("run_id") if status else None)
+
+
+def get_card_usage(params, body):
+    return 200, usage_view(card=params["n"])
+
+
+STUCK_MIN_INTERVAL = 30.0  # seconds: a stuck scan of a large board takes seconds and shells out per card
+_STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None}
+_STUCK_LOCK = threading.Lock()
+
+
+def stuck_interval():
+    """How long a stuck result is reused: the longer of 30 s and twice the last scan's duration."""
+    return max(STUCK_MIN_INTERVAL, 2.0 * _STUCK["duration"])
+
+
+def _mtime_ns(path):
+    try:
+        return os.stat(str(path)).st_mtime_ns
+    except OSError:
+        return None
+
+
+def stuck_stamp(board_dir):
+    """(cards dir mtime, active markers dir mtime): a card moved, created or released changes it."""
+    if board_dir is None:
+        return None
+    return (_mtime_ns(Path(board_dir) / "cards"), _mtime_ns(Path(board_dir) / "active"))
+
+
+def _refresh_stuck(stamp):
+    """The one background refresher: runs stuck.find (read-only) and writes the cache."""
+    began = time.monotonic()
+    try:
+        try:
+            found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
+                            for x in supervisor_stuck.find(APP["root"])], None
+        except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
+            found, error = None, str(exc)[:300] or exc.__class__.__name__
+        with _STUCK_LOCK:
+            if found is None:
+                found = _STUCK["found"]  # keep the last good result (None while there is none)
+            _STUCK.update(at=time.time(), mono=time.monotonic(), found=found, error=error,
+                          duration=time.monotonic() - began, stamp=stamp)
+    finally:
+        with _STUCK_LOCK:
+            _STUCK["running"] = False  # whatever happened, a later request may start another refresher
+
+
+def stuck_state(board_dir, refresh=True):
+    """{findings, checked_at, error, checking, known} with no supervisor running, answered at once from the cache.
+
+    Never computes on the calling thread. A refresh starts only when a caller asks for one (a poll from a
+    visible tab), no page-initiated launch is in flight, no refresher runs, and the result is due: none yet,
+    older than stuck_interval(), or the cards or active markers directory changed since it was taken.
+    findings is None (known false) until a check has succeeded."""
+    stamp = stuck_stamp(board_dir)
+    with _STUCK_LOCK:
+        due = (_STUCK["at"] is None or (stamp is not None and stamp != _STUCK["stamp"])
+               or time.monotonic() - _STUCK["mono"] >= stuck_interval())
+        if refresh and due and not _STUCK["running"] and not _LAUNCH_LOCK.locked():
+            _STUCK["running"] = True
+            try:
+                threading.Thread(target=_refresh_stuck, args=(stamp,), daemon=True).start()
+            except BaseException:
+                _STUCK["running"] = False  # the thread never ran: nothing would ever clear the flag
+                raise
+        found = _STUCK["found"]
+        return {"findings": None if found is None else [dict(i) for i in found],
+                "checked_at": _STUCK["at"], "error": _STUCK["error"],
+                "checking": _STUCK["running"] or _STUCK["at"] is None, "known": found is not None}
+
+
+def stuck_suppressed(status):
+    """A notice when a live process holds the repository run lock without answering here as the supervisor (a
+    supervisor of another checkout of this repository, or one behind another socket directory): its live work
+    would read as stuck (matches the CLI's notice), so stuck is suppressed. None otherwise."""
+    if status is not None:
+        return None
+    cfg, _ = ctx()
+    holder = supervisor_stuck.run_lock_holder(run_lock_path(cfg))
+    return ("a supervisor of another checkout holds the repository run lock (pid %d)" % holder
+            if holder is not None else None)
+
+
+def stuck_view(status, refresh=True):
+    """The /api/stuck answer for a supervisor status (None: none answers).
+
+    While a supervisor answers, the board never runs find(): the loop's own `stuck` command computes find()
+    on demand rather than returning a cached list, so there is no cheap, current answer to show, and cards
+    that wait for a slot, a reconcile or a resume are healthy. No card is stuck then."""
+    if status is not None:
+        return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": True,
+                "suppressed": None}
+    notice = stuck_suppressed(status)
+    if notice is not None:
+        return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": False,
+                "suppressed": notice}
+    _, board_dir = ctx()
+    return dict(stuck_state(board_dir, refresh=refresh), suppressed=None)
+
+
+def wants_stuck_refresh(params):
+    """False when the page asks for no stuck refresh (a hidden tab polls with refresh_stuck=0)."""
+    values = (params.get("query") or {}).get("refresh_stuck") or []
+    return not values or values[-1] != "0"
+
+
+def get_stuck(params, body):
+    return 200, stuck_view(supervisor_status(), refresh=wants_stuck_refresh(params))
+
+
+def board_extras(status, run, refresh=True):
+    """({card: {kind, detail}}, {card: {action, elapsed_seconds}}) for /api/board; also adds stuck_checked_at,
+    stuck_error, stuck_checking, stuck_known and stuck_suppressed to `run`. Stuck is null for every card while
+    a supervisor runs, no result exists, a check failed before any result, or a run holds the lock without
+    answering."""
+    view = stuck_view(status, refresh=refresh)
+    run.update(stuck_checked_at=view["checked_at"], stuck_error=view["error"], stuck_checking=view["checking"],
+               stuck_known=view["known"], stuck_suppressed=view["suppressed"])
+    stuck_of = {}
+    for item in view["findings"] or []:
+        stuck_of.setdefault(item["card"], {"kind": item["kind"], "detail": item["detail"]})
+    activity = {}
+    now = time.time()
+    for a in (status.get("active") if isinstance(status, dict) else None) or []:
+        if isinstance(a, dict) and is_int(a.get("card")):
+            began = a.get("started_at")
+            activity[a["card"]] = {"action": a.get("action"), "elapsed_seconds": (
+                max(0, int(now - began)) if isinstance(began, (int, float)) and not isinstance(began, bool) else None)}
+    return stuck_of, activity
 
 
 def post_planner(params, body):
@@ -1577,15 +1580,11 @@ ROUTES = [
     ("PATCH", r"/api/cards/(?P<n>\d+)", edit_card),
     ("POST", r"/api/cards/(?P<n>\d+)/move", move_card),
     ("POST", r"/api/cards/(?P<n>\d+)/comments", comment_card),
-    ("GET", r"/api/run", get_run),
-    ("POST", r"/api/run/start", start_run),
-    ("POST", r"/api/run/stop", stop_run),
     ("GET", r"/api/supervisor", get_supervisor),
+    ("GET", r"/api/usage", get_usage),
+    ("GET", r"/api/stuck", get_stuck),
+    ("GET", r"/api/cards/(?P<n>\d+)/usage", get_card_usage),
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
-    ("GET", r"/api/supervisor/events", supervisor_events),
-    ("GET", r"/api/cards/(?P<n>\d+)/execution", card_execution),
-    ("GET", r"/api/cards/(?P<n>\d+)/execution/log/(?P<log_id>[^/]+)", card_execution_log),
-    ("POST", r"/api/cards/(?P<n>\d+)/execution/(?P<action>pause|release-reservations|resolve|resume)", card_control),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/draft", post_planner_draft),
@@ -1595,7 +1594,6 @@ ROUTES = [
     ("POST", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/create", create_import_cards),
     ("PATCH", r"/api/import/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/cards/(?P<key>[A-Za-z0-9][A-Za-z0-9._-]*)", edit_import_card_route),
 ]
-NO_BODY = (start_run, stop_run)  # POST routes that take no JSON body
 PAGE_ROUTES = [r"/", r"/cards/\d+"]
 
 
@@ -1641,15 +1639,6 @@ def host_ok(handler) -> bool:
 
 MAX_BODY = 1024 * 1024
 REQUEST_TIMEOUT = 30  # seconds a handler waits on a silent client
-
-
-def read_optional_json_body(handler) -> dict:
-    """The JSON object body, or {} when the request has none (the compatibility routes)."""
-    try:
-        length = int(handler.headers.get("Content-Length") or 0)
-    except ValueError:
-        raise ApiError(400, "bad Content-Length")
-    return read_json_body(handler) if length > 0 else {}
 
 
 def read_json_body(handler) -> dict:
@@ -1728,10 +1717,8 @@ class Handler(BaseHTTPRequestHandler):
             if route is not None:
                 fn, params = route
                 params["query"] = parse_qs(urlsplit(self.path).query)
-                if method in ("POST", "PATCH") and fn not in NO_BODY:
+                if method in ("POST", "PATCH"):
                     body = read_json_body(self)
-                elif fn in NO_BODY and supervisor_enabled(ctx()[0]):
-                    body = read_optional_json_body(self)  # an optional {request_id, expected_revision}
                 else:
                     body = {}
                 code, payload = fn(params, body)

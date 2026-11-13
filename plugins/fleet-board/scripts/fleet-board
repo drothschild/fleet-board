@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# fleet-board command-line launcher
+#
+# Starts the board page or the supervisor from the plugin's current install, so
+# nobody needs the versioned install path. install-cli.sh copies this file to
+# ~/.local/bin/fleet-board (or $FLEET_BOARD_BIN_DIR); it finds the install on
+# every run, so plugin updates never break it.
+#
+# Usage:
+#   fleet-board board [board-web.sh args...]   serve the board page for this repo
+#   fleet-board supervisor <args...>           run supervisor.sh (start, status, stop, ...)
+#                                              from the repo root (the main checkout)
+#   fleet-board path                           print the plugin root in use
+#
+# Which install: $FLEET_BOARD_PLUGIN_ROOT when set; else the newest version in
+# ${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/installed_plugins.json whose directory
+# holds the script the subcommand runs. A prerelease (0.27.1-beta) sorts below
+# its release (0.27.1). Old per-project install records can point at versions
+# that predate a script, so the newest install wins rather than the one
+# registered for this repository; when they differ, one stderr line says so.
+#
+# When the chosen install ships a launcher that differs from this file, this
+# file runs that one instead, once, passing the chosen root in the private
+# FLEET_BOARD_LAUNCHER_HANDOFF (removed before anything else starts), so an
+# installed copy follows updates.
+#
+# Exit codes: 1 no install found, no install has the script, an unreadable
+# registry, or not in a git repository (board); 2 usage. Otherwise the exit code
+# of board-web.sh or supervisor.sh.
+
+set -uo pipefail
+unset CDPATH
+
+usage() {
+  cat <<'EOF'
+usage: fleet-board board [--port N]        serve the board page for the repo you are in
+       fleet-board supervisor <command>    start [--detach] | status | pause | resume |
+                                           stop [--drain|--cancel] | usage | stuck
+       fleet-board path                    print the fleet-board plugin directory in use
+EOF
+}
+
+die() { printf 'fleet-board: %s\n' "$2" >&2; exit "$1"; }
+
+# _vnum VAR FIELD: VAR gets FIELD as a number; an empty or non-numeric field is 0.
+_vnum() { case "$2" in ''|*[!0-9]*) printf -v "$1" 0 ;; *) printf -v "$1" '%s' "$((10#$2))" ;; esac; }
+
+# vgt A B: true when version A sorts strictly above B. The -suffix is dropped
+# before comparing the first three numeric fields; on a tie, no suffix wins.
+# The README's install one-liner orders versions the same way.
+vgt() {
+  local a="${1%%-*}" b="${2%%-*}" ra=1 rb=1 a1 a2 a3 b1 b2 b3 x y i
+  [ "$a" = "$1" ] || ra=0
+  [ "$b" = "$2" ] || rb=0
+  IFS=. read -r a1 a2 a3 _ <<< "$a"
+  IFS=. read -r b1 b2 b3 _ <<< "$b"
+  for i in 1 2 3; do
+    eval "_vnum x \"\$a$i\"; _vnum y \"\$b$i\""
+    [ "$x" -gt "$y" ] && return 0
+    [ "$x" -lt "$y" ] && return 1
+  done
+  [ "$ra" -gt "$rb" ]
+}
+
+# main_checkout: print the main checkout of the repository you are in (the parent
+# of the common git directory), or the worktree's top when that is not a plain
+# <checkout>/.git. Fails outside a repository.
+main_checkout() {
+  local top common
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$top" ] || return 1
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
+  case "$common" in /*) [ -d "$common" ] || common="" ;; *) common="" ;; esac
+  if [ -z "$common" ]; then
+    # git before 2.31 has no --path-format; its --git-common-dir may be relative.
+    common="$(git rev-parse --git-common-dir 2>/dev/null)" || common=""
+    if [ -n "$common" ]; then
+      common="$( (cd "$common" 2>/dev/null || cd "$top/$common" 2>/dev/null) && pwd -P)" || common=""
+    fi
+  fi
+  if [ -n "$common" ] && [ "${common##*/}" = .git ] && [ -d "${common%/*}" ]; then
+    printf '%s\n' "${common%/*}"
+  else
+    printf '%s\n' "$top"
+  fi
+}
+
+# A handoff passes the chosen root in FLEET_BOARD_LAUNCHER_HANDOFF. Read it once and
+# remove it from the environment, so nothing this launcher starts inherits it.
+HANDOFF_ROOT="${FLEET_BOARD_LAUNCHER_HANDOFF:-}"
+unset FLEET_BOARD_LAUNCHER_HANDOFF
+
+# plugin_root SCRIPT: print the plugin root to use. SCRIPT (under scripts/) must
+# exist there; empty means any root with a scripts/ directory.
+plugin_root() {
+  local need="$1" want
+  if [ -n "$need" ]; then want="scripts/$need"; else want="scripts"; fi
+  if [ -n "$HANDOFF_ROOT" ]; then
+    [ -e "$HANDOFF_ROOT/$want" ] || die 1 "the handed-off plugin root has no $want: $HANDOFF_ROOT"
+    printf '%s\n' "$HANDOFF_ROOT"; return
+  fi
+  if [ -n "${FLEET_BOARD_PLUGIN_ROOT:-}" ]; then
+    local r
+    r="$(cd "$FLEET_BOARD_PLUGIN_ROOT" 2>/dev/null && pwd)" || die 1 "FLEET_BOARD_PLUGIN_ROOT is not a directory: $FLEET_BOARD_PLUGIN_ROOT"
+    [ -e "$r/$want" ] || die 1 "FLEET_BOARD_PLUGIN_ROOT has no $want: $FLEET_BOARD_PLUGIN_ROOT"
+    printf '%s\n' "$r"; return
+  fi
+  local registry="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json"
+  local pick="" pick_ver="" any=0 list="" path ver scope proj
+  if [ -f "$registry" ]; then
+    command -v jq >/dev/null 2>&1 || die 1 "jq is required"
+    # Fields are joined with US (0x1f), which bash does not treat as IFS whitespace.
+    list="$(jq -r '(.plugins["fleet-board@fleet-board"] // [])
+                   | if type == "array" then .[] else . end
+                   | select(.version and .installPath)
+                   | [.installPath, .version, .scope // "", .projectPath // ""]
+                   | map(tostring | gsub("[\u001f\n]"; "")) | join("\u001f")' \
+              "$registry" 2>/dev/null)" || die 1 "cannot read $registry"
+  fi
+  while IFS=$'\x1f' read -r path ver scope proj; do
+    [ -n "$path" ] && [ -d "$path/scripts" ] || continue
+    any=1
+    [ -e "$path/$want" ] || continue
+    # >= so that, between equal versions, the later record wins (as in the README)
+    if [ -z "$pick" ] || ! vgt "$pick_ver" "$ver"; then pick="$path"; pick_ver="$ver"; fi
+  done <<< "$list"
+  if [ -z "$pick" ]; then
+    [ "$any" -eq 0 ] || die 1 "no installed fleet-board version has $need; update the plugin"
+    die 1 "the fleet-board plugin is not installed. In Claude Code run:
+  /plugin marketplace add drothschild/fleet-board
+  /plugin install fleet-board@fleet-board"
+  fi
+  # A project or local record for this repository at another version is not
+  # used; say so once.
+  local top main pin_ver="" pin_path="" pin_len=0 p
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
+  main="$(main_checkout 2>/dev/null)" || main=""
+  if [ -n "$top" ]; then
+    while IFS=$'\x1f' read -r path ver scope proj; do
+      case "$scope" in project|local) ;; *) continue ;; esac
+      [ -n "$proj" ] && [ -d "$path" ] || continue
+      p="$proj"; while [ "${#p}" -gt 1 ] && [ "${p%/}" != "$p" ]; do p="${p%/}"; done
+      case "$top/" in "$p"/*) ;; *) case "$main/" in "$p"/*) ;; *) continue ;; esac ;; esac
+      if [ "${#p}" -gt "$pin_len" ]; then pin_len="${#p}"; pin_ver="$ver"; pin_path="$path"; fi
+    done <<< "$list"
+  fi
+  if [ -n "$pin_ver" ] && [ "$pin_ver" != "$pick_ver" ]; then
+    if [ -e "$pin_path/$want" ]; then
+      printf 'fleet-board: using %s (%s); this repo is registered at %s — set FLEET_BOARD_PLUGIN_ROOT to pin it\n' \
+        "$pick_ver" "$pick" "$pin_ver" >&2
+    else
+      printf 'fleet-board: using %s (%s); this repo is registered at %s, which has no %s\n' \
+        "$pick_ver" "$pick" "$pin_ver" "$want" >&2
+    fi
+  fi
+  printf '%s\n' "$pick"
+}
+
+# handoff ROOT CMD ARGS...: run ROOT's launcher instead when it differs from this file.
+handoff() {
+  local root="$1"; shift
+  [ -z "$HANDOFF_ROOT" ] || return 0
+  [ -f "$root/scripts/fleet-board" ] || return 0
+  ! cmp -s "$root/scripts/fleet-board" "${BASH_SOURCE[0]}" || return 0
+  FLEET_BOARD_LAUNCHER_HANDOFF="$root" exec bash "$root/scripts/fleet-board" "$@"
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+cmd="$1"; shift
+case "$cmd" in
+  -h|--help|help) usage; exit 0 ;;
+  board)
+    top="$(git rev-parse --show-toplevel 2>/dev/null)" || die 1 "not inside a git repository; cd into the repo whose board you want"
+    root="$(plugin_root board-web.sh)" || exit 1
+    handoff "$root" "$cmd" "$@"
+    exec bash "$root/scripts/board-web.sh" --repo "$top" "$@" ;;
+  supervisor)
+    root="$(plugin_root supervisor.sh)" || exit 1
+    handoff "$root" "$cmd" "$@"
+    # From the repo root of the main checkout; outside a repository, where you
+    # are, so supervisor.sh reports that itself.
+    if dir="$(main_checkout)"; then cd "$dir" || die 1 "cannot cd to $dir"; fi
+    exec bash "$root/scripts/supervisor.sh" "$@" ;;
+  path)
+    root="$(plugin_root "")" || exit 1
+    handoff "$root" "$cmd" "$@"
+    printf '%s\n' "$root" ;;
+  *)
+    printf 'fleet-board: unknown command: %s\n' "$cmd" >&2; usage >&2; exit 2 ;;
+esac

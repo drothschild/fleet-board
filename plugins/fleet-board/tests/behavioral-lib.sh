@@ -3,7 +3,7 @@
 #
 # Hits the REAL sandbox repo named by SANDBOX_REPO: it pushes branches, opens
 # draft PRs, creates card issues and posts comments there. Callers:
-# behavioral-role.sh (Phase 5), behavioral-tick.sh (Phase 6) and the Phase 7
+# behavioral-role.sh (Phase 5) and the Phase 7
 # overnight run.
 #
 # Provides:
@@ -131,6 +131,8 @@ prepare() {
 
   # Step 4: init, with the throwaway config written elsewhere
   local initdir; initdir="$(mktemp -d)"
+  # init installs the fleet-board command: keep it out of the real ~/.local/bin
+  export FLEET_BOARD_BIN_DIR="$WORK/bin"
   bash "$S/init.sh" --repo "$SANDBOX_REPO" --test-one "node --test {file}" \
     --dir "$initdir" >/dev/null 2>"$WORK/init.err" || bl_die "init.sh failed: $(cat "$WORK/init.err")"
   rm -rf "$initdir"
@@ -183,7 +185,7 @@ open_patch_pr() {
   git -C "$WT" push -q -u origin "$BRANCH" 2>/dev/null || bl_die "push $BRANCH failed"
   local url
   url="$(cd "$WT" && gh pr create --repo "$SANDBOX_REPO" --draft --base main --head "$BRANCH" \
-    --title "Add subtract [behavioral $BL_TS]" --body "Closes #$CARD")" || bl_die "gh pr create failed"
+    --title "Add subtract [behavioral $BL_TS]" --body "Local board card $CARD (behavioral seed)")" || bl_die "gh pr create failed"
   PR="${url##*/}"
   case "$PR" in ''|*[!0-9]*) bl_die "cannot read PR number from: $url" ;; esac
   bl_log "PR #$PR"

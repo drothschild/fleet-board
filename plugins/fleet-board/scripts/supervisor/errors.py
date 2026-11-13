@@ -24,16 +24,6 @@ class StaleRevision(SupervisorError, ValueError):
     code = "stale_revision"
 
 
-class UncertainWriter(SupervisorError, RuntimeError):
-    """An unresolved shutdown leaves a writer that may still be active."""
-    code = "uncertain_writer"
-
-
-class Disabled(SupervisorError, RuntimeError):
-    """supervisor.enabled is false: the control API is read-only."""
-    code = "disabled"
-
-
 class Unauthenticated(SupervisorError, PermissionError):
     """The peer could not be authenticated as the owning user."""
     code = "unauthenticated"
@@ -47,6 +37,12 @@ class Invalid(SupervisorError, ValueError):
 class Unavailable(SupervisorError, RuntimeError):
     """The supervisor could not answer right now."""
     code = "unavailable"
+
+
+class UnsafeSocketDir(SupervisorError, ValueError):
+    """The socket directory is a symlink, not owned by this user, group/other accessible,
+    or would make the socket path too long. It is refused, never silently used."""
+    code = "unsafe_socket_dir"
 
 
 def classify(exc):

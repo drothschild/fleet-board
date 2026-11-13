@@ -4,7 +4,7 @@
 # dependency chain can be moved to Ready, and that nothing promotes a Backlog card.
 #
 # Usage: bash plugins/fleet-board/tests/test-readme-claims.sh
-# README_FILE overrides the file checked (used to prove the test can fail).
+# README_FILE and GATES_FILE override the files checked (used to prove the test can fail).
 
 set -uo pipefail
 unset CDPATH
@@ -27,7 +27,7 @@ check() {
 section="$(awk '/^### Writing a card/{f=1;next} f && /^##/{exit} f' "$README")"
 
 r=bad
-printf '%s\n' "$section" | grep -qF "Move the whole chain to Ready; each card starts on the first tick after its dependencies are Done." && r=ok
+printf '%s\n' "$section" | grep -qF "Move the whole chain to Ready; each card starts once its dependencies are Done." && r=ok
 check "card-writing section says to move the whole chain to Ready" "$r"
 
 r=bad
@@ -48,49 +48,25 @@ r=bad
 awk '/^## Config/{f=1;next} f && /^## /{exit} f' "$README" | grep -qF '| `review.stages` |' && r=ok
 check "config table has a review.stages row" "$r"
 
-# --- settle.sh docs claims (it runs outside the gate, so these are safety claims) ---
+# settle.sh is gone (0.27.0): run by hand beside a running supervisor it moved cards and marked PRs ready
+# outside the gate with no run-lock check. The README and gates.md no longer describe it.
 DOCS_DIR="${SCRIPT_DIR}/../docs"
 GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
-OVERNIGHT="${OVERNIGHT_FILE:-${DOCS_DIR}/overnight.md}"
+# The upgrade notes may say it was removed; nothing else in the README names it.
+r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -q 'settle\.sh' || r=ok
+check "README does not mention settle.sh outside its upgrade notes" "$r"
+r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
+check "gates.md does not mention settle.sh" "$r"
 
-gsec="$(awk '/^## settle\.sh runs outside the gate$/{f=1;next} f && /^## /{exit} f' "$GATES")"
-r=bad
-[ -n "$gsec" ] && r=ok
-check "gates.md has the heading '## settle.sh runs outside the gate'" "$r"
-
-r=bad
-printf '%s\n' "$gsec" | grep -qi "never merges" && r=ok
-check "gates.md settle.sh section says settle.sh never merges" "$r"
-
-r=bad
-printf '%s\n' "$gsec" | grep -qi "never moves a card out of human_qa" && r=ok
-check "gates.md settle.sh section says it never moves a card out of human_qa" "$r"
-
-settle_lines() { grep -F 'scripts/settle.sh' "$1"; }
-for pair in "README:$README" "overnight.md:$OVERNIGHT"; do
-  name="${pair%%:*}"; file="${pair#*:}"
-  lines="$(settle_lines "$file")"
-  r=bad; [ -n "$lines" ] && r=ok
-  check "$name mentions scripts/settle.sh" "$r"
-  r=bad; printf '%s\n' "$lines" | grep -qi "never merges" && r=ok
-  check "$name says settle.sh never merges" "$r"
-  r=bad; printf '%s\n' "$lines" | grep -qF 'interactive `/fleet-board:tick` does not run it' && r=ok
-  check "$name says an interactive /fleet-board:tick does not run settle.sh" "$r"
-done
-
-# The overrides must work: a copy with the "never merges" sentence removed must fail.
+# The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
-  for var in README_FILE GATES_FILE OVERNIGHT_FILE; do
-    case "$var" in
-      README_FILE) src="$README" ;;
-      GATES_FILE) src="$GATES" ;;
-      OVERNIGHT_FILE) src="$OVERNIGHT" ;;
-    esac
-    sed 's/never merges/may merge/g' "$src" > "$tmp/$var.md"
+  sed 's/Move the whole chain to Ready/Move it/' "$README" > "$tmp/README_FILE.md"
+  { cat "$GATES"; printf '\n`scripts/settle.sh` moves cards.\n'; } > "$tmp/GATES_FILE.md"
+  for var in README_FILE GATES_FILE; do
     r=bad
     if ! env README_CLAIMS_NESTED=1 "$var=$tmp/$var.md" bash "${BASH_SOURCE[0]:-$0}" >/dev/null 2>&1; then r=ok; fi
-    check "$var pointing at a copy without 'never merges' makes the test fail" "$r"
+    check "$var pointing at a broken copy makes the test fail" "$r"
   done
   rm -rf "$tmp"
 fi

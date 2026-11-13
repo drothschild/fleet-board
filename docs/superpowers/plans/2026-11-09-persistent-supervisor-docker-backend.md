@@ -1,5 +1,7 @@
 # Persistent supervisor Docker backend Implementation Plan
 
+> **Superseded (2026-11-11)** by [`docs/superpowers/specs/2026-11-11-cli-supervisor-design.md`](../specs/2026-11-11-cli-supervisor-design.md). Kept for history; where they disagree, the new design wins.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add an explicit Docker Desktop backend that confines one worker attempt in an offline Linux container and relays only the authorized broker operations to the trusted host controller.
