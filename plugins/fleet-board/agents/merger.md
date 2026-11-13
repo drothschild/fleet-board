@@ -26,7 +26,7 @@ and the persona decides only the after-merge steps and how to judge a refusal. I
 
 - **Card number, title and PR number.**
 - **Mode**: `after_merge` or `refusal`.
-- **Merged head** (after_merge) or **refusal** `{pr, head, reason, required_check?}` (refusal).
+- **Post-merge head** (after_merge) or **refusal** `{pr, head, reason, required_check?}` (refusal).
 - **Persona text**, resolved by the supervisor from the repository root: `merge.persona` null or unset means `.fleet-board/merger.md` when that file exists, else the plugin default; a `merge.persona` path that is set but missing is an error the supervisor reports, never a silent fallback. `merge.persona_append` follows whichever persona was chosen.
 - **Config JSON** and the **scripts directory**, which holds
   `board-comment.sh` and `parse-report.sh`.

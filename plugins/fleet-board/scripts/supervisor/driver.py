@@ -293,7 +293,7 @@ _LABELS = {
     'worktree': 'Worktree', 'branch': 'Branch', 'note': 'Manager note', 'config': 'Config', 'scripts': 'Scripts dir',
     'pr': 'PR number', 'diff': 'PR diff', 'report': 'Latest implementor or fixer report', 'round': 'Round',
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
-    'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'merged_head': 'Merged head',
+    'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'merged_head': 'Post-merge head',
     'refusal': 'Refusal', 'persona': 'Persona',
 }
 DIFF_FILE_LINES = 1500
