@@ -25,8 +25,9 @@ agents do the rest, and hooks stop them from skipping a step.
   ```
 
   You move cards from Backlog to Ready, and out of Human QA. Everything else moves on its own.
-- **Test-first implementation.** The implementor works in its own git worktree and branch. Its first commit holds only
-  the failing tests. Then it makes them pass and opens a draft PR.
+- **Extra review stages.** You can add your own stages after the main review, such as security, UX or performance. Each
+  stage runs its own agent or a model from another provider, and can be limited to the files it cares about.
+- **Processes new issues into cards.** When a bug or side issue is found in the implementation of one card, a new card is created in the backlog to resolve it.**
 - **Evidence-based review.** The reviewer does not take the implementor's word for anything. It:
   - maps every acceptance item to a test;
   - breaks the code on purpose (mutation testing) to prove the tests catch it;
@@ -35,9 +36,7 @@ agents do the rest, and hooks stop them from skipping a step.
 
   Findings go to a fixer. Review and fix rounds repeat until the review is clean or the card is blocked. Each blocked
   card gets a comment saying why.
-- **Extra review stages.** You can add your own stages after the main review, such as security, UX or performance. Each
-  stage runs its own agent or a model from another provider, and can be limited to the files it cares about.
-- **Merging and deploys, if you want them.** With `merge.policy: auto`, a card with a clean review and green checks is
+- **Optional Merges and deploys.** With `merge.policy: auto`, a card with a clean review and green checks is
   merged for you, one at a time per repository.
 
   After the merge, a **merger** agent follows a short persona file you write in plain English. A typical persona says to
@@ -45,27 +44,26 @@ agents do the rest, and hooks stop them from skipping a step.
 
   The merger can retry a refused merge once, send a merge conflict back for a fix, or stop and wait for you. It never
   loosens a merge rule. The only way to merge past a known-flaky check is a dated entry in your config.
-- **A supervisor, not a cron job.** One `supervisor start` process per repository runs the board:
+- **A supervisor.** One `supervisor start` process per repository runs the board:
   - it plans each card's next step and runs several cards at once, up to the limits you set;
   - it keeps two cards from editing the same files at the same time;
   - it backs off when a provider is rate-limited.
 
   Stop it, and it either finishes the work in flight or cancels it cleanly.
-- **Crash recovery you can see.** If a run dies part-way through, the next `start` lists every card left half done and
+- **Crash recovery.** If a run dies part-way through, the next `start` lists every card left half done and
   refuses to start until each one is resolved. The board page shows those cards with a red border and a **STUCK**
   label. One command returns a card to its last stable column, without touching its branch or pull request.
-- **Token accounting, not guesswork.** Every agent session's tokens go into a ledger in your repo. The board page shows:
+- **Token accounting.** Every agent session's tokens go into a ledger in your repo. The board page shows:
   - tokens for this run, all time, and the planning chat, each counted separately;
   - a total at the top of each column;
   - for each card, a breakdown by column and by action.
 
   A token budget pauses the supervisor when it is reached. Cache reads are shown but don't count toward the budget.
-- **Guardrails enforced by hooks, not by asking nicely.** A hook checks every agent command before it runs. It blocks:
+- **Guardrails enforced by hooks.** A hook checks every agent command before it runs. It blocks:
   - releasing Human QA;
   - merging a draft PR, or merging with red or pending checks;
   - force-pushing;
   - starting a card that has no acceptance items;
-  - writing PR text that would close unrelated GitHub issues.
 - **Planning help.** A chat on the board page drafts cards with you. `/fleet-board:import-plan` turns a written plan
   into PR-sized cards. It works out the dependencies between them and shows you a preview before it creates anything.
 
