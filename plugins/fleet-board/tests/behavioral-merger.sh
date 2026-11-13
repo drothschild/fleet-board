@@ -151,7 +151,7 @@ make_repo "$RUN/repo-after"
 mkdir -p "$RUN/repo-after/.fleet-board"
 printf '# Persona\nAfter a merge, run ./deploy.sh from the repository root.\n' > "$RUN/repo-after/.fleet-board/merger.md"
 rm -f "$RUN/repo-after/deploy-ran"
-build_prompt "$RUN/repo-after" after_merge '{"merged_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+build_prompt "$RUN/repo-after" after_merge '{"pr_head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","merge_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}' \
   "$RUN/after.prompt" || { echo "behavioral-merger: cannot build the after-merge prompt" >&2; exit 1; }
 run_merger after "$RUN/repo-after" "$RUN/after.prompt"
 check_report after after_merge done

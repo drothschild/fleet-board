@@ -12,7 +12,9 @@
 # prompt (message contents joined by a blank line) on stdin. Stdout is the
 # reply, with null token counts; a non-zero exit, a timeout or an empty stdout
 # exits 1. With --dir <path>, it runs in that directory and substitutes {dir}
-# with the shell-quoted path.
+# with the shell-quoted path. With --json-events, stdout is JSONL from
+# `codex exec --json`: the reply is the text of the last agent_message item and
+# the token counts come from the last turn.completed usage (null when absent).
 #
 # The key is read from the environment variable named by --key-env ('-' sends
 # no Authorization header, for a loopback server). It reaches curl only through
@@ -48,9 +50,10 @@ usage() {
   exit 2
 }
 
-BASE_URL="" KEY_ENV="" MODEL="" MAX_TOKENS="" MAX_PARAM="" TIMEOUT="" COMMAND=""
+BASE_URL="" KEY_ENV="" MODEL="" MAX_TOKENS="" MAX_PARAM="" TIMEOUT="" COMMAND="" JSON_EVENTS=0
 unset COMMAND_DIR
 while [ $# -gt 0 ]; do
+  if [ "$1" = --json-events ]; then JSON_EVENTS=1; shift; continue; fi
   [ $# -ge 2 ] || usage "missing value for $1"
   case "$1" in
     --base-url) BASE_URL="$2" ;;
@@ -134,6 +137,16 @@ if [ -n "$COMMAND" ]; then
   fi
   if [ "$rc" -ne 0 ]; then
     die "command failed (exit $rc): $(t="$(tr '\n\r' '  ' < "$TMP/err.txt")"; printf '%s' "${t:0:300}")" 1
+  fi
+  if [ "$JSON_EVENTS" -eq 1 ]; then
+    jq -R 'fromjson? | objects' "$TMP/out.txt" | jq -s . > "$TMP/events.json" || die "unreadable codex events" 1
+    jq -j '[.[] | select(.type == "item.completed" and .item.type == "agent_message" and (.item.text | type) == "string")] | if length == 0 then "" else .[-1].item.text end' "$TMP/events.json" > "$TMP/text.txt"
+    grep -q '[^[:space:]]' "$TMP/text.txt" || die "empty reply" 1
+    jq -cn --rawfile t "$TMP/text.txt" --arg m "$MODEL" --slurpfile ev "$TMP/events.json" '
+      def count($k): ([$ev[0][] | select(.type == "turn.completed") | .usage[$k]?] | last)
+        | if type == "number" and . >= 0 and floor == . then . else null end;
+      {text: $t, finish_reason: "stop", input_tokens: count("input_tokens"), output_tokens: count("output_tokens"), model: $m}'
+    exit 0
   fi
   grep -q '[^[:space:]]' "$TMP/out.txt" || die "empty reply" 1
   jq -cn --rawfile t "$TMP/out.txt" --arg m "$MODEL" \
