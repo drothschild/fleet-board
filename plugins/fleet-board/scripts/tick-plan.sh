@@ -18,7 +18,8 @@
 #
 # stage is the config's stage object whole (as config.sh prints it: name,
 # agent, provider, model, paths, label, advisory, max_rounds, brief,
-# timeout, max_output_tokens, max_diff_bytes; provider is null for an agent
+# timeout, max_output_tokens, max_diff_bytes, required_passes, and default
+# when the config sets it; provider is null for an agent
 # stage, agent null for a provider stage): for advance_stage the stage being
 # entered, for any other card in a stage column that column's stage, else null.
 #

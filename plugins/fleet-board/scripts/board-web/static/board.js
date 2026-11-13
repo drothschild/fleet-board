@@ -1768,6 +1768,7 @@ function openDraft(id, text) {
   const imp = { phase: "running", id: id, fileName: null, cards: [], timer: null };
   S.imp = imp;
   $("imp-embed").checked = true;
+  $("imp-status-select").value = "backlog";
   $("imp-grid").replaceChildren();
   $("imp-error").hidden = true;
   $("imp-error").textContent = "";
@@ -1830,10 +1831,12 @@ function setImportPhase(phase) {
   $("imp-progress").hidden = phase !== "running";
   $("imp-create").hidden = !ready;
   $("imp-embed-row").hidden = !ready;
+  $("imp-status-row").hidden = !ready;
   $("imp-dry").hidden = !ready || !$("imp-table").textContent;
   const busy = phase === "creating";
   $("imp-create").disabled = busy;
   $("imp-embed").disabled = busy;
+  $("imp-status-select").disabled = busy;
   $("imp-discard").disabled = busy;
   const grid = $("imp-grid");
   for (const n of grid.all ? grid.all() : grid.querySelectorAll("button")) {
@@ -2070,7 +2073,7 @@ async function createImport(id) {
   const imp = S.imp;
   if (!imp || imp.id !== id || imp.phase !== "ready") return;
   setImportPhase("creating");
-  const r = await writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/create", { embed_docs: $("imp-embed").checked });
+  const r = await writeApi("POST", "/api/import/" + encodeURIComponent(id) + "/create", { embed_docs: $("imp-embed").checked, status: $("imp-status-select").value });
   if (S.imp !== imp) return;
   const created = Array.isArray(r.data.created) ? r.data.created.filter(Number.isInteger) : [];
   const nums = created.map(function (n) { return "#" + n; }).join(", ");
@@ -2366,10 +2369,10 @@ function bindPlanner() {
   $("pl-draft").addEventListener("click", draftPlanner);
   $("pl-close").addEventListener("click", requestClosePlanner);
   $("pl-input").addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      sendPlanner();
-    }
+    // Enter (and Cmd/Ctrl+Enter) sends; Shift+Enter keeps the newline; IME confirm never sends.
+    if (e.key !== "Enter" || e.isComposing || (e.shiftKey && !e.metaKey && !e.ctrlKey)) return;
+    e.preventDefault();
+    sendPlanner();
   });
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && S.pl && !S.imp && !S.drawer && !e.defaultPrevented) {

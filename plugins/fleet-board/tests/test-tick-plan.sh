@@ -1488,7 +1488,7 @@ assert_jq "stage-review: dispatchable" '.dispatchable' 'true'
 assert_jq "agent_stage_plan_card_has_null_provider: provider" "$(card 12 stage.provider)" 'null'
 assert_jq "agent_stage_plan_card_has_null_provider: agent" "$(card 12 stage.agent)" '"acme:sec"'
 assert_jq "stage-review: stage object is the config stage whole" "$(card 12 stage) | keys" \
-  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","provider","timeout"]'
+  '["advisory","agent","brief","label","max_diff_bytes","max_output_tokens","max_rounds","model","name","paths","provider","required_passes","timeout"]'
 # no_warning_when_stage_not_acted_on: no card in the provider stage
 assert_jq "no_warning_when_stage_not_acted_on: no card in the stage" '.warnings' '[]'
 # last_review from in_review (stage null, round 1) does not count
