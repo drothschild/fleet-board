@@ -340,5 +340,33 @@ check "local board, other repo: dependent card is blocked by card 3 on this boar
 check "local board, other repo: no ref names other/repo" "$(jq -r .body "$ROOT_L/.fleet-board/cards/4.json" 2>/dev/null | grep -c 'other/repo#')" "0"
 ROOT="$ROOT_SAVED"
 
+# ---------------------------------------------------------------- bare #N dependency
+echo "# bare #N dependency"
+cat > "$SB/cards-bare.json" <<'EOF'
+{"cards":[
+ {"key":"d","title":"Depends on five","repo":"acme/api","labels":[],
+  "why":"Needs card five.","scope":["src/d.js"],
+  "acceptance":["D works"],"depends_on":["#5"],"consumes":[],"produces":[]},
+ {"key":"e","title":"Independent","repo":"acme/api","labels":[],
+  "why":"Stands alone.","scope":["src/e.js"],
+  "acceptance":["E works"],"consumes":[],"produces":[]}
+]}
+EOF
+seed_five() { printf '%s' '{"number":5,"title":"Existing five","state":"Ready","body":"","blocked_by":[]}' > "$ROOT/.fleet-board/cards/5.json"; echo 6 > "$ROOT/.fleet-board/next"; }
+reset_gh; seed_five
+run_import "" "$SB/cards-bare.json" --dry-run
+check "import-plan.sh --dry-run on a card with depends_on [\"#5\"] exits 0" "$RC" "0"
+check "depends_on [\"#5\"] prints no unknown dependency error" "$(grep -c 'unknown dependency' "$SB/err")" "0"
+reset_gh; seed_five
+run_import "y" "$SB/cards-bare.json" --status ready
+check "creating a card with depends_on [\"#5\"] exits 0" "$RC" "0"
+check "creating a card with depends_on [\"#5\"] sets its blocked_by to [5]" "$(jq -c .blocked_by "$ROOT/.fleet-board/cards/$(card_of "Depends on five").json" 2>/dev/null)" "[5]"
+check "a card with depends_on [\"#5\"] is created even when listed before cards it does not depend on" "$(cards_created)" "3"
+printf '%s' '{"cards":[{"key":"a","title":"A","repo":"x/y","depends_on":["nosuchkey"]}]}' > "$SB/nosuch.json"
+reset_gh
+run_import "" "$SB/nosuch.json" --dry-run
+check "depends_on [\"nosuchkey\"] still exits 1" "$RC" "1"
+case "$(cat "$SB/err")" in *"unknown dependency: nosuchkey"*) pass "depends_on [\"nosuchkey\"] still fails with unknown dependency: nosuchkey" ;; *) fail "depends_on [\"nosuchkey\"] still fails with unknown dependency: nosuchkey" "$(cat "$SB/err")" ;; esac
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
