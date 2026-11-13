@@ -88,6 +88,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   every other `"version"` must equal the three-way result, and no key may be repeated
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
+- **Declared Scope parsing.** `tick-plan.sh` reads a card's `## Scope` section for backticked
+  spans and plain-text path tokens (no whitespace, holding a `/` or ending in an extension;
+  leading `(` and trailing `.,:;)` stripped). A token ending in `/` is a directory scope.
 - **Scope reservations.** A normal plan supplements open cards' declared Scope paths
   with their complete PR file lists when ready cards exist. Missing or truncated PR
   paths hold new starts, while existing work can continue. Selected starts reserve
