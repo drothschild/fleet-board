@@ -43,6 +43,13 @@ BODYTMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 trap 'rm -f "$TMP" "$BODYTMP"; fb_lock_release "$FB_LOCK"' EXIT
 fl_check_blocked_by "$N" "$BLOCKED"
 fl_fold_outside "$SPLIT" "#$N" > "$BODYTMP" || exit 1
+for l in ${labels[@]+"${labels[@]}"}; do
+  if [ "$l" = needs-human-qa ]; then
+    QB="$(cat "$BODYTMP"; printf x)"; QB="${QB%x}"
+    fl_add_qa_section "$QB" > "$BODYTMP" || exit 1
+    break
+  fi
+done
 LABELS_JSON="$(printf '%s\n' ${labels[@]+"${labels[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')"
 jq -n --argjson n "$N" --arg t "$TITLE" --rawfile b "$BODYTMP" \
   --arg s "$STATE" --argjson l "$LABELS_JSON" --arg now "$(fl_now)" \

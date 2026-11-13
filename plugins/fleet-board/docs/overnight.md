@@ -53,7 +53,7 @@ fleet-board supervisor stop --cancel    # end every session now and return each 
 | `limits.rate_limit_max_wait`, `rate_limit_margin` | `3600`, `5` | a GitHub rate limit holds new work until its reset plus the margin; a reset further away than the cap pauses the supervisor |
 | `headless.permission_mode` | `auto` | `--permission-mode` of each role session |
 
-Tokens are the only unit: nothing is priced, and a count the ledger could not read is `unknown`, never 0. The other `supervisor.*` keys (timeouts, retry backoff, aging, the reconcile interval) are in [config.md](config.md).
+Tokens are the only unit: nothing is priced, and a count the ledger could not read is `unknown`, never 0. The other `supervisor.*` keys (the reconcile interval, timeouts, retry backoff, aging, `scope_ignore` and `version_files`) are in [config.md](config.md#supervisor).
 
 ## Permissions
 
@@ -64,7 +64,7 @@ Tokens are the only unit: nothing is priced, and a count the ledger could not re
 
 Merges stay human by default: under `merge.policy: human` the supervisor merges nothing and leaves reviewed PRs to be merged by hand. Under `merge.policy: auto` it merges them itself, one card at a time, in the `merging` column.
 
-**How.** Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session, so no role session merges. The supervisor's merge lane runs `scripts/merge-reviewed.sh --card <n>` instead, a plain shell step outside any Claude session, bound to the planned head. It merges (`gh pr merge <pr> --squash`, never `--admin`) only a card whose review is clean for the PR head, with no routed review stage left, whose PR is open, not a draft and green, and which does not need Human QA. After the merge it runs `verify-main.sh`; the merger agent then runs, and the card's `## After merge` steps run, before the card goes to Done. The gate hook G2 still applies to any merge a Claude session makes.
+**How.** Claude Code's auto-mode safety classifier blocks an unattended `gh pr merge` in a headless session, so no role session merges. The supervisor's merge lane runs `scripts/merge-reviewed.sh --card <n>` instead, a plain shell step outside any Claude session, bound to the planned head. It merges (`gh pr merge <pr> --squash`, never `--admin`) only a card whose review is clean for the PR head, with no routed review stage left, whose PR is open, not a draft and green, and which does not need Human QA. After the merge it runs `verify-main.sh`. The card's `## After merge` steps run before the merger agent, which then runs and decides whether the card is finished; the card goes to Done only after that. See [the README](../README.md#merger-and-deploys). The gate hook G2 still applies to any merge a Claude session makes.
 
 ## Worktree cleanup
 
