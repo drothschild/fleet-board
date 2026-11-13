@@ -2,7 +2,7 @@
 
 [![tests](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml/badge.svg)](https://github.com/drothschild/fleet-board/actions/workflows/tests.yml)
 
-Turns a local card board into a work queue for a fleet of Claude Code agents. Cards are files in your repo, shown on a board page; each carries acceptance criteria and is marked ready by hand. Each tick, a manager agent moves every open card one step: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), optional extra review stages (security, UX, whatever you configure) check it again with their own agent or a model from another provider, and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review; merging stays manual. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
+Turns a local card board into a work queue for a fleet of Claude Code agents. Cards are files in your repo, shown on a board page; each carries acceptance criteria and is marked ready by hand. A supervisor you start yourself (`scripts/supervisor.sh`) moves every open card along: an implementor writes a failing test first and opens a draft PR, a reviewer checks it on evidence (an Acceptance-to-test map, mutation testing, one re-run claim), optional extra review stages (security, UX, whatever you configure) check it again with their own agent or a model from another provider, and a fixer addresses what the review found. Each role works in its own git worktree. Finished cards land in Human QA or as a PR ready for review; merging stays manual unless you set `merge.policy: auto`. A hook keeps agents from releasing Human QA, merging when they shouldn't, or starting a card without acceptance criteria.
 
 ## Install
 
@@ -13,7 +13,7 @@ Tell Claude Code "Go to https://github.com/drothschild/fleet-board and follow th
 /plugin install fleet-board@fleet-board
 ```
 
-Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (the PRs live on GitHub). The board page and the headless run wrapper need `python3` 3.9 or later (standard library only). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
+Requires Claude Code 2.1.x, `git`, `jq` (both ship with macOS 15 and later) and `gh`, logged in with the `repo` scope (the PRs live on GitHub). The board page and the supervisor need `python3` 3.9 or later (standard library only). `/fleet-board:init` checks that these tools are on `PATH` and checks the `gh` scopes, printing the command that adds a missing one.
 
 ## Adding fleet-board to an existing project
 
@@ -29,10 +29,10 @@ Check these first. Each one stopped a real card when fleet-board was adopted on 
   A lockfile out of sync with its manifest, or a dependency on a relative path outside the repo (`file:../lib.tgz`), breaks here.
 - **One test file at a time.** `commands.test_one` must take a single test path in place of `{file}`, for example `npm test -- --runTestsByPath {file}` or `pytest {file}`.
 - **Existing GitHub board.** If the project already runs on a fleet-board issue board, copy it over once with [`import-github.sh`](#moving-an-existing-github-board); the board itself is always local.
-- **Cards already on the board.** The manager acts on every card in Ready, In Progress, In Review and Blocked, including ones that were there before. Run `/fleet-board:status` first, and move work that should be finished by hand back to Backlog.
-- **Process docs.** If `AGENTS.md` or `CLAUDE.md` has board, review or merge rules, remove them; the agents read those files and would argue with the manager. Keep the project facts.
+- **Cards already on the board.** The supervisor acts on every card in Ready, In Progress, In Review and Blocked, including ones that were there before. Run `/fleet-board:status` first, and move work that should be finished by hand back to Backlog.
+- **Process docs.** If `AGENTS.md` or `CLAUDE.md` has board, review or merge rules, remove them; the agents read those files and would argue with their role specs. Keep the project facts.
 
-Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (role worktrees branch from `origin/HEAD`), move **one** small card to Ready, and run `/fleet-board:tick` until it reaches a ready PR or Human QA.
+Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (role worktrees branch from `origin/HEAD`), move **one** small card to Ready, and start the supervisor (see [Running the supervisor](#running-the-supervisor)) until the card reaches a ready PR or Human QA.
 
 ## On a fresh repo
 
@@ -46,17 +46,16 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
 
 4. **Write one small card** on the board page (see [Local board](#local-board)): a title, a body, and testable acceptance items (see [Writing a card](#writing-a-card)). Add the `needs-human-qa` label to check the result by hand before any PR is marked ready.
 5. **Move it to Ready.**
-6. **Run `/fleet-board:tick`** a few times, or `/fleet-board:run` to keep going until nothing is left. Each tick ends its report with `dispatchable: true` or `false`.
+6. **Start the supervisor**: press Start on the board page, or run `fleet-board supervisor start --detach` (see [Running the supervisor](#running-the-supervisor)).
 7. **Watch it move.** With a clean review:
 
-   | After | Card | What appears |
+   | Step | Card | What appears |
    |---|---|---|
-   | tick 1 | In Progress | A `fleet/<n>-<slug>` branch, a worktree, and a draft PR whose first commit holds only the failing tests |
-   | tick 2 | In Review | The reviewer's report on the card |
-   | tick 3 | Human QA, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
-   | tick 4 | unchanged | `dispatchable: false` |
+   | implement | In Progress | A `fleet/<n>-<slug>` branch, a worktree, and a draft PR whose first commit holds only the failing tests |
+   | review | In Review | The reviewer's report on the card |
+   | hand-off | Human QA, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
 
-   With `review.stages` configured and a PR that matches a stage, the clean In Review card goes to `Review: <name>` instead of Human QA, and the stage's report appears on it in that same tick. Each stage adds at least one tick; Human QA or the ready PR follows once every stage is clean ([details](docs/config.md#reviewstages)).
+   With `review.stages` configured and a PR that matches a stage, the clean In Review card goes to `Review: <name>` instead of Human QA, and the stage's report appears on it next. Human QA or the ready PR follows once every stage is clean ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
 
 8. **Release Human QA by hand** on the board page: check the change, merge the PR, and move the card to Done (or back to Ready). No agent can do this; the gate blocks it.
 
@@ -64,25 +63,25 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
 
 ```
 Backlog → Ready → In Progress → In Review → Human QA → Done
-                        ↓             ↓
+                        ↓             ↓   ↘ Merging ↗
                      Blocked       Blocked
 ```
 
-Each entry in `review.stages` adds a column after In Review. Plus Won't Do. A card's state is a field in its file.
+Each entry in `review.stages` adds a column after In Review. Merging is used only under `merge.policy: auto`. Plus Won't Do. A card's state is a field in its file.
 
-**Who moves what.** Only a person moves cards from Backlog to Ready, and out of Human QA. The manager makes every other move. Role agents never move cards; they post reports as comments.
+**Who moves what.** Only a person moves cards from Backlog to Ready, and out of Human QA. The supervisor makes every other move. Role agents never move cards; they post reports as comments.
 
 ### Writing a card
 
 - **Acceptance lists only what a test can check**, one item per behavior, in the card's `acceptance` field (the drawer's Acceptance list). The reviewer maps each item to a test; an item with no test is a finding.
 - **Put on-device and manual checks under `## Human QA`** in the body, not in Acceptance. No agent can test them, so in Acceptance they only get the card blocked.
-- **Hold a card until another finishes with Blocked by**: the card's `blocked_by` field lists card numbers on this board (the drawer's Blocked by chips; `#22` in the add box). While any blocker is not Done, the card stays in Ready, `/fleet-board:status` shows what it waits for, and the manager comments `Waiting for ...` once (again only when the set of unmet blockers changes). A blocker is met when its card is Done. A Won't Do blocker never counts as met and adds a tick warning. A blocker must be a card on this board: a card that names itself or a card that does not exist is refused, and a dependency in another repo has no home (multi-repo plans go into one board). You still move the card from Backlog to Ready yourself; the gate only holds a Ready card back, and never one already in progress. See [Dependencies](docs/config.md#how-the-board-works-in-detail).
-- **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress, In review or review-stage card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. The plan also gives `merge` to at most one card per tick, the lowest card number; the others wait for the next tick.
-- **Move the whole chain to Ready; each card starts on the first tick after its dependencies are Done.** That is the safe way to set up an overnight run. Nothing promotes a Backlog card when its dependencies finish, so a card left in Backlog stays there.
+- **Hold a card until another finishes with Blocked by**: the card's `blocked_by` field lists card numbers on this board (the drawer's Blocked by chips; `#22` in the add box). While any blocker is not Done, the card stays in Ready, `/fleet-board:status` shows what it waits for, and the supervisor comments `Waiting for ...` once (again only when the set of unmet blockers changes). A blocker is met when its card is Done. A Won't Do blocker never counts as met and adds a plan warning. A blocker must be a card on this board: a card that names itself or a card that does not exist is refused, and a dependency in another repo has no home (multi-repo plans go into one board). You still move the card from Backlog to Ready yourself; the gate only holds a Ready card back, and never one already in progress. See [Dependencies](docs/config.md#how-the-board-works-in-detail).
+- **Avoid edit conflicts with `## Scope`**: list the files a card changes as backticked paths in its `## Scope` section. A Ready card that names a path that an In progress, In review or review-stage card also names waits (the plan's reason names that card) instead of starting, so the two do not edit the same files in parallel. A card whose `## Scope` names no backticked paths starts as usual. Merges run one at a time, lowest card number first; the others wait their turn.
+- **Move the whole chain to Ready; each card starts once its dependencies are Done.** That is the safe way to set up an overnight run. Nothing promotes a Backlog card when its dependencies finish, so a card left in Backlog stays there.
 
 **Lint command.** `/fleet-board:lint [card...]` (`scripts/lint.sh`) runs `card-lint.sh` on Ready and Backlog cards, or on the cards you name, and adds `untestable-bullet`, `dependency-cycle`, `unresolved-dependency` and `missing-file`. It exits 1 when any card fails. `/fleet-board:import-plan` runs it on its generated cards and creates nothing while one fails.
 
-**Card lint.** Before a Ready card is dispatched, `scripts/card-lint.sh` checks its acceptance items. A failing card stays in Ready, the manager posts one comment naming the rule and the item (again only when the lint result changes), and no implementor runs until you fix the card. The rules:
+**Card lint.** Before a Ready card is dispatched, `scripts/card-lint.sh` checks its acceptance items. A failing card stays in Ready, the supervisor posts one comment naming the rule and the item (again only when the lint result changes), and no implementor runs until you fix the card. The rules:
 
 - [`no-heading`](#card-lint-no-heading): a body has no `## Acceptance` heading.
 - [`no-bullets`](#card-lint-no-bullets): the heading has no `- ` bullet under it.
@@ -105,9 +104,9 @@ A stored card's `acceptance` field is empty or missing. Add at least one testabl
 
 An acceptance item containing `on device`, `on a device`, `verify on`, `by hand`, `Human QA` or `simulator` (any case) can only be checked by a person. Move it under `## Human QA` in the body; the same phrases there are not linted.
 
-**When a card gets blocked.** The manager blocks a card, with a comment saying why, when Critical or Important findings survive `review.max_rounds` rounds, when the implementor produces no PR in that many attempts, or when that many actions in a row make no progress. From round `models.escalate_after_rounds` on, the implementor and fixer run on `models.escalation`, or on the reviewer's model when that is unset.
+**When a card gets blocked.** The supervisor blocks a card, with a comment saying why, when Critical or Important findings survive `review.max_rounds` rounds, when the implementor produces no PR in that many attempts, or when that many actions in a row make no progress. From round `models.escalate_after_rounds` on, the implementor and fixer run on `models.escalation`, or on the reviewer's model when that is unset.
 
-More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md](docs/config.md#how-the-board-works-in-detail).
+More on how planning, notes, follow-ups and the `main` check work: [docs/config.md](docs/config.md#how-the-board-works-in-detail).
 
 ## Config
 
@@ -122,7 +121,7 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
 | `commands.typecheck` | none | run by roles, and on `main` after a merge |
 | `commands.lint` | none | run by roles |
-| `commands.preflight` | none | checks the environment once per tick; a non-zero exit holds every card and warns with the last 20 lines of output |
+| `commands.preflight` | none | checks the environment before each plan; a non-zero exit holds every card and warns with the last 20 lines of output |
 | `commands.qa_build` | none | run before a card goes to Human QA; the last 20 lines go in its comment |
 | `worktrees.dir` | `../.fleet-worktrees` | where card worktrees go, relative to the repo root |
 | `worktrees.setup` | none | run once in each new worktree, such as `npm ci` |
@@ -134,20 +133,20 @@ More on how ticks, notes, follow-ups and the `main` check work: [docs/config.md]
 | `review.verify_claim` | `true` | the reviewer re-runs one claim from the implementor's report |
 | `review.max_rounds` | `3` | rounds, attempts and no-progress actions allowed before a card is blocked |
 | `review.stages` | `[]` | extra review columns after In Review, each with its own agent or provider model, routed by path globs or a label ([details](docs/config.md#reviewstages)) |
-| `review.stages[].provider` | none | runs the review stage on a model from a provider instead of a Claude `agent`; set exactly one of the two, plus `model` and `price` ([details](docs/config.md#providers)) |
+| `review.stages[].provider` | none | runs the review stage on a model from a provider instead of a Claude `agent`; set exactly one of the two, plus `model` ([details](docs/config.md#providers)) |
 | `providers` | `{}` | provider connections by name: `base_url`, `api_key_env`, `max_tokens_param`, or `command` (a local program such as `codex exec`; sends the same card, findings, report and diff to it); built-in presets `openai`, `gemini`, `openrouter`, `ollama`, `codex` need no entry ([details](docs/config.md#providers)) |
-| `models.manager` / `implementor` / `reviewer` / `fixer` | `sonnet` / `sonnet` / `opus` / `sonnet` | each role's model |
+| `models.implementor` / `reviewer` / `fixer` / `merger` | `sonnet` / `opus` / `sonnet` / `sonnet` | each role's model |
 | `models.escalate_after_rounds` | `2` | from this round on, implementor and fixer use `models.escalation` |
-| `models.reviewer` | `opus` | Claude model string or an object with `provider`, `model`, `price` and optional `timeout` ([details](docs/config.md#modelsreviewer)) |
+| `models.reviewer` | `opus` | Claude model string or an object with `provider`, `model` and optional `timeout` ([details](docs/config.md#modelsreviewer)) |
 | `providers.<name>.review_command` | none | runs the evidence reviewer in a scratch clone. A Codex evidence reviewer can read the whole repository and sends what it reads to OpenAI through the Codex CLI. |
 | `models.escalation` | unset | model for escalated implementor and fixer; defaults to the reviewer model in string form and is required in object form. Setting it equal to `models.reviewer` warns, since the writer then shares the reviewer's blind spots |
-| `limits.concurrency` | `6` | role agents running at once |
-| `limits.tick_interval` | `300` | seconds between ticks |
-| `limits.max_hours`, `max_cost_usd`, `max_consecutive_failures`, `max_turns` | `8`, `40`, `3`, `200` | headless wrapper limits |
-| `limits.rate_limit_max_wait`, `rate_limit_margin`, `min_tick_gap` | `3600`, `5`, `0` | seconds: total rate-limit wait cap, margin after a reset, minimum gap between tick starts of runs sharing a token |
-| `headless.permission_mode` | `auto` | `--permission-mode` for each headless tick |
+| `limits.concurrency` | `6` | role sessions running at once |
+| `limits.max_hours`, `max_tokens`, `max_tokens_per_card`, `max_turns` | `8`, `20000000`, none, `200` | supervisor limits: hours before it drains and exits, run tokens before admissions pause, tokens per card, `--max-turns` per session; both token limits count input, output and cache-write tokens, and cache reads are shown but not counted ([details](docs/overnight.md#limits)) |
+| `limits.rate_limit_max_wait`, `rate_limit_margin` | `3600`, `5` | seconds: the longest rate-limit wait before the supervisor pauses, margin after a reset |
+| `headless.permission_mode` | `auto` | `--permission-mode` for each role session |
+| `supervisor.*` | see [config.md](docs/config.md) | timeouts, retry backoff, per-provider concurrency |
 
-The config file is `.fleet-board.yml`, any valid YAML. `board.backend`, `board.project_number` and `board.project_owner` are gone: `config.sh` exits 5 on any of them (see [Upgrading](#upgrading-from-an-earlier-version)).
+The config file is `.fleet-board.yml`, any valid YAML. `board.backend`, `board.project_number` and `board.project_owner` are gone, and so are the tick system's `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager`: `config.sh` exits 5 on any of them (see [Upgrading](#upgrading-from-an-earlier-version)). Tokens are the only unit; an old `price` key is ignored.
 
 ## Gates
 
@@ -157,17 +156,19 @@ A `PreToolUse` hook blocks any agent command that would move a card out of Human
 
 The reviewer catches 6 of 6 seeded defect classes at least 2 of 3 times (opus, `review.mutation` on), measured by a harness in `tests/eval/` on defects such as an off-by-one the tests miss, a weakened assertion and a mocked-away bug. The method, the exact commands, and the results table (measured catch rate per defect class, with and without `review.mutation`, per model, plus cost per run) are in [docs/reviewer-eval.md](docs/reviewer-eval.md).
 
-## Running overnight
+## Running the supervisor
 
-The headless wrapper runs ticks one after another until the board is settled or a limit is reached. Find its path on the last line of `/fleet-board:status`, then from the repo root:
+The supervisor dispatches the board's work until you stop it. Run it from anywhere in the repo; it runs from the repo root (the main checkout, even from a worktree):
 
 ```bash
-bash <path from /fleet-board:status> --repo .
+fleet-board supervisor start --detach   # or Start on the board page
+fleet-board supervisor status
+fleet-board supervisor stop             # finish running sessions, then exit
 ```
 
-After each successful tick the wrapper also runs `scripts/settle.sh`, a plain shell script that starts no Claude session. It moves the cards whose next step needs no agent (for example a clean review to Human QA) right away instead of a whole tick later. It never merges and never moves a card out of Human QA. A person's interactive `/fleet-board:tick` does not run it.
+`fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version that has the script it needs, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. When that version ships a newer launcher, the copy runs it instead. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository, or pins a version; when a per-project install record names a different version, the launcher says so on stderr.
 
-Stop it gracefully with `touch .fleet-board.stop`, or at once with Ctrl-C. Under `merge.policy: auto` an overnight run merges reviewed, non-draft, green PRs itself and moves their cards to Done; under `human` (the default) it merges nothing. Stop reasons, exit codes, the run log, cost estimates and scheduling with launchd are in [docs/overnight.md](docs/overnight.md).
+Before it starts, it checks for cards a crashed run left behind and refuses to start (exit 4) until you resolve them (`stuck`, `stuck --release N`). It stops on its own after `limits.max_hours`, pauses admissions at `limits.max_tokens` (cache reads are shown but not counted), and counts tokens only. Under `merge.policy: auto` it merges reviewed, non-draft, green PRs that need no Human QA, one at a time, and moves their cards to Done; under `human` (the default) it merges nothing. Pause, resume, limits, the startup check and scheduling are in [docs/overnight.md](docs/overnight.md).
 
 ## Local board
 
@@ -181,21 +182,21 @@ The board is always local: cards are JSON files under `<repo>/.fleet-board/`, wh
 | `blocked_by` | card numbers on this board | the dependency gate, `/fleet-board:status`, the card face |
 | `pr_url` | the card's PR | the card face and drawer |
 
-`board-read.sh <n>` prints them next to the prose body. `pr_url` follows the manager note's `pr`: when a tick records a PR, the card gets its URL; a URL you set yourself in the drawer is kept until a note names a different PR. A body you give `board-create.sh` or import with `## Acceptance` and `## Depends on` sections is split into the fields, so plans written the old way still import.
+`board-read.sh <n>` prints them next to the prose body. `pr_url` follows the manager note's `pr`: when the note records a PR, the card gets its URL; a URL you set yourself in the drawer is kept until a note names a different PR. A body you give `board-create.sh` or import with `## Acceptance` and `## Depends on` sections is split into the fields, so plans written the old way still import.
 
-Open the page from the repo root with the `board-web.sh` beside the wrapper (the wrapper's path is the last line of `/fleet-board:status`):
+Open the page from anywhere in the repo:
 
 ```bash
-bash <directory of that path>/board-web.sh --repo .
+fleet-board board
 ```
 
 It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 - **Cards.** Drag a card to another column, or click it to open the drawer and edit its title, body, labels, state, Acceptance list, Blocked by chips and PR link. The state select in the drawer is the keyboard path. A card shows `blocked by #n` in amber while a blocker is open, and its PR link. A card lights up while a role works on it.
-- **Start and Stop.** Start spawns the headless wrapper in its own session, so it keeps running when you close the page. Stop writes `.fleet-board.stop`, which ends the run after the current tick. A restarted page finds a live run again, and a run started from a terminal or launchd counts too: every wrapper holds a per-repo run lock, so Start never launches a second one (see [docs/overnight.md](docs/overnight.md)). The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it). `FLEET_BOARD_RUN` replaces the wrapper script.
+- **Start and Stop.** The board page's Start, Pause, Resume and Stop drive the command-line supervisor (`fleet-board supervisor`, which runs `scripts/supervisor.sh`). Start launches one in the background, the same as `fleet-board supervisor start --detach`, or resumes a paused one; Stop offers Drain and Cancel. A supervisor started from a terminal shows up too. The token strip shows tokens for this run, all time, and the planner. A card's drawer breaks its tokens down by column and action. Cards a crashed run left behind get a red border and a STUCK label, with a line that says how to resolve each (`fleet-board supervisor stuck --release N`). A banner gives the count, and Start stays disabled until they are resolved. The page keeps its state under `~/.fleet-board/web/` (`FLEET_BOARD_LOG_DIR` moves it).
 - **Import.** Paste a plan. The page runs `claude -p` with `/fleet-board:import-plan <plan> --preview`, using `headless.permission_mode` and `limits.max_turns`, and shows the cards it would create. Nothing is created until you press Create, which runs `import-plan.sh` (it prints `Created #N: <title>` for each card). `FLEET_BOARD_CLAUDE` names a different `claude` binary and `FLEET_BOARD_PLUGIN_DIR` adds `--plugin-dir` to that session.
 - **Who you are.** The author of a note is `FLEET_BOARD_USER`, else `$USER`. Anyone who can write the directory can write a note.
-- **Rate limits.** The board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain, so you can lower `limits.tick_interval` to match your CI time.
+- **Rate limits.** The board makes no GitHub calls to list columns, read cards and comments, or write notes and reports. PR calls (`gh pr view`, `gh pr list`, pushes) remain; a GitHub rate limit holds new work until it resets (`limits.rate_limit_max_wait`).
 
 **Migrating a store.** A store made before the fields existed keeps them in the body. Run `migrate-card-fields.sh` from the repo root (`--dry-run` first to see the cards it would change): it moves each card's `## Acceptance` and `## Depends on` sections into the fields, takes `pr_url` from the manager note, and prints one line per changed card. A dependency that is not a card on this board stays in the body as a prose line, with a warning. It is safe to run again.
 
@@ -203,14 +204,16 @@ It binds `127.0.0.1` only and uses `board.port` unless you pass `--port N`.
 
 Do the steps in this order. On 0.15.x and earlier a missing `backend` key defaults to `github-labels`, so deleting the key before updating would quietly switch a local board to GitHub labels.
 
-0. Stop a running `fleet-board-run.sh` first (`touch .fleet-board.stop` and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
+0. Stop a running supervisor first (`fleet-board supervisor stop`, and wait for it to exit). Between the update and the migration every unmigrated card reads `acceptance: []`, so a live run would see no acceptance on any card.
 1. Update the plugin (`/plugin marketplace update fleet-board`, then update or reinstall it) and start a new session.
 2. Delete `backend:` (and `project_number:` and `project_owner:` if set) from `.fleet-board.yml`. `config.sh` exits 5 naming the key until you do.
 3. Run `migrate-card-fields.sh` on the local store. If your cards are GitHub issues (`backend: github-labels`, `github-projects`, or no `backend` key: the old default was labels), skip this step and follow "Moving an existing GitHub board" below instead.
+4. From 0.26.0 the tick system is gone: the `tick` and `run` skills, the headless tick wrapper, the manager agent and the `.fleet-board.stop` file. Delete `limits.max_cost_usd`, `limits.tick_interval`, `limits.min_tick_gap`, `limits.max_consecutive_failures` and `models.manager` from `.fleet-board.yml` (`config.sh` exits 5 naming each), and run the supervisor instead.
+5. From 0.27.0 `scripts/settle.sh` and `tick-plan.sh --settle` are gone (the supervisor plans those steps itself), and `limits.max_tokens` and `limits.max_tokens_per_card` no longer count cache reads, so the same limit lets a run go further. Lower them if you set them with cache reads in mind.
 
 ### Moving an existing GitHub board
 
-A repo whose cards are still GitHub issues (`fleet:<state>` labels, or a Projects board) is copied once into the local store with `scripts/import-github.sh`, run from the repo root (the wrapper's directory is in the last line of `/fleet-board:status`). It is read-only: every `gh` call is a GET or a list, and nothing is written to GitHub.
+A repo whose cards are still GitHub issues (`fleet:<state>` labels, or a Projects board) is copied once into the local store with `scripts/import-github.sh`, run from the repo root (the scripts directory is in the last line of `/fleet-board:status`). It is read-only: every `gh` call is a GET or a list, and nothing is written to GitHub.
 
 First, run `/fleet-board:init` (or write `.fleet-board.yml` by hand) so the local store exists, and make sure the config no longer has `backend`, `project_number` or `project_owner`: the importer loads the config and `config.sh` exits 5 on them. Note the project number from the old config before you delete it. `init.sh` adds `.fleet-board/` to `.gitignore`; if you wrote the config by hand, add that line yourself, or remove it later if you want to version the board.
 
@@ -228,10 +231,6 @@ Each card keeps its issue number, title, dates, labels (without the `fleet:<stat
 ## Known issues
 
 - **Unblocking a card re-runs the implementor.** A card moved from Blocked back to Ready goes through `start` again, so the implementor runs once more before review. Its branch and PR are reused, so no work is lost. Planned for 0.1.1.
-
-## Demo
-
-[`docs/demo.cast`](docs/demo.cast) records `tests/behavioral-tick.sh --scenario ready-path` on a sandbox repo: one card goes from Ready to a PR ready for review in four ticks, with all 48 checks passing. Play it with `asciinema play docs/demo.cast`.
 
 ## Design
 

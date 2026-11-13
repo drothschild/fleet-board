@@ -57,7 +57,7 @@ BACK="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }
     on && $0 == "```" { exit }
     on { print }' | jq -r '.blocked_from // empty' 2>/dev/null)"
-case "$BACK" in ready|in_progress|in_review|review_?*) ;; *) BACK=in_review ;; esac
+case "$BACK" in ready|in_progress|in_review|merging|review_?*) ;; *) BACK=in_review ;; esac
 
 PR="$(jq -r '.manager_note // empty' <<<"$CARD" | awk '
     $0 == "```json" && !found { found = 1; on = 1; next }

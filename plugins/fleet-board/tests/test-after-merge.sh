@@ -178,9 +178,8 @@ body_file "## After merge
 run_check "$SCRIPT" run "$BODY"
 assert_jq "run: a refused command's note line says refused" '.note' '["rm -rf /tmp/never -> refused (not allowlisted)"]'
 
-echo "manager wiring"
-MANAGER="${SCRIPT_DIR}/../agents/manager.md"
-if grep -qF -- 'after-merge.sh run' "$MANAGER"; then pass "manager: finish runs after-merge.sh"; else fail "manager: finish runs after-merge.sh" "missing"; fi
+# The manager.md wiring check went with the tick system: the supervisor's driver runs after-merge.sh on
+# finish (driver_cases.py test_finish_runs_after_merge_and_records_results).
 
 echo "gate unchanged"
 bash "${SCRIPT_DIR}/test-gate.sh" >/dev/null 2>&1

@@ -7,7 +7,9 @@
 #   G2  gh pr merge: blocked under merge.policy human; under auto, never --admin,
 #       never without an explicit PR, never a draft, never with checks that are
 #       not green, never a fleet PR whose head holds commits after the last
-#       review other than clean merges of main; raw merges blocked
+#       review other than clean merges of main, never a fleet PR whose title,
+#       body or a commit message holds a closing keyword before an issue
+#       reference (pr-closing-check.sh); raw merges blocked
 #   G3  board-move N ready needs a non-empty acceptance field on the card
 #
 # A block is exit 2 with one line on stderr. Within the shapes it recognizes,
@@ -596,6 +598,7 @@ DIR_OK=()
 DIR_POLICY=()
 DIR_QA=()
 DIR_REPO=()
+DIR_IGNORE=()
 
 # use_dir D: loads D's config (once) and sets CURDIR, POLICY, CFG_REPO and
 # QA_NAME; returns 1 when D has no config. Blocks when D is missing or its
@@ -622,10 +625,11 @@ use_dir() {
     # state, tab-separated; any failure or unexpected value fails closed
     info="$(cd "$d" && . "$S/board-lib.sh" && fb_load_config >/dev/null 2>&1 \
       && p="$(fb_cfg merge.policy)" \
-      && printf 'policy\t%s\nrepo\t%s\n' "$p" "$(fb_cfg board.repo)" \
+      && printf 'policy\t%s\nrepo\t%s\nignore\t%s\n' "$p" "$(fb_cfg board.repo)" "$(fb_cfg merge.ignore_checks)" \
       && for s in $FB_STATES; do printf 'state\t%s\t%s\n' "$s" "$(fb_state_name "$s")"; done)" || info=""
     DIR_POLICY[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "policy" { print $2; exit }')"
     DIR_REPO[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "repo" { print $2; exit }')"
+    DIR_IGNORE[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "ignore" { print $2; exit }')"
     DIR_QA[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }')"
     case "${DIR_POLICY[n]}" in
       human|auto) ;;
@@ -636,7 +640,7 @@ use_dir() {
   fi
   [ "${DIR_OK[n]}" = 1 ] || return 1
   CURDIR="$d"; POLICY="${DIR_POLICY[n]}"
-  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"
+  CFG_REPO="${DIR_REPO[n]}"; QA_NAME="${DIR_QA[n]}"; IGNORE_CHECKS="${DIR_IGNORE[n]:-[]}"
   return 0
 }
 
@@ -711,17 +715,17 @@ gate_move() {
 
 # check_pr REF REPO: blocks unless the PR is not a draft and its checks are green
 check_pr() {
-  local ref="$1" repo="$2" info num draft green what="PR $1"
+  local ref="$1" repo="$2" info num draft green today what="PR $1"
   local args=(pr view "$ref")
   [ -n "$repo" ] && args+=(-R "$repo")
   args+=(--json number,isDraft,statusCheckRollup)
   lookup "$what" gh "${args[@]}"
-  info="$(jq -r '
+  today="$(date -u +%Y-%m-%d)"
+  info="$(jq -r --argjson ig "${IGNORE_CHECKS:-[]}" --arg today "$today" "$(cat "$S/ignore-checks.jq")"'
     (.number // ""),
     (.isDraft | if type == "boolean" then . else error("no isDraft") end),
     (.statusCheckRollup | if type == "array" then . else error("no statusCheckRollup") end
-      | map(.conclusion // .state)
-      | all(. == "SUCCESS" or . == "NEUTRAL" or . == "SKIPPED"))' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+      | ic_green($ig; $today))' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify $what; blocking to be safe"
   num="$(printf '%s\n' "$info" | sed -n 1p)"
   draft="$(printf '%s\n' "$info" | sed -n 2p)"
@@ -756,6 +760,26 @@ check_reviewed() {
   [ "$LOOKUP_OUT" = reviewed ] \
     || block "PR $ref head ${oid:0:7} has commits after the last review at ${from:0:7} that are not clean merges of main; review it before merging"
   return 0
+}
+
+# check_closing REF REPO: blocks when the PR is a fleet card's PR whose title,
+# body or a commit message holds a GitHub closing keyword before an issue
+# reference (pr-closing-check.sh): card numbers are not GitHub numbers, so the
+# merge would close an unrelated issue or PR
+check_closing() {
+  local ref="$1" repo="$2" name err rc
+  local args=(pr view "$ref")
+  [ -n "$repo" ] && args+=(-R "$repo")
+  args+=(--json headRefName,title,body,commits)
+  lookup "PR $ref" gh "${args[@]}"
+  name="$(jq -r '.headRefName // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify PR $ref; blocking to be safe"
+  case "$name" in fleet/[0-9]*-*) ;; *) return 0 ;; esac
+  err="$(printf '%s' "$LOOKUP_OUT" | bash "$S/pr-closing-check.sh" --json - 2>&1 >/dev/null)"
+  rc=$?
+  [ $rc -eq 0 ] && return 0
+  [ $rc -eq 1 ] || block "could not verify the title, body and commit messages of PR $ref; blocking to be safe"
+  block "PR #$ref holds a GitHub closing keyword before an issue reference; card numbers are not GitHub numbers, so reword it as \"Local board card <n>\": $(printf '%s\n' "$err" | sed -n 2p | sed 's/^pr-closing-check: //')"
 }
 
 # --- gates -----------------------------------------------------------------------
@@ -807,7 +831,8 @@ while [ $k -lt ${#SHAPES[@]} ]; do
       merge)
         check_pr "$f1" "$f3"
         check_reviewed "$f1" "$f3"
-        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; done ;;
+        check_closing "$f1" "$f3"
+        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; check_closing "$ref" "$f3"; done ;;
     esac
   done <<<"${SHAPE_DIRS[k]}"
   k=$((k + 1))

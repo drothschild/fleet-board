@@ -95,6 +95,7 @@ GH
   : > "$R"
   INREV=()
   INSTG=()
+  INMRG=()
   printf '{"login":"fleet-bot"}\n' > "$FX/user.json"
   printf '{"id":9001}\n' > "$FX/created.json"
   route 'issue edit *' 0 -
@@ -113,6 +114,11 @@ finalize() {
     items="$(jq -c --argjson n "$n" '. + [{number:$n, title:"Add subtract", url:"u", labels:[{name:"fleet:in_review"}]}]' <<<"$items")"
   done
   printf '%s\n' "$items" > "$FX/list-in_review.json"
+  items='[]'
+  for n in ${INMRG[@]+"${INMRG[@]}"}; do
+    items="$(jq -c --argjson n "$n" '. + [{number:$n, title:"Add subtract", url:"u", labels:[{name:"fleet:merging"}]}]' <<<"$items")"
+  done
+  printf '%s\n' "$items" > "$FX/list-merging.json"
   for col in in_progress; do printf '[]\n' > "$FX/list-$col.json"; done
   local e
   for col in review_security; do
@@ -126,6 +132,7 @@ finalize() {
   {
     printf 'issue list --repo acme/toy --label fleet:in_review *\t0\t%s\n' "$FX/list-in_review.json"
     printf 'issue list --repo acme/toy --label fleet:review_security *\t0\t%s\n' "$FX/list-review_security.json"
+    printf 'issue list --repo acme/toy --label fleet:merging *\t0\t%s\n' "$FX/list-merging.json"
     cat "$R"
   } > "$FAKE_GH_ROUTES"
 }
@@ -142,7 +149,7 @@ card() {
       created_at:"2026-09-28T00:01:00Z"}]' > "$FX/comments-$n.json"
   route "api repos/acme/toy/issues/$n" 0 "$FX/issue-$n.json"
   route "api --paginate repos/acme/toy/issues/$n/comments" 0 "$FX/comments-$n.json"
-  case "$col" in review_*) INSTG+=("$col:$n"); return ;; esac
+  case "$col" in review_*) INSTG+=("$col:$n"); return ;; merging) INMRG+=("$n"); return ;; esac
   case "$col:${4:-yes}" in in_review:*|*:yes) INREV+=("$n") ;; esac
 }
 
@@ -156,6 +163,18 @@ pr() {
   route "pr view $p --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid" 0 "$FX/pr-$p.json"
   route "pr view $p --repo acme/toy --json files*" 0 "$FX/files-$p.json"
   route "pr view $p --repo acme/toy --json isDraft,mergeable,statusCheckRollup" 0 "$FX/handoff-$p.json"
+  # the merge-time closing-keyword check (pr-closing-check.sh): clean unless a case rewrites it
+  closing "$p" "Add subtract" "Local board card 12" "feat: subtract" "Local board card 12"
+  route "pr view $p --repo acme/toy --json title,body,commits" 0 "$FX/closing-$p.json"
+}
+
+# closing <pr> <title> <body> [<headline> <commit body>]...: the PR's title, body and commits
+closing() {
+  local p="$1" t="$2" b="$3" c='[]'; shift 3
+  while [ $# -ge 2 ]; do
+    c="$(jq -c --arg h "$1" --arg m "$2" '. + [{oid:"abc1234def", messageHeadline:$h, messageBody:$m}]' <<<"$c")"; shift 2
+  done
+  jq -cn --arg t "$t" --arg b "$b" --argjson c "$c" '{title:$t, body:$b, commits:$c}' > "$FX/closing-$p.json"
 }
 
 CLEAN='{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}}'
@@ -180,6 +199,9 @@ finalize
 run_merge extra
 assert_exit "an argument is a usage error" 2
 assert_eq "usage: no gh call" "$(cnt "")" 0
+run_merge --no-finish
+assert_exit "--no-finish without --card is a usage error" 2
+assert_eq "--no-finish without --card: no gh call" "$(cnt "")" 0
 
 echo "merge.policy auto: a reviewed, non-draft, green PR is merged and its card moves to done"
 setup_case auto
@@ -251,6 +273,62 @@ finalize
 run_merge
 assert_exit "failed merge: exit 1" 1
 assert_eq "failed merge: no move to done" "$(moved_done)" 0
+
+echo "a closing keyword in the PR title, body or a commit message refuses the merge"
+for where in title body commit; do
+  setup_case auto
+  card 12 in_review "$CLEAN"
+  pr 34 false "$GREEN"
+  case "$where" in
+    title) closing 34 "Closes #253" "Local board card 12" "feat: subtract" "" ;;
+    body) closing 34 "Add subtract" "$(printf 'Summary\n\nCloses #253')" "feat: subtract" "" ;;
+    commit) closing 34 "Add subtract" "Local board card 12" "feat: subtract" "Fixes #253" ;;
+  esac
+  finalize
+  run_merge
+  assert_exit "closing keyword ($where): exit 1" 1
+  assert_eq "closing keyword ($where): no gh pr merge" "$(cnt "pr merge")" 0
+  assert_eq "closing keyword ($where): no move to done" "$(moved_done)" 0
+  case "$LAST_ERR" in
+    *"#12: PR #34"*"closing keyword"*) pass "closing keyword ($where): the warning names the card, the PR and the cause" ;;
+    *) fail "closing keyword ($where): the warning names the card, the PR and the cause" "stderr: $LAST_ERR" ;;
+  esac
+done
+
+setup_case auto
+card 12 in_review "$CLEAN"
+card 13 in_review "$(jq -c '.pr=35 | .branch="fleet/13-next"' <<<"$CLEAN")"
+pr 34 false "$GREEN"
+pr 35 false "$GREEN"
+closing 34 "Add subtract" "Closes #253"
+finalize
+run_merge
+assert_exit "closing keyword on one card: exit 1" 1
+assert_eq "closing keyword on one card: that PR is not merged" "$(cnt "pr merge 34 ")" 0
+assert_eq "closing keyword on one card: the other card still merges" "$(cnt "pr merge 35 ")" 1
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+printf 'pr view 34 --repo acme/toy --json title,body,commits\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
+finalize
+run_merge
+assert_exit "closing check cannot read the PR: exit 1" 1
+assert_eq "closing check cannot read the PR: no gh pr merge" "$(cnt "pr merge")" 0
+assert_eq "closing check cannot read the PR: no move to done" "$(moved_done)" 0
+
+echo "keyed form: a closing-keyword refusal leaves the operation marker, so the lane classifies it refused"
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+closing 34 "Add subtract" "Local board card 12" "feat: subtract" "Resolves owner/repo#4"
+finalize
+run_merge --no-finish --card 12 --operation-key op-12 --pr 34 --head abc1234
+assert_exit "keyed closing refusal: exit 1" 1
+assert_eq "keyed closing refusal: no gh pr merge" "$(cnt "pr merge")" 0
+INSPECT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+assert_eq "keyed closing refusal: inspection observes the marker on the open PR at the planned head" \
+  "$(jq -c '[.status,.state,.observed_head]' <<<"$INSPECT" 2>/dev/null)" '["observed","OPEN","abc1234"]'
 
 echo "cases that must never merge"
 no_merge() { # <desc> ; the case is already finalized
@@ -493,6 +571,126 @@ for i in $(jq -r '.comments | keys[]' "$REPO/.fleet-board/cards/12.json" 2>/dev/
       && grep -q '"ok": true' "$FAKE_GH_DIR/evidence.md"; then RECORDED=1; break; fi
 done
 if [ "$RECORDED" = 1 ]; then pass "crash recovery: operation-bound main result persisted"; else fail "crash recovery: operation-bound main result persisted" "missing note write"; fi
+
+
+echo "merging: the merge script accepts the state; --no-finish stops after verification"
+MERGING_NOTE="$(jq -c '.state="merging"' <<<"$CLEAN")"
+note_field() { "$BASH_EXE" "$SCRIPT_DIR/../scripts/note.sh" get 12 </dev/null | jq -c "$1"; }
+card_state() { jq -r .state "$REPO/.fleet-board/cards/12.json"; }
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12
+assert_exit "merging: a merging card is merged by --card" 0
+assert_eq "merging: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "merging: a merging card is never finished here, even without --no-finish" "$(card_state)" merging
+assert_eq "merging: --card verifies main and notes it" "$(note_field '.main_check.ok')" true
+assert_eq "merging: --card writes no done note" "$(note_field '.state')" '"merging"'
+
+# The no-argument form (once the tick wrapper's) lists merging too, but never finishes a merging
+# card: only the supervisor finishes it, after the merger
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "merging legacy: exit 0" 0
+assert_eq "merging legacy: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "merging legacy: the card stays in merging" "$(card_state)" merging
+assert_eq "merging legacy: no done note" "$(note_field '.state')" '"merging"'
+
+# --inspect with no marker at all reports the PR as it is (the supervisor reads a planner skip from it)
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+store_sync
+INSPECT_OUT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+LAST_EXIT=$?
+assert_exit "inspect absent: exit 0" 0
+assert_eq "inspect absent: status, state and heads" "$(jq -c '[.status, .state, .planned_head, .observed_head, .pr]' <<<"$INSPECT_OUT")" '["absent","OPEN","abc1234","abc1234",34]'
+setup_case auto
+card 12 merging "$(jq -c '.pending_merge={operation_key:"op-old",pr:34,head_sha:"abc1234"}' <<<"$MERGING_NOTE")"
+pr 34 false "$GREEN"
+finalize
+store_sync
+INSPECT_OUT="$("$BASH_EXE" "$SCRIPT" --inspect --card 12 --operation-key op-12 --pr 34 --head abc1234 </dev/null 2>/dev/null)"
+assert_eq "inspect: another operation's marker is still unmatched" "$(jq -c '.status' <<<"$INSPECT_OUT")" '"unmatched"'
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: exit 0" 0
+assert_eq "no-finish: the PR merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "no-finish: the card stays in merging" "$(card_state)" merging
+assert_eq "no-finish: merged_pr is noted" "$(note_field .merged_pr)" 34
+assert_eq "no-finish: main_check is noted" "$(note_field '.main_check.ok')" true
+assert_eq "no-finish: no done note" "$(note_field '.state')" '"merging"'
+
+setup_case auto
+card 12 merging "$(jq -c '.merged_pr=34' <<<"$MERGING_NOTE")"
+pr 34 false "$GREEN"
+jq '.state="MERGED"' "$FX/pr-34.json" > "$FX/merged.json"
+mv "$FX/merged.json" "$FX/pr-34.json"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: a merged, unverified merging card is verified (exit 0)" 0
+assert_eq "no-finish: no second merge" "$(cnt "pr merge ")" 0
+assert_eq "no-finish: verification recorded" "$(note_field '.main_check.ok')" true
+assert_eq "no-finish: still merging after verification" "$(card_state)" merging
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: an in_review card also merges (exit 0)" 0
+assert_eq "no-finish: in_review card merged" "$(cnt "pr merge 34 ")" 1
+assert_eq "no-finish: in_review card is not moved to done" "$(card_state)" in_review
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-12 --pr 34 --head abc1234
+assert_exit "no-finish keyed: exit 0" 0
+assert_eq "no-finish keyed: merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+assert_eq "no-finish keyed: card stays in merging" "$(card_state)" merging
+assert_eq "no-finish keyed: merge_operation recorded" "$(note_field '.merge_operation.operation_key')" '"op-12"'
+assert_eq "no-finish keyed: verified evidence in merge_operation" "$(note_field '.merge_operation.main_check.ok')" true
+
+# A merger attention cleared by a person (note.sh merge: merger null, merge_refusal null) merges again with a
+# new operation key; the driver clears pending_merge when it records attention, since a stale marker of the
+# refused operation (same PR and head, old key) makes this script exit 3 and the lane pause the board
+CLEARED_NOTE="$(jq -c '.merger=null | .merge_refusal=null | .pending_merge=null' <<<"$MERGING_NOTE")"
+setup_case auto
+card 12 merging "$CLEARED_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-new --pr 34 --head abc1234
+assert_exit "cleared attention: a new operation key merges (exit 0)" 0
+assert_eq "cleared attention: merged once" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 1
+STALE_NOTE="$(jq -c '.pending_merge={operation_key:"op-old",pr:34,head_sha:"abc1234"}' <<<"$CLEARED_NOTE")"
+setup_case auto
+card 12 merging "$STALE_NOTE"
+pr 34 false "$GREEN"
+finalize
+run_merge --card 12 --no-finish --operation-key op-new --pr 34 --head abc1234
+assert_exit "stale pending_merge: a new operation key is refused (exit 3)" 3
+assert_eq "stale pending_merge: nothing merged" "$(cnt "pr merge 34 ")" 0
+
+setup_case auto
+card 12 merging "$MERGING_NOTE"
+pr 34 false "$GREEN"
+printf '#!/usr/bin/env bash\nprintf '"'"'{"commit":"abc1234","ok":false,"results":[]}\\n'"'"'\n' > "$FX/verify-main.sh"
+finalize
+run_merge --card 12 --no-finish
+assert_exit "no-finish: a failed verification still exits 3" 3
+assert_eq "no-finish: a failed verification leaves the card in merging" "$(card_state)" merging
 
 echo ""
 echo "-----------------------------------"
