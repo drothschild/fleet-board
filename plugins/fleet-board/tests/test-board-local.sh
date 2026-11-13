@@ -507,6 +507,32 @@ assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 assert_card_json 2 '.acceptance|length' 0
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --title-file "$tf"
 assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+# a dependency line that starts with a reference but carries a note is refused
+setup_case
+printf 'Why\n' > "$REPO/ok.md"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Dep target' "$REPO/ok.md"
+printf 'Why\n\n## Depends on\n- #1 (PR #87, which adds scripts/lint.sh)\n' > "$REPO/bad1.md"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Bad dep' "$REPO/bad1.md"
+assert_exit "create refuses a dependency line with a note after the reference" 2
+assert_stderr_contains "create names the bad dependency line" 'bad dependency line: #1 (PR #87'
+if [ ! -e "$REPO/.fleet-board/cards/2.json" ]; then pass "create with a bad dependency line writes no card file"; else fail "create with a bad dependency line writes no card file" "cards/2.json exists"; fi
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Plain' "$REPO/ok.md"
+assert_json "refused create does not spend a card number" '.number' 2
+cp "$REPO/.fleet-board/cards/1.json" "$REPO/c1.before"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 1 --body-file "$REPO/bad1.md"
+assert_exit "edit --body-file refuses a dependency line with a note after the reference" 2
+assert_stderr_contains "edit names the bad dependency line" 'bad dependency line: #1 (PR #87'
+cmp -s "$REPO/c1.before" "$REPO/.fleet-board/cards/1.json" && pass "refused edit leaves the card file unchanged" || fail "refused edit leaves the card file unchanged" "card 1 changed"
+printf 'Why\n\n## Depends on\n- #1\n- other/repo#5\n' > "$REPO/good.md"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Good deps' "$REPO/good.md"
+assert_exit "bare #n and another repo's bare ref still create" 0
+assert_card_json 3 '.blocked_by|map(tostring)|join(",")' 1
+assert_card_json 3 '.body|contains("Depends on (outside this board): other/repo#5")' true
+printf 'Why\n\n## Depends on\n- #1 (first note)\n- acme/toy#2, then more\n' > "$REPO/bad2.md"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" 'Two bad' "$REPO/bad2.md"
+assert_exit "create with two malformed entries exits 2" 2
+assert_stderr_contains "stderr names the first malformed line" 'bad dependency line: #1 (first note)'
+assert_stderr_contains "stderr names the second malformed line" 'bad dependency line: acme/toy#2, then more'
 # migration
 setup_case
 seed_card 1 backlog 'Old one' $'Why\n\n## Acceptance\n- a1\n- a2\n\n## Depends on\n- #2\n- other/repo#3\n'
