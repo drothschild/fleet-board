@@ -540,11 +540,12 @@ class Supervisor:
             row = dict(original)
             row['provider'] = resolver.provider_for(config, row)
             if row.get('number') in capped and row['provider'] != 'scripts':
-                limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT})
+                limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT, 'source': 'limit'})
                 continue
             retry = self._retry_after(row) if row.get('action') == 'merge' else None
             if retry is not None and retry > now:
-                limit_waits.append({'number': row.get('number'), 'reason': 'merge retry at %s' % _iso(retry)})
+                limit_waits.append({'number': row.get('number'), 'reason': 'merge retry at %s' % _iso(retry),
+                                    'until': retry, 'source': 'limit'})
                 continue
             if row.get('action') == 'wait' and row.get('waiting_on'):
                 row['deps_commented'] = self._deps_commented(row.get('number'))
@@ -561,6 +562,7 @@ class Supervisor:
         self.last_cycle = {'admitted': [r.get('number') for r in result['admitted']],
                            'waits': result['waits'] + limit_waits, 'attention': result['attention'],
                            'ignored': result['ignored']}
+        self.state.set_holds(self._holds(result, limit_waits))
         attention = sorted((a.get('number'), a.get('reason')) for a in result['attention'])
         if attention != self._last_attention:
             self._last_attention = attention
@@ -572,6 +574,19 @@ class Supervisor:
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    @staticmethod
+    def _holds(result, limit_waits):
+        """Why each card was held this cycle: {number: {reason, source, until}} from the planner's wait and skip_*
+        rows, the scheduler's waits and the loop's own limit waits."""
+        holds = {}
+        for row in result['ignored']:
+            if row.get('action') != 'skip' and row.get('reason'):
+                holds[str(row.get('number'))] = {'reason': row['reason'], 'source': 'planner', 'until': None}
+        for wait in result['waits'] + limit_waits:
+            holds[str(wait.get('number'))] = {'reason': wait.get('reason'), 'source': wait.get('source', 'scheduler'),
+                                              'until': wait.get('until')}
+        return holds
 
     def _refresh_ignored(self):
         """Stuck cards stay out of admission while a fresh startup check still reports them (throttled)."""
