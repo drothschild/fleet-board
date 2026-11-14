@@ -882,6 +882,20 @@ set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important
 run_note get 12
 assert_eq "last_review.stage: absent accepted" "$(jq -c '.last_review.round' <<<"$LAST_OUT")" '1'
 
+# reviews: each reviewer's latest report, keyed "evidence" or a stage name
+set_note_json '{"reviews":{"evidence":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":null},"security":{"round":1,"sha":"abc1234","critical":0,"important":1,"stage":"security"}}}'
+run_note get 12
+assert_eq "reviews: kept per reviewer" "$(jq -c '.reviews | keys' <<<"$LAST_OUT")" '["evidence","security"]'
+set_note_json '{"reviews":{"Bad Key":{"round":1,"sha":"abc1234"}}}'
+run_note get 12; assert_stdout_exact "reviews: a bad reviewer key rejected" "{}"
+assert_stderr_contains "reviews: names the field" "ignoring invalid manager note on #12: reviews"
+set_note_json '{"reviews":{"security":{"round":"1","sha":"abc1234"}}}'
+run_note get 12; assert_stdout_exact "reviews: a non-integer round rejected" "{}"
+set_note_json '{"reviews":{"security":{"round":1,"sha":"not a sha"}}}'
+run_note get 12; assert_stdout_exact "reviews: a non-hex sha rejected" "{}"
+set_note_json '{"reviews":["security"]}'
+run_note get 12; assert_stdout_exact "reviews: a list rejected" "{}"
+
 set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"compliance","provider":"openai"}}'
 run_note get 12
 assert_eq "last_review.provider: kept" "$(jq -c .last_review.provider <<<"$LAST_OUT")" '"openai"'

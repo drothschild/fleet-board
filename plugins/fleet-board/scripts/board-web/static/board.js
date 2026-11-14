@@ -1063,6 +1063,8 @@ function renderDrawer(card) {
   renderBodyPreview();
   renderDrawerMeta();
   renderHold(card);
+  setAcceptError("");
+  syncAccept();
   $("dr-comments-sec").hidden = isNew;
   if (isNew) {
     $("dr-comments").replaceChildren();
@@ -1739,6 +1741,50 @@ async function submitComment() {
   }
 }
 
+// The Accept button shows only in the drawer of a stored Blocked card.
+function syncAccept() {
+  const d = S.drawer;
+  const btn = $("dr-accept");
+  btn.hidden = !(d && d.n !== null && d.base && d.base.state === "blocked");
+  btn.disabled = !!(d && d.accepting);
+}
+
+function setAcceptError(msg) {
+  const p = $("dr-accept-err");
+  p.textContent = msg;
+  p.hidden = !msg;
+}
+
+// acceptCard(): confirms, then POST /api/cards/<n>/accept; the state picker
+// shows the state the server returns, or the server's message shows on a refusal.
+async function acceptCard() {
+  const d = S.drawer;
+  if (!d || d.n === null || d.accepting) return;
+  if (!confirm("Accept #" + d.n + " and move it out of Blocked?")) return;
+  d.accepting = true;
+  setAcceptError("");
+  syncAccept();
+  const r = await writeApi("POST", "/api/cards/" + d.n + "/accept");
+  d.accepting = false;
+  if (S.drawer !== d) {
+    fetchBoard(true);
+    return;
+  }
+  if (!r.ok) {
+    setAcceptError(errorText(r));
+    syncAccept();
+    return;
+  }
+  if (typeof r.data.state === "string") {
+    d.base.state = r.data.state;
+    d.card = r.data;
+    fillStateSelect(r.data.state);
+    updateDirty();
+  }
+  syncAccept();
+  fetchBoard(true);
+}
+
 // syncDrawer(): after a board poll, refresh the live parts of the drawer.
 function syncDrawer() {
   const d = S.drawer;
@@ -1760,6 +1806,7 @@ function bindDrawer() {
   $("dr-close").addEventListener("click", requestCloseDrawer);
   $("drawer-dim").addEventListener("click", requestCloseDrawer);
   $("dr-save").addEventListener("click", saveDrawer);
+  $("dr-accept").addEventListener("click", acceptCard);
   $("dr-comment-btn").addEventListener("click", submitComment);
   $("dr-title").addEventListener("input", updateDirty);
   $("dr-state").addEventListener("change", updateDirty);
