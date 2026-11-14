@@ -757,12 +757,15 @@ def test_reviewer_round_one_checks_the_accepted_sha_is_an_ancestor(base):
     assert any(c[1:] == ('merge-base', '--is-ancestor', 'acce123', 'HEAD') for c in b.git_calls), b.git_calls
 
 
-def test_a_fresh_start_clears_an_earlier_accept(base):
+def test_a_start_keeps_an_accept(base):
+    # accept.sh sends a card blocked from Ready back to Ready; its start must not undo the accept.
+    # A new PR or rewritten branch is handled by the ancestor check, not by clearing it here.
     b = board_for(base)
-    b.put_note({'accepted': {'login': driver.local_login(), 'at': '2026-11-14T00:00:00Z', 'sha': 'acce123'}})
+    entry = {'login': driver.local_login(), 'at': '2026-11-14T00:00:00Z', 'sha': 'acce123'}
+    b.put_note({'accepted': entry})
     b.stubs['worktree.sh'] = ok(b.worktree + '\n')
     begin(b, 'start')
-    assert b.note().get('accepted') is None, b.note()
+    assert b.note().get('accepted') == entry, b.note()
 
 
 def test_reviewer_round_one_ignores_an_accept_by_another_login(base):
