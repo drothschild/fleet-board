@@ -1798,7 +1798,9 @@ def stuck_view(status, refresh=True):
                          if isinstance(a, dict) and is_int(a.get("card")))
         view = stuck_state(board_dir, refresh=refresh, live=live)
         if view["findings"] is not None:   # an in_progress card with no session may only wait for a slot
-            view["findings"] = [i for i in view["findings"] if i["kind"] != "in_flight"]
+            # The cached scan may have used an older live set and read a just-launched card's marker before it
+            # was live: leave out any finding for a card in the current live set.
+            view["findings"] = [i for i in view["findings"] if i["kind"] != "in_flight" and i["card"] not in live]
         return dict(view, suppressed=None)
     notice = stuck_suppressed(status)
     if notice is not None:
