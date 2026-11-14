@@ -19,6 +19,7 @@ while [ $# -gt 0 ]; do
     --state) STATE="$2"; shift 2 ;;
     --acceptance-file) ACC_FILE="$2"; shift 2 ;;
     --blocked-by) blocked+=("$2"); shift 2 ;;
+    --repo) shift 2 ;; # the local board is one store; the repo names no other board
     *) fb_die 2 "create.sh: unknown argument: $1" ;;
   esac
 done
