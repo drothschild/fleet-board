@@ -630,6 +630,21 @@ assert_stderr_line "no role, fix: unknown status" "parse-report: unknown status:
 run_parse --role reviewer --mode refusal "$REPORTS/reviewer-ok.md"
 assert_exit "--mode with another role: exit 2" 2
 
+# --- merger acceptance: statuses per mode ------------------------------------
+echo "merger acceptance"
+for s in retry fix attention; do
+  run_parse --role merger --mode refusal "$REPORTS/merger-refusal-$s.md"
+  assert_exit "acceptance: refusal mode accepts $s" 0
+  assert_jq "acceptance: refusal mode reports $s" ".status == \"$s\""
+done
+for s in done attention; do
+  run_parse --role merger --mode after_merge "$REPORTS/merger-after-merge-$s.md"
+  assert_exit "acceptance: after_merge mode accepts $s" 0
+  assert_jq "acceptance: after_merge mode reports $s" ".status == \"$s\""
+done
+run_parse --role merger --mode after_merge "$REPORTS/merger-after-merge-fix.md"
+assert_exit "acceptance: after_merge mode rejects fix" 1
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
