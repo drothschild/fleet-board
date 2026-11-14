@@ -95,8 +95,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   with their complete PR file lists when ready cards exist. Missing or truncated PR
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
-  directory scopes cover descendants with path-boundary matching. `review`, `review_stage` and
-  `update_branch` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
+  `review_stage` and `update_branch` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card. Settle plans do
   not fetch scope files or start workers. Every overlap check (the scheduler,
   `state.reserve`, and tick-plan's Ready-card checks) first drops paths matching

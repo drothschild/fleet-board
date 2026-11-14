@@ -23,10 +23,11 @@ _ACTION_CLASS = {
 # class 1 only when they carry work (see _has_work).
 _IGNORED = ('skip', 'skip_no_acceptance', 'skip_card_lint', 'wait')
 _WORK_CLASS = 1
-# Actions that change no file another card works on: a review or stage review reads the PR, and a
-# branch update merges the base into the card's own branch. They take a slot and wait for their own
-# card, but neither wait on another card's scope nor block one, so a writer never holds them up.
-SCOPE_FREE_ACTIONS = frozenset({'review', 'review_stage', 'update_branch'})
+# Actions that change no file another card works on: a review (start_review is its first round) or a
+# stage review reads the PR, and a branch update merges the base into the card's own branch. They take
+# a slot and wait for their own card, but neither wait on another card's scope nor block one, so a
+# writer never holds them up.
+SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch'})
 # Provider label of script-only actions: never capped by provider_concurrency.
 _SCRIPTS = 'scripts'
 _PRIORITY = {'high': 0, 'normal': 1, 'low': 2}
