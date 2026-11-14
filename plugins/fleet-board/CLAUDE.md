@@ -104,6 +104,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
   language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
   parity test over `fixtures/glob-cases.json`.
+- **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
+  <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
+  `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
+  `git commit-tree`) and moves the branch with `git merge --ff-only`, printing the new head. Exit 0 ok,
+  3 conflict (paths on stdout), 4 git older than 2.40, 1 other failure (parent head not an
+  ancestor of HEAD, changes to tracked files), 2 usage; on 3 or 4 nothing changes. A squash already in
+  HEAD prints HEAD and adds no commit. Nothing calls it yet.
 - **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
@@ -116,6 +123,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `origin/<branch>` and verifies the push; after the merge starts and until the push is
   verified, any non-zero exit aborts or resets (`git reset --keep`) to the pre-run head,
   never past a head origin already has.
+- **Built-in review stages** (`builtin_stages` in `scripts/config-defaults.json`, merged by
+  `scripts/config.sh`). Every project gets `documentation` and `blast_radius` (agent stages)
+  after its own `review.stages`. A project stage of the same name replaces the built-in; a
+  stage entry `{name: <built-in>, enabled: false}` removes it and is itself dropped. `enabled`
+  must be boolean. With a provider `models.reviewer` the built-ins carry model `sonnet`.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
