@@ -1899,6 +1899,17 @@ assert_jq "all reported: the card still has a row" "[.cards[] | select(.number =
 splan parallel-accepted-baseline
 assert_jq "accepted baseline: the evidence reviewer is planned" "[.cards[] | select(.number == 12 and .action == \"review\")] | length" '1'
 assert_jq "accepted baseline: no fix or block on the older findings" "[.cards[] | select(.number == 12 and (.action == \"fix\" or .action == \"block\"))] | length" '0'
+# Leaving in_review: a card moves on only when every routed reviewer (the evidence reviewer and each
+# routed stage) is clean at the current head. Card 12 routes security (blocking) and ux (advisory).
+CARD12_GATED='[.cards[] | select(.number == 12 and (.action == "to_human_qa" or .action == "mark_ready" or .action == "merge" or .action == "advance_stage"))] | length'
+splan parallel-all-reported
+assert_jq "gate: the card moves to its next state when every routed reviewer is clean at the current head" "$(card 12 action)" '"mark_ready"'
+splan gate-one-stage-unreported
+assert_jq "gate: the card stays in in_review when the evidence report is clean but one stage has not reported" "[($CARD12_GATED), ([.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name])]" '[0,["ux"]]'
+splan gate-stage-stale-head
+assert_jq "gate: the card stays in in_review when a stage's clean report is for an older head" "[($CARD12_GATED), ([.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name])]" '[0,["security"]]'
+splan gate-advisory-findings
+assert_jq "gate: an advisory stage with findings counts as clean" "$(card 12 action)" '"mark_ready"'
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
