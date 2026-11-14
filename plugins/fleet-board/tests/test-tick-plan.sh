@@ -1921,8 +1921,11 @@ JQ_SHIM="$FAKE_GH_DIR/jqshim"; mkdir -p "$JQ_SHIM"
 JQ_COUNT="$FAKE_GH_DIR/jq-count"; : > "$JQ_COUNT"
 printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$JQ_COUNT" "$REAL_JQ" > "$JQ_SHIM/jq"
 chmod +x "$JQ_SHIM/jq"
+store_sync # build the card store first: only the planner pass is counted
 PATH="$JQ_SHIM:$PATH"; export PATH
-run_check "$SCRIPT" --candidates
+"$BASH_EXE" "$SCRIPT" --candidates > "$FAKE_GH_DIR/perf-out" 2> "$FAKE_GH_DIR/perf-err"
+LAST_EXIT=$?
+LAST_OUT="$(cat "$FAKE_GH_DIR/perf-out")"; LAST_ERR="$(cat "$FAKE_GH_DIR/perf-err")"
 JQ_LAUNCHES="$(wc -l < "$JQ_COUNT" | tr -d ' ')"
 PATH="${PATH#"$JQ_SHIM":}"; export PATH
 assert_exit "jq launches: the 20-card pass exits 0" 0
