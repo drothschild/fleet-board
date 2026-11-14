@@ -1083,3 +1083,5 @@ button, select, input, textarea { font: inherit; color: inherit; }
   .sup-menu { right: auto; left: 0; }
 }
 .dr-blocks-none { margin: 4px 0 0; font-size: 12px; color: var(--faint); }
+
+.open-terminal { font-size: 0.85em; text-decoration: underline; cursor: pointer; }

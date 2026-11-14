@@ -100,6 +100,26 @@ function prNumber(url) {
   return m ? Number(m[1]) : null;
 }
 
+// terminalLink(n) -> <a>: asks the server to open a terminal at card n's directory.
+function terminalLink(n) {
+  const a = el("a", "open-terminal", "Open terminal");
+  a.href = "#";
+  a.draggable = false;
+  a.title = "Open a terminal in this card's directory";
+  a.addEventListener("click", async function (e) {
+    e.preventDefault();
+    if (e.stopPropagation) e.stopPropagation();
+    let r;
+    try {
+      r = await api("POST", "/api/cards/" + n + "/terminal");
+    } catch (err) {
+      r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
+    }
+    if (!r.ok) showToast(errorText(r), "error");
+  });
+  return a;
+}
+
 function prLink(url, text) {
   const a = el("a", null, text);
   a.href = url;
@@ -726,6 +746,12 @@ function renderCard(c, repo) {
   if (attn) li.appendChild(el("div", "card-meta card-attention-reason", clean(attn, 300)));
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
+
+  if (typeof c.worktree === "string" && c.worktree) {
+    const t = el("div", "card-meta");
+    t.appendChild(terminalLink(n));
+    li.appendChild(t);
+  }
 
   const labels = Array.isArray(c.labels) ? c.labels : [];
   if (labels.length) {
@@ -1457,6 +1483,7 @@ function renderDrawerMeta() {
   const active = live ? live.active : d.card.active;
   if (active) parts.push(el("span", "dr-now", "agent working now"));
   if (!parts.length) parts.push(document.createTextNode("No manager note yet"));
+  if (typeof d.card.worktree === "string" && d.card.worktree) parts.push(terminalLink(d.n));
   const frag = document.createDocumentFragment();
   parts.forEach(function (p, i) {
     if (i) frag.appendChild(document.createTextNode(" · "));
