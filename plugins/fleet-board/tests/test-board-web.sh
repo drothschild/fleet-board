@@ -286,7 +286,7 @@ if setup_case; then
   HOSTHDR="localhost:$PORT" api GET /api/board
   assert_code 200
 
-  ORIGIN="http://127.0.0.1:$PORT" api POST /api/cards '{"title":"New","body":"## Acceptance\n- x","labels":["bug"]}'
+  ORIGIN="http://127.0.0.1:$PORT" api POST /api/cards '{"title":"New","body":"## Acceptance\n- x\n\n## Scope\n- src/new.sh","labels":["bug"]}'
   assert_code 200
   assert_body "create returns number 4" '.number' 4
   if [ "$(card_json 4 .title)|$(card_json 4 '.labels|join(",")')|$(card_json 4 .state)" = "New|bug|backlog" ]; then
@@ -309,7 +309,7 @@ if setup_case; then
   api GET /api/cards/4
   assert_body "patched title" '.title' Renamed
   assert_body "patch kept the acceptance field" '.acceptance|join("|")' x
-  assert_body "patch kept the body prose" '.body' ''
+  assert_body "patch kept the body prose" '.body' '## Scope*src/new.sh*'
   assert_body "patch kept the labels" '.labels|join(",")' bug
 
   api POST /api/cards/4/comments '{"body":"hi"}'
@@ -318,7 +318,7 @@ if setup_case; then
   assert_body "card 4 has one comment" '.comments|length' 1
   assert_body "card 4 comment body" '.comments[0].body' 'hi*'
 
-  api POST /api/cards '{"title":"Readied","body":"## Acceptance\n- y","state":"ready"}'
+  api POST /api/cards '{"title":"Readied","body":"## Acceptance\n- y\n\n## Scope\n- src/readied.sh","state":"ready"}'
   assert_code 200
   [ "$(card_json 5 .state)" = ready ] && pass "create with state ready" || fail "create with state ready" "state $(card_json 5 .state)"
   api POST /api/cards '{"title":"Blocked one","body":"b","state":"blocked"}'
@@ -1169,7 +1169,10 @@ echo 7 > "$REPO/.fleet-board/next"
 for n in 1 2 3 4 5 6; do seed_card "$n" backlog "Card $n" "Do it.
 
 ## Acceptance
-- works"
+- works
+
+## Scope
+- src/card$n.sh"
   jq '.acceptance = ["works"]' "$REPO/.fleet-board/cards/$n.json" > "$TMP/mv.json" && mv "$TMP/mv.json" "$REPO/.fleet-board/cards/$n.json"
 done
 MV_OUT="$(SCRIPTS="$SCRIPTS" MV_REPO="$MV_REPO" python3 -I - <<'PYEOF'
