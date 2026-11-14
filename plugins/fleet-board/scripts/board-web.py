@@ -151,19 +151,33 @@ def states(cfg: dict) -> list:
 
 def resolve_persona(root: str, cfg: dict):
     """(text, warning): the planner.persona file under root when it exists, else
-    the shipped default persona. warning names a configured path that is missing."""
+    the shipped default persona, followed by the planner.persona_append file when
+    set. warning names a configured path that is missing."""
     default = Path(__file__).resolve().parent.parent / "skills" / "planner" / "references" / "persona.md"
-    configured = (cfg.get("planner") or {}).get("persona")
-    warning = None
+    planner = cfg.get("planner") or {}
+    configured = planner.get("persona")
+    warnings = []
+    text = None
     if configured:
         path = Path(configured)
         if not path.is_absolute():
             path = Path(root) / path
         try:
-            return path.read_text(encoding="utf-8"), None
+            text = path.read_text(encoding="utf-8")
         except OSError:
-            warning = "planner.persona file not found: %s; using the shipped default persona" % configured
-    return default.read_text(encoding="utf-8"), warning
+            warnings.append("planner.persona file not found: %s; using the shipped default persona" % configured)
+    if text is None:
+        text = default.read_text(encoding="utf-8")
+    extra_path = planner.get("persona_append")
+    if extra_path:
+        path = Path(extra_path)
+        if not path.is_absolute():
+            path = Path(root) / path
+        try:
+            text = text.rstrip("\n") + "\n\n" + path.read_text(encoding="utf-8")
+        except OSError:
+            warnings.append("planner.persona_append file not found: %s; prompt left unchanged" % extra_path)
+    return text, ("; ".join(warnings) or None)
 
 
 def store_dir(root: str, cfg: dict) -> Path:
