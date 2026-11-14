@@ -109,6 +109,20 @@ start_server() { # $1 = planner yaml, $2 = conversation id
   [ -n "$PORT" ] || { echo "server did not start: $(cat "$TMP/server.err")"; exit 1; }
   api POST /api/planner '{}'
 }
+restart_same_repo() { # $1 = conversation id; restarts the server on the current $REPO
+  kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; SERVER_PID=""
+  export FLEET_BOARD_TEST_PLANNER_ID="$1"
+  FLEET_BOARD_LOG_DIR="$TMP/logs" python3 "$SCRIPTS/board-web.py" --root "$REPO" --port 0 --scripts "$SCRIPTS" \
+    > "$TMP/server.out" 2> "$TMP/server.err" < /dev/null &
+  SERVER_PID=$!
+  PORT=""
+  for _ in $(seq 1 50); do
+    line="$(head -n 1 "$TMP/server.out" 2>/dev/null)"
+    case "$line" in "listening on http://127.0.0.1:"*) PORT="${line##*:}"; break ;; esac
+    sleep 0.1
+  done
+  [ -n "$PORT" ] || { echo "server did not start: $(cat "$TMP/server.err")"; exit 1; }
+}
 argv_of() { sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n'; }
 has_pair() { printf '%s\n' "$1" | grep -A1 -x -e "$2" | grep -qx -e "$3"; }
 has_arg() { printf '%s\n' "$1" | grep -qx -e "$2"; }
@@ -166,6 +180,36 @@ wait_idle conv2
 a3="$(argv_of 1)"
 if [ -z "$a3" ]; then fail "codex was run" "no argv logged"; elif has_arg "$a3" '-m'; then fail "no -m flag when planner.model is null" "$a3"; else pass "no -m flag when planner.model is null"; fi
 if has_arg "$a3" 'exec'; then pass "codex exec was run for the null-model chat"; else fail "codex exec was run for the null-model chat" "$a3"; fi
+
+echo "Case: start_planner records the current planner.provider in meta.json"
+echo ok > "$MODE_FILE"
+start_server '  provider: claude' conv3
+prov="$(jq -r .provider "$PDIR/conv3/meta.json" 2>/dev/null)"
+if [ "$prov" = "claude" ]; then pass "start_planner records planner.provider claude in meta.json"; else fail "start_planner records planner.provider claude in meta.json" "got '$prov'"; fi
+
+echo "Case: a chat started under claude still runs claude after the config changes to codex"
+FAKE_CLAUDE="$TMP/fake-claude.sh"
+CLAUDE_LOG="$TMP/claude.log"
+printf '#!/bin/sh\necho called >> "%s"\nexit 0\n' "$CLAUDE_LOG" > "$FAKE_CLAUDE"
+chmod +x "$FAKE_CLAUDE"
+: > "$CLAUDE_LOG"
+: > "$ARGV_LOG"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nplanner:\n  provider: codex\n' > "$REPO/.fleet-board.yml"
+restart_with_claude() { :; }
+FLEET_BOARD_CLAUDE="$FAKE_CLAUDE" restart_same_repo conv3x
+# restart_same_repo keeps the repo, so conv3 (started under claude) is still on disk
+api POST /api/planner/conv3/messages '{"text":"hello"}'
+wait_idle conv3
+if [ "$(wc -l < "$CLAUDE_LOG" | tr -d ' ')" = 1 ]; then pass "claude chat runs claude after config changes to codex"; else fail "claude chat runs claude after config changes to codex" "claude calls: $(wc -l < "$CLAUDE_LOG")"; fi
+if [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" = 0 ]; then pass "claude chat does not run codex after config changes to codex"; else fail "claude chat does not run codex after config changes to codex" "codex was called"; fi
+
+echo "Case: a chat started after that config change runs codex"
+api POST /api/planner '{}'
+api POST /api/planner/conv3x/messages '{"text":"hello"}'
+wait_idle conv3x
+if [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" = 1 ]; then pass "chat started after the config change runs codex"; else fail "chat started after the config change runs codex" "codex calls: $(wc -l < "$ARGV_LOG")"; fi
+prov="$(jq -r .provider "$PDIR/conv3x/meta.json" 2>/dev/null)"
+if [ "$prov" = "codex" ]; then pass "new chat records provider codex in meta.json"; else fail "new chat records provider codex in meta.json" "got '$prov'"; fi
 
 echo
 echo "Passed: $PASS  Failed: $FAIL"
