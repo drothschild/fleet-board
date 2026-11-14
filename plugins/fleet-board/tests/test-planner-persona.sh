@@ -51,6 +51,50 @@ if [ -f "$DEFAULT_PERSONA" ] && [ "$text" = "$(cat "$DEFAULT_PERSONA")" ] && cas
   pass "planner.persona set to missing file: falls back to shipped default and warns naming the path"
 else fail "planner.persona set to missing file: falls back to shipped default and warns naming the path" "got: $out"; fi
 
+# resolve_append <root> <persona-json> <append-json>
+resolve_append() {
+  python3 -I - "$SCRIPTS/board-web.py" "$1" "$2" "$3" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("board_web", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cfg = {"planner": {"persona": json.loads(sys.argv[3]), "persona_append": json.loads(sys.argv[4])}}
+text, warning = m.resolve_persona(sys.argv[2], cfg)
+print(json.dumps({"text": text, "warning": warning}))
+PY
+}
+printf 'appended words\n' > "$TMP/repo/extra.md"
+
+echo "Case: planner.persona_append defaults to null"
+if python3 -I -c 'import json,sys; c=json.load(open(sys.argv[1]))["planner"]; sys.exit(0 if "persona_append" in c and c["persona_append"] is None else 1)' "$SCRIPTS/config-defaults.json"; then
+  pass "planner.persona_append defaults to null"
+else fail "planner.persona_append defaults to null" "config-defaults.json planner has no null persona_append"; fi
+
+echo "Case: only planner.persona_append set"
+out="$(resolve_append "$TMP/repo" null '"extra.md"' 2>&1)"
+text="$(printf '%s' "$out" | field text 2>/dev/null)"
+want="$(python3 -I -c 'import sys; print(open(sys.argv[1]).read().rstrip("\n") + "\n\n" + open(sys.argv[2]).read(), end="")' "$DEFAULT_PERSONA" "$TMP/repo/extra.md")"
+if [ "$text" = "$want" ]; then
+  pass "only planner.persona_append set: prompt is the shipped default followed by that file's text"
+else fail "only planner.persona_append set: prompt is the shipped default followed by that file's text" "got: $out"; fi
+
+echo "Case: both keys set"
+out="$(resolve_append "$TMP/repo" '"mine.md"' '"extra.md"' 2>&1)"
+text="$(printf '%s' "$out" | field text 2>/dev/null)"
+want="$(python3 -I -c 'import sys; print(open(sys.argv[1]).read().rstrip("\n") + "\n\n" + open(sys.argv[2]).read(), end="")' "$TMP/repo/mine.md" "$TMP/repo/extra.md")"
+if [ "$text" = "$want" ]; then
+  pass "both keys set: prompt is the planner.persona file followed by the appended text"
+else fail "both keys set: prompt is the planner.persona file followed by the appended text" "got: $out"; fi
+
+echo "Case: planner.persona_append file missing"
+out="$(resolve_append "$TMP/repo" null '"nope/gone.md"' 2>&1)"
+text="$(printf '%s' "$out" | field text 2>/dev/null)"
+warn="$(printf '%s' "$out" | field warning 2>/dev/null)"
+if [ "$text" = "$(cat "$DEFAULT_PERSONA")" ] && case "$warn" in *nope/gone.md*) true;; *) false;; esac; then
+  pass "planner.persona_append file that doesn't exist: prompt unchanged and warning names the path"
+else fail "planner.persona_append file that doesn't exist: prompt unchanged and warning names the path" "got: $out"; fi
+
+
 echo "Case: config default and shipped persona are portable"
 cfg_default="$(grep -c '"persona"' "$SCRIPTS/config-defaults.json")"
 if [ "$cfg_default" -ge 1 ]; then pass "config-defaults.json declares planner.persona"
