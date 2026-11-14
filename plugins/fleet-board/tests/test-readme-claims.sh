@@ -94,6 +94,14 @@ for doc in "${SCRIPT_DIR}/../CLAUDE.md" "${SCRIPT_DIR}/../docs/overnight.md"; do
   fi
 done
 
+# board.terminal_command and the Open terminal link are documented.
+r=bad; grep -qF '`board.terminal_command`' "$CONFIG_MD" && grep -qF '["open", "-a", "Terminal", "{dir}"]' "$CONFIG_MD" && r=ok
+check "config.md lists board.terminal_command with its default [\"open\", \"-a\", \"Terminal\", \"{dir}\"]" "$r"
+r=bad; grep -qF '["open", "-a", "iTerm", "{dir}"]' "$CONFIG_MD" && r=ok
+check "config.md has an iTerm example [\"open\", \"-a\", \"iTerm\", \"{dir}\"]" "$r"
+r=bad; grep -qF '| `board.terminal_command` |' "$README" && grep -qF 'Open terminal' "$README" && r=ok
+check "README lists board.terminal_command and the Open terminal link" "$r"
+
 # The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
 if [ -z "${README_CLAIMS_NESTED:-}" ]; then
   tmp="$(mktemp -d)"
