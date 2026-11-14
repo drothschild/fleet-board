@@ -559,7 +559,23 @@ assert_stdout_exact_jq "stages: explicit values kept" '.review.stages[0]' \
   '{"name":"ux","agent":"ux-reviewer","provider":null,"model":"sonnet","paths":["src/ui/**"],"label":"ux-pls","advisory":true,"max_rounds":1,"required_passes":1,"brief":"Check copy.","timeout":600,"max_output_tokens":16000,"max_diff_bytes":400000}'
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_stdout_exact_jq "stages: empty by default" '.review.stages' '[]'
+assert_stdout_exact_jq "stages: with no review.stages, documentation and blast_radius are built in with default true and the shipped agents" \
+  '.review.stages | map({name, agent, default})' \
+  '[{"name":"documentation","agent":"fleet-board:documentation-reviewer","default":true},{"name":"blast_radius","agent":"fleet-board:blast-radius-reviewer","default":true}]'
+# a project stage named documentation replaces the built-in one
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: documentation, agent: "acme:docs", model: sonnet } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: project documentation stage is valid" 0
+assert_stdout_exact_jq "stages: a project stage named documentation replaces the built-in one" \
+  '[.review.stages[] | select(.name == "documentation") | .agent]' '["acme:docs"]'
+assert_stdout_exact_jq "stages: replacing documentation keeps the blast_radius built-in" \
+  '.review.stages | map(.name) | sort' '["blast_radius","documentation"]'
+# a stage entry with enabled: false removes the built-in
+REPO="$(printf 'board:\n  repo: a/b\nreview:\n  stages:\n    - name: blast_radius\n      enabled: false\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "stages: enabled false entry is valid" 0
+assert_stdout_exact_jq "stages: a stage entry name blast_radius with enabled false removes that stage from the printed config" \
+  '.review.stages | map(.name)' '["documentation"]'
 invalid_field_case "stages not a list" 'review: { stages: 3 }' "review.stages must be a list"
 invalid_field_case "stage bad name" 'review: { stages: [ { name: "Sec-1", agent: a } ] }' "review.stages[0].name must match ^[a-z][a-z0-9_]*$"
 invalid_field_case "stage duplicate name" 'review: { stages: [ { name: s, agent: a }, { name: s, agent: b } ] }' "review.stages[1].name s is not unique"
@@ -596,7 +612,7 @@ assert_exit "stages: board.states may map a stage" 0
 REPO="$(printf 'board:\n  repo: a/b\nreview:\n  stages:\n    - name: security\n      agent: "acme:sec"\n      paths: ["src/auth/**"]\n    - name: ux\n      agent: ux-reviewer\n      advisory: true\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages: block list of block maps parses" 0
-assert_stdout_exact_jq "stages: block form names" '.review.stages | map(.name)' '["security","ux"]'
+assert_stdout_exact_jq "stages: block form names" '.review.stages | map(.name)' '["security","ux","documentation","blast_radius"]'
 
 # providers map and provider-backed stages
 REPO="$(make_test_repo provider-stage.yml)"
@@ -633,7 +649,7 @@ assert_stdout_exact_jq "agent stage: provider null, no price" '.review.stages[0]
 REPO="$(make_test_repo stages.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages.yml fixture: valid" 0
-assert_stdout_exact_jq "stages.yml: three stages" '.review.stages | map(.name)' '["security","ux","compliance"]'
+assert_stdout_exact_jq "stages.yml: three stages" '.review.stages | map(.name)' '["security","ux","compliance","documentation","blast_radius"]'
 assert_stdout_exact_jq "stages.yml: compliance is a provider stage" '.review.stages[2] | [.agent, .provider, .model, has("price")]' '[null,"openai","gpt-test",false]'
 
 BASE_CORP='providers: { corp: { base_url: "https://llm.corp.example/v1", api_key_env: CORP_KEY } }'
