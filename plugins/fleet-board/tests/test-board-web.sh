@@ -1210,6 +1210,35 @@ case "$(mv_field busy 4)" in *"agent is working on"*) pass "the 409 error text s
 [ "$(mv_field norun 2)" = 200 ] && pass "the same move returns 200 when the marker exists but no run is alive" || fail "the same move returns 200 when the marker exists but no run is alive" "got: $MV_OUT"
 [ "$(mv_field stuck 2)" = 200 ] && pass "the same move returns 200 when the marker exists, the run is alive and the card has a stuck finding" || fail "the same move returns 200 when the marker exists, the run is alive and the card has a stuck finding" "got: $MV_OUT"
 
+echo "Case: card detail reports the cards it blocks"
+REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
+echo 20 > "$REPO/.fleet-board/next"
+seed_card 1 backlog "The blocker" "Prose one."
+seed_card 3 backlog "Blocked three" "Prose three."
+set_fields 3 '.blocked_by = [1]'
+seed_card 10 backlog "Blocked ten" "Prose ten."
+set_fields 10 '.blocked_by = [1]'
+seed_card 2 backlog "Blocked two" "Prose two."
+set_fields 2 '.blocked_by = [1]'
+seed_card 5 backlog "Depends only in prose" "## Depends on
+
+- #1
+"
+seed_card 6 backlog "Nobody blocked by six" "Prose six."
+if start_server "$REPO"; then
+  api GET /api/cards/1
+  assert_code 200
+  assert_body "GET /api/cards/1 returns blocks 2, 3, 10 when those cards list 1 in blocked_by" '.blocks|map(tostring)|join(",")' 2,3,10
+  assert_body "blocks is in ascending card-number order whatever order the files are read in" '.blocks == (.blocks|sort)' true
+  assert_body "a card that lists the card only under a Depends on heading is not in blocks" '.blocks|index(5)' null
+  api GET /api/cards/6
+  assert_body "blocks is [] when no card lists the card in blocked_by" '.blocks|tojson' '[]'
+  api GET /api/board
+  assert_body "GET /api/board card summaries have no blocks key" '[.cards[]|has("blocks")]|any' false
+  stop_server
+fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
