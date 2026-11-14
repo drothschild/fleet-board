@@ -797,6 +797,9 @@ def send_planner_message(id: str, text: str):
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
             "--append-system-prompt", persona,
         ]
+        model = (cfg.get("planner") or {}).get("model")
+        if model:
+            argv += ["--model", str(model)]
         if meta.get("session_id"):
             argv += ["--resume", meta["session_id"]]
         plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
