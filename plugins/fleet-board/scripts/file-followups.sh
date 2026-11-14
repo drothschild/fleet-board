@@ -158,14 +158,27 @@ pr_comment() {
 PR_FILES="" PR_FILES_DONE=0 FL_DEFBR=""
 # scope_lines <text>: the "- `path`" Scope lines for a follow-up card, read from the item's own text by
 # the board's Scope parser over the text with its backticks dropped (so a path inside a backticked
-# command counts), keeping only plain repository-relative paths: no quotes or brackets (a repro
-# command's arguments), no leading "-" or "/", no "..", and a "/" or an extension starting with a
-# letter (so "2.5" is not a file). Prints nothing when the text names no path; board-create.sh then
-# files the card in Backlog.
+# command counts) and a ":42" or "#L10" line suffix after a file extension dropped. A candidate is
+# kept only when it is a plain repository-relative path (no quotes or brackets, no leading "-" or "/",
+# no "..", and a "/" or an extension starting with a letter, so "2.5" is not a file) that exists, in
+# the checkout or on the default branch: prose such as "e.g.", "and/or" or "Node.js" never becomes a
+# Scope that would let the card start. Prints nothing when the text names no existing path;
+# board-create.sh then files the card in Backlog.
 scope_lines() {
-  fb_card_scope_paths "$(printf '## Scope\n%s\n' "$1" | tr -d '`')" | jq -r '.[]
-    | select(test("^[A-Za-z0-9._@+][A-Za-z0-9._/@+-]*$")) | select(contains("..") | not)
-    | select(contains("/") or test("[.][A-Za-z][A-Za-z0-9]*$")) | "- `\(.)`"' 2>/dev/null
+  local p ref
+  ref="$(git -C "$FLEET_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || ref=""
+  [ -n "$ref" ] || for ref in main master ""; do
+    [ -n "$ref" ] && git -C "$FLEET_ROOT" rev-parse --verify -q "$ref" >/dev/null 2>&1 && break
+  done
+  fb_card_scope_paths "$(printf '## Scope\n%s\n' "$1" | tr -d '`' \
+      | sed -E 's/(\.[A-Za-z][A-Za-z0-9]*)(:[0-9]+)+/\1/g; s/(\.[A-Za-z][A-Za-z0-9]*)#L[0-9]+(-L?[0-9]+)?/\1/g')" \
+    | jq -r '.[] | select(test("^[A-Za-z0-9._@+][A-Za-z0-9._/@+-]*$")) | select(contains("..") | not)
+        | select(contains("/") or test("[.][A-Za-z][A-Za-z0-9]*$"))' 2>/dev/null \
+    | while IFS= read -r p; do
+        if [ -e "$FLEET_ROOT/${p%/}" ] || { [ -n "$ref" ] && git -C "$FLEET_ROOT" cat-file -e "$ref:${p%/}" 2>/dev/null; }; then
+          printf -- '- `%s`\n' "$p"
+        fi
+      done
 }
 
 fl_names_unmerged_path() {

@@ -155,7 +155,9 @@ setup_case() {
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
   printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
-  git -C "$REPO" add .fleet-board.yml
+  # files the fixture items name, so a follow-up derives a Scope from them (scope_lines keeps existing paths)
+  mkdir -p "$REPO/tests"; : > "$REPO/calc.js"; : > "$REPO/cli.sh"; : > "$REPO/tests/round.sh"
+  git -C "$REPO" add .fleet-board.yml calc.js cli.sh tests/round.sh
   git -C "$REPO" commit -q -m "initial"
 
   FAKE_GH_DIR="$(mktemp -d)"
@@ -320,6 +322,26 @@ else
 fi
 case "$(all_bodies)" in *$'## Scope\n- `tests/round.sh`\n'*) pass "files-bug-scoped: Scope names the repro's file and not 2.5" ;;
   *) fail "files-bug-scoped: Scope names the repro's file and not 2.5" "$(all_bodies)" ;; esac
+
+# files-bug-prose: prose path-like words that are not files in the repository give no Scope, so the card
+# goes to Backlog instead of a Ready card that would start without holding the files it touches
+setup_case
+report '[]' "[$(jq -cn '{title:"Crash e.g. on Node.js and/or www.example.com", repro:"open docs/missing.md", expected:"no crash", observed:"i.e. a crash"}')]"
+run_ff
+CREATE="$(files_starting issue create | head -1)"
+if [ -n "$CREATE" ]; then
+  assert_true "files-bug-prose: filed in Backlog" has_pair "$CREATE" --label fleet:backlog
+else
+  fail "files-bug-prose: filed in Backlog" "no issue create call"
+fi
+case "$(all_bodies)" in *'## Scope'*) fail "files-bug-prose: no Scope section" "$(all_bodies)" ;; *) pass "files-bug-prose: no Scope section" ;; esac
+
+# files-bug-line: a path with a line suffix (":42", "#L10") is the file itself
+setup_case
+report '[]' "[$(jq -cn '{title:"Off by one", repro:"bash cli.sh", expected:"1", observed:"0 at tests/round.sh:42 and calc.js#L10"}')]"
+run_ff
+case "$(all_bodies)" in *$'## Scope\n- `calc.js`\n- `cli.sh`\n- `tests/round.sh`\n'*) pass "files-bug-line: line suffixes are dropped from the Scope paths" ;;
+  *) fail "files-bug-line: line suffixes are dropped from the Scope paths" "$(all_bodies)" ;; esac
 
 # ---------------------------------------------------------------------------
 # AC3.10 bug-matches-open-issue (case differs; a near-miss title comes first)
