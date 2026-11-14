@@ -246,7 +246,7 @@ VALIDATION_SCRIPT='
           | .board.states | to_entries | map(
               if (.key | test("^(backlog|ready|in_progress|in_review|merging|human_qa|blocked|done|wont_do)$")) then empty
               elif (.key | startswith("review_")) then (.key | ltrimstr("review_")) as $n |
-                (if ($names | index($n)) != null then empty else "board.states key \(.key) names no stage" end)
+                empty
               else "board.states key \(.key) is not canonical" end)[])
       else empty end),
       (if (.review | type) == "object" then
@@ -449,9 +449,12 @@ VALIDATION_SCRIPT='
     ] | map(select(. != null))
   ;
   def warnings:
-    if (.providers | type) == "object" then
+    (if (.providers | type) == "object" then
       ((stage_providers + [(.models | objects | .reviewer | objects | .provider | strings)]) as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
-    else [] end;
+    else [] end)
+    + (if (.board | type) == "object" and (.board.states | type) == "object"
+       then [.board.states | keys[] | select(startswith("review_")) | "warning: board.states.\(.) is retired; the per-stage review columns no longer exist"]
+       else [] end);
   (errors | .[]), (warnings | .[])
 '
 

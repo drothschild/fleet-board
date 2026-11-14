@@ -604,8 +604,8 @@ assert_stdout_exact_jq "stage required_passes 5 kept" '.review.stages[0].require
 # (board is already a key in invalid_field_case's base, so this one builds its own repo)
 REPO="$(printf 'board:\n  repo: a/b\n  states: { review_x: "X Review" }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_exit "field-validation board.states names no stage: exit 5" "5"
-assert_stderr_contains "field-validation board.states names no stage: names the field" "board.states key review_x names no stage"
+assert_exit "field-validation board.states review_<name> key is retired, not refused: exit 0" "0"
+assert_stderr_contains "field-validation board.states review_<name> key is retired, not refused: warns" "board.states.review_x is retired"
 REPO="$(printf 'board:\n  repo: a/b\n  states: { review_security: "Sec" }\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages: board.states may map a stage" 0

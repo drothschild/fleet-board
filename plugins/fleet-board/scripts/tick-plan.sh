@@ -147,7 +147,8 @@
 # round 1 and pr; no dispatch; the next tick's review action starts the
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
-# dispatchable false. A plan without --settle-merge never emits move_to_review.
+# dispatchable false. Outside settle mode move_to_review is planned only for a card found in a retired
+# review_<name> column: it goes back to in_review with its reviewed_stages kept.
 # Settle mode also keeps merge and verify_main actions (merge-reviewed.sh carries them out and
 # ignores every other action). The by-hand --settle flag went with the by-hand settle script in 0.27.0.
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
@@ -1152,6 +1153,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
          then act("wait"; "successful main verification required before another merge")
        elif $d00.action == "merge" and $merger != $c.number
          then act("wait"; "one merge per tick: #\($merger) merges first")
+       elif (($c.state // "") | startswith("review_")) and $d00.action != "skip"
+         then act("move_to_review"; "retired column \($c.state); move back to in_review, keeping reviewed_stages")
        else $d00 end) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0

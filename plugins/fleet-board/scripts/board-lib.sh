@@ -38,17 +38,15 @@ fb_load_config() {
   fb_set_states
 }
 
-# fb_set_states: sets FB_STATES to the fixed states with review_<name> for each
-# review stage of $FLEET_CFG inserted after in_review, in config order.
+# fb_set_states: sets FB_STATES to the fixed states. The review_<name> columns are
+# retired; fb_stage_states still names them so a planner can find a card left in one.
 fb_set_states() {
   # a planner pass computes the states once (FB_STATES_MEMO, exported by tick-plan.sh)
   if [ -n "${FB_CFG_FOR:-}" ] && [ "$FB_CFG_FOR" = "$PWD" ] && [ -n "${FB_STATES_MEMO:-}" ]; then
     FB_STATES="$FB_STATES_MEMO"; return 0
   fi
-  local extra; extra="$(fb_stage_states | tr '\n' ' ')"
-  extra="${extra% }"
-  if [ -z "$extra" ]; then FB_STATES="$FB_STATES_FIXED"; return 0; fi
-  FB_STATES="${FB_STATES_FIXED/in_review/in_review $extra}"
+  # the per-stage review_<name> columns are retired: a card never sits in one
+  FB_STATES="$FB_STATES_FIXED"
 }
 
 # fb_mark_active <n>: touches <board.dir>/active/<n>
