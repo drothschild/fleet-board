@@ -139,6 +139,60 @@ def _mask_versions(text):
     return [_VERSION_LINE.sub(r'\1"@"\2', line) for line in text.split('\n')]
 
 
+_SEMVER = re.compile(r'^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$')
+
+
+def _semver_key(value):
+    """A sort key for a semver string (None when it is not one): the core, then a release above its prereleases,
+    then prerelease identifiers (digits below letters, a longer list above its prefix)."""
+    m = _SEMVER.match(value) if isinstance(value, str) else None
+    if not m:
+        return None
+    pre = m.group(4)
+    ids = [(0, int(i), '') if i.isdigit() else (1, 0, i) for i in pre.split('.')] if pre else None
+    return (tuple(int(m.group(n)) for n in (1, 2, 3)), ids is None, ids or [])
+
+
+def _version_paths(doc, path=()):
+    """Every path to a string "version" value in the JSON document."""
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            if k == 'version' and isinstance(v, str):
+                yield path + (k,)
+            else:
+                yield from _version_paths(v, path + (k,))
+    elif isinstance(doc, list):
+        for i, v in enumerate(doc):
+            yield from _version_paths(v, path + (i,))
+
+
+def _get_path(doc, path):
+    for k in path:
+        try:
+            doc = doc[k]
+        except (KeyError, IndexError, TypeError):
+            return None
+    return doc
+
+
+def _raise_ok(old_text, new_text):
+    """True when both texts parse and every string "version" value that differs sits at the top level or under
+    plugins[], and is semver strictly above the old value (the keys review-drift.sh allows)."""
+    try:
+        old, new = json.loads(old_text), json.loads(new_text)
+    except ValueError:
+        return False
+    for path in set(_version_paths(old)) | set(_version_paths(new)):
+        before, after = _get_path(old, path), _get_path(new, path)
+        if before == after:
+            continue
+        allowed = path == ('version',) or (len(path) == 3 and path[0] == 'plugins' and isinstance(path[1], int))
+        lo, hi = _semver_key(before), _semver_key(after)
+        if not allowed or lo is None or hi is None or hi <= lo:
+            return False
+    return True
+
+
 def _version_only(git, cwd, sha, version_files):
     """True when the one-parent commit `sha` modifies only files `version_files` matches, and only in whole-line
     "version" values (what update-branch.sh's "Raise versions above origin/<base>" commit does)."""
@@ -154,6 +208,8 @@ def _version_only(git, cwd, sha, version_files):
         old = git(cwd, 'show', sha + '^:' + path)
         new = git(cwd, 'show', sha + ':' + path)
         if old.rc != 0 or new.rc != 0 or _mask_versions(old.stdout) != _mask_versions(new.stdout):
+            return False
+        if not _raise_ok(old.stdout, new.stdout):
             return False
     return True
 
@@ -1509,14 +1565,23 @@ class CardDriver:
     def _merger_attention(self, c, mode, reason, head, verified=None):
         # pending_merge goes: a person who clears the attention lets the card merge again under a new operation
         # key, which merge-reviewed.sh refuses (exit 3, the lane pauses the board) over the refused one's marker
-        patch = dict(_RESET, pending_merge=None,
+        # The card goes to Blocked, the column a person watches; moving it out clears merger, merge_refusal and
+        # merge_retry (move.sh), and the planner never unblocks a card that came from Merging on its own
+        patch = dict(_RESET, pending_merge=None, state='blocked', blocked_from='merging',
                      merger={'mode': mode, 'status': 'attention', 'reason': reason, 'head': head})
         if verified is not None:
             patch['last_verified'] = verified
         c.merge(patch)
+        c.move('blocked')
         self.state.set_attention(c.n, reason)
         self.state.event('attention', card=c.n, mode=mode, reason=reason)
-        c.comment_soft('Merger needs attention (%s): %s' % (mode, reason))
+        if mode == 'after_merge':
+            todo = ('The PR is merged. Fix the cause, then move the card to Merging to run the after-merge steps '
+                    'again, or to Done to finish without them.')
+        else:
+            todo = ('The PR is still open. Fix the cause, then move the card to In Review; the planner merges it '
+                    'when the review at that head is clean and its checks are green.')
+        c.comment_soft('Waiting for a person: %s\n\n%s' % (reason, todo))
 
     @staticmethod
     def _merger_reason(parsed):

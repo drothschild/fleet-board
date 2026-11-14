@@ -219,6 +219,10 @@ review:
   stages:
     - name: security
       agent: acme:sec
+    - name: documentation
+      enabled: false
+    - name: blast_radius
+      enabled: false
 YML
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name review_security'
 assert_stdout_exact "local review stage name" "Review: security"
