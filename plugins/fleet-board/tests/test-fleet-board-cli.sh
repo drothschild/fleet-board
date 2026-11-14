@@ -598,6 +598,67 @@ check "up with the port in use: asks the supervisor to drain (stop --drain)" "st
 (cd "$BREPO" && HOME="$HD" UP_STATE="$BF_STATE" bash "$RD/scripts/supervisor.sh" status >/dev/null 2>&1); src=$?
 check "up with the port in use: supervisor status reports not running afterwards (exit 1)" 1 "$src"
 
+# --- up: board request lines go to <log dir>/board-web.log ------------------
+# A fake board-web.sh that writes board-web.py's real stderr shapes: a request
+# line per request, "port N is in use" when the bind fails, and the listening
+# line on stdout.
+RL="$TMP/roots/0.41.0"; mkdir -p "$RL/scripts"
+cp "$RU/scripts/supervisor.sh" "$RL/scripts/supervisor.sh"
+cat > "$RL/scripts/board-web.sh" <<'EOS'
+#!/usr/bin/env bash
+port=""; while [ $# -gt 0 ]; do case "$1" in --port) port="$2"; shift 2 ;; *) shift ;; esac; done
+exec python3 -u -c '
+import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200); self.end_headers(); self.wfile.write(b"{}")
+    def log_message(self, fmt, *a):
+        sys.stderr.write("board-web: %s - %s\n" % (self.address_string(), fmt % a)); sys.stderr.flush()
+port = int(sys.argv[1])
+try:
+    srv = HTTPServer(("127.0.0.1", port), H)
+except OSError:
+    sys.stderr.write("board-web: port %d is in use\n" % port); sys.exit(1)
+sys.stdout.write("listening on http://127.0.0.1:%d\n" % port); sys.stdout.flush()
+srv.serve_forever()' "${port:-8765}"
+EOS
+HL="$TMP/home-rl"; make_home "$HL" "user||$RL|0.41.0"
+RL_REPO="$TMP/work/repo-rl"; make_repo "$RL_REPO"
+RL_STATE="$TMP/rl-state"; mkdir -p "$RL_STATE"
+RL_LOGS="$TMP/rl-logs"; mkdir -p "$RL_LOGS"
+RL_OUT="$TMP/rl.out"; RL_ERR="$TMP/rl.err"
+RL_PORT="$(free_port)"
+(cd "$RL_REPO" && HOME="$HL" UP_STATE="$RL_STATE" FLEET_BOARD_LOG_DIR="$RL_LOGS" bash "$LAUNCHER" up --port "$RL_PORT" >"$RL_OUT" 2>"$RL_ERR") &
+RL_PID=$!
+wait_port "$RL_PORT"
+curl -s -o /dev/null "http://127.0.0.1:$RL_PORT/api/board"
+sleep 0.5
+pkill -P "$RL_PID" 2>/dev/null; kill "$RL_PID" 2>/dev/null; wait "$RL_PID" 2>/dev/null
+check "up: a request to /api/board prints no board-web: line on stderr" 0 "$(grep -c '^board-web:' "$RL_ERR")"
+contains "up: the request's board-web: line is written to <log dir>/board-web.log" "GET /api/board" "$(cat "$RL_LOGS/board-web.log" 2>/dev/null)"
+contains "up: the listening line still appears on stdout" "listening on http://127.0.0.1:$RL_PORT" "$(cat "$RL_OUT")"
+
+RLB_PORT="$(free_port)"
+python3 -c '
+import socket, sys, time
+s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(("127.0.0.1", int(sys.argv[1]))); s.listen(5); time.sleep(60)' "$RLB_PORT" &
+RLB_PID=$!
+sleep 0.5
+RLB_ERR="$(cd "$RL_REPO" && HOME="$HL" UP_STATE="$RL_STATE" FLEET_BOARD_LOG_DIR="$RL_LOGS" bash "$LAUNCHER" up --port "$RLB_PORT" 2>&1 >/dev/null)"
+kill "$RLB_PID" 2>/dev/null; wait "$RLB_PID" 2>/dev/null
+contains "up with the port in use: port <n> is in use still appears on stderr" "port $RLB_PORT is in use" "$RLB_ERR"
+
+RLC_PORT="$(free_port)"
+(cd "$RL_REPO" && HOME="$HL" FLEET_BOARD_LOG_DIR="$RL_LOGS" bash "$LAUNCHER" board --port "$RLC_PORT" >/dev/null 2>"$TMP/rlc.err") &
+RLC_PID=$!
+wait_port "$RLC_PORT"
+curl -s -o /dev/null "http://127.0.0.1:$RLC_PORT/api/board"
+sleep 0.3
+pkill -P "$RLC_PID" 2>/dev/null; kill "$RLC_PID" 2>/dev/null; wait "$RLC_PID" 2>/dev/null
+contains "board: request lines still print on its own stderr" "board-web: 127.0.0.1 - " "$(cat "$TMP/rlc.err")"
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
