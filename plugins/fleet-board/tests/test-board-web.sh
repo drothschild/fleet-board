@@ -1161,6 +1161,59 @@ assert_body "When models.reviewer is {provider: codex, model: gpt-6-astra}, the 
 assert_body "States that are not review columns (backlog, ready, human_qa, ...) have no reviewer field" '[.states[]|select(.key|startswith("in_review")|not)|select(has("reviewer"))]|length' 0
 stop_server
 
+echo "Case: /api/board reports the escalation model"
+ES_REPO="$(new_repo "$LOCAL_YML
+models:
+  escalation: opus
+  reviewer: sonnet
+  escalate_after_rounds: 2")"
+mkdir -p "$ES_REPO/.fleet-board/cards"
+start_server "$ES_REPO"
+api GET /api/board
+assert_code 200
+assert_body "When models.escalation is opus and escalate_after_rounds is 2, /api/board includes escalation: {model: opus, after_rounds: 2}" '.escalation|tojson' '{"model":"opus","after_rounds":2}'
+stop_server
+
+ES_REPO2="$(new_repo "$LOCAL_YML
+models:
+  reviewer: opus")"
+mkdir -p "$ES_REPO2/.fleet-board/cards"
+start_server "$ES_REPO2"
+api GET /api/board
+assert_body "When models.escalation is null and models.reviewer is the string opus, escalation.model is opus" '.escalation.model' opus
+stop_server
+
+ES_REPO3="$(new_repo "$LOCAL_YML
+providers:
+  codex:
+    review_command: \"codex exec -C {dir} -m {model}\"
+models:
+  reviewer:
+    provider: codex
+    model: gpt-6-astra
+    price: { input: 1, output: 2 }")"
+mkdir -p "$ES_REPO3/.fleet-board/cards"
+start_server "$ES_REPO3"
+api GET /api/board
+assert_body "When neither models.escalation nor a string models.reviewer gives a model, /api/board has escalation: null" '.escalation|tojson' null
+stop_server
+
+echo "Case: escalation_info is null when no model applies (config.sh rejects such a config, so call it directly)"
+ES_UNIT="$(SCRIPTS="$SCRIPTS" python3 -I - <<'PYEOF'
+import importlib.util, json, os
+spec = importlib.util.spec_from_file_location("bw", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cfg = {"models": {"escalation": None, "escalate_after_rounds": 2,
+                  "reviewer": {"provider": "codex", "model": "gpt-6-astra"}}}
+print(json.dumps(m.escalation_info(cfg)))
+print(json.dumps(m.escalation_info({"models": {"escalation": None, "escalate_after_rounds": 2, "reviewer": "opus"}})))
+PYEOF
+)"
+assert_eq_unit() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
+assert_eq_unit "When neither models.escalation nor a string models.reviewer gives a model, escalation_info returns null" "$(printf '%s\n' "$ES_UNIT" | sed -n 1p)" null
+assert_eq_unit "When models.escalation is null and models.reviewer is the string opus, escalation_info returns model opus" "$(printf '%s\n' "$ES_UNIT" | sed -n 2p)" '{"model": "opus", "after_rounds": 2}'
+
 echo "Case: the move endpoint refuses a card an agent is working on, unless it is stuck"
 MV_REPO="$(new_repo "$LOCAL_YML")"
 REPO="$MV_REPO"
