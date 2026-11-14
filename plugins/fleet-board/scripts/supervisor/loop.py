@@ -58,6 +58,9 @@ def _iso(seconds):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(seconds))
 
 
+ACTIVE_CLAIM_REASON = 'card already has an active claim'
+
+
 class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
                  clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
@@ -594,6 +597,8 @@ class Supervisor:
             if row.get('action') != 'skip' and row.get('reason'):
                 holds[str(row.get('number'))] = {'reason': row['reason'], 'source': 'planner', 'until': None}
         for wait in result['waits'] + limit_waits:
+            if wait.get('reason') == ACTIVE_CLAIM_REASON:
+                continue  # a running card is busy with its own work, not held back
             holds[str(wait.get('number'))] = {'reason': wait.get('reason'), 'source': wait.get('source', 'scheduler'),
                                               'until': wait.get('until')}
         return holds
