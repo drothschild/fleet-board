@@ -759,6 +759,14 @@ run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
 assert_exit "list fails closed on a null card" 1
 assert_stderr_contains "list names the null card file" "2.json"
 
+# --- a card whose state is not a string is warned about, not silently dropped ---
+setup_case; seed_card 1 ready 'Real' 'x'
+printf '{"number":2,"title":"Numeric","state":7}\n' > "$REPO/.fleet-board/cards/2.json"
+run_check_in "$REPO" "$SCRIPTS/board-list.sh" ready
+assert_exit "list with a non-numeric-state card still exits 0" 0
+assert_stderr_contains "list warns on stderr about a card whose state is not a string" "warning: card #2"
+assert_stdout_exact "list still lists the valid cards when another card has a non-string state" '[{"number":1,"title":"Real","url":"http://127.0.0.1:8765/cards/1"}]'
+
 # --- hardening: one next-comment-id helper ---
 for s in comment note; do
   f="$SCRIPTS/adapters/local/$s.sh"

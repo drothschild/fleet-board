@@ -15,7 +15,11 @@ if [ ! -e "$1" ]; then echo '[]'; exit 0; fi
 jq -nc --arg s "$STATE" --arg p "$PORT" '
   [inputs | if type == "object" then {number, title, state} else error("not a card") end]
   | [.[] | select(.state == $s)] | sort_by(.number)
-  | map({number, title, url: ("http://127.0.0.1:" + $p + "/cards/" + (.number | tostring))})' "$@" 2>/dev/null && exit 0
+  | map({number, title, url: ("http://127.0.0.1:" + $p + "/cards/" + (.number | tostring))})' "$@" 2>/dev/null && {
+  # a card whose state is not a string sits in no column: say so on stderr
+  jq -r 'select(type == "object" and (.state | type) != "string") | "fleet-board: warning: card #\(.number) has a state that is not a string; it is in no column"' "$@" >&2 2>/dev/null
+  exit 0
+}
 for f in "$@"; do
   jq -ce 'select(type == "object") | {number, title, state}' "$f" >/dev/null 2>&1 \
     || fb_die 1 "card file is not valid JSON: $f"
