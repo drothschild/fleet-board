@@ -62,6 +62,20 @@ async function drawerText(cards, n) {
     assert.ok(!t.includes("Held"), t);
   });
 
+  await test("A card tile whose summary has hold.reason shows Held: <reason>", async () => {
+    const h = setup([mk(1, {hold: {reason, source: "scheduler", until: null}})]);
+    await h.flush();
+    const tile = allText(h.ctx.renderCard(mk(1, {hold: {reason, source: "scheduler", until: null}}), "acme/toy"));
+    assert.ok(tile.includes("Held: " + reason), tile);
+  });
+
+  await test("A card tile without a hold shows no Held line", async () => {
+    const h = setup([mk(1, {hold: null})]);
+    await h.flush();
+    const tile = allText(h.ctx.renderCard(mk(1, {hold: null}), "acme/toy"));
+    assert.ok(!tile.includes("Held"), tile);
+  });
+
   process.exit(fails ? 1 : 0);
 })();
 JS

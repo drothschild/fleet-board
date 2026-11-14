@@ -1015,7 +1015,7 @@ def card_worktree(note):
     return wt if isinstance(wt, str) and wt and os.path.isdir(wt) else None
 
 
-def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, known_states=None) -> dict:
+def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, known_states=None, status=None) -> dict:
     """state_of: number -> state for every card read in this request, so
     `blocked` (any blocker missing or not done) costs no extra read."""
     note = parse_note(card)
@@ -1034,6 +1034,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, k
         "acceptance_count": len(card_acceptance(card)),
         "blocked_by": blk,
         "blocked": any(state_of.get(b) != "done" for b in blk),
+        "hold": hold_from_status(status, card.get("number")),
     }
 
 
@@ -1059,7 +1060,11 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
 
 def card_hold(n: int):
     """The running supervisor's hold for card n ({reason, source, until}), else None."""
-    status = supervisor_status()
+    return hold_from_status(supervisor_status(), n)
+
+
+def hold_from_status(status, n):
+    """Card n's hold taken from an already-read supervisor status, else None."""
     holds = status.get("holds") if isinstance(status, dict) else None
     hold = holds.get(str(n)) if isinstance(holds, dict) else None
     if not isinstance(hold, dict):
@@ -1178,7 +1183,7 @@ def get_board(params, body):
     stuck_of, activity = board_extras(status, run, refresh=wants_stuck_refresh(params))
     return 200, {
         "states": sts,
-        "cards": [dict(card_summary(cfg, dir, c, owned, state_of, keys),
+        "cards": [dict(card_summary(cfg, dir, c, owned, state_of, keys, status),
                        stuck=stuck_of.get(c.get("number")), activity=activity.get(c.get("number")))
                   for c in cards],
         "run": run,
