@@ -744,6 +744,7 @@ function renderCard(c, repo) {
     li.appendChild(el("div", "card-meta card-stuck-resolve", "resolve with: fleet-board supervisor stuck --release " + n));
   }
   if (attn) li.appendChild(el("div", "card-meta card-attention-reason", clean(attn, 300)));
+  if (c.hold && typeof c.hold.reason === "string") li.appendChild(el("div", "card-meta card-hold", "Held: " + clean(c.hold.reason, 300)));
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
 

@@ -1468,6 +1468,70 @@ assert_code 409
 assert_body "With accept.sh exiting 3 the response message is its stderr (note written, card still needs moving)" '.error' '*note on #1 is written*move it by hand*'
 stop_server
 
+# --- board card summaries carry the supervisor's hold (real service, real board-web process) ---
+HOLD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/board-hold.XXXXXX")"
+CLEANUP_DIRS+=("$HOLD_TMP")
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$SCRIPTS:$SCRIPT_DIR/../fixtures/supervisor" python3 - "$HOLD_TMP" <<'PY'
+import sys
+import unittest
+from unittest import mock
+
+import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when run directly
+
+
+class BoardHold(wc.SupervisorWebContract):
+
+    def test_board_summary_hold_is_the_supervisors_hold_for_card_2_and_null_for_the_others(self):
+        for n in (1, 2, 3):
+            self.write_card(n)
+        self.start_service()
+        hold = {"reason": "Scope overlaps #3 on src/a.sh", "source": "planner", "until": None}
+        self.state.set_holds({"2": hold})
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        by_n = {c["number"]: c for c in body["cards"]}
+        self.assertEqual(by_n[2].get("hold"), hold)
+        for n in (1, 3):
+            self.assertIn("hold", by_n[n])
+            self.assertIsNone(by_n[n]["hold"])
+
+    def test_board_summary_hold_is_null_for_every_card_when_no_supervisor_is_running(self):
+        for n in (1, 2):
+            self.write_card(n)
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(len(body["cards"]), 2)
+        for c in body["cards"]:
+            self.assertIn("hold", c)
+            self.assertIsNone(c["hold"])
+
+    def test_one_board_request_makes_exactly_one_supervisor_status_request_however_many_cards_are_held(self):
+        for n in (1, 2, 3):
+            self.write_card(n)
+        board = self.load_board_module("board_web_hold_calls")
+        board.APP["scripts"] = str(wc.SCRIPTS)
+        holds = {str(n): {"reason": "r%d" % n, "source": "planner", "until": None} for n in (1, 2, 3)}
+        calls = []
+
+        def fake_proxy(command, body=None, **extra):
+            calls.append(command)
+            return {"holds": holds, "state": "running", "pid": 1}
+        with mock.patch.object(board, "supervisor_running", lambda: True), \
+                mock.patch.object(board, "proxy_call", fake_proxy):
+            code, body = board.get_board({}, {})
+        self.assertEqual(code, 200)
+        self.assertEqual([c["hold"]["reason"] for c in body["cards"]], ["r1", "r2", "r3"])
+        self.assertEqual(calls.count("status"), 1, calls)
+
+
+names = [n for n in dir(BoardHold) if n.startswith("test_board_summary") or n.startswith("test_one_board")]
+result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(BoardHold(n) for n in names))
+sys.exit(0 if result.wasSuccessful() else 1)
+PY
+if [ $? -eq 0 ]; then pass "board card summaries carry the supervisor's hold"; else fail "board card summaries carry the supervisor's hold" "see the unittest output above"; fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

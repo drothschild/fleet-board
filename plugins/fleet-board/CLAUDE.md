@@ -288,7 +288,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
     column's total in its header, the remainder (`all_time` minus the shown columns) on the Unknown
     state header or the All time tooltip, and never a 0 for unreadable usage. There is no `/api/run` route,
     no tick-stop file and no marker clearing: Start always launches (or resumes) the supervisor, and
-    `/api/board`'s `run` is `{state, supervisor}` plus the `stuck_*` fields. Status is
+    `/api/board`'s `run` is `{state, supervisor}` plus the `stuck_*` fields. Each `/api/board` card summary
+    carries `hold` (`{reason, source, until}` or `null`) taken from the one status read `get_board` makes, and
+    the tile shows it as "Held: <reason>". Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
 - **Merging and the merger** (Phase 4; spec section 6). `merging` is a fixed state between the
