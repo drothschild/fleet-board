@@ -1147,6 +1147,25 @@ def get_card(params, body):
     return 200, card_detail(cfg, dir, params["n"])
 
 
+def open_terminal(params, body):
+    """Run board.terminal_command with {dir} replaced by the card's directory."""
+    cfg, dir = ctx()
+    card = read_card(dir, params["n"])
+    wt = card_worktree(parse_note(card))
+    if wt is None:
+        raise ApiError(409, "card #%d has no directory to open" % params["n"])
+    cmd = [part.replace("{dir}", wt) for part in (cfg.get("board") or {}).get("terminal_command") or []]
+    if not cmd:
+        raise ApiError(500, "board.terminal_command is not configured")
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ApiError(500, "terminal command failed: %s" % exc)
+    if proc.returncode != 0:
+        raise ApiError(500, "terminal command exited %d: %s" % (proc.returncode, proc.stderr.strip()))
+    return 200, {"opened": wt}
+
+
 def require_str(body: dict, key: str, required: bool = True):
     v = body.get(key)
     if v is None and not required:
@@ -1779,6 +1798,7 @@ ROUTES = [
     ("PATCH", r"/api/cards/(?P<n>\d+)", edit_card),
     ("POST", r"/api/cards/(?P<n>\d+)/move", move_card),
     ("POST", r"/api/cards/(?P<n>\d+)/comments", comment_card),
+    ("POST", r"/api/cards/(?P<n>\d+)/terminal", open_terminal),
     ("GET", r"/api/supervisor", get_supervisor),
     ("GET", r"/api/usage", get_usage),
     ("GET", r"/api/stuck", get_stuck),
