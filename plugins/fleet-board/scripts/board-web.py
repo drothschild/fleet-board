@@ -1347,6 +1347,15 @@ def edit_card(params, body):
     return 200, card_detail(cfg, dir, n)
 
 
+def accept_card(params, body):
+    """Runs accept.sh for a Blocked card; a non-zero exit is a 409 carrying its stderr."""
+    cfg, dir = ctx()
+    n = params["n"]
+    read_card(dir, n)
+    board_write(["bash", script("accept.sh"), str(n)])
+    return 200, card_detail(cfg, dir, n)
+
+
 def move_card(params, body):
     cfg, dir = ctx()
     n = params["n"]
@@ -1831,6 +1840,7 @@ ROUTES = [
     ("GET", r"/api/cards/(?P<n>\d+)", get_card),
     ("PATCH", r"/api/cards/(?P<n>\d+)", edit_card),
     ("POST", r"/api/cards/(?P<n>\d+)/move", move_card),
+    ("POST", r"/api/cards/(?P<n>\d+)/accept", accept_card),
     ("POST", r"/api/cards/(?P<n>\d+)/comments", comment_card),
     ("POST", r"/api/cards/(?P<n>\d+)/terminal", open_terminal),
     ("GET", r"/api/supervisor", get_supervisor),
