@@ -94,7 +94,7 @@ PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
-_FLAGS = frozenset(('--qa-summary', '--role', '--commits-since-review', '--mode'))
+_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
@@ -454,10 +454,12 @@ class _Run:
 
 
 _SECTIONS = {
-    'implementor': ('number', 'title', 'body', 'acceptance', 'worktree', 'branch', 'note', 'config', 'scripts'),
-    'reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'round',
+    'implementor': ('number', 'title', 'body', 'acceptance', 'open_cards', 'worktree', 'branch', 'note', 'config',
+                    'scripts'),
+    'reviewer': ('number', 'body', 'acceptance', 'open_cards', 'pr', 'diff', 'report', 'worktree', 'config', 'round',
                  'prev_sha', 'findings', 'scripts'),
-    'fixer': ('number', 'title', 'body', 'acceptance', 'pr', 'worktree', 'findings', 'config', 'scripts'),
+    'fixer': ('number', 'title', 'body', 'acceptance', 'open_cards', 'pr', 'worktree', 'findings', 'config',
+              'scripts'),
     'stage-reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'stage_name',
                        'brief', 'round', 'prev_sha', 'findings', 'scripts', 'post'),
     'merger': ('number', 'title', 'pr', 'mode', 'pr_head', 'merge_commit', 'refusal', 'persona', 'persona_hash', 'config',
@@ -465,7 +467,7 @@ _SECTIONS = {
 }
 _LABELS = {
     'number': 'Card number', 'title': 'Card title', 'body': 'Card body', 'acceptance': 'Acceptance',
-    'worktree': 'Worktree', 'branch': 'Branch', 'note': 'Manager note', 'config': 'Config', 'scripts': 'Scripts dir',
+    'open_cards': 'Open cards', 'worktree': 'Worktree', 'branch': 'Branch', 'note': 'Manager note', 'config': 'Config', 'scripts': 'Scripts dir',
     'pr': 'PR number', 'diff': 'PR diff', 'report': 'Latest implementor or fixer report', 'round': 'Round',
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
     'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'pr_head': 'PR head (pr_head)',
@@ -822,6 +824,8 @@ class CardDriver:
         inputs = {'number': c.n, 'title': card.get('title'), 'body': card.get('body'),
                   'acceptance': ''.join('- %s\n' % a for a in card.get('acceptance') or []) or 'none',
                   'config': json.dumps(c.config, indent=2, sort_keys=True), 'scripts': str(self.plugin_dir / 'scripts')}
+        if role in ('implementor', 'reviewer', 'fixer'):
+            inputs['open_cards'] = self._open_cards(c)
         if role == 'implementor':
             inputs.update(worktree=c.worktree(), branch=c.branch())
             if name == 'continue_implementor':
@@ -841,6 +845,30 @@ class CardDriver:
         run.guard = self._role_snapshot(card)
         self._launch(run)
         return 'session'
+
+    def _open_cards(self, c):
+        """One `#<n> <title>` line per card that is not done or wont_do, the card itself left out; `none` when
+        there are none or the board cannot be listed."""
+        result = c.soft('board-list.sh', '--all', timeout=60)
+        if result.timed_out or result.rc != 0:
+            return 'none'
+        states = c.states()
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if len(lines) != len(states):
+            return 'none'
+        out = []
+        for state, line in zip(states, lines):
+            if state in ('done', 'wont_do'):
+                continue
+            try:
+                items = json.loads(line)
+            except ValueError:
+                return 'none'
+            for item in items if isinstance(items, list) else ():
+                if (isinstance(item, dict) and type(item.get('number')) is int and item['number'] != c.n
+                        and isinstance(item.get('title'), str)):
+                    out.append((item['number'], ' '.join(item['title'].split())))
+        return '\n'.join('#%d %s' % item for item in sorted(out)) or 'none'
 
     @staticmethod
     def _stage_name(stage):

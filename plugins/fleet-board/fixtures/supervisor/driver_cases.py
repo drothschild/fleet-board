@@ -93,7 +93,7 @@ class Board:
 
     def scripts_called(self):
         """Script names in call order, without the note reads and merges."""
-        return [c[0] for c in self.calls if c[0] != 'note.sh']
+        return [c[0] for c in self.calls if c[0] not in ('note.sh', 'board-list.sh')]
 
     def seed(self, number, card_state='ready', body='', acceptance=('does it',)):
         card = {'number': number, 'title': 'Add subtract', 'body': body, 'state': card_state, 'labels': [],

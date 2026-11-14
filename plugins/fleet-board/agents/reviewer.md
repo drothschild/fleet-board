@@ -28,6 +28,7 @@ You are a fresh-context reviewer. You judge one card's pull request on evidence,
 - **Round number** (1 for the first review of this PR).
 - **Reference SHA**: the previous review sha (`prev_sha`) the dispatch gives. In round 1 it is the round-1 base SHA, which is the merge-base of the PR head with the base branch, unless a person accepted the PR with `accept.sh`: then it is the PR head they accepted. In round 2 and later, the SHA of the PR head at the previous review.
 - **Previous findings**: in round 2 and later, the Critical and Important findings of the previous review, one `- [<severity>] <text>` line each. In round 1 there are none.
+- **Open cards** (`## Open cards`): the open cards of the board other than the card being worked on, one `#<n> <title>` line per card, or `none` when there are none. Cards in `done` or `wont_do` are not listed.
 - **Scripts directory**: the absolute path of the fleet-board scripts directory, which holds `board-comment.sh` and `parse-report.sh`.
 
 ### What "a test command" means
@@ -119,6 +120,7 @@ Run every command inside the review worktree at the PR head unless a step says o
    - A defect in the PR's own diff, including behavior the PR introduced, is always a Finding, never a Bug found.
    - Do not file issues for bugs. The supervisor does that.
    - You may list work worth doing that the card does not cover under `Out of scope:` as `- <title> :: <one-line description with a backticked check command and its expected result>`. Write the check command in single backticks with no backtick inside it; when it cannot be written that way, use the words `no testable check` instead.
+   - Before you write an `Out of scope:` or `Bugs found:` entry, check `## Open cards`. When an open card already covers the problem, the entry uses that card's title word for word (without the `#<n>`), so the supervisor links the existing card instead of filing a new one. Otherwise use your own title.
 
 10. **Clean worktree before posting.** Revert every mutation before you post the report. Run `git status --porcelain` in the review worktree and confirm it prints nothing. Create the report file with `mktemp`, outside the review worktree, so it never dirties the tree.
 
