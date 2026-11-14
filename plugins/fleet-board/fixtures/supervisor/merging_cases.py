@@ -720,6 +720,26 @@ class Lane(MergeCase):
         self.assertEqual(outcome.detail['required_check'], 'build')
         self.assertEqual(calls[0][:4], ('pr', 'checks', '34', '--repo'))
 
+    def refusal_outcome(self, **inspect):
+        self.inspect = dict(OPEN, **inspect)
+        self.stderr('refused\n', 1)
+        return self.outcome_of(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+
+    def test_a_refusal_at_the_merge_head_after_a_version_bump_is_refused_and_records_that_head(self):
+        outcome = self.refusal_outcome(planned_head='abc1234', merge_head='bee5678', observed_head='bee5678')
+        self.assertEqual(outcome.kind, 'refused')
+        self.assertEqual(self.b.note(12)['merge_refusal']['head'], 'bee5678')
+
+    def test_a_refusal_with_the_pr_open_at_the_planned_head_not_the_merge_head_is_not_refused(self):
+        outcome = self.refusal_outcome(planned_head='abc1234', merge_head='bee5678', observed_head='abc1234')
+        self.assertNotEqual(outcome.kind, 'refused')
+        self.assertIsNone(self.b.note(12).get('merge_refusal'))
+
+    def test_a_refusal_with_no_merge_head_is_read_against_the_planned_head(self):
+        outcome = self.refusal_outcome(planned_head='abc1234', observed_head='abc1234')
+        self.assertEqual(outcome.kind, 'refused')
+        self.assertEqual(self.b.note(12)['merge_refusal']['head'], 'abc1234')
+
     def test_the_merge_lane_action_works_in_merging_even_from_in_review(self):
         # Consistency only: the merge lane writes no ledger line today, so this has no ledger effect yet.
         self.lane.start(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
