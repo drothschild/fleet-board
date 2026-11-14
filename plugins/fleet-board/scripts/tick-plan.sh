@@ -956,8 +956,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         # starts the after-merge merger); a pending merge_refusal at this head plans merge_refusal
         # (the refusal merger) unless the merger asked for attention. A merge after a merger retry
         # carries retry_after (note.merge_retry.after), the time before which the supervisor holds it.
-        # Attention waits for a person, who clears it with `note.sh merge <n>` setting merger: null (and merge_refusal: null,
-        # merge_retry: null to let the card merge again), or move the card by hand.
+        # Attention moves the card to Blocked (blocked_from: merging), where it waits for a person; the Blocked row
+        # skips it. The person moves the card out of Blocked (move.sh clears merger, merge_refusal and merge_retry).
         elif is_merging($c) then
           if $c.pr == null or $c.pr_info == null then act("skip"; "in merging, but no PR is known")
           elif $c.pr_info.state == "MERGED" then
@@ -1040,7 +1040,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif $cfg.merge.policy == "auto" and ($c.pr_info | green) then act("merge"; "clean review, green checks, merge.policy auto")
           else act("wait"; "waiting for a human merge or green checks") end
         elif $c.state == "blocked" then
-          if $n.blocking_pr != null and $c.blocking_merged == true then act("unblock"; "blocking PR #\($n.blocking_pr) merged")
+          # A card a merger attention blocked waits for a person, whatever its blocking PR does
+          if $n.blocked_from == "merging" then act("skip"; "blocked, waiting for a person")
+          elif $n.blocking_pr != null and $c.blocking_merged == true then act("unblock"; "blocking PR #\($n.blocking_pr) merged")
           else act("skip"; "blocked") end
         else act("skip"; "state \($c.state) is not planned") end;
 
