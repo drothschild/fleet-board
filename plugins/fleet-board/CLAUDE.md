@@ -59,6 +59,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
   against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`).
+  Stacking fields (config `stacking.enabled`, default false, boolean): `stack` (null, else
+  `parent` positive integer, `base` a `fleet/<n>-<slug>` branch, `start` 40-hex, `attention` null
+  or at most 300 characters without a control character) and `landed` (null, else `parent`
+  positive integer, `parent_head`, `squash` and `sha` each 40-hex); an invalid one makes the
+  note `{}` with a warning naming the field.
   Note-to-card mirror: the local `note` verb copies the note's `pr` into the card's `pr_url`
   (`https://github.com/<board.repo>/pull/<pr>`, `pr_url_source: note`); `pr: null` clears a
   note-sourced URL. A URL a person set (`pr_url_source: person`) is kept unless a note names

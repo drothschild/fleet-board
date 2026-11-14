@@ -73,6 +73,10 @@ board:
 
 `board.backend`, `board.project_number` and `board.project_owner` are no longer settings: `config.sh` exits 5 naming each one it finds. Delete them from `.fleet-board.yml`. To bring an existing GitHub board over, see [Moving an existing GitHub board](../README.md#moving-an-existing-github-board).
 
+## `stacking.enabled`
+
+Stacked pull requests are opt-in. `stacking: { enabled: false }` is the default, and with it off nothing behaves differently. Set `stacking.enabled: true` to turn the feature on; any other value is rejected by `config.sh` (`stacking.enabled must be boolean`). A stacked card's state lives in its manager note (`stack` and `landed`), validated like `branch`.
+
 ## `followups.status`
 
 Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card) are created in the `ready` column by default, with an `acceptance` field drafted from the finding, so the supervisor can pick them up. Set `followups.status: backlog` to have a person triage them first; any other value is rejected by `config.sh` (`followups.status must be ready or backlog`). The Acceptance command is the first backticked span with a non-blank character; spans are paired single backticks, so a detail with an odd number of backticks or a double backtick has none. An out-of-scope item with no such span, or whose detail holds the words `no testable check` (even beside a backticked path, and even when quoted), gives no testable bullet; it is filed in Backlog regardless, with a comment saying why. Roles are told to write the check command before any other backticked text; a backticked file path written first is taken as the command, and invisible characters inside a span are not checked. A follow-up whose detail says "depends on this card" carries a `blocked_by` entry naming the spawning card. Before filing, an open card, or one closed in the last 30 days, with the same title (case-insensitive) suppresses the new card; the printed entry has `"existing": true` and `"matched": "open"` or `"closed"`.
