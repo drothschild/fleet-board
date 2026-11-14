@@ -180,5 +180,13 @@ check "the self-scoped card is created" "$(issues)" "1"
 case "$OUT" in *"missing on the default branch"*) fail "a path in the card's own scope (exact or suffix) is not flagged as missing" "$OUT" ;; *) pass "a path in the card's own scope (exact or suffix) is not flagged as missing" ;; esac
 check "the self-scoped acceptance is kept verbatim" "$(grep -c 'specs/merger.md defines the merger role' "$D/bodies/101.md" 2>/dev/null)" "1"
 
+echo "# a suffix-scoped doc that exists in the working tree is not flagged"
+printf '# Root merger spec\n' > "$ROOT/specs/merger.md"
+reset_gh
+run_import "y\n" "$SB/cards-own.json"
+check "a suffix-scoped reference that exists in the working tree is created without a doc prompt" "$RC" "0"
+case "$OUT" in *"missing on the default branch"*) fail "a suffix-scoped reference that exists in the working tree is not flagged as missing" "$OUT" ;; *) pass "a suffix-scoped reference that exists in the working tree is not flagged as missing" ;; esac
+check "the suffix-scoped acceptance is kept verbatim" "$(grep -c 'specs/merger.md defines the merger role' "$D/bodies/101.md" 2>/dev/null)" "1"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
