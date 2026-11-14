@@ -244,6 +244,12 @@ else
   fail "resumed planner turn passes --tools Read,Grep,Glob" "got '$got'"
 fi
 
+echo "Case: the argument after the --tools list is an option or --, never the prompt"
+for ln in 1 2; do
+  nxt="$(sed -n "${ln}p" "$ARGV_LOG" | tr '\037' '\n' | grep -A2 -x -e '--tools' | sed -n 3p)"
+  case "$nxt" in -*) pass "turn $ln: argument after --tools list is '$nxt'" ;; *) fail "turn $ln: argument after --tools list is an option or --" "got '$nxt'" ;; esac
+done
+
 echo "Case: the import-preview session started by Draft cards keeps its argv without a tool limit"
 LINES_BEFORE_DRAFT="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
 api POST /api/planner/conv1/draft '{}'
