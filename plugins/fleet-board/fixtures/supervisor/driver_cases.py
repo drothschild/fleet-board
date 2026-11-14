@@ -1407,6 +1407,38 @@ def test_provider_stage_done_records_the_stage_review(base):
     assert review['model'] == 'gpt-5' and review['sha'] == 'abc1234' and review['important'] == 1, review
 
 
+def test_an_evidence_review_is_kept_in_reviews_under_evidence(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    run_role(b, begin(b, 'review', state='in_review', round=1))
+    note = b.note()
+    assert note['reviews'] == {'evidence': note['last_review']}, note.get('reviews')
+    assert note['reviews']['evidence']['sha'] == 'abc1234' and note['reviews']['evidence']['stage'] is None
+
+
+def test_a_stage_review_at_the_same_head_keeps_the_evidence_record(base):
+    # The evidence reviewer reported at the head, then a stage reports at the same head: last_review is the
+    # stage's record, and note.reviews keeps both, so a fresh plan replans neither (test-tick-plan.sh
+    # parallel-stage-after-evidence and parallel-all-reported feed the planner this note shape)
+    evidence = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'stage': None, 'agent': None,
+                'model': None, 'provider': None, 'findings': []}
+    out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',
+           'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    b, stage = provider_stage_board(base, 0, '')
+    b.put_note({'state': 'in_review', 'stage': None, 'last_review': evidence, 'reviews': {'evidence': evidence}})
+    out['report_file'] = report_file(b, 'stage-reviewer-findings')
+    fake_plugin(b, 0, json.dumps(out))
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=1))
+    note = b.note()
+    assert note['last_review']['stage'] == 'security', note['last_review']
+    assert note['reviews']['evidence'] == evidence, note['reviews']
+    assert note['reviews']['security'] == note['last_review'], note['reviews']
+    assert note['reviews']['security']['sha'] == 'abc1234' == note['reviews']['evidence']['sha']
+
+
 def _stage_ledger_line(base, **tokens):
     from supervisor import usage
     out = {'status': 'posted', 'report_file': None, 'parsed': {}, 'provider': 'codex', 'model': 'gpt-5',

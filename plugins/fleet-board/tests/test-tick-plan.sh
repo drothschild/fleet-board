@@ -1884,6 +1884,16 @@ splan parallel-evidence-at-head
 assert_jq "parallel evidence: one review_stage row per routed stage" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name]" '["security","ux"]'
 assert_jq "parallel evidence: no advance_stage row" "[.cards[] | select(.number == 12 and .action == \"advance_stage\")] | length" '0'
 assert_jq "parallel evidence: every row is at the same head SHA" "[.cards[] | select(.number == 12) | .head_sha] | unique" '["abc1234"]'
+# The loop case: the evidence reviewer reported clean at the head, then a stage did, so last_review
+# holds the stage's record. note.reviews keeps both: the evidence reviewer is not planned again,
+# and only the stage that has not reported at this head is
+splan parallel-stage-after-evidence
+assert_jq "stage after evidence: the evidence reviewer is not planned again" "[.cards[] | select(.number == 12 and .action == \"review\")] | length" '0'
+assert_jq "stage after evidence: only the unreported stage is planned" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name]" '["ux"]'
+# Every reviewer reported clean at the head: none is planned again
+splan parallel-all-reported
+assert_jq "all reported: no reviewer is planned again" "[.cards[] | select(.number == 12 and (.action == \"review\" or .action == \"review_stage\" or .action == \"advance_stage\"))] | length" '0'
+assert_jq "all reported: the card still has a row" "[.cards[] | select(.number == 12)] | length" '1'
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
