@@ -195,7 +195,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   main (`review-drift.sh`; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
   closing keyword before an issue reference in the title, body or a commit message
   (`pr-closing-check.sh --json`, also run by `merge-reviewed.sh` before every merge, keyed
-  form after `pending_merge` so the lane classifies it `refused`). G3: moving to ready needs a non-empty
+  form after `pending_merge` so the lane classifies it `refused`), and a PR base that is
+  the default branch (`origin/HEAD` without the prefix, else main; `merge-reviewed.sh`
+  refuses the same with `PR #<pr> targets <base>, not <default>; not merged`; an unreadable
+  base is a refusal in both). G3: moving to ready needs a non-empty
   `acceptance` field on the card. Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
