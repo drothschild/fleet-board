@@ -1523,14 +1523,23 @@ class CardDriver:
     def _merger_attention(self, c, mode, reason, head, verified=None):
         # pending_merge goes: a person who clears the attention lets the card merge again under a new operation
         # key, which merge-reviewed.sh refuses (exit 3, the lane pauses the board) over the refused one's marker
-        patch = dict(_RESET, pending_merge=None,
+        # The card goes to Blocked, the column a person watches; moving it out clears merger, merge_refusal and
+        # merge_retry (move.sh), and the planner never unblocks a card that came from Merging on its own
+        patch = dict(_RESET, pending_merge=None, state='blocked', blocked_from='merging',
                      merger={'mode': mode, 'status': 'attention', 'reason': reason, 'head': head})
         if verified is not None:
             patch['last_verified'] = verified
         c.merge(patch)
+        c.move('blocked')
         self.state.set_attention(c.n, reason)
         self.state.event('attention', card=c.n, mode=mode, reason=reason)
-        c.comment_soft('Merger needs attention (%s): %s' % (mode, reason))
+        if mode == 'after_merge':
+            todo = ('The PR is merged. Fix the cause, then move the card to Merging to run the after-merge steps '
+                    'again, or to Done to finish without them.')
+        else:
+            todo = ('The PR is still open. Fix the cause, then move the card to In Review; the planner merges it '
+                    'when the review at that head is clean and its checks are green.')
+        c.comment_soft('Waiting for a person: %s\n\n%s' % (reason, todo))
 
     @staticmethod
     def _merger_reason(parsed):
