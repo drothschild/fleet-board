@@ -164,6 +164,27 @@ def case_version_commit_on_a_nested_key_is_counted(sub):
     assert dc._count_since(repo, reviewed) == str(int(base_count) + 1), dc._count_since(repo, reviewed)
 
 
+def case_move_to_review_returns_a_retired_column_card_to_in_review_keeping_reviewed_stages(sub):
+    b = dc.board_for(sub, 'review_security')
+    b.put_note({'stage': 'security', 'round': 2, 'reviewed_stages': ['perf'], 'action_failures': 1,
+                'last_action_error': 'old'})
+    started = dc.begin(b, 'move_to_review', state='review_security', stage={'name': 'security'})
+    assert started.kind == 'done' and 12 not in b.state.active
+    assert ('board-move.sh', '12', 'in_review') in b.calls, b.calls
+    assert b.card()['state'] == 'in_review'
+    note = b.note()
+    assert note['state'] == 'in_review' and note['stage'] is None, note
+    assert note['reviewed_stages'] == ['perf'], note
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+
+
+def case_move_to_review_refuses_a_card_outside_a_review_column(sub):
+    b = dc.board_for(sub, 'in_review')
+    assert dc.begin(b, 'move_to_review', state='in_review').kind == 'done'
+    assert 'board-move.sh' not in b.scripts_called(), b.calls
+    assert b.card()['state'] == 'in_review'
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):
