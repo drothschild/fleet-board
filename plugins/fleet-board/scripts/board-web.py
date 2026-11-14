@@ -728,6 +728,8 @@ def start_planner() -> str:
         pdir.mkdir(parents=True, mode=0o700)
         os.chmod(str(pdir), 0o700)
         write_private_atomic(pdir / "transcript.json", "[]")
+        provider = "codex" if (cfg.get("planner") or {}).get("provider") == "codex" else "claude"
+        write_private_atomic(pdir / "meta.json", json.dumps({"provider": provider}))
     return id
 
 
@@ -842,7 +844,9 @@ def send_planner_message(id: str, text: str):
         meta = read_json_file(pdir / "meta.json") or {}
         n = len(read_turns(pdir))
         reply_path = pdir / ("reply-%d.txt" % n)
-        codex = (cfg.get("planner") or {}).get("provider") == "codex"
+        # a chat keeps the provider it started with; chats without a recorded provider follow the config
+        provider = meta.get("provider") or (cfg.get("planner") or {}).get("provider")
+        codex = provider == "codex"
         if codex:
             model = (cfg.get("planner") or {}).get("model")
             codex_bin = os.environ.get("FLEET_BOARD_CODEX") or "codex"

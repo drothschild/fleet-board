@@ -901,6 +901,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
       | ($n.last_action_error // "no error recorded") as $err
       | if $c.lookup_failed != null then act("skip"; "lookup failed: \($c.lookup_failed)")
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
+        # A role session tripped the role guard: a person clears note.role_guard first
+        elif ($n.role_guard.status // null) == "attention"
+          then act("skip"; "role guard needs attention (\($n.role_guard.reason // "no reason recorded")); a person clears it")
         # Never let failure limits or follow-ups move an unverified merge out
         # of review, where the headless recovery pass can still find it.
         elif (is_review($c) or is_merging($c)) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
