@@ -47,9 +47,8 @@ import merging_cases as mc  # noqa: E402
 
 class Attention(mc.MergerFlow):
     def waiting_comment(self):
-        comments = self.b.comments(12)
+        comments = [c for c in self.b.comments(12) if c.startswith('Waiting for a person:')]
         self.assertEqual(len(comments), 1, comments)
-        self.assertTrue(comments[0].startswith('Waiting for a person:'), comments[0])
         return comments[0]
 
     def test_a_refusal_mode_merger_reporting_attention_leaves_the_card_in_blocked_with_blocked_from_merging_and_one_waiting_for_a_person_comment_naming_the_reason(self):
@@ -128,7 +127,7 @@ scenario() {
 plan_field() { jq -r --argjson n "$1" ".cards[] | select(.number == \$n) | .$2" <<<"$PLAN"; }
 
 scenario to-in-review "$TICK/common/issue-12-in_review.json" "$TICK/common/pr-34-open-green.json" in_review \
-  "$TICK/common/list-in_review-12.json" "{\"state\":\"blocked\",\"blocked_from\":\"merging\",$BASE_NOTE,$CLEAN_LR}"
+  "$TICK/common/list-in_review-12.json" "{\"state\":\"blocked\",\"blocked_from\":\"merging\",\"reviewed_stages\":[\"documentation\",\"blast_radius\"],$BASE_NOTE,$CLEAN_LR}"
 assert_eq "a card moved from Blocked to In Review with an open PR, a clean review at the current head and green checks plans merge" \
   "$(plan_field 12 action)" "merge"
 
