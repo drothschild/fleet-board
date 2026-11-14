@@ -651,7 +651,7 @@ class CardDriver:
         branch, worktree = c.branch(), c.worktree()
         c.attempts_before = 0
         patch = {'state': 'in_progress', 'branch': branch, 'worktree': worktree, 'round': 0,
-                 'implementor_attempts': 1, 'cancelled': None, 'accepted': None}  # an accept is for the old PR
+                 'implementor_attempts': 1, 'cancelled': None}
         patch.update(c.models_patch())
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         c.move('in_progress')
