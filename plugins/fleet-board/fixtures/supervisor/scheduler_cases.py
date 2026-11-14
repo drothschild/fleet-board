@@ -561,6 +561,11 @@ def test_one_cards_reviewers_are_admitted_together():
     running = [{'number': 7, 'provider': 'claude', 'paths': [], 'action': 'review'}]
     r = Scheduler(clock=lambda: 0).admit(rows[1:], active=running, limits=LIMITS)
     assert len(r['admitted']) == 2 and r['waits'] == [], r
+    # the planner keeps planning a reviewer until it reports: a running one is not admitted a second time
+    r = Scheduler(clock=lambda: 0).admit(rows, active=[{'number': 7, 'provider': 'claude', 'paths': [],
+                                                        'action': 'review_stage', 'stage': 'security'}], limits=LIMITS)
+    assert [x.get('stage') for x in r['admitted']] == [None, 'ux'], r
+    assert [w['reason'] for w in r['waits']] == ['card already has an active claim'], r
     # global capacity still bounds them
     r = Scheduler(clock=lambda: 0).admit(rows, limits=dict(LIMITS, **{'global': 2}))
     assert len(r['admitted']) == 2 and r['waits'][0]['reason'] == 'global capacity', r

@@ -1544,13 +1544,13 @@ def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(bas
     stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
              'provider': None}
     b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
-                'worktree': b.worktree})
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
     worktree_ok(b)
     b.gh_result = ok('diff --git a/x b/x\n+line\n')
     b.plans({'report': 'reviewer-findings', 'sleep': 1}, {'report': 'stage-reviewer-ok', 'sleep': 1})
     evidence = begin(b, 'review', state='in_review', round=1)
     staged = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
-    assert evidence.kind == 'session' and staged.kind == 'session'
+    assert evidence.kind == 'session' and staged.kind == 'session', (evidence.kind, staged.kind, [e['payload'] for e in b.state.events])
     assert ('worktree.sh', 'review', '12', '34', 'security') in b.calls, b.calls
     assert sorted(a.action for a in b.state.actions_for(12)) == ['review', 'review_stage']
     first, second = wait_for(evidence), wait_for(staged)
