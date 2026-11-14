@@ -116,3 +116,32 @@ if __name__ == '__main__':
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     sys.exit(0 if result.wasSuccessful() else 1)
 PY
+
+# The planner honours it: tick-plan.sh skips a card whose note has role_guard.status attention
+# until a person clears it (the note no longer carries it).
+. "$plugin_dir/tests/store-sync.sh"
+unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
+repo=$(mktemp -d "${TMPDIR:-/tmp}/role-guard-plan.XXXXXX")
+fakegh=$(mktemp -d "${TMPDIR:-/tmp}/role-guard-gh.XXXXXX")
+trap 'rm -rf "$tmp" "$FLEET_BOARD_SOCKET_DIR" "$repo" "$fakegh"' EXIT
+git init -q "$repo"
+git -C "$repo" config user.email t@example.com
+git -C "$repo" config user.name T
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$repo/.fleet-board.yml"
+git -C "$repo" add .fleet-board.yml
+git -C "$repo" commit -q -m initial
+mkdir -p "$fakegh/bin"
+ln -s "$plugin_dir/tests/fake-gh.sh" "$fakegh/bin/gh"
+# the scenario: the in-progress-no-pr fixture, its note carrying role_guard attention
+src="$plugin_dir/fixtures/gh/tick/in-progress-no-pr"
+mkdir -p "$fakegh/scenario"
+sed 's|\.\./\.\./|'"$plugin_dir"'/fixtures/gh/|g; s|\.\./common|'"$plugin_dir"'/fixtures/gh/tick/common|g; s|comments-12.json|'"$fakegh"'/scenario/comments-12.json|' "$src/routes" > "$fakegh/scenario/routes"
+sed 's|\\"implementor_attempts\\":1}|\\"implementor_attempts\\":1,\\"role_guard\\":{\\"role\\":\\"fixer\\",\\"status\\":\\"attention\\",\\"reason\\":\\"edited .fleet-board.yml\\"}}|' "$src/comments-12.json" > "$fakegh/scenario/comments-12.json"
+export FAKE_GH_DIR="$fakegh" FAKE_GH_ROUTES="$fakegh/scenario/routes"
+PATH="$fakegh/bin:$PATH"
+cd "$repo"
+REPO="$repo" store_sync
+plan_json=$(bash "$plugin_dir/scripts/tick-plan.sh")
+action=$(printf '%s' "$plan_json" | jq -r '.cards[] | select(.number == 12) | .action')
+if [ "$action" = "skip" ]; then echo "  ok   the planner skips a card whose note has role_guard attention"
+else echo "  FAIL the planner skips a card whose note has role_guard attention (planned: $action)"; exit 1; fi
