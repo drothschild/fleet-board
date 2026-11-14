@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # behavioral-merger.sh - paid behavioural check of agents/merger.md (not run in CI).
 #
-# Runs the merger agent twice in headless `claude --bare -p --agent fleet-board:merger` sessions, built the way
+# Runs the merger agent twice in headless `claude -p --agent fleet-board:merger` sessions, built the way
 # scripts/supervisor/roles.py command() builds them, each with a fresh empty CLAUDE_CONFIG_DIR (no user plugins,
 # hooks, settings or user CLAUDE.md), against two fixtures:
 #   (a) mode refusal, a merge conflict            -> report Status `fix`
@@ -21,9 +21,9 @@
 #   FLEET_BOARD_CLAUDE         claude binary (default: claude)
 #   BL_MAX_TURNS               --max-turns per session (default 40)
 #   BL_MODEL                   --model (default sonnet, the agent's own model)
-#   FB_ISOLATE_SETTINGS        settings file holding the auth (an apiKeyHelper) for the --bare sessions
+#   FB_ISOLATE_SETTINGS        settings file holding the auth (an apiKeyHelper) for the sessions
 #                              (default ~/.config/fleet-board/bare-settings.json; skipped when unreadable,
-#                              then --bare needs ANTHROPIC_API_KEY)
+#                              then the sessions need ANTHROPIC_API_KEY)
 #
 # Portable: bash 3.2, jq, git.
 set -uo pipefail
@@ -99,13 +99,13 @@ PY
 }
 
 # claude argv as roles.command builds it
-# --bare with a fresh empty CLAUDE_CONFIG_DIR: plain --bare still loads installed user plugins (repo CLAUDE.md)
+# No --bare: on Claude Code 2.1.323 --bare does not load plugin agents; the fresh empty CLAUDE_CONFIG_DIR keeps user plugins out
 SETTINGS="${FB_ISOLATE_SETTINGS:-$HOME/.config/fleet-board/bare-settings.json}"
 run_merger() { # LABEL REPO PROMPT_FILE
   local label="$1" repo="$2" prompt cfg="$RUN/claude-config-$1"
   prompt="$(cat "$3")"
   mkdir -p "$cfg"
-  local argv=("$CLAUDE" --bare -p "$prompt" --agent fleet-board:merger --plugin-dir "$PLUGIN_DIR")
+  local argv=("$CLAUDE" -p "$prompt" --agent fleet-board:merger --plugin-dir "$PLUGIN_DIR")
   [ ! -r "$SETTINGS" ] || argv+=(--settings "$SETTINGS")
   [ -z "${BL_MODEL:-}" ] || argv+=(--model "$BL_MODEL")
   argv+=(--permission-mode auto --output-format stream-json --verbose --max-turns "${BL_MAX_TURNS:-40}")
