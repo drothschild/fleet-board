@@ -1552,7 +1552,7 @@ class BoardReviewers(wc.SupervisorWebContract):
         (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
             {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
              "updated_at": "2026-11-11T10:00:00Z", "next_comment_id": 2,
-             "comments": [{"id": 1, "author": "tester", "body": body}]}), encoding="utf-8")
+             "comments": [{"id": 1, "author": "web-test", "body": body}]}), encoding="utf-8")
 
     def test_board_in_review_card_lists_reviewers_with_name_status_and_passes_over_required_passes(self):
         self.config.write_text(
