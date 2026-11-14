@@ -17,5 +17,6 @@
   "limits": { "concurrency": 6, "max_hours": 8, "max_tokens": 20000000, "max_tokens_per_card": null, "max_turns": 200, "rate_limit_max_wait": 3600, "rate_limit_margin": 5 },
   "planner": { "persona": null, "provider": "claude", "model": null },
   "followups": { "status": "ready" },
-  "headless": { "permission_mode": "auto" }
+  "headless": { "permission_mode": "auto" },
+  "stacking": { "enabled": false }
 }
