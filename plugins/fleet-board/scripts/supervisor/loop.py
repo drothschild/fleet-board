@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from . import candidates, errors, markers, merging, resolver, roles, scopes, scripts, stuck, usage
+from .scheduler import SCOPE_FREE_ACTIONS
 from .state import DUPLICATE_ADMISSION, ledger_column
 
 STOP_MODES = ('drain', 'cancel')
@@ -551,8 +552,7 @@ class Supervisor:
             if row.get('action') == 'wait' and row.get('waiting_on'):
                 row['deps_commented'] = self._deps_commented(row.get('number'))
             rows.append(row)
-        active = [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths)}
-                  for a in list(self.state.active.values())]
+        active = self._active_claims()
         reservations = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
                                       now=now, lane_free=self._lane_free(rows))
@@ -675,6 +675,11 @@ class Supervisor:
         value = note.get('deps_commented') if isinstance(note, dict) else None
         return value if isinstance(value, list) else None
 
+    def _active_claims(self):
+        """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
+        return [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action}
+                for a in list(self.state.active.values())]
+
     def _begin(self, row):
         number, name = row.get('number'), row.get('action')
         if name == 'merge':   # the lane keeps no reservation: the scheduler sees its paths among the active
@@ -687,7 +692,10 @@ class Supervisor:
             self._merger_hold.discard(number)   # its session (an active action) holds the lane from here
         free = row.get('provider') == 'scripts' and name != 'update_branch'
         reserved = False
-        if not free:
+        if not free and name in SCOPE_FREE_ACTIONS:
+            # Reads files or writes only its own branch: it holds a slot (state.active) but no scope.
+            self.state.event('admitted', card=number, action=name, provider=row.get('provider'))
+        elif not free:
             try:
                 ignore = ((self.config or {}).get('supervisor') or {}).get('scope_ignore') or []
                 scope = scopes.normalize(scopes.drop_ignored(list(row.get('declared_paths') or [])
