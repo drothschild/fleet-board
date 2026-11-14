@@ -7,6 +7,10 @@
   "after_merge": { "allow": [] },
   "merge": { "policy": "human", "ignore_checks": [], "persona": null, "persona_append": null },
   "review": { "mutation": true, "verify_claim": true, "max_rounds": 3, "stages": [] },
+  "builtin_stages": [
+    { "name": "documentation", "agent": "fleet-board:documentation-reviewer", "default": true },
+    { "name": "blast_radius", "agent": "fleet-board:blast-radius-reviewer", "default": true }
+  ],
   "providers": {},
   "models": { "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "merger": "sonnet", "escalate_after_rounds": 2, "escalation": null },
   "supervisor": { "reconcile_interval_seconds": 5, "progress_timeout_seconds": 900, "attempt_timeout_seconds": 7200, "shutdown_grace_seconds": 30, "retry_backoff_seconds": 60, "aging_seconds": 900, "provider_concurrency": {}, "scope_ignore": [], "version_files": [] },
