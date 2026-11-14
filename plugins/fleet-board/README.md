@@ -174,15 +174,14 @@ After a merge:
 4. Remove the worktree. Report `attention` if any step fails.
 ```
 
-On a refused merge the merger can ask for a retry (the supervisor holds the card until the retry time; a second refusal after a retry is an attention) or report `attention` when a person must decide. On attention the card stays in Merging and nothing else runs for it.
+On a refused merge the merger can ask for a retry (the supervisor holds the card until the retry time; a second refusal after a retry is an attention) or report `attention` when a person must decide. On attention the card moves to Blocked, waiting for a person, with one comment that starts "Waiting for a person:", names the reason and says what to do next.
 
-**Clearing an attention.** Fix the cause, then write a file holding `{"merger": null}` and run:
+**Clearing an attention.** Fix the cause, then move the card out of Blocked on the board page:
 
-```bash
-bash <scripts dir>/note.sh merge <n> <file>
-```
+- A refused merge (the PR is still open): move the card to In Review. The planner merges it as usual when the review at that head is clean and its checks are green; no new review runs for an unchanged head.
+- A failed after-merge step (the PR is merged): move the card to Merging to run the after-merge steps again, or to Done to finish without them.
 
-Add `"merge_refusal": null` and `"merge_retry": null` to the file to let the card try the merge again. Moving the card by hand to another column also clears the records.
+Moving the card out of Blocked sets `"merger": null`, `"merge_refusal": null` and `"merge_retry": null` in its note, so there is nothing to edit by hand. The supervisor never moves a Blocked card that came from a merger attention back on its own.
 
 `merge.ignore_checks` lists red checks to treat as green, each with a `reason` and an `until` date; see [docs/config.md](docs/config.md#mergepersona-mergepersona_append-and-mergeignore_checks). A check GitHub requires still blocks the merge while it is red.
 

@@ -422,9 +422,9 @@ class MergerFlow(unittest.TestCase):
         self.merger('merged', MERGED, 'merger-after-merge-attention')
         self.assertNotIn('cleanup-done.sh', [c[0] for c in self.b.calls])
 
-    def test_after_merge_attention_keeps_the_card_in_merging(self):
+    def test_after_merge_attention_moves_the_card_to_blocked(self):
         self.merger('merged', MERGED, 'merger-after-merge-attention')
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['mode'], merger['status'], merger['head']), ('after_merge', 'attention', 'abc1234'))
         self.assertIn('deploy step failed', merger['reason'])
@@ -485,7 +485,7 @@ class MergerFlow(unittest.TestCase):
         self.no_session('refused', self.refused())      # spec section 6: straight to attention, no session
         note = self.b.note(12)
         self.assertIsNone(note['pending_merge'])
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         self.assertEqual((note['merger']['mode'], note['merger']['status']), ('refusal', 'attention'))
         self.assertIn('after a retry', note['merger']['reason'])
         self.assertEqual(note['merge_retry']['head'], 'abc1234')
@@ -559,9 +559,9 @@ class MergerFlow(unittest.TestCase):
         self.assertEqual((note['last_review']['important'], note['last_review']['stage']), (1, None))
         self.assertEqual((note['state'], note['merge_refusal'], note['pending_merge']), ('in_review', None, None))
 
-    def test_refusal_attention_keeps_the_card_in_merging(self):
+    def test_refusal_attention_moves_the_card_to_blocked(self):
         self.merger('refused', self.refused(), 'merger-refusal-attention')
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         self.assertIsNone(self.b.note(12)['pending_merge'], 'a stale marker would make the next merge exit 3')
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['mode'], merger['status'], merger['head']), ('refusal', 'attention', 'abc1234'))
@@ -598,7 +598,7 @@ class MergerFlow(unittest.TestCase):
         self.no_session('merged', MERGED)
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['status'], merger['reason']), ('attention', 'merge.persona not found: docs/merger.md'))
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         self.assertEqual(len(self.attention_events()), 1)
 
     def test_a_persona_changed_by_the_pr_is_attention(self):
