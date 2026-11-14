@@ -587,6 +587,7 @@ invalid_field_case "stage label reserved" 'review: { stages: [ { name: s, agent:
 invalid_field_case "stage label duplicate" 'review: { stages: [ { name: s, agent: a, label: x }, { name: t, agent: a, label: x } ] }' "review.stages[1].label must be a non-empty string"
 invalid_field_case "stage advisory" 'review: { stages: [ { name: s, agent: a, advisory: yes_please } ] }' "review.stages[0].advisory must be boolean"
 invalid_field_case "stage default" 'review: { stages: [ { name: s, agent: a, default: yes_please } ] }' "review.stages[0].default must be boolean"
+invalid_field_case "stage enabled maybe" 'review: { stages: [ { name: s, agent: a, enabled: maybe } ] }' "review.stages[0].enabled must be boolean"
 invalid_field_case "stage max_rounds" 'review: { stages: [ { name: s, agent: a, max_rounds: 0 } ] }' "review.stages[0].max_rounds must be a positive integer"
 invalid_field_case "stage brief" 'review: { stages: [ { name: s, agent: a, brief: 7 } ] }' "review.stages[0].brief must be a string"
 REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: s, agent: a } ] }\n' | make_inline_repo)"
