@@ -167,6 +167,9 @@ pr() {
   route "pr view $p --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid" 0 "$FX/pr-$p.json"
   route "pr view $p --repo acme/toy --json files*" 0 "$FX/files-$p.json"
   route "pr view $p --repo acme/toy --json isDraft,mergeable,statusCheckRollup" 0 "$FX/handoff-$p.json"
+  # the merge-time base check: the PR targets main unless a case sets PR_BASE
+  jq -cn --arg b "${PR_BASE:-main}" '{baseRefName:$b}' > "$FX/base-$p.json"
+  route "pr view $p --repo acme/toy --json baseRefName" 0 "$FX/base-$p.json"
   # the merge-time closing-keyword check (pr-closing-check.sh): clean unless a case rewrites it
   closing "$p" "Add subtract" "Local board card 12" "feat: subtract" "Local board card 12"
   route "pr view $p --repo acme/toy --json title,body,commits" 0 "$FX/closing-$p.json"
@@ -298,6 +301,43 @@ for where in title body commit; do
     *) fail "closing keyword ($where): the warning names the card, the PR and the cause" "stderr: $LAST_ERR" ;;
   esac
 done
+
+echo "stacking: a PR whose base is not the default branch is never merged"
+setup_case auto
+card 12 in_review "$CLEAN"
+PR_BASE="fleet/11-parent"
+pr 34 false "$GREEN"
+PR_BASE=main
+finalize
+run_merge
+assert_exit "base is a card branch: exit 1" 1
+assert_eq "base is a card branch: no gh pr merge" "$(cnt "pr merge")" 0
+assert_eq "base is a card branch: no move to done" "$(moved_done)" 0
+case "$LAST_ERR" in
+  *"PR #34 targets fleet/11-parent, not main; not merged"*) pass "base is a card branch: the refusal names the PR, the base and main" ;;
+  *) fail "base is a card branch: the refusal names the PR, the base and main" "stderr: $LAST_ERR" ;;
+esac
+
+echo "stacking: a PR whose base is main merges as today"
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "base is main: exit 0" 0
+assert_eq "base is main: gh pr merge 34 ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
+assert_eq "base is main: the card moves to done" "$(moved_done)" 1
+
+echo "stacking: a failed base lookup refuses the merge"
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+printf 'pr view 34 --repo acme/toy --json baseRefName\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
+finalize
+run_merge
+assert_exit "failed base lookup: exit 1" 1
+assert_eq "failed base lookup: no gh pr merge" "$(cnt "pr merge")" 0
+assert_eq "failed base lookup: no move to done" "$(moved_done)" 0
 
 setup_case auto
 card 12 in_review "$CLEAN"
