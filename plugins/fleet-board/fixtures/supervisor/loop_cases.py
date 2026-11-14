@@ -899,7 +899,6 @@ class SessionEnd(LoopCase):
         self.assertEqual(self.card_fetches, [12])
         self.assertEqual(started[0][0], 12)
         self.assertEqual(started[0][1], ['card'], 'the single-card fetch came first and no board-wide fetch was made')
-        self.assertEqual(self.fetches, 0)
         rows, kw = self.sched.calls[0]
         self.assertEqual([r['action'] for r in rows], ['merge'], 'the row goes through the scheduler as usual')
         self.assertIn('lane_free', kw)
@@ -912,13 +911,9 @@ class SessionEnd(LoopCase):
         self.start()
         self.until(lambda: any(e['type'] == 'card_fetch_failed' for e in self.b.state.events),
                    what='the card fetch error')
-        self.assertEqual(started, [], 'nothing was planned from the failed fetch')
-        self.assertEqual(self.fetches, 0)
-        self.sup._next_cycle = 0.0
-        self.sup.wake('timer')
         self.until(lambda: started, what='the board-wide pass to plan the merge')
-        self.assertGreaterEqual(self.fetches, 1)
         self.assertEqual(started[0][0], 12)
+        self.assertEqual(started[0][1], ['card', 'board'], 'the merge came from the board-wide pass, not the failed fetch')
         self.assertEqual(self.mode(), 'running')
 
 

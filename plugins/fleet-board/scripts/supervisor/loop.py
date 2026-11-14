@@ -63,13 +63,14 @@ ACTIVE_CLAIM_REASON = 'card already has an active claim'
 
 class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
-                 clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
+                 fetch_card=candidates.fetch_card, clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
         self.config_loader = config_loader
         self.state = state
         self.driver = driver
         self.scheduler = scheduler
         self.fetch = fetch
+        self.fetch_card = fetch_card
         self.clock = clock
         self.mono = mono
         self.run_script = run
@@ -364,6 +365,7 @@ class Supervisor:
         elif result.failure != 'provider':
             self.state.clear_health(action.provider)
         if not raised:   # a finish that raised waits for the timer, like any other failed action
+            self._plan_card(card)
             self.wake('session ended')
 
     # --- the merge lane ------------------------------------------------------------------------------
@@ -541,24 +543,7 @@ class Supervisor:
         if batch.rate_limit_until is not None:
             return self._rate_limited(batch.rate_limit_until, now)
         self._rate_since = None
-        capped = self._capped_cards()
-        rows, limit_waits = [], []
-        for original in batch.candidates:
-            if not isinstance(original, dict) or original.get('number') in self.ignored:
-                continue
-            row = dict(original)
-            row['provider'] = resolver.provider_for(config, row)
-            if row.get('number') in capped and row['provider'] != 'scripts':
-                limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT, 'source': 'limit'})
-                continue
-            retry = self._retry_after(row) if row.get('action') == 'merge' else None
-            if retry is not None and retry > now:
-                limit_waits.append({'number': row.get('number'), 'reason': 'merge retry at %s' % _iso(retry),
-                                    'until': retry, 'source': 'limit'})
-                continue
-            if row.get('action') == 'wait' and row.get('waiting_on'):
-                row['deps_commented'] = self._deps_commented(row.get('number'))
-            rows.append(row)
+        rows, limit_waits = self._prepare(batch.candidates, config, now)
         active = self._active_claims()
         reservations = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
@@ -583,6 +568,74 @@ class Supervisor:
                 self.state.event('attention', cards=[{'number': n, 'reason': r} for n, r in attention])
         for row in result['admitted']:
             # A begin can be slow: apply a pause that arrived meanwhile before launching the next row.
+            self._drain_commands()
+            if self.state.mode != 'running' or self._stop_mode:
+                break
+            self._begin(row)
+
+    def _prepare(self, candidate_rows, config, now):
+        """The planner's rows as the scheduler takes them: provider resolved, capped and retry-held cards left out
+        (the latter reported as limit waits)."""
+        capped = self._capped_cards()
+        rows, limit_waits = [], []
+        for original in candidate_rows:
+            if not isinstance(original, dict) or original.get('number') in self.ignored:
+                continue
+            row = dict(original)
+            row['provider'] = resolver.provider_for(config, row)
+            if row.get('number') in capped and row['provider'] != 'scripts':
+                limit_waits.append({'number': row.get('number'), 'reason': CARD_LIMIT_WAIT, 'source': 'limit'})
+                continue
+            retry = self._retry_after(row) if row.get('action') == 'merge' else None
+            if retry is not None and retry > now:
+                limit_waits.append({'number': row.get('number'), 'reason': 'merge retry at %s' % _iso(retry),
+                                    'until': retry, 'source': 'limit'})
+                continue
+            if row.get('action') == 'wait' and row.get('waiting_on'):
+                row['deps_commented'] = self._deps_commented(row.get('number'))
+            rows.append(row)
+        return rows, limit_waits
+
+    def _plan_card(self, card):
+        """A role session just ended: plan that one card now (tick-plan.sh --candidates --card) and admit its row
+        through the scheduler as usual, instead of waiting for the next board-wide pass. That pass keeps its
+        interval and stays the only source of `start`. Any failure is recorded and left to that pass."""
+        try:
+            self._plan_card_now(card)
+        except Exception as exc:  # noqa: BLE001 - the board-wide pass still plans the card
+            self._error('card_fetch_failed', '%s: %s' % (type(exc).__name__, _clean(exc)))
+
+    def _plan_card_now(self, card):
+        config = self.config
+        if not isinstance(config, dict) or self.state.mode != 'running' or self._stop_mode or self._sched_pause:
+            return
+        now = self.clock()
+        if self._hold_until is not None and now < self._hold_until:
+            return
+        if self._token_limit_reached():
+            return
+        batch = self.fetch_card(self.root, card, self.run_script, self.clock)
+        if batch.error:
+            self._error('card_fetch_failed', batch.error)
+            return
+        self._last_errors.pop('card_fetch_failed', None)
+        if batch.rate_limit_until is not None:
+            return   # the board-wide pass holds admissions until the reset
+        mine = [r for r in batch.candidates
+                if isinstance(r, dict) and r.get('number') == card and r.get('action') != 'start']
+        rows, _waits = self._prepare(mine, config, now)
+        if not rows:
+            return
+        # _lane_free(rows) would also drop merger holds a one-card plan cannot see; only the board-wide pass does that
+        lane_free = (self.state.lane is None and not self._merger_hold
+                     and not any(a.action == 'after_merge' for a in self.state.all_actions()))
+        result = self.scheduler.admit(rows, active=self._active_claims(), limits=self._limits(config),
+                                      reservations=[{'card': c, 'paths': list(p)}
+                                                    for c, p in list(self.state.reservations.items())],
+                                      now=now, lane_free=lane_free)
+        if result.get('stop_reason'):
+            return
+        for row in result['admitted']:
             self._drain_commands()
             if self.state.mode != 'running' or self._stop_mode:
                 break
