@@ -528,6 +528,17 @@ card_input() {
                         and ($stage.advisory == true or ((($lr.critical // 0) + ($lr.important // 0)) == 0))' <<<"$note")" = true ]; then
       labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
       done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings]' <<<"$note" 2>/dev/null)" || done_stages='[]'
+      # In in_review the routed stages review in parallel and report into note.reviews, not
+      # reviewed_stages: a stage whose own report is current (this head, this round) and clean
+      # (an advisory stage's findings count as clean) is done, so the card is not held for it
+      if [ "$st" = in_review ] && [ "$info" != null ]; then
+        done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" --argjson done "$done_stages" \
+          '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd
+           | $done + [$cfg.review.stages[] | select(.name as $s | ($rv[$s] // null) as $r
+               | $r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)
+                 and (.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0))) | .name] | unique' \
+          <<<"$note" 2>/dev/null)" || done_stages='[]'
+      fi
       # With no stages configured there is no next stage, and no call. Else
       # the PR's current files are matched first (routing ran once, at the
       # move to in_review; a later push may touch a stage's paths), and every
