@@ -54,6 +54,18 @@ class MergerHold(MergeCase):
         self.assertIn('--card 12 ', spawned)
         self.assertIn('--card 13 ', spawned)
 
+    def test_a_merge_with_no_after_merge_steps_frees_the_lane_and_the_next_merge_starts(self):
+        del self.b.driver.begin_merger      # the driver's own flow: the default persona skips the session
+        self.add_card(13, 'in_review')
+        self.b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': lc.BRANCH[13],
+                         'worktree': self.b.worktree, 'last_review': lc.dc.LAST_REVIEW}, 13)
+        self.merge_cards = [12, 13]
+        self.start()
+        self.until(lambda: len(self.spawns()) == 2, what="card B's merge after A's skipped merger")
+        self.assertEqual(self.b.note(12)['merger'], {'mode': 'after_merge', 'status': 'done', 'head': 'abc1234'})
+        self.assertNotIn(12, self.b.state.active)
+        self.assertEqual(self.b.fake_calls(), [])
+
     def test_a_loop_counts_a_running_merger_toward_limits_concurrency(self):
         self.merger_sessions()
         self.hold.write_text('')                          # the merge child keeps running
