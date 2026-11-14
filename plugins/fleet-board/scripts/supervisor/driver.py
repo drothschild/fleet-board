@@ -1417,8 +1417,10 @@ class CardDriver:
             path, rel = self.root / configured, configured
         if rel is not None and self._persona_changed(c, rel, pr):
             raise _Attention('persona changed by this PR')
+        # the base text comes from roles.resolve_persona; the append here is inline text, not a file path
+        base_config = dict(c.config, merge=dict(merge, persona_append=None))
         try:
-            text = path.read_text(errors='replace')
+            text = _roles.resolve_persona(self.root, base_config).text
         except OSError as exc:
             raise _Attention('persona unreadable: %s' % _first_line(str(exc)))
         append = merge.get('persona_append')
