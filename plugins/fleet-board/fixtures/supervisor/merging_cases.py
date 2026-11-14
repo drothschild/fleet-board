@@ -842,7 +842,8 @@ esac
 # the merge-time closing-keyword check (pr-closing-check.sh) reads title, body and commits
 CHAIN_CLOSING = {'title': 'Add subtract', 'body': 'Local board card 12',
                  'commits': [{'oid': 'abc1234', 'messageHeadline': 'feat: subtract', 'messageBody': ''}]}
-CHAIN_PR = {'isDraft': False, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': 'abc1234',
+# baseRefName: merge-reviewed.sh refuses a PR whose base it cannot read (#376), so the fixture names main
+CHAIN_PR = {'isDraft': False, 'state': 'OPEN', 'mergedAt': None, 'headRefOid': 'abc1234', 'baseRefName': 'main',
             'statusCheckRollup': [{'name': 'build', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]}
 
 
