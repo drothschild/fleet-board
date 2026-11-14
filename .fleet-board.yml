@@ -7,3 +7,8 @@ commands:
   lint: "bash plugins/fleet-board/tests/test-version-bumped.sh"
 merge:
   policy: "auto"
+supervisor:
+  version_bump: merge
+  version_bump_paths: ["plugins/**"]
+  scope_ignore: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]
+  version_files: [".claude-plugin/marketplace.json", "plugins/*/.claude-plugin/plugin.json"]
