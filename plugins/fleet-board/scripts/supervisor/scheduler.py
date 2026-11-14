@@ -23,6 +23,10 @@ _ACTION_CLASS = {
 # class 1 only when they carry work (see _has_work).
 _IGNORED = ('skip', 'skip_no_acceptance', 'skip_card_lint', 'wait')
 _WORK_CLASS = 1
+# Actions that change no file another card works on: a review or stage review reads the PR, and a
+# branch update merges the base into the card's own branch. They take a slot and wait for their own
+# card, but neither wait on another card's scope nor block one, so a writer never holds them up.
+SCOPE_FREE_ACTIONS = frozenset({'review', 'review_stage', 'update_branch'})
 # Provider label of script-only actions: never capped by provider_concurrency.
 _SCRIPTS = 'scripts'
 _PRIORITY = {'high': 0, 'normal': 1, 'low': 2}
@@ -323,6 +327,7 @@ class Scheduler:
             # Script actions (except update_branch/merge) run synchronously in the driver and
             # hold no claim: no rate wait, caps or scope checks, and they occupy nothing.
             free = provider == _SCRIPTS and c.get('action') not in ('update_branch', 'merge')
+            read_only = c.get('action') in SCOPE_FREE_ACTIONS
             rate_wait = limits.get('rate_limit_wait', {})
             rate_until = rate_wait.get(provider) if isinstance(rate_wait, dict) else rate_wait
             if free:
@@ -350,13 +355,14 @@ class Scheduler:
             if sum(str(x.get('number', x.get('card'))) == str(number) for x in occupied) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
             paths = scopes.drop_ignored((c.get('declared_paths') or []) + (c.get('actual_paths') or []), ignore)
-            reserved = None if free else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
+            reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
                              and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
                 continue
             conflict = next((x for x in occupied if str(x.get('number', x.get('card'))) == str(number)
-                             or (not free and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
+                             or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
+                                 and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue
             if validate is not None and not validate(dict(c)):
@@ -375,6 +381,7 @@ class Scheduler:
             else:
                 item = {'number': number, 'provider': provider, 'paths': paths}
             item.setdefault('number', number); item.setdefault('provider', provider); item.setdefault('paths', paths)
+            item.setdefault('action', c.get('action'))
             admitted.append(c)
             if free:
                 continue

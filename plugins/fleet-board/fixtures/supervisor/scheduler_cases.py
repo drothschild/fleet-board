@@ -452,7 +452,7 @@ def _pr_row(number, action, own, extra=()):
 
 def test_scope_ignore_drops_version_manifests():
     ignore = dict(LIMITS, scope_ignore=['.claude-plugin/marketplace.json', 'plugins/*/.claude-plugin/plugin.json'])
-    rows = [_pr_row(1, 'review', 'src/a.py'), _pr_row(2, 'fix', 'src/b.py')]
+    rows = [_pr_row(1, 'fix', 'src/a.py'), _pr_row(2, 'fix', 'src/b.py')]
     # Both admitted when the only shared paths are ignored manifests.
     both = Scheduler(clock=lambda: 0).admit(rows, limits=ignore)
     assert sorted(x['number'] for x in both['admitted']) == [1, 2], both
@@ -462,22 +462,22 @@ def test_scope_ignore_drops_version_manifests():
     unset = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
     assert [x['number'] for x in unset['admitted']] == [1]
     # A shared path that is not ignored still conflicts.
-    shared = [_pr_row(1, 'review', 'src/a.py', ['src/shared.py']), _pr_row(2, 'fix', 'src/b.py', ['src/shared.py'])]
+    shared = [_pr_row(1, 'fix', 'src/a.py', ['src/shared.py']), _pr_row(2, 'fix', 'src/b.py', ['src/shared.py'])]
     still = Scheduler(clock=lambda: 0).admit(shared, limits=ignore)
     assert [x['number'] for x in still['admitted']] == [1] and still['waits'][0]['reason'] == 'scope or card conflict'
     # Active claims and reservations holding the manifests (normalised forms too) do not block.
     active = [{'number': 9, 'provider': 'claude', 'paths': ['src/z.py', './.claude-plugin/marketplace.json']}]
     reserved = [{'card': 8, 'paths': ['src/y.py', 'plugins/fleet-board/.claude-plugin/plugin.json']}]
-    held = Scheduler(clock=lambda: 0).admit([_pr_row(3, 'update_branch', 'src/c.py')], active=active,
+    held = Scheduler(clock=lambda: 0).admit([_pr_row(3, 'fix', 'src/c.py')], active=active,
                                             reservations=reserved, limits=ignore)
     assert [x['number'] for x in held['admitted']] == [3], held
     assert held['active'][-1]['paths'] == ['src/c.py']
-    blocked = Scheduler(clock=lambda: 0).admit([_pr_row(3, 'update_branch', 'src/c.py')], active=active,
+    blocked = Scheduler(clock=lambda: 0).admit([_pr_row(3, 'fix', 'src/c.py')], active=active,
                                                reservations=reserved, limits=LIMITS)
     assert blocked['admitted'] == [] and blocked['waits'][0]['reason'] == 'scope reserved by #8'
     # A card whose every path is ignored keeps its paths: it never turns into a whole-repo scope.
-    only = dict(candidate(4, 'review', paths=[]), actual_paths=list(MANIFESTS))
-    other = candidate(5, 'review', paths=['src/e.py'])
+    only = dict(candidate(4, 'fix', paths=[]), actual_paths=list(MANIFESTS))
+    other = candidate(5, 'fix', paths=['src/e.py'])
     kept = Scheduler(clock=lambda: 0).admit([only, other], limits=ignore)
     assert sorted(x['number'] for x in kept['admitted']) == [4, 5], kept
 
@@ -493,7 +493,7 @@ def test_scope_ignore_one_side_wholly_ignored():
     ignore = dict(LIMITS, scope_ignore=list(MANIFESTS))
     # A wholly-ignored candidate keeps its paths; a reservation holding a manifest plus other
     # paths is filtered, so the two do not overlap (needs the reservation-side filter).
-    only = dict(candidate(4, 'review', paths=[]), actual_paths=list(MANIFESTS))
+    only = dict(candidate(4, 'fix', paths=[]), actual_paths=list(MANIFESTS))
     res = [{'card': 8, 'paths': ['src/y.py'] + list(MANIFESTS)}]
     r = Scheduler(clock=lambda: 0).admit([only], reservations=res, limits=ignore)
     assert [x['number'] for x in r['admitted']] == [4], r
@@ -502,7 +502,7 @@ def test_scope_ignore_one_side_wholly_ignored():
     assert [x['number'] for x in r['admitted']] == [4], r
     # The mirror case needs the candidate-side filter: a candidate with a manifest plus
     # other paths against a reservation that holds only manifests (kept whole).
-    mixed = _pr_row(5, 'review', 'src/e.py')
+    mixed = _pr_row(5, 'fix', 'src/e.py')
     res = [{'card': 8, 'paths': list(MANIFESTS)}]
     r = Scheduler(clock=lambda: 0).admit([mixed], reservations=res, limits=ignore)
     assert [x['number'] for x in r['admitted']] == [5], r
@@ -513,7 +513,7 @@ def test_scope_ignore_one_side_wholly_ignored():
 
 def test_scope_ignore_cleans_the_path_side():
     ignore = dict(LIMITS, scope_ignore=['.claude-plugin/marketplace.json'])
-    rows = [dict(candidate(n, 'review', paths=['src/%d.py' % n]), actual_paths=['./.claude-plugin/marketplace.json'])
+    rows = [dict(candidate(n, 'fix', paths=['src/%d.py' % n]), actual_paths=['./.claude-plugin/marketplace.json'])
             for n in (1, 2)]
     r = Scheduler(clock=lambda: 0).admit(rows, limits=ignore)
     assert sorted(x['number'] for x in r['admitted']) == [1, 2], r
