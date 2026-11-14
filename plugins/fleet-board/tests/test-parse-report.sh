@@ -606,6 +606,12 @@ assert_exit "merger done in a refusal report: exit 1" 1
 assert_stderr_line "merger done in refusal: message" "parse-report: role merger does not allow status: done in mode refusal"
 run_parse --role merger --mode after_merge "$REPORTS/merger-refusal-retry.md"
 assert_stderr_line "merger retry in after_merge: message" "parse-report: role merger does not allow status: retry in mode after_merge"
+run_parse --role merger --mode refusal "$REPORTS/merger-clean.md"
+assert_exit "merger clean in a refusal report: exit 1" 1
+assert_stderr_line "merger clean in refusal: message" "parse-report: role merger does not allow status: clean in mode refusal"
+run_parse --role merger --mode after_merge "$REPORTS/merger-clean.md"
+assert_exit "merger clean in an after_merge report: exit 1" 1
+assert_stderr_line "merger clean in after_merge: message" "parse-report: role merger does not allow status: clean in mode after_merge"
 run_parse --role merger --mode refusal "$REPORTS/merger-bad-status.md"
 assert_exit "merger unknown status: exit 1" 1
 assert_stderr_line "merger unknown status: message" "parse-report: unknown status: merged"
@@ -623,6 +629,21 @@ run_parse "$REPORTS/merger-refusal-fix.md"
 assert_stderr_line "no role, fix: unknown status" "parse-report: unknown status: fix"
 run_parse --role reviewer --mode refusal "$REPORTS/reviewer-ok.md"
 assert_exit "--mode with another role: exit 2" 2
+
+# --- merger acceptance: statuses per mode ------------------------------------
+echo "merger acceptance"
+for s in retry fix attention; do
+  run_parse --role merger --mode refusal "$REPORTS/merger-refusal-$s.md"
+  assert_exit "acceptance: refusal mode accepts $s" 0
+  assert_jq "acceptance: refusal mode reports $s" ".status == \"$s\""
+done
+for s in done attention; do
+  run_parse --role merger --mode after_merge "$REPORTS/merger-after-merge-$s.md"
+  assert_exit "acceptance: after_merge mode accepts $s" 0
+  assert_jq "acceptance: after_merge mode reports $s" ".status == \"$s\""
+done
+run_parse --role merger --mode after_merge "$REPORTS/merger-after-merge-fix.md"
+assert_exit "acceptance: after_merge mode rejects fix" 1
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
