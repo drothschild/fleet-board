@@ -1110,7 +1110,14 @@ class SessionLogRetention(unittest.TestCase):
         thread = threading.Thread(target=run, daemon=True)
         thread.start()
         end = time.time() + 15
-        while thread.is_alive() and time.time() < end and old.exists():
+        socket_path = paths.controller_socket(paths.domain_id_for_root(case), env=env)
+        from supervisor.cli import _socket_transport
+        while thread.is_alive() and time.time() < end:
+            try:
+                if _socket_transport(socket_path)({"command": "status"}).get("startup") == "done":
+                    break
+            except (OSError, ValueError):
+                pass
             time.sleep(0.05)
         main(["stop", "--cancel"], env=env, stdout=io.StringIO(), stderr=io.StringIO())
         thread.join(15)
