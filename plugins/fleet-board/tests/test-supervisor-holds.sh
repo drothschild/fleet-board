@@ -63,6 +63,24 @@ class Holds(lc.LoopCase):
         self.cycles_done(2)
         self.assertNotIn('12', self.holds())
 
+    ACTIVE = 'card already has an active claim'
+
+    @staticmethod
+    def held(waits):
+        from supervisor.loop import Supervisor
+        return Supervisor._holds({'ignored': [], 'waits': waits}, [])
+
+    def test_when_a_cycles_only_wait_for_a_card_is_the_active_claim_reason_the_card_has_no_hold(self):
+        self.assertNotIn('8', self.held([{'number': 8, 'reason': self.ACTIVE}]))
+
+    def test_when_a_cycle_has_a_global_capacity_wait_for_a_card_its_hold_keeps_that_reason(self):
+        holds = self.held([{'number': 9, 'reason': 'global capacity'}])
+        self.assertEqual(holds['9']['reason'], 'global capacity')
+
+    def test_when_a_cycle_has_an_active_claim_wait_and_a_scope_overlap_wait_holds_has_only_the_second_card(self):
+        holds = self.held([{'number': 10, 'reason': self.ACTIVE}, {'number': 11, 'reason': 'scope overlap'}])
+        self.assertEqual(list(holds), ['11'])
+
 
 if __name__ == '__main__':
     unittest.main(argv=[sys.argv[0], 'Holds'])
