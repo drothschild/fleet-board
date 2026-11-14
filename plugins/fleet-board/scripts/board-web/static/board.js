@@ -905,6 +905,7 @@ function clearDrawer(n) {
   $("dr-acc").replaceChildren();
   $("dr-acc-count").textContent = "";
   $("dr-blk").replaceChildren();
+  $("dr-blocks").replaceChildren();
   setFieldError("dr-blk-input", "dr-blk-err", "");
   setFieldError("dr-pr-input", "dr-pr-err", "");
   showPrForm(false);
@@ -1010,6 +1011,7 @@ function renderDrawer(card) {
   renderLabels();
   renderAcceptance();
   renderBlockers();
+  renderBlocks(card);
   setFieldError("dr-blk-input", "dr-blk-err", "");
   $("dr-pr-field").hidden = isNew; // a card has no PR before it exists
   showPrForm(false);
@@ -1227,6 +1229,24 @@ function setFieldError(inputId, errId, msg) {
 
 // renderBlockers(): one chip per blocker: amber while it is open (not done,
 // or not on the board), quiet once done.
+function renderBlocks(card) {
+  const list = card && Array.isArray(card.blocks) ? card.blocks : [];
+  const frag = document.createDocumentFragment();
+  list.forEach(function (n) {
+    const c = boardCard(n);
+    const done = !!c && c.state === "done";
+    const li = el("li", "label blk-chip" + (done ? " done" : " open"));
+    li.appendChild(el("span", "blk-num", "#" + n));
+    li.appendChild(el("span", "blk-title", c ? c.title || "(untitled)" : "not on this board"));
+    li.title = c ? "#" + n + " " + (c.title || "") + " · " + stateName(c.state) : "#" + n + " is not on this board";
+    frag.appendChild(li);
+  });
+  $("dr-blocks").replaceChildren(frag);
+  $("dr-blocks-none").textContent = "Nothing";
+  $("dr-blocks-none").hidden = list.length > 0;
+  $("dr-blocks-field").hidden = !card;
+}
+
 function renderBlockers() {
   const d = S.drawer;
   const frag = document.createDocumentFragment();
@@ -1669,7 +1689,7 @@ async function submitComment() {
 function syncDrawer() {
   const d = S.drawer;
   if (!d || !d.base) return;
-  if (d.card) renderDrawerMeta();
+  if (d.card) { renderDrawerMeta(); renderBlocks(d.card); }
   // a blocker that moved to done (or appeared) changes its chip
   const sig = JSON.stringify(d.blk.map(function (n) {
     const c = boardCard(n);
