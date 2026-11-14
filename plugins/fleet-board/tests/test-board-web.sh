@@ -1532,6 +1532,71 @@ sys.exit(0 if result.wasSuccessful() else 1)
 PY
 if [ $? -eq 0 ]; then pass "board card summaries carry the supervisor's hold"; else fail "board card summaries carry the supervisor's hold" "see the unittest output above"; fi
 
+# --- in_review cards list each reviewer's status (real service, real board-web process) ---
+REV_TMP="$(mktemp -d "${TMPDIR:-/tmp}/board-reviewers.XXXXXX")"
+CLEANUP_DIRS+=("$REV_TMP")
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$SCRIPTS:$SCRIPT_DIR/../fixtures/supervisor" python3 - "$REV_TMP" <<'PY'
+import json
+import sys
+import unittest
+
+import web_cases as wc  # pops the temp dir off sys.argv, as web_cases does when run directly
+
+
+class BoardReviewers(wc.SupervisorWebContract):
+
+    def write_review_card(self, n, state, reviews, round_=2):
+        fence = "`" * 3
+        note = {"round": round_, "pr": 41, "reviews": reviews}
+        body = "<!-- fleet-board:manager-note -->\n%sjson\n%s\n%s\n" % (fence, json.dumps(note), fence)
+        (self.repo / ".fleet-board" / "cards" / ("%d.json" % n)).write_text(json.dumps(
+            {"number": n, "title": "card %d" % n, "state": state, "labels": [], "body": "",
+             "updated_at": "2026-11-11T10:00:00Z", "next_comment_id": 2,
+             "comments": [{"id": 1, "author": "tester", "body": body}]}), encoding="utf-8")
+
+    def test_board_in_review_card_lists_reviewers_with_name_status_and_passes_over_required_passes(self):
+        self.config.write_text(
+            "board:\n  repo: acme/toy\nreview:\n  stages:\n"
+            "    - name: security\n      agent: reviewer\n      label: review-security\n      required_passes: 2\n"
+            "    - name: perf\n      agent: reviewer\n      label: review-perf\n", encoding="utf-8")
+        self.write_review_card(1, "in_review", {
+            "evidence": {"round": 2, "sha": "abc123", "critical": 0, "important": 0},
+            "security": {"round": 2, "sha": "abc123", "critical": 1, "important": 0}})
+        self.write_review_card(2, "in_progress", {})
+        self.start_web()
+        code, body = self.http("GET", "/api/board")
+        self.assertEqual(code, 200, body)
+        by_n = {c["number"]: c for c in body["cards"]}
+        got = {r["name"]: r for r in by_n[1]["reviewers"]}
+        self.assertEqual(got["evidence"]["status"], "clean")
+        self.assertEqual((got["evidence"]["passes"], got["evidence"]["required_passes"]), (1, 1))
+        self.assertEqual(got["security"]["status"], "findings")
+        self.assertEqual((got["security"]["passes"], got["security"]["required_passes"]), (0, 2))
+        self.assertEqual(got["perf"]["status"], "pending")
+        self.assertEqual((got["perf"]["passes"], got["perf"]["required_passes"]), (0, 1))
+        self.assertEqual(by_n[2].get("reviewers"), [])
+
+
+names = [n for n in dir(BoardReviewers) if n.startswith("test_board_in_review")]
+result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite(BoardReviewers(n) for n in names))
+sys.exit(0 if result.wasSuccessful() else 1)
+PY
+if [ $? -eq 0 ]; then pass "/api/board returns a reviewers list for an in_review card with name, status and passes over required_passes"; else fail "/api/board returns a reviewers list for an in_review card with name, status and passes over required_passes" "see the unittest output above"; fi
+
+# The card tile renders one line per reviewer with that status (real board.js in the fake DOM)
+jq -n '{states: [{key: "in_review", name: "In review"}], run: null, repo: "acme/toy", escalation: null,
+  cards: [{number: 7, title: "Tile card", state: "in_review", known: true, labels: [], note: {round: 2},
+    reviewers: [{name: "evidence", status: "clean", passes: 1, required_passes: 1},
+                {name: "security", status: "findings", passes: 0, required_passes: 2},
+                {name: "perf", status: "pending", passes: 0, required_passes: 1}]}]}' > "$REV_TMP/board.json"
+REV_OUT="$(node "$SCRIPT_DIR/board-dom-harness.js" "$SCRIPTS/board-web/static/board.js" "$REV_TMP/board.json" in_review 2>&1)"
+for want in "evidence: clean 1/1" "security: findings 0/2" "perf: pending 0/1"; do
+  case "$(printf '%s' "$REV_OUT" | jq -r '[.groups[].cards[]]|join("|")' 2>/dev/null)" in
+    *"$want"*) pass "the card tile renders the reviewer line '$want'" ;;
+    *) fail "the card tile renders the reviewer line '$want'" "$REV_OUT" ;;
+  esac
+done
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
