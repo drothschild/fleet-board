@@ -1502,8 +1502,8 @@ ssettle() { settle "$1" "$2" "$STAGES_YAML"; }
 # in_review, clean current review, label needs-security-review -> advance_stage
 splan stage-advance-from-review
 assert_exit "stage-advance: exit" 0
-assert_jq "stage-advance: action" "$(card 12 action)" '"advance_stage"'
-assert_jq "stage-advance: reason" "$(card 12 reason)" '"review clean; next stage security"'
+assert_jq "stage-advance: in_review plans review_stage, not advance_stage" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-advance: no advance_stage row" "[.cards[] | select(.action == \"advance_stage\")] | length" '0'
 assert_jq "stage-advance: entering security" "$(card 12 stage.name)" '"security"'
 assert_jq "stage-advance: agent carried" "$(card 12 stage.agent)" '"acme:sec"'
 assert_eq "stage-advance: one files lookup (match; no needs-human-qa)" "$(call_count pr view 34 --repo acme/toy --json files,changedFiles)" 1
@@ -1551,7 +1551,7 @@ assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
 # in_review, no routing label, PR files now include src/auth/login.js
 splan stage-rematch-in-review
 assert_exit "rematch in_review: exit" 0
-assert_jq "rematch in_review: advance_stage" "$(card 12 action)" '"advance_stage"'
+assert_jq "rematch in_review: review_stage" "$(card 12 action)" '"review_stage"'
 assert_jq "rematch in_review: into security" "$(card 12 stage.name)" '"security"'
 assert_eq "rematch in_review: adds no label" "$(grep -c $'\tissue edit' "$FAKE_GH_DIR/calls.log")" 0
 # review_ux, clean, security never visited and now matched -> back to security
@@ -1572,7 +1572,7 @@ assert_jq "stage-missing: action skip" "$(card 12 action)" '"skip"'
 assert_jq "stage-missing: not dispatchable" '.dispatchable' 'false'
 # settle keeps advance_stage, drops review_stage
 ssettle stage-advance-from-review 12
-assert_jq "settle: advance_stage kept" "$(card 12 action)" '"advance_stage"'
+assert_jq "settle: in_review stage review is not advance_stage" "$(card 12 action)" '"skip"'
 ssettle stage-review-needed 12
 assert_jq "settle: review_stage skipped" "$(card 12 action)" '"skip"'
 assert_jq "settle: review_stage waits" "$(card 12 reason)" '"review_stage waits for the next tick"'
@@ -1864,6 +1864,21 @@ run_check "$SCRIPT" --candidates
 assert_jq "candidates warnings: none is an empty list" '.warnings' '[]'
 unset FLEET_BOARD_TODAY
 
+
+# Parallel review: an in_review card with two routed stages plans the evidence
+# reviewer and one review_stage per stage at the same head; no advance_stage.
+splan parallel-two-stages
+assert_exit "parallel: exit" 0
+assert_jq "parallel: one review row for the evidence reviewer" "[.cards[] | select(.number == 12 and .action == \"review\")] | length" '1'
+assert_jq "parallel: one review_stage row per routed stage" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name]" '["security","ux"]'
+assert_jq "parallel: every row is at the same head SHA" "[.cards[] | select(.number == 12) | .head_sha] | unique" '["abc1234"]'
+assert_jq "parallel: no row is advance_stage" "[.cards[] | select(.number == 12 and .action == \"advance_stage\")] | length" '0'
+assert_jq "parallel: dispatchable" '.dispatchable' 'true'
+# security already reported at this head: not planned again in the same round
+splan parallel-reported-at-head
+assert_jq "parallel reported: security is not planned again" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name]" '["ux"]'
+assert_jq "parallel reported: the evidence reviewer is still planned" "[.cards[] | select(.number == 12 and .action == \"review\")] | length" '1'
+assert_jq "parallel reported: no advance_stage" "[.cards[] | select(.number == 12 and .action == \"advance_stage\")] | length" '0'
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
