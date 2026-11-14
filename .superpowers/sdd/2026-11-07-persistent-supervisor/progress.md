@@ -1,9 +1,9 @@
-# SDD ledger — plan: docs/superpowers/plans/2026-11-07-persistent-supervisor.md
+# SDD ledger — plan: docs/plans/2026-11-07-persistent-supervisor.md
 
 User stopped execution to continue in a new session. Do not resume until requested.
 
 ## Handoff — 2026-11-07
-- PR #229 merged as 474bba8be63acf9b37d4c3f4ff7920c097daef86. Local main fast-forwarded; existing .fleet-board.yml, .fleet-board.stop, and docs/superpowers/plans/.DS_Store changes preserved.
+- PR #229 merged as 474bba8be63acf9b37d4c3f4ff7920c097daef86. Local main fast-forwarded; existing .fleet-board.yml, .fleet-board.stop, and docs/plans/.DS_Store changes preserved.
 - CI for #229 was pending when read once before merge. Repository permits authorized merges after reviewed head and focused checks; do not poll CI without request.
 - Reused clean isolated worktree /private/tmp/fleet-board-supervisor-runners, now branch feat/supervisor-scheduling.
 - Phase 3 draft PR #230: https://github.com/drothschild/fleet-board/pull/230
@@ -11,7 +11,7 @@ User stopped execution to continue in a new session. Do not resume until request
 - User explicitly requires cheaper models for implementation AND reviews. Use Luna with compact file-based handoffs; do not inherit an expensive model or prior full chat.
 - Current Superpowers 7.0.2 subagent-driven-development skill uses a ledger, task brief files, combined spec/quality task reviews, and a final whole-branch review. User cheaper-model instruction takes precedence over skill model-tier defaults. Other repository TDD and clean-room constraints remain.
 - Next: verify merged baseline log results; finish preflight conflict table; generate task 3.1 brief using skill script; dispatch Luna implementer. Then task review, task 3.2 fresh implementer/review, final review. Remain disabled; no paid calls/services/board processing.
-- Plan: docs/superpowers/plans/2026-11-07-persistent-supervisor.md. Spec: docs/superpowers/specs/2026-11-07-persistent-supervisor-design.md. Phase3 is scheduler/candidate planning and reservation lifecycle. Tracking card224 stays Backlog, DO NOT MOVE TO READY.
+- Plan: docs/plans/2026-11-07-persistent-supervisor.md. Spec: docs/specs/2026-11-07-persistent-supervisor-design.md. Phase3 is scheduler/candidate planning and reservation lifecycle. Tracking card224 stays Backlog, DO NOT MOVE TO READY.
 - Merged-baseline focused test command was started with logs /private/tmp/supervisor-phase3-baseline-{store,recovery,runner,cleanroom}.log. Check final exit evidence; do not assume passing.
 - No active subagents. Prior Phase2 agents are completed.
 - Baseline command completed before stop: store=0, recovery=0, runner=0, cleanroom=0. All four focused merged-code checks passed. No test process remains running.
