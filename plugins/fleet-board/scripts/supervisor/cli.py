@@ -225,13 +225,24 @@ def _detach(root, env, stdout, stderr, ignore_stuck=False):
     return 0
 
 
+def _prune_sessions(loader, stderr):
+    """Delete session logs older than supervisor.session_log_days; never fails the start."""
+    try:
+        days = loader().get("supervisor", {}).get("session_log_days", 14)
+        launcher.prune_session_logs(paths.log_dir() / "sessions", days,
+                                    warn=lambda message: print("supervisor: warning: " + message, file=stderr))
+    except Exception as exc:  # noqa: BLE001 - an invalid config is reported by the loop; retention is best effort
+        print("supervisor: warning: session logs were not pruned: %s" % exc, file=stderr)
+
+
 def _start(root, stdout, stderr, ignore_stuck=False):
     """Run the supervisor in the foreground until it is told to stop; exit 0 after a clean stop, 4 when it
     refuses to start because a previous supervisor left cards half done."""
     state = State(uuid.uuid4().hex, time.time)
     state.event_log = str(paths.log_dir() / "supervisor.log")
     loader = loop.config_loader(root)
-    supervisor = loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
+    _prune_sessions(loader, stderr)
+    supervisor =loop.Supervisor(root, config_loader=loader, state=state, scheduler=Scheduler(),
                                  driver=CardDriver(root, loader, state))
     service = Service(root, state, supervisor.handle)
     service.startup = "checking"
