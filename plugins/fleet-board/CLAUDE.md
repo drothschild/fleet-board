@@ -115,7 +115,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   reviewers while any of those runs. `State.active` keeps the card's first action, `State.actions_for(card)` all
   of them, `State.end(card, action)` ends one, and the snapshot lists the further ones under `also`. The card's
   marker stays until its last action ends. `worktree.sh review <n> <pr> <stage>` gives a stage reviewer its own
-  checkout `<n>-review-<stage>` (and copy), so reviewers never share one. Settle plans do
+  checkout `<n>-review-<stage>` (and copy), so reviewers never share one. It first removes the card's stage checkouts and copies whose stage is no longer in the configured `review.stages` (built-ins merged, disabled dropped), as `remove` does; a path resolving outside the base is left with a warning. Settle plans do
   not fetch scope files or start workers. Every overlap check (the scheduler,
   `state.reserve`, and tick-plan's Ready-card checks) first drops paths matching
   `supervisor.scope_ignore`; a scope wholly ignored is kept. Globs are
