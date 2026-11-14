@@ -1032,8 +1032,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif ($n.merge_refusal.head // null) != null and (head_moved($c; {sha: $n.merge_refusal.head}) | not) then
             if merger_for($c; $n; "refusal") == "attention" then act("skip"; "merger needs attention; a person decides")
             else act("merge_refusal"; "merge of PR #\($c.pr) refused; the merger decides retry, fix or attention") end
-          elif ($n.pending_merge.head_sha // null) != null and head_moved($c; {sha: $n.pending_merge.head_sha})
-            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \($n.pending_merge.head_sha[0:7]); supervisor decides")
+          elif (($n.pending_merge.bumped_head // $n.pending_merge.head_sha) // null) != null and head_moved($c; {sha: ($n.pending_merge.bumped_head // $n.pending_merge.head_sha)})
+            then act("skip"; "PR head \($c.pr_info.headRefOid[0:7]) differs from the journaled merge head \(($n.pending_merge.bumped_head // $n.pending_merge.head_sha)[0:7]); supervisor decides")
           # Nothing merges here that the review rows would not merge: a clean review (an advisory
           # stage findings count as clean, as in its column) covering this head, or a head moved
           # only by clean merges of main (the drift allowance of the review row) whose PR needs no human
@@ -1112,7 +1112,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     | .scope_unknown = $actual.unknown
     # version files whose PR head version is not above the base (supervisor.version_files)
     | (first($version_scope[] | select(.number == $c.number)) // {stale: [], needs: null}) as $vs
-    | .version_stale = ($vs.stale // []) | .version_needs = $vs.needs) as $all
+    # supervisor.version_bump: merge - the merge lane raises the version, so only a card bound for
+    # Human QA (merged by a person, never in the lane) is kept above the base by update_branch
+    | .version_stale = (if ($cfg.supervisor.version_bump // "pr") == "merge" and .needs_human_qa != true then [] else ($vs.stale // []) end)
+    | .version_needs = $vs.needs) as $all
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
   # action is merge: only that card merges this tick

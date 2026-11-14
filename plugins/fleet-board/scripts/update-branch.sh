@@ -2,7 +2,13 @@
 # update-branch.sh - brings a card's PR branch up to date with its base branch
 # by a merge commit and a plain push. Never rebases, never force-pushes.
 #
-# Usage: update-branch.sh <n> <pr> <branch> <worktree>
+# Usage: update-branch.sh <n> <pr> <branch> <worktree> [--lane-bump patch|minor|major --bump-paths <json globs>]
+#
+# With --lane-bump (the merge lane, supervisor.version_bump: merge) the "versions not above
+# the base" step is replaced by the lane's: when the PR changes a path (other than a version
+# file) matching --bump-paths, every "version" key of every version file is set to the base's
+# value plus the bump, in one commit "Raise versions above origin/<base>", then pushed; a key
+# already at that value is left alone, and the lane's value wins over the PR's own.
 #
 # Carries out tick-plan.sh's update_branch action. In <worktree> (the card's
 # worktree, which must have <branch> checked out) it fetches origin and merges
@@ -54,8 +60,16 @@ unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/version-lib.sh"
 
-[ $# -eq 4 ] || fb_die 2 "usage: update-branch.sh <n> <pr> <branch> <worktree>"
+USAGE="usage: update-branch.sh <n> <pr> <branch> <worktree> [--lane-bump patch|minor|major --bump-paths <json globs>]"
+[ $# -eq 4 ] || [ $# -eq 8 ] || fb_die 2 "$USAGE"
 N="$1"; PR="$2"; BRANCH="$3"; WT="$4"
+LANE_BUMP=""; BUMP_PATHS='["**"]'
+if [ $# -eq 8 ]; then
+  [ "$5" = --lane-bump ] && [ "$7" = --bump-paths ] || fb_die 2 "$USAGE"
+  case "$6" in patch|minor|major) LANE_BUMP="$6" ;; *) fb_die 2 "--lane-bump must be patch, minor or major, got: $6" ;; esac
+  jq -e 'type == "array" and all(.[]; type == "string")' <<<"$8" >/dev/null 2>&1 || fb_die 2 "--bump-paths must be a JSON list of strings"
+  BUMP_PATHS="$8"
+fi
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
 fb_valid_number "$PR" || fb_die 2 "PR number must be numeric, got: $PR"
 case "$BRANCH" in
@@ -200,6 +214,43 @@ EOF_FILES
     || fb_die 1 "git commit of the raised versions failed in $WT"
 }
 
+# lane_bump: with --lane-bump, when the PR changes (apart from the version files) a path that
+# matches --bump-paths, sets every "version" key of every version file to the base's value plus
+# the requested bump, in one commit. A key already at that value is left alone (a bump from an
+# earlier, refused attempt is not repeated); the lane's value wins over the PR's own.
+lane_bump() {
+  local f paths hit base_json changes summary="" i=0
+  [ "$VFILES" != '[]' ] || return 0
+  paths="$(git -C "$WT" diff --name-only "origin/$BASE...HEAD")" || fb_die 1 "cannot list the paths the branch changes against origin/$BASE"
+  hit="$(printf '%s\n' "$paths" | jq -R . | jq -sr --argjson v "$VFILES" --argjson g "$BUMP_PATHS" "$JQ_LIB"' .[] | select(length > 0) as $x | select((($x | pg_match($v)) | not) and ($x | pg_match($g))) | $x' | head -1)" \
+    || fb_die 1 "cannot match the changed paths against supervisor.version_bump_paths"
+  [ -n "$hit" ] || return 0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    case "$f" in *.json) ;; *) continue ;; esac
+    vf_match "$f" || continue
+    [ -f "$WT/$f" ] && [ ! -L "$WT/$f" ] || continue
+    git -C "$WT" show "origin/$BASE:$f" > "$TMPD/lane-base.json" 2>/dev/null || continue
+    jq -e . "$TMPD/lane-base.json" >/dev/null 2>&1 || continue
+    changes="$(jq -c --slurpfile b "$TMPD/lane-base.json" "$JQ_LIB"' vr_lane($b[0]; "'"$LANE_BUMP"'")' "$WT/$f")" \
+      || fb_die 1 "cannot compute the versions of $f"
+    [ "$changes" != '[]' ] || continue
+    i=$((i + 1))
+    jq -Rsj --argjson c "$changes" "$JQ_LIB"' vr_apply($c)' "$WT/$f" > "$TMPD/raised" 2> "$TMPD/err" \
+      || fb_die 1 "cannot raise the versions in $f: $(sed 's/^jq: error[^:]*: //' "$TMPD/err" | head -1)"
+    jq -e . "$TMPD/raised" >/dev/null 2>&1 || fb_die 1 "$f is not valid JSON after raising its versions"
+    printf '%s\n' "$f" >> "$TMPD/written"
+    cat "$TMPD/raised" > "$WT/$f" || fb_die 1 "cannot write $f"
+    git -C "$WT" add -- "$f" || fb_die 1 "git add $f failed"
+    summary="$summary$(jq -r --arg f "$f" '.[] | "\n- \($f) \(.path | map(tostring) | join(".")): \(.from) -> \(.to)"' <<<"$changes")"
+  done <<EOF_FILES
+$(git -C "$WT" ls-tree -r --name-only HEAD)
+EOF_FILES
+  [ "$i" -gt 0 ] || return 0
+  git -C "$WT" commit -q -m "Raise versions above origin/$BASE$(printf '\n%s' "$summary")" >/dev/null \
+    || fb_die 1 "git commit of the raised versions failed in $WT"
+}
+
 CUR="$(git -C "$WT" symbolic-ref -q --short HEAD)" || CUR=""
 [ "$CUR" = "$BRANCH" ] || fb_die 1 "$WT has ${CUR:-a detached HEAD} checked out, not $BRANCH"
 
@@ -245,7 +296,7 @@ if [ "$RC" -ne 0 ] || [ -n "$CONFLICTS" ]; then
   fb_die 1 "merge of origin/$BASE into $BRANCH conflicts; recorded the files for the fixer"
 fi
 
-vr_raise
+if [ -n "$LANE_BUMP" ]; then lane_bump; else vr_raise; fi
 
 AFTER="$(git -C "$WT" rev-parse HEAD)" || fb_die 1 "cannot read HEAD in $WT"
 CHANGED=false

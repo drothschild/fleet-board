@@ -343,6 +343,16 @@ VALIDATION_SCRIPT='
             then "supervisor.\($k) entries must be repo-relative, without a leading / or .."
             else (first($v[] | select(. as $g | try (("" | test("\\A(?:" + ($g | pg_regex) + ")\\z")) | false) catch true)) // null) as $bad
               | if $bad != null then "supervisor.\($k) entry \($bad | tojson) is not a valid glob" else empty end
+            end),
+        (if ($sup.version_bump != "pr" and $sup.version_bump != "merge") then "supervisor.version_bump must be pr or merge" else empty end),
+        # version_bump_paths: globs too, but "**" (every path) is its default, so wildcard-only entries are fine
+        ($sup.version_bump_paths as $v
+          | if ($v | type) != "array" then "supervisor.version_bump_paths must be a list of strings"
+            elif any($v[]; (type != "string") or . == "") then "supervisor.version_bump_paths entries must be non-empty strings"
+            elif any($v[]; gsub("\\\\"; "/") | startswith("/") or (split("/") | any(. == ".." or . == ".")))
+            then "supervisor.version_bump_paths entries must be repo-relative, without a leading / or .."
+            else (first($v[] | select(. as $g | try (("" | test("\\A(?:" + ($g | pg_regex) + ")\\z")) | false) catch true)) // null) as $bad
+              | if $bad != null then "supervisor.version_bump_paths entry \($bad | tojson) is not a valid glob" else empty end
             end)
       else empty end),
       (if (.merge | type) == "object" then

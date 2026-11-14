@@ -106,7 +106,7 @@ if [ "$INSPECT" = 1 ]; then
         {status:"unmatched"}
       else
         {status:"observed", operation_key:$marker.operation_key, note_operation_key:$marker.operation_key,
-         pr:$pr, planned_head:$head, observed_head:$info.headRefOid, state:$info.state,
+         pr:$pr, planned_head:$head, merge_head:($marker.bumped_head // $head), observed_head:$info.headRefOid, state:$info.state,
          main_check:$marker.main_check}
       end' || fb_die 3 "cannot build merge recovery evidence"
   exit 0
@@ -225,8 +225,47 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       fail "$n" "PR #$pr targets $base, not $default_branch; not merged"
       continue
     fi
+    # supervisor.version_bump: merge - the lane raises the versions: bring the branch up to date
+    # with its base, set the version files above the base, push, and merge at the new head
+    merge_head="$head"
+    if [ "$(jq -r '.supervisor.version_bump // "pr"' <<<"$FLEET_CFG")" = merge ] \
+       && [ "$(jq -r '(.supervisor.version_files // []) | length' <<<"$FLEET_CFG")" != 0 ]; then
+      if ! labels="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n" </dev/null | jq -c '.labels // []')"; then
+        fail "$n" "cannot read the card labels for the version bump; not merged"
+        continue
+      fi
+      minor="$(jq -r 'index("fleet:bump:minor") != null' <<<"$labels")"
+      major="$(jq -r 'index("fleet:bump:major") != null' <<<"$labels")"
+      if [ "$minor" = true ] && [ "$major" = true ]; then
+        fail "$n" "the card has both fleet:bump:minor and fleet:bump:major; a person decides which; not merged"
+        continue
+      fi
+      level=patch; [ "$minor" = true ] && level=minor; [ "$major" = true ] && level=major
+      bump_branch="$(bash "$FLEET_SCRIPTS/note.sh" get "$n" </dev/null | jq -r '.branch // empty')"
+      case "$bump_branch" in fleet/[0-9]*-*) ;; *) bump_branch="" ;; esac
+      if [ -z "$bump_branch" ]; then
+        fail "$n" "the card's branch is unknown, so the lane cannot raise the versions; not merged"
+        continue
+      fi
+      wt_dir="$(fb_cfg worktrees.dir)"; [ -n "$wt_dir" ] || wt_dir=../.fleet-worktrees
+      case "$wt_dir" in /*) ;; *) wt_dir="$FLEET_ROOT/$wt_dir" ;; esac
+      bump_wt="$wt_dir/${bump_branch#fleet/}"
+      if ! bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null \
+         || ! bash "$FLEET_SCRIPTS/update-branch.sh" "$n" "$pr" "$bump_branch" "$bump_wt" \
+              --lane-bump "$level" --bump-paths "$(jq -c '.supervisor.version_bump_paths // ["**"]' <<<"$FLEET_CFG")" </dev/null >/dev/null; then
+        fail "$n" "the lane could not raise the versions of PR #$pr; not merged"
+        continue
+      fi
+      merge_head="$(git -C "$bump_wt" rev-parse HEAD 2>/dev/null)" || merge_head=""
+      case "$merge_head" in ''|*[!0-9a-fA-F]*) fail "$n" "cannot read the head after the version bump; not merged"; continue ;; esac
+      if [ "$merge_head" != "$head" ] && [ -n "$OPERATION_KEY" ]; then
+        merge_note "$n" "$(jq -cn --arg key "$OPERATION_KEY" --argjson pr "$pr" --arg head "$head" --arg new "$merge_head" \
+          '{pending_merge:{operation_key:$key,pr:$pr,head_sha:$head,bumped_head:$new}}')" \
+          || fb_die 3 "#$n: cannot persist the bumped head"
+      fi
+    fi
     merge_rc=0
-    gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$head" </dev/null >/dev/null || merge_rc=$?
+    gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null || merge_rc=$?
     # Both exit paths are ambiguous: success may mean queued, while a lost
     # response may follow a completed merge. Only MERGED permits verification.
     state="$(gh pr view "$pr" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid \
@@ -240,8 +279,8 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
     esac
     printf 'merged #%s PR #%s\n' "$n" "$pr"
     if [ -n "$OPERATION_KEY" ]; then
-      merge_note "$n" "$(jq -cn --arg key "$OPERATION_KEY" --argjson pr "$pr" --arg head "$head" \
-        '{merged_pr:$pr,merge_operation:{operation_key:$key,pr:$pr,head_sha:$head}}')" \
+      merge_note "$n" "$(jq -cn --arg key "$OPERATION_KEY" --argjson pr "$pr" --arg head "$head" --arg mh "$merge_head" \
+        '{merged_pr:$pr,merge_operation:({operation_key:$key,pr:$pr,head_sha:$head} + (if $mh != $head then {bumped_head:$mh} else {} end))}')" \
         || fb_die 3 "#$n: cannot record merged PR operation; recovery required"
     else
       merge_note "$n" "$(jq -cn --argjson pr "$pr" '{merged_pr: $pr}')" || fb_die 3 "#$n: cannot record merged PR; recovery required"

@@ -228,6 +228,21 @@ A card's declared Scope is read from its `## Scope` section: backticked spans, a
 
 Left empty (the default), none of this runs and every conflict goes to the fixer.
 
+### `supervisor.version_bump` and `supervisor.version_bump_paths`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `supervisor.version_bump` | `pr` | `pr`: every PR carries its own version bump (the behaviour described above). `merge`: the merge lane raises the versions, so a PR never touches the version files |
+| `supervisor.version_bump_paths` | `["**"]` | path globs (same rules as the other path globs, but `**` is allowed): under `merge`, the lane raises the versions only when the PR changes at least one path (other than a version file) that matches |
+
+`config.sh` exits 5 unless `version_bump` is `pr` or `merge` and `version_bump_paths` is a list of non-empty strings that compile as globs. Everything below applies only under `merge` with `supervisor.version_files` set.
+
+- **The lane bumps.** After the card is in `merging` and before `gh pr merge`, `merge-reviewed.sh` runs `update-branch.sh <n> <pr> <branch> <worktree> --lane-bump <level> --bump-paths <globs>` in the card's worktree. That merges `origin/<base>` into the branch (version-only conflicts are resolved as above), sets every string `version` key of every version file to the base branch's value plus one bump, commits `Raise versions above origin/<base>`, and pushes. Then `gh pr merge --match-head-commit` pins the new head. The manager note's `pending_merge` and `merge_operation` keep the planned `head_sha` and add `bumped_head`; a refusal is recorded against the bumped head. `review-drift.sh` already accepts a version-only commit as reviewed and is unchanged. Raising only one plugin's entry in a marketplace with several plugins is not supported: every key is raised.
+- **How much.** A patch bump by default. The card label `fleet:bump:minor` gives a minor bump (`X.Y+1.0`), `fleet:bump:major` a major one (`X+1.0.0`). Both labels on one card merge nothing: `merge-reviewed.sh` reports the card and exits 1 until a person removes one.
+- **A refused merge.** The next attempt computes the bump from the base as it is then; a version already at that value is left alone, so a bump pushed by a refused attempt is not repeated and none is skipped twice.
+- **A PR that changed a version file anyway.** The lane's value wins.
+- **The planner.** Under `merge`, `tick-plan.sh` no longer plans `update_branch` for `version not above base` on a card that goes through the lane. A card bound for Human QA (the `needs-human-qa` label, or a path in `human_qa_paths`) is merged by a person and never enters the lane, so it keeps the `pr` behaviour: `update_branch` raises its version and keeps it above the base.
+
 ## `board.dir` and `board.port`
 
 `board.dir` is where the cards live: `<board.dir>/cards/<n>.json`, the `next` counter, and the `active/` markers. The default is `.fleet-board`. It is relative to the repo root, so it cannot be absolute or contain `..`; `config.sh` exits 5 for either.
