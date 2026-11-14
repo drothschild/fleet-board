@@ -218,6 +218,10 @@ case "$cmd" in
     mkdir -p "$logdir" 2>/dev/null
     bash "$root/scripts/board-web.sh" --repo "$top" "$@" 2> >(route_board_stderr "$logdir/board-web.log") &
     bpid=$!
+    # Follow the supervisor log as raw lines; -n 0 skips what is already there and -F
+    # keeps following after the file is renamed and recreated.
+    tail -n 0 -F "$logdir/supervisor.log" 2>/dev/null &
+    tpid=$!
     trap 'got_signal=1' INT TERM HUP
     wait "$bpid"; brc=$?
     if [ "$got_signal" -eq 0 ]; then
@@ -228,6 +232,7 @@ case "$cmd" in
         (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --drain >/dev/null 2>&1)
         while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do sleep 0.2; done
       fi
+      kill "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null
       exit "$brc"
     fi
     kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
@@ -246,6 +251,8 @@ case "$cmd" in
         sleep 0.2
       done
     fi
+    # The log is followed through the drain; stop following only now.
+    kill "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null
     exit 0 ;;
   supervisor)
     root="$(plugin_root supervisor.sh)" || exit 1
