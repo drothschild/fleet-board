@@ -112,6 +112,18 @@ def reviewer_info(cfg: dict) -> dict:
     return {"provider": "claude", "model": r if isinstance(r, str) and r else "opus"}
 
 
+def escalation_info(cfg: dict):
+    """{model, after_rounds} for the writers' escalation, or None when no model applies."""
+    m = cfg.get("models") or {}
+    model = m.get("escalation")
+    if not (isinstance(model, str) and model):
+        r = m.get("reviewer")
+        model = r if isinstance(r, str) and r else None
+    if model is None:
+        return None
+    return {"model": model, "after_rounds": m.get("escalate_after_rounds")}
+
+
 def states(cfg: dict) -> list:
     """[{key, name}] in FB_STATES order, from one bash call into board-lib.sh."""
     cache_key = json.dumps(cfg, sort_keys=True)
@@ -1118,6 +1130,7 @@ def get_board(params, body):
                   for c in cards],
         "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
+        "escalation": escalation_info(cfg),
     }
 
 
