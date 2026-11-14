@@ -170,6 +170,8 @@ assert_stdout_exact "default: exact output" "$(printf '%s\n' \
   ready '  (none)' \
   in_progress '  (none)' \
   in_review "$LINE12" "$LINE14" \
+  review_documentation '  (none)' \
+  review_blast_radius '  (none)' \
   merging '  (none)' \
   human_qa '  (none)' \
   blocked "$LINE15")"
@@ -181,6 +183,8 @@ assert_stdout_exact "--all: exact output" "$(printf '%s\n' \
   ready '  (none)' \
   in_progress '  (none)' \
   in_review "$LINE12" "$LINE14" \
+  review_documentation '  (none)' \
+  review_blast_radius '  (none)' \
   merging '  (none)' \
   human_qa '  (none)' \
   blocked "$LINE15" \
@@ -203,6 +207,8 @@ assert_stdout_exact "merging: its own section between in_review and human_qa" "$
   ready '  (none)' \
   in_progress '  (none)' \
   in_review "$LINE12" "$LINE14" \
+  review_documentation '  (none)' \
+  review_blast_radius '  (none)' \
   merging '  #16 Ship it · round 1 · PR #44 · sonnet/opus' \
   human_qa '  (none)' \
   blocked "$LINE15")"
@@ -531,6 +537,8 @@ assert_stdout_exact "stages: sections after in_review in config order, both card
   review_security '  #14 Fix divide · round 1 · PR #40 · sonnet/acme:security-reviewer@opus' \
   review_ux '  (none)' \
   review_compliance '  #15 Audit log · round 2 · PR #41 · sonnet/openai:gpt-test' \
+  review_documentation '  (none)' \
+  review_blast_radius '  (none)' \
   merging '  (none)' \
   human_qa '  (none)' \
   blocked '  (none)')"

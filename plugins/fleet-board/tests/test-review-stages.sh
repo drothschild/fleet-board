@@ -103,13 +103,32 @@ STAGES_YML='  stages:
       paths: ["src/ui/**"]
       advisory: true'
 
+# The built-in stages (documentation, blast_radius) are on for every project;
+# the cases below that are about the user-defined stages switch them off.
+NO_BUILTINS_YML='    - name: documentation
+      enabled: false
+    - name: blast_radius
+      enabled: false'
+
 # setup_case <kind: labels|local|nostages|labelonly> <issue fixture> <PR file paths> [changedFiles]
 # (labels: the card comes from the issue fixture through the routes; local: the
 # case seeds the store itself; every kind is a local board)
 setup_case() {
   local backend="$1" issue="$2" files="$3" changed="${4:-}" board='  repo: acme/toy' stages=""
-  [ "$backend" = nostages ] || stages="review:
-$STAGES_YML"
+  # nostages: no stage at all (built-ins off); builtins: no review block, only the
+  # built-ins; withbuiltins: the user stages plus the built-ins; any other kind:
+  # the user stages with the built-ins off
+  case "$backend" in
+    nostages) stages="review:
+  stages:
+$NO_BUILTINS_YML" ;;
+    builtins) stages="" ;;
+    withbuiltins) stages="review:
+$STAGES_YML" ;;
+    *) stages="review:
+$STAGES_YML
+$NO_BUILTINS_YML" ;;
+  esac
   # labelonly: a third stage with no paths (routed by its label only)
   [ "$backend" = labelonly ] && stages="$stages
     - name: copy
@@ -358,6 +377,38 @@ run_stages route 12 34
 assert_exit "route local label-only: exit 0" 0
 assert_stdout_exact "route local label-only: routed by the card's label" '["copy"]'
 assert_eq "route local label-only: labels unchanged" "$(jq -c .labels "$REPO/.fleet-board/cards/12.json")" '["needs-copy-review"]'
+
+# built-ins: a project with no review block still routes documentation and blast_radius
+setup_case builtins "$CARD_PLAIN" "README.md"
+run_stages route 12 34
+assert_exit "route builtins: exit 0" 0
+assert_stdout_exact "route builtins: documentation and blast_radius are routed with no stages configured" '["documentation","blast_radius"]'
+assert_eq "route builtins: adds the documentation label" "$(cnt issue edit 12 --repo acme/toy --add-label needs-documentation-review)" 1
+assert_eq "route builtins: adds the blast_radius label" "$(cnt issue edit 12 --repo acme/toy --add-label needs-blast_radius-review)" 1
+assert_eq "route builtins: two label edits, nothing else edited" "$(cnt_prefix issue edit)" 2
+
+setup_case builtins "$CARD_PLAIN" "src/auth/login.js"
+run_stages match 34
+assert_stdout_exact "match builtins: both built-ins are listed (default true) with no path match" '["documentation","blast_radius"]'
+assert_eq "match builtins: adds no label" "$(cnt_prefix issue edit)" 0
+
+# built-ins: they come after the user's stages, in config order
+setup_case withbuiltins "$CARD_PLAIN" "src/auth/login.js"
+run_stages route 12 34
+assert_stdout_exact "route withbuiltins: user stages first, then the built-ins" '["security","documentation","blast_radius"]'
+run_stages match 34
+assert_stdout_exact "match withbuiltins: user stages first, then the built-ins" '["security","documentation","blast_radius"]'
+
+# built-ins: a truncated file list routes every stage, built-ins included
+setup_case withbuiltins "$CARD_PLAIN" "README.md" 400
+run_stages route 12 35
+assert_stdout_exact "route withbuiltins: truncated list routes the built-ins too" '["security","ux","documentation","blast_radius"]'
+
+# built-ins: disabling one leaves the other
+setup_case builtins "$CARD_PLAIN" "README.md"
+printf 'review:\n  stages:\n    - name: blast_radius\n      enabled: false\n' >> "$REPO/.fleet-board.yml"
+run_stages route 12 34
+assert_stdout_exact "route builtins: a stage with enabled false removes that built-in only" '["documentation"]'
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
