@@ -439,7 +439,8 @@ _SECTIONS = {
     'fixer': ('number', 'title', 'body', 'acceptance', 'pr', 'worktree', 'findings', 'config', 'scripts'),
     'stage-reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'stage_name',
                        'brief', 'round', 'prev_sha', 'findings', 'scripts', 'post'),
-    'merger': ('number', 'title', 'pr', 'mode', 'pr_head', 'merge_commit', 'refusal', 'persona', 'config', 'scripts'),
+    'merger': ('number', 'title', 'pr', 'mode', 'pr_head', 'merge_commit', 'refusal', 'persona', 'persona_hash', 'config',
+               'scripts'),
 }
 _LABELS = {
     'number': 'Card number', 'title': 'Card title', 'body': 'Card body', 'acceptance': 'Acceptance',
@@ -448,7 +449,7 @@ _LABELS = {
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
     'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'pr_head': 'PR head (pr_head)',
     'merge_commit': 'Merge commit (merge_commit)',
-    'refusal': 'Refusal', 'persona': 'Persona',
+    'refusal': 'Refusal', 'persona': 'Persona', 'persona_hash': 'Persona hash',
 }
 DIFF_FILE_LINES = 1500
 
@@ -1439,6 +1440,7 @@ class CardDriver:
         run = _Run(c, c.action, dispatch, 'merger', '', prior='merging', mode=mode, head=head, pr_number=pr,
                    refusal=extra.get('refusal'), guard=self._guard_snapshot(c, card))
         inputs = dict(extra, number=c.n, title=card.get('title'), pr=pr, mode=mode, persona=persona,
+                      persona_hash=hashlib.sha256(persona.encode()).hexdigest(),
                       config=json.dumps(c.config, indent=2, sort_keys=True), scripts=str(self.plugin_dir / 'scripts'))
         run.prompt = run.base_prompt = role_prompt('merger', inputs, c.tmp)
         run.attempts_before = None
