@@ -39,7 +39,8 @@
 # blocked_by naming the spawning card; so does a detail naming a backticked path
 # that is not on the default branch and is in the spawning PR's file list (the
 # work needs code only the unmerged PR adds). They are created in the
-# followups.status column (default ready). The command is the first backticked span
+# followups.status column (default ready); board-create.sh puts a card whose body
+# has no Scope paths in Backlog instead, where a person adds the Scope. The command is the first backticked span
 # with a non-blank character, spans being paired single backticks (an even number of
 # them, none adjacent). An out-of-scope item with no such span, or whose detail holds
 # the words "no testable check", is filed in Backlog with a card comment saying why.
@@ -155,6 +156,31 @@ pr_comment() {
 # (the follow-up targets code only the unmerged PR adds). Any lookup failure
 # means no.
 PR_FILES="" PR_FILES_DONE=0 FL_DEFBR=""
+# scope_lines <text>: the "- `path`" Scope lines for a follow-up card, read from the item's own text by
+# the board's Scope parser over the text with its backticks dropped (so a path inside a backticked
+# command counts) and a ":42" or "#L10" line suffix after a file extension dropped. A candidate is
+# kept only when it is a plain repository-relative path (no quotes or brackets, no leading "-" or "/",
+# no "..", and a "/" or an extension starting with a letter, so "2.5" is not a file) that exists, in
+# the checkout or on the default branch: prose such as "e.g.", "and/or" or "Node.js" never becomes a
+# Scope that would let the card start. Prints nothing when the text names no existing path;
+# board-create.sh then files the card in Backlog.
+scope_lines() {
+  local p ref
+  ref="$(git -C "$FLEET_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || ref=""
+  [ -n "$ref" ] || for ref in main master ""; do
+    [ -n "$ref" ] && git -C "$FLEET_ROOT" rev-parse --verify -q "$ref" >/dev/null 2>&1 && break
+  done
+  fb_card_scope_paths "$(printf '## Scope\n%s\n' "$1" | tr -d '`' \
+      | sed -E 's/(\.[A-Za-z][A-Za-z0-9]*)(:[0-9]+)+/\1/g; s/(\.[A-Za-z][A-Za-z0-9]*)#L[0-9]+(-L?[0-9]+)?/\1/g')" \
+    | jq -r '.[] | select(test("^[A-Za-z0-9._@+][A-Za-z0-9._/@+-]*$")) | select(contains("..") | not)
+        | select(contains("/") or test("[.][A-Za-z][A-Za-z0-9]*$"))' 2>/dev/null \
+    | while IFS= read -r p; do
+        if [ -e "$FLEET_ROOT/${p%/}" ] || { [ -n "$ref" ] && git -C "$FLEET_ROOT" cat-file -e "$ref:${p%/}" 2>/dev/null; }; then
+          printf -- '- `%s`\n' "$p"
+        fi
+      done
+}
+
 fl_names_unmerged_path() {
   [ -n "$PR" ] || return 1
   local paths p
@@ -202,6 +228,8 @@ while IFS= read -r item; do
     jq -r --arg c "$CARD" --arg p "$PR_SUFFIX" '
       "## Bug\n\(.title)\n\n## Repro\n`\(.repro)`\n\n## Expected\n\(.expected)\n\n## Observed\n\(.observed)\n\nFound by fleet-board while working #\($c)\($p)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
+    sl="$(scope_lines "$(jq -r '[.title, .repro, .expected, .observed] | map(. // "") | join("\n")' <<<"$item")")"
+    [ -z "$sl" ] || printf '\n## Scope\n%s\n' "$sl" >> "$BODY" || stop "cannot write the card body for: $title"
     jq -r '"- `\(.repro)` gives the expected result: \(.expected)" | gsub("[\r\n]+"; " ")' <<<"$item" > "$ACC" || stop "cannot write the card acceptance for: $title"
     created="$(bash "$FLEET_SCRIPTS/board-create.sh" "$title" "$BODY" --label bug --state "$STATUS" --acceptance-file "$ACC" </dev/null)" || stop "cannot create the card for: $title"
   else
@@ -214,6 +242,8 @@ while IFS= read -r item; do
       (if .detail == "" then "" else "\(.detail)\n\n" end)
       + "Found while working #\($c)\($p)."' \
       <<<"$item" > "$BODY" || stop "cannot write the card body for: $title"
+    sl="$(scope_lines "$(jq -r '.detail // ""' <<<"$item")")"
+    [ -z "$sl" ] || printf '\n## Scope\n%s\n' "$sl" >> "$BODY" || stop "cannot write the card body for: $title"
     if [ -n "$cmd" ]; then
       jq -rn --arg cmd "$cmd" '"- `\($cmd)` gives the result the description above expects" | gsub("[\r\n]+"; " ")' > "$ACC" \
         || stop "cannot write the card acceptance for: $title"
