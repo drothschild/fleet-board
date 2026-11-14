@@ -106,6 +106,16 @@ render_body() {
     + (if .embedded then "\n\n## Referenced docs\n" + .embedded else "" end)'
 }
 
+# A card whose Scope yields no repository path is refused before anything is
+# created (the scheduler cannot place it, so it would never start).
+n=0
+while [ "$n" -lt "$N" ]; do
+  if ! fb_card_has_scope_paths "$(jq -r --argjson i "$n" '"## Scope\n" + ((.cards[$i].scope // []) | map(select(type == "string") | "- " + .) | join("\n"))' <<<"$PLAN")"; then
+    fb_die 1 "card \"$(jq -r --argjson i "$n" '.cards[$i].title' <<<"$PLAN")\" has no Scope paths: every Scope bullet must name a repository path; nothing was created"
+  fi
+  n=$((n + 1))
+done
+
 # The card linter: render every card with its dependencies as plan keys and
 # lint the set. A failing card stops the import before anything is created.
 LINTDIR="$(mktemp -d)"

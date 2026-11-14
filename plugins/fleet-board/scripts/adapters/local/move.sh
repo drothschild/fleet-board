@@ -11,9 +11,21 @@ CARD="$(fl_read_card "$N")" || exit $?
 if [ "$TARGET" = ready ] && ! fb_card_has_acceptance "$CARD"; then
   fb_die 1 "card #$N has no acceptance criteria (its acceptance field is empty); refusing to move it to ready"
 fi
+if [ "$TARGET" = ready ] && ! fb_card_has_scope_paths "$(jq -r '.body // ""' <<<"$CARD")"; then
+  fb_die 1 "card #$N has no Scope paths; refusing to move it to ready"
+fi
 [ "$(jq -r '.state // ""' <<<"$CARD")" = "$TARGET" ] && exit 0
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 trap 'rm -f "$TMP"; fb_lock_release "$FB_LOCK"' EXIT
 jq --arg s "$TARGET" --arg now "$(fl_now)" '.state = $s | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
+# Out of Blocked: a merger attention's leftovers go, so a person never edits the note
+if [ "$(jq -r '.state // ""' <<<"$CARD")" = blocked ]; then
+  PATCH="$(mktemp)" || fb_die 1 "cannot create a temporary file"
+  printf '%s' '{"merger":null,"merge_refusal":null,"merge_retry":null}' > "$PATCH"
+  fb_lock_release "$FB_LOCK"   # note.sh takes the card's lock itself
+  bash "$FLEET_SCRIPTS/note.sh" merge "$N" "$PATCH" >/dev/null 2>&1 \
+    || echo "fleet-board: warning: could not clear the merger fields in the note of card #$N" >&2
+  rm -f "$PATCH"
+fi

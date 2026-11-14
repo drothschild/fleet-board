@@ -161,6 +161,24 @@ assert_body "import becomes ready" '.state' 'ready'
 assert_body "ready import carries the dry-run table" '.table' '*| A |*'
 case "$(cat "$IMPORT_LOG")" in *"import-plan "*"plan.md --preview "*"cards.json"*) pass "session runs import-plan --preview" ;; *) fail "session runs import-plan --preview" "$(cat "$IMPORT_LOG")" ;; esac
 
+echo "Case: creating from a draft holding a card with no Scope paths is refused and writes no card"
+cp "$IDIR/cards.json" "$TMP/cards.good.json"
+cat > "$IDIR/cards.json" <<'JSON'
+{"cards":[
+ {"key":"a","title":"Has paths","repo":"acme/toy","labels":[],"why":"w","scope":["src/a.js"],
+  "acceptance":["A works"],"consumes":[],"produces":[]},
+ {"key":"n","title":"Scopeless draft card","repo":"acme/toy","labels":[],"why":"w","scope":["Everything in the card"],
+  "acceptance":["N works"],"consumes":[],"produces":[]}
+]}
+JSON
+api POST /api/import/imp1/create '{}'
+assert_code 409 "create of a draft with a scopeless card refused"
+assert_body "the refusal names the card" '.error' '*Scopeless draft card*'
+assert_body "the refusal says the Scope lists no paths" '.error' '*Scope*'
+api GET /api/board
+assert_body "no card was written to the store" '.cards | length' '0'
+cp "$TMP/cards.good.json" "$IDIR/cards.json"
+
 echo "Case: POST create creates the drafted cards as for a pasted plan"
 api POST /api/import/imp1/create '{}'
 assert_code 200 "create accepted"

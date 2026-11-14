@@ -104,6 +104,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
   language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
   parity test over `fixtures/glob-cases.json`.
+- **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
+  <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
+  `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
+  `git commit-tree`) and moves the branch with `git merge --ff-only`, printing the new head. Exit 0 ok,
+  3 conflict (paths on stdout), 4 git older than 2.40, 1 other failure (parent head not an
+  ancestor of HEAD, changes to tracked files), 2 usage; on 3 or 4 nothing changes. A squash already in
+  HEAD prints HEAD and adds no commit. Nothing calls it yet.
 - **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
@@ -116,6 +123,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `origin/<branch>` and verifies the push; after the merge starts and until the push is
   verified, any non-zero exit aborts or resets (`git reset --keep`) to the pre-run head,
   never past a head origin already has.
+- **Built-in review stages** (`builtin_stages` in `scripts/config-defaults.json`, merged by
+  `scripts/config.sh`). Every project gets `documentation` and `blast_radius` (agent stages)
+  after its own `review.stages`. A project stage of the same name replaces the built-in; a
+  stage entry `{name: <built-in>, enabled: false}` removes it and is itself dropped. `enabled`
+  must be boolean. With a provider `models.reviewer` the built-ins carry model `sonnet`.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
@@ -293,11 +305,14 @@ no file here. The gate's residual bypasses and false positives are listed in the
     the board runs again); a merging card plans `finish` only after
     `note.merger {mode: after_merge, status: done}` for its head. A refusal merger's `retry` sets
     `merge_retry {pr, head, after}`; the next merge row carries `retry_after` and the supervisor
-    holds it until then; a second refusal after a retry is attention. A merger `attention` keeps
-    the card in merging (`skip "merger needs attention; a person decides"`) with `pending_merge`
-    cleared. The way out: `note.sh merge <n>` with `merger: null` (plus `merge_refusal: null`
-    and `merge_retry: null` to let it merge again), or move the card by hand to another column
-    (the lane drops those records when the card is merged from there again).
+    holds it until then; a second refusal after a retry is attention. A merger `attention` moves
+    the card from merging to blocked with `blocked_from: merging` in the note, `pending_merge` cleared and one
+    comment starting "Waiting for a person:" that names the reason and the next step; the planner skips such a
+    card ("blocked, waiting for a person") and never unblocks it on its own. The way out is a person moving the
+    card: a refused merge (PR open) to in_review, where the planner merges it when the review at that head is
+    clean and checks are green; a failed after-merge step (PR merged) to merging, to run the steps again, or to
+    done. `adapters/local/move.sh` clears `merger`, `merge_refusal` and `merge_retry` in the note when a card
+    leaves blocked.
   - Persona: `merge.persona` null (the default) -> `.fleet-board/merger.md` when present, else the
     plugin default; a set path that is missing, or a tracked persona this PR changed, is attention.
   - Checks: one rule, `scripts/ignore-checks.jq`, shared by the planner and the gate: an unexpired

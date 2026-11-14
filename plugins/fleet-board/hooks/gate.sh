@@ -10,7 +10,8 @@
 #       review other than clean merges of main, never a fleet PR whose title,
 #       body or a commit message holds a closing keyword before an issue
 #       reference (pr-closing-check.sh); raw merges blocked
-#   G3  board-move N ready needs a non-empty acceptance field on the card
+#   G3  board-move N ready needs a non-empty acceptance field on the card and
+#       a Scope section that names at least one path
 #
 # A block is exit 2 with one line on stderr. Within the shapes it recognizes,
 # the hook never lets a real call through: when a gated command is present and
@@ -700,6 +701,9 @@ read_card() {
 # has_acceptance: the card's acceptance field is non-empty (fb_card_has_acceptance)
 has_acceptance() { (. "$S/board-lib.sh" && fb_card_has_acceptance "$CARD_JSON"); }
 
+# has_scope_paths: the card's Scope yields at least one path (fb_card_scope_paths)
+has_scope_paths() { (. "$S/board-lib.sh" && fb_card_has_scope_paths "$(jq -r '.body // ""' <<<"$CARD_JSON")"); }
+
 gate_move() {
   local n="$1" st="$2"
   case "$n" in ''|*[!0-9]*) return 0 ;; esac # board-move.sh refuses a non-numeric number
@@ -710,6 +714,9 @@ gate_move() {
   fi
   if [ "$st" = ready ] && ! has_acceptance; then
     block "card #$n has no acceptance criteria (its acceptance field is empty)"
+  fi
+  if [ "$st" = ready ] && ! has_scope_paths; then
+    block "card #$n has no Scope paths (its Scope section names no repository path)"
   fi
 }
 

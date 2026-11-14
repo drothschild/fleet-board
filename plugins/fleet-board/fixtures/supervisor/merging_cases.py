@@ -111,6 +111,7 @@ class Merging(MergeCase):
         self.assertNotIn('ignored_checks', self.b.note(12))
 
     def test_merged_card_runs_the_real_merger_and_finishes(self):
+        self.b.config = dict(self.b.config, merge={'persona_append': 'extra'})
         del self.b.driver.begin_merger           # the driver's own merger flow
         self.b.plans({'report': 'merger-after-merge-done', 'post': False})
         self.start()
@@ -122,6 +123,7 @@ class Merging(MergeCase):
         self.assertEqual(self.mode(), 'running')
 
     def test_a_deferred_merger_runs_after_a_restart(self):
+        self.b.config = dict(self.b.config, merge={'persona_append': 'extra'})
         del self.b.driver.begin_merger
         self.hold.write_text('')
         self.start()
@@ -323,7 +325,9 @@ class MergerFlow(unittest.TestCase):
     def setUp(self):
         self.dir = BASE / self.id().rsplit('.', 1)[-1]
         self.dir.mkdir()
-        self.b = dc.Board(self.dir, dict(dc.CONFIG, supervisor={'retry_backoff_seconds': 60}))
+        # persona_append: with the plugin default persona alone no session starts (card 366); these cases need one
+        self.b = dc.Board(self.dir, dict(dc.CONFIG, supervisor={'retry_backoff_seconds': 60},
+                                         merge={'persona_append': 'Report any extra steps.'}))
         self.b.seed(12, 'merging', body='plain body')
         self.b.put_note(dict(DONE_NOTE, worktree=self.b.worktree))
         self.b.driver.clock = lambda: NOW
@@ -422,9 +426,9 @@ class MergerFlow(unittest.TestCase):
         self.merger('merged', MERGED, 'merger-after-merge-attention')
         self.assertNotIn('cleanup-done.sh', [c[0] for c in self.b.calls])
 
-    def test_after_merge_attention_keeps_the_card_in_merging(self):
+    def test_after_merge_attention_moves_the_card_to_blocked(self):
         self.merger('merged', MERGED, 'merger-after-merge-attention')
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['mode'], merger['status'], merger['head']), ('after_merge', 'attention', 'abc1234'))
         self.assertIn('deploy step failed', merger['reason'])
@@ -485,7 +489,7 @@ class MergerFlow(unittest.TestCase):
         self.no_session('refused', self.refused())      # spec section 6: straight to attention, no session
         note = self.b.note(12)
         self.assertIsNone(note['pending_merge'])
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         self.assertEqual((note['merger']['mode'], note['merger']['status']), ('refusal', 'attention'))
         self.assertIn('after a retry', note['merger']['reason'])
         self.assertEqual(note['merge_retry']['head'], 'abc1234')
@@ -559,9 +563,9 @@ class MergerFlow(unittest.TestCase):
         self.assertEqual((note['last_review']['important'], note['last_review']['stage']), (1, None))
         self.assertEqual((note['state'], note['merge_refusal'], note['pending_merge']), ('in_review', None, None))
 
-    def test_refusal_attention_keeps_the_card_in_merging(self):
+    def test_refusal_attention_moves_the_card_to_blocked(self):
         self.merger('refused', self.refused(), 'merger-refusal-attention')
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         self.assertIsNone(self.b.note(12)['pending_merge'], 'a stale marker would make the next merge exit 3')
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['mode'], merger['status'], merger['head']), ('refusal', 'attention', 'abc1234'))
@@ -598,7 +602,7 @@ class MergerFlow(unittest.TestCase):
         self.no_session('merged', MERGED)
         merger = self.b.note(12)['merger']
         self.assertEqual((merger['status'], merger['reason']), ('attention', 'merge.persona not found: docs/merger.md'))
-        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertEqual(self.b.card(12)['state'], 'blocked')
         self.assertEqual(len(self.attention_events()), 1)
 
     def test_a_persona_changed_by_the_pr_is_attention(self):
@@ -667,7 +671,7 @@ class MergerFlow(unittest.TestCase):
         # A repo that sets only merge.policy auto, with no .fleet-board/merger.md: the merger gets the plugin
         # default persona (config-defaults.json must leave merge.persona null, never a path)
         (self.b.root / '.fleet-board.yml').write_text(
-            'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n')
+            'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n  persona_append: extra\n')
         self.b.config = loop.config_loader(self.b.root)()
         self.assertFalse((self.b.root / '.fleet-board' / 'merger.md').exists())
         self.merger('merged', MERGED, 'merger-after-merge-done')
@@ -770,6 +774,39 @@ class Lane(MergeCase):
         self.assertEqual(note['merge_retry'], retry)
         self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
 
+    def test_merge_lane_start_moves_the_card_to_merging_before_merge_reviewed_runs(self):
+        seen = []
+        real = self.lane.spawn
+
+        def spawn(root, name, *args, **kw):
+            seen.append((name, self.b.card(12)['state'], self.b.note(12).get('state')))
+            return real(root, name, *args, **kw)
+        self.lane.spawn = spawn
+        self.hold.write_text('')
+        self.lane.start(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+        self.hold.unlink()
+        self.assertEqual(seen, [('merge-reviewed.sh', 'merging', 'merging')])
+        self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
+
+    def test_a_card_already_in_merging_is_not_moved_again(self):
+        self.b.seed(12, 'merging')
+        self.hold.write_text('')
+        self.lane.start(dc.candidate('merge', number=12, state='merging', head_sha='abc1234', pr=34))
+        self.hold.unlink()
+        self.assertNotIn(('board-move.sh', '12', 'merging'), self.b.calls)
+        self.assertEqual([c for c in self.b.calls if c[0] == 'board-move.sh'], [])
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
+
+    def test_a_card_in_human_qa_is_not_moved(self):
+        self.b.seed(12, 'human_qa')
+        with self.assertRaises(ValueError):
+            self.lane.start(dc.candidate('merge', number=12, state='human_qa', head_sha='abc1234', pr=34))
+        self.assertEqual(self.b.card(12)['state'], 'human_qa')
+        self.assertEqual([c for c in self.b.calls if c[0] == 'board-move.sh'], [])
+        self.assertEqual(self.spawns(), [])
+        self.assertFalse(self.lane.busy)
+
     def test_a_malformed_candidate_never_spawns(self):
         for bad in (dict(head_sha='not-hex!'), dict(pr=0), dict(pr=None), dict(head_sha=None)):
             with self.assertRaises(ValueError):
@@ -781,7 +818,9 @@ class Lane(MergeCase):
 
 CHAIN_YML = ('board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\nreview:\n  stages:\n'
              '    - name: security\n      agent: sec-reviewer\n      model: opus\n'
-             '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n')
+             '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n'
+             '    - name: documentation\n      enabled: false\n'
+             '    - name: blast_radius\n      enabled: false\n')
 CHAIN_GH = r'''#!/bin/bash
 d="$CHAIN_GH_DIR"
 printf '%s\n' "$*" >> "$d/calls"

@@ -219,6 +219,10 @@ review:
   stages:
     - name: security
       agent: acme:sec
+    - name: documentation
+      enabled: false
+    - name: blast_radius
+      enabled: false
 YML
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name review_security'
 assert_stdout_exact "local review stage name" "Review: security"
@@ -312,6 +316,16 @@ jq '.acceptance = [] | .blocked_by = []' "$REPO/.fleet-board/cards/5.json" > "$R
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 5 ready
 assert_exit "move to ready refused when acceptance is [] whatever the body says" 1
 assert_card_state 5 backlog
+seed_card 6 backlog 'No scope' $'Work.\n\n## Scope\nEverything in the card.\n'
+jq '.acceptance = ["it works"] | .blocked_by = []' "$REPO/.fleet-board/cards/6.json" > "$REPO/six.tmp" && mv "$REPO/six.tmp" "$REPO/.fleet-board/cards/6.json"
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 6 ready
+assert_exit "move to ready refused when the card has acceptance but no Scope paths" 1
+assert_stderr_contains "refusal says the card has no Scope paths" "card #6 has no Scope paths; refusing to move it to ready"
+assert_card_state 6 backlog
+jq '.body = "Work.\n\n## Scope\n- plugins/a/b.sh\n- c.json (notes)\n"' "$REPO/.fleet-board/cards/6.json" > "$REPO/six.tmp" && mv "$REPO/six.tmp" "$REPO/.fleet-board/cards/6.json"
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 6 ready
+assert_exit "move to ready allowed once the Scope names bare paths" 0
+assert_card_state 6 ready
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 1 review_security
 assert_exit "move to an unknown state exit 2" 2
 assert_card_state 1 in_progress

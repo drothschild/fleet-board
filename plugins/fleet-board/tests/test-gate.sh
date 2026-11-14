@@ -173,7 +173,10 @@ worktrees:
 YML
       mkdir -p "$REPO/.fleet-board/cards"
       echo 1 > "$REPO/.fleet-board/next"
-      local_card 12 backlog "## Acceptance
+      local_card 12 backlog "## Scope
+- src/a.sh
+
+## Acceptance
 - works"
       local_card 13 backlog "just a body"
       local_card 14 human_qa "## Acceptance
@@ -185,8 +188,13 @@ YML
       # card fields: acceptance [] with a body that still has the heading; items with no heading
       jq -n '{number: 15, title: "card 15", body: "## Acceptance\n- works\n", acceptance: [], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
         > "$REPO/.fleet-board/cards/15.json"
-      jq -n '{number: 16, title: "card 16", body: "", acceptance: ["works"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+      jq -n '{number: 16, title: "card 16", body: "## Scope\n- src/a.sh\n", acceptance: ["works"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
         > "$REPO/.fleet-board/cards/16.json"
+      # acceptance items but a Scope that names no path (17); a bare path in Scope (18)
+      jq -n '{number: 17, title: "card 17", body: "## Scope\nEverything in the card.\n", acceptance: ["works"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+        > "$REPO/.fleet-board/cards/17.json"
+      jq -n '{number: 18, title: "card 18", body: "## Scope\n- plugins/a/b.sh\n- c.json (notes)\n", acceptance: ["works"], blocked_by: [], state: "backlog", labels: [], next_comment_id: 1, comments: []}' \
+        > "$REPO/.fleet-board/cards/18.json"
       ;;
     stages) cp "$CONFIG_FIXTURES/stages.yml" "$REPO/.fleet-board.yml" ;;
     hmb) cp "$CONFIG_FIXTURES/hmb.yml" "$REPO/.fleet-board.yml" ;;
@@ -443,6 +451,7 @@ assert_blocked "admin-blocked" "--admin bypasses branch protection"
 # ready-needs-acceptance
 setup_case human
 card_routes > "$ROUTES"
+jq '.body += "\n## Scope\n- src/a.sh\n"' "$REPO/.fleet-board/cards/12.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/12.json"
 run_hook bash.json "board-move.sh 13 ready"
 assert_blocked "ready-needs-acceptance: #13" "no acceptance criteria"
 assert_stderr_contains "ready-needs-acceptance: names #13" "#13"
@@ -463,6 +472,11 @@ run_hook bash.json "board-move.sh 15 ready"
 assert_blocked "local: ready refused when acceptance is [] whatever the body says (#15)" "no acceptance criteria"
 run_hook bash.json "board-move.sh 16 ready"
 assert_silent_allow "local: ready allowed when acceptance has items and the body has no heading (#16)"
+run_hook bash.json "board-move.sh 17 ready"
+assert_blocked "local: ready blocked for a card with acceptance criteria but no Scope paths (#17)" "no Scope paths"
+assert_stderr_contains "local: the no-Scope block names #17" "#17"
+run_hook bash.json "board-move.sh 18 ready"
+assert_silent_allow "local: ready allowed for a card with a bare Scope path (#18)"
 run_hook bash.json "gh pr merge 5"
 assert_blocked "local: auto policy blocks a red PR" "not green"
 run_hook bash.json "gh pr merge 4"

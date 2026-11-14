@@ -86,6 +86,23 @@ jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
 # assert_jq <desc> <filter> <expected compact JSON>
 assert_jq() { assert_eq "$1" "$(jqc "$2")" "$3"; }
 
+# no_builtin_stages <extra YAML>: the extra YAML with the two built-in review
+# stages (documentation, blast_radius) disabled, so a case that is not about them
+# sees the board it was written for. TP_KEEP_BUILTINS=1 leaves them on.
+no_builtin_stages() {
+  local x="$1" dis nl
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  dis="$(printf '    - name: documentation\n      enabled: false\n    - name: blast_radius\n      enabled: false')"
+  if [ "${TP_KEEP_BUILTINS:-}" = 1 ]; then printf '%s' "$x"; return; fi
+  if ! printf '%s\n' "$x" | grep -q '^review:'; then
+    printf '%s%sreview:\n  stages:\n%s' "$x" "${x:+$nl}" "$dis"
+  elif printf '%s\n' "$x" | grep -q '^  stages:'; then
+    DIS="$dis" awk '{print} /^  stages:/ {print ENVIRON["DIS"]}' <<<"$x"
+  else
+    DIS="$dis" awk '{print} /^review:/ {print "  stages:"; print ENVIRON["DIS"]}' <<<"$x"
+  fi
+}
+
 # setup_case <case> [extra YAML appended to the config]
 setup_case() {
   REPO="$(mktemp -d)"
@@ -97,7 +114,7 @@ setup_case() {
     [ -n "${3:-}" ] && printf '%s\n' "$3"
     printf 'worktrees:\n  dir: .fw\n'
     printf 'human_qa_paths: ["src/components/**"]\n'
-    [ -n "${2:-}" ] && printf '%s\n' "$2"
+    printf '%s\n' "$(no_builtin_stages "${2:-}")"
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
@@ -1107,8 +1124,27 @@ assert_jq "scope-disjoint: cards naming different paths start" "$(card 14 action
 
 plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
-assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
+assert_jq "scope-none: a card in Ready whose Scope yields no paths plans wait" "$(card 14 action)" '"wait"'
+assert_jq "scope-none: the reason is Scope lists no paths" "$(card 14 reason)" '"Scope lists no paths"'
 
+plan_scope NONE
+assert_jq "scope-none: a card in Ready with no Scope section plans wait" "$(card 14 action)" '"wait"'
+assert_jq "scope-none: no Scope section gives the reason Scope lists no paths" "$(card 14 reason)" '"Scope lists no paths"'
+
+# Candidate mode exposes the same workflow decision without tick-local admission.
+candidate_empty_human_qa_route() {
+  local route_dir
+  route_dir="$(mktemp -d)"
+  CLEANUP_DIRS+=("$route_dir")
+  local route_base
+  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
+  awk -F '\t' -v OFS='\t' -v base="$route_base" \
+    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
+    "$FAKE_GH_ROUTES" > "$route_dir/routes"
+  FAKE_GH_ROUTES="$route_dir/routes"
+  export FAKE_GH_ROUTES
+  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
+}
 # Plain-text paths in a card's Scope (candidate mode exposes declared_paths).
 # cand_scope <scope text>: ready card 14 alone; run --candidates
 cand_scope() {
@@ -1124,6 +1160,12 @@ declared_14() { printf '(.candidates[] | select(.number == 14)).declared_paths';
 cand_scope "$(printf -- '- plugins/fleet-board/scripts/a.sh\n- New plugins/fleet-board/tests/test-a.sh (runs the harness)')"
 assert_exit "plain-scope: exit" 0
 assert_jq "plain-scope: bullet lines with plain-text paths plan both declared_paths" "$(declared_14)" '["plugins/fleet-board/scripts/a.sh","plugins/fleet-board/tests/test-a.sh"]'
+
+cand_scope "$(printf -- '- plugins/a/b.sh\n- c.json (notes)')"
+assert_jq "plain-scope: unbackticked plugins/a/b.sh and c.json (notes) plan declared_paths c.json and plugins/a/b.sh" "$(declared_14)" '["c.json","plugins/a/b.sh"]'
+
+cand_scope "$(printf -- '- `plugins/a/b.sh`\n- c.json (notes)')"
+assert_jq "plain-scope: a Scope mixing a backticked path and a bare path shows both in declared_paths" "$(declared_14)" '["c.json","plugins/a/b.sh"]'
 
 cand_scope 'plugins/x/a.sh, plugins/x/b.json'
 assert_jq "plain-scope: a comma-separated line without a bullet yields both paths, no trailing comma" "$(declared_14)" '["plugins/x/a.sh","plugins/x/b.json"]'
@@ -1650,20 +1692,6 @@ assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | se
 plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
 assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
-# Candidate mode exposes the same workflow decision without tick-local admission.
-candidate_empty_human_qa_route() {
-  local route_dir
-  route_dir="$(mktemp -d)"
-  CLEANUP_DIRS+=("$route_dir")
-  local route_base
-  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
-  awk -F '\t' -v OFS='\t' -v base="$route_base" \
-    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
-    "$FAKE_GH_ROUTES" > "$route_dir/routes"
-  FAKE_GH_ROUTES="$route_dir/routes"
-  export FAKE_GH_ROUTES
-  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
-}
 setup_case ready-start
 candidate_empty_human_qa_route
 run_check "$SCRIPT" --candidates
@@ -1671,7 +1699,7 @@ assert_exit "candidate mode: exit" 0
 assert_jq "candidate mode: schema version" '.schema_version' '2'
 assert_jq "candidate mode: action parity" '.candidates[0].action' '"start"'
 assert_jq "candidate mode: preconditions and scope contract" '(.candidates[0] | [has("preconditions"), has("declared_paths"), has("actual_paths"), has("scope_complete"), has("dependencies"), has("stage"), has("head_sha"), has("round"), has("priority"), has("state_revision")])' '[true,true,true,true,true,true,true,true,true,true]'
-assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '[]'
+assert_jq "candidate mode: declared paths" '.candidates[0].declared_paths' '["src/subtract.js"]'
 assert_jq "candidate mode: empty actual paths are complete" '(.candidates[0] | [.actual_paths, .scope_complete])' '[[],true]'
 
 # A malformed labels payload from the board-read contract must not silently clear priority metadata.
