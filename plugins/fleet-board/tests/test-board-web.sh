@@ -236,7 +236,7 @@ if setup_case; then
   assert_code 200
   assert_body "board states start with backlog" '.states[0].key' backlog
   assert_body "board states carry display names" '.states[0].name' Backlog
-  assert_body "board has 9 states" '.states|length' 9
+  assert_body "board has 11 states" '.states|length' 11
   assert_body "board lists 3 cards" '.cards|length' 3
   assert_body "card 2 note pr" '.cards[]|select(.number==2)|.note.pr' 41
   assert_body "card 2 note round" '.cards[]|select(.number==2)|.note.round' 1
@@ -1013,7 +1013,7 @@ echo 1 > "$STAGES_REPO/.fleet-board/next"
 if start_server "$STAGES_REPO"; then
   api GET /api/board
   assert_code 200
-  assert_body "stages repo has 10 states" '.states|length' 10
+  assert_body "stages repo has 12 states" '.states|length' 12
   assert_body "review_security follows in_review" '[.states[].key]|index("in_review") as $i|.[$i+1]' review_security
   assert_body "review_security display name" '.states[]|select(.key=="review_security")|.name' 'Review: security'
   stop_server
