@@ -14,6 +14,7 @@ Every value handed to a script is validated first (numbers are positive ints, a 
 starts with "-"). A failed step ends the action; earlier steps stand. A failure that is not an
 uncounted action merges `action_failures + 1` and the first stderr line into the card's manager note.
 """
+import calendar
 import hashlib
 import json
 import os
@@ -71,6 +72,29 @@ _CLEAN = re.compile(r'[^\x00-\x1f\x7f]+')
 
 def _iso(seconds):
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(seconds))
+
+
+def format_duration(seconds):
+    """`45s`, `4m 12s` or `1h 03m`: seconds under a minute, minutes under an hour, otherwise hours."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return '%ds' % seconds
+    if seconds < 3600:
+        return '%dm %02ds' % (seconds // 60, seconds % 60)
+    return '%dh %02dm' % (seconds // 3600, seconds % 3600 // 60)
+
+
+def _epoch(text):
+    return calendar.timegm(time.strptime(text, '%Y-%m-%dT%H:%M:%SZ'))
+
+
+def duration_comment(line):
+    """The card comment for one ledger line: `<column> · <action> · <duration> (<model>)`; no suffix when the
+    model is unknown."""
+    column = ' '.join(word.capitalize() for word in str(line['column']).split('_'))
+    text = '%s \u00b7 %s \u00b7 %s' % (column, line['action'],
+                                       format_duration(_epoch(line['ended_at']) - _epoch(line['started_at'])))
+    return text + (' (%s)' % line['model'] if line.get('model') else '')
 
 
 QA_BUILD_TIMEOUT = 1800
@@ -828,7 +852,7 @@ class CardDriver:
         if run is None or run.action is not action:
             raise ValueError('no role session for card %r' % (action.card,))
         c = run.c
-        self._record_usage(run, result)
+        ledger_line = self._record_usage(run, result)
         try:
             outcome = self._reconcile(run, result, allow_redispatch)
         except _Fail as exc:
@@ -837,6 +861,8 @@ class CardDriver:
         except BaseException:
             self._release(run)
             raise
+        if ledger_line is not None:
+            c.comment_soft(duration_comment(ledger_line))
         if not outcome.redispatch:
             self._release(run)
             if c.reached_done:
@@ -869,6 +895,8 @@ class CardDriver:
                                                              or _usage.DEFAULT_DIR))
         except (OSError, ValueError) as exc:
             self.state.event('warning', card=action.card, message='usage not recorded: %s' % exc)
+            return None
+        return line
 
     def _reconcile(self, run, result, allow):
         c = run.c
