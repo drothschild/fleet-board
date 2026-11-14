@@ -770,6 +770,39 @@ class Lane(MergeCase):
         self.assertEqual(note['merge_retry'], retry)
         self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
 
+    def test_merge_lane_start_moves_the_card_to_merging_before_merge_reviewed_runs(self):
+        seen = []
+        real = self.lane.spawn
+
+        def spawn(root, name, *args, **kw):
+            seen.append((name, self.b.card(12)['state'], self.b.note(12).get('state')))
+            return real(root, name, *args, **kw)
+        self.lane.spawn = spawn
+        self.hold.write_text('')
+        self.lane.start(dc.candidate('merge', number=12, state='in_review', head_sha='abc1234', pr=34))
+        self.hold.unlink()
+        self.assertEqual(seen, [('merge-reviewed.sh', 'merging', 'merging')])
+        self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
+
+    def test_a_card_already_in_merging_is_not_moved_again(self):
+        self.b.seed(12, 'merging')
+        self.hold.write_text('')
+        self.lane.start(dc.candidate('merge', number=12, state='merging', head_sha='abc1234', pr=34))
+        self.hold.unlink()
+        self.assertNotIn(('board-move.sh', '12', 'merging'), self.b.calls)
+        self.assertEqual([c for c in self.b.calls if c[0] == 'board-move.sh'], [])
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.until(lambda: self.lane.poll() is not None or not self.lane.busy, what='the lane to free')
+
+    def test_a_card_in_human_qa_is_not_moved(self):
+        self.b.seed(12, 'human_qa')
+        with self.assertRaises(ValueError):
+            self.lane.start(dc.candidate('merge', number=12, state='human_qa', head_sha='abc1234', pr=34))
+        self.assertEqual(self.b.card(12)['state'], 'human_qa')
+        self.assertEqual([c for c in self.b.calls if c[0] == 'board-move.sh'], [])
+        self.assertEqual(self.spawns(), [])
+        self.assertFalse(self.lane.busy)
+
     def test_a_malformed_candidate_never_spawns(self):
         for bad in (dict(head_sha='not-hex!'), dict(pr=0), dict(pr=None), dict(head_sha=None)):
             with self.assertRaises(ValueError):
