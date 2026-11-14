@@ -249,12 +249,21 @@ assert_json "read state backlog" '.state' backlog
 assert_json "read labels" '.labels|join(",")' bug
 assert_json "read note null" '.manager_note' null
 assert_json "read item_id null" '.item_id' null
-run_check_in "$REPO" "$SCRIPTS/board-create.sh" Second "$body" --state ready
+scoped="$(mktemp)"; CLEANUP_DIRS+=("$scoped"); printf '## Why\nx\n\n## Scope\n- src/a.sh\n\n## Acceptance\n- it works\n' > "$scoped"
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" Second "$scoped" --state ready
 assert_stdout_contains "second number is 2" '"number":2'
 run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
-assert_json "create --state ready stores ready" '.state' ready
+assert_json "create --state ready stores ready for a card with Scope paths" '.state' ready
+# An agent filing a card (verify-main, file-followups) into Ready without Scope paths: it lands in
+# Backlog, where a person adds the Scope, instead of a Ready card the planner can never start
+run_check_in "$REPO" "$SCRIPTS/board-create.sh" Unscoped "$body" --state ready
+assert_exit "create --state ready without Scope paths still creates the card" 0
+assert_stderr_contains "create warns that a card with no Scope paths went to backlog" \
+  "card #3 has no Scope paths; created in backlog, not ready"
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 3
+assert_json "create --state ready without Scope paths stores backlog" '.state' backlog
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" backlog
-assert_stdout_exact "list backlog" '[{"number":1,"title":"Title with \"quotes\"","url":"http://127.0.0.1:8765/cards/1"}]'
+assert_stdout_exact "list backlog" '[{"number":1,"title":"Title with \"quotes\"","url":"http://127.0.0.1:8765/cards/1"},{"number":3,"title":"Unscoped","url":"http://127.0.0.1:8765/cards/3"}]'
 run_check_in "$REPO" "$SCRIPTS/board-list.sh" done
 assert_stdout_exact "list empty column" '[]'
 echo '{' > "$REPO/.fleet-board/cards/2.json"
@@ -326,6 +335,15 @@ jq '.body = "Work.\n\n## Scope\n- plugins/a/b.sh\n- c.json (notes)\n"' "$REPO/.f
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 6 ready
 assert_exit "move to ready allowed once the Scope names bare paths" 0
 assert_card_state 6 ready
+# The Scope check guards only Backlog -> Ready: a card the supervisor returns to Ready (cancel, stuck
+# release, unblock) was already admitted, and the planner holds a Scope-less Ready card from starting
+for from in in_progress blocked; do
+  seed_card 7 "$from" 'Returned' $'Work.\n\n## Scope\nEverything in the card.\n'
+  jq '.acceptance = ["it works"] | .blocked_by = []' "$REPO/.fleet-board/cards/7.json" > "$REPO/seven.tmp" && mv "$REPO/seven.tmp" "$REPO/.fleet-board/cards/7.json"
+  run_check_in "$REPO" "$SCRIPTS/board-move.sh" 7 ready
+  assert_exit "move to ready from $from allowed for a card with no Scope paths" 0
+  assert_card_state 7 ready
+done
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 1 review_security
 assert_exit "move to an unknown state exit 2" 2
 assert_card_state 1 in_progress

@@ -1332,6 +1332,79 @@ if start_server "$REPO"; then
   stop_server
 fi
 
+echo "Case: /api/board and card detail report the card's worktree"
+WT_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$WT_REPO/.fleet-board/cards" "$WT_REPO/wt-here"
+echo 4 > "$WT_REPO/.fleet-board/next"
+WT_FENCE='```'
+wt_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"worktree":"%s"}\n%s\n' "$WT_FENCE" "$1" "$WT_FENCE"
+}
+WT_COMMENT1="$(jq -n --arg b "$(wt_note "$WT_REPO/wt-here")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+WT_COMMENT2="$(jq -n --arg b "$(wt_note "$WT_REPO/wt-gone")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$WT_REPO" seed_card 1 in_progress "Has dir" "b" "$WT_COMMENT1"
+REPO="$WT_REPO" seed_card 2 in_progress "Deleted dir" "b" "$WT_COMMENT2"
+REPO="$WT_REPO" seed_card 3 in_progress "No note" "b"
+start_server "$WT_REPO"
+api GET /api/board
+assert_code 200
+assert_body "A card whose manager note has a worktree that exists on disk shows that path as worktree in /api/board" '.cards[]|select(.number==1)|.worktree' "$WT_REPO/wt-here"
+assert_body "A card whose note worktree has been deleted from disk shows worktree: null in /api/board" '.cards[]|select(.number==2)|.worktree|tojson' null
+assert_body "A card with no manager note shows worktree: null in /api/board" '.cards[]|select(.number==3)|.worktree|tojson' null
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> returns the same worktree value as /api/board for a card with an existing worktree" '.worktree' "$WT_REPO/wt-here"
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> returns worktree null as /api/board does for a deleted worktree" '.worktree|tojson' null
+api GET /api/cards/3
+assert_body "GET /api/cards/<n> returns worktree null as /api/board does for a card with no note" '.worktree|tojson' null
+stop_server
+
+echo "Case: POST /api/cards/<n>/terminal opens the card's directory"
+TM_STUB="$TMP/term-stub.sh"
+TM_LOG="$TMP/term.log"
+TM_FAIL_STUB="$TMP/term-fail.sh"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\n' "$TM_LOG" > "$TM_STUB"
+printf '#!/bin/sh\necho "terminal exploded" >&2\nexit 3\n' > "$TM_FAIL_STUB"
+chmod +x "$TM_STUB" "$TM_FAIL_STUB"
+tm_repo() {
+  TM_YML="board:
+  repo: acme/toy
+  terminal_command:
+    - \"$1\"
+    - --open
+    - \"{dir}\"
+worktrees:
+  dir: .fw"
+  TM_REPO="$(new_repo "$TM_YML")"
+  mkdir -p "$TM_REPO/.fleet-board/cards" "$TM_REPO/wt-here"
+  echo 4 > "$TM_REPO/.fleet-board/next"
+  REPO="$TM_REPO" seed_card 1 in_progress "Has dir" "b" "$(jq -n --arg b "$(wt_note "$TM_REPO/wt-here")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+  REPO="$TM_REPO" seed_card 2 in_progress "No dir" "b"
+}
+tm_repo "$TM_STUB"
+start_server "$TM_REPO"
+: > "$TM_LOG"
+api POST /api/cards/1/terminal '{}'
+assert_code 200
+assert_body "A card with an existing directory runs the configured terminal_command once with {dir} replaced by that path" '.error // "ok"' ok
+if [ "$(wc -l < "$TM_LOG" | tr -d ' ')" = 1 ] && [ "$(cat "$TM_LOG")" = "--open $TM_REPO/wt-here" ]; then pass "the terminal command ran once with the directory"; else fail "the terminal command ran once with the directory" "log: $(cat "$TM_LOG")"; fi
+: > "$TM_LOG"
+api POST /api/cards/2/terminal '{}'
+assert_code 409
+if [ ! -s "$TM_LOG" ]; then pass "A card with no directory (worktree: null) runs nothing"; else fail "A card with no directory runs nothing" "log: $(cat "$TM_LOG")"; fi
+api POST /api/cards/99/terminal '{}'
+assert_code 404
+NOHDR=1 api POST /api/cards/1/terminal '{}'
+assert_code 403
+if [ ! -s "$TM_LOG" ]; then pass "A request without the X-Fleet-Board header runs nothing"; else fail "A request without the X-Fleet-Board header runs nothing" "log: $(cat "$TM_LOG")"; fi
+stop_server
+tm_repo "$TM_FAIL_STUB"
+start_server "$TM_REPO"
+api POST /api/cards/1/terminal '{}'
+assert_code 500
+assert_body "A configured command that exits non-zero gives 500 with the command's stderr in the error" '.error' '*terminal exploded*'
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

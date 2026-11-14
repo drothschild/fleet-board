@@ -155,7 +155,9 @@ setup_case() {
   git -C "$REPO" config user.email "test@example.com"
   git -C "$REPO" config user.name "Test User"
   printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
-  git -C "$REPO" add .fleet-board.yml
+  # files the fixture items name, so a follow-up derives a Scope from them (scope_lines keeps existing paths)
+  mkdir -p "$REPO/tests"; : > "$REPO/calc.js"; : > "$REPO/cli.sh"; : > "$REPO/tests/round.sh"
+  git -C "$REPO" add .fleet-board.yml calc.js cli.sh tests/round.sh
   git -C "$REPO" commit -q -m "initial"
 
   FAKE_GH_DIR="$(mktemp -d)"
@@ -267,11 +269,12 @@ assert_eq "files-bug: 1 issue create" "$(calls_starting issue create)" 1
 CREATE="$(files_starting issue create | head -1)"
 if [ -n "$CREATE" ]; then
   assert_true "files-bug: --label bug" has_pair "$CREATE" --label bug
-  assert_true "files-bug: --label fleet:ready" has_pair "$CREATE" --label fleet:ready
+  # The bug names no file (its repro is a node -e one-liner), so it has no Scope: Backlog, not Ready
+  assert_true "files-bug: a bug naming no file is filed in Backlog" has_pair "$CREATE" --label fleet:backlog
   assert_eq "files-bug: title" "$(arg_after "$CREATE" --title)" "Division by zero crashes"
 else
   fail "files-bug: --label bug" "no issue create call"
-  fail "files-bug: --label fleet:ready" "no issue create call"
+  fail "files-bug: a bug naming no file is filed in Backlog" "no issue create call"
   fail "files-bug: title" "no issue create call"
 fi
 EXPECTED_BODY="$(cat << 'BODYEOF'
@@ -305,6 +308,40 @@ assert_eq "files-bug: 1 pr comment" "$(calls_starting pr comment 34)" 1
 assert_eq "files-bug: pr comment body" "$(bodies_of pr comment 34)" "Bug found outside this card, filed as #13: Division by zero crashes"
 assert_eq "files-bug: bugs_filed[0].existing" "$(jqc '.bugs_filed[0].existing')" "false"
 assert_eq "files-bug: output" "$(jqc .)" '{"out_of_scope_created":[],"bugs_filed":[{"title":"Division by zero crashes","number":13,"existing":false}]}'
+
+# files-bug-scoped: a bug whose repro names a file gets that file as its Scope and goes to Ready
+setup_case
+report '[]' "[$(jq -cn '{title:"Rounding is off", repro:"bash tests/round.sh 2.5", expected:"3", observed:"2"}')]"
+run_ff
+assert_exit "files-bug-scoped: exit" 0
+CREATE="$(files_starting issue create | head -1)"
+if [ -n "$CREATE" ]; then
+  assert_true "files-bug-scoped: filed in Ready" has_pair "$CREATE" --label fleet:ready
+else
+  fail "files-bug-scoped: filed in Ready" "no issue create call"
+fi
+case "$(all_bodies)" in *$'## Scope\n- `tests/round.sh`\n'*) pass "files-bug-scoped: Scope names the repro's file and not 2.5" ;;
+  *) fail "files-bug-scoped: Scope names the repro's file and not 2.5" "$(all_bodies)" ;; esac
+
+# files-bug-prose: prose path-like words that are not files in the repository give no Scope, so the card
+# goes to Backlog instead of a Ready card that would start without holding the files it touches
+setup_case
+report '[]' "[$(jq -cn '{title:"Crash e.g. on Node.js and/or www.example.com", repro:"open docs/missing.md", expected:"no crash", observed:"i.e. a crash"}')]"
+run_ff
+CREATE="$(files_starting issue create | head -1)"
+if [ -n "$CREATE" ]; then
+  assert_true "files-bug-prose: filed in Backlog" has_pair "$CREATE" --label fleet:backlog
+else
+  fail "files-bug-prose: filed in Backlog" "no issue create call"
+fi
+case "$(all_bodies)" in *'## Scope'*) fail "files-bug-prose: no Scope section" "$(all_bodies)" ;; *) pass "files-bug-prose: no Scope section" ;; esac
+
+# files-bug-line: a path with a line suffix (":42", "#L10") is the file itself
+setup_case
+report '[]' "[$(jq -cn '{title:"Off by one", repro:"bash cli.sh", expected:"1", observed:"0 at tests/round.sh:42 and calc.js#L10"}')]"
+run_ff
+case "$(all_bodies)" in *$'## Scope\n- `calc.js`\n- `cli.sh`\n- `tests/round.sh`\n'*) pass "files-bug-line: line suffixes are dropped from the Scope paths" ;;
+  *) fail "files-bug-line: line suffixes are dropped from the Scope paths" "$(all_bodies)" ;; esac
 
 # ---------------------------------------------------------------------------
 # AC3.10 bug-matches-open-issue (case differs; a near-miss title comes first)

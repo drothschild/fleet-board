@@ -212,6 +212,19 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       cat "$TMPD/closing.err" >&2
       continue
     fi
+    # A PR whose base is not the default branch would land in its parent's PR
+    # unreviewed: refuse it, and refuse when the base cannot be read.
+    default_branch="$(git -C "$FLEET_ROOT" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || default_branch=""
+    default_branch="${default_branch#origin/}"
+    [ -n "$default_branch" ] || default_branch=main
+    if ! base="$(gh pr view "$pr" --repo "$FLEET_REPO" --json baseRefName </dev/null 2>/dev/null | jq -er '.baseRefName | strings | select(length > 0)' 2>/dev/null)"; then
+      fail "$n" "PR #$pr base branch could not be read; not merged"
+      continue
+    fi
+    if [ "$base" != "$default_branch" ]; then
+      fail "$n" "PR #$pr targets $base, not $default_branch; not merged"
+      continue
+    fi
     merge_rc=0
     gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$head" </dev/null >/dev/null || merge_rc=$?
     # Both exit paths are ambiguous: success may mean queued, while a lost
