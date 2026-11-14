@@ -1471,7 +1471,8 @@ def get_card_usage(params, body):
 
 
 STUCK_MIN_INTERVAL = 30.0  # seconds: a stuck scan of a large board takes seconds and shells out per card
-_STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None}
+_STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None,
+          "live": frozenset()}
 _STUCK_LOCK = threading.Lock()
 
 
@@ -1494,26 +1495,26 @@ def stuck_stamp(board_dir):
     return (_mtime_ns(Path(board_dir) / "cards"), _mtime_ns(Path(board_dir) / "active"))
 
 
-def _refresh_stuck(stamp):
+def _refresh_stuck(stamp, live=frozenset()):
     """The one background refresher: runs stuck.find (read-only) and writes the cache."""
     began = time.monotonic()
     try:
         try:
             found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
-                            for x in supervisor_stuck.find(APP["root"])], None
+                            for x in supervisor_stuck.find(APP["root"], live_cards=live)], None
         except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
             found, error = None, str(exc)[:300] or exc.__class__.__name__
         with _STUCK_LOCK:
             if found is None:
                 found = _STUCK["found"]  # keep the last good result (None while there is none)
             _STUCK.update(at=time.time(), mono=time.monotonic(), found=found, error=error,
-                          duration=time.monotonic() - began, stamp=stamp)
+                          duration=time.monotonic() - began, stamp=stamp, live=live)
     finally:
         with _STUCK_LOCK:
             _STUCK["running"] = False  # whatever happened, a later request may start another refresher
 
 
-def stuck_state(board_dir, refresh=True):
+def stuck_state(board_dir, refresh=True, live=frozenset()):
     """{findings, checked_at, error, checking, known} with no supervisor running, answered at once from the cache.
 
     Never computes on the calling thread. A refresh starts only when a caller asks for one (a poll from a
@@ -1522,12 +1523,12 @@ def stuck_state(board_dir, refresh=True):
     findings is None (known false) until a check has succeeded."""
     stamp = stuck_stamp(board_dir)
     with _STUCK_LOCK:
-        due = (_STUCK["at"] is None or (stamp is not None and stamp != _STUCK["stamp"])
+        due = (_STUCK["at"] is None or live != _STUCK["live"] or (stamp is not None and stamp != _STUCK["stamp"])
                or time.monotonic() - _STUCK["mono"] >= stuck_interval())
         if refresh and due and not _STUCK["running"] and not _LAUNCH_LOCK.locked():
             _STUCK["running"] = True
             try:
-                threading.Thread(target=_refresh_stuck, args=(stamp,), daemon=True).start()
+                threading.Thread(target=_refresh_stuck, args=(stamp, live), daemon=True).start()
             except BaseException:
                 _STUCK["running"] = False  # the thread never ran: nothing would ever clear the flag
                 raise
@@ -1552,12 +1553,18 @@ def stuck_suppressed(status):
 def stuck_view(status, refresh=True):
     """The /api/stuck answer for a supervisor status (None: none answers).
 
-    While a supervisor answers, the board never runs find(): the loop's own `stuck` command computes find()
-    on demand rather than returning a cached list, so there is no cheap, current answer to show, and cards
-    that wait for a slot, a reconcile or a resume are healthy. No card is stuck then."""
+    While a supervisor answers, its active cards are passed to find() as live, so a card it works on is not
+    reported and a stuck card under a live run is surfaced (move_card can then move it). The scan is the same
+    cached, background one used with no supervisor; a change in the live cards makes it due. in_flight is
+    dropped: a card waiting for a slot, a reconcile or a resume is healthy."""
     if status is not None:
-        return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": True,
-                "suppressed": None}
+        _, board_dir = ctx()
+        live = frozenset(a["card"] for a in (status.get("active") or [])
+                         if isinstance(a, dict) and is_int(a.get("card")))
+        view = stuck_state(board_dir, refresh=refresh, live=live)
+        if view["findings"] is not None:   # an in_progress card with no session may only wait for a slot
+            view["findings"] = [i for i in view["findings"] if i["kind"] != "in_flight"]
+        return dict(view, suppressed=None)
     notice = stuck_suppressed(status)
     if notice is not None:
         return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": False,
