@@ -1449,10 +1449,16 @@ class CardDriver:
             path, rel = self.root / configured, configured
         if rel is not None and self._persona_changed(c, rel, pr):
             raise _Attention('persona changed by this PR')
+        # the base text comes from roles.resolve_persona; the append here is inline text, not a file path
+        base_config = dict(c.config, merge=dict(merge, persona_append=None))
         try:
-            text = path.read_text(errors='replace')
+            resolved = _roles.resolve_persona(self.root, base_config)
         except OSError as exc:
             raise _Attention('persona unreadable: %s' % _first_line(str(exc)))
+        if resolved.warnings:
+            # resolve_persona fell back to the default; a set path that cannot be read is attention
+            raise _Attention('persona unreadable: %s' % _first_line(str(resolved.warnings[0])))
+        text = resolved.text
         append = merge.get('persona_append')
         if isinstance(append, str) and append.strip():
             text = text.rstrip('\n') + '\n\n' + append.strip('\n') + '\n'
