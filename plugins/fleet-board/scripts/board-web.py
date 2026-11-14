@@ -902,7 +902,18 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
     out["pr_url"] = card_pr_url(cfg, card, note)
+    out["hold"] = card_hold(n)
     return out
+
+
+def card_hold(n: int):
+    """The running supervisor's hold for card n ({reason, source, until}), else None."""
+    status = supervisor_status()
+    holds = status.get("holds") if isinstance(status, dict) else None
+    hold = holds.get(str(n)) if isinstance(holds, dict) else None
+    if not isinstance(hold, dict):
+        return None
+    return {"reason": hold.get("reason"), "source": hold.get("source"), "until": hold.get("until")}
 
 
 DEPENDS_HEADING_RE = re.compile(r"^#{1,6}\s*depends on\s*$", re.I)
