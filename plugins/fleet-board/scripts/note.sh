@@ -47,7 +47,7 @@
 #
 # accepted (null, or {"login", "at", "sha"}) is written by accept.sh: who
 # accepted the card's blocked change, when, and at which head. tick-plan.sh
-# honors it only when login is the authenticated one.
+# honors it only when login is the local one (fb_login).
 #
 # deps_commented (null, or a list of "owner/repo#n" refs) is the set of unmet
 # dependencies of a waiting Ready card that the manager last commented about
