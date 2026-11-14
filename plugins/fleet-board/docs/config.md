@@ -210,6 +210,9 @@ The supervisor reads `limits.concurrency`, `max_hours`, `max_tokens`, `max_token
 | `supervisor.provider_concurrency` | `{}` | a cap on running actions per provider (`claude` or a name under `providers`) |
 | `supervisor.scope_ignore` | `[]` | path globs left out of every scope overlap check |
 | `supervisor.version_files` | `[]` | path globs of JSON files whose `"version"` conflicts `update-branch.sh` may resolve, and whose versions must stay above the base |
+| `supervisor.session_log_days` | `14` | days a session log (`card-*.jsonl`, `card-*.err` in `runs/sessions/`) is kept; the supervisor deletes older ones when it starts, and `0` keeps everything. A failed delete is a warning, never a failed start |
+
+**`supervisor.log` rotation.** Before `start --detach` opens `runs/supervisor.log`, a file over 10 MB is renamed to `supervisor.log.1`, replacing any older `.1`, and a fresh file is started. A log of 10 MB or less is appended to.
 
 **Path globs** (`scope_ignore`, `version_files`) are repo-relative and matched one path segment at a time: `*` and `?` never cross `/`, `[...]` and `[!...]` are character classes, and a `**` segment matches any number of segments (none included). So `src/*` matches `src/a.py` but not `src/deep/a.py`, `*.json` matches only top-level JSON files, and `**/package.json` matches one at any depth. Paths and globs are cleaned first (`\` to `/`, no leading `./`, no trailing `/`) and matched case-sensitively. One definition serves every caller: `scripts/path-glob.jq` for the shell scripts and `scripts/supervisor/scopes.py` for the supervisor, kept identical by a parity test. `config.sh` exits 5 unless each key is a list of non-empty strings with no leading `/`, no `.` or `..` segment, something besides wildcards and separators, and a pattern that compiles (`[z-a].json` does not); the supervisor refuses an uncompilable one too.
 
