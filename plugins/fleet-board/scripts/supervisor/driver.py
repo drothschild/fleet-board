@@ -19,6 +19,7 @@ import hashlib
 import json
 import os
 import posixpath
+import pwd
 import re
 import shutil
 import tempfile
@@ -28,6 +29,29 @@ from pathlib import Path
 
 from . import markers as _markers, paths, resolver, roles as _roles, scopes, scripts, usage as _usage
 from .state import Action, ledger_column
+
+
+def local_login():
+    """The login accept.sh records (board-lib.sh fb_login): FLEET_BOARD_USER, else USER, else `id -un`."""
+    found = os.environ.get('FLEET_BOARD_USER') or os.environ.get('USER')
+    if found:
+        return found
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (KeyError, OSError):
+        return None
+
+
+def accepted_sha(note):
+    """The PR head a person accepted with accept.sh, when the entry is this login's; else None.
+
+    In round 1 the reviewer compares against it instead of the merge-base, so the commits and test
+    edits up to it are not raised again."""
+    entry = note.get('accepted') if isinstance(note, dict) else None
+    if not isinstance(entry, dict) or not entry.get('login') or entry.get('login') != local_login():
+        return None
+    sha = entry.get('sha')
+    return sha if isinstance(sha, str) and _SHA.fullmatch(sha) else None
 
 Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
@@ -754,14 +778,20 @@ class CardDriver:
         previous = last.get('sha') if isinstance(last.get('sha'), str) and _SHA.fullmatch(last['sha']) else None
         findings = self._severe(last.get('findings')) if run.round >= 2 else []
         report = self._latest_report(card)
+        accepted = accepted_sha(note)
         if d.runner in _SCRIPT_RUNNERS:
-            return self._script_args(c, run, pr, previous, findings, report)
+            return self._script_args(c, run, pr, previous, findings, report, accepted)
         data = _json(c.step('worktree.sh', 'review', c.n, pr).stdout)
         if not (isinstance(data, dict) and isinstance(data.get('path'), str) and os.path.isabs(data['path'])
                 and isinstance(data.get('sha'), str) and _SHA.fullmatch(data['sha'])):
             raise _Fail('worktree.sh review printed an unexpected result')
         run.sha = data['sha']
-        prev_sha = previous if (run.round >= 2 or stage) else data.get('base')
+        if accepted and not (run.round >= 2 or stage):
+            # An accepted head counts only while it is still in the PR's history (a new PR or a
+            # rewritten branch leaves it behind); otherwise round 1 compares against the merge-base.
+            if self.git(data['path'], 'merge-base', '--is-ancestor', accepted, 'HEAD').rc != 0:
+                accepted = None
+        prev_sha = previous if (run.round >= 2 or stage) else (accepted or data.get('base'))
         if not (isinstance(prev_sha, str) and _SHA.fullmatch(prev_sha)):
             raise _Fail('no previous review sha for round %d' % run.round)
         diff = self.gh(self.root, 'pr', 'diff', str(pr), '--repo', c.repo())
@@ -775,7 +805,7 @@ class CardDriver:
                                'stage-reviewer <path> && bash %s/board-comment.sh %d <path>`'
                                % (inputs['scripts'], inputs['scripts'], c.n))
 
-    def _script_args(self, c, run, pr, previous, findings, report):
+    def _script_args(self, c, run, pr, previous, findings, report, accepted=None):
         """argv tail for evidence-review.sh / stage-review.sh (the provider scripts post their own report)."""
         stage, args = run.stage, [c.n, pr]
         if stage:
@@ -796,6 +826,8 @@ class CardDriver:
                 if previous is None:
                     raise _Fail('no previous review sha for round %d' % run.round)
                 args += ['--prev-sha', previous, '--findings', c._file(findings)]
+            elif accepted:
+                args += ['--prev-sha', accepted]
         run.stage_args = args
 
     def _launch(self, run):
