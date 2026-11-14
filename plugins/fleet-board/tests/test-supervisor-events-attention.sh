@@ -47,8 +47,11 @@ class MergerAttention(mc.MergerFlow):
         attention = self.b.state.snapshot().get('attention', {})
         self.assertIn('12', attention)
         self.assertIn(reason, json.dumps(attention['12']))
-        comments = self.b.comments(12)
-        self.assertEqual(len(comments), 1, comments)
+        # The driver also posts a session-duration comment (#345); count only the attention comment.
+        comments = [c for c in self.b.comments(12) if c.startswith('Waiting for a person')]
+        self.assertEqual(len(comments), 1, self.b.comments(12))
+        others = [c for c in self.b.comments(12) if not c.startswith('Waiting for a person')]
+        self.assertTrue(all(c.startswith('Merging · ') for c in others), others)
         self.assertIn(reason, comments[0])
 
 

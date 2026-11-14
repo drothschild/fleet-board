@@ -57,10 +57,11 @@ class ControlContracts(unittest.TestCase):
         self.assertEqual(status["schema_version"], 2)
         self.assertIsInstance(status["pid"], int)
         self.assertEqual(status["root"], str(self.root))
-        for key in ("run_id", "mode", "pause_reason", "revision", "active", "lane", "provider_health", "run_tokens"):
+        for key in ("run_id", "mode", "pause_reason", "revision", "active", "lane", "provider_health", "run_tokens", "queue"):
             self.assertIn(key, status)
+        self.assertEqual(status["queue"], {"ready": None, "waiting": None})
         for gone in ("boot_registration", "session", "known_spend", "host_boot_id", "heartbeat", "capacity",
-                     "queue", "config", "claims", "execution_available", "read_only", "phase", "desired_mode"):
+                     "config", "claims", "execution_available", "read_only", "phase", "desired_mode"):
             self.assertNotIn(gone, status, "removed status key %s is back" % gone)
         self.assertNotIn("known_spend", json.dumps(status))
 
