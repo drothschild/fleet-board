@@ -180,6 +180,7 @@ STAGE_DEFAULTS='
             max_output_tokens: ($s.max_output_tokens // 16000),
             max_diff_bytes: ($s.max_diff_bytes // 400000)
           } + (if $s | has("default") then {default: $s.default} else {} end)
+            + (if $s | has("enabled") then {enabled: $s.enabled} else {} end)
         else . end)
     else . end
 '
@@ -274,6 +275,7 @@ VALIDATION_SCRIPT='
                       or (($stages[0:$i] | map(select(type == "object") | .label)) | index($s.label)) != null
                  then "review.stages[\($i)].label must be a non-empty string" else empty end),
                 (if ($s | has("default")) and ($s.default | type) != "boolean" then "review.stages[\($i)].default must be boolean" else empty end),
+                (if ($s | has("enabled")) and ($s.enabled | type) != "boolean" then "review.stages[\($i)].enabled must be boolean" else empty end),
                 (if ($s.advisory | type) != "boolean" then "review.stages[\($i)].advisory must be boolean" else empty end),
                 (if ($s.max_rounds | type) != "number" or ($s.max_rounds | floor) != $s.max_rounds or $s.max_rounds <= 0 then "review.stages[\($i)].max_rounds must be a positive integer" else empty end),
                 (if ($s.required_passes | type) != "number" or ($s.required_passes | floor) != $s.required_passes or $s.required_passes < 1 or $s.required_passes > 5 then "review.stages[\($i)].required_passes must be an integer from 1 to 5" else empty end),
