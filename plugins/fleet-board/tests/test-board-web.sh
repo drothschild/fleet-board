@@ -1324,6 +1324,33 @@ ls_field() { printf '%s\n' "$LS_OUT" | grep "^$1|" | cut -d'|' -f2; }
 [ "$(ls_field live)" = 6 ] && pass "the stuck check is given the supervisor's active cards as live" || fail "the stuck check is given the supervisor's active cards as live" "got: $LS_OUT"
 [ "$(ls_field move)" = 200 ] && pass "move_card moves a stuck card while the supervisor runs" || fail "move_card moves a stuck card while the supervisor runs" "got: $LS_OUT"
 
+echo "Case: /api/stuck leaves out a cached finding for a card in the current live set"
+CL_OUT="$(SCRIPTS="$SCRIPTS" MV_REPO="$MV_REPO" python3 -I - <<'PYEOF'
+import importlib.util, os, time
+spec = importlib.util.spec_from_file_location("board_web_cached", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.APP.update(root=os.environ["MV_REPO"], scripts=os.environ["SCRIPTS"])
+m.run_alive = lambda status=None: True
+def cards_for(kind, active):
+    # a cached scan taken with an older (empty) live set, served without a refresh
+    m._STUCK.update(at=time.time(), mono=time.monotonic(), running=False, error=None, live=frozenset(),
+                    stamp=m.stuck_stamp(m.ctx()[1]),
+                    found=[dict(card=12, kind=kind, detail="x")])
+    status = {"schema_version": 2, "mode": "running", "active": [{"card": n, "action": "work"} for n in active]}
+    m.supervisor_status = lambda: status
+    code, view = m.get_stuck({"query": {"refresh_stuck": ["0"]}}, None)
+    return ",".join(str(i["card"]) for i in view["findings"])
+for kind in ("marker", "live_orphan"):
+    print("%s_active|%s" % (kind, cards_for(kind, [12])))
+    print("%s_idle|%s" % (kind, cards_for(kind, [13])))
+PYEOF
+)"
+cl_field() { printf '%s\n' "$CL_OUT" | grep "^$1|" | cut -d'|' -f2; }
+for kind in marker live_orphan; do
+  [ "$(cl_field ${kind}_active)" = "" ] && [ -n "$(printf '%s\n' "$CL_OUT" | grep "^${kind}_active|")" ] && pass "/api/stuck returns no $kind finding for card 12 when the supervisor lists card 12 as active" || fail "/api/stuck returns no $kind finding for card 12 when the supervisor lists card 12 as active" "got: $CL_OUT"
+  [ "$(cl_field ${kind}_idle)" = 12 ] && pass "/api/stuck still returns the $kind finding for card 12 when the supervisor does not list it as active" || fail "/api/stuck still returns the $kind finding for card 12 when the supervisor does not list it as active" "got: $CL_OUT"
+done
+
 echo "Case: card detail reports the cards it blocks"
 REPO="$(new_repo "$LOCAL_YML")"
 mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"

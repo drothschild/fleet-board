@@ -1910,6 +1910,28 @@ splan gate-stage-stale-head
 assert_jq "gate: the card stays in in_review when a stage's clean report is for an older head" "[($CARD12_GATED), ([.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name])]" '[0,["security"]]'
 splan gate-advisory-findings
 assert_jq "gate: an advisory stage with findings counts as clean" "$(card 12 action)" '"mark_ready"'
+# A --candidates pass over 20 Ready cards launches few jq processes (cost only: the plan is unchanged)
+setup_case ready-start
+dir="$FAKE_GH_DIR/perf"; mkdir -p "$dir"
+for n in $(seq 21 40); do scope_issue "$dir" "$n" ready "- src/perf-$n.sh"; done
+scope_routes "$dir" "$(seq 21 40 | tr '\n' ' ')" ""
+candidate_empty_human_qa_route
+REAL_JQ="$(command -v jq)"
+JQ_SHIM="$FAKE_GH_DIR/jqshim"; mkdir -p "$JQ_SHIM"
+JQ_COUNT="$FAKE_GH_DIR/jq-count"; : > "$JQ_COUNT"
+printf '#!/bin/sh\necho x >> "%s"\nexec "%s" "$@"\n' "$JQ_COUNT" "$REAL_JQ" > "$JQ_SHIM/jq"
+chmod +x "$JQ_SHIM/jq"
+store_sync # build the card store first: only the planner pass is counted
+PATH="$JQ_SHIM:$PATH"; export PATH
+"$BASH_EXE" "$SCRIPT" --candidates > "$FAKE_GH_DIR/perf-out" 2> "$FAKE_GH_DIR/perf-err"
+LAST_EXIT=$?
+LAST_OUT="$(cat "$FAKE_GH_DIR/perf-out")"; LAST_ERR="$(cat "$FAKE_GH_DIR/perf-err")"
+JQ_LAUNCHES="$(wc -l < "$JQ_COUNT" | tr -d ' ')"
+PATH="${PATH#"$JQ_SHIM":}"; export PATH
+assert_exit "jq launches: the 20-card pass exits 0" 0
+assert_jq "jq launches: all 20 cards are planned to start" '[.candidates[] | select(.action == "start")] | length' '20'
+if [ "$JQ_LAUNCHES" -le 200 ]; then pass "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq ($JQ_LAUNCHES)"; else fail "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq" "launched $JQ_LAUNCHES"; fi
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

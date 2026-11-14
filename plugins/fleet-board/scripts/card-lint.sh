@@ -36,7 +36,7 @@ if [ $# -eq 2 ] && [ "$1" = "--body-file" ]; then
 elif [ $# -eq 2 ] && [ "$1" = "--read-file" ]; then
   [ -r "$2" ] || fb_die 2 "cannot read file: $2"
   READ="$(cat "$2")"
-  BODY="$(jq -r '.body // ""' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read in $2"
+  READ_SRC="$2" # the body is not used for a card read (its acceptance items are linted); a read that does not parse fails below
 elif [ $# -eq 1 ]; then
   fb_valid_number "$1" || fb_die 2 "card number must be numeric, got: $1"
   fb_load_config
@@ -53,8 +53,12 @@ FOUND=0
 
 # A card with an acceptance field: the items are the Acceptance section
 if [ -n "$READ" ]; then
-  READ="$(jq -c '.acceptance |= (if type == "array" then . else [] end)' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read"
-  if [ "$(jq -r '.acceptance | length' <<<"$READ")" = 0 ]; then
+  # one jq: the item count, then each item as one line
+  ITEMS="$(jq -r 'if type == "object" or . == null then ((.acceptance? // null) | if type == "array" then . else [] end) as $a
+                    | ($a | length | tostring), ($a[] | tostring | gsub("\n"; " "))
+                  else error("not a card") end' <<<"$READ" 2>/dev/null)" || fb_die 3 "cannot parse the card read${READ_SRC:+ in $READ_SRC}"
+  COUNT="${ITEMS%%$'\n'*}"
+  if [ "$COUNT" = 0 ]; then
     echo "empty-acceptance: the card has no acceptance items"
     exit 1
   fi
@@ -63,7 +67,7 @@ if [ -n "$READ" ]; then
       printf 'manual-check: %s\n' "$item"
       FOUND=1
     fi
-  done < <(jq -r '.acceptance[] | tostring | gsub("\n"; " ")' <<<"$READ")
+  done < <(tail -n +2 <<<"$ITEMS")
   [ "$FOUND" -eq 0 ] || exit 1
   exit 0
 fi

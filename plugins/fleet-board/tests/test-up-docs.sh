@@ -58,5 +58,34 @@ else
 fi
 rm -f "$TMP"
 
+# The `fleet-board up` section: the paragraph that starts with the up command.
+UP_SECTION="$(awk '/^`fleet-board up \[--port N\]`/{f=1;print;next} f&&/^$/{f=0} f' "$README")"
+LOG_CLAIM='the terminal shows `supervisor.log`'
+BOARD_LOG_CLAIM='`<log dir>/board-web.log`'
+
+if printf '%s\n' "$UP_SECTION" | grep -qF -- "$LOG_CLAIM"; then
+  pass "up section says the terminal shows supervisor.log"
+else
+  fail "up section says the terminal shows supervisor.log (missing: $LOG_CLAIM)"
+fi
+
+if printf '%s\n' "$UP_SECTION" | grep -qF -- "$BOARD_LOG_CLAIM"; then
+  pass "up section names <log dir>/board-web.log as where request lines go"
+else
+  fail "up section names <log dir>/board-web.log as where request lines go (missing: $BOARD_LOG_CLAIM)"
+fi
+
+# Each claim check fails when its statement is removed.
+if printf '%s\n' "$UP_SECTION" | sed 's/supervisor\.log/gone/' | grep -qF -- "$LOG_CLAIM"; then
+  fail "supervisor.log check fails when the statement is removed"
+else
+  pass "supervisor.log check fails when the statement is removed"
+fi
+if printf '%s\n' "$UP_SECTION" | sed 's/board-web\.log/gone/' | grep -qF -- "$BOARD_LOG_CLAIM"; then
+  fail "board-web.log check fails when the statement is removed"
+else
+  pass "board-web.log check fails when the statement is removed"
+fi
+
 printf '%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -303,6 +303,10 @@ finish() {
 trap finish EXIT
 
 fb_load_config
+# the scripts started below reuse this config, its states and the values they read (board-lib.sh)
+FB_CFG_FOR="$PWD"; export FB_CFG_FOR
+fb_cfg_warm board.dir board.port board.repo worktrees.dir
+FB_STATES_MEMO="$FB_STATES"; export FB_STATES_MEMO
 
 # No configured stage: no stage column and no review-stages.sh next lookup
 HAS_STAGES=false
@@ -410,6 +414,7 @@ card_input() {
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels routed_last=null
   local have_matched=false parallel='[]'
+  local fields c_labels c_rev c_acc c_marker c_scope c_nodeps=false nf note_branch='' note_accepted=false
 
   # A review column: in_review, or the column of a configured review stage
   # (a review_<name> state whose stage is not configured stays unplanned)
@@ -430,18 +435,30 @@ card_input() {
   else
     read="$(bash "$FLEET_SCRIPTS/board-read.sh" "$n")" || failed="board-read.sh $n"
   fi
+  # One jq reads every field the card read feeds (body, labels, revision, acceptance, skip marker,
+  # Scope paths, whether blocked_by is empty), as shell assignments
   if [ -z "$failed" ]; then
-    body="$(jq -r '.body // ""' <<<"$read" 2>/dev/null)" || failed="board-read.sh $n (unparsable)"
-    if ! card_labels="$(jq -ce '(.labels // []) | if type == "array" and all(.[]; type == "string") then . else error("invalid labels") end' <<<"$read" 2>/dev/null)"; then
-      card_labels='[]'
-      failed="board-read.sh $n (malformed labels)"
+    if fields="$(jq -r --arg m "$SKIP_MARKER" "(.body // \"\") as \$body | (\$body | tostring) as \$b
+        | (try ((.labels // []) | if type == \"array\" and all(.[]; type == \"string\") then tojson else error(\"invalid labels\") end) catch \"\") as \$labels
+        | (try (.revision // .updatedAt // null | tojson) catch \"null\") as \$rev
+        | ((try ((.acceptance | type) == \"array\" and (.acceptance | length) > 0) catch false)) as \$acc
+        | (try ([(.comments // [])[] | (.body // \"\") | contains(\$m)] | any | tostring) catch \"\") as \$marker
+        | (try (\$b | $FB_SCOPE_JQ | tojson) catch \"[]\") as \$scope
+        | ((.blocked_by // []) == []) as \$nodeps
+        | \"body=\(\$body | @sh)\", \"c_labels=\(\$labels | @sh)\", \"c_rev=\(\$rev | @sh)\", \"c_acc=\(\$acc)\",
+          \"c_marker=\(\$marker | @sh)\", \"c_scope=\(\$scope | @sh)\", \"c_nodeps=\(\$nodeps)\"" <<<"$read" 2>/dev/null)"; then
+      eval "$fields"
+      state_revision="$c_rev"
+      if [ -z "$c_labels" ]; then
+        failed="board-read.sh $n (malformed labels)"
+      else
+        card_labels="$c_labels"
+        [ "$c_acc" = true ] && has_acc=true
+        if [ -n "$c_marker" ]; then marker="$c_marker"; else failed="board-read.sh $n (unparsable comments)"; fi
+      fi
+    else
+      failed="board-read.sh $n (unparsable)"
     fi
-    state_revision="$(jq -c '.revision // .updatedAt // null' <<<"$read" 2>/dev/null)" || state_revision=null
-  fi
-  if [ -z "$failed" ]; then
-    fb_card_has_acceptance "$read" && has_acc=true
-    marker="$(jq --arg m "$SKIP_MARKER" '[(.comments // [])[] | (.body // "") | contains($m)] | any' <<<"$read" 2>/dev/null)" \
-      || failed="board-read.sh $n (unparsable comments)"
   fi
   if [ -z "$failed" ]; then
     note="$(bash "$FLEET_SCRIPTS/note.sh" parse "$n" <<<"$read" 2>"$NOTE_ERR")" || { note='{}'; failed="note.sh parse $n"; }
@@ -450,12 +467,16 @@ card_input() {
     outside="$(sed -n "s/^fleet-board: warning: \(manager note on #$n names a worktree outside .*\)$/\1/p" "$NOTE_ERR" | head -1)"
   fi
   if [ -z "$failed" ]; then
-    pr="$(jq -c '.pr' <<<"$note")" || failed="note.sh parse $n (unparsable)"
+    if nf="$(jq -r '"\(.pr | tojson)", (.branch // ""), (.accepted != null)' <<<"$note")"; then
+      { IFS= read -r pr; IFS= read -r note_branch; IFS= read -r note_accepted; } <<<"$nf"
+    else
+      failed="note.sh parse $n (unparsable)"
+    fi
   fi
 
   # The card's own PR: known from the note, or discovered from its branch
   if [ -z "$failed" ] && [ -z "$invalid" ] && { [ "$st" = in_progress ] || [ "$st" = merging ] || [ "$review_col" = true ] || { [ "$CANDIDATES" = true ] && [ "$st" = human_qa ]; }; }; then
-    branch="$(jq -r '.branch // empty' <<<"$note")"
+    branch="$note_branch"
     if [ "$pr" = null ] && [ -n "$branch" ]; then
       cmd="gh pr list --repo $FLEET_REPO --head $branch --state open --json number"
       if out="$(gh pr list --repo "$FLEET_REPO" --head "$branch" --state open --json number)"; then
@@ -621,7 +642,7 @@ card_input() {
   fi
 
   # An accepted entry (accept.sh) counts only when its login is the local one (fb_login)
-  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$(jq -r '.accepted != null' <<<"$note")" = true ]; then
+  if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$note_accepted" = true ]; then
     if me="$(fb_login 2>/dev/null)"; then
       accepted_mine="$(jq --arg me "$me" '.accepted.login == $me' <<<"$note")"
     else
@@ -676,14 +697,16 @@ card_input() {
   # plain-text token (leading "(" and trailing . , : ; ) stripped), with no
   # whitespace that holds a "/" or ends in an extension
   if [ -z "$failed" ]; then
-    scope="$(fb_card_scope_paths "$body")" || scope='[]'
+    scope="${c_scope:-[]}"
   fi
 
   # A ready card's dependencies, its blocked_by field (only a card that could
   # start is looked up)
   has_deps=1; deps_cmd=parse-card
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] && [ "$lint_gate" = false ]; then
-    if printf '%s\n' "$read" > "$DEPS_FILE"; then has_deps=0; else has_deps=2; fi
+    # a card whose blocked_by is empty has no refs and no warnings: deps.sh has nothing to report
+    if [ "$c_nodeps" = true ]; then has_deps=1
+    elif printf '%s\n' "$read" > "$DEPS_FILE"; then has_deps=0; else has_deps=2; fi
     [ "$has_deps" -le 1 ] || failed="deps.sh parse-card $n (cannot write the card)"
   fi
   if [ -z "$failed" ] && [ "$has_deps" -eq 0 ]; then
@@ -739,14 +762,15 @@ fi
 SEEN=" "
 for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
-  NUMS="$(jq -r 'if type == "array" then .[].number else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
+  ROWS="$(jq -r 'if type == "array" then .[] | "\(.number)\t\((.title // "") | tojson)" else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
+  NUMS="$(printf '%s\n' "$ROWS" | cut -f1)"
   for n in $NUMS; do
     fb_valid_number "$n" || fb_die 1 "the $st column lists a non-numeric card: $n"
     case "$SEEN" in *" $n "*) continue ;; esac
     SEEN="$SEEN$n "
-    TITLE="$(jq -c --argjson n "$n" 'first(.[] | select(.number == $n) | .title) // ""' <<<"$LIST")" \
-      || fb_die 1 "cannot read the title of card #$n"
+    TITLE="$(printf '%s\n' "$ROWS" | awk -F'\t' -v n="$n" '$1 == n { sub(/^[^\t]*\t/, ""); print; exit }')"
+    [ -n "$TITLE" ] || TITLE='""'
     card_input "$st" "$n" "$TITLE" >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$n"
   done
 done

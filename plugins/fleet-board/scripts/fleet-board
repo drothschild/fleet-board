@@ -161,6 +161,18 @@ plugin_root() {
 }
 
 # handoff ROOT CMD ARGS...: run ROOT's launcher instead when it differs from this file.
+# route_board_stderr LOGFILE: read board-web's stderr; request lines go to LOGFILE,
+# every other line (such as "port N is in use") is passed to this stderr.
+route_board_stderr() {
+  local logfile="$1" l
+  while IFS= read -r l; do
+    case "$l" in
+      'board-web: '*' - "'*) printf '%s\n' "$l" >> "$logfile" ;;
+      *) printf '%s\n' "$l" >&2 ;;
+    esac
+  done
+}
+
 handoff() {
   local root="$1"; shift
   [ -z "$HANDOFF_ROOT" ] || return 0
@@ -200,8 +212,16 @@ case "$cmd" in
     # Serve in the background so SIGINT, SIGTERM and SIGHUP reach this shell: stop
     # serving, ask an owned supervisor to drain, and exit once it is not running.
     got_signal=0
-    bash "$root/scripts/board-web.sh" --repo "$top" "$@" &
+    # Request lines (board-web: <addr> - "GET ...") go to <log dir>/board-web.log so
+    # they do not bury the supervisor output; every other stderr line passes through.
+    logdir="${FLEET_BOARD_LOG_DIR:-$HOME/.fleet-board/runs}"
+    mkdir -p "$logdir" 2>/dev/null
+    bash "$root/scripts/board-web.sh" --repo "$top" "$@" 2> >(route_board_stderr "$logdir/board-web.log") &
     bpid=$!
+    # Follow the supervisor log as raw lines; -n 0 skips what is already there and -F
+    # keeps following after the file is renamed and recreated.
+    tail -n 0 -F "$logdir/supervisor.log" 2>/dev/null &
+    tpid=$!
     trap 'got_signal=1' INT TERM HUP
     wait "$bpid"; brc=$?
     if [ "$got_signal" -eq 0 ]; then
@@ -212,6 +232,7 @@ case "$cmd" in
         (cd "$dir" && bash "$sroot/scripts/supervisor.sh" stop --drain >/dev/null 2>&1)
         while (cd "$dir" && bash "$sroot/scripts/supervisor.sh" status >/dev/null 2>&1); do sleep 0.2; done
       fi
+      kill "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null
       exit "$brc"
     fi
     kill "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
@@ -230,6 +251,8 @@ case "$cmd" in
         sleep 0.2
       done
     fi
+    # The log is followed through the drain; stop following only now.
+    kill "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null
     exit 0 ;;
   supervisor)
     root="$(plugin_root supervisor.sh)" || exit 1

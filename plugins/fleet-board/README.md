@@ -205,7 +205,7 @@ fleet-board supervisor status
 fleet-board supervisor stop             # finish running sessions, then exit
 ```
 
-`fleet-board up [--port N]` starts the supervisor in the background, then serves the board page. Ctrl-C drains the supervisor it started: running sessions finish, then both exit, and a second Ctrl-C cancels instead of waiting. A supervisor that was already running is left alone.
+`fleet-board up [--port N]` starts the supervisor in the background, then serves the board page. Ctrl-C drains the supervisor it started: running sessions finish, then both exit, and a second Ctrl-C cancels instead of waiting. A supervisor that was already running is left alone. While it runs, the terminal shows `supervisor.log`, the supervisor's own log; the board's request lines go to `<log dir>/board-web.log` instead.
 
 `fleet-board` is a small launcher that `/fleet-board:init` puts in `~/.local/bin` (`FLEET_BOARD_BIN_DIR` moves it; `scripts/install-cli.sh` installs or refreshes it on its own). It runs the plugin's newest installed version that has the script it needs, so plugin updates never break it, and `fleet-board path` prints the plugin directory it uses. When that version ships a newer launcher, the copy runs it instead. `FLEET_BOARD_PLUGIN_ROOT` points it at another copy, such as a checkout of this repository, or pins a version; when a per-project install record names a different version, the launcher says so on stderr.
 
