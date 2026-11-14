@@ -1018,6 +1018,7 @@ function renderDrawer(card) {
   renderPr();
   renderBodyPreview();
   renderDrawerMeta();
+  renderHold(card);
   $("dr-comments-sec").hidden = isNew;
   if (isNew) {
     $("dr-comments").replaceChildren();
@@ -1025,6 +1026,14 @@ function renderDrawer(card) {
     renderComments(card);
   }
   updateDirty();
+}
+
+// renderHold(card | null): the Held line, shown only while the card has a hold.
+function renderHold(card) {
+  const p = $("dr-hold");
+  const hold = card && card.hold && typeof card.hold.reason === "string" ? card.hold : null;
+  p.hidden = !hold;
+  p.textContent = hold ? "Held: " + hold.reason + (hold.until ? " (until " + hold.until + ")" : "") : "";
 }
 
 function fillStateSelect(current) {
