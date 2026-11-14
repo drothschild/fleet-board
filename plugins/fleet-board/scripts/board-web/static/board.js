@@ -111,7 +111,7 @@ function terminalLink(n) {
     if (e.stopPropagation) e.stopPropagation();
     let r;
     try {
-      r = await api("POST", "/api/cards/" + n + "/terminal");
+      r = await api("POST", "/api/cards/" + n + "/terminal", {}); // every POST needs a JSON object body
     } catch (err) {
       r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
     }
@@ -1764,7 +1764,7 @@ async function acceptCard() {
   d.accepting = true;
   setAcceptError("");
   syncAccept();
-  const r = await writeApi("POST", "/api/cards/" + d.n + "/accept");
+  const r = await writeApi("POST", "/api/cards/" + d.n + "/accept", {}); // every POST needs a JSON object body
   d.accepting = false;
   if (S.drawer !== d) {
     fetchBoard(true);
