@@ -890,6 +890,45 @@ set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important
 run_note get 12; assert_stdout_exact "last_review.provider: bad name rejected" "{}"
 assert_stderr_contains "last_review.provider: names the field" "ignoring invalid manager note on #12: last_review.provider"
 
+# ---------------------------------------------------------------------------
+# stack and landed fields
+GOOD_STACK='{"parent":7,"base":"fleet/5-x","start":"%s","attention":null}'
+GOOD_STACK="$(printf "$GOOD_STACK" "$(printf 'a%%.0s' $(seq 1 40))")"
+setup_case
+set_note_json "{\"state\":\"ready\",\"stack\":$GOOD_STACK}"
+run_note get 12
+assert_eq "stack round-trip: a valid stack is kept by note.sh get" "$(jq -c .stack <<<"$LAST_OUT")" "$GOOD_STACK"
+printf '{"state":"ready","stack":%s}\n' "$GOOD_STACK" > "$REPO/in.json"
+clear_inputs; run_note put 12 "$REPO/in.json"
+assert_exit "stack round-trip: note.sh put with a valid stack exit" 0
+assert_eq "stack round-trip: put writes the stack" "$(jq -c .stack <<<"$(block_json "$(posted_body)")")" "$GOOD_STACK"
+set_note_json "$(block_json "$(posted_body)")"
+run_note get 12
+assert_eq "stack round-trip: get reads back what put wrote" "$(jq -c .stack <<<"$LAST_OUT")" "$GOOD_STACK"
+
+H40="$(printf 'b%%.0s' $(seq 1 40))"
+hostile "stack parent as a string" stack '{"state":"ready","stack":{"parent":"7","base":"fleet/5-x","start":"'"$H40"'","attention":null}}'
+hostile "stack base main" stack '{"state":"ready","stack":{"parent":7,"base":"main","start":"'"$H40"'","attention":null}}'
+hostile "stack base with shell" stack '{"state":"ready","stack":{"parent":7,"base":"; rm -rf ~","start":"'"$H40"'","attention":null}}'
+hostile "stack start abc" stack '{"state":"ready","stack":{"parent":7,"base":"fleet/5-x","start":"abc","attention":null}}'
+hostile "stack attention with a newline" stack '{"state":"ready","stack":{"parent":7,"base":"fleet/5-x","start":"'"$H40"'","attention":"a\nb"}}'
+hostile "stack set to the string yes" stack '{"state":"ready","stack":"yes"}'
+hostile "landed squash too short" landed '{"state":"ready","landed":{"parent":7,"parent_head":"'"$H40"'","squash":"abc123","sha":"'"$H40"'"}}'
+
+setup_case
+printf '{"state":"ready","stack":{"parent":"7","base":"fleet/5-x","start":"%s","attention":null}}\n' "$H40" > "$REPO/in.json"
+clear_inputs; run_note put 12 "$REPO/in.json"
+assert_exit "put refuses an invalid stack: exit" 1
+assert_stderr_contains "put refuses an invalid stack: names the field" "refusing to write invalid manager note on #12: stack"
+assert_eq "put refuses an invalid stack: nothing written" "$(input_count)" "0"
+
+setup_case
+set_note_json "{\"state\":\"ready\",\"stack\":$GOOD_STACK}"
+printf '{"stack":null}\n' > "$REPO/p.json"
+clear_inputs; run_note merge 12 "$REPO/p.json"
+assert_exit "merge with stack null: exit" 0
+assert_eq "merge with {\"stack\": null} clears the field" "$(jq -c .stack <<<"$(block_json "$(posted_body)")")" "null"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
