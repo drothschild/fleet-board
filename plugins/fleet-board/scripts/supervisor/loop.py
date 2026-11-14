@@ -232,7 +232,7 @@ class Supervisor:
         return max(0.05, self._sup('reconcile_interval_seconds', 5))
 
     def _timeout(self):
-        if self.state.lane is not None or any(a.session is not None for a in self.state.active.values()):
+        if self.state.lane is not None or any(a.session is not None for a in self.state.all_actions()):
             return POLL
         return max(0.01, min(1.0, self._next_cycle - self.mono()))
 
@@ -275,9 +275,9 @@ class Supervisor:
             self._cancel_all(self._sup('shutdown_grace_seconds', 30))
 
     def _cancel_all(self, grace):
-        for action in list(self.state.active.values()):
+        for action in self.state.all_actions():
             if action.session is not None:
-                self._cancelled.setdefault(action.card, action)
+                self._cancelled.setdefault(id(action), action)
                 action.session.cancel(grace)
 
     def _check_max_hours(self):
@@ -290,11 +290,11 @@ class Supervisor:
         """Last resort on the way out: terminate and reconcile whatever is still running. A session that has
         not ended by the deadline is given up on, and still gets a ledger line (unknown counts)."""
         deadline = time.monotonic() + REAP_WAIT
-        for action in list(self.state.active.values()):
+        for action in self.state.all_actions():
             if action.session is not None:
                 action.session.cancel(0)
         while time.monotonic() < deadline:
-            running = [a for a in self.state.active.values() if a.session is not None]
+            running = [a for a in self.state.all_actions() if a.session is not None]
             if not running:
                 return
             for action in running:
@@ -305,11 +305,12 @@ class Supervisor:
                     self.driver.finish(action, result, allow_redispatch=False)
                 except Exception:  # noqa: BLE001
                     pass
-                if action.card in self.state.active:
-                    self.state.end(action.card)
-                self.state.release(action.card)
+                if action in self.state.actions_for(action.card):
+                    self.state.end(action.card, action)
+                if not self.state.actions_for(action.card):
+                    self.state.release(action.card)
             time.sleep(0.05)
-        for action in [a for a in self.state.active.values() if a.session is not None]:
+        for action in [a for a in self.state.all_actions() if a.session is not None]:
             self._record_unfinished(action)
             if not markers.group_alive(action.pgid):   # a group still running keeps its marker: a live orphan
                 markers.clear(action.marker, action.pgid)
@@ -328,7 +329,7 @@ class Supervisor:
 
     # --- sessions ------------------------------------------------------------------------------------
     def _poll(self):
-        for action in list(self.state.active.values()):
+        for action in self.state.all_actions():
             session = action.session
             if session is None:
                 continue
@@ -348,11 +349,12 @@ class Supervisor:
             raised = True
         if outcome is not None and outcome.redispatch:
             return
-        if card in self.state.active:
-            self.state.end(card)
-        self.state.release(card)
-        if card in self._cancelled and result.cancelled:
-            self._note_cancelled(self._cancelled.pop(card))
+        if action in self.state.actions_for(card):
+            self.state.end(card, action)
+        if not self.state.actions_for(card):
+            self.state.release(card)
+        if id(action) in self._cancelled and result.cancelled:
+            self._note_cancelled(self._cancelled.pop(id(action)))
         elif outcome is not None and outcome.provider_failure:
             self._provider_failed(outcome.provider_failure, result.reason)
         elif result.failure != 'provider':
@@ -411,13 +413,13 @@ class Supervisor:
         config = self.config
         if not isinstance(config, dict):
             return False
-        return len(self.state.active) >= self._limits(config)['global']
+        return len(self.state.all_actions()) >= self._limits(config)['global']
 
     def _lane_free(self, candidate_rows):
         """The merge lane is free when no merge runs and no merged card still has its after_merge merger to
         begin or running (two deploys must not race on one host)."""
         planned = {r.get('number') for r in candidate_rows if r.get('action') == 'after_merge'}
-        active = {a.card for a in list(self.state.active.values()) if a.action == 'after_merge'}
+        active = {a.card for a in self.state.all_actions() if a.action == 'after_merge'}
         self._merger_hold &= planned | active   # a card the planner no longer plans a merger for releases it
         return self.state.lane is None and not self._merger_hold and not active
 
@@ -462,7 +464,8 @@ class Supervisor:
     def _note_cancelled(self, action):
         """A cancelled card goes back to the column it was in when the action began; its marker goes too."""
         card, column = action.card, action.column
-        markers.clear(action.marker, action.pgid)
+        if not self.state.actions_for(card):   # a reviewer of the card that still runs keeps its marker
+            markers.clear(action.marker, action.pgid)
         try:
             with tempfile.TemporaryDirectory(prefix='fleet-cancel-') as tmp:
                 path = Path(tmp) / 'patch.json'
@@ -680,8 +683,9 @@ class Supervisor:
 
     def _active_claims(self):
         """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
-        return [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action}
-                for a in list(self.state.active.values())]
+        return [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
+                 'stage': a.stage}
+                for a in self.state.all_actions()]
 
     def _begin(self, row):
         number, name = row.get('number'), row.get('action')

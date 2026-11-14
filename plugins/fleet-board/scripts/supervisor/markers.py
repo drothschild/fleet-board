@@ -60,15 +60,16 @@ def group_alive(pgid):
     return True
 
 
-def clear(marker, pgid):
+def clear(marker, pgid, also=()):
     """Remove `marker` at the end of the action that owned the card: when it still names `pgid`, or names no
     usable pgid at all (an empty marker a board script made while the supervisor owned the card is the
-    supervisor's own). A marker naming another process group is left alone. Never raises."""
+    supervisor's own). `also` lists further pgids that count as ours (the card's other reviewers that already
+    ended). A marker naming another process group is left alone. Never raises."""
     if marker is None:
         return False
     try:
         named = read_pgid(marker)
-        if named is not None and named != pgid:
+        if named is not None and named != pgid and named not in also:
             return False
         os.unlink(str(marker))
         return True
