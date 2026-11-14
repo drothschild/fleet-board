@@ -167,6 +167,11 @@ run --no-post --prev-sha "$head"
 check "round 1 with --prev-sha (an accepted head) uses it as the reference" \
   grep -Fq "Review round 1. Reference SHA $head." "$FAKE_REVIEWER_DIR/prompt.1"
 
+setup
+run --no-post --prev-sha 0123456789abcdef0123456789abcdef01234567
+check "round 1 with a --prev-sha that is not an ancestor of the head falls back to the merge-base" \
+  grep -Fq "Review round 1. Reference SHA $base." "$FAKE_REVIEWER_DIR/prompt.1"
+
 # the production path: no --card-file, the card is read from the board and its
 # acceptance field reaches the reviewer as an "## Acceptance" section
 setup

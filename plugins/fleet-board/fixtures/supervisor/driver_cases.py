@@ -744,6 +744,27 @@ def test_reviewer_round_one_uses_the_sha_a_person_accepted(base):
     assert 'acce123' in prompt and 'bace000' not in prompt, prompt
 
 
+def test_reviewer_round_one_checks_the_accepted_sha_is_an_ancestor(base):
+    b = board_for(base, 'in_review')
+    b.put_note(_accepted_note(b, driver.local_login()))
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-ok'})
+    b.git_result = lambda *a: fail_with('not an ancestor') if a[:2] == ('merge-base', '--is-ancestor') else ok('')
+    begin(b, 'review', state='in_review', round=1)
+    prompt = b.prompt()
+    assert 'bace000' in prompt and 'acce123' not in prompt, 'a non-ancestor accept falls back to the merge-base'
+    assert any(c[1:] == ('merge-base', '--is-ancestor', 'acce123', 'HEAD') for c in b.git_calls), b.git_calls
+
+
+def test_a_fresh_start_clears_an_earlier_accept(base):
+    b = board_for(base)
+    b.put_note({'accepted': {'login': driver.local_login(), 'at': '2026-11-14T00:00:00Z', 'sha': 'acce123'}})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    begin(b, 'start')
+    assert b.note().get('accepted') is None, b.note()
+
+
 def test_reviewer_round_one_ignores_an_accept_by_another_login(base):
     b = board_for(base, 'in_review')
     b.put_note(_accepted_note(b, driver.local_login() + '-someone-else'))
