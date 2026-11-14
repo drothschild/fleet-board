@@ -81,8 +81,9 @@ case "$HEAD_SHA" in
 esac
 
 TMP="$(mktemp)" || fb_die 1 "cannot create a temp file"
-jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{action_failures: 0, last_action_error: null,
+# state: the column the card moves to, so the plan never reads a stale "blocked" from the note.
+jq -n --arg sha "$HEAD_SHA" --arg me "$ME" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg back "$BACK" \
+  '{state: $back, action_failures: 0, last_action_error: null,
     last_review: {round: 0, sha: $sha, critical: 0, important: 0, findings: []},
     blocked_findings: [], blocking_pr: null, blocked_from: null,
     accepted: {login: $me, at: $at, sha: $sha}}' > "$TMP" || fb_die 1 "cannot build the patch"

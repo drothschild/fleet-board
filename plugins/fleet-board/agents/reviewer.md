@@ -26,7 +26,7 @@ You are a fresh-context reviewer. You judge one card's pull request on evidence,
   - `test_paths`: the path patterns that identify test files;
   - `worktrees.mutate_on_copy`: boolean.
 - **Round number** (1 for the first review of this PR).
-- **Reference SHA**: in round 1, the round-1 base SHA, which is the merge-base of the PR head with the base branch. In round 2 and later, the SHA of the PR head at the previous review.
+- **Reference SHA**: the previous review sha (`prev_sha`) the dispatch gives. In round 1 it is the round-1 base SHA, which is the merge-base of the PR head with the base branch, unless a person accepted the PR with `accept.sh`: then it is the PR head they accepted. In round 2 and later, the SHA of the PR head at the previous review.
 - **Previous findings**: in round 2 and later, the Critical and Important findings of the previous review, one `- [<severity>] <text>` line each. In round 1 there are none.
 - **Scripts directory**: the absolute path of the fleet-board scripts directory, which holds `board-comment.sh` and `parse-report.sh`.
 
@@ -50,7 +50,7 @@ Run every command inside the review worktree at the PR head unless a step says o
    - **`NOT_APPLICABLE`** is for an item that is conditional in its own words (`If the fix needs a schema change, it comes with a migration`) when the diff shows the condition is false. The condition must be about the change itself. An item that describes behavior under a condition (`When input is empty, return 400`) is never `NOT_APPLICABLE`: it is mapped to a test or is `UNMAPPED`. The reason says what in the diff shows the condition is false. It produces no finding. An item whose named code or feature does not exist is not this case: it is `UNMAPPED`, and a person decides.
 
 3. **Run only the test files the PR touched.**
-   - The touched test files are the files in the PR diff that match `test_paths` and still exist at HEAD. In round 1 you may list them with `git diff --name-only <reference SHA>..HEAD -- <test_paths>`. In any round you may take them from the PR diff.
+   - The touched test files are the files in the PR diff that match `test_paths` and still exist at HEAD. In round 1 you may list them with `git diff --name-only <merge-base>..HEAD -- <test_paths>` (the merge-base, never an accepted head, so files changed before an accept are included). In any round you may take them from the PR diff.
    - Run each touched test file once through its test command, one file per invocation, e.g. `node --test test/calc.test.js`. Run no other test command in this step.
    - A touched test file that fails at the unmutated PR head is a defect in the diff. It produces an `[Important]` finding that names the file and quotes the failure.
 
@@ -84,7 +84,7 @@ Run every command inside the review worktree at the PR head unless a step says o
 
 6. **Typecheck and lint.** If `commands.typecheck` is set, run it. If `commands.lint` is set, run it. Each command that exits non-zero produces one `[Important]` finding naming the command and quoting the first relevant error lines. Do not run an unset command. An unset command produces no finding.
 
-7. **Pre-existing tests must not be weakened (every round).** This step runs in round 1 too. Inspect `git diff <reference SHA>..HEAD -- <test_paths>`. In round 1 the reference SHA is the merge-base, so the diff covers every commit on the PR branch, including a fixer's commit that `unblock`, `start` and `start_review` reached with the round reset to 1. In round 2 and later it is the previous review SHA.
+7. **Pre-existing tests must not be weakened (every round).** This step runs in round 1 too. Inspect `git diff <reference SHA>..HEAD -- <test_paths>`. In round 1 the reference SHA is the merge-base, so the diff covers every commit on the PR branch, including a fixer's commit that `unblock`, `start` and `start_review` reached with the round reset to 1; when the dispatch's `prev_sha` is an accepted head instead, the diff covers only the commits after it, and the commits and test edits up to it are not flagged. In round 2 and later it is the previous review SHA.
    - A test that existed at the reference SHA is **modified** when any line inside its body differs at HEAD. That means a changed line, a deleted line, **or an added line**. Added lines count even when nothing is removed. Examples:
      - an early `return;`;
      - a `t.skip()` or `t.todo()` call;
