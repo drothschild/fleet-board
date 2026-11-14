@@ -1897,7 +1897,7 @@ function showImportProgress(elapsed, lastText) {
   setImportStatus("grouping · " + elapsed + " s");
   $("imp-elapsed").textContent = elapsed + " s";
   const line = String(lastText || "").replace(/\s+/g, " ").trim();
-  $("imp-last").textContent = line || "Claude is reading the plan";
+  $("imp-last").textContent = line || "Reading the plan";
   $("imp-last").title = line;
 }
 
@@ -1939,12 +1939,12 @@ async function pollImport(id) {
     return c && typeof c === "object";
   }) : [];
   if (!cards.length) {
-    showImportFailed("Claude finished without grouping the plan into any cards.");
+    showImportFailed("Finished without grouping the plan into any cards.");
     return;
   }
   imp.cards = cards;
   setImportPhase("splitting");
-  setImportStatus("grouped by Claude in " + elapsed + " s");
+  setImportStatus("Grouped in " + elapsed + " s");
   $("imp-table").textContent = typeof d.table === "string" ? d.table.replace(/\s+$/, "") : "";
   renderPreview(cards);
   await playSplit(cards);
