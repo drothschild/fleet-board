@@ -174,6 +174,12 @@ if [ "$(jq -r .ok <<<"$OUT")" != true ]; then
       jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exited \(.exit)"' <<<"$OUT"
       printf '\nMerged PR: #%s\n' "$PR"
       printf 'Card: #%s\n' "$CARD"
+      # The merged PR's files are the Scope: the failing tests are among them, and so most likely is the
+      # fix. Without a Scope the card would land in Backlog (create.sh), not followups.status.
+      SCOPE_LINES="$(while IFS= read -r f; do
+        [ -n "$f" ] && [[ "$f" =~ $safe_re ]] && printf -- '- `%s`\n' "$f"
+      done <<<"$PATHS")"
+      [ -z "$SCOPE_LINES" ] || printf '\n## Scope\n%s\n' "$SCOPE_LINES"
     } > "$BODY" || fb_die 1 "cannot write the P0 card body"
     ACC="$(mktemp)" || fb_die 1 "cannot create a temp file"
     jq -r '.results[] | select(.exit != 0) | "- `\(.cmd)` exits 0 on main" | gsub("[\r\n]+"; " ")' <<<"$OUT" > "$ACC" \
