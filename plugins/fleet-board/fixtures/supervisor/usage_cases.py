@@ -14,7 +14,7 @@ PLUGIN = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PLUGIN / 'fixtures' / 'supervisor'))
 import loop_cases as lc  # noqa: E402  (pops the base directory from argv)
 import driver_cases as dc  # noqa: E402
-from supervisor import cli, state as sup_state, usage  # noqa: E402
+from supervisor import cli, driver, state as sup_state, usage  # noqa: E402
 
 BASE = lc.BASE
 KEYS = ('run_id', 'card', 'kind', 'column', 'action', 'role', 'provider', 'model', 'input', 'output',
@@ -333,6 +333,91 @@ class DriverLine(unittest.TestCase):
             outcome = b.driver.finish(started.action, result)
         self.assertTrue(outcome.progressed)
         self.assertTrue([e for e in b.state.events if e['type'] == 'warning'])
+
+
+class DurationComment(unittest.TestCase):
+    def board(self):
+        d = BASE / self.id().rsplit('.', 1)[-1]
+        d.mkdir()
+        return dc.board_for(d)
+
+    def finish(self, b, seconds=252, report='implementor-ok', more=()):
+        b.stubs.setdefault('worktree.sh', dc.ok(b.worktree + '\n'))
+        b.plans({'report': report, 'usage': FULL}, *more)
+        started = dc.begin(b, 'start')
+        result = dc.wait_for(started)
+        b.driver.clock = lambda: started.action.started_at + seconds
+        return started, result, b.driver.finish(started.action, result)
+
+    def test_format_duration_under_a_minute_reads_seconds(self):
+        self.assertEqual(driver.format_duration(45), '45s')
+        self.assertEqual(driver.format_duration(0), '0s')
+        self.assertEqual(driver.format_duration(59), '59s')
+
+    def test_format_duration_under_an_hour_reads_minutes_and_seconds(self):
+        self.assertEqual(driver.format_duration(252), '4m 12s')
+        self.assertEqual(driver.format_duration(60), '1m 00s')
+        self.assertEqual(driver.format_duration(3599), '59m 59s')
+
+    def test_format_duration_otherwise_reads_hours_and_minutes(self):
+        self.assertEqual(driver.format_duration(3780), '1h 03m')
+        self.assertEqual(driver.format_duration(3600), '1h 00m')
+        self.assertEqual(driver.format_duration(7384), '2h 03m')
+
+    def test_the_comment_is_column_action_duration_and_model_from_the_ledger_line(self):
+        got = driver.duration_comment(line(column='in_review', action='review_documentation', model='opus',
+                                           started_at='2026-11-11T10:00:00Z', ended_at='2026-11-11T10:04:12Z'))
+        self.assertEqual(got, 'In Review \u00b7 review_documentation \u00b7 4m 12s (opus)')
+
+    def test_an_unknown_model_omits_the_suffix(self):
+        got = driver.duration_comment(line(column='in_progress', action='start', model=None,
+                                           started_at='2026-11-11T10:00:00Z', ended_at='2026-11-11T10:00:45Z'))
+        self.assertEqual(got, 'In Progress \u00b7 start \u00b7 45s')
+
+    def test_a_finished_session_posts_exactly_one_duration_comment_after_its_report(self):
+        b = self.board()
+        _, _, outcome = self.finish(b)
+        self.assertTrue(outcome.progressed)
+        ledger = usage.read(b.root)[0][0]
+        self.assertEqual(ledger['column'], 'in_progress')
+        comments = b.comments()
+        durations = [c for c in comments if '\u00b7' in c and c.endswith(' 4m 12s (%s)' % ledger['model'])]
+        self.assertEqual(durations, ['In Progress \u00b7 start \u00b7 4m 12s (%s)' % ledger['model']])
+        self.assertEqual(comments[-1], durations[0], 'the duration comment follows the report')
+        self.assertGreater(len(comments), 1, 'the role report is on the card before it')
+
+    def test_a_rejected_report_that_is_redispatched_posts_one_comment_per_session(self):
+        b = self.board()
+        b.stubs['worktree.sh'] = dc.ok(b.worktree + '\n')
+        b.plans({'report': 'no-verified', 'usage': FULL}, {'report': 'implementor-ok', 'usage': FULL})
+        started = dc.begin(b, 'start')
+        b.driver.finish(started.action, dc.wait_for(started))
+        dc.run_role(b, started)
+        lines, _ = usage.read(b.root)
+        self.assertEqual(len(lines), 2)
+        durations = [c for c in b.comments() if c.startswith('In Progress \u00b7 start \u00b7 ')]
+        self.assertEqual(len(durations), 2)
+
+    def test_a_failed_duration_post_is_a_warning_and_changes_no_outcome(self):
+        ok_board = self.board()
+        _, _, good = self.finish(ok_board)
+        d = BASE / 'failed_post'
+        d.mkdir()
+        b = dc.board_for(d)
+
+        def flaky(*args):
+            text = Path(args[1]).read_text()
+            if '\u00b7' in text:
+                return dc.fail_with('boom')
+            return dc.scripts.run(b.root, 'board-comment.sh', *args, env=b.env)
+
+        b.stubs['board-comment.sh'] = flaky
+        _, _, bad = self.finish(b)
+        self.assertEqual(bad, good)
+        self.assertEqual(b.card()['state'], ok_board.card()['state'])
+        self.assertEqual(b.note()['pr'], ok_board.note()['pr'])
+        self.assertTrue([e for e in b.state.events if e['type'] == 'warning' and 'comment failed' in
+                         e['payload'].get('message', '')])
 
 
 class Limits(lc.LoopCase):
