@@ -1759,6 +1759,47 @@ assert_exit "candidate mode: invalid mode rejected" 2
 run_check "$SCRIPT" --candidates --settle-merge 12
 assert_exit "candidate mode: cannot combine with settle" 2
 
+# --candidates --card <n>: one card planned alone, the row the board-wide pass prints for it
+setup_case in-review-merge-auto "$AUTO"
+candidate_empty_human_qa_route
+CARD_DIR="$FAKE_GH_DIR/onecard"; mkdir -p "$CARD_DIR"
+scope_issue "$CARD_DIR" 14 ready "- src/other.js"
+printf '[{"number":14,"title":"Card 14","url":"u","labels":[{"name":"fleet:ready"}]}]\n' > "$CARD_DIR/list-ready.json"
+{
+  awk -F '\t' -v OFS='\t' -v f="$CARD_DIR/list-ready.json" '$1 ~ /--label fleet:ready/ { $3 = f } { print }' "$FAKE_GH_ROUTES"
+  printf 'api repos/acme/toy/issues/14\t0\t%s/issue-14.json\n' "$CARD_DIR"
+  printf 'api --paginate repos/acme/toy/issues/14/comments\t0\t%s/common/empty.json\n' "$TICK"
+} > "$CARD_DIR/routes"
+FAKE_GH_ROUTES="$CARD_DIR/routes"; export FAKE_GH_ROUTES
+run_check "$SCRIPT" --candidates
+FULL_ROW="$(jq -c '.candidates[] | select(.number == 12)' <<<"$LAST_OUT")"
+assert_eq "card mode: the board-wide pass plans the in-review card 12 to merge" "$(jq -r '.action' <<<"$FULL_ROW")" "merge"
+CARD_STUB="$(mktemp -d)"
+CLEANUP_DIRS+=("$CARD_STUB")
+cp -R "$SCRIPT_DIR/../scripts/." "$CARD_STUB/"
+READ_LOG="$CARD_STUB/reads.log"; : > "$READ_LOG"
+printf '#!/usr/bin/env bash\necho "$1" >> "%s"\nexec bash "%s/board-read.sh" "$@"\n' "$READ_LOG" "$SCRIPTS_ABS" > "$CARD_STUB/board-read.sh"
+run_check "$CARD_STUB/tick-plan.sh" --candidates --card 12
+assert_exit "card mode: exit" 0
+assert_eq "card mode: an in-review card with a clean review prints the row the board-wide pass prints" "$(jq -c '.candidates[] | select(.number == 12)' <<<"$LAST_OUT")" "$FULL_ROW"
+assert_jq "card mode: only the named card is in the output" '[.candidates[].number]' '[12]'
+assert_eq "card mode: the board-read count for other cards is 0" "$(grep -vcx 12 "$READ_LOG")" "0"
+assert_eq "card mode: the named card is read" "$(grep -cx 12 "$READ_LOG")" "1"
+run_check "$SCRIPT" --candidates --card
+assert_exit "card mode: --card needs a number" 2
+run_check "$SCRIPT" --candidates --card abc
+assert_exit "card mode: --card needs a numeric card" 2
+run_check "$SCRIPT" --candidates --card 12 14
+assert_exit "card mode: one card only" 2
+setup_case ready-start
+candidate_empty_human_qa_route
+run_check "$SCRIPT" --candidates
+assert_jq "card mode: the board-wide pass plans the Ready card to start" '.candidates[0].action' '"start"'
+run_check "$SCRIPT" --candidates --card 12
+assert_exit "card mode: a Ready card exits 0" 0
+assert_jq "card mode: a Ready card prints wait" '[.candidates[] | select(.number == 12) | .action]' '["wait"]'
+assert_jq "card mode: a Ready card never prints start" '[.candidates[] | select(.action == "start")] | length' '0'
+
 # merge.ignore_checks: a red check whose name matches an unexpired entry counts as green
 IGN_YAML() { # IGN_YAML <until-lint> <until-legacy>
   printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: "docs lint is flaky"\n      until: %s\n    - name: "ci/legacy-?int"\n      reason: "legacy status"\n      until: %s\n' "$1" "$2"
