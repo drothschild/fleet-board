@@ -57,8 +57,8 @@ Run every command inside the review worktree at the PR head unless a step says o
 4. **Mutation (`review.mutation`).**
    - **When `review.mutation` is false:** make no mutant. `## Mutation` contains exactly the line `skipped: review.mutation is off`.
    - **When `review.mutation` is true:** make exactly one mutant for every Acceptance item mapped to a test. `UNMAPPED`, `CHECKED` and `NOT_APPLICABLE` items get no mutant. A mutant is a small change in the **implementation code** that the mapped test covers, chosen to break that item's behavior: flip an operator, change a constant, or remove a branch. Never mutate a test file.
-     - Run the mapped test's file through its test command, e.g. `node --test test/calc.test.js`, and expect red.
-     - Restore the mutated file with `git checkout -- <file>`. Re-run the same test command and confirm it is green again before you make the next mutant.
+     - Run only the mapped test through its test command and expect red: the single test case when the runner can select one (e.g. `node --test --test-name-pattern '<name>' test/calc.test.js`), else only the mapped test's file, e.g. `node --test test/calc.test.js`. Never run the other touched test files for a mutant.
+     - Restore the mutated file with `git checkout -- <file>` and confirm the restore with `git diff --quiet -- <file>` (exit 0) before you make the next mutant. Do not re-run the test after a restore: the restored file is byte for byte the unmutated head that step 3 already ran green.
      - Classify each mutant as exactly one of:
        - **killed**: the mapped test went red.
        - **survived**: the mapped test stayed green.
