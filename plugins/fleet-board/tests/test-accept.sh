@@ -166,6 +166,15 @@ assert_eq "accept: records who accepted (authenticated login) and the sha" \
 assert_eq "accept: records when (UTC timestamp)" \
   "$(jq -r '.accepted.at | test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z\\z")' "$PATCH_COPY" 2>/dev/null)" true
 
+assert_eq "accept: the note's state is the column the card moves to, not blocked" \
+  "$(jq -c '.state' "$PATCH_COPY" 2>/dev/null)" '"in_review"'
+
+setup_case "$BLOCKED"
+set_note_json "$(jq -c '.round = 0 | del(.last_review) | del(.blocked_from)' <<<"$NOTE")"
+run_accept 12
+assert_eq "accept: round 0: the note's state is in_progress, where the card moves" \
+  "$(jq -c '.state' "$PATCH_COPY" 2>/dev/null)" '"in_progress"'
+
 setup_case "$BLOCKED"
 set_note_json "$(jq -c '.round = 1 | .last_review.round = 1' <<<"$NOTE")"
 run_accept 12

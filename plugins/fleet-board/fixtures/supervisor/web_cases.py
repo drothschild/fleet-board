@@ -710,10 +710,10 @@ class SupervisorWebContract(unittest.TestCase):
         self.assertIsInstance(board["run"]["stuck_checked_at"], float)
         self.assertIs(board["run"]["stuck_known"], True)
 
-    def test_while_a_supervisor_runs_the_board_shows_no_stuck_card_and_never_runs_find(self):
-        # The loop's `stuck` handler runs find() on demand (it keeps no cached list), so while a supervisor
-        # answers the board shows no stuck card at all: cards waiting for a slot, a reconcile or a resume
-        # are healthy, and the board never runs find() itself nor asks the loop.
+    def test_while_a_supervisor_runs_the_board_shows_only_cards_it_does_not_work_on_as_stuck(self):
+        # find() gets the supervisor's active cards as live: a card it works on, and one waiting for a slot
+        # (no marker), are healthy; a marker for a card it does not work on is stuck. The board never asks
+        # the loop to run find().
         from supervisor.state import Action
         self.write_card(3)
         self.write_card(5)
@@ -731,32 +731,35 @@ class SupervisorWebContract(unittest.TestCase):
         self.state.begin(Action(card=3, action="review", column="in_review", role="reviewer", provider="claude",
                                 paths=[], started_at=time.time() - 12, started_mono=0.0))
         self.start_web()
-        code, body = self.http("GET", "/api/stuck")
-        self.assertEqual(code, 200, body)
-        self.assertEqual(body["findings"], [])
-        self.assertIs(body["checking"], False)
-        time.sleep(1.0)   # a background find() would have reported card 5 or 7 by now
+        body = self.stuck_settled()
+        self.assertEqual([x["card"] for x in body["findings"]], [5])
         code, board = self.http("GET", "/api/board")
         self.assertEqual(code, 200)
         by_number = {c["number"]: c for c in board["cards"]}
-        for n in (3, 5, 7):
+        for n in (3, 7):
             self.assertIsNone(by_number[n]["stuck"], "card %d marked stuck while a supervisor runs" % n)
-        self.assertIs(board["run"]["stuck_checking"], False)
+        self.assertEqual(by_number[5]["stuck"]["kind"], "marker")
         self.assertEqual(by_number[3]["activity"]["action"], "review")
         self.assertGreaterEqual(by_number[3]["activity"]["elapsed_seconds"], 12)
         self.assertLess(by_number[3]["activity"]["elapsed_seconds"], 60)
         self.assertIsNone(by_number[5]["activity"])
         self.assertNotIn("stuck", commands, "the board asked the supervisor loop to run find()")
 
-    def test_the_board_never_runs_find_while_a_supervisor_answers(self):
+    def test_the_board_passes_the_supervisors_active_cards_to_find_as_live(self):
         board = self.load_board_module("board_web_running")
+        board.APP["scripts"] = str(SCRIPTS)
         calls = []
-        with mock.patch.object(board.supervisor_stuck, "find", lambda *a, **k: calls.append(1) or []):
-            view = board.stuck_view({"schema_version": 2, "mode": "running", "active": []})
-            time.sleep(0.3)
-        self.assertEqual(calls, [], "find() ran while a supervisor answers")
+        status = {"schema_version": 2, "mode": "running", "active": [{"card": 4}]}
+        with mock.patch.object(board.supervisor_stuck, "find",
+                               lambda root, live_cards=frozenset(), **k: calls.append(set(live_cards)) or []):
+            board.stuck_view(status)
+            deadline = time.time() + 5
+            while board._STUCK["running"] or board._STUCK["at"] is None:
+                self.assertLess(time.time(), deadline)
+                time.sleep(0.02)
+            view = board.stuck_view(status, refresh=False)
+        self.assertEqual(calls, [{4}])
         self.assertEqual(view["findings"], [])
-        self.assertIs(view["checking"], False)
         self.assertIs(view["known"], True)
 
     def test_a_changed_board_is_rechecked_at_once_and_an_unchanged_one_waits_for_the_interval(self):
