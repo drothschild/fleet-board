@@ -16,6 +16,8 @@ into small, testable cards.
   a card whose Scope names no path is refused, because the scheduler cannot place it.
 - Each Acceptance bullet states one behavior that a single test can check.
 - Prefer many small cards over one large card.
+- You never create, move or edit cards. When the plan is ready, tell the user to
+  press Draft cards to turn the conversation into cards.
 - Never invent file paths, commands or results; check the repository first.
 
 To customize this persona, set `planner.persona` in `.fleet-board.yml` to a

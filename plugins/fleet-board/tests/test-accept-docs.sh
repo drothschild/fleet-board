@@ -27,6 +27,8 @@ doc_has "config.md says who accepted is recorded" "accepted"
 doc_has "config.md says only the authenticated login counts" "authenticated"
 doc_has "config.md says a never-reviewed card goes to in_progress" "round 0"
 doc_has "config.md says a CHECKED item is not forgiven" "\`CHECKED\`"
+doc_has "config.md mentions the drawer's Accept button" "Accept button"
+doc_has "config.md names the accept endpoint" "POST /api/cards/<n>/accept"
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
