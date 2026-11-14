@@ -1426,6 +1426,48 @@ assert_code 500
 assert_body "A configured command that exits non-zero gives 500 with the command's stderr in the error" '.error' '*terminal exploded*'
 stop_server
 
+echo "Case: POST /api/cards/<n>/accept"
+ACC_GH="$TMP/acc-gh"
+mkdir -p "$ACC_GH"
+printf '#!/bin/sh\necho "{\\"headRefOid\\": \\"0123456789abcdef0123456789abcdef01234567\\"}"\n' > "$ACC_GH/gh"
+chmod +x "$ACC_GH/gh"
+acc_repo() {
+  REPO="$(new_repo "$LOCAL_YML")"
+  mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
+  echo 4 > "$REPO/.fleet-board/next"
+  local fence='```' note
+  note="$(printf '<!-- fleet-board:manager-note -->\n## Manager note\n\n%sjson\n{"round":1,"pr":41,"blocked_from":"in_progress"}\n%s\n' "$fence" "$fence")"
+  seed_card 1 blocked "Stuck" "b
+
+## Acceptance
+- x" "$(jq -n --arg b "$note" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+  seed_card 2 ready "Fine" "b
+
+## Acceptance
+- x"
+}
+acc_repo
+PATH="$ACC_GH:$PATH" start_server "$REPO"
+api POST /api/cards/1/accept '{}'
+assert_code 200
+assert_body "POST /api/cards/<n>/accept on a Blocked card with blocked_from in_progress and a PR returns the card in in_progress" '.state' in_progress
+api POST /api/cards/2/accept '{}'
+assert_code 409
+assert_body "accept on a Ready card returns accept.sh's error message" '.error' '*not Blocked*'
+if [ "$(card_json 2 .state)" = ready ]; then pass "the Ready card stays in Ready"; else fail "the Ready card stays in Ready" "state: $(card_json 2 .state)"; fi
+api POST /api/cards/99/accept '{}'
+assert_code 404
+stop_server
+ACC_SCRIPTS="$TMP/acc-scripts"
+cp -R "$SCRIPTS" "$ACC_SCRIPTS"
+printf '#!/usr/bin/env bash\necho "the note on #$1 is written; cannot move the card; move it by hand" >&2\nexit 3\n' > "$ACC_SCRIPTS/accept.sh"
+acc_repo
+SERVER_PY="$ACC_SCRIPTS/board-web.py" SCRIPTS="$ACC_SCRIPTS" start_server "$REPO"
+api POST /api/cards/1/accept '{}'
+assert_code 409
+assert_body "With accept.sh exiting 3 the response message is its stderr (note written, card still needs moving)" '.error' '*note on #1 is written*move it by hand*'
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
