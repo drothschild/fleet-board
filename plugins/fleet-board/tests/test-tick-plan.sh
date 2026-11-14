@@ -1948,6 +1948,12 @@ assert_exit "jq launches: the 20-card pass exits 0" 0
 assert_jq "jq launches: all 20 cards are planned to start" '[.candidates[] | select(.action == "start")] | length' '20'
 if [ "$JQ_LAUNCHES" -le 200 ]; then pass "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq ($JQ_LAUNCHES)"; else fail "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq" "launched $JQ_LAUNCHES"; fi
 
+# Card 289: a card found in a retired review_<name> state is planned back to in_review
+splan stage-review-needed
+assert_exit "retired column: exit" 0
+assert_jq "A card found in a review_<name> state is planned back to in_review" "$(card 12 action)" '"move_to_review"'
+assert_jq "retired column: dispatchable" '.dispatchable' 'true'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
