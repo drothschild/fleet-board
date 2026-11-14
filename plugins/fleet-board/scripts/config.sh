@@ -133,6 +133,27 @@ MERGED="$(jq -c -n --slurpfile d "$HERE/config-defaults.json" '$d[0] * input' <(
   exit 5
 }
 
+# Built-in review stages: every project gets them. A project stage of the same
+# name replaces the built-in; a stage entry with enabled: false removes it (and
+# is itself dropped). Anything but a list is left for validation to name.
+BUILTIN_STAGES='
+  # With a provider reviewer an agent stage has no model to inherit, so the
+  # built-ins carry the agents'"'"' own model.
+  .builtin_stages as $b | del(.builtin_stages)
+  | (if (.models | if type == "object" then .reviewer else null end | type) == "object" then "sonnet" else null end) as $m
+  | ($b | map(if $m != null then . + {model: $m} else . end)) as $b
+  | if (.review | type) == "object" and (.review.stages | type) == "array" then
+      .review.stages as $u
+      | .review.stages = (
+          [$u[] | select((type == "object" and .enabled == false) | not)]
+          + [$b[] | . as $s | select(([$u[] | select(type == "object") | .name] | index($s.name)) == null)])
+    else . end
+'
+MERGED="$(jq -c "$BUILTIN_STAGES" <<<"$MERGED")" || {
+  echo "config.sh: invalid config: failed to add built-in review stages" >&2
+  exit 5
+}
+
 # Fill each review stage's defaults so no reader re-derives them. A stage that is
 # not an object is left as it is, for validation to name.
 STAGE_DEFAULTS='
