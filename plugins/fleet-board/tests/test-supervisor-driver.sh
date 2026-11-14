@@ -74,6 +74,38 @@ def case_file_pending_still_holds_a_non_blocked_card_with_no_pr(sub):
     assert b.note()['pending_followups'] is not None
 
 
+def version_commit_count(sub, text):
+    g, repo, reviewed = dc._version_repo(sub)
+    (repo / 'plugin.json').write_text(text)
+    g('commit', '-q', '-am', 'version commit')
+    return dc._count_since(repo, reviewed)
+
+
+def case_version_commit_raising_semver_is_not_counted(sub):
+    assert version_commit_count(sub, '{\n  "name": "x",\n  "version": "1.0.1"\n}\n') == '0'
+
+
+def case_version_commit_lowering_the_version_is_counted(sub):
+    g, repo, reviewed = dc._version_repo(sub)
+    (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "0.9.0"\n}\n')
+    g('commit', '-q', '-am', 'lower')
+    assert dc._count_since(repo, reviewed) == '1', dc._count_since(repo, reviewed)
+
+
+def case_version_commit_to_a_non_semver_value_is_counted(sub):
+    assert version_commit_count(sub, '{\n  "name": "x",\n  "version": "latest"\n}\n') == '1'
+
+
+def case_version_commit_on_a_nested_key_is_counted(sub):
+    g, repo, reviewed = dc._version_repo(sub)
+    (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "1.0.0",\n  "source": {\n    "version": "2.0.0"\n  }\n}\n')
+    g('commit', '-q', '-am', 'add nested')
+    base_count = dc._count_since(repo, reviewed)
+    (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "1.0.0",\n  "source": {\n    "version": "2.0.1"\n  }\n}\n')
+    g('commit', '-q', '-am', 'bump nested')
+    assert dc._count_since(repo, reviewed) == str(int(base_count) + 1), dc._count_since(repo, reviewed)
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):
