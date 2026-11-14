@@ -146,7 +146,7 @@ if [ "$(printf '%s\n' "$a2" | sed -n '1,3p' | tr '\n' ' ')" = "exec resume --jso
 if has_pair "$a2" -c 'sandbox_mode="read-only"'; then pass "later turn passes -c sandbox_mode=\"read-only\""; else fail "later turn passes -c sandbox_mode=\"read-only\"" "$a2"; fi
 if has_pair "$a2" -m gpt-test; then pass "later turn passes -m <model>"; else fail "later turn passes -m <model>" "$a2"; fi
 if printf '%s\n' "$a2" | grep -A1 -x -e '-o' | tail -1 | grep -q 'reply-'; then pass "later turn passes -o <file>"; else fail "later turn passes -o <file>" "$a2"; fi
-if [ "$(printf '%s\n' "$a2" | tail -3 | head -1)" = "thr-1" ]; then pass "later turn passes the thread_id before the prompt"; else fail "later turn passes the thread_id before the prompt" "$a2"; fi
+if [ "$(printf '%s\n' "$a2" | grep -A2 -x -e '-o' | sed -n 3p)" = "thr-1" ]; then pass "later turn passes the thread_id before the prompt"; else fail "later turn passes the thread_id before the prompt" "$a2"; fi
 if has_arg "$a2" '-s'; then fail "resume has no -s flag" "$a2"; else pass "resume has no -s flag"; fi
 
 echo "Case: on a failed turn the reply is [error] plus the turn.failed message, even when stderr ends with other text"
