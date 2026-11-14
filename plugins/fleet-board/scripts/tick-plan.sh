@@ -409,6 +409,7 @@ card_input() {
   local drift=null scope='[]'
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels routed_last=null
+  local have_matched=false parallel='[]'
 
   # A review column: in_review, or the column of a configured review stage
   # (a review_<name> state whose stage is not configured stays unplanned)
@@ -484,6 +485,25 @@ card_input() {
         | jq -c 'if (.mergeable | type) == "string" then .mergeable else null end' 2>/dev/null)" || mergeable=null
       [ -n "$mergeable" ] || mergeable=null
     fi
+    # Parallel review: an in_review card's routed stages (matched files plus the stage
+    # labels the card carries, in config order) review the head together with the
+    # evidence reviewer; a stage whose report already covers this head is not planned again
+    if [ -z "$failed" ] && [ "$st" = in_review ] && [ "$HAS_STAGES" = true ] && [ "$info" != null ] \
+       && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
+      labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
+      if ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+        failed="review-stages.sh match $pr"
+      elif ! parallel="$(jq -cn --argjson cfg "$FLEET_CFG" --argjson m "$matched" --argjson l "$labels" --argjson note "$note" --argjson info "$info" \
+             '($note.last_review // null) as $lr
+              | [$cfg.review.stages[] | select(.name as $s | .label as $x | ($m | index($s)) != null or ($l | index($x)) != null)
+                 | select(.name as $s | ($lr != null and ($lr.stage // null) == $s and ($lr.sha // "") == $info.headRefOid
+                                          and (($lr.round // 0) >= ($note.round // 0))) | not)
+                 | .name]' 2>/dev/null)"; then
+        parallel='[]'; failed="review-stages.sh match $pr (unexpected answer)"
+      else
+        have_matched=true
+      fi
+    fi
     # The next stage and the human-QA question matter only for a clean review
     # of the current round (and of this column's stage; an advisory stage's
     # findings count as clean). The next stage comes first: needs-human-qa.sh
@@ -502,7 +522,7 @@ card_input() {
       # counts.
       if [ "$HAS_STAGES" = false ]; then
         :
-      elif ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
+      elif [ "$have_matched" != true ] && ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
         failed="review-stages.sh match $pr"
       elif ! next_labels="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" \
              '(. + [$cfg.review.stages[] | select(.name as $s | $m | index($s) != null) | .label]) | unique' <<<"$labels" 2>/dev/null)"; then
@@ -667,7 +687,7 @@ card_input() {
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" \
-    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson routed_last "$routed_last" \
+    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson routed_last "$routed_last" --argjson parallel "$parallel" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -677,7 +697,7 @@ card_input() {
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope,
-      stage: $stage, next_stage: $next_stage, routed_last_stage: $routed_last}'
+      stage: $stage, next_stage: $next_stage, routed_last_stage: $routed_last, parallel_stages: $parallel}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -1023,6 +1043,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             then act("block"; "\($ci) Critical/Important findings survive round \($round) of \($smax)\(if $c.stage != null then " in \($c.stage.name)" else "" end)")
           elif $ci_eff > 0 then act("fix"; "\($ci) Critical/Important findings in round \($round)")
           # Clean (or advisory) and current: a next stage comes before the tail
+          # In in_review the routed stages review in parallel (review_stage rows), never one after another
+          elif $c.next_stage != null and $c.state == "in_review"
+            then act("review_stage"; "routed stage \($c.next_stage) not reviewed yet at this head")
           elif $c.next_stage != null then act("advance_stage"; "review clean; next stage \($c.next_stage)")
           elif $c.needs_human_qa == true then act("to_human_qa"; "no Critical/Important findings; needs human QA")
           elif $c.needs_human_qa != false then act("skip"; "human-QA need unknown")
@@ -1096,7 +1119,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
        else $d end) as $d2
     | ($d2.action != $d.action) as $keyheld
     | $d2 as $d
-    | {key_held: $keyheld, number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
+    | ({key_held: $keyheld, number: $c.number, title: $c.title, state: $c.state, action: $d.action, reason: $d.reason,
        branch: ($n.branch // "fleet/\($c.number)-\($slug)"),
        worktree: ($n.worktree // "\($base)/\($c.number)-\($slug)"),
        pr: $c.pr, head_sha: $c.pr_info.headRefOid, round: $n.round, models: $models, escalated: $esc,
@@ -1123,7 +1146,24 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
        lint: (if $d.action == "skip_card_lint" then $c.lint else null end),
        lint_marker: (if $d.action == "skip_card_lint" then $c.lint_marker else null end),
        pending_wait: ($n.pending_followups != null and $d.action != "file_pending" and $c.lookup_failed == null),
-       outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}
+       outside_warning: $c.outside_warning, deps_warnings: ($c.deps_warnings // [])}) as $row
+    # Parallel review: an in_review card plans the evidence reviewer (review) and one review_stage
+    # per routed stage that has not reported at this head, all on the same head. The rows share the card number.
+    | ($c.parallel_stages // []) as $ps
+    | if $c.state == "in_review" and ($row.action == "review" or $row.action == "review_stage") then
+        if ($ps | length) == 0 then
+          (if $row.action == "review" then $row
+           else $row + {action: "wait", reason: "routed stage review pending; no stage to plan", stage: null} end)
+        else
+          ((if $row.action == "review" then $row else empty end),
+           ($ps[] as $sn | first($cfg.review.stages[] | select(.name == $sn)) as $sg
+            | ($sg.provider != null and any($unset[]; . == $sn)) as $held
+            | $row + {key_held: $held, stage: $sg,
+                      action: (if $held then "wait" else "review_stage" end),
+                      reason: (if $held then "stage \($sn): \($cfg.providers[$sg.provider].api_key_env) is not set"
+                               else "round \($round) of \($sn) not reviewed yet; reviews run in parallel at this head" end)}))
+        end
+      else $row end
   ] as $planned
   # Reserve only starts that actually survived every gate. A waiting card
   # contributes no reservation, so it cannot unnecessarily serialize others.
