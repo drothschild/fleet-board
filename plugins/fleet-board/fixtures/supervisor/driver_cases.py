@@ -725,6 +725,60 @@ def test_reviewer_round_one_uses_the_base_even_after_an_earlier_review(base):
     assert 'bace000' in prompt and 'feed123' not in prompt, prompt
 
 
+def _accepted_note(b, login, rnd=1):
+    return {'round': rnd, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+            'last_review': dict(LAST_REVIEW, sha='acce123', round=0, critical=0, important=0, findings=[]),
+            'accepted': {'login': login, 'at': '2026-11-14T00:00:00Z', 'sha': 'acce123'}}
+
+
+def test_reviewer_round_one_uses_the_sha_a_person_accepted(base):
+    # accept.sh moved the baseline to the accepted head; in round 1 the reviewer must compare against it,
+    # not the merge-base, or the accepted test edits are raised again.
+    b = board_for(base, 'in_review')
+    b.put_note(_accepted_note(b, driver.local_login()))
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-ok'})
+    begin(b, 'review', state='in_review', round=1)
+    prompt = b.prompt()
+    assert 'acce123' in prompt and 'bace000' not in prompt, prompt
+
+
+def test_reviewer_round_one_checks_the_accepted_sha_is_an_ancestor(base):
+    b = board_for(base, 'in_review')
+    b.put_note(_accepted_note(b, driver.local_login()))
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-ok'})
+    b.git_result = lambda *a: fail_with('not an ancestor') if a[:2] == ('merge-base', '--is-ancestor') else ok('')
+    begin(b, 'review', state='in_review', round=1)
+    prompt = b.prompt()
+    assert 'bace000' in prompt and 'acce123' not in prompt, 'a non-ancestor accept falls back to the merge-base'
+    assert any(c[1:] == ('merge-base', '--is-ancestor', 'acce123', 'HEAD') for c in b.git_calls), b.git_calls
+
+
+def test_a_start_keeps_an_accept(base):
+    # accept.sh sends a card blocked from Ready back to Ready; its start must not undo the accept.
+    # A new PR or rewritten branch is handled by the ancestor check, not by clearing it here.
+    b = board_for(base)
+    entry = {'login': driver.local_login(), 'at': '2026-11-14T00:00:00Z', 'sha': 'acce123'}
+    b.put_note({'accepted': entry})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    begin(b, 'start')
+    assert b.note().get('accepted') == entry, b.note()
+
+
+def test_reviewer_round_one_ignores_an_accept_by_another_login(base):
+    b = board_for(base, 'in_review')
+    b.put_note(_accepted_note(b, driver.local_login() + '-someone-else'))
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-ok'})
+    begin(b, 'review', state='in_review', round=1)
+    prompt = b.prompt()
+    assert 'bace000' in prompt and 'acce123' not in prompt, prompt
+
+
 def test_reviewer_round_two_gets_prev_sha_and_findings_and_a_long_diff_goes_to_a_file(base):
     b = board_for(base, 'in_review')
     b.put_note({'round': 2, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
@@ -1272,6 +1326,20 @@ def test_evidence_reviewer_path(base):
     assert review['stage'] is None and review['agent'] is None and review['important'] == 0, review
     assert b.note()['models']['reviewer'] == 'opus', b.note()
     assert b.fake_calls() == [], 'no claude session'
+
+
+def test_evidence_reviewer_round_one_passes_the_accepted_sha(base):
+    b = board_for(base, 'in_review', config=EVIDENCE_CONFIG)
+    b.put_note(_accepted_note(b, driver.local_login()))
+    fake_plugin(b, 0, json.dumps({'status': 'posted', 'report_file': report_file(b, 'reviewer-ok'),
+                                  'parsed': {}, 'provider': 'codex', 'model': 'gpt-5', 'sha': 'deadbee',
+                                  'input_tokens': None, 'output_tokens': None, 'attempts': 1}))
+    started = begin(b, 'review', state='in_review', round=1)
+    run_role(b, started)
+    args = (b.fake / 'args.txt').read_text().split('\n')
+    assert args[:4] == ['12', '34', '--round', '1'], args
+    assert '--prev-sha' in args and args[args.index('--prev-sha') + 1] == 'acce123', args
+    assert '--findings' not in args, args
 
 
 def test_evidence_reviewer_exit_6_appends_report_errors_without_a_rerun(base):
