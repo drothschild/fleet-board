@@ -1659,6 +1659,33 @@ done
 ms_absent "a card outside Merging shows no merge step text" "Merging PR" in_review merge '{"pr": 41, "pending_merge": {"pr": 41}}'
 rm -rf "$MS_TMP"
 
+# Card 409: the card view serves a session log through supervisor/sessiontext.py.
+if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -q .; then
+  pass "a python script besides sessiontext.py calls sessiontext"
+else
+  fail "a python script besides sessiontext.py calls sessiontext" "no caller found under $SCRIPTS"
+fi
+setup_case
+TR_LOG="$TMP/tr-session.jsonl"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"hello from the session"}]}}' > "$TR_LOG"
+jq -nc --arg log "$TR_LOG" '{run_id:"r1",card:2,kind:"card",column:"in_progress",action:"start",role:"implementor",provider:"claude",model:"sonnet",input:1,output:1,cache_write:0,cache_read:0,started_at:"2026-01-01T00:00:00Z",ended_at:"2026-01-01T00:01:00Z",log:$log}' \
+  > "$REPO/.fleet-board/usage.jsonl"
+curl -s -o "$BODY_FILE" -D "$TMP/tr.hdr" -w '%{http_code}' -H 'X-Fleet-Board: 1' "http://127.0.0.1:$PORT/api/cards/2/transcripts/tr-session" > "$TMP/tr.code"
+if [ "$(cat "$TMP/tr.code")" = 200 ] && grep -qi '^content-type: text/plain; charset=utf-8' "$TMP/tr.hdr" && grep -q 'hello from the session' "$BODY_FILE"; then
+  pass "GET /api/cards/2/transcripts/<id> returns the rendered session text as text/plain"
+else
+  fail "GET /api/cards/2/transcripts/<id> returns the rendered session text as text/plain" "code $(cat "$TMP/tr.code"): $(head -c 200 "$BODY_FILE")"
+fi
+api GET /api/cards/1/transcripts/tr-session
+assert_code 404
+api GET /api/cards/2/transcripts/..%2F..%2Fetc%2Fpasswd
+assert_code 404
+rm -f "$TR_LOG"
+api GET /api/cards/2/transcripts/tr-session
+assert_code 404
+assert_body "a deleted log file is reported as missing" '.error' '*log file is missing*'
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
