@@ -236,6 +236,8 @@ cat > "$FAKE_GH_DIR/full.json" << JSONEOF
   "last_action_error": "fatal: branch fleet/12-add-subtract is checked out elsewhere",
   "deps_commented": ["acme/toy#22"],
   "stage": null,
+  "stack": null,
+  "landed": null,
   "reviewed_stages": [],
   "updated_at": "2020-01-01T00:00:00Z"
 }
@@ -278,7 +280,7 @@ assert_exit "put-fills-defaults: exit" 0
 BODY="$(posted_body)"
 assert_eq "put-fills-defaults: every key with its default" \
   "$(jq -S -c 'del(.updated_at)' <<<"$(block_json "$BODY")" 2>/dev/null)" \
-  '{"action_failures":0,"blocked_findings":[],"blocking_pr":null,"branch":null,"bugs_filed":[],"deps_commented":null,"escalated":null,"escalated_at_round":null,"implementor_attempts":0,"last_action_error":null,"last_review":null,"last_verified":null,"main_check":null,"merged_pr":null,"models":null,"out_of_scope_created":[],"pending_followups":null,"pr":null,"report_errors":[],"reviewed_stages":[],"round":null,"stage":null,"state":"ready","worktree":null}'
+  '{"action_failures":0,"blocked_findings":[],"blocking_pr":null,"branch":null,"bugs_filed":[],"deps_commented":null,"escalated":null,"escalated_at_round":null,"implementor_attempts":0,"landed":null,"last_action_error":null,"last_review":null,"last_verified":null,"main_check":null,"merged_pr":null,"models":null,"out_of_scope_created":[],"pending_followups":null,"pr":null,"report_errors":[],"reviewed_stages":[],"round":null,"stack":null,"stage":null,"state":"ready","worktree":null}'
 assert_eq "put-fills-defaults: summary line with nothing set" "$(printf '%s\n' "$BODY" | sed -n 3p)" \
   'State: ready · Round: — · PR: — · Branch: —'
 
@@ -893,7 +895,7 @@ assert_stderr_contains "last_review.provider: names the field" "ignoring invalid
 # ---------------------------------------------------------------------------
 # stack and landed fields
 GOOD_STACK='{"parent":7,"base":"fleet/5-x","start":"%s","attention":null}'
-GOOD_STACK="$(printf "$GOOD_STACK" "$(printf 'a%%.0s' $(seq 1 40))")"
+GOOD_STACK="$(printf "$GOOD_STACK" "$(printf 'a%.0s' $(seq 1 40))")"
 setup_case
 set_note_json "{\"state\":\"ready\",\"stack\":$GOOD_STACK}"
 run_note get 12
@@ -906,7 +908,7 @@ set_note_json "$(block_json "$(posted_body)")"
 run_note get 12
 assert_eq "stack round-trip: get reads back what put wrote" "$(jq -c .stack <<<"$LAST_OUT")" "$GOOD_STACK"
 
-H40="$(printf 'b%%.0s' $(seq 1 40))"
+H40="$(printf 'b%.0s' $(seq 1 40))"
 hostile "stack parent as a string" stack '{"state":"ready","stack":{"parent":"7","base":"fleet/5-x","start":"'"$H40"'","attention":null}}'
 hostile "stack base main" stack '{"state":"ready","stack":{"parent":7,"base":"main","start":"'"$H40"'","attention":null}}'
 hostile "stack base with shell" stack '{"state":"ready","stack":{"parent":7,"base":"; rm -rf ~","start":"'"$H40"'","attention":null}}'
