@@ -1198,6 +1198,22 @@ api GET /api/board
 assert_body "When neither models.escalation nor a string models.reviewer gives a model, /api/board has escalation: null" '.escalation|tojson' null
 stop_server
 
+echo "Case: escalation_info is null when no model applies (config.sh rejects such a config, so call it directly)"
+ES_UNIT="$(SCRIPTS="$SCRIPTS" python3 -I - <<'PYEOF'
+import importlib.util, json, os
+spec = importlib.util.spec_from_file_location("bw", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cfg = {"models": {"escalation": None, "escalate_after_rounds": 2,
+                  "reviewer": {"provider": "codex", "model": "gpt-6-astra"}}}
+print(json.dumps(m.escalation_info(cfg)))
+print(json.dumps(m.escalation_info({"models": {"escalation": None, "escalate_after_rounds": 2, "reviewer": "opus"}})))
+PYEOF
+)"
+assert_eq_unit() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
+assert_eq_unit "When neither models.escalation nor a string models.reviewer gives a model, escalation_info returns null" "$(printf '%s\n' "$ES_UNIT" | sed -n 1p)" null
+assert_eq_unit "When models.escalation is null and models.reviewer is the string opus, escalation_info returns model opus" "$(printf '%s\n' "$ES_UNIT" | sed -n 2p)" '{"model": "opus", "after_rounds": 2}'
+
 echo "Case: the move endpoint refuses a card an agent is working on, unless it is stuck"
 MV_REPO="$(new_repo "$LOCAL_YML")"
 REPO="$MV_REPO"
