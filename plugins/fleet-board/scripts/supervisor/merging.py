@@ -74,6 +74,8 @@ class MergeLane:
         number, pr, head = candidate.get('number'), candidate.get('pr'), candidate.get('head_sha')
         if not _posint(number) or not _posint(pr) or not isinstance(head, str) or not _SHA.fullmatch(head):
             raise ValueError('invalid merge candidate: card %r, pr %r, head %r' % (number, pr, head))
+        if candidate.get('state') == 'human_qa':   # a card waiting for a person is never moved by the merge lane
+            raise ValueError('card %d is in human_qa: not moved to merging' % number)
         if self._child is not None:
             raise ValueError('merge lane taken')
         self._seq += 1
