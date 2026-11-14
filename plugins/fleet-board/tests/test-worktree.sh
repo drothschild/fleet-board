@@ -496,6 +496,64 @@ run_mark_active 12
 assert_true "mark-active-writable: the marker file exists" test -f "$REPO/.fleet-board/active/12"
 assert_eq "mark-active-writable: stderr is empty" "$LAST_ERR" ""
 
+# ---------------------------------------------------------------------------
+# review prunes the checkouts of stages that are no longer configured
+setup_case true
+stage_yaml() {
+  local n
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n  setup: "echo ran >> .setup-ran"\n  mutate_on_copy: true\nreview:\n  stages:\n' > "$REPO/.fleet-board.yml"
+  for n in "$@"; do
+    printf '    - name: %s\n      agent: stage-reviewer\n      model: sonnet\n      paths: ["%s/**"]\n      label: needs-%s\n' "$n" "$n" "$n" >> "$REPO/.fleet-board.yml"
+  done
+}
+stage_yaml security ux
+run_wt review 12 7
+assert_exit "prune: evidence review: exit" 0
+run_wt review 12 7 security
+assert_exit "prune: review security: exit" 0
+run_wt review 12 7 ux
+assert_exit "prune: review ux: exit" 0
+for d in 12-review 12-review-copy 12-review-security 12-review-security-copy 12-review-ux 12-review-ux-copy; do
+  printf 'keep\n' > "$BASE/$d/sentinel"
+done
+run_wt review 12 7 security
+assert_exit "prune: both stages configured: exit" 0
+assert_true "prune: a configured stage's checkout is never removed (ux)" test -f "$BASE/12-review-ux/sentinel"
+assert_true "prune: a configured stage's copy is never removed (ux)" test -f "$BASE/12-review-ux-copy/sentinel"
+assert_true "prune: ux still listed while configured" wt_listed "$BASE/12-review-ux"
+
+stage_yaml security
+run_wt review 12 7 security
+assert_exit "prune: stage dropped from config: exit" 0
+assert_false "prune: the dropped stage's checkout is removed" test -e "$BASE/12-review-ux"
+assert_false "prune: the dropped stage's copy is removed" test -e "$BASE/12-review-ux-copy"
+assert_false "prune: git worktree list no longer shows 12-review-ux" wt_listed "$BASE/12-review-ux"
+assert_true "prune: security checkout untouched" test -f "$BASE/12-review-security/sentinel"
+assert_true "prune: security copy untouched" test -f "$BASE/12-review-security-copy/sentinel"
+assert_true "prune: evidence checkout untouched" test -f "$BASE/12-review/sentinel"
+assert_true "prune: evidence copy untouched" test -f "$BASE/12-review-copy/sentinel"
+
+# a symlink resolving outside the base is refused and left in place
+mkdir -p "$TMPROOT/outside-ux"
+printf 'keep\n' > "$TMPROOT/outside-ux/sentinel"
+ln -s "$TMPROOT/outside-ux" "$BASE/12-review-ghost"
+run_wt review 12 7 security
+assert_true "prune-symlink: the symlink is left in place" test -L "$BASE/12-review-ghost"
+assert_true "prune-symlink: its target is untouched" test -f "$TMPROOT/outside-ux/sentinel"
+case "$LAST_ERR" in
+  *"12-review-ghost"*) pass "prune-symlink: a warning names it" ;;
+  *) fail "prune-symlink: a warning names it" "stderr: $LAST_ERR" ;;
+esac
+rm -f "$BASE/12-review-ghost"
+
+# remove still removes every review checkout, configured or not
+run_wt review 12 7 ux
+run_wt remove 12
+assert_exit "prune-remove: exit" 0
+assert_false "prune-remove: configured stage checkout gone" test -e "$BASE/12-review-security"
+assert_false "prune-remove: unconfigured stage checkout gone" test -e "$BASE/12-review-ux"
+assert_false "prune-remove: evidence checkout gone" test -e "$BASE/12-review"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
