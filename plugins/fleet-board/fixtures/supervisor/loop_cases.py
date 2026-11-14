@@ -860,12 +860,42 @@ class ScopeIgnore(LoopCase):
         self.assertEqual(self.sup._limits(self.b.config)['scope_ignore'], [])
         self.sup.config = config
         seen = []
-        row = dict(number=12, action='review', provider='claude', declared_paths=['src/a.py'],
+        row = dict(number=12, action='fix', provider='claude', declared_paths=['src/a.py'],
                    actual_paths=['plugins/fleet-board/.claude-plugin/plugin.json'])
         with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append((p, kw)) or 99):
             self.sup._begin(row)
         self.assertEqual(seen, [(['src/a.py'], {'ignore': ['plugins/*/.claude-plugin/plugin.json']})],
                          'the reservation leaves the ignored manifest out and filters the held scopes too')
+
+
+class ReadOnlyScope(LoopCase):
+    def test_a_read_only_action_reserves_no_scope(self):
+        for action, provider in (('review', 'claude'), ('review_stage', 'claude'), ('update_branch', 'scripts')):
+            reserved, begun = [], []
+            row = dict(number=12, action=action, provider=provider, declared_paths=['src/a.py'], actual_paths=[])
+            with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: reserved.append(n)), \
+                    mock.patch.object(self.sup.driver, 'begin', side_effect=lambda r: begun.append(r['number'])):
+                self.sup._begin(row)
+            self.assertEqual(reserved, [], '%s reserves no scope' % action)
+            self.assertEqual(begun, [12], '%s still begins' % action)
+            self.assertNotIn(12, self.sup.state.reservations)
+
+    def test_a_writer_still_reserves_its_scope(self):
+        reserved = []
+        row = dict(number=12, action='fix', provider='claude', declared_paths=['src/a.py'], actual_paths=[])
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: reserved.append(n) or 99):
+            self.sup._begin(row)
+        self.assertEqual(reserved, [12])
+
+    def test_active_claims_name_their_action(self):
+        from supervisor.state import Action
+        self.sup.state.active[77] = Action(card=77, action='review', column='in_review', role='reviewer',
+                                           provider='claude', paths=['src/a.py'], started_at=0.0, started_mono=0.0)
+        try:
+            self.assertEqual(self.sup._active_claims(),
+                             [{'number': 77, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'review'}])
+        finally:
+            self.sup.state.active.pop(77, None)
 
 
 if __name__ == '__main__':

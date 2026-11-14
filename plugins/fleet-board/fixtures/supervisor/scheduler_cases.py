@@ -216,7 +216,10 @@ def run():
     test_an_unscoped_role_does_not_block_another_cards_finish()
     test_script_actions_ignore_rate_limit_and_global_cap()
     test_script_action_still_waits_for_its_own_active_card()
-    test_update_branch_still_scope_checked()
+    test_update_branch_skips_scope_but_takes_capacity()
+    test_read_only_actions_ignore_other_cards_scope()
+    test_a_read_only_claim_does_not_block_a_writer()
+    test_a_read_only_action_still_waits_for_capacity_and_its_own_card()
     test_has_work_tolerates_mixed_dependency_types()
     test_scope_ignore_drops_version_manifests()
     test_scope_ignore_validated_in_limits()
@@ -381,16 +384,55 @@ def test_script_action_still_waits_for_its_own_active_card():
     assert result['admitted'] == [] and result['waits'][0]['reason'] == 'card already has an active claim'
 
 
-def test_update_branch_still_scope_checked():
+def test_update_branch_skips_scope_but_takes_capacity():
     row = dict(candidate(2, 'update_branch', 'scripts'), declared_paths=[])
     active = [{'number': 1, 'provider': 'claude', 'paths': ['src']}]
     result = Scheduler(clock=lambda: 0).admit([row], active=active, limits=LIMITS)
-    assert result['admitted'] == [] and result['waits'][0]['reason'] == 'scope or card conflict'
+    assert [x['number'] for x in result['admitted']] == [2], 'a branch update writes only its own branch'
     capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])],
         active=active, limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
     assert capped['waits'][0]['reason'] == 'global capacity'
     ok = Scheduler(clock=lambda: 0).admit([candidate(3, 'update_branch', 'scripts', paths=['x'])], active=active, limits=LIMITS)
     assert [x['number'] for x in ok['admitted']] == [3] and len(ok['active']) == 2
+
+
+def test_read_only_actions_ignore_other_cards_scope():
+    writer = {'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'fix'}
+    held = [{'card': 1, 'paths': ['src/a.py']}]
+    for action, provider in (('review', 'claude'), ('review_stage', 'claude'), ('update_branch', 'scripts')):
+        result = Scheduler(clock=lambda: 0).admit([candidate(2, action, provider, paths=['src/a.py'])],
+            active=[writer], reservations=held, limits=LIMITS)
+        assert [x['number'] for x in result['admitted']] == [2], (action, result['waits'])
+        assert [x['number'] for x in result['active']] == [1, 2], 'it still occupies a slot'
+        assert result['active'][1]['action'] == action, 'its claim records the action'
+
+
+def test_a_read_only_claim_does_not_block_a_writer():
+    reader = {'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'review'}
+    result = Scheduler(clock=lambda: 0).admit([candidate(2, 'fix', paths=['src/a.py'])], active=[reader], limits=LIMITS)
+    assert [x['number'] for x in result['admitted']] == [2], result['waits']
+    # A review admitted earlier in the same call does not block a later writer either.
+    both = Scheduler(clock=lambda: 0).admit([candidate(3, 'review', paths=['src/a.py']),
+                                             candidate(4, 'fix', paths=['src/a.py'])], limits=LIMITS)
+    assert [x['number'] for x in both['admitted']] == [3, 4], both['waits']
+    # Two writers still exclude each other, and a claim with no action counts as a writer.
+    for claim in (dict(reader, action='start'), {'number': 1, 'provider': 'claude', 'paths': ['src/a.py']}):
+        writers = Scheduler(clock=lambda: 0).admit([candidate(5, 'fix', paths=['src/a.py'])], active=[claim],
+                                                   limits=LIMITS)
+        assert writers['admitted'] == [] and writers['waits'][0]['reason'] == 'scope or card conflict', claim
+    # A writer still waits on another card's reservation.
+    reserved = Scheduler(clock=lambda: 0).admit([candidate(6, 'fix', paths=['src/a.py'])],
+        reservations=[{'card': 1, 'paths': ['src/a.py']}], limits=LIMITS)
+    assert reserved['admitted'] == [] and reserved['waits'][0]['reason'] == 'scope reserved by #1'
+
+
+def test_a_read_only_action_still_waits_for_capacity_and_its_own_card():
+    writer = {'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'fix'}
+    capped = Scheduler(clock=lambda: 0).admit([candidate(2, 'review', paths=['src/a.py'])], active=[writer],
+        limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1})
+    assert capped['admitted'] == [] and capped['waits'][0]['reason'] == 'global capacity'
+    own = Scheduler(clock=lambda: 0).admit([candidate(1, 'review', paths=['src/a.py'])], active=[writer], limits=LIMITS)
+    assert own['admitted'] == [] and own['waits'][0]['reason'] == 'card already has an active claim'
 
 
 def test_has_work_tolerates_mixed_dependency_types():
