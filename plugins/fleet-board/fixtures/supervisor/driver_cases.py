@@ -943,6 +943,35 @@ def test_fix_done_increments_round(base):
     assert note['last_verified'].startswith('VERIFIED:')
 
 
+STAGE_CLEAN = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'stage': 'security', 'agent': None,
+               'model': None, 'provider': 'codex', 'findings': []}
+
+
+def test_a_fix_in_in_review_takes_the_evidence_findings_when_a_stage_reported_last(base):
+    # The evidence reviewer found something, then a stage reported clean at the same head: last_review is the
+    # stage's clean record, and the fixer still gets the evidence findings the planner planned the fix on
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.put_note({'last_review': STAGE_CLEAN, 'reviews': {'evidence': LAST_REVIEW, 'security': STAGE_CLEAN}})
+    b.plans({'report': 'fixer-ok'})
+    started = begin(b, 'fix', state='in_review', round=1)
+    assert started.kind == 'session' and started.action.role == 'fixer', started
+    assert '- [Important] no test' in b.prompt()
+
+
+def test_review_for_judges_each_reviewer_on_its_own_record(base):
+    baseline = {'round': 0, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'stage': None}
+    note = {'last_review': baseline, 'reviews': {'evidence': LAST_REVIEW, 'security': STAGE_CLEAN}}
+    assert driver.review_for(note, None, 'in_review') == baseline, 'an accept.sh baseline in last_review is kept'
+    note = {'last_review': STAGE_CLEAN, 'reviews': {'evidence': LAST_REVIEW, 'security': STAGE_CLEAN}}
+    assert driver.review_for(note, None, 'in_review') == LAST_REVIEW
+    assert driver.review_for(note, 'security', 'in_review') == STAGE_CLEAN
+    assert driver.review_for(note, 'ux', 'in_review') == {}
+    assert driver.review_for({'last_review': STAGE_CLEAN}, None, 'in_review') == {}, 'a stage record is no evidence'
+    assert driver.review_for(note, 'security', 'review_security') == STAGE_CLEAN
+    assert driver.review_for(note, None, 'merging') == STAGE_CLEAN, 'outside in_review it is last_review'
+
+
 def test_fix_blocked_with_blocked_by_moves_to_blocked(base):
     b = board_for(base, 'in_review')
     seed_fix(b)

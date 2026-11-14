@@ -1894,6 +1894,11 @@ assert_jq "stage after evidence: only the unreported stage is planned" "[.cards[
 splan parallel-all-reported
 assert_jq "all reported: no reviewer is planned again" "[.cards[] | select(.number == 12 and (.action == \"review\" or .action == \"review_stage\" or .action == \"advance_stage\"))] | length" '0'
 assert_jq "all reported: the card still has a row" "[.cards[] | select(.number == 12)] | length" '1'
+# An accept.sh baseline in last_review (round 0, stage null) is kept over an older reviews.evidence
+# with findings: the card is reviewed at the accepted head, never fixed or blocked on the old findings
+splan parallel-accepted-baseline
+assert_jq "accepted baseline: the evidence reviewer is planned" "[.cards[] | select(.number == 12 and .action == \"review\")] | length" '1'
+assert_jq "accepted baseline: no fix or block on the older findings" "[.cards[] | select(.number == 12 and (.action == \"fix\" or .action == \"block\"))] | length" '0'
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
