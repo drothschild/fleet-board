@@ -818,7 +818,9 @@ class Lane(MergeCase):
 
 CHAIN_YML = ('board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\nreview:\n  stages:\n'
              '    - name: security\n      agent: sec-reviewer\n      model: opus\n'
-             '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n')
+             '    - name: perf\n      agent: perf-reviewer\n      model: sonnet\n'
+             '    - name: documentation\n      enabled: false\n'
+             '    - name: blast_radius\n      enabled: false\n')
 CHAIN_GH = r'''#!/bin/bash
 d="$CHAIN_GH_DIR"
 printf '%s\n' "$*" >> "$d/calls"
