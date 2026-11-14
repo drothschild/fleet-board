@@ -736,6 +736,101 @@ run_merge --card 12 --no-finish
 assert_exit "no-finish: a failed verification still exits 3" 3
 assert_eq "no-finish: a failed verification leaves the card in merging" "$(card_state)" merging
 
+echo "supervisor.version_bump: merge - the lane raises the versions before merging"
+VPLUG='plugins/fb/.claude-plugin/plugin.json'
+# setup_bump <extra supervisor YAML> [<file the PR changes>]: a repo with a bare origin, main at
+# version 0.28.3 and card 12's branch (one commit that leaves the version files alone), reviewed
+setup_bump() {
+  local file="${2:-src/calc.js}"
+  setup_case auto "$(printf 'supervisor:\n  version_files: ["plugins/*/.claude-plugin/plugin.json"]\n  version_bump: merge\n%s' "${1:-}")"
+  BARE="$FAKE_GH_DIR/origin.git"
+  git init -q --bare "$BARE"
+  git -C "$REPO" branch -M main
+  git -C "$REPO" remote add origin "$BARE"
+  mkdir -p "$REPO/plugins/fb/.claude-plugin"
+  printf '{\n  "name": "fb",\n  "version": "0.28.3"\n}\n' > "$REPO/$VPLUG"
+  git -C "$REPO" add -A; git -C "$REPO" commit -q -m base
+  git -C "$REPO" push -q origin main
+  git -C "$REPO" checkout -q -b fleet/12-add-subtract
+  mkdir -p "$REPO/$(dirname "$file")"; printf 'x\n' > "$REPO/$file"
+  git -C "$REPO" add -A; git -C "$REPO" commit -q -m "add subtract"
+  git -C "$REPO" push -q origin fleet/12-add-subtract
+  git -C "$REPO" checkout -q main
+  HEAD0="$(git -C "$REPO" rev-parse fleet/12-add-subtract)"
+  card 12 in_review "$(jq -c --arg h "$HEAD0" '.last_review.sha=$h' <<<"$CLEAN")"
+  pr 34 false "$GREEN" "$file"
+  jq -c --arg h "$HEAD0" '.headRefOid=$h' "$FX/pr-34.json" > "$FX/pr-34.new" && mv "$FX/pr-34.new" "$FX/pr-34.json"
+}
+remote_head() { git -C "$BARE" rev-parse fleet/12-add-subtract; }
+remote_version() { git -C "$BARE" show "fleet/12-add-subtract:$VPLUG" | jq -r .version; }
+label_card() { jq -c --arg l "$1" '.labels += [{name:$l}]' "$FX/issue-12.json" > "$FX/issue-12.new" && mv "$FX/issue-12.new" "$FX/issue-12.json"; }
+
+setup_bump ""
+finalize
+run_merge
+assert_exit "bump: exit 0" 0
+NEWH="$(remote_head)"
+assert_eq "bump: the branch got a new head" "$([ "$NEWH" != "$HEAD0" ] && echo yes || echo no)" yes
+assert_eq "bump: the last commit changes only the version file" "$(git -C "$BARE" log -1 --name-only --format= "$NEWH")" "$VPLUG"
+assert_eq "bump: the version is one patch above the base" "$(remote_version)" 0.28.4
+assert_eq "bump: gh pr merge pins the new head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit $NEWH")" 1
+assert_eq "bump: the old head is never pinned" "$(cnt "--match-head-commit $HEAD0")" 0
+
+setup_bump ""
+label_card fleet:bump:minor
+finalize
+run_merge
+assert_exit "bump minor: exit 0" 0
+assert_eq "bump minor: the minor version is raised" "$(remote_version)" 0.29.0
+
+setup_bump ""
+label_card fleet:bump:major
+finalize
+run_merge
+assert_exit "bump major: exit 0" 0
+assert_eq "bump major: the major version is raised" "$(remote_version)" 1.0.0
+
+setup_bump ""
+label_card fleet:bump:minor
+label_card fleet:bump:major
+finalize
+run_merge
+assert_eq "bump both labels: exit non-zero" "$([ "$LAST_EXIT" != 0 ] && echo yes || echo no)" yes
+assert_eq "bump both labels: nothing merged" "$(cnt "pr merge")" 0
+assert_eq "bump both labels: the branch is untouched" "$(remote_head)" "$HEAD0"
+
+setup_bump '  version_bump_paths: ["docs/**"]'
+finalize
+run_merge
+assert_exit "bump paths: exit 0" 0
+assert_eq "bump paths: no version commit" "$(remote_head)" "$HEAD0"
+assert_eq "bump paths: merged at the reviewed head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit $HEAD0")" 1
+
+setup_bump '  version_bump_paths: ["src/**"]'
+finalize
+run_merge
+assert_exit "bump paths match: exit 0" 0
+assert_eq "bump paths match: the version is raised" "$(remote_version)" 0.28.4
+
+echo "version_bump: merge - a refused merge, then the base moves"
+setup_bump ""
+printf 'pr merge *\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
+finalize
+run_merge
+assert_exit "refused after bump: exit 1" 1
+assert_eq "refused after bump: the bump was pushed" "$(remote_version)" 0.28.4
+BUMPED="$(remote_head)"
+printf '{\n  "name": "fb",\n  "version": "0.28.9"\n}\n' > "$REPO/$VPLUG"
+git -C "$REPO" commit -q -am "base moved"; git -C "$REPO" push -q origin main
+grep -v '^pr merge' "$R" > "$R.new" && mv "$R.new" "$R"; route 'pr merge *' 0 -
+jq -c --arg h "$BUMPED" '.headRefOid=$h' "$FX/pr-34.json" > "$FX/pr-34.new" && mv "$FX/pr-34.new" "$FX/pr-34.json"
+card 12 in_review "$(jq -c --arg h "$HEAD0" '.last_review.sha=$h' <<<"$CLEAN")"
+finalize
+run_merge
+assert_exit "second attempt: exit 0" 0
+assert_eq "second attempt: one bump above the new base" "$(remote_version)" 0.28.10
+assert_eq "second attempt: merged at the pushed head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit $(remote_head)")" 1
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"

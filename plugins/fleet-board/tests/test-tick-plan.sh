@@ -1274,6 +1274,9 @@ plan_version() {
   fi
   head="${PV_HEAD:-$(git -C "$REPO" rev-parse fleet/12-card)}"
   scope_issue "$dir" 12 in_review NONE
+  if [ -n "${PV_LABEL:-}" ]; then
+    jq -c --arg l "$PV_LABEL" '.labels += [{name:$l}]' "$dir/issue-12.json" > "$dir/issue-12.new" && mv "$dir/issue-12.new" "$dir/issue-12.json"
+  fi
   scope_review_note "$dir" 12
   scope_routes "$dir" "" "12"
   jq -c --arg h "$head" '.headRefOid = $h' "$TICK/common/pr-34-open-green.json" > "$dir/pr-34.json"
@@ -1297,6 +1300,19 @@ assert_jq "version-above: a head version above the base is not held" "$(card 12 
 plan_version 0.28.4 ""
 assert_jq "version-stale without version_files: not checked" "$(card 12 action) | . != \"update_branch\"" 'true'
 assert_eq "version-stale without version_files: no fetch" "$(fetch_count fetch)" 0
+
+# supervisor.version_bump: merge - the merge lane raises the version, so a card bound for
+# the lane never plans update_branch for "version not above base"; a card bound for Human QA does
+VERSION_MERGE_YAML="$(printf 'supervisor:\n  version_files: ["plugins/*/.claude-plugin/plugin.json"]\n  version_bump: merge')"
+plan_version 0.28.4 "$VERSION_MERGE_YAML"
+assert_exit "version-bump merge: exit" 0
+assert_jq "version-bump merge: a stale version on a lane card plans review or merge" "$(card 12 action) | . == \"review\" or . == \"merge\"" 'true'
+plan_version 0.29.0 "$VERSION_MERGE_YAML"
+assert_jq "version-bump merge: a base above the head never plans update_branch" "$(card 12 action) | . != \"update_branch\"" 'true'
+PV_LABEL=needs-human-qa plan_version 0.28.4 "$VERSION_MERGE_YAML"
+assert_jq "version-bump merge: a needs-human-qa card with a stale version plans update_branch" "$(card 12 action)" '"update_branch"'
+plan_version 0.28.4 "$VERSION_YAML"
+assert_jq "version-bump pr: a stale version still plans update_branch" "$(card 12 action)" '"update_branch"'
 
 # The base is the PR's baseRefName, not origin's default branch
 PV_BASE_BRANCH=release; export PV_BASE_BRANCH
