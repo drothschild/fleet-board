@@ -58,7 +58,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   note; `merge` refuses to overwrite a stored invalid one. Review-stage fields: `stage`
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
-  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`).
+  against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`). `reviews` (null or an object) keeps
+  each reviewer's latest report beside `last_review`, keyed `evidence` (the In Review evidence reviewer) or
+  the stage name, so parallel reviewers at one head never overwrite each other: the planner judges the
+  evidence reviewer on `reviews.evidence` and a stage on `reviews[<stage>]`. A conflict resolution resets it;
+  a refused merge leaves only its synthetic `evidence` record.
   Stacking fields (config `stacking.enabled`, default false, boolean): `stack` (null, else
   `parent` positive integer, `base` a `fleet/<n>-<slug>` branch, `start` 40-hex, `attention` null
   or at most 300 characters without a control character) and `landed` (null, else `parent`

@@ -1110,6 +1110,11 @@ class CardDriver:
         final = dict(_RESET)
         if role in ('reviewer', 'stage-reviewer'):
             patch['last_review'] = self._review_record(run, parsed, script)
+            # Each reviewer keeps its own latest report ("evidence" or the stage name): parallel reviewers at one
+            # head never replace each other, so the planner does not replan one that already reported
+            reviews = dict(note.get('reviews')) if isinstance(note.get('reviews'), dict) else {}
+            reviews[run.stage or 'evidence'] = patch['last_review']
+            patch['reviews'] = reviews
             if not run.stage and isinstance(c.row.get('models'), dict):
                 final['models'] = c.row['models']
         if role == 'implementor' and _posint(parsed.get('pr')):
@@ -1178,7 +1183,7 @@ class CardDriver:
         c.move('in_review')
         if run.prior == 'merging':
             final.update(_LEFT_MERGING)
-        final.update(state='in_review', conflicted_files=None, last_review=None, round=1, stage=None,
+        final.update(state='in_review', conflicted_files=None, last_review=None, reviews=None, round=1, stage=None,
                      reviewed_stages=[], blocking_pr=None, blocked_from=None, blocked_findings=[])
 
     def _block_stage(self, run, line):
@@ -1671,7 +1676,9 @@ class CardDriver:
                       sha=run.head, critical=0, important=1, stage=None, agent=None, provider=None,
                       findings=[{'severity': 'Important', 'text': 'merge refused: ' + run.refusal['reason']}])
         c.move('in_review')
-        c.merge(dict(left, state='in_review', last_review=review, stage=None, reviewed_stages=[]))
+        # The refusal is the evidence record now: no stale per-reviewer report outranks it in the planner
+        c.merge(dict(left, state='in_review', last_review=review, reviews={'evidence': review}, stage=None,
+                     reviewed_stages=[]))
 
     def _do_unblock(self, c):
         c.move('ready')

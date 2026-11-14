@@ -495,13 +495,23 @@ card_input() {
         failed="review-stages.sh match $pr"
       elif ! parallel="$(jq -cn --argjson cfg "$FLEET_CFG" --argjson m "$matched" --argjson l "$labels" --argjson note "$note" --argjson info "$info" \
              '($note.last_review // null) as $lr
+              | (if ($note.reviews | type) == "object" then $note.reviews else {} end) as $rv
               | [$cfg.review.stages[] | select(.name as $s | .label as $x | ($m | index($s)) != null or ($l | index($x)) != null)
-                 | select(.name as $s | ($lr != null and ($lr.stage // null) == $s and ($lr.sha // "") == $info.headRefOid
-                                          and (($lr.round // 0) >= ($note.round // 0))) | not)
+                 # A stage has reported at this head when its own record (note.reviews), or else last_review, covers it
+                 | select(.name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
+                          | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= ($note.round // 0))) | not)
                  | .name]' 2>/dev/null)"; then
         parallel='[]'; failed="review-stages.sh match $pr (unexpected answer)"
       else
         have_matched=true
+      fi
+      # The evidence reviewer is judged on its own report: a stage report written later to last_review
+      # must not make it look unreviewed (which replanned it, and then the stage, forever). Without a
+      # note.reviews record, a stage record in last_review is no evidence review at all.
+      if [ -z "$failed" ]; then
+        note="$(jq -c 'if (.reviews | type) == "object" and (.reviews.evidence | type) == "object" then .last_review = .reviews.evidence
+                       elif (.last_review | type) == "object" and (.last_review.stage // null) != null then .last_review = null
+                       else . end' <<<"$note")" || failed="note.sh parse $n (unparsable)"
       fi
     fi
     # The next stage and the human-QA question matter only for a clean review
