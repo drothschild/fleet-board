@@ -1625,7 +1625,7 @@ assert_jq "no_warning_when_stage_not_acted_on: settle skip" '.warnings' '[]'
 # advance_stage, so entering a provider stage with its key unset warns once
 splan stage-advance-to-provider
 assert_exit "advance_into_provider_stage_warns: exit" 0
-assert_jq "advance_into_provider_stage_warns: action" "$(card 12 action)" '"advance_stage"'
+assert_jq "advance_into_provider_stage_warns: in_review holds the parallel stage review (key unset), never advance_stage" "$(card 12 action)" '"wait"'
 assert_jq "advance_into_provider_stage_warns: stage" "$(card 12 stage.name)" '"compliance"'
 assert_jq "advance_into_provider_stage_warns: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
 setup_case stage-advance-to-provider "$STAGES_YAML"
