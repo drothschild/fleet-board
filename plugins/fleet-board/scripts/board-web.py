@@ -1015,6 +1015,33 @@ def card_worktree(note):
     return wt if isinstance(wt, str) and wt and os.path.isdir(wt) else None
 
 
+def card_reviewers(cfg: dict, card: dict, note) -> list:
+    """The reviewers of an in_review card: the evidence reviewer, then each configured stage, as
+    {name, status, passes, required_passes}. A reviewer is pending until its report is current (this
+    round or later), then clean or findings; an advisory stage counts as clean. Other states: []."""
+    if card.get("state") != "in_review":
+        return []
+    note = note if isinstance(note, dict) else {}
+    reviews = note.get("reviews") if isinstance(note.get("reviews"), dict) else {}
+    rnd = note.get("round") if is_int(note.get("round")) else 0
+    stages = (cfg.get("review") or {}).get("stages")
+    entries = [("evidence", False, 1)]
+    for st in stages if isinstance(stages, list) else []:
+        if isinstance(st, dict) and isinstance(st.get("name"), str) and st.get("enabled") is not False:
+            req = st.get("required_passes")
+            entries.append((st["name"], st.get("advisory") is True, req if is_int(req) and req >= 1 else 1))
+    out = []
+    for name, advisory, req in entries:
+        r = reviews.get(name)
+        status = "pending"
+        if isinstance(r, dict) and (r.get("round") if is_int(r.get("round")) else 0) >= rnd:
+            found = sum(r.get(k) for k in ("critical", "important") if is_int(r.get(k)))
+            status = "clean" if advisory or found == 0 else "findings"
+        out.append({"name": name, "status": status, "passes": 1 if status == "clean" else 0,
+                    "required_passes": req})
+    return out
+
+
 def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, known_states=None, status=None) -> dict:
     """state_of: number -> state for every card read in this request, so
     `blocked` (any blocker missing or not done) costs no extra read."""
@@ -1035,6 +1062,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, k
         "blocked_by": blk,
         "blocked": any(state_of.get(b) != "done" for b in blk),
         "hold": hold_from_status(status, card.get("number")),
+        "reviewers": card_reviewers(cfg, card, note),
     }
 
 
