@@ -849,7 +849,8 @@ class CardDriver:
     def _open_cards(self, c):
         """One `#<n> <title>` line per card that is not done or wont_do, the card itself left out; `none` when
         there are none or the board cannot be listed."""
-        result = c.soft('board-list.sh', '--all', timeout=60)
+        # a read-only listing for the prompt, not a step of the card's action: it goes straight to the script
+        result = scripts.run(c.d.root, 'board-list.sh', '--all', timeout=60, env=c.d.env)
         if result.timed_out or result.rc != 0:
             return 'none'
         # one array per state, in board order; done and wont_do are always the last two, whatever the stages
