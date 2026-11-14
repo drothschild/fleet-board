@@ -12,6 +12,8 @@ DIR="$DIR" node - <<'JS'
 "use strict";
 const assert = require("node:assert/strict");
 const path = require("node:path");
+const fs = require("node:fs");
+const HTML = path.join(process.env.DIR, "../scripts/board-web/static/index.html");
 const loadBoard = require(path.join(process.env.DIR, "board-interaction-harness.js"));
 const JS = path.join(process.env.DIR, "../scripts/board-web/static/board.js");
 
@@ -78,7 +80,7 @@ const allText = n => (n.textContent || "") + (n.children || []).map(allText).joi
     await h.ctx.openDrawer(4);
     await h.flush();
     assert.equal(h.$("dr-blocks-field").hidden, false);
-    assert.equal(h.$("dr-blocks-h").textContent, "Blocks");
+    assert.match(fs.readFileSync(HTML, "utf8"), /<h3 id="dr-blocks-h"[^>]*>Blocks<\/h3>/);
     assert.equal(chips(h).length, 0);
     assert.equal(h.$("dr-blocks-none").textContent, "Nothing");
     assert.equal(h.$("dr-blocks-none").hidden, false);
