@@ -11,7 +11,8 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
 FLEET_BOARD_CLAUDE (the claude binary the
-import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
+import session runs, default `claude`), FLEET_BOARD_CODEX (the codex binary a codex Planner
+chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (when set, the import
 session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one), FLEET_BOARD_CREATE (tests only: the script
 that creates the previewed cards, in place of import-plan.sh).
@@ -761,6 +762,54 @@ def record_planner_usage(action: str, stream_path: Path, ended_at: str = None, s
         return False
 
 
+def codex_events(path: Path) -> list:
+    events = []
+    for line in read_text(path).splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    return events
+
+
+def codex_error_message(events: list) -> str:
+    """The failure text from the JSON turn.failed / error events (stderr is full of unrelated noise)."""
+    found = ""
+    for ev in events:
+        if ev.get("type") == "turn.failed":
+            err = ev.get("error")
+            msg = err.get("message") if isinstance(err, dict) else err
+            if isinstance(msg, str) and msg:
+                found = msg
+        elif ev.get("type") == "error" and not found and isinstance(ev.get("message"), str):
+            found = ev["message"]
+    return found
+
+
+def finish_codex_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, reply_path: Path):
+    rc = proc.wait()
+    events = codex_events(out_path)
+    reply = read_text(reply_path).strip()
+    failed = any(ev.get("type") == "turn.failed" for ev in events)
+    if failed or (rc != 0 and not reply):
+        reply = "[error] " + (codex_error_message(events) or "codex exited %s" % rc)
+    with _PLANNER_LOCK:
+        turns = read_turns(pdir)
+        turns.append({"role": "assistant", "text": reply})
+        write_private_atomic(pdir / "transcript.json", json.dumps(turns))
+        tid = ""
+        for ev in events:
+            if ev.get("type") == "thread.started" and isinstance(ev.get("thread_id"), str) and ev["thread_id"]:
+                tid = ev["thread_id"]
+        if tid:
+            meta = read_json_file(pdir / "meta.json") or {}
+            meta["thread_id"] = tid
+            write_private_atomic(pdir / "meta.json", json.dumps(meta))
+        _PLANNER_BUSY.discard(id)
+
+
 def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, started_at: str = None):
     rc = proc.wait()
     reply = last_session_text(out_path)
@@ -790,23 +839,39 @@ def send_planner_message(id: str, text: str):
         persona, _warn = resolve_persona(APP["root"], cfg)
         prompt = "Board context (JSON):\n%s\n\nUser:\n%s" % (json.dumps(board_context()), text)
         meta = read_json_file(pdir / "meta.json") or {}
-        argv = [
-            os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
-            "--output-format", "stream-json", "--verbose",
-            "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
-            "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
-            "--append-system-prompt", persona,
-        ]
-        model = (cfg.get("planner") or {}).get("model")
-        if model:
-            argv += ["--model", str(model)]
-        if meta.get("session_id"):
-            argv += ["--resume", meta["session_id"]]
-        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
-        if plugin_dir:
-            argv += ["--plugin-dir", plugin_dir]
-        argv.append(prompt)
         n = len(read_turns(pdir))
+        reply_path = pdir / ("reply-%d.txt" % n)
+        codex = (cfg.get("planner") or {}).get("provider") == "codex"
+        if codex:
+            model = (cfg.get("planner") or {}).get("model")
+            codex_bin = os.environ.get("FLEET_BOARD_CODEX") or "codex"
+            if meta.get("thread_id"):
+                argv = [codex_bin, "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"']
+                if model:
+                    argv += ["-m", str(model)]
+                argv += ["-o", str(reply_path), meta["thread_id"], prompt]
+            else:
+                argv = [codex_bin, "exec", "--json", "-s", "read-only"]
+                if model:
+                    argv += ["-m", str(model)]
+                argv += ["-c", "developer_instructions=" + persona, "-o", str(reply_path), prompt]
+        else:
+            argv = [
+                os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
+                "--output-format", "stream-json", "--verbose",
+                "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
+                "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
+                "--append-system-prompt", persona,
+            ]
+            model = (cfg.get("planner") or {}).get("model")
+            if model:
+                argv += ["--model", str(model)]
+            if meta.get("session_id"):
+                argv += ["--resume", meta["session_id"]]
+            plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
+            if plugin_dir:
+                argv += ["--plugin-dir", plugin_dir]
+            argv.append(prompt)
         out_path, err_path = pdir / ("reply-%d.jsonl" % n), pdir / ("reply-%d.err" % n)
         started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
@@ -821,8 +886,12 @@ def send_planner_message(id: str, text: str):
         turns.append({"role": "user", "text": text})
         write_private_atomic(pdir / "transcript.json", json.dumps(turns))
         _PLANNER_BUSY.add(id)
-        threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path, started_at),
-                         daemon=True).start()
+        if codex:
+            threading.Thread(target=finish_codex_turn, args=(id, pdir, proc, out_path, err_path, reply_path),
+                             daemon=True).start()
+        else:
+            threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path, started_at),
+                             daemon=True).start()
 
 
 def planner_status(id: str) -> dict:
