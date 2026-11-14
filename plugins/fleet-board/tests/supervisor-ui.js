@@ -535,7 +535,7 @@ async function main() {
     assert.equal(countCalls(f,"/api/usage"),2);
   });
   // The "ignored by the running supervisor" banner case is gone with its branch: while a supervisor runs the
-  // board carries no stuck findings (board-web.py stuck_view), so that banner could never show.
+  // board reports no stuck cards (board-web.py stuck_view), so that banner could never show.
   await check("with no supervisor, Start waits for the stuck check and for a suppression to end",async()=>{
     const fine={number:6,title:"Fine",body:"",labels:[],comments:[],state:"ready",known:true,stuck:null,activity:null};
     const startOf=async run=>{ const f=fakeFetch({notRunning:true,cards:[fine],run:{state:"idle",stuck_error:null,stuck_suppressed:null,...run}}), h=make(f);
