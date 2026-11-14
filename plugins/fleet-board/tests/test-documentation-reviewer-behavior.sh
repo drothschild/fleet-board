@@ -13,7 +13,7 @@
 # Env: FB_BEHAVIORAL=1 to run; FB_ISOLATE_SETTINGS (auth settings, default
 # ~/.config/fleet-board/bare-settings.json); BL_MODEL (default sonnet);
 # BL_MAX_TURNS (default 40); BL_NO_BARE=1 runs with the caller's own login
-# instead of the isolated --bare session; BL_KEEP=1 keeps the work dir.
+# instead of the isolated session (fresh CLAUDE_CONFIG_DIR, no --bare: it does not load plugin agents); BL_KEEP=1 keeps the work dir.
 #
 # Usage: FB_BEHAVIORAL=1 bash plugins/fleet-board/tests/test-documentation-reviewer-behavior.sh
 
@@ -110,7 +110,7 @@ Scripts directory: $STUBS
 EOF
   (
     cd "$repo" || exit 1
-    if [ "${BL_NO_BARE:-}" = 1 ]; then ISO=(); else ISO=(--bare --settings "$SETTINGS"); export CLAUDE_CONFIG_DIR="$(mktemp -d)"; fi
+    if [ "${BL_NO_BARE:-}" = 1 ]; then ISO=(); else ISO=(--settings "$SETTINGS"); export CLAUDE_CONFIG_DIR="$(mktemp -d)"; fi
     POSTED_REPORT="$REPORT" claude -p ${ISO[@]+"${ISO[@]}"} \
       --model "$MODEL" \
       --tools "Read,Write,Bash,Grep,Glob" --permission-mode bypassPermissions \
