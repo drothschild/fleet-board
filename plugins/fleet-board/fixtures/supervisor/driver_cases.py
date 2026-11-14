@@ -476,15 +476,26 @@ def test_finish_after_the_merger_ran_does_not_rerun_after_merge(base):
 
 
 def test_unblock_resets_the_blocking_fields(base):
-    b = board_for(base, 'blocked')
+    # move.sh refuses Ready for a card with no Scope paths, so the card carries one
+    b = board_for(base, 'blocked', body='## Scope\n- src/a.sh\n')
     b.put_note({'blocking_pr': 9, 'blocked_from': 'in_review',
                 'blocked_findings': [{'severity': 'Important', 'text': 'x'}],
                 'action_failures': 1, 'last_action_error': 'e'})
     assert begin(b, 'unblock', state='blocked').kind == 'done'
-    assert b.card()['state'] == 'ready'
+    assert b.card()['state'] == 'ready', b.card()
     note = b.note()
     assert note['blocking_pr'] is None and note['blocked_from'] is None and note['blocked_findings'] is None, note
     assert note['action_failures'] == 0 and note['last_action_error'] is None and note['state'] == 'ready'
+
+
+def test_unblock_of_a_card_without_scope_is_a_failed_action(base):
+    b = board_for(base, 'blocked')
+    b.put_note({'blocking_pr': 9, 'blocked_from': 'in_review', 'action_failures': 1, 'last_action_error': 'e'})
+    begin(b, 'unblock', state='blocked')
+    assert b.card()['state'] == 'blocked', b.card()
+    note = b.note()
+    assert note['action_failures'] == 2 and 'no Scope paths' in (note['last_action_error'] or ''), note
+    assert note['blocked_from'] == 'in_review' and note['blocking_pr'] == 9, note
 
 
 PENDING = {'out_of_scope': [{'title': 'Docs', 'detail': 'd'}, {'title': 'Cache', 'detail': 'c'}],
