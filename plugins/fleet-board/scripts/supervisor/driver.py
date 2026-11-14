@@ -852,14 +852,12 @@ class CardDriver:
         result = c.soft('board-list.sh', '--all', timeout=60)
         if result.timed_out or result.rc != 0:
             return 'none'
-        states = c.states()
+        # one array per state, in board order; done and wont_do are always the last two, whatever the stages
         lines = [line for line in result.stdout.splitlines() if line.strip()]
-        if len(lines) != len(states):
+        if len(lines) < 2:
             return 'none'
         out = []
-        for state, line in zip(states, lines):
-            if state in ('done', 'wont_do'):
-                continue
+        for line in lines[:-2]:
             try:
                 items = json.loads(line)
             except ValueError:
