@@ -15,11 +15,11 @@ starts with "-"). A failed step ends the action; earlier steps stand. A failure 
 uncounted action merges `action_failures + 1` and the first stderr line into the card's manager note.
 """
 import calendar
-import getpass
 import hashlib
 import json
 import os
 import posixpath
+import pwd
 import re
 import shutil
 import tempfile
@@ -32,8 +32,14 @@ from .state import Action, ledger_column
 
 
 def local_login():
-    """The login accept.sh records (board-lib.sh fb_login): FLEET_BOARD_USER, else USER, else the OS user."""
-    return os.environ.get('FLEET_BOARD_USER') or os.environ.get('USER') or getpass.getuser()
+    """The login accept.sh records (board-lib.sh fb_login): FLEET_BOARD_USER, else USER, else `id -un`."""
+    found = os.environ.get('FLEET_BOARD_USER') or os.environ.get('USER')
+    if found:
+        return found
+    try:
+        return pwd.getpwuid(os.geteuid()).pw_name
+    except (KeyError, OSError):
+        return None
 
 
 def accepted_sha(note):
@@ -42,7 +48,7 @@ def accepted_sha(note):
     In round 1 the reviewer compares against it instead of the merge-base, so the commits and test
     edits up to it are not raised again."""
     entry = note.get('accepted') if isinstance(note, dict) else None
-    if not isinstance(entry, dict) or entry.get('login') != local_login():
+    if not isinstance(entry, dict) or not entry.get('login') or entry.get('login') != local_login():
         return None
     sha = entry.get('sha')
     return sha if isinstance(sha, str) and _SHA.fullmatch(sha) else None
@@ -645,7 +651,7 @@ class CardDriver:
         branch, worktree = c.branch(), c.worktree()
         c.attempts_before = 0
         patch = {'state': 'in_progress', 'branch': branch, 'worktree': worktree, 'round': 0,
-                 'implementor_attempts': 1, 'cancelled': None}
+                 'implementor_attempts': 1, 'cancelled': None, 'accepted': None}  # an accept is for the old PR
         patch.update(c.models_patch())
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         c.move('in_progress')
@@ -780,6 +786,11 @@ class CardDriver:
                 and isinstance(data.get('sha'), str) and _SHA.fullmatch(data['sha'])):
             raise _Fail('worktree.sh review printed an unexpected result')
         run.sha = data['sha']
+        if accepted and not (run.round >= 2 or stage):
+            # An accepted head counts only while it is still in the PR's history (a new PR or a
+            # rewritten branch leaves it behind); otherwise round 1 compares against the merge-base.
+            if self.git(data['path'], 'merge-base', '--is-ancestor', accepted, 'HEAD').rc != 0:
+                accepted = None
         prev_sha = previous if (run.round >= 2 or stage) else (accepted or data.get('base'))
         if not (isinstance(prev_sha, str) and _SHA.fullmatch(prev_sha)):
             raise _Fail('no previous review sha for round %d' % run.round)

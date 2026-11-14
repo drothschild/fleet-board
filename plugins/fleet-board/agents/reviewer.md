@@ -50,7 +50,7 @@ Run every command inside the review worktree at the PR head unless a step says o
    - **`NOT_APPLICABLE`** is for an item that is conditional in its own words (`If the fix needs a schema change, it comes with a migration`) when the diff shows the condition is false. The condition must be about the change itself. An item that describes behavior under a condition (`When input is empty, return 400`) is never `NOT_APPLICABLE`: it is mapped to a test or is `UNMAPPED`. The reason says what in the diff shows the condition is false. It produces no finding. An item whose named code or feature does not exist is not this case: it is `UNMAPPED`, and a person decides.
 
 3. **Run only the test files the PR touched.**
-   - The touched test files are the files in the PR diff that match `test_paths` and still exist at HEAD. In round 1 you may list them with `git diff --name-only <reference SHA>..HEAD -- <test_paths>`. In any round you may take them from the PR diff.
+   - The touched test files are the files in the PR diff that match `test_paths` and still exist at HEAD. In round 1 you may list them with `git diff --name-only <merge-base>..HEAD -- <test_paths>` (the merge-base, never an accepted head, so files changed before an accept are included). In any round you may take them from the PR diff.
    - Run each touched test file once through its test command, one file per invocation, e.g. `node --test test/calc.test.js`. Run no other test command in this step.
    - A touched test file that fails at the unmutated PR head is a defect in the diff. It produces an `[Important]` finding that names the file and quotes the failure.
 

@@ -88,8 +88,13 @@ REVIEW_DIR="$(jq -er .path <<<"$TREE")" || die "cannot read the review worktree 
 SHA="$(jq -er .sha <<<"$TREE")" || die "cannot read the PR head"
 BASE="$(jq -er .base <<<"$TREE")" || die "cannot read the merge-base"
 REF_SHA="$BASE"
-# From round 2 the previous review; in round 1 a --prev-sha is the head a person accepted (accept.sh).
-if [ -n "$PREV_SHA" ]; then REF_SHA="$PREV_SHA"; fi
+# From round 2 the previous review. In round 1 a --prev-sha is the head a person accepted (accept.sh);
+# it counts only while it is an ancestor of the PR head, otherwise the merge-base stays the reference.
+if [ "$ROUND" -ge 2 ]; then
+  REF_SHA="$PREV_SHA"
+elif [ -n "$PREV_SHA" ] && git -C "$REVIEW_DIR" merge-base --is-ancestor "$PREV_SHA" "$SHA" 2>/dev/null; then
+  REF_SHA="$PREV_SHA"
+fi
 
 # Copy git objects without hardlinks. The provider gets its own refs and index
 # and can inspect the reference commit and restore mutants inside the clone.
