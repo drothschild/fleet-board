@@ -246,8 +246,8 @@ def find(root, live_cards=frozenset(), run=scripts.run, run_argv=scripts.run_arg
         if skip(card):
             continue
         path = board_dir / 'active' / str(card)
-        pgid = markers.read_pgid(path)
-        if markers.group_alive(pgid):
+        pgid = next((p for p in markers.read_pgids(path) if markers.group_alive(p)), None)
+        if pgid is not None:
             found.append(Stuck(card, 'live_orphan', 'active marker %s names process group %d, which is still '
                                'running and no supervisor session owns it; stop that process group first '
                                '(kill -TERM -- -%d)' % (path, pgid, pgid)))
@@ -355,7 +355,8 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
     found = find(root, live_cards=live_cards, run=run, run_argv=run_argv, cards={card})
     orphans = [item for item in found if item.kind == 'live_orphan']
     if orphans:
-        pgid = markers.read_pgid(board_dir / 'active' / str(card))
+        pgid = next((p for p in markers.read_pgids(board_dir / 'active' / str(card)) if markers.group_alive(p)),
+                    markers.read_pgid(board_dir / 'active' / str(card)))
         raise ValueError('card #%d has a live process group (%s) from an earlier run; stop that process group '
                          'first (kill -TERM -- -%s), then release' % (card, pgid, pgid))
     pending = note.get('pending_merge')

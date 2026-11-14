@@ -18,13 +18,15 @@
 #         fleet-board: branch <branch> is checked out at <other path>; remove that worktree (git worktree remove, or git worktree prune when its directory is gone) or restore worktrees.dir
 #       or, when the other checkout is the repository's main checkout,
 #         fleet-board: branch <branch> is checked out at <path>, the repository's main checkout; switch that checkout to another branch
-#   worktree.sh review <n> <pr>
+#   worktree.sh review <n> <pr> [<stage>]
 #       Fetches the PR head (into refs/fleet-board/pull/<pr>) and puts a
 #       detached worktree <base>/<n>-review on it, creating it (and running
 #       worktrees.setup once) or checking the new head out in it. With
 #       worktrees.mutate_on_copy, also refreshes <base>/<n>-review-copy, a
 #       cp -R of the checkout without .git. Prints
 #       {"path":..,"copy":..|null,"sha":<head>,"base":<merge-base origin/main head>}.
+#       With a <stage> name ([a-z][a-z0-9_]*, not "copy") the checkout is <base>/<n>-review-<stage> and the
+#       copy <base>/<n>-review-<stage>-copy, so reviewers of one card that run together never share one.
 #   worktree.sh remove <n> [<worktree-path>]
 #       Removes <worktree-path>, which must be the card's own directory: a
 #       direct child of <base> named <n>-* (as given and after symlinks are
@@ -50,7 +52,7 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> | review <n> <pr> | remove <n> [<worktree-path>]"; }
+usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> | review <n> <pr> [<stage>] | remove <n> [<worktree-path>]"; }
 
 [ $# -ge 2 ] || usage
 CMD="$1"
@@ -58,7 +60,12 @@ N="$2"
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
 case "$CMD" in
   create) [ $# -eq 4 ] || usage ;;
-  review) [ $# -eq 3 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3" ;;
+  review) [ $# -eq 3 ] || [ $# -eq 4 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3"
+    if [ $# -eq 4 ]; then
+      case "$4" in
+        copy|[!a-z]*|*[!a-z0-9_]*|"") fb_die 2 "stage name must match [a-z][a-z0-9_]* and not be copy, got: $4" ;;
+      esac
+    fi ;;
   remove) [ $# -eq 2 ] || [ $# -eq 3 ] || usage ;;
   *) usage ;;
 esac
@@ -165,6 +172,10 @@ case "$CMD" in
     PR="$3"
     RV="$BASE/$N-review"
     RC="$BASE/$N-review-copy"
+    if [ $# -eq 4 ]; then
+      RV="$BASE/$N-review-$4"
+      RC="$BASE/$N-review-$4-copy"
+    fi
     REF="refs/fleet-board/pull/$PR"
     g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
     g fetch -q origin "+refs/pull/$PR/head:$REF" >&2 || fb_die 1 "cannot fetch the head of PR #$PR"
@@ -213,6 +224,7 @@ case "$CMD" in
       for d in "$BASE/$N"-*; do
         [ -L "$d" ] || [ -e "$d" ] || continue
         case "$(basename "$d")" in "$N-review"|"$N-review-copy") continue ;; esac
+        case "$(basename "$d")" in "$N"-review-*) continue ;; esac   # the stage review checkouts: below
         T="$(resolve_under_base "$d")" || fb_die 1 "refusing a path outside $BASE: $d"
         TARGETS+=("$T")
       done
@@ -221,6 +233,13 @@ case "$CMD" in
       T="$(resolve_under_base "$BASE/$N-review")" || fb_die 1 "refusing a path outside $BASE: $BASE/$N-review"
       TARGETS+=("$T")
     fi
+    # The stage reviewers' checkouts (<n>-review-<stage>) go with the card's review checkout; their copies below
+    for d in "$BASE/$N"-review-*; do
+      [ -L "$d" ] || [ -e "$d" ] || continue
+      case "$d" in *-copy) continue ;; esac
+      T="$(resolve_under_base "$d")" || fb_die 1 "refusing a path outside $BASE: $d"
+      TARGETS+=("$T")
+    done
     RC=0
     for t in ${TARGETS[@]+"${TARGETS[@]}"}; do
       [ -L "$t" ] || [ -e "$t" ] || continue
@@ -232,6 +251,10 @@ case "$CMD" in
     if [ -L "$BASE/$N-review-copy" ] || [ -e "$BASE/$N-review-copy" ]; then
       rm -rf "$BASE/$N-review-copy" || { printf 'fleet-board: cannot remove %s\n' "$BASE/$N-review-copy" >&2; RC=1; }
     fi
+    for d in "$BASE/$N"-review-*-copy; do
+      [ -L "$d" ] || [ -e "$d" ] || continue
+      rm -rf "$d" || { printf 'fleet-board: cannot remove %s\n' "$d" >&2; RC=1; }
+    done
     g worktree prune >&2 || { printf 'fleet-board: git worktree prune failed\n' >&2; RC=1; }
     exit "$RC"
     ;;
