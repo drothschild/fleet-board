@@ -870,7 +870,8 @@ class ScopeIgnore(LoopCase):
 
 class ReadOnlyScope(LoopCase):
     def test_a_read_only_action_reserves_no_scope(self):
-        for action, provider in (('review', 'claude'), ('review_stage', 'claude'), ('update_branch', 'scripts')):
+        for action, provider in (('start_review', 'claude'), ('review', 'claude'), ('review_stage', 'claude'),
+                                 ('update_branch', 'scripts')):
             reserved, begun = [], []
             row = dict(number=12, action=action, provider=provider, declared_paths=['src/a.py'], actual_paths=[])
             with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: reserved.append(n)), \

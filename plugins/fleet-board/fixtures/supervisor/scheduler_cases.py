@@ -399,7 +399,8 @@ def test_update_branch_skips_scope_but_takes_capacity():
 def test_read_only_actions_ignore_other_cards_scope():
     writer = {'number': 1, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'fix'}
     held = [{'card': 1, 'paths': ['src/a.py']}]
-    for action, provider in (('review', 'claude'), ('review_stage', 'claude'), ('update_branch', 'scripts')):
+    for action, provider in (('start_review', 'claude'), ('review', 'claude'), ('review_stage', 'claude'),
+                             ('update_branch', 'scripts')):
         result = Scheduler(clock=lambda: 0).admit([candidate(2, action, provider, paths=['src/a.py'])],
             active=[writer], reservations=held, limits=LIMITS)
         assert [x['number'] for x in result['admitted']] == [2], (action, result['waits'])
