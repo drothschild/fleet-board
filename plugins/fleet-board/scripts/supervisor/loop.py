@@ -313,7 +313,8 @@ class Supervisor:
         for action in [a for a in self.state.all_actions() if a.session is not None]:
             self._record_unfinished(action)
             if not markers.group_alive(action.pgid):   # a group still running keeps its marker: a live orphan
-                markers.clear(action.marker, action.pgid)
+                # clear() leaves the marker while a sibling reviewer's group, named in it, still runs
+                markers.clear(action.marker, action.pgid, also=[a.pgid for a in self.state.actions_for(action.card)])
 
     def _record_unfinished(self, action):
         """Tokens are never silently missing: the session was given up on, so its counts are unknown."""

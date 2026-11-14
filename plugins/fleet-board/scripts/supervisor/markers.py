@@ -23,7 +23,10 @@ def write(root, board_dir, card, pgid, supervisor_pid=None):
     """Atomically write the marker for `card` naming `pgid`; returns its path. Raises OSError."""
     target = path(root, board_dir, card)
     target.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps({'pgid': int(pgid), 'supervisor_pid': int(supervisor_pid or os.getpid())})
+    # `pgids` lists every process group of the card's reviewers still running, so a dead last-launched one
+    # does not hide a live sibling from the orphan checks.
+    pgids = [int(pgid)] + [p for p in read_pgids(target) if p != int(pgid) and group_alive(p)]
+    data = json.dumps({'pgid': int(pgid), 'pgids': pgids, 'supervisor_pid': int(supervisor_pid or os.getpid())})
     fd, temp = tempfile.mkstemp(dir=str(target.parent), prefix='.%s.' % card)
     try:
         with os.fdopen(fd, 'w') as out:
@@ -43,6 +46,21 @@ def read_pgid(marker):
         return None
     pgid = data.get('pgid') if isinstance(data, dict) else None
     return pgid if type(pgid) is int and pgid > 1 else None
+
+
+def read_pgids(marker):
+    """Every usable pgid a marker names: its `pgid` first, then the `pgids` list. Empty when none."""
+    try:
+        data = json.loads(Path(marker).read_text())
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    found = []
+    for item in [data.get('pgid')] + (data.get('pgids') if isinstance(data.get('pgids'), list) else []):
+        if type(item) is int and item > 1 and item not in found:
+            found.append(item)
+    return found
 
 
 def group_alive(pgid):
@@ -71,6 +89,8 @@ def clear(marker, pgid, also=()):
         named = read_pgid(marker)
         if named is not None and named != pgid and named not in also:
             return False
+        if any(group_alive(p) for p in read_pgids(marker) if p != pgid):
+            return False   # another reviewer of the card named in the marker still runs
         os.unlink(str(marker))
         return True
     except OSError:

@@ -839,5 +839,26 @@ class RunLock(CliEnv):
         self.assertEqual(rc, 0, err.getvalue())
 
 
+class SiblingReviewerMarkerTests(unittest.TestCase):
+    """A card's marker lists every reviewer's group: a dead last-launched one does not hide a live sibling."""
+
+    def setUp(self):
+        StuckCase.setUp(self)   # the same fixture board (a real config.sh), without StuckCase's tests
+    group = StuckCase.group
+
+    def test_a_dead_last_reviewer_does_not_hide_a_live_sibling(self):
+        from supervisor import markers
+        live = self.group()
+        dead = subprocess.Popen(['true'], start_new_session=True)
+        dead.wait()
+        markers.write(self.root, None, 7, live)
+        markers.write(self.root, None, 7, dead.pid)
+        marker = markers.path(self.root, None, 7)
+        self.assertFalse(markers.clear(marker, dead.pid), 'a live sibling keeps the marker')
+        self.assertTrue(marker.exists())
+        found = stuck.find(self.root, live_cards=set(), cards={7})
+        self.assertEqual([f.kind for f in found], ['live_orphan'])
+
+
 if __name__ == '__main__':
     unittest.main()
