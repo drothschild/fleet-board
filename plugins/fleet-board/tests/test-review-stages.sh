@@ -275,6 +275,12 @@ assert_exit "match: no stages exit 0" 0
 assert_stdout_exact "match: no stages prints []" '[]'
 assert_eq "match: no stages, no gh call at all" "$(ls "$FAKE_GH_DIR/argv" 2>/dev/null | wc -l | tr -d ' ')" 0
 
+# match: a default: true stage is listed even when no path matches, like route
+setup_case defaultstage "$CARD_PLAIN" "README.md"
+run_stages match 34
+assert_exit "match default: exit 0" 0
+assert_stdout_exact "match default: a default true stage is listed with no path match" '["everyone"]'
+
 # match: usage
 run_stages match
 assert_exit "match: missing PR -> exit 2" 2

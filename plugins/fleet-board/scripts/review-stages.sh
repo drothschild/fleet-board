@@ -19,7 +19,8 @@
 #
 # match: read-only. Prints the JSON list of stage names, in config order, whose
 # paths globs match a file the PR changes now; the card's labels do not count
-# and a stage with empty paths never matches. When gh lists fewer files than
+# and a stage with empty paths never matches, except a default: true stage,
+# which always matches (as in route). When gh lists fewer files than
 # the PR changes, every stage with a non-empty paths list matches, with
 # route's warning. Adds no label and reads no card. With no stages configured
 # it prints [] and calls nothing. tick-plan.sh runs it at every clean, current
@@ -152,7 +153,7 @@ case "$MODE" in
     MATCHED='[]'
     i=0
     while [ "$i" -lt "$COUNT" ]; do
-      if paths_match "$i"; then
+      if [ "$(jq -r ".[$i].default // false" <<<"$STAGES")" = true ] || paths_match "$i"; then
         MATCHED="$(jq -c --arg n "$(jq -r ".[$i].name" <<<"$STAGES")" '. + [$n]' <<<"$MATCHED")"
       fi
       i=$((i + 1))

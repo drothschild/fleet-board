@@ -224,7 +224,7 @@
 # again would only repeat the findings.
 # A note's accepted entry (accept.sh) moved last_review.sha to the accepted
 # head, so commits before it are not flagged and later ones are. It counts only
-# when accepted.login is the authenticated gh login; otherwise a current review
+# when accepted.login is the local login (fb_login); otherwise a current review
 # with Critical or Important findings plans review ("accept by <login> is not
 # honored ...") instead of fix.
 # Review drift warnings, for an open in_review (or stage column) PR whose head moved past
@@ -576,7 +576,7 @@ card_input() {
     drift="$(drift_lookup "$note" "$info")" || drift=null
   fi
 
-  # An accepted entry (accept.sh) counts only when its login is the authenticated one
+  # An accepted entry (accept.sh) counts only when its login is the local one (fb_login)
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$(jq -r '.accepted != null' <<<"$note")" = true ]; then
     if me="$(fb_login 2>/dev/null)"; then
       accepted_mine="$(jq --arg me "$me" '.accepted.login == $me' <<<"$note")"

@@ -11,7 +11,8 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
 FLEET_BOARD_CLAUDE (the claude binary the
-import session runs, default `claude`), FLEET_BOARD_PLUGIN_DIR (when set, the import
+import session runs, default `claude`), FLEET_BOARD_CODEX (the codex binary a codex Planner
+chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (when set, the import
 session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one), FLEET_BOARD_CREATE (tests only: the script
 that creates the previewed cards, in place of import-plan.sh).
@@ -762,6 +763,54 @@ def record_planner_usage(action: str, stream_path: Path, ended_at: str = None, s
         return False
 
 
+def codex_events(path: Path) -> list:
+    events = []
+    for line in read_text(path).splitlines():
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(ev, dict):
+            events.append(ev)
+    return events
+
+
+def codex_error_message(events: list) -> str:
+    """The failure text from the JSON turn.failed / error events (stderr is full of unrelated noise)."""
+    found = ""
+    for ev in events:
+        if ev.get("type") == "turn.failed":
+            err = ev.get("error")
+            msg = err.get("message") if isinstance(err, dict) else err
+            if isinstance(msg, str) and msg:
+                found = msg
+        elif ev.get("type") == "error" and not found and isinstance(ev.get("message"), str):
+            found = ev["message"]
+    return found
+
+
+def finish_codex_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, reply_path: Path):
+    rc = proc.wait()
+    events = codex_events(out_path)
+    reply = read_text(reply_path).strip()
+    failed = any(ev.get("type") == "turn.failed" for ev in events)
+    if failed or (rc != 0 and not reply):
+        reply = "[error] " + (codex_error_message(events) or "codex exited %s" % rc)
+    with _PLANNER_LOCK:
+        turns = read_turns(pdir)
+        turns.append({"role": "assistant", "text": reply})
+        write_private_atomic(pdir / "transcript.json", json.dumps(turns))
+        tid = ""
+        for ev in events:
+            if ev.get("type") == "thread.started" and isinstance(ev.get("thread_id"), str) and ev["thread_id"]:
+                tid = ev["thread_id"]
+        if tid:
+            meta = read_json_file(pdir / "meta.json") or {}
+            meta["thread_id"] = tid
+            write_private_atomic(pdir / "meta.json", json.dumps(meta))
+        _PLANNER_BUSY.discard(id)
+
+
 def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, started_at: str = None):
     rc = proc.wait()
     reply = last_session_text(out_path)
@@ -791,20 +840,39 @@ def send_planner_message(id: str, text: str):
         persona, _warn = resolve_persona(APP["root"], cfg)
         prompt = "Board context (JSON):\n%s\n\nUser:\n%s" % (json.dumps(board_context()), text)
         meta = read_json_file(pdir / "meta.json") or {}
-        argv = [
-            os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
-            "--output-format", "stream-json", "--verbose",
-            "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
-            "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
-            "--append-system-prompt", persona,
-        ]
-        if meta.get("session_id"):
-            argv += ["--resume", meta["session_id"]]
-        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
-        if plugin_dir:
-            argv += ["--plugin-dir", plugin_dir]
-        argv.append(prompt)
         n = len(read_turns(pdir))
+        reply_path = pdir / ("reply-%d.txt" % n)
+        codex = (cfg.get("planner") or {}).get("provider") == "codex"
+        if codex:
+            model = (cfg.get("planner") or {}).get("model")
+            codex_bin = os.environ.get("FLEET_BOARD_CODEX") or "codex"
+            if meta.get("thread_id"):
+                argv = [codex_bin, "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"']
+                if model:
+                    argv += ["-m", str(model)]
+                argv += ["-o", str(reply_path), meta["thread_id"], prompt]
+            else:
+                argv = [codex_bin, "exec", "--json", "-s", "read-only"]
+                if model:
+                    argv += ["-m", str(model)]
+                argv += ["-c", "developer_instructions=" + persona, "-o", str(reply_path), prompt]
+        else:
+            argv = [
+                os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
+                "--output-format", "stream-json", "--verbose",
+                "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
+                "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
+                "--append-system-prompt", persona,
+            ]
+            model = (cfg.get("planner") or {}).get("model")
+            if model:
+                argv += ["--model", str(model)]
+            if meta.get("session_id"):
+                argv += ["--resume", meta["session_id"]]
+            plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
+            if plugin_dir:
+                argv += ["--plugin-dir", plugin_dir]
+            argv.append(prompt)
         out_path, err_path = pdir / ("reply-%d.jsonl" % n), pdir / ("reply-%d.err" % n)
         started_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         try:
@@ -819,8 +887,12 @@ def send_planner_message(id: str, text: str):
         turns.append({"role": "user", "text": text})
         write_private_atomic(pdir / "transcript.json", json.dumps(turns))
         _PLANNER_BUSY.add(id)
-        threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path, started_at),
-                         daemon=True).start()
+        if codex:
+            threading.Thread(target=finish_codex_turn, args=(id, pdir, proc, out_path, err_path, reply_path),
+                             daemon=True).start()
+        else:
+            threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path, started_at),
+                             daemon=True).start()
 
 
 def planner_status(id: str) -> dict:
@@ -903,7 +975,18 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
     out["pr_url"] = card_pr_url(cfg, card, note)
+    out["hold"] = card_hold(n)
     return out
+
+
+def card_hold(n: int):
+    """The running supervisor's hold for card n ({reason, source, until}), else None."""
+    status = supervisor_status()
+    holds = status.get("holds") if isinstance(status, dict) else None
+    hold = holds.get(str(n)) if isinstance(holds, dict) else None
+    if not isinstance(hold, dict):
+        return None
+    return {"reason": hold.get("reason"), "source": hold.get("source"), "until": hold.get("until")}
 
 
 DEPENDS_HEADING_RE = re.compile(r"^#{1,6}\s*depends on\s*$", re.I)
@@ -1472,7 +1555,8 @@ def get_card_usage(params, body):
 
 
 STUCK_MIN_INTERVAL = 30.0  # seconds: a stuck scan of a large board takes seconds and shells out per card
-_STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None}
+_STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None,
+          "live": frozenset()}
 _STUCK_LOCK = threading.Lock()
 
 
@@ -1495,26 +1579,26 @@ def stuck_stamp(board_dir):
     return (_mtime_ns(Path(board_dir) / "cards"), _mtime_ns(Path(board_dir) / "active"))
 
 
-def _refresh_stuck(stamp):
+def _refresh_stuck(stamp, live=frozenset()):
     """The one background refresher: runs stuck.find (read-only) and writes the cache."""
     began = time.monotonic()
     try:
         try:
             found, error = [dict(card=x.card, kind=x.kind, detail=x.detail)
-                            for x in supervisor_stuck.find(APP["root"])], None
+                            for x in supervisor_stuck.find(APP["root"], live_cards=live)], None
         except Exception as exc:  # noqa: BLE001 - a failed check is recorded and shown, never hidden
             found, error = None, str(exc)[:300] or exc.__class__.__name__
         with _STUCK_LOCK:
             if found is None:
                 found = _STUCK["found"]  # keep the last good result (None while there is none)
             _STUCK.update(at=time.time(), mono=time.monotonic(), found=found, error=error,
-                          duration=time.monotonic() - began, stamp=stamp)
+                          duration=time.monotonic() - began, stamp=stamp, live=live)
     finally:
         with _STUCK_LOCK:
             _STUCK["running"] = False  # whatever happened, a later request may start another refresher
 
 
-def stuck_state(board_dir, refresh=True):
+def stuck_state(board_dir, refresh=True, live=frozenset()):
     """{findings, checked_at, error, checking, known} with no supervisor running, answered at once from the cache.
 
     Never computes on the calling thread. A refresh starts only when a caller asks for one (a poll from a
@@ -1523,12 +1607,12 @@ def stuck_state(board_dir, refresh=True):
     findings is None (known false) until a check has succeeded."""
     stamp = stuck_stamp(board_dir)
     with _STUCK_LOCK:
-        due = (_STUCK["at"] is None or (stamp is not None and stamp != _STUCK["stamp"])
+        due = (_STUCK["at"] is None or live != _STUCK["live"] or (stamp is not None and stamp != _STUCK["stamp"])
                or time.monotonic() - _STUCK["mono"] >= stuck_interval())
         if refresh and due and not _STUCK["running"] and not _LAUNCH_LOCK.locked():
             _STUCK["running"] = True
             try:
-                threading.Thread(target=_refresh_stuck, args=(stamp,), daemon=True).start()
+                threading.Thread(target=_refresh_stuck, args=(stamp, live), daemon=True).start()
             except BaseException:
                 _STUCK["running"] = False  # the thread never ran: nothing would ever clear the flag
                 raise
@@ -1553,12 +1637,18 @@ def stuck_suppressed(status):
 def stuck_view(status, refresh=True):
     """The /api/stuck answer for a supervisor status (None: none answers).
 
-    While a supervisor answers, the board never runs find(): the loop's own `stuck` command computes find()
-    on demand rather than returning a cached list, so there is no cheap, current answer to show, and cards
-    that wait for a slot, a reconcile or a resume are healthy. No card is stuck then."""
+    While a supervisor answers, its active cards are passed to find() as live, so a card it works on is not
+    reported and a stuck card under a live run is surfaced (move_card can then move it). The scan is the same
+    cached, background one used with no supervisor; a change in the live cards makes it due. in_flight is
+    dropped: a card waiting for a slot, a reconcile or a resume is healthy."""
     if status is not None:
-        return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": True,
-                "suppressed": None}
+        _, board_dir = ctx()
+        live = frozenset(a["card"] for a in (status.get("active") or [])
+                         if isinstance(a, dict) and is_int(a.get("card")))
+        view = stuck_state(board_dir, refresh=refresh, live=live)
+        if view["findings"] is not None:   # an in_progress card with no session may only wait for a slot
+            view["findings"] = [i for i in view["findings"] if i["kind"] != "in_flight"]
+        return dict(view, suppressed=None)
     notice = stuck_suppressed(status)
     if notice is not None:
         return {"findings": [], "checked_at": None, "error": None, "checking": False, "known": False,

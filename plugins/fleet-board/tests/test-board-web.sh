@@ -1213,6 +1213,43 @@ case "$(mv_field busy 4)" in *"agent is working on"*) pass "the 409 error text s
 [ "$(mv_field norun 2)" = 200 ] && pass "the same move returns 200 when the marker exists but no run is alive" || fail "the same move returns 200 when the marker exists but no run is alive" "got: $MV_OUT"
 [ "$(mv_field stuck 2)" = 200 ] && pass "the same move returns 200 when the marker exists, the run is alive and the card has a stuck finding" || fail "the same move returns 200 when the marker exists, the run is alive and the card has a stuck finding" "got: $MV_OUT"
 
+echo "Case: a stuck card under a live supervisor run is surfaced to move_card (stuck_view unpatched)"
+LS_OUT="$(SCRIPTS="$SCRIPTS" MV_REPO="$MV_REPO" python3 -I - <<'PYEOF'
+import importlib.util, os, time
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("board_web_live", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+repo = os.environ["MV_REPO"]
+m.APP.update(root=repo, scripts=os.environ["SCRIPTS"])
+seen = []
+def fake_find(root, live_cards=frozenset(), **k):
+    seen.append(sorted(live_cards))
+    return [] if 5 in live_cards else [m.supervisor_stuck.Stuck(5, "marker", "x")]
+m.supervisor_stuck.find = fake_find
+status = {"schema_version": 2, "mode": "running", "active": [{"card": 6, "action": "review"}]}
+m.run_alive = lambda status=None: True
+m.supervisor_status = lambda: status
+(Path(repo) / ".fleet-board" / "active" / "5").write_text("")
+deadline = time.time() + 5
+while time.time() < deadline:
+    view = m.stuck_view(status)
+    if view["findings"] and not view["checking"]:
+        break
+    time.sleep(0.1)
+print("cards|%s" % ",".join(str(i["card"]) for i in view["findings"]))
+print("live|%s" % ";".join(",".join(map(str, s)) for s in seen[:1]))
+try:
+    code, _ = m.move_card({"n": 5}, {"state": "ready"})
+except m.ApiError as e:
+    code = e.code
+print("move|%s" % code)
+PYEOF
+)"
+ls_field() { printf '%s\n' "$LS_OUT" | grep "^$1|" | cut -d'|' -f2; }
+[ "$(ls_field cards)" = 5 ] && pass "a card with a marker and no live action is a stuck finding while a supervisor answers" || fail "a card with a marker and no live action is a stuck finding while a supervisor answers" "got: $LS_OUT"
+[ "$(ls_field live)" = 6 ] && pass "the stuck check is given the supervisor's active cards as live" || fail "the stuck check is given the supervisor's active cards as live" "got: $LS_OUT"
+[ "$(ls_field move)" = 200 ] && pass "move_card moves a stuck card while the supervisor runs" || fail "move_card moves a stuck card while the supervisor runs" "got: $LS_OUT"
+
 echo "Case: card detail reports the cards it blocks"
 REPO="$(new_repo "$LOCAL_YML")"
 mkdir -p "$REPO/.fleet-board/cards" "$REPO/.fleet-board/active"
