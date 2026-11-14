@@ -16,6 +16,7 @@ from . import paths, webproxy
 READY_TIMEOUT = 30.0
 _LOG_TAIL = 300
 _OUTPUT_MAX = 64 * 1024
+LOG_MAX_BYTES = 10 * 1024 * 1024
 
 
 class LaunchError(RuntimeError):
@@ -57,6 +58,7 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT, ignore_stuc
     if override and override != bind_path:
         raise LaunchError("FLEET_BOARD_SUPERVISOR_SOCKET points away from where start binds: %s" % bind_path)
     log_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    rotate_log(log_path)
     fd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     os.fchmod(fd, 0o600)
     offset = os.fstat(fd).st_size
@@ -89,6 +91,43 @@ def launch_detached(root, log_path, env=None, timeout=READY_TIMEOUT, ignore_stuc
             raise LaunchError("supervisor readiness timed out after %.0f seconds" % timeout
                               + _tail(_output(log_path, offset)))
         time.sleep(0.05)
+
+
+def rotate_log(log_path, limit=LOG_MAX_BYTES):
+    """Rename a log over `limit` bytes to <name>.1 (replacing an older one) so a fresh file is started.
+    Best effort: a rotation that fails leaves the log to be appended to."""
+    log_path = Path(log_path)
+    try:
+        if log_path.stat().st_size > limit:
+            os.replace(str(log_path), str(log_path) + ".1")
+    except OSError:
+        pass
+
+
+def prune_session_logs(sessions_dir, days, warn=None, now=None):
+    """Delete card-*.jsonl and card-*.err files in sessions_dir last modified more than `days` days ago.
+    `days` 0 keeps everything. A file that cannot be deleted is reported through warn(message), never raised.
+    Returns how many files were removed."""
+    if not days or days < 0:
+        return 0
+    warn = warn or (lambda message: None)
+    cutoff = (time.time() if now is None else now) - days * 86400
+    removed = 0
+    try:
+        entries = sorted(Path(sessions_dir).glob("card-*"))
+    except OSError:
+        return 0
+    for path in entries:
+        if path.suffix not in (".jsonl", ".err"):
+            continue
+        try:
+            if not path.is_file() or path.stat().st_mtime >= cutoff:
+                continue
+            path.unlink()
+            removed += 1
+        except OSError as exc:
+            warn("could not remove old session log %s: %s" % (path.name, exc))
+    return removed
 
 
 def _output(log_path, offset):

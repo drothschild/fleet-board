@@ -1031,5 +1031,141 @@ class StartIsTheStartupEnv(unittest.TestCase):
         self.assertEqual(os.environ["FLEET_BOARD_SOCKET_DIR"], str(self.other), "the process env is restored")
 
 
+def _age(path, days):
+    when = time.time() - days * 86400
+    os.utime(str(path), (when, when))
+
+
+class SessionLogRetention(unittest.TestCase):
+    def setUp(self):
+        name = self.id().rsplit(".", 1)[-1]
+        self.sessions = ROOT / (name + "-sessions")
+        self.sessions.mkdir(mode=0o700)
+
+    def make(self, name, age_days):
+        path = self.sessions / name
+        path.write_text("x", encoding="utf-8")
+        _age(path, age_days)
+        return path
+
+    def test_with_session_log_days_14_a_start_removes_old_card_logs_and_keeps_newer_and_other_files(self):
+        old_jsonl = self.make("card-1-implement-1-1.jsonl", 15)
+        old_err = self.make("card-1-implement-1-1.err", 15)
+        new_jsonl = self.make("card-2-implement-2-1.jsonl", 13)
+        other = self.make("notes.txt", 100)
+        other_jsonl = self.make("other-1.jsonl", 100)
+        removed = launcher.prune_session_logs(self.sessions, 14, warn=lambda message: None)
+        self.assertFalse(old_jsonl.exists())
+        self.assertFalse(old_err.exists())
+        self.assertTrue(new_jsonl.exists())
+        self.assertTrue(other.exists())
+        self.assertTrue(other_jsonl.exists())
+        self.assertEqual(removed, 2)
+
+    def test_with_session_log_days_0_a_start_removes_no_session_log(self):
+        old = self.make("card-1-implement-1-1.jsonl", 400)
+        launcher.prune_session_logs(self.sessions, 0, warn=lambda message: None)
+        self.assertTrue(old.exists())
+
+    def test_a_session_log_that_cannot_be_removed_gives_a_warning_and_the_rest_are_still_pruned(self):
+        stuck = self.make("card-1-implement-1-1.jsonl", 20)
+        gone = self.make("card-2-implement-2-1.err", 20)
+        warnings = []
+        real = Path.unlink
+
+        def unlink(path, *args, **kwargs):
+            if path.name == stuck.name:
+                raise PermissionError("denied")
+            return real(path, *args, **kwargs)
+        with mock.patch.object(Path, "unlink", unlink):
+            launcher.prune_session_logs(self.sessions, 14, warn=warnings.append)
+        self.assertEqual(len(warnings), 1)
+        self.assertIn(stuck.name, warnings[0])
+        self.assertFalse(gone.exists())
+
+    def test_a_missing_sessions_directory_is_not_an_error(self):
+        launcher.prune_session_logs(self.sessions / "nope", 14, warn=lambda message: None)
+
+    def test_a_real_start_prunes_the_sessions_of_its_log_dir_and_still_starts(self):
+        case = make_root(ROOT, "prune-start")
+        (case / ".fleet-board.yml").write_text("board:\n  repo: acme/toy\nsupervisor:\n  session_log_days: 14\n",
+                                               encoding="utf-8")
+        base = short_base(self)
+        logs = ROOT / "prune-start-logs"
+        (logs / "sessions").mkdir(mode=0o700, parents=True)
+        old = logs / "sessions" / "card-1-a-1-1.jsonl"
+        old.write_text("x", encoding="utf-8")
+        _age(old, 20)
+        fresh = logs / "sessions" / "card-2-a-1-1.jsonl"
+        fresh.write_text("x", encoding="utf-8")
+        env = dict(os.environ, FLEET_BOARD_DOMAIN=str(case), FLEET_BOARD_SOCKET_DIR=str(base),
+                   FLEET_BOARD_LOG_DIR=str(logs))
+        env.pop("FLEET_BOARD_SUPERVISOR_SOCKET", None)
+        box = {}
+
+        def run():
+            out, err = io.StringIO(), io.StringIO()
+            box["rc"] = main(["start"], env=env, stdout=out, stderr=err)
+            box["err"] = err.getvalue()
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        end = time.time() + 15
+        socket_path = paths.controller_socket(paths.domain_id_for_root(case), env=env)
+        from supervisor.cli import _socket_transport
+        while thread.is_alive() and time.time() < end:
+            try:
+                if _socket_transport(socket_path)({"command": "status"}).get("startup") == "done":
+                    break
+            except (OSError, ValueError):
+                pass
+            time.sleep(0.05)
+        main(["stop", "--cancel"], env=env, stdout=io.StringIO(), stderr=io.StringIO())
+        thread.join(15)
+        if SANDBOX_PS in box.get("err", "") or SANDBOX_BIND in box.get("err", ""):
+            self.skipTest("sandbox: " + box["err"][:120])
+        self.assertFalse(old.exists())
+        self.assertTrue(fresh.exists())
+        self.assertEqual(box.get("rc"), 0, box)
+
+
+class SupervisorLogRotation(unittest.TestCase):
+    def setUp(self):
+        name = self.id().rsplit(".", 1)[-1]
+        self.board = make_root(ROOT, name)
+        self.logs = ROOT / (name + "-logs")
+        self.logs.mkdir(mode=0o700)
+        self.log = self.logs / "supervisor.log"
+
+    def launch(self):
+        child = mock.Mock()
+        child.poll.return_value = 1
+        child.wait.return_value = 1
+
+        def popen(argv, **kwargs):
+            kwargs["stdout"].write("new run\n")
+            kwargs["stdout"].flush()
+            return child
+        with mock.patch.object(launcher.subprocess, "Popen", side_effect=popen):
+            with self.assertRaises(launcher.LaunchError):
+                launcher.launch_detached(self.board, self.log, env={"FLEET_BOARD_LOG_DIR": str(self.logs)}, timeout=1)
+
+    def test_start_detach_with_a_log_over_10_mb_renames_it_to_dot_1_replacing_an_older_one_and_starts_fresh(self):
+        self.log.write_text("big", encoding="utf-8")
+        with open(str(self.log), "r+b") as handle:
+            handle.truncate(10 * 1024 * 1024 + 1)
+        (self.logs / "supervisor.log.1").write_text("older", encoding="utf-8")
+        self.launch()
+        self.assertEqual((self.logs / "supervisor.log.1").stat().st_size, 10 * 1024 * 1024 + 1)
+        self.assertEqual(self.log.read_text(encoding="utf-8"), "new run\n")
+
+    def test_start_detach_with_a_log_of_10_mb_or_less_appends_to_it_as_before(self):
+        self.log.write_text("before\n", encoding="utf-8")
+        with open(str(self.log), "r+b") as handle:
+            handle.truncate(10 * 1024 * 1024)
+        self.launch()
+        self.assertFalse((self.logs / "supervisor.log.1").exists())
+        self.assertEqual(self.log.stat().st_size, 10 * 1024 * 1024 + len("new run\n"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
