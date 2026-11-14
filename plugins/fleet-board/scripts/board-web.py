@@ -276,8 +276,15 @@ def parse_note(card: dict):
     return None
 
 
-def is_active(dir: Path, n, alive: bool) -> bool:
-    return alive and (Path(dir) / "active" / str(n)).exists()
+def owned_cards(status) -> set:
+    """The cards a supervisor answering with `status` works on (its `active` list); empty when none answers."""
+    if not status:
+        return set()
+    return {a["card"] for a in status.get("active") or [] if isinstance(a, dict) and is_int(a.get("card"))}
+
+
+def is_active(n, owned) -> bool:
+    return n in owned
 
 
 # --- runtime state -------------------------------------------------------------
@@ -986,7 +993,7 @@ def card_worktree(note):
     return wt if isinstance(wt, str) and wt and os.path.isdir(wt) else None
 
 
-def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict, known_states=None) -> dict:
+def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, known_states=None) -> dict:
     """state_of: number -> state for every card read in this request, so
     `blocked` (any blocker missing or not done) costs no extra read."""
     note = parse_note(card)
@@ -998,7 +1005,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict, 
         "known": known_states is None or card.get("state") in known_states,
         "labels": card.get("labels") or [],
         "updated_at": card.get("updated_at"),
-        "active": is_active(dir, card.get("number"), alive),
+        "active": is_active(card.get("number"), owned),
         "note": None if note is None else {k: note.get(k) for k in NOTE_FIELDS},
         "pr_url": card_pr_url(cfg, card, note),
         "worktree": card_worktree(note),
@@ -1009,7 +1016,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict, 
 
 
 def card_detail(cfg: dict, dir: Path, n: int) -> dict:
-    alive = run_alive()
+    owned = owned_cards(supervisor_status())
     card = read_card(dir, n)
     note = parse_note(card)
     out = dict(card)
@@ -1020,7 +1027,7 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
         c["number"] for c in read_cards(dir)
         if is_int(c.get("number")) and n in card_blocked_by(c)
     )
-    out["active"] = is_active(dir, n, alive)
+    out["active"] = is_active(n, owned)
     out["manager_note"] = note_body(card)
     out["pr_url"] = card_pr_url(cfg, card, note)
     out["worktree"] = card_worktree(note)
@@ -1140,7 +1147,7 @@ def board_context(cache: dict = None) -> list:
 def get_board(params, body):
     cfg, dir = ctx()
     status = supervisor_status()  # read once: liveness, run state, activity and stuck all agree
-    alive = run_alive(status)
+    owned = owned_cards(status)
     cards = read_cards(dir)
     state_of = {c.get("number"): c.get("state") for c in cards if is_int(c.get("number"))}
     sts = states(cfg)
@@ -1149,7 +1156,7 @@ def get_board(params, body):
     stuck_of, activity = board_extras(status, run, refresh=wants_stuck_refresh(params))
     return 200, {
         "states": sts,
-        "cards": [dict(card_summary(cfg, dir, c, alive, state_of, keys),
+        "cards": [dict(card_summary(cfg, dir, c, owned, state_of, keys),
                        stuck=stuck_of.get(c.get("number")), activity=activity.get(c.get("number")))
                   for c in cards],
         "run": run,
@@ -1346,12 +1353,23 @@ def move_card(params, body):
     state = require_str(body, "state")
     read_card(dir, n)
     status = supervisor_status()
-    if run_alive(status) and is_active(dir, n, True):
-        stuck_of, _ = board_extras(status, {}, refresh=False)
-        if n not in stuck_of:
-            raise ApiError(409, "an agent is working on card #%s; it cannot be moved until the agent is done "
-                                "(or the card is stuck)" % n)
-    board_write(["bash", script("board-move.sh"), str(n), state])
+    if status is None:
+        board_write(["bash", script("board-move.sh"), str(n), state])
+        return 200, card_detail(cfg, dir, n)
+    owned = owned_cards(status)
+    if n in owned:
+        raise ApiError(409, "an agent is working on card #%s; it cannot be moved until the agent is done "
+                            "(or the card is stuck)" % n)
+    if not (Path(dir) / "active" / str(n)).exists():
+        board_write(["bash", script("board-move.sh"), str(n), state])
+        return 200, card_detail(cfg, dir, n)
+    holder = supervisor_stuck.run_lock_holder(run_lock_path(cfg))
+    if holder is not None and holder != status.get("pid"):
+        raise ApiError(409, "a supervisor of another checkout holds the repository run lock (pid %d)" % holder)
+    try:
+        supervisor_stuck.release(APP["root"], n, live_cards=owned, force=True, target=state)
+    except ValueError as exc:
+        raise ApiError(409, str(exc))
     return 200, card_detail(cfg, dir, n)
 
 

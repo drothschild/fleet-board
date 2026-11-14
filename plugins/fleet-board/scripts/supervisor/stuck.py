@@ -336,14 +336,16 @@ def _gh_state(run_argv):
     return state
 
 
-def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, force=False, live_cards=frozenset()):
+def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, force=False, live_cards=frozenset(),
+            target=None):
     """Return `card` to its last stable column, clear its marker, a dead lock and its stuck note. Never touches
     git. in_progress goes to ready (no PR) or in_review; merging whose PR is merged stays in merging (recording
     merge_operation from pending_merge), open or closed drops its merge records and goes to in_review.
 
     Raises ValueError and changes nothing when the card is unknown, has no current finding (unless `force`),
     has a live orphan (a marker naming a process group that still runs: stop it first), is locked by a running
-    process, or is a merging card whose PR state cannot be read."""
+    process, or is a merging card whose PR state cannot be read. With `target` (a state) the card moves there
+    instead of the derived column; a card with an unrecorded pending_merge is then refused (the CLI reads the PR)."""
     if type(card) is not int or card <= 0:
         raise ValueError('card must be a positive integer')
     data = _read(root, card, run)
@@ -356,6 +358,10 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
         pgid = markers.read_pgid(board_dir / 'active' / str(card))
         raise ValueError('card #%d has a live process group (%s) from an earlier run; stop that process group '
                          'first (kill -TERM -- -%s), then release' % (card, pgid, pgid))
+    pending = note.get('pending_merge')
+    if target is not None and isinstance(pending, dict) and not note.get('merge_operation'):
+        raise ValueError('card #%d has a merge in flight; run fleet-board supervisor stuck --release %d, which reads '
+                         'the PR first' % (card, card))
     if not found and not force:
         raise ValueError('card #%d has no stuck finding; pass --force to release it anyway' % card)
     lock = worktrees / '.locks' / ('card-%d.lock' % card)
@@ -363,9 +369,9 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
         raise ValueError('card #%d is locked by a running process (%s)' % (card, lock))
     state = data.get('state')
     pr = _pr_number(data, note)
-    patch, target = {'stuck': None}, None
+    patch, dest = {'stuck': None}, None
     if state == 'in_progress':
-        target = 'in_review' if pr else 'ready'
+        dest = 'in_review' if pr else 'ready'
     elif state == 'merging':
         if pr is None:
             raise ValueError('card #%d is in merging with no PR on record; move it by hand' % card)
@@ -379,7 +385,7 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
                 patch.update({'merge_operation': pending, 'merged_pr': pr})
         elif pr_state in ('OPEN', 'CLOSED'):
             patch.update({key: None for key in MERGE_KEYS})
-            target = 'in_review'
+            dest = 'in_review'
         else:
             raise ValueError('cannot tell whether PR %d of card #%d is merged (gh said %r)' % (pr, card, pr_state))
     dirty = _dirty(root, note.get('worktree'), run_argv)
@@ -417,10 +423,11 @@ def release(root, card, run=scripts.run, gh=None, run_argv=scripts.run_argv, for
             rel.rmdir()
         except OSError as exc:
             raise ValueError('cannot remove the dead lock %s of card #%d: %s' % (lock, card, exc)) from None
-    if target:
-        moved = run(root, 'board-move.sh', card, target, timeout=60)
+    dest = target or dest
+    if dest:
+        moved = run(root, 'board-move.sh', card, dest, timeout=60)
         if moved.timed_out or moved.rc != 0:
-            _json(moved, 'board-move.sh #%d %s' % (card, target))
+            _json(moved, 'board-move.sh #%d %s' % (card, dest))
     _patch(root, card, patch, run)
     try:
         (board_dir / 'active' / str(card)).unlink()
