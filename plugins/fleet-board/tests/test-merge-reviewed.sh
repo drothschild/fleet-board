@@ -34,6 +34,10 @@ assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3',
 
 run_merge() {
   store_sync
+  if [ -f "$FX/extra-labels" ]; then
+    jq -c --argjson l "$(jq -R . "$FX/extra-labels" | jq -sc .)" '.labels += $l' "$REPO/.fleet-board/cards/12.json" > "$FX/card-12.new" \
+      && mv "$FX/card-12.new" "$REPO/.fleet-board/cards/12.json"
+  fi
   cp "$REPO/.fleet-board/cards/12.json" "$FAKE_GH_DIR/card-12.before" 2>/dev/null || : > "$FAKE_GH_DIR/card-12.before"
   local e; e="$(mktemp)"
   "$BASH_EXE" "$SCRIPT" "$@" > /dev/null 2> "$e" </dev/null
@@ -760,10 +764,15 @@ setup_bump() {
   card 12 in_review "$(jq -c --arg h "$HEAD0" '.last_review.sha=$h' <<<"$CLEAN")"
   pr 34 false "$GREEN" "$file"
   jq -c --arg h "$HEAD0" '.headRefOid=$h' "$FX/pr-34.json" > "$FX/pr-34.new" && mv "$FX/pr-34.new" "$FX/pr-34.json"
+  # the planner's version check reads the base with --jq (a bare name, not JSON)
+  printf 'main\n' > "$FX/base-34.txt"
+  route "pr view 34 --repo acme/toy --json baseRefName*" 0 "$FX/base-34.txt"
 }
 remote_head() { git -C "$BARE" rev-parse fleet/12-add-subtract; }
 remote_version() { git -C "$BARE" show "fleet/12-add-subtract:$VPLUG" | jq -r .version; }
-label_card() { jq -c --arg l "$1" '.labels += [{name:$l}]' "$FX/issue-12.json" > "$FX/issue-12.new" && mv "$FX/issue-12.new" "$FX/issue-12.json"; }
+# the routes fixture keeps only non-fleet: labels in a card's labels, so a fleet:bump: label is
+# added to the local store card itself, after each store_sync (see run_merge)
+label_card() { printf '%s\n' "$1" >> "$FX/extra-labels"; }
 
 setup_bump ""
 finalize
@@ -825,6 +834,9 @@ git -C "$REPO" commit -q -am "base moved"; git -C "$REPO" push -q origin main
 grep -v '^pr merge' "$R" > "$R.new" && mv "$R.new" "$R"; route 'pr merge *' 0 -
 jq -c --arg h "$BUMPED" '.headRefOid=$h' "$FX/pr-34.json" > "$FX/pr-34.new" && mv "$FX/pr-34.new" "$FX/pr-34.json"
 card 12 in_review "$(jq -c --arg h "$HEAD0" '.last_review.sha=$h' <<<"$CLEAN")"
+# the PR head moved from the reviewed head by the lane's version-only commit
+jq -cn --arg h "$BUMPED" --arg r "$HEAD0" '{commits:[{sha:$h, parents:[{sha:$r}], commit:{message:"Raise versions above origin/main"}}]}' > "$FX/compare.json"
+route "api repos/acme/toy/compare/$HEAD0...$BUMPED" 0 "$FX/compare.json"
 finalize
 run_merge
 assert_exit "second attempt: exit 0" 0
