@@ -146,6 +146,13 @@ setup_case() {
   BASE="$(mkdir -p "$REPO/.fw" && cd "$REPO/.fw" && pwd -P)"
 }
 
+stage_yaml() {
+  local n
+  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n  setup: "echo ran >> .setup-ran"\n  mutate_on_copy: true\nreview:\n  stages:\n' > "$REPO/.fleet-board.yml"
+  for n in "$@"; do
+    printf '    - name: %s\n      agent: stage-reviewer\n      model: sonnet\n      paths: ["%s/**"]\n      label: needs-%s\n' "$n" "$n" "$n" >> "$REPO/.fleet-board.yml"
+  done
+}
 echo "Test: worktree.sh"
 echo ""
 
@@ -267,6 +274,7 @@ assert_true "review-again: copy refreshed" test -f "$RC/feature2.txt"
 # review with a stage name: its own checkout, and the evidence reviewer's stays untouched
 printf 'mine\n' > "$RV/evidence-sentinel"
 git -C "$RV" checkout -q --force --detach "$SHA_P2"
+stage_yaml security ux
 run_wt review 12 7 security
 assert_exit "review-stage: exit" 0
 assert_eq "review-stage: its own path" "$(jqc .path)" "\"$BASE/12-review-security\""
@@ -499,13 +507,6 @@ assert_eq "mark-active-writable: stderr is empty" "$LAST_ERR" ""
 # ---------------------------------------------------------------------------
 # review prunes the checkouts of stages that are no longer configured
 setup_case true
-stage_yaml() {
-  local n
-  printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n  setup: "echo ran >> .setup-ran"\n  mutate_on_copy: true\nreview:\n  stages:\n' > "$REPO/.fleet-board.yml"
-  for n in "$@"; do
-    printf '    - name: %s\n      agent: stage-reviewer\n      model: sonnet\n      paths: ["%s/**"]\n      label: needs-%s\n' "$n" "$n" "$n" >> "$REPO/.fleet-board.yml"
-  done
-}
 stage_yaml security ux
 run_wt review 12 7
 assert_exit "prune: evidence review: exit" 0
