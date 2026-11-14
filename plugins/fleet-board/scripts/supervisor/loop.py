@@ -566,6 +566,9 @@ class Supervisor:
         holds = self._holds(result, limit_waits)
         self.state.set_holds(holds)
         self.state.set_queue(len(result['admitted']), len(holds))
+        for a in result['attention']:
+            if self.state.attention.get(str(a.get('number')), {}).get('reason') != a.get('reason'):
+                self.state.set_attention(a.get('number'), a.get('reason'))
         attention = sorted((a.get('number'), a.get('reason')) for a in result['attention'])
         if attention != self._last_attention:
             self._last_attention = attention
