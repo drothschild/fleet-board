@@ -902,6 +902,7 @@ def send_planner_message(id: str, text: str):
                 "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
                 "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
                 "--append-system-prompt", persona,
+                "--tools", "Read,Grep,Glob",
             ]
             model = (cfg.get("planner") or {}).get("model")
             if model:
