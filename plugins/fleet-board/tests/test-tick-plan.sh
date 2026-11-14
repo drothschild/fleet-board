@@ -86,6 +86,23 @@ jqc() { jq -c "$1" <<<"$LAST_OUT" 2>/dev/null || echo INVALID; }
 # assert_jq <desc> <filter> <expected compact JSON>
 assert_jq() { assert_eq "$1" "$(jqc "$2")" "$3"; }
 
+# no_builtin_stages <extra YAML>: the extra YAML with the two built-in review
+# stages (documentation, blast_radius) disabled, so a case that is not about them
+# sees the board it was written for. TP_KEEP_BUILTINS=1 leaves them on.
+no_builtin_stages() {
+  local x="$1" dis nl
+  nl="$(printf '\nx')"; nl="${nl%x}"
+  dis="$(printf '    - name: documentation\n      enabled: false\n    - name: blast_radius\n      enabled: false')"
+  if [ "${TP_KEEP_BUILTINS:-}" = 1 ]; then printf '%s' "$x"; return; fi
+  if ! printf '%s\n' "$x" | grep -q '^review:'; then
+    printf '%s%sreview:\n  stages:\n%s' "$x" "${x:+$nl}" "$dis"
+  elif printf '%s\n' "$x" | grep -q '^  stages:'; then
+    DIS="$dis" awk '{print} /^  stages:/ {print ENVIRON["DIS"]}' <<<"$x"
+  else
+    DIS="$dis" awk '{print} /^review:/ {print "  stages:"; print ENVIRON["DIS"]}' <<<"$x"
+  fi
+}
+
 # setup_case <case> [extra YAML appended to the config]
 setup_case() {
   REPO="$(mktemp -d)"
@@ -97,7 +114,7 @@ setup_case() {
     [ -n "${3:-}" ] && printf '%s\n' "$3"
     printf 'worktrees:\n  dir: .fw\n'
     printf 'human_qa_paths: ["src/components/**"]\n'
-    [ -n "${2:-}" ] && printf '%s\n' "$2"
+    printf '%s\n' "$(no_builtin_stages "${2:-}")"
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
@@ -1109,6 +1126,20 @@ plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
 assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
 
+# Candidate mode exposes the same workflow decision without tick-local admission.
+candidate_empty_human_qa_route() {
+  local route_dir
+  route_dir="$(mktemp -d)"
+  CLEANUP_DIRS+=("$route_dir")
+  local route_base
+  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
+  awk -F '\t' -v OFS='\t' -v base="$route_base" \
+    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
+    "$FAKE_GH_ROUTES" > "$route_dir/routes"
+  FAKE_GH_ROUTES="$route_dir/routes"
+  export FAKE_GH_ROUTES
+  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
+}
 # Plain-text paths in a card's Scope (candidate mode exposes declared_paths).
 # cand_scope <scope text>: ready card 14 alone; run --candidates
 cand_scope() {
@@ -1650,20 +1681,6 @@ assert_jq "provider reviewer: shared implementor model warns" '[.warnings[] | se
 plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-astra}"
 assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
-# Candidate mode exposes the same workflow decision without tick-local admission.
-candidate_empty_human_qa_route() {
-  local route_dir
-  route_dir="$(mktemp -d)"
-  CLEANUP_DIRS+=("$route_dir")
-  local route_base
-  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
-  awk -F '\t' -v OFS='\t' -v base="$route_base" \
-    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
-    "$FAKE_GH_ROUTES" > "$route_dir/routes"
-  FAKE_GH_ROUTES="$route_dir/routes"
-  export FAKE_GH_ROUTES
-  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
-}
 setup_case ready-start
 candidate_empty_human_qa_route
 run_check "$SCRIPT" --candidates
