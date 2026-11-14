@@ -896,6 +896,10 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["body"] = card.get("body") if isinstance(card.get("body"), str) else ""
     out["acceptance"] = card_acceptance(card)
     out["blocked_by"] = card_blocked_by(card)
+    out["blocks"] = sorted(
+        c["number"] for c in read_cards(dir)
+        if is_int(c.get("number")) and n in card_blocked_by(c)
+    )
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
     out["pr_url"] = card_pr_url(cfg, card, note)
