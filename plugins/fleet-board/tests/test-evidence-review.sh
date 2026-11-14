@@ -162,6 +162,11 @@ for input in 'CARD BODY' 'PR DIFF' 'IMPLEMENTOR REPORT' 'PRIOR FINDING' "Review 
   check "round 2 prompt includes $input" grep -Fq "$input" "$FAKE_REVIEWER_DIR/prompt.1"
 done
 
+setup
+run --no-post --prev-sha "$head"
+check "round 1 with --prev-sha (an accepted head) uses it as the reference" \
+  grep -Fq "Review round 1. Reference SHA $head." "$FAKE_REVIEWER_DIR/prompt.1"
+
 # the production path: no --card-file, the card is read from the board and its
 # acceptance field reaches the reviewer as an "## Acceptance" section
 setup
