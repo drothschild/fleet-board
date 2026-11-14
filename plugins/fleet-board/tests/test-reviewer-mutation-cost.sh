@@ -20,10 +20,11 @@ check() { # <label> <file>
   else
     pass "$label: no re-run of the test after a mutant is restored"
   fi
-  if grep -qF 'git status --porcelain` prints nothing before' "$f" || grep -qF 'git status --porcelain` prints nothing. Only then' "$f"; then
-    pass "$label: the whole worktree is confirmed restored before the next mutant"
+  # A restore is checked across the whole worktree, against a baseline saved before the first mutant
+  if grep -qF 'prints exactly the baseline' "$f" && grep -qiE 'save[sd]? (the output of )?`git status --porcelain` as the baseline' "$f"; then
+    pass "$label: the whole worktree is confirmed back at its baseline before the next mutant"
   else
-    fail "$label: the whole worktree is confirmed restored before the next mutant"
+    fail "$label: the whole worktree is confirmed back at its baseline before the next mutant"
   fi
   if grep -qF 'only the mapped test' "$f"; then
     pass "$label: a mutant runs only the mapped test"
