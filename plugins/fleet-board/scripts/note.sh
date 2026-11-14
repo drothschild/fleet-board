@@ -151,6 +151,13 @@ invalid_field() {
     elif (.reviewed_stages | . == null or (type == "array" and all(.[]; type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "reviewed_stages"
     elif (.last_review | . == null or type != "object" or (.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z"))) | not) then "last_review.stage"
     elif (.last_review | . == null or type != "object" or (.provider | . == null or (type == "string" and test("\\A[a-z][a-z0-9_-]*\\z"))) | not) then "last_review.provider"
+    # reviews: the latest report of each reviewer ("evidence" or a stage name), so parallel reviewers never overwrite each other
+    elif (.reviews | . == null or (type == "object" and all(to_entries[];
+            (.key | test("\\A[a-z][a-z0-9_]*\\z")) and (.value | type == "object")
+            and (.value.round | . == null or (type == "number" and . == floor and . >= 0))
+            and (.value.sha | . == null or (type == "string" and test("\\A[0-9a-f]+\\z")))
+            and (.value.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z")))
+            and (.value.provider | . == null or (type == "string" and test("\\A[a-z][a-z0-9_-]*\\z"))))) | not) then "reviews"
     elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review" or . == "merging"
             or (type == "string" and test("\\Areview_[a-z][a-z0-9_]*\\z")) | not) then "blocked_from"
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)
