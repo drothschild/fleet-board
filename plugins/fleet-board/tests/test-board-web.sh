@@ -1332,6 +1332,33 @@ if start_server "$REPO"; then
   stop_server
 fi
 
+echo "Case: /api/board and card detail report the card's worktree"
+WT_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$WT_REPO/.fleet-board/cards" "$WT_REPO/wt-here"
+echo 4 > "$WT_REPO/.fleet-board/next"
+WT_FENCE='```'
+wt_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"worktree":"%s"}\n%s\n' "$WT_FENCE" "$1" "$WT_FENCE"
+}
+WT_COMMENT1="$(jq -n --arg b "$(wt_note "$WT_REPO/wt-here")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+WT_COMMENT2="$(jq -n --arg b "$(wt_note "$WT_REPO/wt-gone")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$WT_REPO" seed_card 1 in_progress "Has dir" "b" "$WT_COMMENT1"
+REPO="$WT_REPO" seed_card 2 in_progress "Deleted dir" "b" "$WT_COMMENT2"
+REPO="$WT_REPO" seed_card 3 in_progress "No note" "b"
+start_server "$WT_REPO"
+api GET /api/board
+assert_code 200
+assert_body "A card whose manager note has a worktree that exists on disk shows that path as worktree in /api/board" '.cards[]|select(.number==1)|.worktree' "$WT_REPO/wt-here"
+assert_body "A card whose note worktree has been deleted from disk shows worktree: null in /api/board" '.cards[]|select(.number==2)|.worktree|tojson' null
+assert_body "A card with no manager note shows worktree: null in /api/board" '.cards[]|select(.number==3)|.worktree|tojson' null
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> returns the same worktree value as /api/board for a card with an existing worktree" '.worktree' "$WT_REPO/wt-here"
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> returns worktree null as /api/board does for a deleted worktree" '.worktree|tojson' null
+api GET /api/cards/3
+assert_body "GET /api/cards/<n> returns worktree null as /api/board does for a card with no note" '.worktree|tojson' null
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
