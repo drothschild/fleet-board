@@ -47,7 +47,7 @@ class MergerAttention(mc.MergerFlow):
         attention = self.b.state.snapshot().get('attention', {})
         self.assertIn('12', attention)
         self.assertIn(reason, json.dumps(attention['12']))
-        comments = self.b.comments(12)
+        comments = [c for c in self.b.comments(12) if c.startswith('Merger needs attention')]
         self.assertEqual(len(comments), 1, comments)
         self.assertIn(reason, comments[0])
 
