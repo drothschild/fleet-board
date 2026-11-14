@@ -123,6 +123,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `origin/<branch>` and verifies the push; after the merge starts and until the push is
   verified, any non-zero exit aborts or resets (`git reset --keep`) to the pre-run head,
   never past a head origin already has.
+- **Built-in review stages** (`builtin_stages` in `scripts/config-defaults.json`, merged by
+  `scripts/config.sh`). Every project gets `documentation` and `blast_radius` (agent stages)
+  after its own `review.stages`. A project stage of the same name replaces the built-in; a
+  stage entry `{name: <built-in>, enabled: false}` removes it and is itself dropped. `enabled`
+  must be boolean. With a provider `models.reviewer` the built-ins carry model `sonnet`.
 - **Review stages** (`scripts/review-stages.sh route|match|next|setup`). `route <n> <pr>` adds
   each stage's routing label (path glob match or the label already on the card; never
   removes one) and prints the routed stage names; exit 1 on a failed read. The driver runs
