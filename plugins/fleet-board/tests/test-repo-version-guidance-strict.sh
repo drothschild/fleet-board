@@ -41,4 +41,8 @@ sed -i.bak 's/1\.2\.3/1.2.4/' "$R/plugins/fleet-board/.claude-plugin/plugin.json
 rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak
 g add -A; g commit -qm "bump one"
 if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out2" 2>&1; then bad "configured lint passed a one-manifest bump"; else ok "configured lint flags a one-manifest bump"; fi
+sed -i.bak 's/1\.2\.3/1.2.4/' "$R/plugins/fleet-board/.claude-plugin/plugin.json" "$R/.claude-plugin/marketplace.json"
+rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak "$R"/.claude-plugin/*.bak
+g add -A; g commit -qm bump
+if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out3" 2>&1; then ok "configured lint passes a bumped branch"; else bad "configured lint rejected a bumped branch"; fi
 exit $fail

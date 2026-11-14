@@ -79,4 +79,17 @@ mkrepo "$tmp/h"
 setver 0.16.1 0.16.2 plugin; git add . && git commit -qm plugin-only
 git update-ref refs/remotes/origin/main HEAD
 expect 'main whose manifests disagree fails' fail "$tmp/h"
+
+mkrepo "$tmp/i"
+git checkout -qb feature
+git commit --allow-empty -qm feature-without-bump
+sed 's/0.16.1/0.16.2/' plugins/fleet-board/.claude-plugin/plugin.json > "$tmp/p" && cp "$tmp/p" plugins/fleet-board/.claude-plugin/plugin.json
+git add . && git commit -qm plugin-bump
+sed 's/0.16.1/0.16.2/' .claude-plugin/marketplace.json > "$tmp/m" && cp "$tmp/m" .claude-plugin/marketplace.json
+git add . && git commit -qm marketplace-bump
+if ! bash plugins/fleet-board/tests/test-version-bumped.sh > "$tmp/output" 2>&1; then
+  echo 'not ok - split version bump was rejected'; cat "$tmp/output"; fail=1
+else
+  echo 'ok - split version bump accepted'
+fi
 exit $fail

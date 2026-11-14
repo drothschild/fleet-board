@@ -66,4 +66,8 @@ if bash "$R/plugins/fleet-board/tests/test-version-bumped.sh" >"$T/out2" 2>&1; t
 else
   grep -q '^not ok' "$T/out2" && ok "branch raising only one manifest is flagged" || bad "flag output missing"
 fi
+sed -i.bak 's/1\.2\.3/1.2.4/' "$R/plugins/fleet-board/.claude-plugin/plugin.json" "$R/.claude-plugin/marketplace.json"
+rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak "$R"/.claude-plugin/*.bak
+g add -A; g commit -qm bump
+if bash "$R/plugins/fleet-board/tests/test-version-bumped.sh" >"$T/out3" 2>&1; then ok "bumped card branch passes"; else bad "bumped branch rejected: $(cat "$T/out3")"; fi
 exit $fail
