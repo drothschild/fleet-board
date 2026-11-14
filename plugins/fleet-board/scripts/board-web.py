@@ -49,6 +49,7 @@ if _SCRIPTS_DIR not in sys.path:
 from supervisor import launcher as supervisor_launcher
 from supervisor import paths as supervisor_paths
 from supervisor import roles as supervisor_roles
+from supervisor import sessiontext as supervisor_sessiontext
 from supervisor import stuck as supervisor_stuck
 from supervisor import usage as supervisor_usage
 from supervisor import webproxy
@@ -1706,6 +1707,27 @@ def get_card_usage(params, body):
     return 200, usage_view(card=params["n"])
 
 
+class PlainText(str):
+    """A controller result sent as text/plain instead of JSON."""
+
+
+def get_transcript(params, body):
+    """The rendered session log of one of this card's ledger lines; the id is the log's file stem."""
+    cfg, _ = ctx()
+    board_dir = (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR
+    lines, _skipped = supervisor_usage.read(APP["root"], board_dir)
+    for line in lines:
+        log = line.get("log")
+        if line["card"] == params["n"] and log and Path(log).stem == params["id"]:
+            try:
+                return 200, PlainText(supervisor_sessiontext.render(log))
+            except FileNotFoundError:
+                raise ApiError(404, "the log file is missing for session %s" % params["id"])
+            except OSError as exc:
+                raise ApiError(500, "log unreadable: %s" % str(exc)[:200])
+    raise ApiError(404, "no such session for card %d: %s" % (params["n"], params["id"]))
+
+
 STUCK_MIN_INTERVAL = 30.0  # seconds: a stuck scan of a large board takes seconds and shells out per card
 _STUCK = {"at": None, "mono": 0.0, "found": None, "error": None, "running": False, "duration": 0.0, "stamp": None,
           "live": frozenset()}
@@ -1905,6 +1927,7 @@ ROUTES = [
     ("GET", r"/api/usage", get_usage),
     ("GET", r"/api/stuck", get_stuck),
     ("GET", r"/api/cards/(?P<n>\d+)/usage", get_card_usage),
+    ("GET", r"/api/cards/(?P<n>\d+)/transcripts/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_transcript),
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
     ("POST", r"/api/planner", post_planner),
     ("POST", r"/api/planner/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)/messages", post_planner_message),
@@ -2044,6 +2067,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     body = {}
                 code, payload = fn(params, body)
+                if isinstance(payload, PlainText):
+                    data = payload.encode("utf-8")
+                    self.send_response(code)
+                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                    return
                 send_json(self, code, payload)
                 return
             target = static_file(path) if method == "GET" else None
