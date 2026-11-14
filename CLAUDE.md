@@ -72,19 +72,19 @@ version; the two must not drift.
 ## Fleet agents: version bump
 
 This section applies to this repository only; the shipped plugin does not know about it.
-`plugins/fleet-board/tests/test-version-bumped.sh` fails CI when a change under `plugins/`
-does not bump both manifests above the `origin/main` version. Fleet implementors and fixers
-working on this repo, for any change under `plugins/`:
+`.fleet-board.yml` sets `supervisor.version_bump: merge` with `version_bump_paths: ["plugins/**"]`,
+so the merge lane raises the plugin version, not each PR. Fleet implementors and fixers no longer
+bump: leave `plugins/fleet-board/.claude-plugin/plugin.json` and the fleet-board entry in
+`.claude-plugin/marketplace.json` as they are for any change under `plugins/`.
 
-1. Run `git fetch origin`. If the branch is behind `origin/main`, merge `origin/main` into it
-   (never rebase or force-push) before bumping.
-2. Bump `plugins/fleet-board/.claude-plugin/plugin.json` and the fleet-board entry in
-   `.claude-plugin/marketplace.json` (patch by default) strictly above the `origin/main` version (an equal version fails), in the
-   implementation commit (not the test-first commit).
-3. Collisions: bump at card start against the current `origin/main`. If `origin/main` moves
-   to the same or a higher version before merge, merge it again and re-bump above it.
-4. Run `bash plugins/fleet-board/tests/test-version-bumped.sh` (wired as `commands.lint` in
-   `.fleet-board.yml`) before pushing; it must print no `not ok` line.
+- `plugins/fleet-board/tests/test-version-bumped.sh` (wired as `commands.lint`) passes a branch
+  that leaves both manifests at their branch-point versions, and fails one that raises only one
+  or lowers either. On merged main it checks that the two manifests agree and that the latest
+  change under `plugins/` came with a version raise.
+- A patch bump is the default. Ask for a minor or major bump with the `fleet:bump:minor` or
+  `fleet:bump:major` card label.
+- A PR merged by a person outside the fleet still needs a bump by hand, in both manifests,
+  strictly above the `origin/main` version. The check on main catches a miss.
 
 ## Primitive Types
 

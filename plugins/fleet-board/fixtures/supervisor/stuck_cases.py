@@ -299,6 +299,27 @@ class Release(StuckCase):
         with mock.patch.object(stuck, '_head', lambda *a: 'old'):
             self.assertEqual(self.kinds(), [(12, 'in_flight')])
 
+    def pending_at(self, current, **extra):
+        self.b.seed(12, 'merging')
+        pending = dict({'operation_key': 'k', 'pr': 34, 'head_sha': 'aaa111'}, **extra)
+        self.b.put_note({'pr': 34, 'pending_merge': pending})
+        with mock.patch.object(stuck, '_head', lambda *a: current):
+            found = self.kinds()
+        return found, self.b.note(12).get('pending_merge')
+
+    def test_a_pending_merge_whose_pr_head_is_its_bumped_head_is_kept_as_in_flight(self):
+        found, pending = self.pending_at('bbb222', bumped_head='bbb222')
+        self.assertEqual(found, [(12, 'in_flight')])
+        self.assertEqual(pending['bumped_head'], 'bbb222')
+
+    def test_a_pending_merge_whose_pr_head_is_a_third_commit_is_dropped_as_stale(self):
+        found, _ = self.pending_at('ccc333', bumped_head='bbb222')
+        self.assertEqual(found, [])
+
+    def test_a_pending_merge_with_no_bumped_head_is_dropped_when_the_pr_head_moved(self):
+        found, _ = self.pending_at('ccc333')
+        self.assertEqual(found, [])
+
     def test_the_driver_clears_stuck_released_when_it_next_acts_on_the_card(self):
         self.b.seed(12, 'in_progress')
         path = self.worktree(12, dirty=True)
