@@ -1073,10 +1073,10 @@ def test_commits_since_review_counts_only_the_prs_own_commits(base):
     g('commit', '-q', '-m', 'fix')
     assert count() == '1', 'the fixer commit after the merge counts: %s' % count()
 
-def _version_repo(base):
+def _version_repo(base, repo=None):
     """A repo with a reviewed head on `feat`, then a merge of main; returns (g, repo, reviewed)."""
-    repo = Path(base) / 'vrepo'
-    repo.mkdir()
+    repo = Path(repo) if repo else Path(base) / 'vrepo'
+    repo.mkdir(parents=True)
 
     def g(*args):
         out = subprocess.run(['git', '-C', str(repo)] + list(args), capture_output=True, text=True, check=True)
@@ -1112,6 +1112,23 @@ def test_commits_since_review_leaves_out_a_version_only_commit(base):
     (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "1.0.1"\n}\n')
     g('commit', '-q', '-am', 'Raise versions above origin/main')
     assert _count_since(repo, reviewed) == '0', _count_since(repo, reviewed)
+
+
+def test_fixer_action_passes_version_files_to_the_commit_count(base):
+    """A fixer action with supervisor.version_files set, on a real-git worktree holding a version-only commit,
+    gets --commits-since-review 0 on its parse-report call."""
+    config = dict(CONFIG, supervisor={'version_files': ['plugin.json']})
+    b = board_for(base, 'in_review', config=config)
+    g, repo, reviewed = _version_repo(base, b.worktree)
+    (repo / 'plugin.json').write_text('{\n  "name": "x",\n  "version": "1.0.1"\n}\n')
+    g('commit', '-q', '-am', 'Raise versions above origin/main')
+    b.driver.git = driver._git
+    seed_fix(b, last_review=dict(LAST_REVIEW, sha=reviewed))
+    b.plans({'report': 'fixer-ok'})
+    run_role(b, begin(b, 'fix', state='in_review'))
+    calls = [c for c in b.calls if c[0] == 'parse-report.sh']
+    assert calls, b.calls
+    assert calls[-1][calls[-1].index('--commits-since-review') + 1] == '0', calls
 
 
 def test_commits_since_review_counts_a_commit_that_changes_another_line(base):
