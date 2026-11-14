@@ -1,32 +1,45 @@
 #!/usr/bin/env bash
-# Wording contract for the reviewer's mutation step (agents/reviewer.md and the provider prompt
-# scripts/providers/evidence-review-prompt.md). A reviewer re-ran every mapped test file after each
-# restore and re-ran every touched suite per mutant, so a planner card's review took about an hour.
-# These checks pin the instructions only; they are not a behavioral test of a reviewer session.
+# Wording contract for the reviewer's mutation step (agents/reviewer.md, its behavior spec, and the
+# provider prompt scripts/providers/evidence-review-prompt.md). A reviewer re-ran every mapped test
+# file after each restore and re-ran every touched suite per mutant, so a planner card's review took
+# about an hour. These checks pin the instructions only; they are not a behavioral test of a session.
 set -uo pipefail
 unset CDPATH
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN="$HERE/.."
+SPEC="$PLUGIN/../../docs/implementation-plans/2026-09-28-fleet-board/specs/reviewer.md"
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 
-for f in agents/reviewer.md scripts/providers/evidence-review-prompt.md; do
-  text="$(cat "$PLUGIN/$f")"
-  case "$text" in
-    *'Re-run the same test command and confirm it is green again'*|*'rerun to confirm green'*)
-      fail "$f: no rerun of the test after a mutant is restored" ;;
-    *) pass "$f: no rerun of the test after a mutant is restored" ;;
-  esac
-  case "$text" in
-    *'git diff --quiet -- <file>'*) pass "$f: a restore is confirmed with git diff --quiet" ;;
-    *) fail "$f: a restore is confirmed with git diff --quiet" ;;
-  esac
-  case "$text" in
-    *'only the mapped test'*) pass "$f: a mutant runs only the mapped test" ;;
-    *) fail "$f: a mutant runs only the mapped test" ;;
-  esac
-done
+check() { # <label> <file>
+  local label="$1" f="$2"
+  # Any wording that has a mutant's test re-run after the restore, in either spelling
+  if grep -qiE 'green again|re-?runs? (it|the same test command|the same test)[^.]*green|re-?run to confirm green' "$f"; then
+    fail "$label: no re-run of the test after a mutant is restored"
+  else
+    pass "$label: no re-run of the test after a mutant is restored"
+  fi
+  if grep -qF 'git status --porcelain` prints nothing before' "$f" || grep -qF 'git status --porcelain` prints nothing. Only then' "$f"; then
+    pass "$label: the whole worktree is confirmed restored before the next mutant"
+  else
+    fail "$label: the whole worktree is confirmed restored before the next mutant"
+  fi
+  if grep -qF 'only the mapped test' "$f"; then
+    pass "$label: a mutant runs only the mapped test"
+  else
+    fail "$label: a mutant runs only the mapped test"
+  fi
+  if grep -qF 'exactly one test ran' "$f"; then
+    pass "$label: a single-case run counts only when exactly one test ran"
+  else
+    fail "$label: a single-case run counts only when exactly one test ran"
+  fi
+}
+
+check "agents/reviewer.md" "$PLUGIN/agents/reviewer.md"
+check "providers/evidence-review-prompt.md" "$PLUGIN/scripts/providers/evidence-review-prompt.md"
+if [ -f "$SPEC" ]; then check "specs/reviewer.md" "$SPEC"; else echo "  skip specs/reviewer.md (specs directory absent)"; fi
 
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
