@@ -1228,34 +1228,48 @@ for n in 1 2 3 4 5 6; do seed_card "$n" backlog "Card $n" "Do it.
 - src/card$n.sh"
   jq '.acceptance = ["works"]' "$REPO/.fleet-board/cards/$n.json" > "$TMP/mv.json" && mv "$TMP/mv.json" "$REPO/.fleet-board/cards/$n.json"
 done
+printf '{"pr": 36, "pending_merge": {"operation_key": "k", "pr": 36, "head_sha": "%s"}}' "$(printf 'a%.0s' $(seq 40))" > "$TMP/pm6.json"
+jq '.state = "merging"' "$REPO/.fleet-board/cards/6.json" > "$TMP/mv6.json" && mv "$TMP/mv6.json" "$REPO/.fleet-board/cards/6.json"
+(cd "$MV_REPO" && bash "$SCRIPTS/note.sh" merge 6 "$TMP/pm6.json" >/dev/null 2>&1) || true
 MV_OUT="$(SCRIPTS="$SCRIPTS" MV_REPO="$MV_REPO" python3 -I - <<'PYEOF'
-import importlib.util, os
+import importlib.util, json, os, signal, subprocess
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 repo = os.environ["MV_REPO"]
 m.APP.update(root=repo, scripts=os.environ["SCRIPTS"])
 marker = lambda n: Path(repo) / ".fleet-board" / "active" / str(n)
-def attempt(label, n, alive, mark, stuck):
-    if mark: marker(n).write_text("")
+def running(active, pid=111, phase="running"):
+    return {"phase": phase, "desired_mode": "running", "active": [{"card": c} for c in active], "pid": pid}
+def attempt(label, n, status, mark, other_pid=None, marker_text=""):
+    if mark: marker(n).write_text(marker_text)
     elif marker(n).exists(): marker(n).unlink()
-    m.run_alive = lambda status=None: alive
-    m.supervisor_status = lambda: None
-    findings = [{"card": n, "kind": "marker", "detail": "x"}] if stuck else []
-    m.stuck_view = lambda status, refresh=True: {"findings": findings, "checked_at": None, "error": None,
-                                                 "checking": False, "known": True, "suppressed": None}
+    m.supervisor_status = lambda: status
+    m.supervisor_stuck.run_lock_holder = lambda path: other_pid
     try:
         code, _ = m.move_card({"n": n}, {"state": "ready"})
         err = ""
     except m.ApiError as e:
         code, err = e.code, e.msg
-    import json
     state = json.load(open(os.path.join(repo, ".fleet-board", "cards", "%d.json" % n)))["state"]
-    print("%s|%s|%s|%s" % (label, code, state, err))
-attempt("busy", 1, True, True, False)
-attempt("nomarker", 2, True, False, False)
-attempt("norun", 3, False, True, False)
-attempt("stuck", 4, True, True, True)
+    print("%s|%s|%s|%s|%s" % (label, code, state, err.replace("\n", " "), marker(n).exists()))
+attempt("busy", 1, running([1]), True)
+attempt("nomarker", 2, running([]), False)
+attempt("norun", 3, None, True)
+attempt("stuck", 4, running([]), True)
+proc = subprocess.Popen(["sleep", "60"], start_new_session=True)
+attempt("live", 5, running([]), True, marker_text=json.dumps({"pgid": os.getpgid(proc.pid), "supervisor_pid": 1}))
+os.killpg(os.getpgid(proc.pid), signal.SIGKILL); proc.wait()
+attempt("pending", 6, running([]), True)
+attempt("paused", 1, running([1], phase="paused"), True)
+attempt("other", 2, running([], pid=111), True, other_pid=222)
+m.board_extras = lambda status, run, refresh=False: ({}, {})
+marker(1).write_text(""); marker(3).write_text("")
+m.supervisor_status = lambda: running([1])
+code, body = m.get_board({}, None)
+flags = {c["number"]: c["active"] for c in body["cards"]}
+print("flag1|%s" % flags[1])
+print("flag3|%s" % flags[3])
 PYEOF
 )"
 mv_field() { printf '%s\n' "$MV_OUT" | grep "^$1|" | cut -d'|' -f"$2"; }
@@ -1265,6 +1279,13 @@ case "$(mv_field busy 4)" in *"agent is working on"*) pass "the 409 error text s
 [ "$(mv_field nomarker 2)" = 200 ] && pass "the same move returns 200 when the active/<n> marker is gone" || fail "the same move returns 200 when the active/<n> marker is gone" "got: $MV_OUT"
 [ "$(mv_field norun 2)" = 200 ] && pass "the same move returns 200 when the marker exists but no run is alive" || fail "the same move returns 200 when the marker exists but no run is alive" "got: $MV_OUT"
 [ "$(mv_field stuck 2)" = 200 ] && pass "the same move returns 200 when the marker exists, the run is alive and the card has a stuck finding" || fail "the same move returns 200 when the marker exists, the run is alive and the card has a stuck finding" "got: $MV_OUT"
+[ "$(mv_field stuck 3)" = ready ] && [ "$(mv_field stuck 5)" = False ] && pass "a marked card the supervisor does not own is moved and its marker cleared" || fail "a marked card the supervisor does not own is moved and its marker cleared" "got: $MV_OUT"
+[ "$(mv_field norun 5)" = True ] && pass "with no supervisor a move leaves the marker alone" || fail "with no supervisor a move leaves the marker alone" "got: $MV_OUT"
+[ "$(mv_field live 2)" = 409 ] && case "$(mv_field live 4)" in *"live process group"*) [ "$(mv_field live 5)" = True ] ;; *) false ;; esac && pass "a marker naming a live process group the supervisor does not own stays unmovable" || fail "a marker naming a live process group the supervisor does not own stays unmovable" "got: $MV_OUT"
+[ "$(mv_field pending 2)" = 409 ] && case "$(mv_field pending 4)" in *"stuck --release 6"*) true ;; *) false ;; esac && pass "an unrecorded pending_merge card is refused naming stuck --release 6" || fail "an unrecorded pending_merge card is refused naming stuck --release 6" "got: $MV_OUT"
+[ "$(mv_field paused 2)" = 409 ] && pass "a paused supervisor still owns its active cards" || fail "a paused supervisor still owns its active cards" "got: $MV_OUT"
+[ "$(mv_field other 2)" = 409 ] && case "$(mv_field other 4)" in *"another checkout"*) true ;; *) false ;; esac && pass "a run lock held by another checkout refuses the move" || fail "a run lock held by another checkout refuses the move" "got: $MV_OUT"
+[ "$(mv_field flag1 2)" = True ] && [ "$(mv_field flag3 2)" = False ] && pass "/api/board active means owned by the supervisor: listed card true, merely marked card false" || fail "/api/board active means owned by the supervisor: listed card true, merely marked card false" "got: $MV_OUT"
 
 echo "Case: a stuck card under a live supervisor run is surfaced to move_card (stuck_view unpatched)"
 LS_OUT="$(SCRIPTS="$SCRIPTS" MV_REPO="$MV_REPO" python3 -I - <<'PYEOF'

@@ -231,6 +231,15 @@ Left empty (the default), none of this runs and every conflict goes to the fixer
 
 `board.port` is the port the board page listens on, on `127.0.0.1`. The default is `8765`. It must be an integer from 1024 to 65535. `board-web.sh --port N` overrides it for one run.
 
+## `board.terminal_command`
+
+`board.terminal_command` is the command the board's "Open terminal" link runs, as a list of strings. `{dir}` in any item is replaced by the card's directory (its worktree). It must be a list of strings and at least one item must contain `{dir}`; `config.sh` exits 5 otherwise. The default is `["open", "-a", "Terminal", "{dir}"]`. To use iTerm instead:
+
+```yaml
+board:
+  terminal_command: ["open", "-a", "iTerm", "{dir}"]
+```
+
 ## Finding the file
 
 `config.sh` uses `$FLEET_BOARD_CONFIG` when set, then `.fleet-board.yml` at the git root, then the one in the main checkout (for a linked worktree). Its exit codes: 3 no config, 4 the file is not valid YAML or uses YAML outside the supported subset, 5 an invalid value.

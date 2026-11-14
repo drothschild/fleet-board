@@ -217,6 +217,55 @@ wait_idle conv1
 got="$(model_of $((LINES_BEFORE + 3)))"
 if [ "$got" = haiku ]; then pass "changed planner.model haiku -> --model haiku on the next turn"; else fail "changed planner.model haiku -> --model haiku on the next turn" "got '$got'"; fi
 
+# prints the value following --tools in argv line $1, or NONE when the flag is absent
+tools_of() {
+  local a
+  a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
+  if printf '%s\n' "$a" | grep -qx -e '--tools'; then printf '%s\n' "$a" | grep -A1 -x -e '--tools' | sed -n 2p; else echo NONE; fi
+}
+
+echo "Case: a planner turn's argv limits the built-in tools to Read, Grep and Glob"
+got="$(tools_of 1)"
+if [ "$got" = "Read,Grep,Glob" ]; then pass "first planner turn passes --tools Read,Grep,Glob"; else fail "first planner turn passes --tools Read,Grep,Glob" "got '$got'"; fi
+
+echo "Case: a planner turn's argv does not include Bash, Write, Edit or NotebookEdit among its allowed tools"
+got="$(tools_of 1)"
+if [ "$got" != NONE ] && ! printf '%s\n' "$got" | tr ', ' '\n\n' | grep -qxE 'Bash|Write|Edit|NotebookEdit'; then
+  pass "planner turn tool list holds none of Bash, Write, Edit, NotebookEdit"
+else
+  fail "planner turn tool list holds none of Bash, Write, Edit, NotebookEdit" "tools: '$got'"
+fi
+
+echo "Case: a resumed planner turn carries the same tool limit as the first turn"
+got="$(tools_of 2)"
+if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -qx -e '--resume' && [ "$got" = "Read,Grep,Glob" ]; then
+  pass "resumed planner turn passes --tools Read,Grep,Glob"
+else
+  fail "resumed planner turn passes --tools Read,Grep,Glob" "got '$got'"
+fi
+
+echo "Case: the argument after the --tools list is an option or --, never the prompt"
+for ln in 1 2; do
+  nxt="$(sed -n "${ln}p" "$ARGV_LOG" | tr '\037' '\n' | grep -A2 -x -e '--tools' | sed -n 3p)"
+  case "$nxt" in -*) pass "turn $ln: argument after --tools list is '$nxt'" ;; *) fail "turn $ln: argument after --tools list is an option or --" "got '$nxt'" ;; esac
+done
+
+echo "Case: the import-preview session started by Draft cards keeps its argv without a tool limit"
+LINES_BEFORE_DRAFT="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
+api POST /api/planner/conv1/draft '{}'
+assert_code 200 "draft accepted"
+for _ in $(seq 1 50); do
+  [ "$(wc -l < "$ARGV_LOG" | tr -d ' ')" -gt "$LINES_BEFORE_DRAFT" ] && break
+  sleep 0.1
+done
+dargv="$(sed -n "$((LINES_BEFORE_DRAFT + 1))p" "$ARGV_LOG" | tr '\037' '\n')"
+case "$dargv" in *"/fleet-board:import-plan"*) pass "draft session runs the import-plan preview" ;; *) fail "draft session runs the import-plan preview" "$dargv" ;; esac
+if printf '%s\n' "$dargv" | grep -qxE -e '--tools|--allowedTools|--allowed-tools|--disallowedTools|--disallowed-tools'; then
+  fail "draft session argv has no tool restriction flag" "$dargv"
+else
+  pass "draft session argv has no tool restriction flag"
+fi
+
 echo ""
 echo "Results:$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
