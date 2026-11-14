@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Card 227 (review round 1): stricter checks that kill surviving mutations of the guidance test.
+# Card 227 (review round 1), updated by card 368: stricter checks that kill surviving mutations of the guidance test.
 set -u
 unset CDPATH
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -8,15 +8,16 @@ fail=0
 ok() { echo "ok - $1"; }
 bad() { echo "not ok - $1"; fail=1; }
 
-# Acceptance 1: the guidance demands a strict increase over origin/main.
+# Acceptance 1: the guidance says agents no longer bump and a person outside the fleet bumps by hand.
 sect=$(awk '/^## Fleet agents: version bump/{f=1;next} /^## /{f=0} f' "$ROOT/CLAUDE.md")
-if printf '%s' "$sect" | tr '\n' ' ' | grep -Eq 'strictly above the `origin/main` version \(an equal version fails\)'; then
-  ok "CLAUDE.md requires a version strictly above origin/main"
+flat=$(printf '%s' "$sect" | tr '\n' ' ')
+if printf '%s' "$flat" | grep -Eq 'no longer bump' && printf '%s' "$flat" | grep -Eq 'by hand'; then
+  ok "CLAUDE.md says agents no longer bump and outside merges bump by hand"
 else
-  bad "CLAUDE.md does not require a version strictly above origin/main"
+  bad "CLAUDE.md lacks 'no longer bump' and 'by hand'"
 fi
 
-# Acceptance 2: the configured lint command, run for real, flags an unbumped branch and passes a bumped one.
+# Acceptance 2: the configured lint command, run for real, passes a branch leaving manifests alone and flags a one-manifest bump.
 lint=$(sed -n 's/^[[:space:]]*lint:[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$ROOT/.fleet-board.yml" | head -1)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 R="$T/repo"
@@ -32,15 +33,16 @@ echo x > "$R/plugins/fleet-board/change.txt"; g add -A; g commit -qm "change wit
 if [ -z "$lint" ]; then
   bad "no commands.lint in .fleet-board.yml"
 elif (cd "$R" && bash -c "$lint") >"$T/out" 2>&1; then
-  bad "configured lint passed an unbumped branch"
+  ok "configured lint passes a branch leaving manifests alone"
 else
-  ok "configured lint flags an unbumped branch"
+  bad "configured lint rejected a branch leaving manifests alone"
 fi
+sed -i.bak 's/1\.2\.3/1.2.4/' "$R/plugins/fleet-board/.claude-plugin/plugin.json"
+rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak
+g add -A; g commit -qm "bump one"
+if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out2" 2>&1; then bad "configured lint passed a one-manifest bump"; else ok "configured lint flags a one-manifest bump"; fi
 sed -i.bak 's/1\.2\.3/1.2.4/' "$R/plugins/fleet-board/.claude-plugin/plugin.json" "$R/.claude-plugin/marketplace.json"
 rm -f "$R"/plugins/fleet-board/.claude-plugin/*.bak "$R"/.claude-plugin/*.bak
 g add -A; g commit -qm bump
-if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out2" 2>&1; then ok "configured lint passes a bumped branch"; else bad "configured lint rejected a bumped branch"; fi
-
-# Acceptance 3 (a diff of the current branch against origin/main) was removed: it was a one-time
-# check for card 227 and fails every later PR that changes agents, skills or scripts.
+if [ -n "$lint" ] && (cd "$R" && bash -c "$lint") >"$T/out3" 2>&1; then ok "configured lint passes a bumped branch"; else bad "configured lint rejected a bumped branch"; fi
 exit $fail
