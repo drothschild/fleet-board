@@ -5,8 +5,12 @@ set -uo pipefail
 
 ME="$(fb_login)" || exit 1
 fl_require_store
-CARD="$(fl_read_card "$1")" || exit $?
-STATE="$(jq -r '.state // ""' <<<"$CARD")"
+# One jq both checks the card file is a JSON object (as fl_read_card does) and reads its state
+CARD_FILE="$(fl_card_file "$1")"
+[ -f "$CARD_FILE" ] || fb_die 1 "card #$1 not found in $(fl_cards_dir)"
+CARD="$(cat "$CARD_FILE")"
+STATE="$(jq -r 'if type == "object" then .state // "" else error("not a card") end' <<<"$CARD" 2>/dev/null)" \
+  || fb_die 1 "card #$1 is not valid JSON: $CARD_FILE"
 IN=0
 for s in $FB_STATES; do [ "$s" = "$STATE" ] && IN=1; done
 if [ "$IN" = 0 ]; then
