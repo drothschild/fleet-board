@@ -108,7 +108,14 @@ no file here. The gate's residual bypasses and false positives are listed in the
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
   `review_stage` and `update_branch` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
-  scope-checked against other cards; they still take a slot and one action per card. Settle plans do
+  scope-checked against other cards; they still take a slot and one action per card, except that one card's
+  reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
+  reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
+  every other action of the card (a fix, an update_branch, a start, a merge) while any reviewer runs, and the
+  reviewers while any of those runs. `State.active` keeps the card's first action, `State.actions_for(card)` all
+  of them, `State.end(card, action)` ends one, and the snapshot lists the further ones under `also`. The card's
+  marker stays until its last action ends. `worktree.sh review <n> <pr> <stage>` gives a stage reviewer its own
+  checkout `<n>-review-<stage>` (and copy), so reviewers never share one. Settle plans do
   not fetch scope files or start workers. Every overlap check (the scheduler,
   `state.reserve`, and tick-plan's Ready-card checks) first drops paths matching
   `supervisor.scope_ignore`; a scope wholly ignored is kept. Globs are

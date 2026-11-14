@@ -12,6 +12,8 @@ from typing import Any, Optional
 from . import markers, scopes
 
 DUPLICATE_ADMISSION = 'card already active'  # begin() refuses a second action for a card; loop.py matches it
+# The scope-free review actions: a card may run several of them together (never beside any other action).
+REVIEWER_ACTIONS = frozenset(('start_review', 'review', 'review_stage'))
 _PRIVATE = ('session', 'marker', 'pgid', 'work_column')     # Action fields kept out of the snapshot
 
 
@@ -29,6 +31,7 @@ class Action:
     kind: str = 'role'  # "role" | "script" | "merge"
     marker: Any = None  # the card's active marker path once a session or merge child was launched
     pgid: Any = None    # the process group this action owns; end() removes a marker naming it or no usable pgid
+    stage: Any = None   # a review_stage action's stage name: one card's reviewers run together, one per stage
     work_column: Any = None  # the column the card is in while the role session runs; set in _launch and by the merge lane
 
 
@@ -51,7 +54,9 @@ class State:
         self.mode = 'running'
         self.pause_reason = None
         self.revision = 0
-        self.active = {}
+        self.active = {}        # card -> its first running action
+        self._also = {}         # card -> its further running reviewer actions (see REVIEWER_ACTIONS)
+        self._retired = {}      # card -> {marker, pgids} of the card's reviewers that already ended
         self.reservations = {}
         self.lane = None
         self.provider_health = {}
@@ -133,29 +138,66 @@ class State:
                 self.pause_reason = None
                 self._bump()
 
+    def actions_for(self, card):
+        """Every running action of `card`: the first, then its further reviewer actions."""
+        with self._lock:
+            first = self.active.get(card)
+            return ([first] if first is not None else []) + list(self._also.get(card, ()))
+
+    def all_actions(self):
+        with self._lock:
+            return [a for card in list(self.active) for a in self.actions_for(card)]
+
     def begin(self, action):
         with self._lock:
             if action.kind not in ('role', 'script', 'merge'):
                 raise ValueError('invalid action kind')
-            if action.card in self.active:
+            running = self.actions_for(action.card)
+            if running and not (action.action in REVIEWER_ACTIONS
+                                and all(a.action in REVIEWER_ACTIONS for a in running)):
                 raise ValueError(DUPLICATE_ADMISSION)
             if action.kind == 'merge' and self.lane is not None:
                 raise ValueError('merge lane taken')
-            self.active[action.card] = action
+            if running:
+                self._also.setdefault(action.card, []).append(action)
+            else:
+                self.active[action.card] = action
             self.attention.pop(str(action.card), None)
             if action.kind == 'merge':
                 self.lane = action
             self._bump()
 
-    def end(self, card):
-        """End the card's action. Its active marker goes too, unless it names another process group: a marker naming
-        the action's own pgid, or no usable pgid, is removed when the action ends."""
+    def end(self, card, action=None):
+        """End `action` (default: the card's first one). The card's active marker goes with its last action, unless
+        it names another process group: a marker naming the action's own pgid, one of its ended siblings' pgids,
+        or no usable pgid, is removed then; while a reviewer still runs the marker stays."""
         with self._lock:
-            action = self.active.pop(card)
+            running = self.actions_for(card)
+            if action is None and running:
+                action = running[0]
+            if action is None or action not in running:
+                raise KeyError(card)
+            rest = [a for a in running if a is not action]
+            if rest:
+                self.active[card] = rest[0]
+                if rest[1:]:
+                    self._also[card] = rest[1:]
+                else:
+                    self._also.pop(card, None)
+                kept = self._retired.setdefault(card, {'marker': None, 'pgids': set()})
+                kept['marker'] = kept['marker'] or action.marker
+                if action.pgid is not None:
+                    kept['pgids'].add(action.pgid)
+            else:
+                self.active.pop(card, None)
+                self._also.pop(card, None)
+            retired = None if rest else self._retired.pop(card, None)
             if self.lane is action:
                 self.lane = None
             self._bump()
-        markers.clear(action.marker, action.pgid)
+        if not rest:
+            marker = action.marker or (retired or {}).get('marker')
+            markers.clear(marker, action.pgid, also=(retired or {}).get('pgids') or ())
         return action
 
     def reserve(self, card, paths, ignore=None):
@@ -238,6 +280,16 @@ class State:
         # Not asdict(): it deep-copies, and a live session handle is not copyable.
         return {f.name: getattr(action, f.name) for f in fields(action) if f.name not in _PRIVATE}
 
+    def _with_action_dicts(self, card):
+        return [self._action_dict(a) for a in self._also.get(card, ())]
+
+    def _with_also(self, card, action):
+        entry = self._action_dict(action)
+        also = self._with_action_dicts(card)
+        if also:
+            entry['also'] = also   # the card's further reviewer actions
+        return entry
+
     def snapshot(self):
         with self._lock:
             return copy.deepcopy({
@@ -245,7 +297,7 @@ class State:
                 'mode': self.mode,
                 'pause_reason': self.pause_reason,
                 'revision': self.revision,
-                'active': {card: self._action_dict(a) for card, a in self.active.items()},
+                'active': {card: self._with_also(card, a) for card, a in self.active.items()},
                 'lane': self._action_dict(self.lane),
                 'provider_health': self.provider_health,
                 'holds': self.holds,

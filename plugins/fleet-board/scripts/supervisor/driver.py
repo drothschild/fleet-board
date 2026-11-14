@@ -669,6 +669,7 @@ class CardDriver:
         action = Action(card=number, action=action_name, column=row.get('state'), role=_ROLE_OF.get(action_name),
                         provider=resolver.provider_for(config, row), paths=list(row.get('declared_paths') or []),
                         started_at=self.clock(), started_mono=time.monotonic(),
+                        stage=(row['stage'].get('name') if isinstance(row.get('stage'), dict) else row.get('stage')),
                         kind='role' if action_name in ROLE_ACTIONS else 'script')
         if not _posint(number):
             self.state.event('action_failed', card=number, action=action_name, error='invalid number: %s' % (number,))
@@ -689,14 +690,14 @@ class CardDriver:
             except _Fail as exc:
                 self._failed(ctx, action_name, str(exc))
         except BaseException:
-            self.state.end(number)
+            self.state.end(number, action)
             raise
         finally:
             if tmp is not None and outcome != 'session':
                 shutil.rmtree(tmp, ignore_errors=True)
         if outcome == 'session':
             return Started('session', action)
-        self.state.end(number)
+        self.state.end(number, action)
         if ctx is not None and ctx.reached_done:
             self._cleanup_done()
         return Started('done', action)
@@ -862,7 +863,9 @@ class CardDriver:
         accepted = accepted_sha(note)
         if d.runner in _SCRIPT_RUNNERS:
             return self._script_args(c, run, pr, previous, findings, report, accepted)
-        data = _json(c.step('worktree.sh', 'review', c.n, pr).stdout)
+        # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
+        extra = (stage,) if name == 'review_stage' and stage else ()
+        data = _json(c.step('worktree.sh', 'review', c.n, pr, *extra).stdout)
         if not (isinstance(data, dict) and isinstance(data.get('path'), str) and os.path.isabs(data['path'])
                 and isinstance(data.get('sha'), str) and _SHA.fullmatch(data['sha'])):
             raise _Fail('worktree.sh review printed an unexpected result')
@@ -933,7 +936,7 @@ class CardDriver:
         except BaseException:
             self._give_back_attempt(run)   # no session ever existed: the card was not tried
             raise
-        self._runs[c.n] = run
+        self._runs[id(run.action)] = run   # a card's reviewers run together, so a run is keyed by its action
         self._own_marker(c, run.action, getattr(run.action.session, 'pid', None))
 
     def _own_marker(self, c, action, pgid):
@@ -961,7 +964,7 @@ class CardDriver:
     def finish(self, action, result, allow_redispatch=True):
         """Check a finished role's report and apply it. Returns an Outcome; `redispatch=True` means the report
         was rejected and `action.session` is a new session (the action stays active)."""
-        run = self._runs.get(action.card)
+        run = self._runs.get(id(action))
         if run is None or run.action is not action:
             raise ValueError('no role session for card %r' % (action.card,))
         c = run.c
@@ -983,9 +986,9 @@ class CardDriver:
         return outcome
 
     def _release(self, run):
-        self._runs.pop(run.c.n, None)
-        if run.c.n in self.state.active:
-            self.state.end(run.c.n)
+        self._runs.pop(id(run.action), None)
+        if run.action in self.state.actions_for(run.c.n):
+            self.state.end(run.c.n, run.action)
         shutil.rmtree(run.c.tmp, ignore_errors=True)
 
     def _record_usage(self, run, result):
