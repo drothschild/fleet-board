@@ -175,6 +175,7 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .col-count { color: var(--muted); font-weight: 500; font-variant-numeric: tabular-nums; }
 .col-head { justify-content: flex-start; }
 .col-head .col-count { margin-left: auto; }
+.col-reviewer { color: var(--muted); font-size: 12px; font-weight: 500; }
 .col-tokens { color: var(--muted); font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
 .col-tokens:empty { display: none; }
 .col-tokens:not(:empty)::before { content: "· "; }

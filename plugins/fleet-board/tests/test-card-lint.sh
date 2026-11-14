@@ -247,7 +247,8 @@ assert_eq "local: a clean field item passes" "$LAST_EXIT" 0
 setup_local '[]' "$(printf '## Acceptance\n- stale body bullet\n')"
 run_check "$PLAN"
 assert_eq "local plan: acceptance [] is skip_no_acceptance whatever the body says" "$(card action)" '"skip_no_acceptance"'
-setup_local '["clamp returns 3"]' ""
+# a Ready card needs Scope paths to start (#319): the body carries one
+setup_local '["clamp returns 3"]' "$(printf '## Scope\n- src/clamp.js\n')"
 run_check "$PLAN"
 assert_eq "local plan: field items let the card start" "$(card action)" '"start"'
 setup_local '["clamp returns 3"]' ""

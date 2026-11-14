@@ -1161,6 +1161,59 @@ assert_body "When models.reviewer is {provider: codex, model: gpt-6-astra}, the 
 assert_body "States that are not review columns (backlog, ready, human_qa, ...) have no reviewer field" '[.states[]|select(.key|startswith("in_review")|not)|select(has("reviewer"))]|length' 0
 stop_server
 
+echo "Case: /api/board reports the escalation model"
+ES_REPO="$(new_repo "$LOCAL_YML
+models:
+  escalation: opus
+  reviewer: sonnet
+  escalate_after_rounds: 2")"
+mkdir -p "$ES_REPO/.fleet-board/cards"
+start_server "$ES_REPO"
+api GET /api/board
+assert_code 200
+assert_body "When models.escalation is opus and escalate_after_rounds is 2, /api/board includes escalation: {model: opus, after_rounds: 2}" '.escalation|tojson' '{"model":"opus","after_rounds":2}'
+stop_server
+
+ES_REPO2="$(new_repo "$LOCAL_YML
+models:
+  reviewer: opus")"
+mkdir -p "$ES_REPO2/.fleet-board/cards"
+start_server "$ES_REPO2"
+api GET /api/board
+assert_body "When models.escalation is null and models.reviewer is the string opus, escalation.model is opus" '.escalation.model' opus
+stop_server
+
+ES_REPO3="$(new_repo "$LOCAL_YML
+providers:
+  codex:
+    review_command: \"codex exec -C {dir} -m {model}\"
+models:
+  reviewer:
+    provider: codex
+    model: gpt-6-astra
+    price: { input: 1, output: 2 }")"
+mkdir -p "$ES_REPO3/.fleet-board/cards"
+start_server "$ES_REPO3"
+api GET /api/board
+assert_body "When neither models.escalation nor a string models.reviewer gives a model, /api/board has escalation: null" '.escalation|tojson' null
+stop_server
+
+echo "Case: escalation_info is null when no model applies (config.sh rejects such a config, so call it directly)"
+ES_UNIT="$(SCRIPTS="$SCRIPTS" python3 -I - <<'PYEOF'
+import importlib.util, json, os
+spec = importlib.util.spec_from_file_location("bw", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+cfg = {"models": {"escalation": None, "escalate_after_rounds": 2,
+                  "reviewer": {"provider": "codex", "model": "gpt-6-astra"}}}
+print(json.dumps(m.escalation_info(cfg)))
+print(json.dumps(m.escalation_info({"models": {"escalation": None, "escalate_after_rounds": 2, "reviewer": "opus"}})))
+PYEOF
+)"
+assert_eq_unit() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
+assert_eq_unit "When neither models.escalation nor a string models.reviewer gives a model, escalation_info returns null" "$(printf '%s\n' "$ES_UNIT" | sed -n 1p)" null
+assert_eq_unit "When models.escalation is null and models.reviewer is the string opus, escalation_info returns model opus" "$(printf '%s\n' "$ES_UNIT" | sed -n 2p)" '{"model": "opus", "after_rounds": 2}'
+
 echo "Case: the move endpoint refuses a card an agent is working on, unless it is stuck"
 MV_REPO="$(new_repo "$LOCAL_YML")"
 REPO="$MV_REPO"
@@ -1278,6 +1331,33 @@ if start_server "$REPO"; then
   assert_body "GET /api/board card summaries have no blocks key" '[.cards[]|has("blocks")]|any' false
   stop_server
 fi
+
+echo "Case: /api/board and card detail report the card's worktree"
+WT_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$WT_REPO/.fleet-board/cards" "$WT_REPO/wt-here"
+echo 4 > "$WT_REPO/.fleet-board/next"
+WT_FENCE='```'
+wt_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"worktree":"%s"}\n%s\n' "$WT_FENCE" "$1" "$WT_FENCE"
+}
+WT_COMMENT1="$(jq -n --arg b "$(wt_note "$WT_REPO/wt-here")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+WT_COMMENT2="$(jq -n --arg b "$(wt_note "$WT_REPO/wt-gone")" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$WT_REPO" seed_card 1 in_progress "Has dir" "b" "$WT_COMMENT1"
+REPO="$WT_REPO" seed_card 2 in_progress "Deleted dir" "b" "$WT_COMMENT2"
+REPO="$WT_REPO" seed_card 3 in_progress "No note" "b"
+start_server "$WT_REPO"
+api GET /api/board
+assert_code 200
+assert_body "A card whose manager note has a worktree that exists on disk shows that path as worktree in /api/board" '.cards[]|select(.number==1)|.worktree' "$WT_REPO/wt-here"
+assert_body "A card whose note worktree has been deleted from disk shows worktree: null in /api/board" '.cards[]|select(.number==2)|.worktree|tojson' null
+assert_body "A card with no manager note shows worktree: null in /api/board" '.cards[]|select(.number==3)|.worktree|tojson' null
+api GET /api/cards/1
+assert_body "GET /api/cards/<n> returns the same worktree value as /api/board for a card with an existing worktree" '.worktree' "$WT_REPO/wt-here"
+api GET /api/cards/2
+assert_body "GET /api/cards/<n> returns worktree null as /api/board does for a deleted worktree" '.worktree|tojson' null
+api GET /api/cards/3
+assert_body "GET /api/cards/<n> returns worktree null as /api/board does for a card with no note" '.worktree|tojson' null
+stop_server
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

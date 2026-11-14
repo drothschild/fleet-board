@@ -11,7 +11,12 @@ CARD="$(fl_read_card "$N")" || exit $?
 if [ "$TARGET" = ready ] && ! fb_card_has_acceptance "$CARD"; then
   fb_die 1 "card #$N has no acceptance criteria (its acceptance field is empty); refusing to move it to ready"
 fi
-if [ "$TARGET" = ready ] && ! fb_card_has_scope_paths "$(jq -r '.body // ""' <<<"$CARD")"; then
+# Scope paths are checked only on the way in from Backlog (or an unreadable state). A card returned to
+# Ready from a later column (a cancel, a stuck release, an unblock) is not refused: the planner holds a
+# Ready card with no Scope paths, and refusing would leave it in a column that holds other cards' starts.
+FROM="$(jq -r '.state // ""' <<<"$CARD")"
+if [ "$TARGET" = ready ] && { [ "$FROM" = backlog ] || ! fb_valid_state "$FROM"; } \
+    && ! fb_card_has_scope_paths "$(jq -r '.body // ""' <<<"$CARD")"; then
   fb_die 1 "card #$N has no Scope paths; refusing to move it to ready"
 fi
 [ "$(jq -r '.state // ""' <<<"$CARD")" = "$TARGET" ] && exit 0
