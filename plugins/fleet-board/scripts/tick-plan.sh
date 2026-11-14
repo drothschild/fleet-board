@@ -1037,7 +1037,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif $cfg.merge.policy == "auto" and ($c.pr_info | green) then act("merge"; "clean review, green checks, merge.policy auto")
           else act("wait"; "waiting for a human merge or green checks") end
         elif $c.state == "blocked" then
-          if $n.blocking_pr != null and $c.blocking_merged == true then act("unblock"; "blocking PR #\($n.blocking_pr) merged")
+          # A card a merger attention blocked waits for a person, whatever its blocking PR does
+          if $n.blocked_from == "merging" then act("skip"; "blocked, waiting for a person")
+          elif $n.blocking_pr != null and $c.blocking_merged == true then act("unblock"; "blocking PR #\($n.blocking_pr) merged")
           else act("skip"; "blocked") end
         else act("skip"; "state \($c.state) is not planned") end;
 
