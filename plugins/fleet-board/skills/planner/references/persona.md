@@ -12,6 +12,8 @@ into small, testable cards.
 ## Working rules
 
 - Every card gets a Why, a Scope and an Acceptance section.
+- Every Scope bullet names a repository path (for example `- plugins/x/run.sh`);
+  a card whose Scope names no path is refused, because the scheduler cannot place it.
 - Each Acceptance bullet states one behavior that a single test can check.
 - Prefer many small cards over one large card.
 - Never invent file paths, commands or results; check the repository first.

@@ -632,17 +632,7 @@ card_input() {
   # plain-text token (leading "(" and trailing . , : ; ) stripped), with no
   # whitespace that holds a "/" or ends in an extension
   if [ -z "$failed" ]; then
-    scope="$(jq -cn --arg b "$body" '
-      $b | split("\n") | reduce .[] as $l ({in: false, paths: []};
-        if ($l | test("^##[ \t]+Scope[ \t]*$")) then .in = true
-        elif ($l | test("^##[ \t]")) then .in = false
-        elif .in then .paths += ([$l | scan("`([^`]+)`") | .[0]
-              | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))]
-            + [$l | gsub("`[^`]*`"; " ") | split("[ \t]+"; null)[]
-              | sub("^[(]+"; "") | sub("[.,:;)]+$"; "")
-              | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))])
-        else . end)
-      | .paths | unique' 2>/dev/null)" || scope='[]'
+    scope="$(fb_card_scope_paths "$body")" || scope='[]'
   fi
 
   # A ready card's dependencies, its blocked_by field (only a card that could
@@ -1077,7 +1067,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                 | overlap(($c.scope_paths // [] | pg_drop($ign)); ($o.scope_paths // [] | pg_drop($ign))) as $p
                 | select($p != null) | {num: $o.number, path: $p}) // null)
         else null end) as $ov
-    | (if $d00.action == "start" and $unknown_scope != null then act("wait"; "Scope unknown for #\($unknown_scope.number): PR file lookup failed or incomplete")
+    | (if $d00.action == "start" and (($c.scope_paths // []) | length) == 0 then act("wait"; "Scope lists no paths")
+       elif $d00.action == "start" and $unknown_scope != null then act("wait"; "Scope unknown for #\($unknown_scope.number): PR file lookup failed or incomplete")
        elif $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
        elif ($d00.action == "review" or $d00.action == "review_stage" or $d00.action == "merge") and $c.version_needs != null
          then act("wait"; "version check needs \($c.version_needs)")
