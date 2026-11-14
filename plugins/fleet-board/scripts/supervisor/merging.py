@@ -166,12 +166,15 @@ class MergeLane:
             return MergeOutcome(number, 'unclear', detail)
         if result.rc == 3 and isinstance(check, dict) and check.get('ok') is False:
             return MergeOutcome(number, 'verify_failed', dict(detail, main_check=check))
-        if seen and seen.get('state') == 'OPEN' and _same_head(seen.get('observed_head'), seen.get('planned_head')):
+        # a lane that raised the versions pushed a new head (merge_head): a refusal is read against it
+        merged_at = seen.get('merge_head') if seen and isinstance(seen.get('merge_head'), str) else None
+        merged_at = merged_at or (seen.get('planned_head') if seen else None)
+        if seen and seen.get('state') == 'OPEN' and _same_head(seen.get('observed_head'), merged_at):
             required = self._required_check(candidate['pr'])
             if required:
                 detail['required_check'] = required
             try:
-                refusal = {'pr': candidate['pr'], 'head': candidate['head_sha'], 'reason': detail['reason'],
+                refusal = {'pr': candidate['pr'], 'head': merged_at or candidate['head_sha'], 'reason': detail['reason'],
                            'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.clock()))}
                 if required:
                     refusal['required_check'] = required
