@@ -169,6 +169,14 @@ $OUT
 EOF
 case "$OUT" in *"ok   "*) ;; *) fail "enter driver produced results" "$OUT" ;; esac
 
+echo "Case: chat and import labels say Planner, not Claude"
+TITLE="$(grep -o '<h2 id="pl-h"[^>]*>[^<]*</h2>' "$STATIC/index.html" | sed 's/<[^>]*>//g')"
+if [ "$TITLE" = "Plan" ] && ! printf '%s' "$TITLE" | grep -qi claude; then pass "The chat title reads Plan and doesn't contain Claude"; else fail "The chat title reads Plan and doesn't contain Claude" "title: '$TITLE'"; fi
+if grep -q '<span>Planner is replying</span>' "$STATIC/index.html"; then pass "The running indicator reads Planner is replying"; else fail "The running indicator reads Planner is replying" "$(grep -o 'pl-running.*' "$STATIC/index.html" | head -1)"; fi
+if grep -q '"Reading the plan"' "$STATIC/board.js" && grep -q '"Finished without grouping the plan into any cards."' "$STATIC/board.js" && grep -q '"Grouped in " + elapsed + " s"' "$STATIC/board.js"; then pass "The import status lines read Reading the plan, Finished without grouping the plan into any cards. and Grouped in N s"; else fail "The import status lines read Reading the plan, Finished without grouping the plan into any cards. and Grouped in N s" "$(grep -n 'imp-last").textContent\|without grouping\|rouped ' "$STATIC/board.js")"; fi
+if grep -qi 'claude' "$STATIC/index.html"; then fail "No text node or placeholder/aria-label attribute in index.html contains Claude" "$(grep -ni claude "$STATIC/index.html" | head -3)"; else pass "No text node or placeholder/aria-label attribute in index.html contains Claude"; fi
+if grep -i 'claude' "$STATIC/board.js" | grep -q '"[^"]*Claude[^"]*"'; then fail "board.js has no user-facing string containing Claude" "$(grep -ni '"[^"]*Claude[^"]*"' "$STATIC/board.js" | head -3)"; else pass "board.js has no user-facing string containing Claude"; fi
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
