@@ -414,7 +414,8 @@ if grep -qF '## `followups.status`' "$DOCS" && grep -qF 'followups.status: backl
 
 # docs: the main-is-red card is filed in the followups.status column, not Backlog
 # --- local backend: the "no testable check" item lands in Backlog on a card
-# file, with the why-comment on that card; gh answers only the PR comment
+# file, with the why-comment on that card; only the PR comment is routed in gh
+# (the PR file lookup fl_names_unmerged_path makes is also one gh call, and fails)
 setup_case
 printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\n' > "$REPO/.fleet-board.yml"
 mkdir -p "$REPO/.fleet-board/cards"
