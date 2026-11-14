@@ -300,11 +300,14 @@ no file here. The gate's residual bypasses and false positives are listed in the
     the board runs again); a merging card plans `finish` only after
     `note.merger {mode: after_merge, status: done}` for its head. A refusal merger's `retry` sets
     `merge_retry {pr, head, after}`; the next merge row carries `retry_after` and the supervisor
-    holds it until then; a second refusal after a retry is attention. A merger `attention` keeps
-    the card in merging (`skip "merger needs attention; a person decides"`) with `pending_merge`
-    cleared. The way out: `note.sh merge <n>` with `merger: null` (plus `merge_refusal: null`
-    and `merge_retry: null` to let it merge again), or move the card by hand to another column
-    (the lane drops those records when the card is merged from there again).
+    holds it until then; a second refusal after a retry is attention. A merger `attention` moves
+    the card from merging to blocked with `blocked_from: merging` in the note, `pending_merge` cleared and one
+    comment starting "Waiting for a person:" that names the reason and the next step; the planner skips such a
+    card ("blocked, waiting for a person") and never unblocks it on its own. The way out is a person moving the
+    card: a refused merge (PR open) to in_review, where the planner merges it when the review at that head is
+    clean and checks are green; a failed after-merge step (PR merged) to merging, to run the steps again, or to
+    done. `adapters/local/move.sh` clears `merger`, `merge_refusal` and `merge_retry` in the note when a card
+    leaves blocked.
   - Persona: `merge.persona` null (the default) -> `.fleet-board/merger.md` when present, else the
     plugin default; a set path that is missing, or a tracked persona this PR changed, is attention.
   - Checks: one rule, `scripts/ignore-checks.jq`, shared by the planner and the gate: an unexpired
