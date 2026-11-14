@@ -1109,6 +1109,21 @@ plan_scope 'Everything in the card, no file named here.'
 assert_exit "scope-none: exit" 0
 assert_jq "scope-none: a Ready card whose Scope names no paths starts" "$(card 14 action)" '"start"'
 
+# Helper: stub the empty human_qa issue list for candidate mode.
+candidate_empty_human_qa_route() {
+  local route_dir
+  route_dir="$(mktemp -d)"
+  CLEANUP_DIRS+=("$route_dir")
+  local route_base
+  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
+  awk -F '\t' -v OFS='\t' -v base="$route_base" \
+    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
+    "$FAKE_GH_ROUTES" > "$route_dir/routes"
+  FAKE_GH_ROUTES="$route_dir/routes"
+  export FAKE_GH_ROUTES
+  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
+}
+
 # Plain-text paths in a card's Scope (candidate mode exposes declared_paths).
 # cand_scope <scope text>: ready card 14 alone; run --candidates
 cand_scope() {
@@ -1651,19 +1666,6 @@ plan escalation-round2 "${provider_models/escalation: opus/escalation: gpt-6-ast
 assert_jq "provider reviewer: shared escalation model warns" '[.warnings[] | select(startswith("escalation and reviewer share model gpt-6-astra"))] | length' 1
 
 # Candidate mode exposes the same workflow decision without tick-local admission.
-candidate_empty_human_qa_route() {
-  local route_dir
-  route_dir="$(mktemp -d)"
-  CLEANUP_DIRS+=("$route_dir")
-  local route_base
-  route_base="$(cd "$(dirname "$FAKE_GH_ROUTES")" && pwd)"
-  awk -F '\t' -v OFS='\t' -v base="$route_base" \
-    '$3 != "-" && substr($3, 1, 1) != "/" { $3 = base "/" $3 } { print }' \
-    "$FAKE_GH_ROUTES" > "$route_dir/routes"
-  FAKE_GH_ROUTES="$route_dir/routes"
-  export FAKE_GH_ROUTES
-  printf 'issue list --repo acme/toy --label fleet:human_qa *\t0\t%s/common/empty.json\n' "$TICK" >> "$FAKE_GH_ROUTES"
-}
 setup_case ready-start
 candidate_empty_human_qa_route
 run_check "$SCRIPT" --candidates
