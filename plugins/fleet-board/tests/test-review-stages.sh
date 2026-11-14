@@ -103,13 +103,26 @@ STAGES_YML='  stages:
       paths: ["src/ui/**"]
       advisory: true'
 
+# the built-in stages are switched off so these cases see only their own stages
+BUILTIN_OFF='    - name: documentation
+      enabled: false
+    - name: blast_radius
+      enabled: false'
+
 # setup_case <kind: labels|local|nostages|labelonly> <issue fixture> <PR file paths> [changedFiles]
 # (labels: the card comes from the issue fixture through the routes; local: the
 # case seeds the store itself; every kind is a local board)
 setup_case() {
   local backend="$1" issue="$2" files="$3" changed="${4:-}" board='  repo: acme/toy' stages=""
-  [ "$backend" = nostages ] || stages="review:
-$STAGES_YML"
+  if [ "$backend" = nostages ]; then
+    stages="review:
+  stages:
+$BUILTIN_OFF"
+  else
+    stages="review:
+$STAGES_YML
+$BUILTIN_OFF"
+  fi
   # labelonly: a third stage with no paths (routed by its label only)
   [ "$backend" = labelonly ] && stages="$stages
     - name: copy
