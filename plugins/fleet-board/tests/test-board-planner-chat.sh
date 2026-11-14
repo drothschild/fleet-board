@@ -189,6 +189,34 @@ wait "$HOLDER" 2>/dev/null
 for _ in $(seq 1 50); do [ "$(wc -l < "$LEDGER" | tr -d ' ')" = 4 ] && break; sleep 0.1; done
 if [ "$(wc -l < "$LEDGER" | tr -d ' ')" = 4 ]; then pass "the usage line lands once the lock is released"; else fail "the usage line lands once the lock is released" "ledger: $(cat "$LEDGER")"; fi
 
+model_of() {
+  # prints the value following --model in argv line $1, or NONE when the flag is absent
+  local a
+  a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
+  if printf '%s\n' "$a" | grep -qx -e '--model'; then printf '%s\n' "$a" | grep -A1 -x -e '--model' | sed -n 2p; else echo NONE; fi
+}
+LINES_BEFORE="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
+
+echo "Case: when planner.model is null, the claude argv has no --model flag"
+api POST /api/planner/conv1/messages '{"text":"model null"}'
+wait_idle conv1
+got="$(model_of $((LINES_BEFORE + 1)))"
+if [ "$got" = NONE ]; then pass "planner.model null -> no --model flag"; else fail "planner.model null -> no --model flag" "got --model $got"; fi
+
+echo "Case: when planner.model is set, the claude argv contains --model <model>"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nplanner:\n  model: opus\n' > "$REPO/.fleet-board.yml"
+api POST /api/planner/conv1/messages '{"text":"model set"}'
+wait_idle conv1
+got="$(model_of $((LINES_BEFORE + 2)))"
+if [ "$got" = opus ]; then pass "planner.model opus -> --model opus"; else fail "planner.model opus -> --model opus" "got '$got'"; fi
+
+echo "Case: after planner.model changes, the next turn of an open chat uses the new model"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nplanner:\n  model: haiku\n' > "$REPO/.fleet-board.yml"
+api POST /api/planner/conv1/messages '{"text":"model changed"}'
+wait_idle conv1
+got="$(model_of $((LINES_BEFORE + 3)))"
+if [ "$got" = haiku ]; then pass "changed planner.model haiku -> --model haiku on the next turn"; else fail "changed planner.model haiku -> --model haiku on the next turn" "got '$got'"; fi
+
 echo ""
-echo "Results: $PASS passed, $FAIL failed"
+echo "Results:$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
