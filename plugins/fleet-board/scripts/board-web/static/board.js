@@ -351,9 +351,13 @@ function renderBoard(board, force) {
   $("repo").textContent = repo;
   document.title = repo + " board";
 
-  const keys = board.states.map(function (s) { return s.key; }).join(" ");
+  // the header holds each state's reviewer and the escalation, so a change in
+  // either rebuilds the columns even when the state keys are the same
+  const keys = board.states.map(function (s) { return s.key; }).join(" ") +
+    "|" + JSON.stringify(board.states.map(function (s) { return s.reviewer || null; })) +
+    "|" + JSON.stringify(board.escalation || null);
   if (keys !== S.stateKeys) {
-    buildColumns(board.states);
+    buildColumns(board.states, board.escalation);
     S.stateKeys = keys;
     force = true;
   }
@@ -425,7 +429,19 @@ function renderUnknown(cards, repo, force) {
   g.sig = sig;
 }
 
-function buildColumns(states) {
+// reviewerLine(reviewer, escalation): the header line "provider · model", or null
+// without a reviewer. Its title names the escalation, when there is one.
+function reviewerLine(reviewer, escalation) {
+  if (!reviewer || !reviewer.model) return null;
+  const text = reviewer.provider ? reviewer.provider + " \u00b7 " + reviewer.model : String(reviewer.model);
+  const line = el("span", "col-reviewer", text);
+  if (escalation && escalation.model && isNum(escalation.after_rounds)) {
+    line.setAttribute("title", "From round " + escalation.after_rounds + ", implementor and fixer use " + escalation.model);
+  }
+  return line;
+}
+
+function buildColumns(states, escalation) {
   const root = $("board");
   root.replaceChildren();
   S.unknown = null;
@@ -459,6 +475,8 @@ function buildColumns(states) {
     } else {
       const head = el("h2", "col-head");
       head.appendChild(el("span", null, s.name));
+      const rev = reviewerLine(s.reviewer, escalation);
+      if (rev) head.appendChild(rev);
       head.appendChild(count);
       head.appendChild(tokens);
       col.appendChild(head);
