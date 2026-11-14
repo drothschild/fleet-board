@@ -19,6 +19,9 @@ check 'The default persona says to choose `fix` for a merge conflict.' "$rc"
 rc=0; has 'choose `retry` at most once for a check that was still pending' || rc=1
 check 'The default persona says to choose `retry` at most once for a check that was still pending.' "$rc"
 
+rc=0; has 'choose `retry` at most once for a refusal whose reason says the base branch was modified' || rc=1
+check 'The default persona says to choose `retry` at most once when the base branch was modified.' "$rc"
+
 rc=0; has 'choose `attention` for anything else, including a failed check of main' || rc=1
 check 'The default persona says to choose `attention` for anything else, including a failed check of main.' "$rc"
 
