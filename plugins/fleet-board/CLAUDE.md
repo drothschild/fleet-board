@@ -104,6 +104,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
   language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
   parity test over `fixtures/glob-cases.json`.
+- **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
+  <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
+  `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
+  `git commit-tree`) and moves the branch with `git merge --ff-only`, printing the new head. Exit 0 ok,
+  3 conflict (paths on stdout), 4 git older than 2.40, 1 other failure (parent head not an
+  ancestor of HEAD, changes to tracked files), 2 usage; on 3 or 4 nothing changes. A squash already in
+  HEAD prints HEAD and adds no commit. Nothing calls it yet.
 - **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
