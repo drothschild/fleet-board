@@ -27,6 +27,9 @@
 #       {"path":..,"copy":..|null,"sha":<head>,"base":<merge-base origin/main head>}.
 #       With a <stage> name ([a-z][a-z0-9_]*, not "copy") the checkout is <base>/<n>-review-<stage> and the
 #       copy <base>/<n>-review-<stage>-copy, so reviewers of one card that run together never share one.
+#       Before preparing its checkout, review removes the card's <n>-review-<stage> checkouts and
+#       copies whose stage is not in the configured review.stages (git worktree remove, then a
+#       prune; a path resolving outside <base> is left in place with a warning).
 #   worktree.sh remove <n> [<worktree-path>]
 #       Removes <worktree-path>, which must be the card's own directory: a
 #       direct child of <base> named <n>-* (as given and after symlinks are
@@ -180,6 +183,26 @@ case "$CMD" in
     g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
     g fetch -q origin "+refs/pull/$PR/head:$REF" >&2 || fb_die 1 "cannot fetch the head of PR #$PR"
     SHA="$(g rev-parse --verify --quiet "$REF^{commit}")" || fb_die 1 "cannot resolve the head of PR #$PR"
+    # Checkouts of stages no longer configured go first (never a configured
+    # stage's, nor the evidence reviewer's <n>-review and its copy)
+    CONFIGURED=" $(fb_stage_states | sed 's/^review_//' | tr '\n' ' ') "
+    for d in "$BASE/$N"-review-*; do
+      [ -L "$d" ] || [ -e "$d" ] || continue
+      ST="$(basename "$d")"; ST="${ST#"$N"-review-}"
+      IS_COPY=0
+      case "$ST" in copy) continue ;; *-copy) IS_COPY=1; ST="${ST%-copy}" ;; esac
+      case "$CONFIGURED" in *" $ST "*) continue ;; esac
+      if ! T="$(resolve_under_base "$d")"; then
+        printf 'fleet-board: warning: refusing to remove %s, which resolves outside %s\n' "$d" "$BASE" >&2
+        continue
+      fi
+      if [ "$IS_COPY" = 1 ]; then
+        rm -rf "$T" || printf 'fleet-board: warning: cannot remove %s\n' "$T" >&2
+      else
+        g worktree remove --force "$T" >&2 || printf 'fleet-board: warning: cannot remove the worktree %s\n' "$T" >&2
+      fi
+    done
+    g worktree prune >&2 || printf 'fleet-board: warning: git worktree prune failed\n' >&2
     if [ -L "$RV" ] || [ -e "$RV" ]; then
       is_our_worktree "$RV" || fb_die 1 "$RV exists and is not a worktree of this repository"
       git -C "$RV" checkout -q --force --detach "$SHA" >&2 || fb_die 1 "cannot check out $SHA in $RV"
