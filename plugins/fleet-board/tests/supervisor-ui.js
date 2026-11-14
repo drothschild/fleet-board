@@ -594,6 +594,29 @@ async function main() {
     f.enqueue("/api/board",response(200,{repo:"acme/toy",states,cards:[{...card(64),activity:{action:"merge",elapsed_seconds:65}}],run:{state:"idle"}})); await h.fireTimers();
     assert.notEqual(cardOf(),before,"a changed action did not re-render"); assert.match(cardOf().textContent,/merge/);
   });
+  // board-web.py reads a JSON object body for every POST and refuses an empty one ("a JSON object
+  // body is required"), so a body-less action click must still send {}
+  await check("Open terminal on a card tile POSTs a JSON object body",async()=>{
+    const card={...baseCard,title:"Has a worktree",state:"ready",known:true,worktree:"/repo/wt-4",activity:null};
+    const f=fakeFetch({cards:[card]}), h=make(f); await h.flush(); await h.waitForRequests();
+    f.enqueue("/api/cards/4/terminal",response(200,{ok:true}));
+    const tile=h.$("board").all().find(x=>x.classList.contains("card")&&x.dataset.n==="4");
+    const link=tile.all().find(n=>n.classList.contains("open-terminal")); assert.ok(link,"no Open terminal link on the tile");
+    await link.fire("click",{stopPropagation(){}}); await h.waitForRequests();
+    const call=f.calls.find(c=>c.url==="/api/cards/4/terminal"&&c.method==="POST"); assert.ok(call,"the click did not POST");
+    assert.ok(call.body&&typeof call.body==="object"&&!Array.isArray(call.body),"the POST had no JSON object body: "+JSON.stringify(call.body));
+  });
+  await check("Accept in a Blocked card's drawer POSTs a JSON object body",async()=>{
+    const card={...baseCard,title:"Blocked one",state:"blocked",known:true,activity:null};
+    const blockedStates=states.concat([{key:"blocked",name:"Blocked"}]);
+    const f=fakeFetch({cards:[card],states:blockedStates,snapshot:{...snapshot,cards:[card]}}), h=make(f); await h.flush(); await h.waitForRequests();
+    f.enqueue("/api/cards/4/accept",response(200,{...card,state:"in_review"}));
+    const tile=h.$("board").all().find(x=>x.classList.contains("card")&&x.dataset.n==="4"); await tile.fire("click"); await h.waitForRequests();
+    assert.equal(h.$("dr-accept").hidden,false,"Accept is not shown for a Blocked card");
+    await h.$("dr-accept").fire("click"); await h.waitForRequests();
+    const call=f.calls.find(c=>c.url==="/api/cards/4/accept"&&c.method==="POST"); assert.ok(call,"Accept did not POST");
+    assert.ok(call.body&&typeof call.body==="object"&&!Array.isArray(call.body),"the POST had no JSON object body: "+JSON.stringify(call.body));
+  });
   // The failure summary is printed, never written: the suite leaves no file behind.
   if(failures.length) {
     console.log(failures.map(x=>"- "+x.name+": "+x.reason.split("\n")[0]).join("\n"));
