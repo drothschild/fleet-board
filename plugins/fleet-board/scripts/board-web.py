@@ -640,7 +640,8 @@ def create_import(id: str, embed: bool, status: str | None = None) -> dict:
             raise ApiError(409, "import %s was already created" % id)
         state = import_status(id)
         if state["state"] != "ready":
-            raise ApiError(409, "import %s is %s, not ready" % (id, state["state"]))
+            detail = (": " + state["error"]) if state["state"] == "failed" and state.get("error") else ""
+            raise ApiError(409, "import %s is %s, not ready%s" % (id, state["state"], detail))
         argv = ["bash", os.environ.get("FLEET_BOARD_CREATE") or script("import-plan.sh"), str(idir / "cards.json")]
         if (status or meta.get("status")) == "ready":
             argv += ["--status", "ready"]
