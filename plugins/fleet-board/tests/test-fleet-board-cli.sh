@@ -659,6 +659,48 @@ sleep 0.3
 pkill -P "$RLC_PID" 2>/dev/null; kill "$RLC_PID" 2>/dev/null; wait "$RLC_PID" 2>/dev/null
 contains "board: request lines still print on its own stderr" "board-web: 127.0.0.1 - " "$(cat "$TMP/rlc.err")"
 
+# --- up: the supervisor log is followed on stdout ---------------------------
+SL_STATE="$TMP/sl-state"; mkdir -p "$SL_STATE"
+SL_LOGS="$TMP/sl-logs"; mkdir -p "$SL_LOGS"
+printf 'OLD-LINE-BEFORE-UP\n' > "$SL_LOGS/supervisor.log"
+SL_REPO="$TMP/work/repo-sl"; make_repo "$SL_REPO"
+SL_PORT="$(free_port)"; SL_OUT="$TMP/sl.out"
+SL_RC="$(python3 - "$SL_PORT" "$SL_REPO" "$SL_STATE" "$HD" "$LAUNCHER" "$SL_OUT" "$SL_LOGS" <<'EOPY'
+import os, signal, subprocess, sys, time, urllib.request
+port, repo, state, home, launcher, out, logs = sys.argv[1:]
+env = dict(os.environ, HOME=home, UP_STATE=state, FLEET_BOARD_LOG_DIR=logs)
+p = subprocess.Popen(["bash", launcher, "up", "--port", port], cwd=repo, env=env,
+                     stdout=open(out, "w"), stderr=subprocess.STDOUT,
+                     preexec_fn=lambda: [signal.signal(s, signal.SIG_DFL) for s in (signal.SIGINT, signal.SIGHUP, signal.SIGTERM)])
+for _ in range(100):
+    try: urllib.request.urlopen("http://127.0.0.1:%s/api/board" % port); break
+    except Exception: time.sleep(0.1)
+time.sleep(1)
+def wait_for(text):
+    for _ in range(50):
+        if text in open(out).read(): return
+        time.sleep(0.1)
+log = os.path.join(logs, "supervisor.log")
+with open(log, "a") as f: f.write('{"event":"NEW-LINE-AFTER-UP"}\n')
+wait_for("NEW-LINE-AFTER-UP")
+os.rename(log, log + ".1")
+time.sleep(0.5)
+with open(log, "w") as f: f.write("ROTATED-LINE\n")
+wait_for("ROTATED-LINE")
+p.send_signal(signal.SIGINT)
+try: rc = p.wait(timeout=20)
+except subprocess.TimeoutExpired: p.kill(); rc = "timeout"
+print(rc)
+EOPY
+)"
+check "up: the supervisor log run exits 0" 0 "$SL_RC"
+contains "up: a line added to supervisor.log after up starts appears unchanged on stdout" \
+  '{"event":"NEW-LINE-AFTER-UP"}' "$(cat "$SL_OUT")"
+check "up: lines already in supervisor.log before up started are not printed" 0 "$(grep -c 'OLD-LINE-BEFORE-UP' "$SL_OUT")"
+check "up: after supervisor.log is renamed and recreated, a new line still appears on stdout" 1 "$(grep -c '^ROTATED-LINE$' "$SL_OUT")"
+sleep 0.5
+check "up: after Ctrl-C and the drain, no process following the log is still running" 0 "$(pgrep -f "tail.*$SL_LOGS/supervisor.log" | wc -l | tr -d ' ')"
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"
