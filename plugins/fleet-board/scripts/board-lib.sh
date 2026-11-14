@@ -19,6 +19,15 @@ fb_die() { printf 'fleet-board: %s\n' "$2" >&2; exit "$1"; }
 
 fb_load_config() {
   # Sets and exports FLEET_CFG FLEET_ROOT FLEET_REPO FLEET_SCRIPTS
+  # A planner pass (tick-plan.sh) exports FB_CFG_FOR=<its cwd> after loading: the scripts it
+  # starts from that directory reuse its config instead of each reading and parsing it again.
+  if [ -n "${FB_CFG_FOR:-}" ] && [ "$FB_CFG_FOR" = "$PWD" ] && [ -n "${FLEET_CFG:-}" ] \
+     && [ -n "${FLEET_ROOT:-}" ] && [ -n "${FLEET_REPO:-}" ]; then
+    FLEET_SCRIPTS="$FB_SCRIPTS"
+    export FLEET_SCRIPTS
+    fb_set_states
+    return 0
+  fi
   FLEET_CFG="$(bash "$FB_SCRIPTS/config.sh")"; local rc=$?
   [ $rc -eq 0 ] || exit $rc
   local common; common="$(fb_git_common_dir .)"
@@ -32,6 +41,10 @@ fb_load_config() {
 # fb_set_states: sets FB_STATES to the fixed states with review_<name> for each
 # review stage of $FLEET_CFG inserted after in_review, in config order.
 fb_set_states() {
+  # a planner pass computes the states once (FB_STATES_MEMO, exported by tick-plan.sh)
+  if [ -n "${FB_CFG_FOR:-}" ] && [ "$FB_CFG_FOR" = "$PWD" ] && [ -n "${FB_STATES_MEMO:-}" ]; then
+    FB_STATES="$FB_STATES_MEMO"; return 0
+  fi
   local extra; extra="$(fb_stage_states | tr '\n' ' ')"
   extra="${extra% }"
   if [ -z "$extra" ]; then FB_STATES="$FB_STATES_FIXED"; return 0; fi
@@ -86,7 +99,28 @@ fb_git_common_dir() {
 }
 
 # Prints scalars raw (booleans print as true/false), objects/arrays as JSON, and nothing for null.
-fb_cfg() { jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"; }
+# During a planner pass (FB_CFG_FOR is this directory) a value is memoized in an exported
+# FB_CFGV_<path> variable ("v" + the value), which the scripts the pass starts inherit; tick-plan.sh
+# warms the keys they read (fb_cfg_warm). Outside a pass every call reads FLEET_CFG.
+fb_cfg_key() { printf 'FB_CFGV_%s' "$(printf '%s' "$1" | tr -c 'A-Za-z0-9\n' '_')"; }
+fb_cfg() {
+  local k v
+  if [ -n "${FB_CFG_FOR:-}" ] && [ "$FB_CFG_FOR" = "$PWD" ]; then
+    k="$(fb_cfg_key "$1")"
+    v="${!k:-}"
+    if [ -n "$v" ]; then [ -z "${v#v}" ] || printf '%s\n' "${v#v}"; return 0; fi
+  fi
+  jq -r --arg p "$1" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG"
+}
+# fb_cfg_warm <path>...: reads each path once and memoizes it for this shell and its children
+fb_cfg_warm() {
+  local p k v
+  for p in "$@"; do
+    k="$(fb_cfg_key "$p")"
+    v="$(jq -r --arg p "$p" 'getpath($p | split(".")) | if . == null then empty elif type == "object" or type == "array" then tojson else . end' <<<"$FLEET_CFG")"
+    export "$k=v$v"
+  done
+}
 
 # fb_login: the login whose manager note counts on this board: FLEET_BOARD_USER,
 # else $USER, else `id -un` (no gh call); exits 1 if it cannot be determined
@@ -196,9 +230,8 @@ fb_card_has_acceptance() {
 # A path is a backticked span, or a plain-text token (leading "(" and trailing
 # . , : ; ) stripped), with no whitespace that holds a "/" or ends in a file
 # extension. Prints [] when there is none or the body cannot be parsed.
-fb_card_scope_paths() {
-  jq -cn --arg b "$1" '
-    $b | split("\n") | reduce .[] as $l ({in: false, paths: []};
+# The Scope parser as a jq program over the string $b (shared with tick-plan.sh's one-call card read)
+FB_SCOPE_JQ='$b | split("\n") | reduce .[] as $l ({in: false, paths: []};
       if ($l | test("^##[ \t]+Scope[ \t]*$")) then .in = true
       elif ($l | test("^##[ \t]")) then .in = false
       elif .in then .paths += ([$l | scan("`([^`]+)`") | .[0]
@@ -207,7 +240,9 @@ fb_card_scope_paths() {
             | sub("^[(]+"; "") | sub("[.,:;)]+$"; "")
             | select(test("^[^ \t]+$") and (test("/") or test("[.][A-Za-z0-9]+$")))])
       else . end)
-    | .paths | unique' 2>/dev/null || echo '[]'
+    | .paths | unique'
+fb_card_scope_paths() {
+  jq -cn --arg b "$1" "$FB_SCOPE_JQ" 2>/dev/null || echo '[]'
 }
 
 # fb_card_has_scope_paths <body>: succeeds when fb_card_scope_paths finds one
