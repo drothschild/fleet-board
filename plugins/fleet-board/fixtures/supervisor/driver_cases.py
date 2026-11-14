@@ -1537,6 +1537,31 @@ def test_agent_stage_dispatches_the_stage_agent_with_its_brief(base):
     assert review['model'] == 'opus' and review['sha'] == 'abc1234', review
 
 
+def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(base):
+    # Both reviewers are launched from the same starting note and report back to back: each is applied to the
+    # note the other left, so note.reviews ends with both entries
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings', 'sleep': 1}, {'report': 'stage-reviewer-ok', 'sleep': 1})
+    evidence = begin(b, 'review', state='in_review', round=1)
+    staged = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    assert evidence.kind == 'session' and staged.kind == 'session'
+    assert ('worktree.sh', 'review', '12', '34', 'security') in b.calls, b.calls
+    assert sorted(a.action for a in b.state.actions_for(12)) == ['review', 'review_stage']
+    first, second = wait_for(evidence), wait_for(staged)
+    b.driver.finish(evidence.action, first)
+    b.driver.finish(staged.action, second)
+    note = b.note()
+    assert sorted(note['reviews']) == ['evidence', 'security'], note.get('reviews')
+    assert note['reviews']['evidence']['stage'] is None and note['reviews']['security']['stage'] == 'security'
+    assert b.state.actions_for(12) == [], b.state.active
+
+
 def test_exit_2_from_the_checker_pauses_the_supervisor(base):
     b = board_for(base)
     started = started_implementor(b)

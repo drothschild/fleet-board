@@ -222,6 +222,58 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(self.state.events[-1]['sequence'], seqs[-1])
         self.assertEqual(self.state.events[-1]['type'], 'tick')
 
+    def test_the_review_and_a_stage_review_of_one_card_are_active_together(self):
+        s = self.state
+        evidence = Action(card=7, action='review', column='in_review', role='reviewer', provider='claude',
+                          paths=[], started_at=1.0, started_mono=2.0)
+        stage = Action(card=7, action='review_stage', column='in_review', role='stage-reviewer', provider='claude',
+                       paths=[], started_at=1.0, started_mono=2.0)
+        s.begin(evidence)
+        s.begin(stage)
+        self.assertEqual(sorted(a.action for a in s.actions_for(7)), ['review', 'review_stage'])
+        snap = s.snapshot()
+        listed = [snap['active'][7]['action']] + [a['action'] for a in snap['active'][7]['also']]
+        self.assertEqual(sorted(listed), ['review', 'review_stage'])
+        self.assertIs(s.end(7, stage), stage)
+        self.assertEqual([a.action for a in s.actions_for(7)], ['review'])
+        self.assertIs(s.end(7, evidence), evidence)
+        self.assertEqual(s.actions_for(7), [])
+        self.assertNotIn(7, s.active)
+
+    def test_only_reviewer_actions_share_a_card(self):
+        s = self.state
+        s.begin(Action(card=7, action='review', column='in_review', role='reviewer', provider='claude',
+                       paths=[], started_at=1.0, started_mono=2.0))
+        for name in ('fix', 'update_branch', 'start', 'merge'):
+            with self.assertRaisesRegex(ValueError, 'card already active'):
+                s.begin(Action(card=7, action=name, column='in_review', role='fixer', provider='claude',
+                               paths=[], started_at=1.0, started_mono=2.0))
+        s.end(7)
+        s.begin(Action(card=7, action='fix', column='in_review', role='fixer', provider='claude',
+                       paths=[], started_at=1.0, started_mono=2.0))
+        with self.assertRaisesRegex(ValueError, 'card already active'):
+            s.begin(Action(card=7, action='review', column='in_review', role='reviewer', provider='claude',
+                           paths=[], started_at=1.0, started_mono=2.0))
+
+    def test_the_marker_stays_until_the_last_reviewer_ends(self):
+        from supervisor import markers
+        s = self.state
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(root, ignore_errors=True))
+        acts = []
+        for name, pgid in (('review', 4242), ('review_stage', 4343)):
+            a = Action(card=7, action=name, column='in_review', role='reviewer', provider='claude',
+                       paths=[], started_at=1.0, started_mono=2.0)
+            s.begin(a)
+            a.marker = markers.write(root, None, 7, pgid)   # the later write names the later session's group
+            a.pgid = pgid
+            acts.append(a)
+        marker = markers.path(root, None, 7)
+        s.end(7, acts[1])
+        self.assertTrue(marker.exists(), 'a reviewer still runs, so the marker stays')
+        s.end(7, acts[0])
+        self.assertFalse(marker.exists(), 'the last reviewer ended, so the marker is removed')
+
     def test_snapshot_shape(self):
         self.state.begin(action(1, kind='merge', paths=['a']))
         self.state.provider_health['claude'] = {'until': 5.0, 'reason': 'limit', 'failures': 1}

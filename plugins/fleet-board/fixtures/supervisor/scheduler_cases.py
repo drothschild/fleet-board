@@ -226,6 +226,8 @@ def run():
     test_scope_ignore_one_side_wholly_ignored()
     test_scope_ignore_cleans_the_path_side()
     test_glob_segments_and_jq_parity()
+    test_one_cards_reviewers_are_admitted_together()
+    test_a_writer_and_the_reviewers_of_one_card_exclude_each_other()
     print('scheduler cases passed')
 
 
@@ -544,6 +546,40 @@ def test_glob_segments_and_jq_parity():
     whole = subprocess.run(['jq', '-c', lib + ' pg_drop(["*.json"])'], input='["a.json"]',
                            capture_output=True, text=True, check=True)
     assert json.loads(whole.stdout) == ['a.json']
+
+
+def test_one_cards_reviewers_are_admitted_together():
+    rows = [candidate(7, 'review', paths=[]),
+            dict(candidate(7, 'review_stage', paths=[]), stage='security'),
+            dict(candidate(7, 'review_stage', paths=[]), stage='ux')]
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS)
+    assert [x['action'] for x in r['admitted']] == ['review', 'review_stage', 'review_stage'], r
+    assert [x.get('stage') for x in r['admitted']] == [None, 'security', 'ux'], r
+    assert r['waits'] == [], r
+    assert len(r['active']) == 3, r
+    # a reviewer already running does not hold the card's other reviewers back
+    running = [{'number': 7, 'provider': 'claude', 'paths': [], 'action': 'review'}]
+    r = Scheduler(clock=lambda: 0).admit(rows[1:], active=running, limits=LIMITS)
+    assert len(r['admitted']) == 2 and r['waits'] == [], r
+    # global capacity still bounds them
+    r = Scheduler(clock=lambda: 0).admit(rows, limits=dict(LIMITS, **{'global': 2}))
+    assert len(r['admitted']) == 2 and r['waits'][0]['reason'] == 'global capacity', r
+
+
+def test_a_writer_and_the_reviewers_of_one_card_exclude_each_other():
+    reviewer = [{'number': 7, 'provider': 'claude', 'paths': [], 'action': 'review_stage'}]
+    for name in ('fix', 'update_branch'):
+        r = Scheduler(clock=lambda: 0).admit([candidate(7, name, paths=[])], active=reviewer, limits=LIMITS)
+        assert r['admitted'] == [] and r['waits'], (name, r)
+        writer = [{'number': 7, 'provider': 'claude', 'paths': [], 'action': name}]
+        r = Scheduler(clock=lambda: 0).admit([candidate(7, 'review', paths=[]),
+                                              dict(candidate(7, 'review_stage', paths=[]), stage='ux')],
+                                             active=writer, limits=LIMITS)
+        assert r['admitted'] == [] and len(r['waits']) == 2, (name, r)
+    # in one pass a writer and a reviewer of one card are not both admitted
+    r = Scheduler(clock=lambda: 0).admit([candidate(7, 'review', paths=[]), candidate(7, 'fix', paths=[])],
+                                         limits=LIMITS)
+    assert len(r['admitted']) == 1, r
 
 
 if __name__ == '__main__':
