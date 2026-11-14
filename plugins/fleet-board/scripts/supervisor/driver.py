@@ -53,6 +53,27 @@ def accepted_sha(note):
     sha = entry.get('sha')
     return sha if isinstance(sha, str) and _SHA.fullmatch(sha) else None
 
+
+def review_for(note, stage, column):
+    """The review record a reviewer is judged on, by the planner's rule (tick-plan.sh card_input).
+
+    In in_review the evidence reviewer and the routed stages report in parallel, so last_review may hold
+    another reviewer's report: the evidence reviewer (stage None) is judged on last_review unless that is a
+    stage's record, then on note.reviews.evidence; a stage on its own note.reviews entry. Elsewhere it is
+    last_review. Always a dict ({} when there is none)."""
+    note = note if isinstance(note, dict) else {}
+    last = note.get('last_review') if isinstance(note.get('last_review'), dict) else {}
+    if column != 'in_review':
+        return last
+    reviews = note.get('reviews') if isinstance(note.get('reviews'), dict) else {}
+    if stage:
+        own = reviews.get(stage)
+        return own if isinstance(own, dict) else (last if last.get('stage') == stage else {})
+    if last.get('stage'):
+        own = reviews.get('evidence')
+        return own if isinstance(own, dict) else {}
+    return last
+
 Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
 
@@ -805,7 +826,7 @@ class CardDriver:
                 inputs['note'] = note
             run.round = note.get('round') if isinstance(note.get('round'), int) else 0
         elif role == 'fixer':
-            findings = conflict or self._severe((note.get('last_review') or {}).get('findings'))
+            findings = conflict or self._severe(review_for(note, None, c.row.get('state')).get('findings'))
             if not findings:
                 raise _Fail('no Critical/Important findings to fix')
             inputs.update(pr=c.pr(note.get('pr')), worktree=c.worktree(), findings=self._lines(findings))
@@ -830,7 +851,10 @@ class CardDriver:
         name, d, stage = c.row['action'], run.dispatch, run.stage
         pr = c.pr(note.get('pr'))
         run.round = 1 if name == 'start_review' else note.get('round') if _posint(note.get('round')) else 1
-        last = note.get('last_review') if isinstance(note.get('last_review'), dict) else {}
+        # The reviewer's own previous record; a stage reviewing in parallel for the first time has none, and
+        # compares against last_review as before
+        last = review_for(note, stage, c.row.get('state')) or (
+            note.get('last_review') if isinstance(note.get('last_review'), dict) else {})
         previous = last.get('sha') if isinstance(last.get('sha'), str) and _SHA.fullmatch(last['sha']) else None
         findings = self._severe(last.get('findings')) if run.round >= 2 else []
         report = self._latest_report(card)
@@ -1264,7 +1288,7 @@ class CardDriver:
                            'Last error: `%s`\n\nA person must fix the cause and then move the card back.'
                            % (match.group(1), ' '.join(match.group(2).split())))
             return
-        review = c.note().get('last_review')
+        review = review_for(c.note(), None, c.row.get('state'))
         found = [{'severity': f['severity'], 'text': f.get('text', '')}
                  for f in ((review or {}).get('findings') or [])
                  if isinstance(f, dict) and f.get('severity') in _SEVERE]
@@ -1676,9 +1700,9 @@ class CardDriver:
                       sha=run.head, critical=0, important=1, stage=None, agent=None, provider=None,
                       findings=[{'severity': 'Important', 'text': 'merge refused: ' + run.refusal['reason']}])
         c.move('in_review')
-        # The refusal is the evidence record now: no stale per-reviewer report outranks it in the planner
-        c.merge(dict(left, state='in_review', last_review=review, reviews={'evidence': review}, stage=None,
-                     reviewed_stages=[]))
+        # The refusal is the evidence record now (stage None, so the planner judges on it); earlier per-reviewer
+        # records are cleared (note.sh merge is a deep merge, so a replacement map would keep them)
+        c.merge(dict(left, state='in_review', last_review=review, reviews=None, stage=None, reviewed_stages=[]))
 
     def _do_unblock(self, c):
         c.move('ready')

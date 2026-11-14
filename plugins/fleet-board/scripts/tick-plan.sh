@@ -506,11 +506,14 @@ card_input() {
         have_matched=true
       fi
       # The evidence reviewer is judged on its own report: a stage report written later to last_review
-      # must not make it look unreviewed (which replanned it, and then the stage, forever). Without a
-      # note.reviews record, a stage record in last_review is no evidence review at all.
+      # must not make it look unreviewed (which replanned it, and then the stage, forever). Only a stage
+      # record in last_review is replaced (by note.reviews.evidence, or null when there is none); an
+      # evidence record, the accept.sh baseline or a refused merge's record in last_review is kept.
+      # driver.py review_for applies the same rule to the fixer's findings, a block and prev_sha.
       if [ -z "$failed" ]; then
-        note="$(jq -c 'if (.reviews | type) == "object" and (.reviews.evidence | type) == "object" then .last_review = .reviews.evidence
-                       elif (.last_review | type) == "object" and (.last_review.stage // null) != null then .last_review = null
+        note="$(jq -c 'if (.last_review | type) == "object" and (.last_review.stage // null) != null
+                       then .last_review = (if (.reviews | type) == "object" and (.reviews.evidence | type) == "object"
+                                            then .reviews.evidence else null end)
                        else . end' <<<"$note")" || failed="note.sh parse $n (unparsable)"
       fi
     fi
