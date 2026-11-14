@@ -486,8 +486,16 @@ def last_session_text(path: Path) -> str:
     return last
 
 
+def ran_binary(proc, default: str) -> str:
+    """The basename of the binary a process ran, else the default."""
+    args = getattr(proc, "args", None)
+    if isinstance(args, (list, tuple)) and args and isinstance(args[0], str) and args[0]:
+        return os.path.basename(args[0]) or default
+    return default
+
+
 def session_error(idir: Path, rc) -> str:
-    """The last stderr line, else the last result text, else 'claude exited <rc>'."""
+    """The last stderr line, else the last result text, else '<binary> exited <rc>'."""
     lines = [l for l in read_text(idir / "session.err").splitlines() if l.strip()]
     if lines:
         return lines[-1]
@@ -499,7 +507,8 @@ def session_error(idir: Path, rc) -> str:
             continue
         if isinstance(ev, dict) and ev.get("type") == "result" and isinstance(ev.get("result"), str) and ev["result"]:
             result = ev["result"]
-    return result or "claude exited %s" % ("?" if rc is None else rc)
+    binary = os.path.basename(os.environ.get("FLEET_BOARD_CLAUDE") or "claude") or "claude"
+    return result or "%s exited %s" % (binary, "?" if rc is None else rc)
 
 
 def import_elapsed(idir: Path, running: bool) -> int:
@@ -797,7 +806,7 @@ def finish_codex_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path,
     reply = read_text(reply_path).strip()
     failed = any(ev.get("type") == "turn.failed" for ev in events)
     if failed or (rc != 0 and not reply):
-        reply = "[error] " + (codex_error_message(events) or "codex exited %s" % rc)
+        reply = "[error] " + (codex_error_message(events) or "%s exited %s" % (ran_binary(proc, "codex"), rc))
     with _PLANNER_LOCK:
         turns = read_turns(pdir)
         turns.append({"role": "assistant", "text": reply})
@@ -818,7 +827,7 @@ def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Pat
     reply = last_session_text(out_path)
     if rc != 0 and not reply:
         lines = [l for l in read_text(err_path).splitlines() if l.strip()]
-        reply = "[error] " + (lines[-1] if lines else "claude exited %s" % rc)
+        reply = "[error] " + (lines[-1] if lines else "%s exited %s" % (ran_binary(proc, "claude"), rc))
     with _PLANNER_LOCK:
         turns = read_turns(pdir)
         turns.append({"role": "assistant", "text": reply})
