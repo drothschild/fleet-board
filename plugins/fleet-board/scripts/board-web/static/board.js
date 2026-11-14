@@ -745,6 +745,11 @@ function renderCard(c, repo) {
   }
   if (attn) li.appendChild(el("div", "card-meta card-attention-reason", clean(attn, 300)));
   if (c.hold && typeof c.hold.reason === "string") li.appendChild(el("div", "card-meta card-hold", "Held: " + clean(c.hold.reason, 300)));
+  for (const r of Array.isArray(c.reviewers) ? c.reviewers : []) {
+    if (!r || typeof r.name !== "string") continue;
+    li.appendChild(el("div", "card-meta card-reviewer card-reviewer-" + clean(r.status, 20),
+      clean(r.name, 60) + ": " + clean(r.status, 20) + " " + r.passes + "/" + r.required_passes));
+  }
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
 
