@@ -112,6 +112,18 @@ def reviewer_info(cfg: dict) -> dict:
     return {"provider": "claude", "model": r if isinstance(r, str) and r else "opus"}
 
 
+def escalation_info(cfg: dict):
+    """{model, after_rounds} for the writers' escalation, or None when no model applies."""
+    m = cfg.get("models") or {}
+    model = m.get("escalation")
+    if not (isinstance(model, str) and model):
+        r = m.get("reviewer")
+        model = r if isinstance(r, str) and r else None
+    if model is None:
+        return None
+    return {"model": model, "after_rounds": m.get("escalate_after_rounds")}
+
+
 def states(cfg: dict) -> list:
     """[{key, name}] in FB_STATES order, from one bash call into board-lib.sh."""
     cache_key = json.dumps(cfg, sort_keys=True)
@@ -952,6 +964,12 @@ def card_pr_url(cfg: dict, card: dict, note):
     return "https://github.com/%s/pull/%d" % (repo, pr) if is_int(pr) and repo else None
 
 
+def card_worktree(note):
+    """The note's worktree path when it is a string naming a directory that exists, else None."""
+    wt = note.get("worktree") if note else None
+    return wt if isinstance(wt, str) and wt and os.path.isdir(wt) else None
+
+
 def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict, known_states=None) -> dict:
     """state_of: number -> state for every card read in this request, so
     `blocked` (any blocker missing or not done) costs no extra read."""
@@ -967,6 +985,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, alive: bool, state_of: dict, 
         "active": is_active(dir, card.get("number"), alive),
         "note": None if note is None else {k: note.get(k) for k in NOTE_FIELDS},
         "pr_url": card_pr_url(cfg, card, note),
+        "worktree": card_worktree(note),
         "acceptance_count": len(card_acceptance(card)),
         "blocked_by": blk,
         "blocked": any(state_of.get(b) != "done" for b in blk),
@@ -988,6 +1007,7 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["active"] = is_active(dir, n, alive)
     out["manager_note"] = note_body(card)
     out["pr_url"] = card_pr_url(cfg, card, note)
+    out["worktree"] = card_worktree(note)
     out["hold"] = card_hold(n)
     return out
 
@@ -1118,6 +1138,7 @@ def get_board(params, body):
                   for c in cards],
         "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
+        "escalation": escalation_info(cfg),
     }
 
 
