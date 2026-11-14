@@ -124,3 +124,22 @@ def vr_apply($changes):
     else reduce $changes[] as $c ($lines; ($ps | index([$c.path])) as $k | .[$idx[$k]] |= vline_set($c.to))
       | join("\n")
     end;
+
+# The version the merge lane gives a file over a base (supervisor.version_bump: merge): patch is
+# sv_above; minor and major drop the prerelease and the lower parts
+def sv_bump($base; $level):
+  ($base | sv_parse) as $b
+  | if $level == "minor" then "\($b.core[0]).\($b.core[1] + 1).0"
+    elif $level == "major" then "\($b.core[0] + 1).0.0"
+    else sv_above($base) end;
+
+# input: the head JSON. Every string "version" key whose base value is semver and whose head
+# value is not already sv_bump(base): [{path, from, to}] (the lane's value wins over the PR's)
+def vr_lane($base; $level):
+  . as $head
+  | [vr_paths[] as $p
+     | ($head | vr_get($p)) as $h | ($base | vr_get($p)) as $t
+     | select($t | sv_valid)
+     | sv_bump($t; $level) as $to
+     | select($h != $to)
+     | {path: $p, from: $h, to: $to}];
