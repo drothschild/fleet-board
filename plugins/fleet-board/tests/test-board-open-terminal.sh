@@ -68,8 +68,8 @@ const ev = {stopPropagation() {}};
     await link.fire("click", ev);
     const posts = calls.filter(c => c === "POST /api/cards/3/terminal");
     assert.equal(posts.length, 1);
-    assert.equal(h.$("drawer").hidden, true);
     assert.equal(h.ctx.__test.S.drawer, null);
+    assert.equal(calls.filter(c => c === "GET /api/cards/3").length, 0);
   });
 
   await test("If the POST fails, a toast shows the server's error message", async () => {
