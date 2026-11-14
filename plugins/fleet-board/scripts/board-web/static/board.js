@@ -3212,7 +3212,35 @@ function bindSupervisor() {
 function cardActivityLine(c) {
   const a = c.activity;
   if (!a || typeof a !== "object") return "";
-  return "activity: " + clean(a.action, 60) + " · " + fmtDuration(a.elapsed_seconds);
+  return "activity: " + activityWords(c, a) + " · " + fmtDuration(a.elapsed_seconds);
+}
+
+const ACTION_WORDS = {
+  review: "Reviewing", fix: "Fixing", start: "Starting", continue_implementor: "Continuing implementor",
+  update_branch: "Updating branch", merge: "Merging", after_merge: "Post-merge steps",
+};
+
+// activityWords(c, a): readable words for the running action; a Merging card names its merge step.
+function activityWords(c, a) {
+  const step = c.state === "merging" ? mergeStepText(c, a) : "";
+  if (step) return step;
+  return ACTION_WORDS[a.action] || clean(a.action, 60);
+}
+
+// mergeStepText(c, a): the step a Merging card is on, from its manager note and running action.
+function mergeStepText(c, a) {
+  const n = c.note && typeof c.note === "object" ? c.note : {};
+  if (n.merger && typeof n.merger === "object" && n.merger.status === "attention") return "Merger needs attention";
+  if (n.merge_retry && typeof n.merge_retry === "object" && typeof n.merge_retry.after === "string")
+    return "Retry after " + clean(n.merge_retry.after, 40);
+  if (a.action === "after_merge") return "Post-merge steps";
+  if (a.action !== "merge") return "";
+  if (n.merge_operation && !n.main_check) return "Merged; checking main";
+  if (n.pending_merge && !n.merge_operation) {
+    const pr = Number.isInteger(n.pending_merge.pr) ? n.pending_merge.pr : n.pr;
+    return "Merging PR" + (Number.isInteger(pr) ? " #" + pr : "");
+  }
+  return "";
 }
 
 function clearCardUsage() {
