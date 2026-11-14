@@ -1599,7 +1599,7 @@ closing_pr() {
   local p="$1" b="$2" t="$3" body="$4" c='[]'
   [ $# -ge 6 ] && c="$(jq -cn --arg h "$5" --arg m "$6" '[{oid: "abc1234def", messageHeadline: $h, messageBody: $m}]')"
   jq -n --argjson n "$p" --arg b "$b" --arg t "$t" --arg body "$body" --argjson c "$c" \
-    '{number: $n, isDraft: false, statusCheckRollup: [{conclusion: "SUCCESS"}], headRefName: $b, headRefOid: "abc1234def",
+    '{number: $n, isDraft: false, statusCheckRollup: [{conclusion: "SUCCESS"}], headRefName: $b, headRefOid: "abc1234def", baseRefName: "main",
       title: $t, body: $body, commits: $c}' > "$FAKE_GH_DIR/pr-$p.json"
   printf 'pr view %s --json*\t0\t%s/pr-%s.json\n' "$p" "$FAKE_GH_DIR" "$p" >> "$ROUTES"
   printf 'pr view %s -R acme/toy --json*\t0\t%s/pr-%s.json\n' "$p" "$FAKE_GH_DIR" "$p" >> "$ROUTES"
@@ -1629,6 +1629,19 @@ run_hook bash.json "gh pr merge 44 --squash"
 assert_silent_allow "no-closing-keyword: a PR on a non-fleet branch is not checked"
 run_hook bash.json "gh pr merge 45 --squash"
 assert_blocked "no-closing-keyword: a fleet PR whose commits cannot be read blocks" "could not verify"
+
+# ---------------------------------------------------------------------------
+# stacking-base: a merge whose PR base is not the default branch is blocked
+# (a child PR must never land in its parent's branch); main passes
+setup_case auto
+card_routes > "$ROUTES"
+closing_pr 50 fleet/12-add-subtract "Add subtract" "Local board card 12"
+closing_pr 51 fleet/12-add-subtract "Add subtract" "Local board card 12"
+jq '.baseRefName="fleet/11-parent"' "$FAKE_GH_DIR/pr-51.json" > "$FAKE_GH_DIR/pr-51.tmp" && mv "$FAKE_GH_DIR/pr-51.tmp" "$FAKE_GH_DIR/pr-51.json"
+run_hook bash.json "gh pr merge 50 --squash"
+assert_silent_allow "stacking-base: a PR based on main merges"
+run_hook bash.json "gh pr merge 51 --squash"
+assert_blocked "stacking-base: a PR based on a card branch is blocked" "fleet-board gate: PR #51 targets fleet/11-parent, not the default branch"
 
 # ---------------------------------------------------------------------------
 # merge.ignore_checks: the gate lets a merge through a red check an unexpired

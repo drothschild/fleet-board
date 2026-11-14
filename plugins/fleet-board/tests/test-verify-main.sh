@@ -326,6 +326,12 @@ run_check "$SCRIPT" 12 7
 assert_exit "p0-local: first run exit" 0
 assert_eq "p0-local: files local card #1" "$(jqc .p0_card)" "1"
 assert_eq "p0-local: card #1 title" "$(jq -r .title "$REPO/.fleet-board/cards/1.json" 2>/dev/null)" "[P0] main is red after #7"
+# The P0 card names the merged PR's files as its Scope, so it is created in Ready (followups.status)
+# and the planner can start it, instead of holding a Scope-less Ready card
+assert_eq "p0-local: card #1 is created in Ready" "$(jq -r .state "$REPO/.fleet-board/cards/1.json" 2>/dev/null)" "ready"
+P0_BODY="$(jq -r .body "$REPO/.fleet-board/cards/1.json" 2>/dev/null)"
+case "$P0_BODY" in *$'## Scope\n- `tests/check.sh`\n- `src/calc.js`\n- `tests/gone.sh`'*) pass "p0-local: Scope lists the merged PR's files" ;;
+  *) fail "p0-local: Scope lists the merged PR's files" "body: $P0_BODY" ;; esac
 run_check "$SCRIPT" 12 7
 assert_exit "p0-local: second run exit" 0
 assert_eq "p0-local: second run reuses #1" "$(jqc .p0_card)" "1"

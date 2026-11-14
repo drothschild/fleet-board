@@ -118,7 +118,7 @@ trap '[ -n "$TMP" ] && rm -f "$TMP"' EXIT
 DEFAULTS='{"state":null,"branch":null,"worktree":null,"pr":null,"round":null,"models":null,
   "escalated":null,"escalated_at_round":null,"last_verified":null,"last_review":null,
   "blocked_findings":[],"blocking_pr":null,"merged_pr":null,"main_check":null,
-  "out_of_scope_created":[],"bugs_filed":[],"stage":null,"reviewed_stages":[],"pending_followups":null,"report_errors":[],
+  "out_of_scope_created":[],"bugs_filed":[],"stage":null,"stack":null,"landed":null,"reviewed_stages":[],"pending_followups":null,"report_errors":[],
   "implementor_attempts":0,"action_failures":0,"last_action_error":null,"deps_commented":null,"updated_at":null}'
 
 # legacy: maps the pre-rename keys setup_failures and last_setup_error to
@@ -164,6 +164,15 @@ invalid_field() {
             and (.until | type == "string" and test("\\A[0-9]{4}-[0-9]{2}-[0-9]{2}\\z"))
             and (.at | type == "string" and clean and length > 0)
             and (.state | . == null or . == "red" or . == "pending"))) | not) then "ignored_checks"
+    elif (.stack | . == null or (type == "object"
+            and (.parent | type == "number" and . == floor and . > 0)
+            and (.base | type == "string" and test("\\Afleet/[0-9]+-[a-z0-9-]{1,40}\\z"))
+            and (.start | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+            and (.attention | . == null or (type == "string" and length <= 300 and clean))) | not) then "stack"
+    elif (.landed | . == null or (type == "object"
+            and (.parent | type == "number" and . == floor and . > 0)
+            and (. as $l | ["parent_head", "squash", "sha"] | all(.[]; $l[.] | type == "string" and test("\\A[0-9a-f]{40}\\z"))))
+          | not) then "landed"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"
     elif (.worktree | . == null or . == $base or startswith($base + "/") | not) then "worktree-outside-base"

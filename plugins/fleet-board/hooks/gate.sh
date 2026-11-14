@@ -789,6 +789,23 @@ check_closing() {
   block "PR #$ref holds a GitHub closing keyword before an issue reference; card numbers are not GitHub numbers, so reword it as \"Local board card <n>\": $(printf '%s\n' "$err" | sed -n 2p | sed 's/^pr-closing-check: //')"
 }
 
+# check_base REF REPO: blocks unless the PR's base is the default branch
+# (origin/HEAD without the origin prefix, else main); an unreadable base blocks
+check_base() {
+  local ref="$1" repo="$2" base def
+  local args=(pr view "$ref")
+  [ -n "$repo" ] && args+=(-R "$repo")
+  args+=(--json baseRefName)
+  lookup "PR $ref" gh "${args[@]}"
+  base="$(jq -er '.baseRefName | strings | select(length > 0)' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify the base of PR $ref; blocking to be safe"
+  def="$(cd "$CURDIR" && git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)" || def=""
+  def="${def#origin/}"
+  [ -n "$def" ] || def=main
+  [ "$base" = "$def" ] || block "PR #$ref targets $base, not the default branch"
+  return 0
+}
+
 # --- gates -----------------------------------------------------------------------
 # Pass 1: gates that need no lookup, so a policy block never waits on the network.
 k=0
@@ -839,7 +856,8 @@ while [ $k -lt ${#SHAPES[@]} ]; do
         check_pr "$f1" "$f3"
         check_reviewed "$f1" "$f3"
         check_closing "$f1" "$f3"
-        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; check_closing "$ref" "$f3"; done ;;
+        check_base "$f1" "$f3"
+        for ref in $f4; do check_pr "$ref" "$f3"; check_reviewed "$ref" "$f3"; check_closing "$ref" "$f3"; check_base "$ref" "$f3"; done ;;
     esac
   done <<<"${SHAPE_DIRS[k]}"
   k=$((k + 1))

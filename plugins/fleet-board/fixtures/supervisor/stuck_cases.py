@@ -225,6 +225,33 @@ class Release(StuckCase):
         self.assertEqual(stuck.find(self.root), [], 'releasing a dirty_worktree finding resolves it')
         self.assertEqual(self.b.note(12)['stuck_released']['kind'], 'dirty_worktree')
 
+    def test_release_with_a_target_moves_there_and_clears_the_leftovers(self):
+        self.b.seed(12, 'in_progress')
+        self.b.put_note({'stuck': {'kind': 'marker', 'detail': 'd', 'at': 't'}})
+        self.marker(12)
+        dead = self.lock(12, dead_pid())
+        stuck.release(self.root, 12, force=True, target='backlog')
+        self.assertEqual(self.b.card(12)['state'], 'backlog')
+        self.assertFalse((self.active / '12').exists())
+        self.assertFalse(dead.exists())
+        self.assertIsNone(self.b.note(12).get('stuck'))
+
+    def test_release_with_a_target_refuses_an_unrecorded_pending_merge(self):
+        self.b.seed(12, 'merging')
+        self.b.put_note({'pr': 34, 'pending_merge': {'operation_key': 'k', 'pr': 34, 'head_sha': 'a' * 40}})
+        self.marker(12)
+        with self.assertRaisesRegex(ValueError, r'fleet-board supervisor stuck --release 12'):
+            stuck.release(self.root, 12, gh=self.gh_state('OPEN'), force=True, target='in_review')
+        self.assertEqual(self.b.card(12)['state'], 'merging')
+        self.assertTrue((self.active / '12').exists(), 'a refused release changes nothing')
+
+    def test_release_with_a_target_refuses_a_live_orphan(self):
+        self.b.seed(12, 'in_progress')
+        self.owned_marker(12, self.group())
+        with self.assertRaisesRegex(ValueError, r'live process group'):
+            stuck.release(self.root, 12, force=True, target='ready')
+        self.assertEqual(self.b.card(12)['state'], 'in_progress')
+
     def test_release_of_an_in_progress_card_with_a_pr_goes_to_in_review(self):
         self.b.seed(12, 'in_progress')
         self.b.put_note({'pr': 34})

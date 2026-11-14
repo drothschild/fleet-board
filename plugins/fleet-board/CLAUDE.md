@@ -59,6 +59,11 @@ no file here. The gate's residual bypasses and false positives are listed in the
   (null or a stage name), `reviewed_stages` (list of names), `last_review.stage` and
   `last_review.provider` (null for an In Review or agent-stage record), each validated
   against `^[a-z][a-z0-9_]*$` (`provider` also allows `-`).
+  Stacking fields (config `stacking.enabled`, default false, boolean): `stack` (null, else
+  `parent` positive integer, `base` a `fleet/<n>-<slug>` branch, `start` 40-hex, `attention` null
+  or at most 300 characters without a control character) and `landed` (null, else `parent`
+  positive integer, `parent_head`, `squash` and `sha` each 40-hex); an invalid one makes the
+  note `{}` with a warning naming the field.
   Note-to-card mirror: the local `note` verb copies the note's `pr` into the card's `pr_url`
   (`https://github.com/<board.repo>/pull/<pr>`, `pr_url_source: note`); `pr: null` clears a
   note-sourced URL. A URL a person set (`pr_url_source: person`) is kept unless a note names
@@ -195,7 +200,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   main (`review-drift.sh`; otherwise blocked as unreviewed), and, for a `fleet/<n>-*` branch, no
   closing keyword before an issue reference in the title, body or a commit message
   (`pr-closing-check.sh --json`, also run by `merge-reviewed.sh` before every merge, keyed
-  form after `pending_merge` so the lane classifies it `refused`). G3: moving to ready needs a non-empty
+  form after `pending_merge` so the lane classifies it `refused`), and a PR base that is
+  the default branch (`origin/HEAD` without the prefix, else main; `merge-reviewed.sh`
+  refuses the same with `PR #<pr> targets <base>, not <default>; not merged`; an unreadable
+  base is a refusal in both). G3: moving to ready needs a non-empty
   `acceptance` field on the card. Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`

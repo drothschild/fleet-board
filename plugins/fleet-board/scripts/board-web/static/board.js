@@ -100,6 +100,26 @@ function prNumber(url) {
   return m ? Number(m[1]) : null;
 }
 
+// terminalLink(n) -> <a>: asks the server to open a terminal at card n's directory.
+function terminalLink(n) {
+  const a = el("a", "open-terminal", "Open terminal");
+  a.href = "#";
+  a.draggable = false;
+  a.title = "Open a terminal in this card's directory";
+  a.addEventListener("click", async function (e) {
+    e.preventDefault();
+    if (e.stopPropagation) e.stopPropagation();
+    let r;
+    try {
+      r = await api("POST", "/api/cards/" + n + "/terminal");
+    } catch (err) {
+      r = { ok: false, status: 0, data: { error: "the board server did not answer" } };
+    }
+    if (!r.ok) showToast(errorText(r), "error");
+  });
+  return a;
+}
+
 function prLink(url, text) {
   const a = el("a", null, text);
   a.href = url;
@@ -351,9 +371,13 @@ function renderBoard(board, force) {
   $("repo").textContent = repo;
   document.title = repo + " board";
 
-  const keys = board.states.map(function (s) { return s.key; }).join(" ");
+  // the header holds each state's reviewer and the escalation, so a change in
+  // either rebuilds the columns even when the state keys are the same
+  const keys = board.states.map(function (s) { return s.key; }).join(" ") +
+    "|" + JSON.stringify(board.states.map(function (s) { return s.reviewer || null; })) +
+    "|" + JSON.stringify(board.escalation || null);
   if (keys !== S.stateKeys) {
-    buildColumns(board.states);
+    buildColumns(board.states, board.escalation);
     S.stateKeys = keys;
     force = true;
   }
@@ -425,7 +449,19 @@ function renderUnknown(cards, repo, force) {
   g.sig = sig;
 }
 
-function buildColumns(states) {
+// reviewerLine(reviewer, escalation): the header line "provider · model", or null
+// without a reviewer. Its title names the escalation, when there is one.
+function reviewerLine(reviewer, escalation) {
+  if (!reviewer || !reviewer.model) return null;
+  const text = reviewer.provider ? reviewer.provider + " \u00b7 " + reviewer.model : String(reviewer.model);
+  const line = el("span", "col-reviewer", text);
+  if (escalation && escalation.model && isNum(escalation.after_rounds)) {
+    line.setAttribute("title", "From round " + escalation.after_rounds + ", implementor and fixer use " + escalation.model);
+  }
+  return line;
+}
+
+function buildColumns(states, escalation) {
   const root = $("board");
   root.replaceChildren();
   S.unknown = null;
@@ -459,6 +495,8 @@ function buildColumns(states) {
     } else {
       const head = el("h2", "col-head");
       head.appendChild(el("span", null, s.name));
+      const rev = reviewerLine(s.reviewer, escalation);
+      if (rev) head.appendChild(rev);
       head.appendChild(count);
       head.appendChild(tokens);
       col.appendChild(head);
@@ -708,6 +746,12 @@ function renderCard(c, repo) {
   if (attn) li.appendChild(el("div", "card-meta card-attention-reason", clean(attn, 300)));
   const activity = cardActivityLine(c);
   if (activity) li.appendChild(el("div", "card-meta card-exec", activity));
+
+  if (typeof c.worktree === "string" && c.worktree) {
+    const t = el("div", "card-meta");
+    t.appendChild(terminalLink(n));
+    li.appendChild(t);
+  }
 
   const labels = Array.isArray(c.labels) ? c.labels : [];
   if (labels.length) {
@@ -1019,6 +1063,8 @@ function renderDrawer(card) {
   renderBodyPreview();
   renderDrawerMeta();
   renderHold(card);
+  setAcceptError("");
+  syncAccept();
   $("dr-comments-sec").hidden = isNew;
   if (isNew) {
     $("dr-comments").replaceChildren();
@@ -1439,6 +1485,7 @@ function renderDrawerMeta() {
   const active = live ? live.active : d.card.active;
   if (active) parts.push(el("span", "dr-now", "agent working now"));
   if (!parts.length) parts.push(document.createTextNode("No manager note yet"));
+  if (typeof d.card.worktree === "string" && d.card.worktree) parts.push(terminalLink(d.n));
   const frag = document.createDocumentFragment();
   parts.forEach(function (p, i) {
     if (i) frag.appendChild(document.createTextNode(" · "));
@@ -1694,6 +1741,50 @@ async function submitComment() {
   }
 }
 
+// The Accept button shows only in the drawer of a stored Blocked card.
+function syncAccept() {
+  const d = S.drawer;
+  const btn = $("dr-accept");
+  btn.hidden = !(d && d.n !== null && d.base && d.base.state === "blocked");
+  btn.disabled = !!(d && d.accepting);
+}
+
+function setAcceptError(msg) {
+  const p = $("dr-accept-err");
+  p.textContent = msg;
+  p.hidden = !msg;
+}
+
+// acceptCard(): confirms, then POST /api/cards/<n>/accept; the state picker
+// shows the state the server returns, or the server's message shows on a refusal.
+async function acceptCard() {
+  const d = S.drawer;
+  if (!d || d.n === null || d.accepting) return;
+  if (!confirm("Accept #" + d.n + " and move it out of Blocked?")) return;
+  d.accepting = true;
+  setAcceptError("");
+  syncAccept();
+  const r = await writeApi("POST", "/api/cards/" + d.n + "/accept");
+  d.accepting = false;
+  if (S.drawer !== d) {
+    fetchBoard(true);
+    return;
+  }
+  if (!r.ok) {
+    setAcceptError(errorText(r));
+    syncAccept();
+    return;
+  }
+  if (typeof r.data.state === "string") {
+    d.base.state = r.data.state;
+    d.card = r.data;
+    fillStateSelect(r.data.state);
+    updateDirty();
+  }
+  syncAccept();
+  fetchBoard(true);
+}
+
 // syncDrawer(): after a board poll, refresh the live parts of the drawer.
 function syncDrawer() {
   const d = S.drawer;
@@ -1715,6 +1806,7 @@ function bindDrawer() {
   $("dr-close").addEventListener("click", requestCloseDrawer);
   $("drawer-dim").addEventListener("click", requestCloseDrawer);
   $("dr-save").addEventListener("click", saveDrawer);
+  $("dr-accept").addEventListener("click", acceptCard);
   $("dr-comment-btn").addEventListener("click", submitComment);
   $("dr-title").addEventListener("input", updateDirty);
   $("dr-state").addEventListener("change", updateDirty);

@@ -376,13 +376,16 @@ VALIDATION_SCRIPT='
       else empty end),
       (if (.planner | type) == "object" then
         (if (.planner.provider | type) != "string" or (.planner.provider as $p | ($p == "claude" or $p == "codex") | not) then "planner.provider must be claude or codex" else empty end),
-        (if (.planner.model | type) != "null" and (.planner.model | type) != "string" then "planner.model must be a string or null" else empty end)
+        (if (.planner.model | type) != "null" and (.planner.model | type) != "string" then "planner.model must be a string or null" else empty end),
+        (if .planner.persona_append != null and (.planner.persona_append | type) != "string" then "planner.persona_append must be null or a string" else empty end)
       else empty end),
       (if (.followups | type) != "object" then "followups must be an object"
        elif (.followups.status | type) != "string" or (.followups.status as $s | ($s == "ready" or $s == "backlog") | not) then "followups.status must be ready or backlog" else empty end),
       (if (.after_merge | type) != "object" then "after_merge must be an object"
        elif (.after_merge.allow | type) != "array" or (.after_merge.allow | map(type != "string" or . == "") | any) then "after_merge.allow must be a list of non-empty strings"
        else empty end),
+      (if (.stacking | type) != "object" then "stacking must be an object"
+       elif (.stacking.enabled | type) != "boolean" then "stacking.enabled must be boolean" else empty end),
       (if (.worktrees | type) == "object" then
         (if (.worktrees.mutate_on_copy | type) != "boolean" then "worktrees.mutate_on_copy must be boolean" else empty end)
       else empty end),

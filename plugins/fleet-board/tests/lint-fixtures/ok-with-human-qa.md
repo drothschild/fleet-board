@@ -1,6 +1,9 @@
 ## What
 Add clamp.
 
+## Scope
+- src/clamp.js
+
 ## Acceptance
 - clamp(5, 0, 3) returns 3
 - clamp(-1, 0, 3) returns 0

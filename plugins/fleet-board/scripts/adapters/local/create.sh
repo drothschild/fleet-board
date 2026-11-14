@@ -51,6 +51,12 @@ for l in ${labels[@]+"${labels[@]}"}; do
     break
   fi
 done
+# A card created into Ready needs Scope paths, as a move from Backlog does; without them it lands in
+# Backlog (the planner would hold it in Ready forever, and a person has to add the Scope either way)
+if [ "$STATE" = ready ] && ! fb_card_has_scope_paths "$(cat "$BODYTMP")"; then
+  echo "fleet-board: warning: card #$N has no Scope paths; created in backlog, not ready" >&2
+  STATE=backlog
+fi
 LABELS_JSON="$(printf '%s\n' ${labels[@]+"${labels[@]}"} | jq -R . | jq -sc 'map(select(. != ""))')"
 jq -n --argjson n "$N" --arg t "$TITLE" --rawfile b "$BODYTMP" \
   --arg s "$STATE" --argjson l "$LABELS_JSON" --arg now "$(fl_now)" \
