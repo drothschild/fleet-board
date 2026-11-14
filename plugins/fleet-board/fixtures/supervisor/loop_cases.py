@@ -65,6 +65,9 @@ class LoopCase(unittest.TestCase):
         self.fetch_gate = None
         self.fetch_raises = None
         self.rows = None
+        self.order = []
+        self.card_fetches = []
+        self.card_batch = None
         self.thread = None
         self.rc = None
         self.crash = None
@@ -74,6 +77,7 @@ class LoopCase(unittest.TestCase):
         self.sup = loop.Supervisor(self.b.root, config_loader=self.load, state=self.b.state, driver=self.b.driver,
                                    scheduler=self.sched, fetch=self.fetch, clock=self.clock, mono=self.mono,
                                    run=self.b.run)
+        self.sup.fetch_card = self.fetch_card
         self.addCleanup(self.shutdown)
 
     # -- injected seams ------------------------------------------------------------------------------
@@ -88,7 +92,13 @@ class LoopCase(unittest.TestCase):
             raise ValueError(self.bad_config)
         return self.b.config
 
+    def fetch_card(self, root, card, run=None, now=None):
+        self.order.append('card')
+        self.card_fetches.append(card)
+        return self.card_batch(card)
+
     def fetch(self, root, run=None, now=None):
+        self.order.append('board')
         self.fetches += 1
         if self.fetch_gate is not None:
             self.fetch_gate.wait(20)
@@ -851,6 +861,65 @@ class Markers(LoopCase):
         self.b.state.end(12)
         self.assertIsNone(self.marker())
 
+
+
+class SessionEnd(LoopCase):
+    def lane(self):
+        started = []
+        test = self
+
+        class Lane:
+            def start(self, row):
+                started.append((row['number'], list(test.order)))
+
+            def poll(self):
+                return None
+
+        self.sup.merge_lane = Lane()
+        return started
+
+    def review_running(self):
+        """Card 12 in review with its reviewer session running and no board-wide pass due for a long while."""
+        self.in_review(12)
+        self.b.plans({'report': 'reviewer-ok'})
+        self.sup.config = self.b.config
+        self.sup._begin(dc.candidate('review', round=1, number=12, branch=BRANCH[12], worktree=self.b.worktree,
+                                     state='in_review', declared_paths=['p12'], pr=34, provider='claude'))
+        self.sup._want_cycle = False
+        self.sup._next_cycle = self.mono() + 3600
+        self.assertIn(12, self.b.state.snapshot()['active'])
+
+    def test_a_reviewer_that_ends_clean_starts_the_merge_after_a_single_card_fetch_before_any_board_wide_fetch(self):
+        started = self.lane()
+        self.card_batch = lambda card: candidates.Batch(
+            [dc.candidate('merge', number=card, state='in_review', declared_paths=['p%d' % card])], None, None)
+        self.review_running()
+        self.start()
+        self.until(lambda: started, what='the merge to start')
+        self.assertEqual(self.card_fetches, [12])
+        self.assertEqual(started[0][0], 12)
+        self.assertEqual(started[0][1], ['card'], 'the single-card fetch came first and no board-wide fetch was made')
+        self.assertEqual(self.fetches, 0)
+        rows, kw = self.sched.calls[0]
+        self.assertEqual([r['action'] for r in rows], ['merge'], 'the row goes through the scheduler as usual')
+        self.assertIn('lane_free', kw)
+
+    def test_a_failed_single_card_fetch_is_recorded_and_the_next_board_wide_pass_still_plans_the_card(self):
+        started = self.lane()
+        self.card_batch = lambda card: candidates.Batch([], None, 'tick-plan.sh timed out')
+        self.rows = lambda: [dc.candidate('merge', number=12, state='in_review', declared_paths=['p12'])]
+        self.review_running()
+        self.start()
+        self.until(lambda: any(e['type'] == 'card_fetch_failed' for e in self.b.state.events),
+                   what='the card fetch error')
+        self.assertEqual(started, [], 'nothing was planned from the failed fetch')
+        self.assertEqual(self.fetches, 0)
+        self.sup._next_cycle = 0.0
+        self.sup.wake('timer')
+        self.until(lambda: started, what='the board-wide pass to plan the merge')
+        self.assertGreaterEqual(self.fetches, 1)
+        self.assertEqual(started[0][0], 12)
+        self.assertEqual(self.mode(), 'running')
 
 
 class ScopeIgnore(LoopCase):
