@@ -126,12 +126,14 @@
     <span id="dr-num" class="dr-num"></span>
     <input id="dr-title" class="dr-title" type="text" aria-label="Title" placeholder="Card title" autocomplete="off">
     <select id="dr-state" class="dr-state" aria-label="State"></select>
+    <button type="button" id="dr-accept" class="dr-accept" hidden>Accept</button>
     <button type="button" id="dr-close" class="dr-close" aria-label="Close">
       <svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
     </button>
   </div>
   <p id="dr-meta" class="dr-meta"></p>
   <p id="dr-hold" class="dr-meta dr-hold" hidden></p>
+  <p id="dr-accept-err" class="dr-field-err" role="alert" hidden></p>
   <div class="dr-scroll">
     <section class="dr-section" aria-labelledby="dr-body-h">
       <h3 id="dr-body-h" class="dr-h"><label for="dr-body">Body</label></h3>
