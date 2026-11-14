@@ -54,7 +54,8 @@ from supervisor import usage as supervisor_usage
 from supervisor import webproxy
 
 MARKER = "<!-- fleet-board:manager-note -->"
-NOTE_FIELDS = ("round", "pr", "models", "stage", "action_failures")
+NOTE_FIELDS = ("round", "pr", "models", "stage", "action_failures",
+               "pending_merge", "merge_operation", "main_check", "merger", "merge_retry")
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",

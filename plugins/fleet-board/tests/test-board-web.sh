@@ -1624,6 +1624,41 @@ for want in "evidence: clean 1/1" "security: findings 0/2" "perf: pending 0/1"; 
   esac
 done
 
+# Merging step text on the card tile and its activity line (real board.js in the fake DOM)
+MS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/board-merge-step.XXXXXX")"
+ms_tile() { # <state> <action> <note json>: the tile text of one card
+  jq -n --arg st "$1" --arg act "$2" --argjson note "$3" \
+    '{states: [{key: "merging", name: "Merging"}, {key: "in_review", name: "In review"}], run: null, repo: "acme/toy", escalation: null,
+      cards: [{number: 9, title: "Step card", state: $st, known: true, labels: [], note: $note,
+        activity: {action: $act, elapsed_seconds: 720}}]}' > "$MS_TMP/board.json"
+  node "$SCRIPT_DIR/board-dom-harness.js" "$SCRIPTS/board-web/static/board.js" "$MS_TMP/board.json" merging 2>&1 \
+    | jq -r '[.groups[].cards[]]|join("|")' 2>/dev/null
+}
+ms_expect() { # <name> <want> <state> <action> <note json>
+  local out; out="$(ms_tile "$3" "$4" "$5")"
+  case "$out" in *"$2"*) pass "$1" ;; *) fail "$1" "$out" ;; esac
+}
+ms_absent() { # <name> <unwanted> <state> <action> <note json>
+  local out; out="$(ms_tile "$3" "$4" "$5")"
+  case "$out" in *"$2"*) fail "$1" "$out" ;; "") fail "$1" "tile did not render" ;; *) pass "$1" ;; esac
+}
+ms_expect "a Merging card with pending_merge and no merge_operation shows Merging PR #<pr> on its tile" \
+  "Merging PR #41" merging merge '{"pr": 41, "pending_merge": {"pr": 41, "head_sha": "abc"}}'
+ms_expect "a Merging card with merge_operation and no main_check shows Merged; checking main on its tile" \
+  "Merged; checking main" merging merge '{"pr": 41, "merge_operation": {"pr": 41, "head_sha": "abc"}}'
+ms_expect "a Merging card whose running action is after_merge shows Post-merge steps on its tile" \
+  "Post-merge steps" merging after_merge '{"pr": 41, "merge_operation": {"pr": 41}, "main_check": {"ok": true}}'
+ms_expect "a Merging card whose merger.status is attention shows Merger needs attention on its tile" \
+  "Merger needs attention" merging merge '{"pr": 41, "pending_merge": {"pr": 41}, "merger": {"status": "attention"}}'
+ms_expect "the activity line shows the merge step words followed by the elapsed time" \
+  "Merging PR #41 · 12m" merging merge '{"pr": 41, "pending_merge": {"pr": 41}}'
+for pair in "review:Reviewing" "fix:Fixing" "start:Starting" "continue_implementor:Continuing implementor" "update_branch:Updating branch"; do
+  ms_expect "the activity line shows '${pair#*:}' instead of the raw action ${pair%%:*}" \
+    "activity: ${pair#*:} · 12m" in_review "${pair%%:*}" '{"pr": 41}'
+done
+ms_absent "a card outside Merging shows no merge step text" "Merging PR" in_review merge '{"pr": 41, "pending_merge": {"pr": 41}}'
+rm -rf "$MS_TMP"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
