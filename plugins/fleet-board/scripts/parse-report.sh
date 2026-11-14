@@ -26,9 +26,9 @@
 # For the card and one VERIFIED line.
 # not_reproducible is a fourth, fixer-only status (the fixer re-ran the finding
 # and could not reproduce it; ## PR holds #<n> as for done). With
-# --commits-since-review <n> (the commits on the branch past the reviewed
-# head, measured by the caller), n > 0 rejects it: it is valid only when the
-# fixer committed nothing.
+# --commits-since-review <n> (the PR's own commits since the reviewed head,
+# measured by the caller, which leaves out merges of the base and version-only
+# commits), n > 0 rejects it: it is valid only when the fixer committed nothing.
 # The merger (the role after a merge or a refused merge) has no required role
 # sections and needs --mode: after_merge allows Status done|attention, refusal
 # allows retry|fix|attention; any other status for the mode is rejected.
