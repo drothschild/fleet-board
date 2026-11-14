@@ -63,6 +63,10 @@ setup_case() {
     printf 'human_qa_paths: ["src/components/**"]\n'
     printf 'merge:\n  policy: %s\n' "$1"
     [ -n "${2:-}" ] && printf '%s\n' "$2"
+    # these cases are about merging, not the built-in review stages: disable both
+    case "${2:-}" in *'review:'*) ;; *) printf 'review:\n  stages:\n' ;; esac
+    printf '    - name: documentation\n      enabled: false\n'
+    printf '    - name: blast_radius\n      enabled: false\n'
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
