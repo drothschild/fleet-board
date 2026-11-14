@@ -264,6 +264,26 @@ assert_eq "review-again: checkout moved" "$(git -C "$RV" rev-parse HEAD 2>/dev/n
 assert_eq "review-again: setup not re-run" "$(line_count "$RV/.setup-ran")" 1
 assert_true "review-again: copy refreshed" test -f "$RC/feature2.txt"
 
+# review with a stage name: its own checkout, and the evidence reviewer's stays untouched
+printf 'mine\n' > "$RV/evidence-sentinel"
+git -C "$RV" checkout -q --force --detach "$SHA_P2"
+run_wt review 12 7 security
+assert_exit "review-stage: exit" 0
+assert_eq "review-stage: its own path" "$(jqc .path)" "\"$BASE/12-review-security\""
+assert_eq "review-stage: its own copy" "$(jqc .copy)" "\"$BASE/12-review-security-copy\""
+assert_eq "review-stage: sha is the PR head" "$(jqc .sha)" "\"$SHA_P2\""
+assert_true "review-stage: git worktree list shows it" wt_listed "$BASE/12-review-security"
+assert_true "review-stage: the evidence checkout is untouched" test -f "$RV/evidence-sentinel"
+assert_true "review-stage: the evidence copy is untouched" test -f "$RC/feature2.txt"
+run_wt review 12 7 ux
+assert_exit "review-stage-ux: exit" 0
+assert_eq "review-stage-ux: a third path" "$(jqc .path)" "\"$BASE/12-review-ux\""
+printf 'sec\n' > "$BASE/12-review-security/stage-sentinel"
+run_wt review 12 7 ux
+assert_true "review-stage-ux again: the security checkout is untouched" test -f "$BASE/12-review-security/stage-sentinel"
+run_wt review 12 7 "bad stage"
+assert_exit "review-stage: a stage name with a space is a usage error" 2
+
 # ---------------------------------------------------------------------------
 # remove refuses paths outside the normalized base, before removing anything
 mkdir -p "${BASE}2/x"
@@ -342,6 +362,9 @@ assert_exit "remove: exit" 0
 assert_false "remove: card worktree gone" test -e "$WT12"
 assert_false "remove: review worktree gone" test -e "$RV"
 assert_false "remove: copy gone" test -e "$RC"
+assert_false "remove: stage review worktree gone" test -e "$BASE/12-review-security"
+assert_false "remove: stage review copy gone" test -e "$BASE/12-review-security-copy"
+assert_false "remove: stage review worktree listing gone" wt_listed "$BASE/12-review-ux"
 assert_false "remove: worktree list no longer shows the card worktree" wt_listed "$WT12"
 assert_false "remove: worktree list no longer shows the review worktree" wt_listed "$RV"
 assert_true "remove: branch still exists" git -C "$REPO" rev-parse --verify --quiet refs/heads/fleet/12-add-subtract

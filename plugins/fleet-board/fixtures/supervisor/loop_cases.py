@@ -894,7 +894,8 @@ class ReadOnlyScope(LoopCase):
                                            provider='claude', paths=['src/a.py'], started_at=0.0, started_mono=0.0)
         try:
             self.assertEqual(self.sup._active_claims(),
-                             [{'number': 77, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'review'}])
+                             [{'number': 77, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'review',
+                              'stage': None}])
         finally:
             self.sup.state.active.pop(77, None)
 

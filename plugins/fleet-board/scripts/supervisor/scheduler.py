@@ -28,6 +28,9 @@ _WORK_CLASS = 1
 # a slot and wait for their own card, but neither wait on another card's scope nor block one, so a
 # writer never holds them up.
 SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch'})
+# The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
+# `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
+REVIEWER_ACTIONS = frozenset({'start_review', 'review', 'review_stage'})
 # Provider label of script-only actions: never capped by provider_concurrency.
 _SCRIPTS = 'scripts'
 _PRIORITY = {'high': 0, 'normal': 1, 'low': 2}
@@ -66,6 +69,18 @@ class _SystemTimerDriver:
         timer.daemon = True
         timer.start()
         return timer
+
+
+def _stage_of(item):
+    stage = item.get('stage')
+    return stage.get('name') if isinstance(stage, dict) else stage
+
+
+def _share_card(row, other):
+    """True when two actions of one card may run together: both are reviewer actions and they are not the same
+    reviewer (the planner keeps planning a reviewer that has not reported yet, so a running one is not run twice)."""
+    return (row.get('action') in REVIEWER_ACTIONS and other.get('action') in REVIEWER_ACTIONS
+            and (row.get('action'), _stage_of(row)) != (other.get('action'), _stage_of(other)))
 
 
 def _has_work(row):
@@ -306,7 +321,9 @@ class Scheduler:
             age = max(0, int((now - since) // max(1, limits.get('aging_seconds', 900))))
             c['_rank'] = max(0, base - age)
             eligible.append(c)
-        active_numbers = {str(x.get('number', x.get('card'))) for x in active}
+        def same_card(item, number):
+            return str(item.get('number', item.get('card'))) == str(number)
+
         # Keep unknown workflow candidates out of scheduling without disturbing claims.
         ordered = sorted(eligible, key=lambda c: (c['_rank'], c['eligible_since'], c.get('number', 0)))
         admitted = []
@@ -320,7 +337,7 @@ class Scheduler:
         for c in ordered:
             number = c.get('number')
             provider = c.get('provider') or 'default'
-            if str(number) in active_numbers:
+            if any(same_card(x, number) and not _share_card(c, x) for x in active):
                 waits.append({'number': number, 'reason': 'card already has an active claim'}); continue
             retry_at = limits.get('retry_at', {}).get(str(number))
             if retry_at is not None and now < retry_at:
@@ -353,7 +370,9 @@ class Scheduler:
             provider_cap = limits['providers'].get(provider, limits['providers'].get('*', limits['global']))
             if not free and provider_counts.get(provider, 0) >= provider_cap:
                 waits.append({'number': number, 'reason': 'provider capacity'}); continue
-            if sum(str(x.get('number', x.get('card'))) == str(number) for x in occupied) >= limits.get('per_card', 1):
+            mine = [x for x in occupied if same_card(x, number)]
+            if mine and not all(_share_card(c, x) for x in mine) \
+                    and len(mine) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
             paths = scopes.drop_ignored((c.get('declared_paths') or []) + (c.get('actual_paths') or []), ignore)
             reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
@@ -361,7 +380,7 @@ class Scheduler:
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
                 continue
-            conflict = next((x for x in occupied if str(x.get('number', x.get('card'))) == str(number)
+            conflict = next((x for x in occupied if (same_card(x, number) and not _share_card(c, x))
                              or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
                                  and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
