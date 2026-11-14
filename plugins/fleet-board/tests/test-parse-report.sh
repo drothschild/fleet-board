@@ -606,6 +606,12 @@ assert_exit "merger done in a refusal report: exit 1" 1
 assert_stderr_line "merger done in refusal: message" "parse-report: role merger does not allow status: done in mode refusal"
 run_parse --role merger --mode after_merge "$REPORTS/merger-refusal-retry.md"
 assert_stderr_line "merger retry in after_merge: message" "parse-report: role merger does not allow status: retry in mode after_merge"
+run_parse --role merger --mode refusal "$REPORTS/merger-clean.md"
+assert_exit "merger clean in a refusal report: exit 1" 1
+assert_stderr_line "merger clean in refusal: message" "parse-report: role merger does not allow status: clean in mode refusal"
+run_parse --role merger --mode after_merge "$REPORTS/merger-clean.md"
+assert_exit "merger clean in an after_merge report: exit 1" 1
+assert_stderr_line "merger clean in after_merge: message" "parse-report: role merger does not allow status: clean in mode after_merge"
 run_parse --role merger --mode refusal "$REPORTS/merger-bad-status.md"
 assert_exit "merger unknown status: exit 1" 1
 assert_stderr_line "merger unknown status: message" "parse-report: unknown status: merged"
