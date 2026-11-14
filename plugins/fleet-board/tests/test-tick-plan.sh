@@ -1879,6 +1879,11 @@ splan parallel-reported-at-head
 assert_jq "parallel reported: security is not planned again" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name]" '["ux"]'
 assert_jq "parallel reported: the evidence reviewer is still planned" "[.cards[] | select(.number == 12 and .action == \"review\")] | length" '1'
 assert_jq "parallel reported: no advance_stage" "[.cards[] | select(.number == 12 and .action == \"advance_stage\")] | length" '0'
+# A clean evidence review at this head with two routed stages: both stages are planned, never advance_stage
+splan parallel-evidence-at-head
+assert_jq "parallel evidence: one review_stage row per routed stage" "[.cards[] | select(.number == 12 and .action == \"review_stage\") | .stage.name]" '["security","ux"]'
+assert_jq "parallel evidence: no advance_stage row" "[.cards[] | select(.number == 12 and .action == \"advance_stage\")] | length" '0'
+assert_jq "parallel evidence: every row is at the same head SHA" "[.cards[] | select(.number == 12) | .head_sha] | unique" '["abc1234"]'
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
