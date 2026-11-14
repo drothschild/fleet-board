@@ -787,16 +787,20 @@ def session_id_of(path: Path) -> str:
     return found
 
 
-def record_planner_usage(action: str, stream_path: Path, ended_at: str = None, started_at: str = None) -> bool:
+def record_planner_usage(action: str, stream_path: Path, ended_at: str = None, started_at: str = None,
+                         provider: str = "claude") -> bool:
     """One planner-kind ledger line for a finished planner or import-preview session. Tokens come from the
     session's result event (unreadable counts stay unknown). A ledger failure is logged, never raised; the return
     value says whether the line was appended."""
     try:
         cfg, _ = ctx()
-        _text, use, _err, _sub, _sid, _mode = supervisor_roles.parse_stream(stream_path)
+        if provider == "codex":
+            use = codex_usage(codex_events(stream_path), (cfg.get("planner") or {}).get("model"))
+        else:
+            _text, use, _err, _sub, _sid, _mode = supervisor_roles.parse_stream(stream_path)
         supervisor_usage.append(APP["root"], {
             "run_id": None, "card": None, "kind": "planner", "column": None, "action": action, "role": None,
-            "provider": "claude", "model": use.model, "input": use.input, "output": use.output,
+            "provider": provider, "model": use.model, "input": use.input, "output": use.output,
             "cache_write": use.cache_write, "cache_read": use.cache_read, "started_at": started_at,
             "ended_at": ended_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "log": str(stream_path),
@@ -805,6 +809,21 @@ def record_planner_usage(action: str, stream_path: Path, ended_at: str = None, s
     except Exception as exc:  # noqa: BLE001 - usage accounting must never break a planner reply
         print("warning: planner usage not recorded: %s" % exc, file=sys.stderr)
         return False
+
+
+def codex_usage(events: list, model):
+    """Token counts from the last turn.completed event of a codex turn; a count it does not carry stays None
+    (unknown, never zero). Codex reports no cache-write count."""
+    usage = {}
+    for ev in events:
+        if ev.get("type") == "turn.completed" and isinstance(ev.get("usage"), dict):
+            usage = ev["usage"]
+
+    def count(key):
+        v = usage.get(key)
+        return v if type(v) is int and v >= 0 else None
+    return supervisor_roles.Usage(count("input_tokens"), count("output_tokens"), None,
+                                  count("cached_input_tokens"), model)
 
 
 def codex_events(path: Path) -> list:
@@ -833,7 +852,8 @@ def codex_error_message(events: list) -> str:
     return found
 
 
-def finish_codex_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, reply_path: Path):
+def finish_codex_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, reply_path: Path,
+                      started_at: str = None):
     rc = proc.wait()
     events = codex_events(out_path)
     reply = read_text(reply_path).strip()
@@ -853,6 +873,8 @@ def finish_codex_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path,
             meta["thread_id"] = tid
             write_private_atomic(pdir / "meta.json", json.dumps(meta))
         _PLANNER_BUSY.discard(id)
+    # last: a ledger append that blocks (a stuck lock) must never leave the conversation "still replying"
+    record_planner_usage("planner", out_path, started_at=started_at, provider="codex")
 
 
 def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Path, started_at: str = None):
@@ -936,7 +958,7 @@ def send_planner_message(id: str, text: str):
         write_private_atomic(pdir / "transcript.json", json.dumps(turns))
         _PLANNER_BUSY.add(id)
         if codex:
-            threading.Thread(target=finish_codex_turn, args=(id, pdir, proc, out_path, err_path, reply_path),
+            threading.Thread(target=finish_codex_turn, args=(id, pdir, proc, out_path, err_path, reply_path, started_at),
                              daemon=True).start()
         else:
             threading.Thread(target=finish_planner_turn, args=(id, pdir, proc, out_path, err_path, started_at),
