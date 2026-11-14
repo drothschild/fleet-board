@@ -57,8 +57,8 @@ Run every command inside the review worktree at the PR head unless a step says o
 4. **Mutation (`review.mutation`).**
    - **When `review.mutation` is false:** make no mutant. `## Mutation` contains exactly the line `skipped: review.mutation is off`.
    - **When `review.mutation` is true:** make exactly one mutant for every Acceptance item mapped to a test. `UNMAPPED`, `CHECKED` and `NOT_APPLICABLE` items get no mutant. A mutant is a small change in the **implementation code** that the mapped test covers, chosen to break that item's behavior: flip an operator, change a constant, or remove a branch. Never mutate a test file.
-     - Run the mapped test's file through its test command, e.g. `node --test test/calc.test.js`, and expect red.
-     - Restore the mutated file with `git checkout -- <file>`. Re-run the same test command and confirm it is green again before you make the next mutant.
+     - Run only the mapped test through its test command and expect red. Run the single mapped test case when the runner can select it by its exact name (e.g. `node --test --test-name-pattern '^<name>$' test/calc.test.js`) and that run's output shows exactly one test ran. Otherwise run only the mapped test's file, e.g. `node --test test/calc.test.js`. A single-case run that shows zero tests, or more than one, does not count: run the file instead. Never run the other touched test files for a mutant.
+     - Before the first mutant, save the output of `git status --porcelain` as the baseline (step 3's runs may have left untracked files). Restore every file you mutated with `git checkout -- <file>`, then confirm the whole worktree is restored: `git status --porcelain` prints exactly the baseline. Only then make the next mutant. Do not re-run the test after a restore: a worktree back at the baseline is byte for byte the unmutated head that step 3 already ran green.
      - Classify each mutant as exactly one of:
        - **killed**: the mapped test went red.
        - **survived**: the mapped test stayed green.
@@ -68,7 +68,7 @@ Run every command inside the review worktree at the PR head unless a step says o
      - Each survivor produces one `[Critical]` finding. It names the item, the file mutated, the change made and the test that stayed green.
      - `## Mutation` contains exactly one line, `killed: <n> survived: <n> invalid: <n>`. The three counts add up to the number of Acceptance items mapped to a test.
      - Put a per-mutant account (item, file, change, command, outcome) in `## For the card` as plain lines that are not list lines. Example: `mutant 1: src/calc.js "a - b" to "a + b"; node --test test/calc.test.js went red; killed`.
-     - **When `worktrees.mutate_on_copy` is true:** copy the review worktree to a temporary directory. Make and run every mutant in the copy, and restore each one there with `git checkout -- <file>`. Remove the copy afterwards. Never mutate the review worktree itself.
+     - **When `worktrees.mutate_on_copy` is true:** copy the review worktree to a temporary directory. Make and run every mutant in the copy. The copy has no `.git`, so restore each mutated file there by copying it back from the review worktree and confirm it with `cmp -s <review worktree file> <copy file>` (exit 0), in place of `git checkout` and the baseline check. Remove the copy afterwards. Never mutate the review worktree itself.
 
 5. **Claim check (`review.verify_claim`).**
    - **When `review.verify_claim` is false:** execute no claim. `## Claim check` contains exactly the line `skipped: review.verify_claim is off`.
