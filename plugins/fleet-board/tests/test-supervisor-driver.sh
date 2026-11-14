@@ -74,6 +74,64 @@ def case_file_pending_still_holds_a_non_blocked_card_with_no_pr(sub):
     assert b.note()['pending_followups'] is not None
 
 
+# No merger session when there are no after-merge steps (card 366)
+def merger_board(sub, body='plain body', config=None, persona_file=False):
+    b = dc.board_for(sub, 'merging', body=body, config=dict(dc.CONFIG, **(config or {})))
+    b.put_note({'merged_pr': 34, 'pr': 34, 'state': 'merging'})
+    b.plans({'report': 'merger-after-merge-done', 'post': False})
+    b.stubs['after-merge.sh'] = dc.ok(dc.json.dumps({'outcome': 'done', 'results': [], 'note': [], 'comment': ''}))
+    b.gh_result = dc.ok(dc.json.dumps({'files': [], 'mergeCommit': {'oid': 'f' * 40}}))
+    if persona_file:
+        (b.root / '.fleet-board' / 'merger.md').write_text('# Persona\nNo steps.\n')
+    return b
+
+
+def merger_started(b, mode='merged'):
+    action = b.driver.begin_merger(12, mode, {'pr': 34, 'head': 'abc1234', 'reason': 'merged'})
+    if action.session is not None:
+        dc.wait_for(dc.driver.Started('session', action))
+    return action
+
+
+def case_default_persona_with_no_after_merge_steps_launches_no_merger_session(sub):
+    b = merger_board(sub)
+    action = merger_started(b)
+    assert action.session is None, 'a merger session was launched'
+    assert b.fake_calls() == [], b.fake_calls()
+    assert 12 not in b.state.active
+    assert b.note()['merger'] == {'mode': 'after_merge', 'status': 'done', 'head': 'abc1234'}, b.note()
+    assert b.card()['state'] == 'merging'
+
+
+def case_persona_append_still_starts_the_merger_session(sub):
+    b = merger_board(sub, config={'merge': {'persona_append': 'Also tag the release.'}})
+    assert merger_started(b).session is not None
+    assert len(b.fake_calls()) == 1
+
+
+def case_a_local_merger_persona_file_still_starts_the_merger_session(sub):
+    b = merger_board(sub, persona_file=True)
+    assert merger_started(b).session is not None
+    assert len(b.fake_calls()) == 1
+
+
+def case_an_after_merge_section_still_starts_the_merger_session(sub):
+    b = merger_board(sub, body='intro\n\n## After merge\n\n- `make deploy`\n')
+    assert merger_started(b).session is not None
+    assert len(b.fake_calls()) == 1
+
+
+def case_a_refused_merge_under_the_default_persona_starts_the_merger_in_refusal_mode(sub):
+    b = merger_board(sub)
+    b.plans({'report': 'merger-refusal-retry', 'post': False})
+    b.put_note({'merge_refusal': {'pr': 34, 'head': 'abc1234', 'reason': 'policy', 'at': '2026-11-11T00:00:00Z'}})
+    action = b.driver.begin_merger(12, 'refused', {'pr': 34, 'head': 'abc1234', 'reason': 'policy'})
+    assert action.session is not None and action.action == 'merge_refusal', action
+    dc.wait_for(dc.driver.Started('session', action))
+    assert len(b.fake_calls()) == 1
+    assert 'merger' not in b.note() or b.note()['merger']['mode'] != 'after_merge', b.note()
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):
