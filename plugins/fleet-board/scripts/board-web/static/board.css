@@ -1086,3 +1086,5 @@ button, select, input, textarea { font: inherit; color: inherit; }
 
 .open-terminal { font-size: 0.85em; text-decoration: underline; cursor: pointer; }
 .dr-accept { margin-left: 8px; }
+.card-reviewer-clean { color: #1a7f37; }
+.card-reviewer-findings { color: #b3261e; }
