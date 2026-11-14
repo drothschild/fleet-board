@@ -1325,8 +1325,22 @@ class CardDriver:
             if merged['outcome'] == 'blocked':
                 c.merge_soft({'after_merge_head': None})
                 return self._after_merge_blocked(c, merged, 'merging')
+        if not _AFTER_MERGE.search(body) and self._default_persona_only(c):
+            # Nothing to run after the merge: record the result a merger would have reported; the planner then
+            # plans finish and the merge lane is free (no session to hold it)
+            c.merge(dict(_RESET, merger={'mode': 'after_merge', 'status': 'done', 'head': head}))
+            return Outcome(c.n, True, False, None)
         return self._dispatch_merger(c, 'after_merge', pr, head, card,
                                      {'pr_head': head, 'merge_commit': self._merge_commit(c, pr)})
+
+    def _default_persona_only(self, c):
+        """True when the resolved merger persona is the plugin default with nothing appended: it lists no
+        after-merge steps, so a session would run nothing."""
+        merge = c.config.get('merge') if isinstance(c.config.get('merge'), dict) else {}
+        append = merge.get('persona_append')
+        if merge.get('persona') is not None or (isinstance(append, str) and append.strip()):
+            return False
+        return not (self.root / '.fleet-board' / 'merger.md').is_file()
 
     def _merge_commit(self, c, pr):
         """The commit the merge put on the base branch (`gh pr view --json mergeCommit`); under a squash merge

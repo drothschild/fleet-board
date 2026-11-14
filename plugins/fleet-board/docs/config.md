@@ -22,6 +22,8 @@ Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be mer
 
 `merge.persona` is a path relative to the repo root, with no `..`. `null` (the default) uses `.fleet-board/merger.md` when that file exists, else the plugin's default persona. A path that is set but missing is an attention, never a silent fallback. `merge.persona_append` is a string added after whichever persona was chosen. See [the README](../README.md#merger-and-deploys) for an example persona.
 
+The supervisor skips the merger session after a successful merge, and records the merger result `{mode: after_merge, status: done}` in the card's note itself, when all of these hold: `merge.persona` is `null` and there is no `.fleet-board/merger.md` (the plugin default persona lists no after-merge steps), `merge.persona_append` is `null`, and the card has no `## After merge` section. The merge lane is then free in the same cycle. A refused merge always starts the merger in refusal mode.
+
 ## `merge.ignore_checks`
 
 A list of dated, reasoned exceptions for checks that should not hold up a merge. Each entry has a `name` (a case-sensitive shell glob: `*` is any run of characters, `?` one character), a `reason`, and an `until` date (`YYYY-MM-DD`, valid through that day, UTC). A red check whose name matches an unexpired entry counts as green. An entry that also says `pending: true` covers a matching check that is still running, so the supervisor merges without waiting for it to finish; without it, a pending check is never green. A `pending: true` entry also covers a red check of the same name: it means "don't wait for this check, whatever it says". A check with no name or context is never covered by any entry.

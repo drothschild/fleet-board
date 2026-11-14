@@ -111,6 +111,7 @@ class Merging(MergeCase):
         self.assertNotIn('ignored_checks', self.b.note(12))
 
     def test_merged_card_runs_the_real_merger_and_finishes(self):
+        self.b.config = dict(self.b.config, merge={'persona_append': 'extra'})
         del self.b.driver.begin_merger           # the driver's own merger flow
         self.b.plans({'report': 'merger-after-merge-done', 'post': False})
         self.start()
@@ -122,6 +123,7 @@ class Merging(MergeCase):
         self.assertEqual(self.mode(), 'running')
 
     def test_a_deferred_merger_runs_after_a_restart(self):
+        self.b.config = dict(self.b.config, merge={'persona_append': 'extra'})
         del self.b.driver.begin_merger
         self.hold.write_text('')
         self.start()
@@ -323,7 +325,9 @@ class MergerFlow(unittest.TestCase):
     def setUp(self):
         self.dir = BASE / self.id().rsplit('.', 1)[-1]
         self.dir.mkdir()
-        self.b = dc.Board(self.dir, dict(dc.CONFIG, supervisor={'retry_backoff_seconds': 60}))
+        # persona_append: with the plugin default persona alone no session starts (card 366); these cases need one
+        self.b = dc.Board(self.dir, dict(dc.CONFIG, supervisor={'retry_backoff_seconds': 60},
+                                         merge={'persona_append': 'Report any extra steps.'}))
         self.b.seed(12, 'merging', body='plain body')
         self.b.put_note(dict(DONE_NOTE, worktree=self.b.worktree))
         self.b.driver.clock = lambda: NOW
@@ -667,7 +671,7 @@ class MergerFlow(unittest.TestCase):
         # A repo that sets only merge.policy auto, with no .fleet-board/merger.md: the merger gets the plugin
         # default persona (config-defaults.json must leave merge.persona null, never a path)
         (self.b.root / '.fleet-board.yml').write_text(
-            'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n')
+            'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nmerge:\n  policy: auto\n  persona_append: extra\n')
         self.b.config = loop.config_loader(self.b.root)()
         self.assertFalse((self.b.root / '.fleet-board' / 'merger.md').exists())
         self.merger('merged', MERGED, 'merger-after-merge-done')
