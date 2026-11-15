@@ -378,6 +378,18 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - Offline suites: `bash plugins/fleet-board/tests/test-<name>.sh` (fakes: `fake-gh.sh`,
   `fake-claude.sh`, fixtures under `fixtures/`). `test-no-tick-system.sh` pins that the tick system stays
   gone. Run only the suite you touched.
+- The planner (`scripts/tick-plan.sh`) is tested by six suites that share one helper file,
+  `tests/tick-plan-lib.sh` (`setup_case`, `plan`, `splan`, `settle`, the assertions, the fake-gh
+  setup and the scenario builders). Each scenario lives in exactly one suite; run only the one for
+  the rule you changed:
+  `test-tick-plan-ready.sh` (Ready start, in-progress, dependency gate),
+  `test-tick-plan-review.sh` (in_review: review, fix, escalation, human QA, drift, re-review),
+  `test-tick-plan-merging.sh` (merging, update_branch, settle mode, merge only reviewed heads),
+  `test-tick-plan-followups.sh` (blocked, pending follow-ups, lookup and action failures),
+  `test-tick-plan-scope.sh` (scope overlap, version bumps, base fetch, the candidates cost pass),
+  `test-tick-plan-stages.sh` (review stages and their gates).
+  `test-tick-plan-split.sh` pins that shape; add a new scenario to the suite for its area and a
+  new helper to the lib, never a copy into a suite.
 - After any change under this directory: `bash plugins/fleet-board/tests/test-clean-room.sh`
   must pass.
 - `behavioral-*.sh` are live: they run real headless sessions against `SANDBOX_REPO` and
