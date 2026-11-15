@@ -65,12 +65,18 @@ for f in ${SUITES[@]+"${SUITES[@]}"}; do
   fi
 done
 
-# Every scenario is kept in exactly one suite: the old single suite is gone and
-# no assertion description appears in two suites
-if [ ! -e "$SCRIPT_DIR/test-tick-plan.sh" ]; then
-  pass "the old single test-tick-plan.sh is gone, so no scenario runs twice"
+# Every scenario is kept in exactly one suite: test-tick-plan.sh holds no scenario of its
+# own (it only runs the split suites, and CI's run-suites.sh skips it as an aggregate runner),
+# and no assertion description appears in two suites
+OLD="$SCRIPT_DIR/test-tick-plan.sh"
+if [ ! -e "$OLD" ]; then
+  pass "test-tick-plan.sh holds no scenario, so no scenario runs twice"
+elif sed -n 2p "$OLD" | grep -q '^# fleet-board: aggregate runner' \
+    && ! grep -qE '^[[:space:]]*(assert_[a-z_]+|plan|splan|setup_case)[[:space:]]' "$OLD"; then
+  pass "test-tick-plan.sh holds no scenario, so no scenario runs twice"
 else
-  fail "the old single test-tick-plan.sh is gone, so no scenario runs twice" "test-tick-plan.sh still exists"
+  fail "test-tick-plan.sh holds no scenario, so no scenario runs twice" \
+    "test-tick-plan.sh is not a marked aggregate runner, or it holds an assert_, plan or setup_case line"
 fi
 
 if [ "${#SUITES[@]}" -ge 1 ]; then
