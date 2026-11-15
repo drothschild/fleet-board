@@ -751,11 +751,13 @@ class Wave5Fixes(StuckCase):
         self.assertEqual(self.b.card(12)['state'], 'in_progress')
 
     # what find checks ---------------------------------------------------------------------------------
-    def test_a_card_in_a_review_stage_has_its_worktree_checked(self):
-        self.b.seed(14, 'review_security')
+    def test_a_card_in_review_has_its_worktree_checked_and_no_stage_column_is_checked(self):
+        # The per-stage review columns are retired (card 289): in_review is the review column checked
+        self.b.seed(14, 'in_review')
         self.b.put_note({'worktree': str(self.worktree(14, dirty=True))}, 14)
         self.assertEqual(self.kinds(), [(14, 'dirty_worktree')])
-        self.assertIn('review_security', stuck.checked_states(dc.CONFIG))
+        self.assertIn('in_review', stuck.checked_states(dc.CONFIG))
+        self.assertNotIn('review_security', stuck.checked_states(dc.CONFIG))
         for state_name in ('backlog', 'done', 'wont_do'):
             self.assertNotIn(state_name, stuck.checked_states(dc.CONFIG))
 

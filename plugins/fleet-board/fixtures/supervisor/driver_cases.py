@@ -230,24 +230,8 @@ def test_start_review_route_failure_moves_nothing(base):
     assert note['action_failures'] == 1 and note['pr'] is None and note['last_action_error'] == 'route broke'
 
 
-def test_advance_stage_moves_and_records_the_stage(base):
-    b = board_for(base, 'in_review')
-    started = begin(b, 'advance_stage', state='in_review', stage={'name': 'security', 'agent': 'x'})
-    assert started.kind == 'done' and 12 not in b.state.active
-    assert b.calls[-3] == ('board-move.sh', '12', 'review_security') or \
-        ('board-move.sh', '12', 'review_security') in b.calls, b.calls
-    assert b.card()['state'] == 'review_security'
-    note = b.note()
-    assert note['stage'] == 'security' and note['round'] == 1 and note['reviewed_stages'] == [], note
-    assert note['state'] == 'review_security' and note['action_failures'] == 0
-    b.put_note({'last_action_error': 'old', 'action_failures': 1})
-    begin(b, 'advance_stage', state='review_security', stage={'name': 'perf'})
-    note = b.note()
-    assert b.card()['state'] == 'review_perf' and note['stage'] == 'perf', note
-    assert note['reviewed_stages'] == ['security'] and note['action_failures'] == 0, note
-    assert note['last_action_error'] is None
-
-
+# test_advance_stage_moves_and_records_the_stage is removed: it moved a card into review_security and
+# review_perf, the per-stage columns this card retires (owner decision 2026-11-14, card 289).
 def test_advance_stage_rejects_an_unknown_stage(base):
     b = board_for(base, 'in_review')
     assert begin(b, 'advance_stage', state='in_review', stage={'name': 'nosuch'}).kind == 'done'

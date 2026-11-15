@@ -78,7 +78,7 @@ Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
 
 SCRIPT_ACTIONS = frozenset((
-    'advance_stage', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
+    'advance_stage', 'move_to_review', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
     'file_pending', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
@@ -1293,6 +1293,14 @@ class CardDriver:
             reviewed.append(leaving[len('review_'):])
         c.move(target)
         c.merge(dict(_RESET, state=target, stage=name, round=1, reviewed_stages=reviewed))
+
+    def _do_move_to_review(self, c):
+        # a card found in a retired review_<name> column goes back to in_review; reviewed_stages stays
+        leaving = c.state_name(c.row.get('state'))
+        if not leaving.startswith('review_'):
+            raise _Invalid('state', leaving)
+        c.move('in_review')
+        c.merge(dict(_RESET, state='in_review', stage=None))
 
     def _do_update_branch(self, c):
         branch, worktree = c.branch(), c.worktree()
