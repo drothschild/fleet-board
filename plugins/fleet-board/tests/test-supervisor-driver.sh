@@ -109,6 +109,12 @@ def case_persona_append_still_starts_the_merger_session(sub):
     assert len(b.fake_calls()) == 1
 
 
+def case_merger_prompt_holds_the_inline_persona_append_exactly_once(sub):
+    b = merger_board(sub, config={'merge': {'persona_append': 'Also run make deploy.'}})
+    assert merger_started(b).session is not None
+    assert b.prompt(1).count('Also run make deploy.') == 1, b.prompt(1)
+
+
 def case_a_local_merger_persona_file_still_starts_the_merger_session(sub):
     b = merger_board(sub, persona_file=True)
     assert merger_started(b).session is not None

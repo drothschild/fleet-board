@@ -49,15 +49,26 @@ check('with merge.persona set, it returns that file text and nothing from the de
       r.text == 'CONFIGURED\n' and r.warnings == [], repr(r)[:200])
 
 r = resolve(repo({'extra.md': 'APPENDED\n'}), {'persona_append': 'extra.md'})
-check('with merge.persona_append set, it returns the base persona followed by that file text',
-      r.text.startswith(default) and r.text.endswith('APPENDED\n') and r.text.index('APPENDED') > len(default.rstrip()),
+check('with merge.persona_append set, it returns the base persona followed by that inline text, extra.md itself',
+      r.text.startswith(default) and r.text.endswith('extra.md') and 'APPENDED' not in r.text
+      and r.text.index('extra.md') > len(default.rstrip()) and r.warnings == [],
       repr(r)[:200])
+
+r = resolve(repo({'Also run make deploy.': 'FILE BODY\n'}), {'persona_append': 'Also run make deploy.'})
+check('merge.persona_append "Also run make deploy." returns the persona then that exact text, no warning, no file read even when a file of that name exists',
+      r.text.startswith(default) and r.text.endswith('Also run make deploy.') and 'FILE BODY' not in r.text
+      and r.warnings == [], repr(r)[:200])
+
+for blank in (None, '', '  \n'):
+    r = resolve(repo({}), {'persona_append': blank})
+    check('merge.persona_append %r returns the chosen persona unchanged and no warning' % (blank,),
+          r.text == default and r.warnings == [], repr(r)[:200])
 
 r = resolve(repo({'p.md': 'REPLACEMENT\n', 'extra.md': 'APPENDED\n'}),
             {'persona': 'p.md', 'persona_append': 'extra.md'})
-check('with both set, it returns the replacement followed by the appended text',
-      r.text.startswith('REPLACEMENT') and r.text.index('APPENDED') > r.text.index('REPLACEMENT')
-      and default.strip().splitlines()[0] not in r.text, repr(r)[:200])
+check('with both set, it returns the replacement followed by the appended inline text',
+      r.text.startswith('REPLACEMENT') and r.text.index('extra.md') > r.text.index('REPLACEMENT')
+      and 'APPENDED' not in r.text and default.strip().splitlines()[0] not in r.text, repr(r)[:200])
 
 r = resolve(repo({}), {'persona': 'nope/missing.md'})
 check('a configured file that does not exist falls back to the default and returns a warning naming the path',
