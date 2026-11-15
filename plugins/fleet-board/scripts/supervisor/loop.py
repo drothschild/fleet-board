@@ -769,7 +769,13 @@ class Supervisor:
             except ValueError as exc:
                 self.state.event('action_failed', card=number, action=name, error='scope: %s' % exc)
                 return
-            if self.state.reserve(number, scope, ignore=ignore) is not None:
+            stack = row.get('stack')
+            ancestors = stack.get('ancestors') if isinstance(stack, dict) else None
+            exempt = tuple(a for a in ancestors if isinstance(a, int)) if isinstance(ancestors, list) else ()
+            # only a stacked child passes `exempt`: every other call is the one it always was
+            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt) if exempt \
+                else self.state.reserve(number, scope, ignore=ignore)
+            if held is not None:
                 return
             reserved = True
             self.state.event('admitted', card=number, action=name, provider=row.get('provider'))
