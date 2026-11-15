@@ -1334,24 +1334,6 @@ def create_card(params, body):
     return 200, created
 
 
-FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
-ACC_HEAD_RE = re.compile(r"^##[ \t]+Acceptance([ \t].*)?$")
-DEP_HEAD_RE = re.compile(r"^##[ \t]+depends[ \t]+on[ \t]*$", re.I)
-
-
-def body_sections(text: str) -> tuple:
-    """(has an Acceptance section, has a Depends on section) outside code
-    fences, by fl_split_body's heading rules."""
-    acc = dep = fence = False
-    for line in text.split("\n"):
-        if FENCE_RE.match(line):
-            fence = not fence
-        elif not fence:
-            acc = acc or bool(ACC_HEAD_RE.match(line))
-            dep = dep or bool(DEP_HEAD_RE.match(line))
-    return acc, dep
-
-
 def require_acceptance(body: dict):
     v = body.get("acceptance")
     if v is None:
@@ -1404,14 +1386,6 @@ def edit_card(params, body):
     acceptance = require_acceptance(body)
     blocked_by = require_blocked_by(dir, n, body, card_blocked_by(card))
     pr_url = require_pr_url(cfg, card, body)
-    if text is not None:
-        # edit.sh treats a body as the whole truth about its sections: a prose
-        # body would clear the fields. Keep them unless the body carries one.
-        has_acc, has_dep = body_sections(text)
-        if acceptance is None and not has_acc:
-            acceptance = card_acceptance(card)
-        if blocked_by is None and not has_dep:
-            blocked_by = card_blocked_by(card)
     paths = []
     try:
         args = ["bash", script("adapters/local/edit.sh"), str(n)]
