@@ -65,6 +65,7 @@ class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
                  fetch_card=candidates.fetch_card, clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
+        self._claim_repo = {}   # card -> the repo its admitted row named; state keeps paths only
         self.config_loader = config_loader
         self.state = state
         self.driver = driver
@@ -559,7 +560,7 @@ class Supervisor:
         self._rate_since = None
         rows, limit_waits = self._prepare(batch.candidates, config, now)
         active = self._active_claims()
-        reservations = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
+        reservations = self._reservations()
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
                                       now=now, lane_free=self._lane_free(rows))
         if result.get('stop_reason'):
@@ -653,8 +654,7 @@ class Supervisor:
         lane_free = (self.state.lane is None and not self._merger_hold
                      and not any(a.action == 'after_merge' for a in self.state.all_actions()))
         result = self.scheduler.admit(rows, active=self._active_claims(), limits=self._limits(config),
-                                      reservations=[{'card': c, 'paths': list(p)}
-                                                    for c, p in list(self.state.reservations.items())],
+                                      reservations=self._reservations(),
                                       now=now, lane_free=lane_free)
         if result.get('stop_reason'):
             return
@@ -765,12 +765,31 @@ class Supervisor:
 
     def _active_claims(self):
         """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
-        return [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
-                 'stage': a.stage}
-                for a in self.state.all_actions()]
+        claims = [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
+                   'stage': a.stage}
+                  for a in self.state.all_actions()]
+        for claim in claims:
+            self._with_repo(claim, claim['number'])
+        return claims
+
+    def _reservations(self):
+        """The held scopes as the scheduler sees them, each with the repo of the card holding it."""
+        held = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
+        for item in held:
+            self._with_repo(item, item['card'])
+        return held
+
+    def _with_repo(self, claim, card):
+        repo = self._claim_repo.get(card)
+        if repo:
+            claim['repo'] = repo
 
     def _begin(self, row):
         number, name = row.get('number'), row.get('action')
+        if row.get('repo'):
+            self._claim_repo[number] = row['repo']
+        else:
+            self._claim_repo.pop(number, None)
         if name == 'merge':   # the lane keeps no reservation: the scheduler sees its paths among the active
             try:
                 self.merge_lane.start(row)
