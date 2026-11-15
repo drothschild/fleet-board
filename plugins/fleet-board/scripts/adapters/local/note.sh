@@ -23,6 +23,7 @@ if [ "$(jq -r '.ok' <<<"$PRINFO")" != true ]; then
 fi
 jq --arg m "$FB_MARKER" --arg me "$ME" --rawfile b "$BODY" --arg now "$(fl_now)" \
   --argjson pi "$PRINFO" --argjson id "$(fl_next_comment_id "$CARD")" --arg repo "$(fb_cfg board.repo)" '
+  (if ((.repo // "") | type) == "string" and (.repo // "") != "" then .repo else $repo end) as $repo |
   def apply_pr:
     if ($pi.ok | not) or ($pi.has | not) then .
     elif $pi.pr == null then

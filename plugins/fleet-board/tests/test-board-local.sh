@@ -657,6 +657,16 @@ run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
 assert_stderr_contains "bad json note warns" "warning"
 assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
 
+echo "Test: pr_url from a note uses the card's repo"
+setup_case; seed_card 1 in_progress 'Other repo PR' 'body'
+jq '.repo = "acme/other"' "$REPO/.fleet-board/cards/1.json" > "$REPO/c1.tmp" && mv "$REPO/c1.tmp" "$REPO/.fleet-board/cards/1.json"
+npr="$(mktemp)"; CLEANUP_DIRS+=("$npr")
+printf '```json\n{"round":1,"pr":7}\n```\n' > "$npr"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
+assert_exit "note pr on a card of another repo exit 0" 0
+assert_card_json 1 '.pr_url' 'https://github.com/acme/other/pull/7'
+assert_card_json 1 '.pr_url_source' note
+
 # --- atomic write ---
 atomic_write_case
 
