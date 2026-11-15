@@ -39,10 +39,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   dependency outside this board stays in the body as prose. `migrate-card-fields.sh
   [--dry-run]` upgrades an older store in place (idempotent).
   Canonical states (`FB_STATES` in `board-lib.sh`, set by `fb_load_config`, not a
-  constant): backlog ready in_progress in_review, then `review_<name>` for each
-  `review.stages` entry in config order, then human_qa blocked done wont_do
-  (`FB_STATES_FIXED` is the list without stages); board names come from `board.states.*` or
-  the default (`Review: <name>` for a stage).
+  constant): backlog ready in_progress in_review human_qa blocked done wont_do
+  (stages are not states); board names come from `board.states.*` or the default.
 - **Active marker** (`fb_mark_active` in `board-lib.sh`). `worktree.sh create|review`
   and `stage-review.sh` write `<board.dir>/active/<n>`; the `comment` verb removes it
   for validated CLI role reports. Web comments and notes leave it in place. `stage-review.sh`
@@ -181,9 +179,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   column, while a label-only stage (empty `paths`) still can. A failed `match` is
   `lookup failed: review-stages.sh match <pr>`. `next` prints the next stage after `--after` that the card's labels route to and
   `--done` does not list. `setup` has nothing to create on the local store (exit 0). Tick plan:
-  a clean, current review with a next stage plans `advance_stage` (move to
-  `review_<stage>`, note `stage`, `round: 1`, `reviewed_stages`); a stage column's
-  reviews are `review_stage`; an advisory stage's findings count as clean. The plan
+  stages review in parallel with the evidence reviewer while the card is In Review. A card found in a
+  retired stage column is planned `move_to_review`, and `advance_stage` applies only to such leftovers; an advisory stage's findings count as clean. The plan
   card's `stage` is the config's stage object whole. Reports use
   `parse-report.sh --role stage-reviewer` (Status clean|findings, Findings, For the
   card, one VERIFIED line; no Acceptance map, Mutation or Claim check).
