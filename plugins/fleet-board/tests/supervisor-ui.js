@@ -257,7 +257,7 @@ async function main() {
     assert.ok(cardOf(h,4).textContent.includes("merge_pending")&&cardOf(h,4).textContent.includes(hostile),"stuck kind/detail missing");
     assert.ok(cardOf(h,4).textContent.includes("resolve with: fleet-board supervisor stuck --release 4"),"how to resolve is not said: "+cardOf(h,4).textContent);
     assert.equal(cardOf(h,6).textContent.includes("resolve with"),false);
-    assert.match(cardOf(h,6).textContent,/review/,"activity not shown"); assert.doesNotMatch(cardOf(h,6).textContent,/object Object/);
+    assert.match(cardOf(h,6).textContent,/activity: Reviewing/,"activity not shown"); assert.doesNotMatch(cardOf(h,6).textContent,/object Object/);
     const banner=h.$("stuck-banner"); assert.equal(banner.hidden,false); assert.equal(banner.textContent.trim(),"2 stuck cards — the supervisor will not start until they are resolved");
     h=await mk(quiet,[stuck(4,"merge_pending"),fine]); assert.equal(h.$("stuck-banner").textContent.trim(),"1 stuck card — the supervisor will not start until it is resolved");
     h=await mk(quiet,[fine]); assert.equal(h.$("stuck-banner").hidden,true,"banner shown with nothing stuck");
@@ -592,7 +592,7 @@ async function main() {
     assert.equal(cardOf(),before,"the column re-rendered for an elapsed-time change");
     assert.match(cardOf().textContent,/1m 4s/,"the elapsed time was not updated: "+cardOf().textContent);
     f.enqueue("/api/board",response(200,{repo:"acme/toy",states,cards:[{...card(64),activity:{action:"merge",elapsed_seconds:65}}],run:{state:"idle"}})); await h.fireTimers();
-    assert.notEqual(cardOf(),before,"a changed action did not re-render"); assert.match(cardOf().textContent,/merge/);
+    assert.notEqual(cardOf(),before,"a changed action did not re-render"); assert.match(cardOf().textContent,/activity: Merging/);
   });
   // board-web.py reads a JSON object body for every POST and refuses an empty one ("a JSON object
   // body is required"), so a body-less action click must still send {}
