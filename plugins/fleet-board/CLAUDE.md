@@ -134,6 +134,15 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `tick-plan.sh`, the scheduler's reservation and occupied checks (`stack.ancestors` of the candidate), and
   `State.reserve(card, paths, ignore=None, exempt=())`, where owners in `exempt` are not overlap-checked
   (`loop._begin` passes the row's ancestors). Suite: `tests/test-stack-plan.sh`.
+- **Stacked start branch and PR retarget.** `worktree.sh create <n> <branch> <path> [<start-branch>]`: the
+  start branch must match `fleet/<n>-<slug>` (else exit 2); a branch that exists neither locally nor on origin is
+  created from origin's copy of it, and a missing one exits 1 (`fleet-board: origin/<start-branch> does not
+  exist`) with no worktree and no branch; an existing branch ignores the argument. The driver's `start` for a
+  row with `stack` passes `stack.base` as that fourth argument and merges the note's `stack`
+  `{parent, base, start (the sha of origin's copy of the base), attention: null}`; `start_review` for a card
+  whose note has `stack` runs `gh pr edit <pr> --repo <repo> --base <stack.base>` before `review-stages.sh
+  route`, and a failed edit fails the action with `route` not called. A row with `stack` null and a card without
+  `stack` behave as before.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
   `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
