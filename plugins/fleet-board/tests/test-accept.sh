@@ -287,7 +287,10 @@ tick_case() {
   setup_case "$IN_REVIEW"
   set_note_json "$1"
   printf '{"isDraft":true,"state":"OPEN","mergedAt":null,"statusCheckRollup":[],"headRefOid":"%s"}\n' "$2" > "$FAKE_GH_DIR/pr-view.json"
+  # The PR's files, for review-stages.sh match (the planner's built-in stage routing)
+  printf '%s\n' '{"files":[{"path":"src/calc.sh"}],"changedFiles":1}' > "$FAKE_GH_DIR/pr-files.json"
   cat > "$ROUTES" << ROUTESEOF
+pr view 34 --repo acme/toy --json files,changedFiles	0	$FAKE_GH_DIR/pr-files.json
 api user	0	$FIXTURES/labels/user.json
 api repos/acme/toy/issues/12	0	$FAKE_GH_DIR/issue.json
 api --paginate repos/acme/toy/issues/12/comments	0	$FAKE_GH_DIR/comments.json

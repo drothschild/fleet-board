@@ -164,6 +164,72 @@ def case_version_commit_on_a_nested_key_is_counted(sub):
     assert dc._count_since(repo, reviewed) == str(int(base_count) + 1), dc._count_since(repo, reviewed)
 
 
+# Open cards in the role prompts (card 393)
+OPEN378 = '#378 Chained merge tests fail on origin/main'
+
+
+def put_card(b, number, title, card_state):
+    path = b.root / '.fleet-board' / 'cards' / ('%d.json' % number)
+    b.seed(number, card_state)
+    card = dc.json.loads(path.read_text())
+    card['title'] = title
+    path.write_text(dc.json.dumps(card))
+
+
+def open_cards_section(prompt):
+    assert '## Open cards\n' in prompt, prompt
+    return prompt.split('## Open cards\n', 1)[1].split('\n\n', 1)[0].strip()
+
+
+def start_prompt(b):
+    b.plans({'report': 'implementor-ok'})
+    b.stubs['worktree.sh'] = dc.ok(b.worktree + '\n')
+    assert dc.begin(b, 'start').kind == 'session'
+    return b.prompt()
+
+
+def case_role_prompt_implementor_lists_the_open_card(sub):
+    text = dc.driver.role_prompt('implementor', {'number': 12, 'open_cards': OPEN378})
+    assert '## Open cards\n' + OPEN378 in text, text
+
+
+def case_role_prompt_reviewer_lists_the_open_card(sub):
+    text = dc.driver.role_prompt('reviewer', {'number': 12, 'open_cards': OPEN378})
+    assert '## Open cards\n' + OPEN378 in text, text
+
+
+def case_role_prompt_fixer_lists_the_open_card(sub):
+    text = dc.driver.role_prompt('fixer', {'number': 12, 'open_cards': OPEN378})
+    assert '## Open cards\n' + OPEN378 in text, text
+
+
+def case_implementor_prompt_lists_an_open_card_by_number_and_title(sub):
+    b = dc.board_for(sub)
+    put_card(b, 378, 'Chained merge tests fail on origin/main', 'ready')
+    assert OPEN378 in open_cards_section(start_prompt(b))
+
+
+def case_open_cards_leave_out_done_and_wont_do_cards(sub):
+    b = dc.board_for(sub)
+    put_card(b, 378, 'Chained merge tests fail on origin/main', 'ready')
+    put_card(b, 379, 'Finished thing', 'done')
+    put_card(b, 380, 'Dropped thing', 'wont_do')
+    section = open_cards_section(start_prompt(b))
+    assert OPEN378 in section and '#379' not in section and '#380' not in section, section
+
+
+def case_open_cards_leave_out_the_card_being_worked_on(sub):
+    b = dc.board_for(sub)
+    put_card(b, 378, 'Chained merge tests fail on origin/main', 'ready')
+    section = open_cards_section(start_prompt(b))
+    assert '#12 ' not in section and OPEN378 in section, section
+
+
+def case_open_cards_read_none_when_there_are_no_other_open_cards(sub):
+    b = dc.board_for(sub)
+    assert open_cards_section(start_prompt(b)) == 'none'
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):
