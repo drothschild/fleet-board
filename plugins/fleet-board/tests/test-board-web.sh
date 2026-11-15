@@ -522,6 +522,14 @@ if start_server "$REPO"; then
     fail "a prose-only body keeps acceptance and blocked_by" "got $(cat "$REPO/.fleet-board/cards/1.json")"
   fi
 
+  api PATCH /api/cards/1 '{"body":"Drawer save prose, no sections."}'
+  assert_code 200
+  if [ "$(card_json 1 '.acceptance|join("|")')|$(card_json 1 '.blocked_by|map(tostring)|join(",")')|$(card_json 1 .body)" = "x|y|z|3|Drawer save prose, no sections." ]; then
+    pass "saving only the body from the drawer keeps both fields with no board-web.py workaround"
+  else
+    fail "saving only the body from the drawer keeps both fields with no board-web.py workaround" "got $(cat "$REPO/.fleet-board/cards/1.json")"
+  fi
+
   api PATCH /api/cards/1 '{"pr_url":"https://github.com/ACME/Toy/pull/12"}'
   assert_code 200
   [ "$(card_json 1 .pr_url)|$(card_json 1 .pr_url_source)" = "https://github.com/ACME/Toy/pull/12|person" ] \
