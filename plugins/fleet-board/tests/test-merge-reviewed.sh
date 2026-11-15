@@ -264,20 +264,35 @@ VERIFY
     "$(jq -r .state "$REPO/.fleet-board/cards/12.json")" "$midflight_state"
 done
 
-echo "merge.policy auto: a card in a review stage with a clean stage review is merged"
+# The per-stage review columns are retired (card 289): a routed stage reviews in In Review, beside
+# the evidence reviewer, and the card merges from there once both are clean at the head.
+echo "merge.policy auto: an In Review card with a clean evidence review and a clean routed stage review is merged"
 STAGE_CFG='review:
   stages:
     - name: security
       agent: "acme:security-reviewer"
-      model: opus'
+      model: opus
+      label: review-security'
 setup_case auto "$STAGE_CFG"
-card 12 review_security '{"state":"review_security","stage":"security","branch":"fleet/12-add-subtract","pr":34,"round":1,"last_review":{"round":1,"stage":"security","sha":"abc1234","critical":0,"important":0,"findings":[]}}'
+card 12 in_review '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"reviewed_stages":[],"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]},"reviews":{"evidence":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]},"security":{"round":1,"stage":"security","sha":"abc1234","critical":0,"important":0,"findings":[]}}}'
+jq -c '.labels += [{name: "review-security"}]' "$FX/issue-12.json" > "$FX/issue-12.json.new" && mv "$FX/issue-12.json.new" "$FX/issue-12.json"
 pr 34 false "$GREEN"
 finalize
 run_merge
 assert_exit "stage: exit 0" 0
 assert_eq "stage: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
 assert_eq "stage: the card moves to done" "$(moved_done)" 1
+
+echo "merge.policy auto: the same card with a Critical in its routed stage review is not merged"
+setup_case auto "$STAGE_CFG"
+card 12 in_review '{"state":"in_review","branch":"fleet/12-add-subtract","pr":34,"round":1,"reviewed_stages":[],"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]},"reviews":{"evidence":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]},"security":{"round":1,"stage":"security","sha":"abc1234","critical":1,"important":0,"findings":[{"severity":"Critical","text":"x"}]}}}'
+jq -c '.labels += [{name: "review-security"}]' "$FX/issue-12.json" > "$FX/issue-12.json.new" && mv "$FX/issue-12.json.new" "$FX/issue-12.json"
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "stage findings: exit 0" 0
+assert_eq "stage findings: no gh pr merge" "$(cnt "pr merge")" 0
+assert_eq "stage findings: the card is not moved to done" "$(moved_done)" 0
 
 echo "merge.policy human: nothing is merged"
 setup_case human

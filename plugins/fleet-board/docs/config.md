@@ -201,7 +201,8 @@ The supervisor reads `limits.concurrency`, `max_hours`, `max_tokens`, `max_token
 
 | Key | Default | Meaning |
 |---|---|---|
-| `supervisor.reconcile_interval_seconds` | `5` | seconds between planning cycles when nothing else wakes the supervisor |
+| `supervisor.reconcile_interval_seconds` | `30` | seconds between planning cycles when nothing else wakes the supervisor; `config.sh` exits 5 below the 10 second floor |
+| `supervisor.min_plan_gap_seconds` | `30` | a board-wide planning pass starts no sooner than this after the previous one ended, and no sooner than that pass's own duration, so planning never takes more than half the loop's time. A wake-up does not shorten the gap: a session that ends has its card planned alone at once, and `resume` still runs a board-wide pass at once. `supervisor status --json` reports the last pass as `last_plan` (`ended_at`, `seconds`) |
 | `supervisor.progress_timeout_seconds` | `900` | seconds a role session may go without output before it is stopped (script actions have no progress timeout) |
 | `supervisor.attempt_timeout_seconds` | `7200` | seconds one action may run in all; must exceed `shutdown_grace_seconds` |
 | `supervisor.shutdown_grace_seconds` | `30` | seconds a stopped session gets to exit before it is killed |
