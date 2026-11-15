@@ -285,7 +285,9 @@ class State:
         if action is None:
             return None
         # Not asdict(): it deep-copies, and a live session handle is not copyable.
-        return {f.name: getattr(action, f.name) for f in fields(action) if f.name not in _PRIVATE}
+        out = {f.name: getattr(action, f.name) for f in fields(action) if f.name not in _PRIVATE}
+        out['log'] = getattr(action.session, 'log_path', None)   # the session's .jsonl path; null without a session
+        return out
 
     def _with_action_dicts(self, card):
         return [self._action_dict(a) for a in self._also.get(card, ())]
