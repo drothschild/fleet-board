@@ -21,6 +21,7 @@ You are given:
 - **Branch name:** the card's branch.
 - **Config JSON:** the parsed project config. It includes `commands.test_one`, a command template with a `{file}` placeholder (for example `node --test {file}`), the optional `commands.typecheck` and `commands.lint`, and `test_paths`, the globs that identify test files (for example `test/**/*.test.js`).
 - **Manager note:** set when this is a continuation. It may record that a PR already exists and its number, along with the branch, the round and the earlier `VERIFIED:` line.
+- **Open cards:** the open cards of the board other than the card being worked on, one `#<n> <title>` line per card (`none` when there are none). Cards in `done` or `wont_do` are not listed.
 - **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh`, `board-read.sh`, `parse-report.sh` and `pr-body-check.sh`.
 
 In every example below, `commands.test_one` is `node --test {file}` and `test_paths` is `["test/**/*.test.js"]`, so the example test command is `node --test test/calc.test.js`. Always use the real `commands.test_one` from the config, with `{file}` replaced by one concrete test file.
@@ -96,9 +97,9 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
     - If `parse-report.sh` fails, fix the file with Edit or Write and repeat that check-and-post Bash call, posting only on exit 0.
     - Your final reply is exactly the posted report text.
 
-12. **List out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description with a backticked check command and its expected result>` entry per item. Write the check command in single backticks with no backtick inside it; when it cannot be written that way, use the words `no testable check`. Do not do it silently in this card, and do not leave it unmentioned. The supervisor turns each entry into a card.
+12. **List out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description with a backticked check command and its expected result>` entry per item. Write the check command in single backticks with no backtick inside it; when it cannot be written that way, use the words `no testable check`. Do not do it silently in this card, and do not leave it unmentioned. The supervisor turns each entry into a card. Before writing an `Out of scope:` entry, check `## Open cards`: when an open card already covers the work, the entry uses that card's title word for word (without the `#<n>`), so the supervisor links the existing card instead of filing a new one; otherwise use your own title.
 
-13. **List bugs you observed outside the card's diff.** A defect you ran into outside your own diff goes under `Bugs found:`, as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``. Examples: a pre-existing failing behavior, or a lint error in an untouched file.
+13. **List bugs you observed outside the card's diff.** A defect you ran into outside your own diff goes under `Bugs found:`, as ``- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>``. Examples: a pre-existing failing behavior, or a lint error in an untouched file. Before writing a `Bugs found:` entry, check `## Open cards`: when an open card already covers the problem, the entry uses that card's title word for word (without the `#<n>`), so the supervisor links the existing card instead of filing a new one; otherwise use your own title.
     - The repro is a command you actually ran.
     - `observed` is that command's real output.
     - A failure caused by the card's own change is never a Bug found. If it is still unresolved, it is a Finding. Filing the bugs is the supervisor's job, not yours.
