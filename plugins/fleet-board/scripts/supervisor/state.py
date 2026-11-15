@@ -75,6 +75,7 @@ class State:
         self.attention = {}     # card number (str) -> {reason, at}: cards that wait for a person
         self.queue = {'ready': None, 'waiting': None}   # the last planning cycle: cards that could start, cards held
         self.global_cap = None  # limits.concurrency as the loop last read it
+        self.last_plan = None   # the last board-wide pass: {ended_at (epoch seconds), seconds}
         self._sequence = 0
         self._lock = threading.RLock()
 
@@ -94,6 +95,11 @@ class State:
             if queue != self.queue:
                 self.queue = queue
                 self._bump()
+
+    def set_last_plan(self, ended_at, seconds):
+        with self._lock:
+            self.last_plan = {'ended_at': ended_at, 'seconds': seconds}
+            self._bump()
 
     def set_global_cap(self, cap):
         with self._lock:
@@ -305,6 +311,7 @@ class State:
                 'events': list(self.events)[-SNAPSHOT_EVENTS:],
                 'attention': self.attention,
                 'queue': self.queue,
+                'last_plan': self.last_plan,
                 'limits': {'concurrency': self.global_cap},
                 'run_tokens': self.run_tokens,
                 'run_budget': {'tokens': self.run_budget, 'partial': self.budget_unknown > 0, 'cap': self.budget_cap,

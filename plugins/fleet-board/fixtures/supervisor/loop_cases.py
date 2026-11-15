@@ -20,7 +20,7 @@ import driver_cases as dc  # noqa: E402
 from supervisor import candidates, cli, errors, loop, scheduler, service, stuck  # noqa: E402
 
 BRANCH = {12: 'fleet/12-add-subtract', 13: 'fleet/13-add-subtract', 14: 'fleet/14-add-subtract'}
-SUP = {'reconcile_interval_seconds': 1, 'shutdown_grace_seconds': 2, 'retry_backoff_seconds': 1,
+SUP = {'reconcile_interval_seconds': 1, 'min_plan_gap_seconds': 0, 'shutdown_grace_seconds': 2, 'retry_backoff_seconds': 1,
        'aging_seconds': 900, 'provider_concurrency': {}}
 
 
@@ -915,6 +915,106 @@ class SessionEnd(LoopCase):
         self.assertEqual(started[0][0], 12)
         self.assertEqual(started[0][1], ['card', 'board'], 'the merge came from the board-wide pass, not the failed fetch')
         self.assertEqual(self.mode(), 'running')
+
+
+class PlanGap(LoopCase):
+    """Board-wide passes are paced: no sooner than supervisor.min_plan_gap_seconds, nor than the previous pass's
+    own duration, after the previous one ended. Fake time is mono_skew."""
+
+    def gapped(self, gap=30):
+        self.b.config['supervisor']['min_plan_gap_seconds'] = gap
+        self.rows = lambda: []
+
+    def poke(self, times=1):
+        for _ in range(times):
+            self.sup.wake('test')
+            time.sleep(0.15)
+
+    def test_five_wake_ups_inside_the_gap_run_no_further_board_wide_pass(self):
+        self.gapped()
+        self.start()
+        self.until(lambda: self.fetches == 1 and self.b.state.snapshot().get('last_plan'), what='the first pass')
+        self.mono_skew += 5
+        self.poke(5)
+        self.assertEqual(self.fetches, 1)
+        self.mono_skew += 30
+        self.poke()
+        self.until(lambda: self.fetches == 2, what='the pass once the gap is over')
+
+    def test_a_pass_that_takes_50_seconds_delays_the_next_one_by_50_seconds(self):
+        self.gapped()
+        inner = self.fetch
+
+        def slow(root, run=None, now=None):
+            batch = inner(root, run, now)
+            if self.fetches == 1:
+                self.mono_skew += 50
+            return batch
+
+        self.sup.fetch = slow
+        self.start()
+        self.until(lambda: self.fetches == 1 and self.b.state.snapshot().get('last_plan'), what='the slow pass')
+        self.mono_skew += 40
+        self.poke(3)
+        self.assertEqual(self.fetches, 1, '40 seconds after a 50 second pass is too soon')
+        self.mono_skew += 11
+        self.poke()
+        self.until(lambda: self.fetches == 2, what='the next pass 51 seconds after the slow one ended')
+
+    def test_a_session_that_ends_inside_the_gap_is_planned_alone_with_no_board_wide_pass(self):
+        self.gapped()
+        started = []
+
+        class Lane:
+            def start(self, row):
+                started.append(row['number'])
+
+            def poll(self):
+                return None
+
+        self.sup.merge_lane = Lane()
+        self.card_batch = lambda card: candidates.Batch(
+            [dc.candidate('merge', number=card, state='in_review', declared_paths=['p%d' % card])], None, None)
+        self.in_review(12)
+        self.b.plans({'report': 'reviewer-ok'})
+        self.sup.config = self.b.config
+        self.sup._begin(dc.candidate('review', round=1, number=12, branch=BRANCH[12], worktree=self.b.worktree,
+                                     state='in_review', declared_paths=['p12'], pr=34, provider='claude'))
+        self.start()
+        self.until(lambda: self.fetches == 1 and self.b.state.snapshot().get('last_plan'), what='the first pass')
+        self.until(lambda: started, what='the merge to start')
+        self.assertEqual(self.card_fetches, [12])
+        self.assertEqual(self.fetches, 1, 'the session end ran no board-wide pass')
+
+    def test_resume_inside_the_gap_runs_a_board_wide_pass_at_once(self):
+        self.gapped()
+        self.start()
+        self.until(lambda: self.fetches == 1 and self.b.state.snapshot().get('last_plan'), what='the first pass')
+        self.sup.handle({'command': 'pause'})
+        self.until(lambda: self.mode() == 'paused', what='the pause')
+        self.poke(2)
+        self.assertEqual(self.fetches, 1)
+        self.sup.handle({'command': 'resume'})
+        self.until(lambda: self.fetches == 2, what='a pass right after resume')
+
+    def test_the_status_holds_the_last_board_wide_pass_end_and_duration(self):
+        self.gapped()
+        inner = self.fetch
+
+        def slow(root, run=None, now=None):
+            batch = inner(root, run, now)
+            self.skew += 7
+            self.mono_skew += 7
+            return batch
+
+        self.sup.fetch = slow
+        self.start()
+        self.until(lambda: self.b.state.snapshot().get('last_plan'), what='the pass to be recorded')
+        plan = self.b.state.snapshot()['last_plan']
+        self.assertEqual(set(plan), {'ended_at', 'seconds'})
+        self.assertGreaterEqual(plan['seconds'], 7)
+        self.assertLess(plan['seconds'], 9)
+        self.assertLessEqual(abs(plan['ended_at'] - self.clock()), 2)
 
 
 class ScopeIgnore(LoopCase):
