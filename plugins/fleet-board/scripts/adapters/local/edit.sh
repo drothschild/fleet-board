@@ -7,6 +7,7 @@
 # fields unless --acceptance-file / --blocked-by-json is given; a body without
 # a section clears that field (the body is the whole truth about its sections). --pr-url sets
 # pr_url with source "person"; an empty U clears both.
+# --repo sets the card repo (board.repo or a board.repos entry); an empty R clears it.
 set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/board-lib.sh"
@@ -16,7 +17,7 @@ USAGE="usage: edit.sh <number> [--title-file F] [--body-file F] [--labels-json J
 [ $# -ge 1 ] || fb_die 2 "$USAGE"
 N="$1"; shift
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
-TITLE_FILE=""; BODY_FILE=""; LABELS=null; ACC_FILE=""; BLOCKED=null; PR_SET=0; PR_URL=""
+TITLE_FILE=""; BODY_FILE=""; LABELS=null; ACC_FILE=""; BLOCKED=null; PR_SET=0; PR_URL=""; REPO_SET=0; REPO_VAL=""
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || fb_die 2 "$USAGE"
   case "$1" in
@@ -26,7 +27,7 @@ while [ $# -gt 0 ]; do
     --acceptance-file) ACC_FILE="$2" ;;
     --blocked-by-json) BLOCKED="$2" ;;
     --pr-url) PR_SET=1; PR_URL="$2" ;;
-    --repo) ;; # the local board is one store; the repo names no other board
+    --repo) REPO_SET=1; REPO_VAL="$2" ;;
     *) fb_die 2 "$USAGE" ;;
   esac
   shift 2
@@ -40,6 +41,7 @@ jq -e '. == null or type == "array"' >/dev/null 2>&1 <<<"$BLOCKED" \
   || fb_die 2 "blocked_by must be null or a JSON array of positive integers"
 fb_load_config
 fl_require_store
+fl_check_repo "$REPO_VAL"
 fb_lock "$N"
 CARD="$(fl_read_card "$N")" || exit $?
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
@@ -81,13 +83,14 @@ fi
 jq --rawfile t "${TITLE_FILE:-/dev/null}" --rawfile b "$BODYTMP" \
   --arg title_file "$TITLE_FILE" --argjson set_body "$SET_BODY" \
   --argjson l "$LABELS" --argjson acc "$ACC" --argjson blk "$BLOCKED" \
-  --argjson pr_set "$PR_SET" --arg pr "$PR_URL" --arg now "$(fl_now)" '
+  --argjson pr_set "$PR_SET" --arg pr "$PR_URL" --argjson repo_set "$REPO_SET" --arg repo "$REPO_VAL" --arg now "$(fl_now)" '
   (if $title_file != "" then .title = ($t | sub("\n+$"; "")) else . end)
   | (if $set_body == 1 then .body = $b else . end)
   | (if $l != null then .labels = $l else . end)
   | (if $acc != null then .acceptance = $acc else . end)
   | (if $blk != null then .blocked_by = $blk else . end)
   | (if $pr_set == 1 then (if $pr == "" then .pr_url = null | .pr_url_source = null else .pr_url = $pr | .pr_url_source = "person" end) else . end)
+  | (if $repo_set == 1 then (if $repo == "" then del(.repo) else .repo = $repo end) else . end)
   | .updated_at = $now' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
