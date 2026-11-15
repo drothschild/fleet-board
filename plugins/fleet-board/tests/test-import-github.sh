@@ -231,7 +231,8 @@ setup_repo projects "$(printf '  states: { in_progress: "In progress" }\nreview:
 run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy --project 1
 assert_exit "projects: exits 0" 0
 assert_eq "projects: one line per imported card" "$(printf '%s\n' "$LAST_OUT" | grep -c .)" "3"
-assert_eq "projects: #21 state from Review: <stage>" "$(jq -r .state "$STORE/cards/21.json" 2>/dev/null)" "review_security"
+# The per-stage review columns are retired (card 289): a configured stage's column imports into in_review
+assert_eq "projects: #21 in Review: <stage> imports into in_review" "$(jq -r .state "$STORE/cards/21.json" 2>/dev/null)" "in_review"
 assert_eq "projects: #20 state Done" "$(jq -r .state "$STORE/cards/20.json" 2>/dev/null)" "done"
 assert_eq "projects: #19 state from a configured column name" "$(jq -r .state "$STORE/cards/19.json" 2>/dev/null)" "in_progress"
 assert_eq "projects: an issue off the project is not imported" "$([ -e "$STORE/cards/22.json" ] && echo yes)" ""
@@ -246,8 +247,8 @@ assert_eq "projects: #21 no pr_url from an untrusted note" "$(jq -r .pr_url "$ST
 assert_eq "projects: next" "$(tr -d '[:space:]' < "$STORE/next")" "22"
 assert_eq "projects: owner defaults to the repo owner" "$(grep -c 'project item-list 1 --owner acme --format json' "$FAKE_GH_DIR/calls.log")" "1"
 no_write_calls "projects: the fake logged no write verb"
-run_in "$REPO" "$BASH_EXE" "$SCRIPTS/board-list.sh" review_security
-assert_eq "projects: the imported card lists in its stage column" "$(jq -c '[.[].number]' <<<"$LAST_OUT" 2>/dev/null)" "[21]"
+run_in "$REPO" "$BASH_EXE" "$SCRIPTS/board-list.sh" in_review
+assert_eq "projects: the imported card lists in In Review" "$(jq -c '[.[].number]' <<<"$LAST_OUT" 2>/dev/null)" "[21]"
 
 echo "import-github: an unknown Projects column stops the run"
 setup_repo projects
