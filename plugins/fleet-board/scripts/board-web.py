@@ -463,6 +463,13 @@ def start_import(plan_text: str, status: str) -> str:
     cfg, _ = ctx()
     id = new_import_id()
     idir = state_dir(APP["root"], cfg) / "imports" / id
+    # the allow rules below embed these paths; a character a permission rule reads specially would
+    # loosen them, so refuse instead of running with a changed rule
+    scripts_path = script("import-plan.sh")
+    for label, p in (("import directory", str(idir)), ("scripts directory", scripts_path)):
+        if re.search(r"[ *()]", p):
+            raise ApiError(500, "the %s path %s contains a space, *, ( or ), which the import's "
+                                "permission rules cannot name safely" % (label, p))
     with _IMPORT_LOCK:
         if idir.exists():
             raise ApiError(409, "import %s already exists" % id)
@@ -485,7 +492,9 @@ def start_import(plan_text: str, status: str) -> str:
             # --tools and --allowedTools take variadic values: keep an option after each so the prompt
             # is not read as a tool name
             "--tools", "Read,Grep,Glob,Write,Bash",
-            "--allowedTools", "Bash(mktemp *)", "Bash(cp *)", "Bash(bash *import-plan.sh *)",
+            "--allowedTools", "Bash(mktemp *)",
+            "Bash(cp * %s)" % (idir / "cards.json"),
+            "Bash(bash %s *)" % script("import-plan.sh"),
             "Write(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
             "Write(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
