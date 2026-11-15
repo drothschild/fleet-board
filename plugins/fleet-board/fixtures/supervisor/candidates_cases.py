@@ -219,6 +219,12 @@ def test_fetch_card_plans_only_that_card(base):
     assert run.seen == [('tick-plan.sh', ('--candidates', '--card', '12'))], run.seen
     assert batch.error is None and batch.rate_limit_until is None, batch
     assert batch.candidates == [{'number': 12, 'action': 'review'}], batch.candidates
+    as_text = fake_run(0, stdout=row)
+    candidates.fetch_card(Path(base), '12', run=as_text)   # a card number read as text is passed as an integer
+    assert as_text.seen == [('tick-plan.sh', ('--candidates', '--card', '12'))], as_text.seen
+    as_float = fake_run(0, stdout=row)
+    candidates.fetch_card(Path(base), 12.0, run=as_float)
+    assert as_float.seen == [('tick-plan.sh', ('--candidates', '--card', '12'))], as_float.seen
 
 
 def test_fetch_card_reports_the_planner_failure(base):
