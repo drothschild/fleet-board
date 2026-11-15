@@ -211,11 +211,10 @@ def test_start_review_routes_moves_and_notes(base):
     b.stubs['worktree.sh'] = ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234', 'base': 'bace000'}))
     started = begin(b, 'start_review', state='in_progress')
     assert started.kind == 'session' and started.action.role == 'reviewer' and started.action.session
-    calls = [c for c in b.calls if c[:2] != ('note.sh', 'get')]   # start_review reads the note for `stack`
     assert b.scripts_called() == ['review-stages.sh', 'board-move.sh', 'board-read.sh', 'worktree.sh'], b.calls
-    assert calls[-1] == ('worktree.sh', 'review', '12', '34'), b.calls
-    assert calls[0] == ('review-stages.sh', 'route', '12', '34')
-    assert calls[1] == ('board-move.sh', '12', 'in_review')
+    assert b.calls[-1] == ('worktree.sh', 'review', '12', '34'), b.calls
+    assert b.calls[0] == ('review-stages.sh', 'route', '12', '34')
+    assert b.calls[1] == ('board-move.sh', '12', 'in_review')
     assert b.card()['state'] == 'in_review'
     note = b.note()
     assert note['round'] == 1 and note['pr'] == 34 and note['state'] == 'in_review', note

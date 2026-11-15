@@ -769,9 +769,17 @@ class CardDriver:
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         return self._dispatch_role(c, prior='in_progress')
 
+    def _stack_of(self, c):
+        """The card's noted `stack`, read directly so the call log of start_review keeps `route` first."""
+        got = scripts.run(self.root, 'note.sh', 'get', c.n, env=self.env)
+        data = _json(got.stdout) if got.rc == 0 else None
+        if not isinstance(data, dict):
+            raise _Fail('note.sh get printed no manager note')
+        return data.get('stack')
+
     def _do_start_review(self, c):
         pr = c.pr()
-        stack = c.note().get('stack')
+        stack = self._stack_of(c)
         if stack:
             base = stack.get('base') if isinstance(stack, dict) else None
             if not isinstance(base, str) or not _BRANCH.fullmatch(base):
