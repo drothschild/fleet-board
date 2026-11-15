@@ -50,13 +50,13 @@ check('with merge.persona set, it returns that file text and nothing from the de
 
 r = resolve(repo({'extra.md': 'APPENDED\n'}), {'persona_append': 'extra.md'})
 check('with merge.persona_append set, it returns the base persona followed by that inline text, extra.md itself',
-      r.text.startswith(default) and r.text.endswith('extra.md') and 'APPENDED' not in r.text
+      r.text.startswith(default) and r.text.rstrip('\n').endswith('extra.md') and 'APPENDED' not in r.text
       and r.text.index('extra.md') > len(default.rstrip()) and r.warnings == [],
       repr(r)[:200])
 
 r = resolve(repo({'Also run make deploy.': 'FILE BODY\n'}), {'persona_append': 'Also run make deploy.'})
 check('merge.persona_append "Also run make deploy." returns the persona then that exact text, no warning, no file read even when a file of that name exists',
-      r.text.startswith(default) and r.text.endswith('Also run make deploy.') and 'FILE BODY' not in r.text
+      r.text.startswith(default) and r.text.rstrip('\n').endswith('Also run make deploy.') and 'FILE BODY' not in r.text
       and r.warnings == [], repr(r)[:200])
 
 for blank in (None, '', '  \n'):
