@@ -27,8 +27,8 @@ BODY="$REPO/body.md"
 printf '## Why\nx\n' > "$BODY"
 
 # board-create.sh passes --repo through: no usage error for the flag
-out="$(cd "$REPO" && bash "$CREATE" t "$BODY" --repo a/b 2>&1)"; rc=$?
-if [ "$rc" -eq 0 ]; then ok "board-create.sh with --repo a/b exits 0"; else bad "board-create.sh with --repo a/b exits 0" "exit $rc: $out"; fi
+out="$(cd "$REPO" && bash "$CREATE" t "$BODY" --repo acme/toy 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ]; then ok "board-create.sh with --repo acme/toy (the board repo) exits 0"; else bad "board-create.sh with --repo acme/toy (the board repo) exits 0" "exit $rc: $out"; fi
 case "$out" in
   *usage:*|*"unknown argument"*) bad "--repo is not reported as a usage error or unknown argument" "$out" ;;
   *) ok "--repo is not reported as a usage error or unknown argument" ;;

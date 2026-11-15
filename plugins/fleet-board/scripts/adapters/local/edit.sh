@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # edit.sh <n> [--title-file F] [--body-file F] [--labels-json J] [--acceptance-file F]
-#             [--blocked-by-json J] [--pr-url U]
+#             [--blocked-by-json J] [--pr-url U] [--repo R]
 # Local-only, called by the web server. Every flag is optional; an omitted flag
 # (or an empty file argument, or --labels-json null) leaves that field unchanged.
 # A body with "## Acceptance" / "## Depends on" sections is split into the card
@@ -12,7 +12,7 @@ unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/board-lib.sh"
 . "$FB_SCRIPTS/adapters/local/local-lib.sh"
 
-USAGE="usage: edit.sh <number> [--title-file F] [--body-file F] [--labels-json J] [--acceptance-file F] [--blocked-by-json J] [--pr-url U]"
+USAGE="usage: edit.sh <number> [--title-file F] [--body-file F] [--labels-json J] [--acceptance-file F] [--blocked-by-json J] [--pr-url U] [--repo R]"
 [ $# -ge 1 ] || fb_die 2 "$USAGE"
 N="$1"; shift
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
@@ -26,6 +26,7 @@ while [ $# -gt 0 ]; do
     --acceptance-file) ACC_FILE="$2" ;;
     --blocked-by-json) BLOCKED="$2" ;;
     --pr-url) PR_SET=1; PR_URL="$2" ;;
+    --repo) ;; # the local board is one store; the repo names no other board
     *) fb_die 2 "$USAGE" ;;
   esac
   shift 2
