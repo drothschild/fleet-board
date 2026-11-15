@@ -880,7 +880,7 @@ class Chained(unittest.TestCase):
         (self.root / '.fleet-board.yml').write_text(CHAIN_YML)
         (self.root / '.fleet-board' / 'cards').mkdir(parents=True)
         (self.root / '.fleet-board' / 'next').write_text('100\n')
-        card = {'number': 12, 'title': 'Add subtract', 'body': 'plain body', 'state': 'review_security',
+        card = {'number': 12, 'title': 'Add subtract', 'body': 'plain body', 'state': 'merging',
                 'labels': ['needs-security-review'], 'acceptance': ['does it'], 'blocked_by': [],
                 'next_comment_id': 1, 'comments': [], 'created_at': '2026-01-01T00:00:00Z'}
         (self.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
@@ -898,7 +898,7 @@ class Chained(unittest.TestCase):
         self.gh_dir = gh_dir
         self.env = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'CHAIN_GH_DIR': str(gh_dir),
                     'FLEET_BOARD_USER': 'fleet-bot', 'FLEET_BOARD_VERIFY_MAIN': str(verify)}
-        self.put_note({'state': 'review_security', 'branch': lc.BRANCH[12], 'pr': 34, 'round': 1,
+        self.put_note({'state': 'merging', 'branch': lc.BRANCH[12], 'pr': 34, 'round': 1,
                        'stage': 'security', 'reviewed_stages': [],
                        'last_review': {'round': 1, 'sha': 'abc1234', 'stage': 'security', 'critical': 0,
                                        'important': 0, 'findings': []}})
@@ -944,7 +944,7 @@ class Chained(unittest.TestCase):
 
     def test_a_card_routed_to_only_the_first_of_two_stages_merges(self):
         row = self.candidate()
-        self.assertEqual(row['state'], 'review_security')
+        self.assertEqual(row['state'], 'merging')
         outcome = self.ended(row)
         self.assertEqual(outcome.kind, 'merged', outcome)
         self.assertEqual(self.card()['state'], 'merging')
