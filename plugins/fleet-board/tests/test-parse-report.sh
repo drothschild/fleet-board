@@ -656,6 +656,73 @@ done
 run_parse --role merger --mode after_merge "$REPORTS/merger-after-merge-fix.md"
 assert_exit "acceptance: after_merge mode rejects fix" 1
 
+# --- checker role ------------------------------------------------------------
+echo "checker"
+for s in go needs built stale; do
+  run_parse --role checker --mode check "$REPORTS/checker-$s.md"
+  assert_exit "checker check mode accepts $s" 0
+  assert_jq "checker check mode reports $s" ".status == \"$s\""
+done
+for s in duplicate fixed drafted; do
+  run_parse --role checker --mode draft "$REPORTS/checker-$s.md"
+  assert_exit "checker draft mode accepts $s" 0
+  assert_jq "checker draft mode reports $s" ".status == \"$s\""
+done
+run_parse --role checker --mode check "$REPORTS/checker-needs.md"
+assert_jq "checker needs: card is the number 40" '.card == 40 and (.card | type) == "number"'
+run_parse --role checker --mode draft "$REPORTS/checker-duplicate.md"
+assert_jq "checker duplicate: card is the number 12" '.card == 12 and (.card | type) == "number"'
+run_parse --role checker --mode check "$REPORTS/checker-built.md"
+assert_jq "checker built: evidence carries item, command and output" '.evidence == [{item: 1, command: "bash plugins/fleet-board/tests/test-premise.sh", output: "failed: 0"}, {item: 2, command: "grep -c checker plugins/fleet-board/scripts/parse-report.sh", output: "4"}]'
+run_parse --role checker --mode check "$REPORTS/checker-stale.md"
+assert_jq "checker stale: summary and proposal with scope and acceptance" '.summary == "plugins/fleet-board/scripts/premise.sh now owns the stamp." and (.proposal.scope | contains("plugins/fleet-board/scripts/premise.sh")) and .proposal.acceptance == ["stamp writes the head", "stamp refuses a missing card"]'
+run_parse --role checker --mode check "$REPORTS/checker-stale-no-proposal.md"
+assert_exit "checker stale without proposal: exit 0" 0
+assert_jq "checker stale without proposal: proposal null" '.proposal == null and .summary == "The script moved."'
+run_parse --role checker --mode draft "$REPORTS/checker-drafted.md"
+assert_jq "checker drafted: why, proposal and repro" '.why == "The stamp is lost on a move." and (.proposal.scope | contains("premise.sh")) and .proposal.acceptance == ["stamp survives a move", "stamp is read back"] and .repro == {command: "bash plugins/fleet-board/tests/test-premise.sh", result: "failed", output: "1 case failed"}'
+run_parse --role checker --mode draft "$REPORTS/checker-drafted-no-repro.md"
+assert_jq "checker drafted without repro: repro null" '.repro == null'
+run_parse --role checker --mode draft "$REPORTS/checker-fixed.md"
+assert_jq "checker fixed: evidence carries command and output" '.evidence == [{command: "bash plugins/fleet-board/tests/test-premise.sh", output: "failed: 0"}]'
+
+run_parse --role checker "$REPORTS/checker-go.md"
+assert_exit "checker without --mode: exit 2" 2
+run_parse --role checker --mode sideways "$REPORTS/checker-go.md"
+assert_exit "checker with an unknown mode: exit 2" 2
+run_parse --role checker --mode check "$REPORTS/checker-drafted.md"
+assert_exit "checker drafted in mode check: exit 1" 1
+assert_stderr_line "checker drafted in mode check: message" "parse-report: checker status drafted is not allowed in mode check"
+run_parse --role checker --mode draft "$REPORTS/checker-go.md"
+assert_stderr_line "checker go in mode draft: message" "parse-report: checker status go is not allowed in mode draft"
+run_parse --role checker --mode check "$REPORTS/checker-clean.md"
+assert_exit "checker clean: exit 1" 1
+run_parse --role checker --mode draft "$REPORTS/checker-clean.md"
+assert_exit "checker clean in draft mode: exit 1" 1
+run_parse --role checker --mode check "$REPORTS/checker-needs-two-cards.md"
+assert_exit "checker needs with two cards: exit 1" 1
+assert_stderr_line "checker needs with two cards: message" "parse-report: ## Card must hold exactly one card number (#<n>)"
+run_parse --role checker --mode check "$REPORTS/checker-stale-one-section.md"
+assert_exit "checker stale with one proposed section: exit 1" 1
+assert_stderr_line "checker stale with one proposed section: message" "parse-report: ## Proposed scope and ## Proposed acceptance must both be present or both absent"
+run_parse --role checker --mode check "$REPORTS/checker-stale-no-path.md"
+assert_exit "checker stale scope without a path: exit 1" 1
+assert_stderr_line "checker stale scope without a path: message" "parse-report: ## Proposed scope names no repository path"
+run_parse --role checker --mode check "$REPORTS/checker-stale-no-bullet.md"
+assert_stderr_line "checker stale acceptance without a bullet: message" "parse-report: ## Proposed acceptance has no bullet"
+run_parse --role checker --mode check "$REPORTS/checker-built-empty-evidence.md"
+assert_exit "checker built with empty evidence: exit 1" 1
+assert_stderr_line "checker built with empty evidence: message" "parse-report: ## Evidence has no entry"
+run_parse --role checker --mode check "$REPORTS/checker-built-bad-item.md"
+assert_exit "checker built evidence not a number: exit 1" 1
+assert_stderr_line "checker built evidence not a number: message" "parse-report: ## Evidence item must be an acceptance item number"
+run_parse --role checker --mode check "$REPORTS/checker-stale-no-what-changed.md"
+assert_exit "checker stale without ## What changed: exit 1" 1
+assert_stderr_line "checker stale without ## What changed: message" "parse-report: checker report needs ## What changed for status stale"
+run_parse --role reviewer --mode check "$REPORTS/reviewer-ok.md"
+assert_exit "--mode check with --role reviewer: exit 2" 2
+assert_stderr_line "--mode check with --role reviewer: message" "parse-report: --mode applies only to --role merger"
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
