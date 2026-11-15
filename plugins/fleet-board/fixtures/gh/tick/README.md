@@ -1,6 +1,6 @@
 # tick-plan fixtures
 
-One directory per `test-tick-plan.sh` scenario. Each holds a `routes` file for
+One directory per tick-plan scenario (the `tests/test-tick-plan-*.sh` suites). Each holds a `routes` file for
 `tests/fake-gh.sh` and, when the card has a manager note, the card's comments
 (`comments-<n>.json`, the note by `fleet-bot`). Fixture paths in a `routes`
 file are relative to that file; every `routes` file routes `api user` to

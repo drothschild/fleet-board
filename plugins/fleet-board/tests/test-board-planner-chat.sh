@@ -293,7 +293,7 @@ for ln in 1 2; do
   done
 done
 
-echo "Case: the import-preview session started by Draft cards keeps its argv without a tool limit"
+echo "Case: the import-preview session started by Draft cards runs with the import session's tool limit (card 446)"
 LINES_BEFORE_DRAFT="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
 api POST /api/planner/conv1/draft '{}'
 assert_code 200 "draft accepted"
@@ -303,10 +303,19 @@ for _ in $(seq 1 50); do
 done
 dargv="$(sed -n "$((LINES_BEFORE_DRAFT + 1))p" "$ARGV_LOG" | tr '\037' '\n')"
 case "$dargv" in *"/fleet-board:import-plan"*) pass "draft session runs the import-plan preview" ;; *) fail "draft session runs the import-plan preview" "$dargv" ;; esac
-if printf '%s\n' "$dargv" | grep -qxE -e '--tools|--allowedTools|--allowed-tools|--disallowedTools|--disallowed-tools'; then
-  fail "draft session argv has no tool restriction flag" "$dargv"
+# Draft cards hands the planner's replies (which may quote web search results) to the import preview,
+# so it runs capped: dontAsk, only the preview's tools, and no web tool
+dtools="$(printf '%s\n' "$dargv" | grep -A1 -x -e '--tools' | sed -n 2p)"
+dmode="$(printf '%s\n' "$dargv" | grep -A1 -x -e '--permission-mode' | sed -n 2p)"
+if [ "$dtools" = "Read,Grep,Glob,Write,Bash" ] && [ "$dmode" = dontAsk ]; then
+  pass "draft session argv passes --tools Read,Grep,Glob,Write,Bash in dontAsk"
 else
-  pass "draft session argv has no tool restriction flag"
+  fail "draft session argv passes --tools Read,Grep,Glob,Write,Bash in dontAsk" "tools '$dtools', mode '$dmode'"
+fi
+if printf '%s\n' "$dargv" | grep -qE 'WebSearch|WebFetch'; then
+  fail "draft session argv names no web tool" "$dargv"
+else
+  pass "draft session argv names no web tool"
 fi
 
 echo ""

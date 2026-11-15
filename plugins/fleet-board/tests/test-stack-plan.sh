@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Plain-bash tests for the stacked start (tick-plan.sh, the scheduler and State.reserve).
-# Offline: the fake gh and the local store built from generated routes, as test-tick-plan.sh does.
+# Offline: the fake gh and the local store built from generated routes, as the test-tick-plan-*.sh suites do.
 # No framework, no dependencies beyond POSIX tools, jq, git and python3.
 #
 # Usage: bash plugins/fleet-board/tests/test-stack-plan.sh

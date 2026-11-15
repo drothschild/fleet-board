@@ -96,10 +96,17 @@ COUNT="$(jq 'if type == "array" then length else error("not a list") end' "$WORK
 [ "$COUNT" -lt "$LIMIT" ] || fb_die 1 "gh issue list returned $COUNT issues, the list limit ($LIMIT); the list may be truncated. Set FLEET_BOARD_LIST_LIMIT above $LIMIT and retry"
 
 # name -> state map: {"<board name>": "<canonical state>"}
-NAMES="$(for s in $FB_STATES; do
+# A configured review stage's old column (Review: <stage>) or label (fleet:review_<stage>) is no
+# state since the per-stage columns were retired (card 289): its card imports into in_review,
+# as the planner moves a card it finds in one back to in_review.
+NAMES="$( { for s in $FB_STATES; do
   if [ -n "$PROJECT" ]; then printf '%s\t%s\n' "$(fb_default_name "$s")" "$s"; else printf 'fleet:%s\t%s\n' "$s" "$s"; fi
   o="$(fb_cfg "board.states.$s")"; [ -z "$o" ] || printf '%s\t%s\n' "$o" "$s"
-done | jq -Rsc 'split("\n") | map(select(. != "") | split("\t") | {(.[0]): .[1]}) | add // {}')"
+done
+for s in $(fb_stage_states); do
+  if [ -n "$PROJECT" ]; then printf '%s\t%s\n' "$(fb_default_name "$s")" in_review; else printf 'fleet:%s\t%s\n' "$s" in_review; fi
+  o="$(fb_cfg "board.states.$s")"; [ -z "$o" ] || printf '%s\t%s\n' "$o" in_review
+done; } | jq -Rsc 'split("\n") | map(select(. != "") | split("\t") | {(.[0]): .[1]}) | add // {}')"
 
 if [ -n "$PROJECT" ]; then
   gh project item-list "$PROJECT" --owner "$OWNER" --format json --limit "$LIMIT" </dev/null > "$WORK/items.json" \
@@ -128,7 +135,7 @@ else
 fi
 
 BAD="$(jq -r '.[] | select((.fb_state // "") | startswith("?")) | "#\(.number) (\(.fb_status))"' "$WORK/states.json")"
-[ -z "$BAD" ] || fb_die 1 "project columns that name no state in this config: $(printf '%s' "$BAD" | tr '\n' ' ')- add them to board.states or review.stages"
+[ -z "$BAD" ] || fb_die 1 "project columns that name no state in this config: $(printf '%s' "$BAD" | tr '\n' ' ')- add them to board.states"
 jq -r '.[] | select(.fb_state == null) | .number' "$WORK/states.json" | while IFS= read -r n; do
   printf 'fleet-board: warning: #%s is not on the board; not imported\n' "$n" >&2
 done

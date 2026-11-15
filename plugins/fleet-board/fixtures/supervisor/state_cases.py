@@ -290,7 +290,7 @@ class Lifecycle(unittest.TestCase):
         snap = self.state.snapshot()
         self.assertEqual(set(snap), {'run_id', 'mode', 'pause_reason', 'revision', 'active',
                                      'lane', 'provider_health', 'holds', 'run_tokens', 'run_budget',
-                                     'events', 'attention', 'queue', 'limits'})
+                                     'events', 'attention', 'queue', 'limits', 'last_plan'})
         self.assertEqual(snap['run_id'], 'run1')
         self.assertEqual(snap['active'][1]['card'], 1)
         self.assertEqual(snap['lane']['card'], 1)

@@ -65,6 +65,7 @@ class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
                  fetch_card=candidates.fetch_card, clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
+        self._claim_repo = {}   # card -> the repo its admitted row named; state keeps paths only
         self.config_loader = config_loader
         self.state = state
         self.driver = driver
@@ -86,6 +87,9 @@ class Supervisor:
         self._inbox = queue.Queue()
         self._want_cycle = True
         self._next_cycle = 0.0
+        self._plan_ok_at = 0.0   # mono time before which a board-wide pass is not started (unless forced)
+        self._force_plan = False  # a command that changes what may run asks for a pass inside the gap
+        self._pass_ended = None   # mono time the last board-wide pass ended, set by _cycle
         self._started = None
         self._stop_mode = None
         self._sigints = 0
@@ -214,12 +218,18 @@ class Supervisor:
                 self._check_max_hours()
                 if self._stop_mode and not self.state.active:
                     return 0
-                if not self._stop_mode and (self._want_cycle or self.mono() >= self._next_cycle):
+                now = self.mono()
+                if not self._stop_mode and (self._want_cycle or now >= self._next_cycle) \
+                        and (self._force_plan or now >= self._plan_ok_at):
+                    self._force_plan = False
+                    self._pass_ended = None
                     try:
                         self._cycle()
                     except Exception as exc:  # noqa: BLE001 - one bad cycle must not end the supervisor
                         self._error('cycle_failed', '%s: %s' % (type(exc).__name__, exc))
                     self._next_cycle = self.mono() + self._interval()
+                    if self._pass_ended is not None:
+                        self._next_cycle = max(self._next_cycle, self._plan_ok_at)
                 self._wake.wait(self._timeout())
         finally:
             self._reap()
@@ -238,7 +248,7 @@ class Supervisor:
     def _timeout(self):
         if self.state.lane is not None or any(a.session is not None for a in self.state.all_actions()):
             return POLL
-        return max(0.01, min(1.0, self._next_cycle - self.mono()))
+        return max(0.01, min(1.0, max(self._next_cycle, self._plan_ok_at) - self.mono()))
 
     def _error(self, kind, message):
         """Record an error once per distinct message, so a persistent fault does not flood the events."""
@@ -261,6 +271,7 @@ class Supervisor:
                     self.state.pause(command.get('reason') or 'paused by operator')
                 else:
                     self._rate_since = None
+                    self._force_plan = True
                     self.state.resume()
                 box['result'] = {'mode': self.state.mode, 'revision': self.state.revision}
             except Exception as exc:  # noqa: BLE001 - handed back to the service thread
@@ -531,7 +542,11 @@ class Supervisor:
         if self._token_limit_reached():
             return
         self._refresh_ignored()
-        batch = self.fetch(self.root, self.run_script, self.clock)
+        began = self.mono()
+        try:
+            batch = self.fetch(self.root, self.run_script, self.clock)
+        finally:
+            self._pass_done(began)
         if batch.error:
             self._error('fetch_failed', batch.error)
             return
@@ -545,7 +560,7 @@ class Supervisor:
         self._rate_since = None
         rows, limit_waits = self._prepare(batch.candidates, config, now)
         active = self._active_claims()
-        reservations = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
+        reservations = self._reservations()
         result = self.scheduler.admit(rows, active=active, limits=self._limits(config), reservations=reservations,
                                       now=now, lane_free=self._lane_free(rows))
         if result.get('stop_reason'):
@@ -572,6 +587,15 @@ class Supervisor:
             if self.state.mode != 'running' or self._stop_mode:
                 break
             self._begin(row)
+
+    def _pass_done(self, began):
+        """A board-wide pass just ended: record it for the status, and hold the next one back for the longer of
+        supervisor.min_plan_gap_seconds and this pass's own duration."""
+        ended = self.mono()
+        seconds = max(0.0, ended - began)
+        self._pass_ended = ended
+        self._plan_ok_at = ended + max(self._sup('min_plan_gap_seconds', 30), seconds)
+        self.state.set_last_plan(self.clock(), round(seconds, 3))
 
     def _prepare(self, candidate_rows, config, now):
         """The planner's rows as the scheduler takes them: provider resolved, capped and retry-held cards left out
@@ -630,8 +654,7 @@ class Supervisor:
         lane_free = (self.state.lane is None and not self._merger_hold
                      and not any(a.action == 'after_merge' for a in self.state.all_actions()))
         result = self.scheduler.admit(rows, active=self._active_claims(), limits=self._limits(config),
-                                      reservations=[{'card': c, 'paths': list(p)}
-                                                    for c, p in list(self.state.reservations.items())],
+                                      reservations=self._reservations(),
                                       now=now, lane_free=lane_free)
         if result.get('stop_reason'):
             return
@@ -742,12 +765,31 @@ class Supervisor:
 
     def _active_claims(self):
         """The running actions as the scheduler sees them; `action` lets a read-only one leave scope free."""
-        return [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
-                 'stage': a.stage}
-                for a in self.state.all_actions()]
+        claims = [{'number': a.card, 'provider': a.provider, 'paths': list(a.paths), 'action': a.action,
+                   'stage': a.stage}
+                  for a in self.state.all_actions()]
+        for claim in claims:
+            self._with_repo(claim, claim['number'])
+        return claims
+
+    def _reservations(self):
+        """The held scopes as the scheduler sees them, each with the repo of the card holding it."""
+        held = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
+        for item in held:
+            self._with_repo(item, item['card'])
+        return held
+
+    def _with_repo(self, claim, card):
+        repo = self._claim_repo.get(card)
+        if repo:
+            claim['repo'] = repo
 
     def _begin(self, row):
         number, name = row.get('number'), row.get('action')
+        if row.get('repo'):
+            self._claim_repo[number] = row['repo']
+        else:
+            self._claim_repo.pop(number, None)
         if name == 'merge':   # the lane keeps no reservation: the scheduler sees its paths among the active
             try:
                 self.merge_lane.start(row)

@@ -236,7 +236,8 @@ if setup_case; then
   assert_code 200
   assert_body "board states start with backlog" '.states[0].key' backlog
   assert_body "board states carry display names" '.states[0].name' Backlog
-  assert_body "board has 11 states" '.states|length' 11
+  # the fixed states only: the per-stage review columns are retired (card 289)
+  assert_body "board has 9 states" '.states|length' 9
   assert_body "board lists 3 cards" '.cards|length' 3
   assert_body "card 2 note pr" '.cards[]|select(.number==2)|.note.pr' 41
   assert_body "card 2 note round" '.cards[]|select(.number==2)|.note.round' 1
@@ -519,6 +520,14 @@ if start_server "$REPO"; then
     pass "a prose-only body keeps acceptance and blocked_by"
   else
     fail "a prose-only body keeps acceptance and blocked_by" "got $(cat "$REPO/.fleet-board/cards/1.json")"
+  fi
+
+  api PATCH /api/cards/1 '{"body":"Drawer save prose, no sections."}'
+  assert_code 200
+  if [ "$(card_json 1 '.acceptance|join("|")')|$(card_json 1 '.blocked_by|map(tostring)|join(",")')|$(card_json 1 .body)" = "x|y|z|3|Drawer save prose, no sections." ]; then
+    pass "saving only the body from the drawer keeps both fields with no board-web.py workaround"
+  else
+    fail "saving only the body from the drawer keeps both fields with no board-web.py workaround" "got $(cat "$REPO/.fleet-board/cards/1.json")"
   fi
 
   api PATCH /api/cards/1 '{"pr_url":"https://github.com/ACME/Toy/pull/12"}'
@@ -1015,7 +1024,7 @@ if setup_case "$TMP/srvtmp"; then
   stop_server
 fi
 
-echo "Case: review stages appear in the board states"
+echo "Case: a configured review stage adds no board column (card 289)"
 STAGES_REPO="$(new_repo "$LOCAL_YML
 review:
   stages:
@@ -1027,9 +1036,9 @@ echo 1 > "$STAGES_REPO/.fleet-board/next"
 if start_server "$STAGES_REPO"; then
   api GET /api/board
   assert_code 200
-  assert_body "stages repo has 12 states" '.states|length' 12
-  assert_body "review_security follows in_review" '[.states[].key]|index("in_review") as $i|.[$i+1]' review_security
-  assert_body "review_security display name" '.states[]|select(.key=="review_security")|.name' 'Review: security'
+  assert_body "stages repo has 9 states" '.states|length' 9
+  assert_body "merging follows in_review" '[.states[].key]|index("in_review") as $i|.[$i+1]' merging
+  assert_body "no review_security column" '[.states[].key]|index("review_security")' null
   stop_server
 fi
 
