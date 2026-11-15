@@ -3,6 +3,7 @@
 #
 # Usage: tick-plan.sh                 (run inside the repo)
 #        tick-plan.sh --candidates    (read-only eligibility snapshot for supervisor admission)
+#        tick-plan.sh --candidates --card <n> (the same row for one card, read alone; never plans start)
 #        tick-plan.sh --settle-merge <n>... (settle mode for merge-reviewed.sh, below)
 #
 # Lists the ready, in_progress, in_review, review_<name> (one per configured
@@ -267,6 +268,7 @@ SETTLE=false
 SETTLE_NUMS=""
 KEEP_MERGE=false
 CANDIDATES=false
+ONE_CARD=""
 if [ $# -gt 0 ]; then
   case "$1" in
     --settle-merge) KEEP_MERGE=true ;; # merge-reviewed.sh: settle mode that also keeps merge
@@ -275,7 +277,11 @@ if [ $# -gt 0 ]; then
   esac
   shift
   if [ "$CANDIDATES" = true ]; then
-    [ $# -eq 0 ] || fb_die 2 "usage: tick-plan.sh --candidates (cannot combine with other modes)"
+    if [ $# -gt 0 ]; then
+      [ "$1" = --card ] && [ $# -eq 2 ] || fb_die 2 "usage: tick-plan.sh --candidates [--card <n>] (cannot combine with other modes)"
+      fb_valid_number "$2" || fb_die 2 "card number must be numeric, got: $2"
+      ONE_CARD="$2"
+    fi
   else
     [ $# -gt 0 ] || fb_die 2 "usage: tick-plan.sh --settle-merge <n>... (at least one card)"
     for a in "$@"; do
@@ -761,8 +767,23 @@ if [ "$SETTLE" = true ]; then
   done
 fi
 
+# --candidates --card <n>: only the named card is read (board-read.sh, its column from that read) and no column is
+# listed. Admitting new work needs the whole board for the Scope overlap check, so a card the table plans to start
+# is printed as wait. A card outside the planned columns prints no row, as in the board-wide pass.
+if [ -n "$ONE_CARD" ]; then
+  if READ="$(bash "$FLEET_SCRIPTS/board-read.sh" "$ONE_CARD")" \
+     && ST="$(jq -r '.state // "none"' <<<"$READ" 2>/dev/null)" \
+     && TITLE="$(jq -c '.title // ""' <<<"$READ" 2>/dev/null)"; then
+    case " ready in_progress in_review $(fb_stage_states | tr '\n' ' ') merging blocked human_qa " in
+      *" $ST "*) card_input "$ST" "$ONE_CARD" "$TITLE" "$READ" >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$ONE_CARD" ;;
+    esac
+  else
+    card_input none "$ONE_CARD" '""' FAILED >> "$CARDS_FILE" || fb_die 1 "cannot build the plan input for card #$ONE_CARD"
+  fi
+fi
+
 SEEN=" "
-for st in $([ "$SETTLE" = true ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
+for st in $([ "$SETTLE" = true ] || [ -n "$ONE_CARD" ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
   ROWS="$(jq -r 'if type == "array" then .[] | "\(.number)\t\((.title // "") | tojson)" else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
@@ -916,7 +937,7 @@ done <<<"$(jq -r '. as $c | (.review.stages // [])[] | select(.provider != null)
 TODAY="${FLEET_BOARD_TODAY:-$(date -u +%Y-%m-%d)}"
 IGNORE_CHECKS_JQ="$(cat "$FLEET_SCRIPTS/ignore-checks.jq")" || fb_die 1 "cannot read ignore-checks.jq"
 
-jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERSION_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ$PATH_GLOB_JQ"'
+jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERSION_FILE" --argjson settle "$SETTLE" --argjson candidates "$CANDIDATES" --argjson no_start "$([ -n "$ONE_CARD" ] && echo true || echo false)" --argjson keepmerge "$KEEP_MERGE" --argjson cfg "$FLEET_CFG" --arg base "$BASE" --arg pre "$PREFLIGHT_WARNING" --arg note_sh "$FLEET_SCRIPTS/note.sh" --argjson unset "$UNSET" --argjson closed_pending "$CLOSED_PENDING" --arg today "$TODAY" "$IGNORE_CHECKS_JQ$PATH_GLOB_JQ"'
   # One shared rule (ignore-checks.jq) for every merge decision: the review rows and the merging row
   def green: .statusCheckRollup | ic_green($cfg.merge.ignore_checks; $today);
   def scope_key: sub("^(\\./)+"; "") | sub("/+$"; "");
@@ -1221,6 +1242,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         end
       else $row end
   ] as $planned
+  # --candidates --card: a single card is planned without the board, so it never starts
+  | ($planned | map(if $no_start and .action == "start"
+      then . + {action: "wait", reason: "a Ready card starts only in the board-wide pass (the Scope overlap check needs the whole board)", waiting_on: []}
+      else . end)) as $planned
   # Reserve only starts that actually survived every gate. A waiting card
   # contributes no reservation, so it cannot unnecessarily serialize others.
   | (if $candidates then {cards:$planned} else reduce ($planned | sort_by(.number)[]) as $card ({cards:[], reserved:[]};
