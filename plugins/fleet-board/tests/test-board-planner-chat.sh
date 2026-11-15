@@ -224,9 +224,9 @@ tools_of() {
   if printf '%s\n' "$a" | grep -qx -e '--tools'; then printf '%s\n' "$a" | grep -A1 -x -e '--tools' | sed -n 2p; else echo NONE; fi
 }
 
-echo "Case: a planner turn's argv limits the built-in tools to Read, Grep and Glob"
+echo "Case: a planner turn's argv limits the built-in tools to Read, Grep, Glob and WebSearch"
 got="$(tools_of 1)"
-if [ "$got" = "Read,Grep,Glob" ]; then pass "first planner turn passes --tools Read,Grep,Glob"; else fail "first planner turn passes --tools Read,Grep,Glob" "got '$got'"; fi
+if [ "$got" = "Read,Grep,Glob,WebSearch" ]; then pass "first planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch"; else fail "first planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch" "got '$got'"; fi
 
 echo "Case: a planner turn's argv does not include Bash, Write, Edit or NotebookEdit among its allowed tools"
 got="$(tools_of 1)"
@@ -238,16 +238,59 @@ fi
 
 echo "Case: a resumed planner turn carries the same tool limit as the first turn"
 got="$(tools_of 2)"
-if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -qx -e '--resume' && [ "$got" = "Read,Grep,Glob" ]; then
-  pass "resumed planner turn passes --tools Read,Grep,Glob"
+if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -qx -e '--resume' && [ "$got" = "Read,Grep,Glob,WebSearch" ]; then
+  pass "resumed planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch"
 else
-  fail "resumed planner turn passes --tools Read,Grep,Glob" "got '$got'"
+  fail "resumed planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch" "got '$got'"
 fi
 
 echo "Case: the argument after the --tools list is an option or --, never the prompt"
 for ln in 1 2; do
   nxt="$(sed -n "${ln}p" "$ARGV_LOG" | tr '\037' '\n' | grep -A2 -x -e '--tools' | sed -n 3p)"
   case "$nxt" in -*) pass "turn $ln: argument after --tools list is '$nxt'" ;; *) fail "turn $ln: argument after --tools list is an option or --" "got '$nxt'" ;; esac
+done
+
+# prints the value following flag $2 in argv line $1, or NONE when the flag is absent
+flag_of() {
+  local a
+  a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
+  if printf '%s\n' "$a" | grep -qx -e "$2"; then printf '%s\n' "$a" | grep -A1 -x -e "$2" | sed -n 2p; else echo NONE; fi
+}
+
+echo "Case: the first and the resumed planner turn pass --permission-mode dontAsk"
+for ln in 1 2; do
+  got="$(flag_of $ln --permission-mode)"
+  if [ "$got" = dontAsk ]; then pass "turn $ln passes --permission-mode dontAsk"; else fail "turn $ln passes --permission-mode dontAsk" "got '$got'"; fi
+done
+
+echo "Case: --permission-mode stays dontAsk when headless.permission_mode is acceptEdits"
+printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nheadless:\n  permission_mode: acceptEdits\n' > "$REPO/.fleet-board.yml"
+LB="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
+api POST /api/planner/conv1/messages '{"text":"accept edits"}'
+wait_idle conv1
+got="$(flag_of $((LB + 1)) --permission-mode)"
+if [ "$got" = dontAsk ]; then pass "acceptEdits config -> resumed turn still --permission-mode dontAsk"; else fail "acceptEdits config -> resumed turn still --permission-mode dontAsk" "got '$got'"; fi
+
+echo "Case: both turns carry --allowedTools WebSearch"
+for ln in 1 2; do
+  got="$(flag_of $ln --allowedTools)"
+  if [ "$got" = WebSearch ]; then pass "turn $ln passes --allowedTools WebSearch"; else fail "turn $ln passes --allowedTools WebSearch" "got '$got'"; fi
+done
+
+echo "Case: both turns carry --disallowedTools naming the secret-file Read rules"
+for ln in 1 2; do
+  got="$(flag_of $ln --disallowedTools)"
+  for rule in 'Read(**/.env)' 'Read(**/.env.*)' 'Read(**/*.pem)' 'Read(**/*.key)' 'Read(~/.ssh/**)' 'Read(~/.aws/**)'; do
+    if printf '%s\n' "$got" | tr ',' '\n' | grep -qxF -e "$rule"; then pass "turn $ln --disallowedTools names $rule"; else fail "turn $ln --disallowedTools names $rule" "got '$got'"; fi
+  done
+done
+
+echo "Case: the argument after each variadic list is an option, never the prompt"
+for ln in 1 2; do
+  for fl in --tools --allowedTools --disallowedTools; do
+    nxt="$(sed -n "${ln}p" "$ARGV_LOG" | tr '\037' '\n' | grep -A2 -x -e "$fl" | sed -n 3p)"
+    case "$nxt" in -*) pass "turn $ln: argument after $fl list is '$nxt'" ;; *) fail "turn $ln: argument after $fl list is an option" "got '$nxt'" ;; esac
+  done
 done
 
 echo "Case: the import-preview session started by Draft cards keeps its argv without a tool limit"
