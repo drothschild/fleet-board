@@ -27,7 +27,7 @@ _WORK_CLASS = 1
 # stage review reads the PR, and a branch update merges the base into the card's own branch. They take
 # a slot and wait for their own card, but neither wait on another card's scope nor block one, so a
 # writer never holds them up.
-SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch'})
+SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'after_merge', 'merge_refusal'})
 # The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
 # `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
 REVIEWER_ACTIONS = frozenset({'start_review', 'review', 'review_stage'})
@@ -81,6 +81,13 @@ def _share_card(row, other):
     reviewer (the planner keeps planning a reviewer that has not reported yet, so a running one is not run twice)."""
     return (row.get('action') in REVIEWER_ACTIONS and other.get('action') in REVIEWER_ACTIONS
             and (row.get('action'), _stage_of(row)) != (other.get('action'), _stage_of(other)))
+
+
+def _ancestors(row):
+    """The card numbers (as strings) of a stacked candidate's `stack.ancestors`; none for any other row."""
+    stack = row.get('stack')
+    found = stack.get('ancestors') if isinstance(stack, dict) else None
+    return {str(x) for x in found} if isinstance(found, list) else set()
 
 
 def _has_work(row):
@@ -375,13 +382,16 @@ class Scheduler:
                     and len(mine) >= limits.get('per_card', 1):
                 waits.append({'number': number, 'reason': 'card capacity'}); continue
             paths = scopes.drop_ignored((c.get('declared_paths') or []) + (c.get('actual_paths') or []), ignore)
+            exempt = _ancestors(c)   # a stacked child's start is not held by its ancestors' scope
             reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
+                             and str(x.get('card', x.get('number'))) not in exempt
                              and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
                 continue
             conflict = next((x for x in occupied if (same_card(x, number) and not _share_card(c, x))
                              or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
+                                 and str(x.get('number')) not in exempt
                                  and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue

@@ -107,7 +107,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage` and `update_branch` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `after_merge` and `merge_refusal` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
@@ -122,6 +122,18 @@ no file here. The gate's residual bypasses and false positives are listed in the
   segment-wise (`*` never crosses `/`, `**` spans segments), defined once per
   language: `scripts/path-glob.jq` and `scopes.glob_regex`, pinned equal by a
   parity test over `fixtures/glob-cases.json`.
+- **Stacked start** (`stacking.enabled`, default false; off changes nothing). `tick-plan.sh` plans a
+  Ready card start, reason `ready, stacked on #<parent>`, instead of wait when exactly one dependency is
+  unmet, its status is in_review, human_qa, merging or `review_*`, the parent's note (`note.sh get`) has a
+  valid branch and pr, and `gh pr view <pr> --json state` says OPEN; any failed lookup keeps today's wait
+  reason, and the note and PR state are read only for a Ready card with exactly one unmet dependency. The
+  row's `stack` is `{parent, base, ancestors}` (`base` the parent's branch, `ancestors` the parent then each
+  further note `stack.parent`, at most 20 hops, stopping on a repeat); every other row has `stack` null, and
+  `--candidates` rows carry the key. A child's start is not held by the Scope of its `ancestors`, but is by
+  every other card, siblings included: the Ready-card Scope check and the plan's reservations in
+  `tick-plan.sh`, the scheduler's reservation and occupied checks (`stack.ancestors` of the candidate), and
+  `State.reserve(card, paths, ignore=None, exempt=())`, where owners in `exempt` are not overlap-checked
+  (`loop._begin` passes the row's ancestors). Suite: `tests/test-stack-plan.sh`.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
   `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
