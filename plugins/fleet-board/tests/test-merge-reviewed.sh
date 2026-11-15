@@ -799,6 +799,19 @@ assert_eq "bump: the version is one patch above the base" "$(remote_version)" 0.
 assert_eq "bump: gh pr merge pins the new head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit $NEWH")" 1
 assert_eq "bump: the old head is never pinned" "$(cnt "--match-head-commit $HEAD0")" 0
 
+# a worktrees.dir with a ".." segment (this repository's own is ../.fleet-worktrees): the lane's
+# bump worktree is made under the resolved directory, so worktree.sh does not refuse it
+setup_bump ""
+WTREL="../$(basename "$REPO")-fw"
+sed -i.bak "s|^  dir: \.fw$|  dir: $WTREL|" "$REPO/.fleet-board.yml" && rm -f "$REPO/.fleet-board.yml.bak"
+finalize
+run_merge
+assert_exit "bump ../ worktrees.dir: exit 0" 0
+assert_eq "bump ../ worktrees.dir: the version is raised" "$(remote_version)" 0.28.4
+assert_eq "bump ../ worktrees.dir: gh pr merge ran once" "$(cnt "pr merge 34 ")" 1
+assert_eq "bump ../ worktrees.dir: the bump worktree is under the resolved directory" \
+  "$([ -d "$(cd "$REPO/.." && pwd -P)/$(basename "$REPO")-fw/12-add-subtract" ] && echo yes || echo no)" yes
+
 setup_bump ""
 label_card fleet:bump:minor
 finalize
