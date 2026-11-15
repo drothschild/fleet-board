@@ -1694,6 +1694,44 @@ assert_code 404
 assert_body "a deleted log file is reported as missing" '.error' '*log file is missing*'
 stop_server
 
+# Card 426: the board page shows a card's repo and lists the configured repos.
+echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
+RP_REPO="$(new_repo "board:
+  repo: acme/toy
+  repos:
+    - repo: acme/other
+      path: /tmp/other-checkout
+worktrees:
+  dir: .fw")"
+mkdir -p "$RP_REPO/.fleet-board/cards"
+REPO="$RP_REPO"
+seed_card 1 ready "Home card" "Body."
+jq '. + {repo: "acme/other"}' "$RP_REPO/.fleet-board/cards/1.json" > "$RP_REPO/.fleet-board/cards/2.json.tmp"
+jq '.number = 2 | .title = "Other card"' "$RP_REPO/.fleet-board/cards/2.json.tmp" > "$RP_REPO/.fleet-board/cards/2.json"
+rm -f "$RP_REPO/.fleet-board/cards/2.json.tmp"
+echo 3 > "$RP_REPO/.fleet-board/next"
+start_server "$RP_REPO"
+api GET /api/board
+assert_code 200
+assert_body "/api/board card summaries carry repo: a card of another repo reports that repo" '.cards[]|select(.number==2)|.repo' 'acme/other'
+assert_body "/api/board card summaries carry repo: a card naming no repo reports board.repo" '.cards[]|select(.number==1)|.repo' 'acme/toy'
+assert_body "/api/board lists repos from config" '.repos|tojson' '["acme/other"]'
+stop_server
+
+jq -n '{states: [{key: "ready", name: "Ready"}], run: null, repo: "acme/toy", repos: ["acme/other"], escalation: null,
+  cards: [{number: 5, title: "Foreign card", state: "ready", known: true, labels: [], repo: "acme/other"},
+          {number: 6, title: "Home card", state: "ready", known: true, labels: [], repo: "acme/toy"}]}' > "$REV_TMP/board.json"
+RP_OUT="$(node "$SCRIPT_DIR/board-dom-harness.js" "$SCRIPTS/board-web/static/board.js" "$REV_TMP/board.json" ready 2>&1)"
+case "$(printf '%s' "$RP_OUT" | jq -r '[.groups[].cards[]|select(contains("Foreign card"))]|join("|")' 2>/dev/null)" in
+  *"acme/other"*) pass "the page shows a tile of another repo with its repo name" ;;
+  *) fail "the page shows a tile of another repo with its repo name" "$RP_OUT" ;;
+esac
+case "$(printf '%s' "$RP_OUT" | jq -r '[.groups[].cards[]|select(contains("Home card"))]|join("|")' 2>/dev/null)" in
+  *"Home card"*"acme/toy"*) fail "the page shows no repo name on a tile of the board's own repo" "$RP_OUT" ;;
+  *"Home card"*) pass "the page shows no repo name on a tile of the board's own repo" ;;
+  *) fail "the page shows no repo name on a tile of the board's own repo" "tile did not render: $RP_OUT" ;;
+esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
