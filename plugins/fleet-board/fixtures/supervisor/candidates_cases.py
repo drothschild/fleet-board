@@ -212,6 +212,24 @@ def test_planner_failure_is_reported(base):
     assert ok.error is None and ok.candidates == [{'number': 1}]
 
 
+def test_fetch_card_plans_only_that_card(base):
+    row = '{"schema_version": 2, "candidates": [{"number": 12, "action": "review"}]}'
+    run = fake_run(0, stdout=row)
+    batch = candidates.fetch_card(Path(base), 12, run=run)
+    assert run.seen == [('tick-plan.sh', ('--candidates', '--card', '12'))], run.seen
+    assert batch.error is None and batch.rate_limit_until is None, batch
+    assert batch.candidates == [{'number': 12, 'action': 'review'}], batch.candidates
+
+
+def test_fetch_card_reports_the_planner_failure(base):
+    run = fake_run(1, stderr='tick-plan: gh: API rate limit exceeded, resets at 2026-11-11T22:00:00Z\n')
+    batch = candidates.fetch_card(Path(base), 7, run=run)
+    assert run.seen == [('tick-plan.sh', ('--candidates', '--card', '7'))], run.seen
+    assert batch.rate_limit_until == calendar.timegm((2026, 11, 11, 22, 0, 0)) and batch.candidates == [], batch
+    failed = candidates.fetch_card(Path(base), 7, run=fake_run(2, stderr='boom: no such card\n'))
+    assert failed.error == 'boom: no such card' and failed.candidates == [], failed
+
+
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
