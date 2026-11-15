@@ -1119,7 +1119,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     | .version_needs = $vs.needs) as $all
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
-  # action is merge: only that card merges this tick
+  # action is merge: in settle mode only that card merges; otherwise every such card plans merge and the
+  # scheduler admits one at a time
   | [$all[] | select(.state == "in_progress" or is_review(.) or is_merging(.))] as $open
   | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
   | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
