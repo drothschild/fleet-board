@@ -4,7 +4,7 @@
 # each has a committed routes file under fixtures/gh/tick/<case>/.
 # No framework, no dependencies beyond POSIX tools, jq and git.
 #
-# Usage: bash plugins/fleet-board/tests/test-tick-plan.sh
+# Usage: bash plugins/fleet-board/tests/test-scope-reservations.sh
 
 set -uo pipefail
 unset CDPATH
