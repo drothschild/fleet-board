@@ -1003,10 +1003,18 @@ def card_acceptance(card: dict) -> list:
     return [a for a in (card.get("acceptance") or []) if isinstance(a, str)]
 
 
-def pr_url_ok(cfg: dict, v) -> bool:
-    """True for exactly https://github.com/<board.repo>/pull/<positive int>
+def card_repo(cfg: dict, card: dict) -> str:
+    """The card's own repo, or board.repo when the card names none."""
+    r = card.get("repo") if card else None
+    if isinstance(r, str) and r:
+        return r
+    return (cfg.get("board") or {}).get("repo") or ""
+
+
+def pr_url_ok(cfg: dict, card: dict, v) -> bool:
+    """True for exactly https://github.com/<the card's repo>/pull/<positive int>
     (owner/name compared case-insensitively)."""
-    repo = (cfg.get("board") or {}).get("repo") or ""
+    repo = card_repo(cfg, card)
     m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9][0-9]*)", v) if isinstance(v, str) else None
     return bool(m and repo and m.group(1).lower() == repo.lower())
 
@@ -1018,9 +1026,9 @@ def card_pr_url(cfg: dict, card: dict, note):
     pr on board.repo."""
     if "pr_url" in card:
         v = card.get("pr_url")
-        return v if pr_url_ok(cfg, v) else None
+        return v if pr_url_ok(cfg, card, v) else None
     pr = note.get("pr") if note else None
-    repo = (cfg.get("board") or {}).get("repo")
+    repo = card_repo(cfg, card)
     return "https://github.com/%s/pull/%d" % (repo, pr) if is_int(pr) and repo else None
 
 
@@ -1362,15 +1370,15 @@ def require_blocked_by(dir: Path, n: int, body: dict, stored: list = ()):
     return v
 
 
-def require_pr_url(cfg: dict, body: dict):
+def require_pr_url(cfg: dict, card: dict, body: dict):
     """None when absent, "" to clear (null), else a pull URL on board.repo."""
     if "pr_url" not in body:
         return None
     v = body["pr_url"]
     if v is None:
         return ""
-    if not pr_url_ok(cfg, v):
-        repo = (cfg.get("board") or {}).get("repo") or "<board.repo>"
+    if not pr_url_ok(cfg, card, v):
+        repo = card_repo(cfg, card) or "<board.repo>"
         raise ApiError(400, "pr_url must be https://github.com/%s/pull/<number>, or null" % repo)
     return v
 
@@ -1384,7 +1392,7 @@ def edit_card(params, body):
     labels = require_labels(body)
     acceptance = require_acceptance(body)
     blocked_by = require_blocked_by(dir, n, body, card_blocked_by(card))
-    pr_url = require_pr_url(cfg, body)
+    pr_url = require_pr_url(cfg, card, body)
     if text is not None:
         # edit.sh treats a body as the whole truth about its sections: a prose
         # body would clear the fields. Keep them unless the body carries one.
