@@ -1086,6 +1086,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, k
         "blocked": any(state_of.get(b) != "done" for b in blk),
         "hold": hold_from_status(status, card.get("number")),
         "reviewers": card_reviewers(cfg, card, note),
+        "repo": card_repo(cfg, card) or None,
     }
 
 
@@ -1239,6 +1240,8 @@ def get_board(params, body):
                   for c in cards],
         "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
+        "repos": [r["repo"] for r in ((cfg.get("board") or {}).get("repos") or [])
+                  if isinstance(r, dict) and isinstance(r.get("repo"), str)],
         "escalation": escalation_info(cfg),
     }
 
