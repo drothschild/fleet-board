@@ -389,7 +389,10 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `test-tick-plan-scope.sh` (scope overlap, version bumps, base fetch, the candidates cost pass),
   `test-tick-plan-stages.sh` (review stages and their gates).
   `test-tick-plan-split.sh` pins that shape; add a new scenario to the suite for its area and a
-  new helper to the lib, never a copy into a suite.
+  new helper to the lib, never a copy into a suite. `test-tick-plan.sh` holds no scenario: it
+  runs all six and prints their combined total, for the whole planner or a card that names it.
+  Its second line marks it as an aggregate runner, so CI's `.github/scripts/run-suites.sh`
+  skips it and no suite runs twice.
 - After any change under this directory: `bash plugins/fleet-board/tests/test-clean-room.sh`
   must pass.
 - `behavioral-*.sh` are live: they run real headless sessions against `SANDBOX_REPO` and
