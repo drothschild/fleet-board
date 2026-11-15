@@ -78,11 +78,25 @@ setup_case() {
   FX="$FAKE_GH_DIR/fx"
   mkdir -p "$FX" "$FAKE_GH_DIR/bin"
   FAKE_GH_REAL="$SCRIPT_DIR/fake-gh.sh"; export FAKE_GH_REAL
-  unset FAKE_MERGE_QUEUED
+  unset FAKE_MERGE_QUEUED FAKE_MERGE_FAILS FAKE_MERGE_MOVE_HEAD
+  FLEET_BOARD_MERGE_RETRY_WAIT=0; export FLEET_BOARD_MERGE_RETRY_WAIT
   cat > "$FAKE_GH_DIR/bin/gh" <<'GH'
 #!/usr/bin/env bash
 bash "$FAKE_GH_REAL" "$@"
 rc=$?
+if [ "$rc" = 0 ] && [ "$1 $2" = 'pr merge' ] && [ -n "${FAKE_MERGE_FAILS:-}" ]; then
+  # a merge that fails FAKE_MERGE_FAILS times with the base-moved message, then succeeds
+  done_n="$(cat "$FAKE_GH_DIR/merge-fails" 2>/dev/null || echo 0)"
+  if [ "$done_n" -lt "$FAKE_MERGE_FAILS" ]; then
+    echo $((done_n + 1)) > "$FAKE_GH_DIR/merge-fails"
+    echo 'GraphQL: Base branch was modified. Review and try the merge again. (mergePullRequest)' >&2
+    if [ "${FAKE_MERGE_MOVE_HEAD:-}" = 1 ]; then
+      jq '.headRefOid="def5678"' "$FAKE_GH_DIR/fx/pr-$3.json" > "$FAKE_GH_DIR/fx/moved.json"
+      mv "$FAKE_GH_DIR/fx/moved.json" "$FAKE_GH_DIR/fx/pr-$3.json"
+    fi
+    exit 1
+  fi
+fi
 if [ "$rc" = 0 ] && [ "$1 $2" = 'pr merge' ] && [ "${FAKE_MERGE_QUEUED:-}" != 1 ]; then
   jq '.state="MERGED"' "$FAKE_GH_DIR/fx/pr-$3.json" > "$FAKE_GH_DIR/fx/merged.json"
   mv "$FAKE_GH_DIR/fx/merged.json" "$FAKE_GH_DIR/fx/pr-$3.json"
@@ -785,6 +799,19 @@ assert_eq "bump: the version is one patch above the base" "$(remote_version)" 0.
 assert_eq "bump: gh pr merge pins the new head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit $NEWH")" 1
 assert_eq "bump: the old head is never pinned" "$(cnt "--match-head-commit $HEAD0")" 0
 
+# a worktrees.dir with a ".." segment (this repository's own is ../.fleet-worktrees): the lane's
+# bump worktree is made under the resolved directory, so worktree.sh does not refuse it
+setup_bump ""
+WTREL="../$(basename "$REPO")-fw"
+sed -i.bak "s|^  dir: \.fw$|  dir: $WTREL|" "$REPO/.fleet-board.yml" && rm -f "$REPO/.fleet-board.yml.bak"
+finalize
+run_merge
+assert_exit "bump ../ worktrees.dir: exit 0" 0
+assert_eq "bump ../ worktrees.dir: the version is raised" "$(remote_version)" 0.28.4
+assert_eq "bump ../ worktrees.dir: gh pr merge ran once" "$(cnt "pr merge 34 ")" 1
+assert_eq "bump ../ worktrees.dir: the bump worktree is under the resolved directory" \
+  "$([ -d "$(cd "$REPO/.." && pwd -P)/$(basename "$REPO")-fw/12-add-subtract" ] && echo yes || echo no)" yes
+
 setup_bump ""
 label_card fleet:bump:minor
 finalize
@@ -842,6 +869,49 @@ run_merge
 assert_exit "second attempt: exit 0" 0
 assert_eq "second attempt: one bump above the new base" "$(remote_version)" 0.28.10
 assert_eq "second attempt: merged at the pushed head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit $(remote_head)")" 1
+
+echo "a merge refused because the base branch moved is retried once with the same head"
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+FAKE_MERGE_FAILS=1; export FAKE_MERGE_FAILS
+run_merge
+assert_exit "base moved once: exit 0" 0
+assert_eq "base moved once: two merge calls with the same head" "$(cnt "pr merge 34 --repo acme/toy --squash --match-head-commit abc1234")" 2
+assert_eq "base moved once: the card moves to done" "$(moved_done)" 1
+assert_eq "base moved once: no merge_refusal recorded" "$(bash "$SCRIPT_DIR/../scripts/note.sh" get 12 </dev/null | jq -c '.merge_refusal')" null
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+FAKE_MERGE_FAILS=2; export FAKE_MERGE_FAILS
+run_merge
+assert_exit "base moved twice: exit 1" 1
+assert_eq "base moved twice: exactly two merge calls" "$(cnt "pr merge 34 ")" 2
+assert_eq "base moved twice: the card does not move to done" "$(moved_done)" 0
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+printf 'GraphQL: Pull request is not mergeable (mergePullRequest)\n' > "$FX/other.stderr"
+printf 'pr merge 34 *\t1\t%s\n' "$FX/other.stderr" | cat - "$FAKE_GH_ROUTES" > "$FX/new-routes"
+mv "$FX/new-routes" "$FAKE_GH_ROUTES"
+run_merge
+assert_exit "other failure: exit 1" 1
+assert_eq "other failure: exactly one merge call" "$(cnt "pr merge 34 ")" 1
+
+setup_case auto
+card 12 in_review "$CLEAN"
+pr 34 false "$GREEN"
+finalize
+FAKE_MERGE_FAILS=1; FAKE_MERGE_MOVE_HEAD=1; export FAKE_MERGE_FAILS FAKE_MERGE_MOVE_HEAD
+run_merge
+assert_exit "head moved after base-moved failure: exit 1" 1
+assert_eq "head moved after base-moved failure: no retry" "$(cnt "pr merge 34 ")" 1
+unset FAKE_MERGE_FAILS FAKE_MERGE_MOVE_HEAD
 
 echo ""
 echo "-----------------------------------"

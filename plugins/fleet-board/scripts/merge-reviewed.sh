@@ -249,6 +249,12 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       fi
       wt_dir="$(fb_cfg worktrees.dir)"; [ -n "$wt_dir" ] || wt_dir=../.fleet-worktrees
       case "$wt_dir" in /*) ;; *) wt_dir="$FLEET_ROOT/$wt_dir" ;; esac
+      # Resolved as worktree.sh resolves its base: it refuses a path with a ".." segment, and
+      # this repository's own worktrees.dir is ../.fleet-worktrees
+      if ! wt_dir="$(mkdir -p "$wt_dir" && cd "$wt_dir" && pwd -P)"; then
+        fail "$n" "cannot resolve the worktrees directory, so the lane cannot raise the versions; not merged"
+        continue
+      fi
       bump_wt="$wt_dir/${bump_branch#fleet/}"
       if ! bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null \
          || ! bash "$FLEET_SCRIPTS/update-branch.sh" "$n" "$pr" "$bump_branch" "$bump_wt" \
@@ -265,7 +271,20 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       fi
     fi
     merge_rc=0
-    gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null || merge_rc=$?
+    merge_err="$TMPD/merge.stderr"
+    gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null 2>"$merge_err" || merge_rc=$?
+    cat "$merge_err" >&2
+    # GitHub refuses a merge with "Base branch was modified" when another PR lands during it. If the
+    # PR is still open at the same head, retry once after a short wait; a second failure is a refusal.
+    if [ "$merge_rc" -ne 0 ] && grep -q 'Base branch was modified' "$merge_err"; then
+      retry_info="$(gh pr view "$pr" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid 2>/dev/null)" || retry_info=""
+      if [ "$(jq -r '.state // empty' <<<"$retry_info" 2>/dev/null)" = OPEN ] \
+        && [ "$(jq -r '.headRefOid // empty' <<<"$retry_info" 2>/dev/null)" = "$merge_head" ]; then
+        sleep "${FLEET_BOARD_MERGE_RETRY_WAIT:-5}"
+        merge_rc=0
+        gh pr merge "$pr" --repo "$FLEET_REPO" --squash --match-head-commit "$merge_head" </dev/null >/dev/null || merge_rc=$?
+      fi
+    fi
     # Both exit paths are ambiguous: success may mean queued, while a lost
     # response may follow a completed merge. Only MERGED permits verification.
     state="$(gh pr view "$pr" --repo "$FLEET_REPO" --json isDraft,state,mergedAt,statusCheckRollup,headRefOid \

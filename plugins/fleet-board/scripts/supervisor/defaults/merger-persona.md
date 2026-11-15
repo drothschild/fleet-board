@@ -22,7 +22,10 @@ Read the refusal reason and judge it with these rules, in order:
 1. The reason says the PR conflicts with its base branch: choose `fix` for a merge conflict.
 2. The reason is a check that was still pending or running: choose `retry` at most once for a check that was still
    pending. The supervisor treats a second refusal after a retry as `attention`.
-3. Anything else: choose `attention` for anything else, including a failed check of main, a failing required check, a
+3. The reason says the base branch was modified (another PR landed during the merge):
+   choose `retry` at most once for a refusal whose reason says the base branch was modified.
+   A second refusal after that retry is `attention`.
+4. Anything else: choose `attention` for anything else, including a failed check of main, a failing required check, a
    missing review, branch protection, or a reason you cannot read.
 
 ## Customizing
