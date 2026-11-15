@@ -25,7 +25,7 @@ echo ""
 SUITES=()
 for f in "$SCRIPT_DIR"/test-tick-plan-*.sh; do
   [ -f "$f" ] || continue
-  [ "$(basename "$f")" = "test-tick-plan-split.sh" ] && continue # this file names the helper but is no suite
+  case "$(basename "$f")" in test-tick-plan-split.sh|test-tick-plan-helper-order.sh) continue ;; esac # these name the helper but hold no scenarios
   if grep -q "$HELPER" "$f"; then SUITES+=("$f"); fi
 done
 
