@@ -20,7 +20,7 @@ Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be mer
 
 ## `merge.persona` and `merge.persona_append`
 
-`merge.persona` is a path relative to the repo root, with no `..`. `null` (the default) uses `.fleet-board/merger.md` when that file exists, else the plugin's default persona. A path that is set but missing is an attention, never a silent fallback. `merge.persona_append` is a string added after whichever persona was chosen. See [the README](../README.md#merger-and-deploys) for an example persona.
+`merge.persona` is a path relative to the repo root, with no `..`. `null` (the default) uses `.fleet-board/merger.md` when that file exists, else the plugin's default persona. A path that is set but missing is an attention, never a silent fallback. `merge.persona_append` is inline text, not a path: the string itself is added after whichever persona was chosen (no file is read; `null` or a blank string adds nothing). See [the README](../README.md#merger-and-deploys) for an example persona.
 
 The supervisor skips the merger session after a successful merge, and records the merger result `{mode: after_merge, status: done}` in the card's note itself, when all of these hold: `merge.persona` is `null` and there is no `.fleet-board/merger.md` (the plugin default persona lists no after-merge steps), `merge.persona_append` is `null`, and the card has no `## After merge` section. The merge lane is then free in the same cycle. A refused merge always starts the merger in refusal mode.
 
