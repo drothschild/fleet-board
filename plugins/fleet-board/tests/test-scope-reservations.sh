@@ -4,7 +4,7 @@
 # each has a committed routes file under fixtures/gh/tick/<case>/.
 # No framework, no dependencies beyond POSIX tools, jq and git.
 #
-# Usage: bash plugins/fleet-board/tests/test-tick-plan.sh
+# Usage: bash plugins/fleet-board/tests/test-scope-reservations.sh
 
 set -uo pipefail
 unset CDPATH
@@ -264,7 +264,8 @@ printf '{"files":[],"changedFiles":2}\n' > "$dir/partial.json"
 printf 'pr view 34 --repo acme/toy --json files*\t0\t%s\n' "$dir/partial.json" | cat - "$FAKE_GH_ROUTES" > "$dir/next-routes"
 mv "$dir/next-routes" "$FAKE_GH_ROUTES"
 run_check "$SCRIPT" --candidates
-assert_jq "candidate marks incomplete PR scope evidence" '.candidates[] | select(.number == 12) | .scope_complete' false
+# one candidate row per routed reviewer (#382): every row of the card carries the flag
+assert_jq "candidate marks incomplete PR scope evidence" '[.candidates[] | select(.number == 12) | .scope_complete] | unique' '[false]'
 
 new_scope
 scope_issue "$dir" 12 human_qa '- Modify `src/a.sh`'
@@ -310,8 +311,25 @@ printf 'pr view 34 --repo acme/toy --json files*\t1\t-\n' | cat - "$FAKE_GH_ROUT
 mv "$dir/next-routes" "$FAKE_GH_ROUTES"
 run_check "$SCRIPT"
 assert_jq "unknown scope holds starts" "$(card 14 action)" '"wait"'
-assert_jq "unknown scope leaves existing review runnable" "$(card 12 action)" '"review"'
-assert_jq "existing work remains dispatchable" '.dispatchable' true
+# The same failed lookup leaves review-stages.sh match without the PR's files, so the review is held
+# (fail closed) rather than run without its stage routing.
+assert_jq "unknown scope holds the existing review on the failed stage lookup" "$(card 12 action)" '"skip"'
+assert_jq "the held review names the failed lookup" "$(card 12 reason)" '"lookup failed: review-stages.sh match 34"'
+
+# With no review stages (the built-ins disabled) the planner never routes stages, so an unknown
+# scope still holds only new starts: the existing review runs and the plan stays dispatchable.
+setup_case ready-start "$(printf 'review:\n  stages:\n    - {name: documentation, enabled: false}\n    - {name: blast_radius, enabled: false}')"
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+scope_issue "$dir" 12 in_review '- Modify `src/a.sh`'
+scope_issue "$dir" 14 ready '- Modify `src/unrelated.sh`'
+jq -cn '[{id:555,user:{login:"fleet-bot"},body:"<!-- fleet-board:manager-note -->\n```json\n{\"state\":\"in_review\",\"branch\":\"fleet/12-card\",\"pr\":34,\"round\":1}\n```\n"}]' > "$dir/comments-12.json"
+scope_routes "$dir" '14' '12'
+printf 'pr view 34 --repo acme/toy --json files*\t1\t-\n' | cat - "$FAKE_GH_ROUTES" > "$dir/next-routes"
+mv "$dir/next-routes" "$FAKE_GH_ROUTES"
+run_check "$SCRIPT"
+assert_jq "no stages: unknown scope holds starts" "$(card 14 action)" '"wait"'
+assert_jq "no stages: unknown scope leaves existing review runnable" "$(card 12 action)" '"review"'
+assert_jq "no stages: existing work remains dispatchable" '.dispatchable' true
 
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

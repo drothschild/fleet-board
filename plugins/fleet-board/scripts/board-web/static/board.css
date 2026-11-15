@@ -1088,3 +1088,8 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .dr-accept { margin-left: 8px; }
 .card-reviewer-clean { color: #1a7f37; }
 .card-reviewer-findings { color: #b3261e; }
+
+.dr-prio { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-wrap: wrap; }
+.dr-prio-btn[aria-pressed="true"] { background: var(--accent); color: #fff; border-color: var(--accent); }
+.dr-prio-warn { font-size: 12px; color: var(--warn); }
+.prio-mark { cursor: help; }

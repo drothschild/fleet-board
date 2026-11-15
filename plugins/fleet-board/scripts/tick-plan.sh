@@ -135,8 +135,9 @@
 # Paths are backticked spans or plain-text tokens in that section with no
 # whitespace and a "/" or an extension (leading "(" and trailing . , : ; )
 # stripped); a card naming none starts as usual.
-# At most one merge is planned per tick: the lowest card number; the other
-# cards that would merge wait ("one merge per tick: #<n> merges first").
+# Every card that can merge plans merge; the scheduler keeps the lane to one merge at a
+# time and skips a held merge for the next. In settle mode (--settle-merge) only the
+# lowest named card merges ("one merge per tick: #<n> merges first").
 #
 # The decision table itself is the single jq program below.
 #
@@ -148,7 +149,8 @@
 # round 1 and pr; no dispatch; the next tick's review action starts the
 # reviewer); a table skip stays a skip; any other action becomes skip, with
 # reason "<action> waits for the next tick". A settle plan always has
-# dispatchable false. A plan without --settle-merge never emits move_to_review.
+# dispatchable false. Outside settle mode move_to_review is planned only for a card found in a retired
+# review_<name> column: it goes back to in_review with its reviewed_stages kept.
 # Settle mode also keeps merge and verify_main actions (merge-reviewed.sh carries them out and
 # ignores every other action). The by-hand --settle flag went with the by-hand settle script in 0.27.0.
 # A card whose lookup fails is skipped with a warning, as in a normal plan.
@@ -1139,7 +1141,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     | .version_needs = $vs.needs) as $all
   | $all
   # Open cards (in_progress, in_review and every review stage column) and the lowest card number whose table
-  # action is merge: only that card merges this tick
+  # action is merge: in settle mode only that card merges; otherwise every such card plans merge and the
+  # scheduler admits one at a time
   | [$all[] | select(.state == "in_progress" or is_review(.) or is_merging(.))] as $open
   | (first($open[] | select(.scope_unknown)) // null) as $unknown_scope
   | (any($all[]; .pr_info.state == "MERGED" and .note.main_check.ok != true)) as $verify_pending
@@ -1171,8 +1174,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
          then act("update_branch"; "version not above base: \($c.version_stale | join(", "))")
        elif $d00.action == "merge" and $verify_pending
          then act("wait"; "successful main verification required before another merge")
-       elif $d00.action == "merge" and $merger != $c.number
+       elif $settle and $d00.action == "merge" and $merger != $c.number
          then act("wait"; "one merge per tick: #\($merger) merges first")
+       elif (($c.state // "") | startswith("review_")) and $d00.action != "skip"
+         then act("move_to_review"; "retired column \($c.state); move back to in_review, keeping reviewed_stages")
        else $d00 end) as $d0
     # Settle mode keeps only the steps that start no agent
     | (if $settle | not then $d0

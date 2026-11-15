@@ -479,7 +479,15 @@ def start_import(plan_text: str, status: str) -> str:
         argv = [
             os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
             "--output-format", "stream-json", "--verbose",
-            "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
+            # the plan can carry outside text, so this session never uses headless.permission_mode:
+            # dontAsk denies every call that would prompt; only the preview's own commands are pre-approved
+            "--permission-mode", "dontAsk",
+            # --tools and --allowedTools take variadic values: keep an option after each so the prompt
+            # is not read as a tool name
+            "--tools", "Read,Grep,Glob,Write,Bash",
+            "--allowedTools", "Bash(mktemp *)", "Bash(cp *)", "Bash(bash *import-plan.sh *)",
+            "Write(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
+            "Write(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
         plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
@@ -899,6 +907,12 @@ def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Pat
     record_planner_usage("planner", out_path, started_at=started_at)
 
 
+PLANNER_DENY_READS = (
+    "Read(**/.env)", "Read(**/.env.*)", "Read(**/*.pem)", "Read(**/*.key)", "Read(**/id_*)",
+    "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(**/.ssh/**)", "Read(**/.aws/**)",
+)
+
+
 def send_planner_message(id: str, text: str):
     cfg, _ = ctx()
     pdir = planner_dir(id)
@@ -930,9 +944,16 @@ def send_planner_message(id: str, text: str):
             argv = [
                 os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
                 "--output-format", "stream-json", "--verbose",
-                "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
-                # --tools takes a variadic value: keep an option after it so the prompt is not read as a tool name
-                "--tools", "Read,Grep,Glob",
+                # the planner reads untrusted web text, so it never uses headless.permission_mode:
+                # dontAsk denies every call that would prompt; only WebSearch is pre-approved
+                "--permission-mode", "dontAsk",
+                # --tools, --allowedTools and --disallowedTools take variadic values: keep an option
+                # after each so the prompt is not read as a tool name
+                # WebSearch lets it research practice for a card. No WebFetch: with Read it would be a way to send
+                # what it reads to a URL a web page names. It still cannot write or run anything.
+                "--tools", "Read,Grep,Glob,WebSearch",
+                "--allowedTools", "WebSearch",
+                "--disallowedTools", ",".join(PLANNER_DENY_READS),
                 "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
                 "--append-system-prompt", persona,
             ]
@@ -990,10 +1011,18 @@ def card_acceptance(card: dict) -> list:
     return [a for a in (card.get("acceptance") or []) if isinstance(a, str)]
 
 
-def pr_url_ok(cfg: dict, v) -> bool:
-    """True for exactly https://github.com/<board.repo>/pull/<positive int>
+def card_repo(cfg: dict, card: dict) -> str:
+    """The card's own repo, or board.repo when the card names none."""
+    r = card.get("repo") if card else None
+    if isinstance(r, str) and r:
+        return r
+    return (cfg.get("board") or {}).get("repo") or ""
+
+
+def pr_url_ok(cfg: dict, card: dict, v) -> bool:
+    """True for exactly https://github.com/<the card's repo>/pull/<positive int>
     (owner/name compared case-insensitively)."""
-    repo = (cfg.get("board") or {}).get("repo") or ""
+    repo = card_repo(cfg, card)
     m = re.fullmatch(r"https://github\.com/([^/\s]+/[^/\s]+)/pull/([1-9][0-9]*)", v) if isinstance(v, str) else None
     return bool(m and repo and m.group(1).lower() == repo.lower())
 
@@ -1005,9 +1034,9 @@ def card_pr_url(cfg: dict, card: dict, note):
     pr on board.repo."""
     if "pr_url" in card:
         v = card.get("pr_url")
-        return v if pr_url_ok(cfg, v) else None
+        return v if pr_url_ok(cfg, card, v) else None
     pr = note.get("pr") if note else None
-    repo = (cfg.get("board") or {}).get("repo")
+    repo = card_repo(cfg, card)
     return "https://github.com/%s/pull/%d" % (repo, pr) if is_int(pr) and repo else None
 
 
@@ -1065,6 +1094,7 @@ def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, k
         "blocked": any(state_of.get(b) != "done" for b in blk),
         "hold": hold_from_status(status, card.get("number")),
         "reviewers": card_reviewers(cfg, card, note),
+        "repo": card_repo(cfg, card) or None,
     }
 
 
@@ -1218,6 +1248,8 @@ def get_board(params, body):
                   for c in cards],
         "run": run,
         "repo": (cfg.get("board") or {}).get("repo"),
+        "repos": [r["repo"] for r in ((cfg.get("board") or {}).get("repos") or [])
+                  if isinstance(r, dict) and isinstance(r.get("repo"), str)],
         "escalation": escalation_info(cfg),
     }
 
@@ -1349,15 +1381,15 @@ def require_blocked_by(dir: Path, n: int, body: dict, stored: list = ()):
     return v
 
 
-def require_pr_url(cfg: dict, body: dict):
+def require_pr_url(cfg: dict, card: dict, body: dict):
     """None when absent, "" to clear (null), else a pull URL on board.repo."""
     if "pr_url" not in body:
         return None
     v = body["pr_url"]
     if v is None:
         return ""
-    if not pr_url_ok(cfg, v):
-        repo = (cfg.get("board") or {}).get("repo") or "<board.repo>"
+    if not pr_url_ok(cfg, card, v):
+        repo = card_repo(cfg, card) or "<board.repo>"
         raise ApiError(400, "pr_url must be https://github.com/%s/pull/<number>, or null" % repo)
     return v
 
@@ -1371,7 +1403,7 @@ def edit_card(params, body):
     labels = require_labels(body)
     acceptance = require_acceptance(body)
     blocked_by = require_blocked_by(dir, n, body, card_blocked_by(card))
-    pr_url = require_pr_url(cfg, body)
+    pr_url = require_pr_url(cfg, card, body)
     if text is not None:
         # edit.sh treats a body as the whole truth about its sections: a prose
         # body would clear the fields. Keep them unless the body carries one.

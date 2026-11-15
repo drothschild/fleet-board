@@ -181,6 +181,11 @@
     </section>
     <section class="dr-section" aria-labelledby="dr-labels-h">
       <h3 id="dr-labels-h" class="dr-h">Labels</h3>
+      <div class="dr-prio" role="group" aria-label="Priority">
+        <button type="button" id="dr-prio-high" class="btn dr-prio-btn" aria-label="High priority" aria-pressed="false">&#9650;</button>
+        <button type="button" id="dr-prio-low" class="btn dr-prio-btn" aria-label="Low priority" aria-pressed="false">&#9660;</button>
+        <span id="dr-prio-warn" class="dr-prio-warn" hidden>Two priority labels: the supervisor sets this card aside until one is removed</span>
+      </div>
       <div class="dr-labels-row">
         <ul id="dr-labels" class="labels dr-labels"></ul>
         <input id="dr-label-input" class="dr-label-input" type="text" placeholder="add label" aria-label="Add label" autocomplete="off">

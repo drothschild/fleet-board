@@ -210,6 +210,8 @@ def run():
     test_wait_with_a_new_dependency_list_is_admitted()
     test_provider_cap_applies_per_resolved_provider()
     test_merge_waits_for_the_lane()
+    test_a_held_merge_does_not_stop_the_next_merge()
+    test_two_merges_with_nothing_active_admit_only_the_lower()
     test_unknown_scope_serialises_starts()
     test_aging_promotes_a_starved_start()
     test_removed_limits_are_ignored()
@@ -322,6 +324,22 @@ def test_merge_waits_for_the_lane():
     capped = Scheduler(clock=lambda: 0).admit([candidate(3, 'merge')], limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1},
         active=[{'number': 9, 'provider': 'claude', 'paths': ['z']}], lane_free=True)
     assert capped['admitted'] == [] and capped['waits'][0]['reason'] == 'global capacity'
+
+
+def test_a_held_merge_does_not_stop_the_next_merge():
+    rows = [candidate(12, 'merge', paths=['src/shared.py']), candidate(13, 'merge', paths=['docs/other.md'])]
+    active = [{'number': 99, 'provider': 'claude', 'paths': ['src/shared.py'], 'action': 'implement'}]
+    result = Scheduler(clock=lambda: 0).admit(rows, active=active, limits=LIMITS, lane_free=True)
+    assert [x['number'] for x in result['admitted']] == [13], 'card 13 is admitted past the held merge'
+    assert {w['number']: w['reason'] for w in result['waits']} == {12: 'scope or card conflict'}
+    assert len([x for x in result['admitted'] if x['action'] == 'merge']) == 1
+
+
+def test_two_merges_with_nothing_active_admit_only_the_lower():
+    rows = [candidate(12, 'merge'), candidate(13, 'merge')]
+    result = Scheduler(clock=lambda: 0).admit(rows, limits=LIMITS, lane_free=True)
+    assert [x['number'] for x in result['admitted']] == [12]
+    assert {w['number']: w['reason'] for w in result['waits']} == {13: 'merge lane busy'}
 
 
 def test_unknown_scope_serialises_starts():

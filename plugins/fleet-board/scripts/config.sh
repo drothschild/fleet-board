@@ -241,12 +241,30 @@ VALIDATION_SCRIPT='
       (if (.board | type) == "object" then
         (if (.board.repo | type) != "string" or (.board.repo | test("^[^/ ]+/[^/ ]+$") | not) then "board.repo must match ^[^/ ]+/[^/ ]+$" else empty end)
       else empty end),
+      (if (.board | type) == "object" then
+        (if (.board.repos | type) != "array" then "board.repos must be a list"
+         else
+          (.board.repo as $home | .board.repos
+            | (to_entries[] | . as $e | $e.key as $i | $e.value as $r
+                | if ($r | type) != "object" then "board.repos[\($i)] must be an object with repo and path"
+                  else
+                    (if ($r.repo | type) != "string" or ($r.repo | test("^[^/ ]+/[^/ ]+$") | not) then "board.repos[\($i)].repo must match ^[^/ ]+/[^/ ]+$"
+                     elif ($home | type) == "string" and ($r.repo | ascii_downcase) == ($home | ascii_downcase) then "board.repos[\($i)].repo must differ from board.repo"
+                     else empty end),
+                    (if ($r.path | type) != "string" or $r.path == "" then "board.repos[\($i)].path is required"
+                     elif ($r.path | startswith("/") | not) then "board.repos[\($i)].path must be absolute"
+                     elif ($r.path | split("/") | index("..") != null) then "board.repos[\($i)].path must not contain a .. segment"
+                     else empty end)
+                  end),
+              ([.[] | select(type == "object") | .repo | strings | ascii_downcase] | group_by(.) | .[] | select(length > 1) | "board.repos names \(.[0]) more than once"))
+         end)
+      else empty end),
       (if (.board | type) == "object" and (.board.states | type) == "object" then
         (stage_names as $names
           | .board.states | to_entries | map(
               if (.key | test("^(backlog|ready|in_progress|in_review|merging|human_qa|blocked|done|wont_do)$")) then empty
               elif (.key | startswith("review_")) then (.key | ltrimstr("review_")) as $n |
-                (if ($names | index($n)) != null then empty else "board.states key \(.key) names no stage" end)
+                empty
               else "board.states key \(.key) is not canonical" end)[])
       else empty end),
       (if (.review | type) == "object" then
@@ -449,9 +467,12 @@ VALIDATION_SCRIPT='
     ] | map(select(. != null))
   ;
   def warnings:
-    if (.providers | type) == "object" then
+    (if (.providers | type) == "object" then
       ((stage_providers + [(.models | objects | .reviewer | objects | .provider | strings)]) as $used | [.providers | keys[] | select(. as $n | $used | index($n) | not) | "warning: providers.\(.) is not used by any stage"])
-    else [] end;
+    else [] end)
+    + (if (.board | type) == "object" and (.board.states | type) == "object"
+       then [.board.states | keys[] | select(startswith("review_")) | "warning: board.states.\(.) is retired; the per-stage review columns no longer exist"]
+       else [] end);
   (errors | .[]), (warnings | .[])
 '
 

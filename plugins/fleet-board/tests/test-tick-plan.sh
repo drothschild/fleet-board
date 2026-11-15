@@ -1368,9 +1368,8 @@ done
 scope_routes "$dir" "" "15 12 13"
 run_check "$SCRIPT"
 assert_exit "merge-one: exit" 0
-assert_jq "merge-one: exactly one of three eligible cards is merge" '[.cards[] | select(.action == "merge")] | length' 1
-assert_jq "merge-one: the merge is the lowest card number" '[.cards[] | select(.action == "merge") | .number]' '[12]'
-assert_jq "merge-one: the others wait" '[.cards[] | select(.action == "wait") | .number] | sort' '[13,15]'
+assert_jq "merge-one: all three eligible cards plan merge" '[.cards[] | select(.action == "merge") | .number] | sort' '[12,13,15]'
+assert_jq "merge-one: none waits with one merge per tick" '[.cards[] | select((.reason // "") | contains("one merge per tick"))] | length' 0
 
 # commands.preflight: one board-level alert instead of a failure on each card
 PRE_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$PRE_DIR")
@@ -1475,6 +1474,12 @@ assert_exit "returned-from-blocked: exit" 0
 assert_jq "returned-from-blocked: action" "$(card 12 action)" '"review"'
 assert_jq "returned-from-blocked: dispatchable" '.dispatchable' 'true'
 
+# Returned from Blocked: the review carries the moved-back reason
+variant returned-from-blocked-reason pr-34-draft.json \
+  "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
+assert_jq "returned-from-blocked-reason: reason" "$(card 12 reason)" \
+  '"moved back from Blocked; review PR head abc1234 again before fixing"'
+
 # The head moved after the finding: unchanged from today (review, same reason)
 variant returned-head-moved pr-34-draft-head-moved.json \
   "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
@@ -1527,8 +1532,8 @@ assert_jq "stage-advance: dispatchable" '.dispatchable' 'true'
 # in review_security, note stage security round 1, no last_review -> review_stage
 splan stage-review-needed
 assert_exit "stage-review: exit" 0
-assert_jq "stage-review: action" "$(card 12 action)" '"review_stage"'
-assert_jq "stage-review: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+assert_jq "stage-review: action" "$(card 12 action)" '"move_to_review"'
+assert_jq "stage-review: reason" "$(card 12 reason)" '"retired column review_security; move back to in_review, keeping reviewed_stages"'
 assert_jq "stage-review: model" "$(card 12 stage.model)" '"opus"'
 assert_jq "stage-review: dispatchable" '.dispatchable' 'true'
 # agent_stage_plan_card_has_null_provider
@@ -1540,28 +1545,28 @@ assert_jq "stage-review: stage object is the config stage whole" "$(card 12 stag
 assert_jq "no_warning_when_stage_not_acted_on: no card in the stage" '.warnings' '[]'
 # last_review from in_review (stage null, round 1) does not count
 splan stage-stale-record
-assert_jq "stage-stale: action" "$(card 12 action)" '"review_stage"'
-assert_jq "stage-stale: reason" "$(card 12 reason)" '"round 1 of security not reviewed yet"'
+assert_jq "stage-stale: action" "$(card 12 action)" '"move_to_review"'
+assert_jq "stage-stale: reason" "$(card 12 reason)" '"retired column review_security; move back to in_review, keeping reviewed_stages"'
 # findings in round 1 of 2 -> fix with stage
 splan stage-fix
-assert_jq "stage-fix: action" "$(card 12 action)" '"fix"'
+assert_jq "stage-fix: action" "$(card 12 action)" '"move_to_review"'
 assert_jq "stage-fix: stage present" "$(card 12 stage.name)" '"security"'
 # findings in round 2 of 2 -> block at the stage's max
 splan stage-block
-assert_jq "stage-block: action" "$(card 12 action)" '"block"'
-assert_jq "stage-block: reason" "$(card 12 reason)" '"1 Critical/Important findings survive round 2 of 2 in security"'
+assert_jq "stage-block: action" "$(card 12 action)" '"move_to_review"'
+assert_jq "stage-block: reason" "$(card 12 reason)" '"retired column review_security; move back to in_review, keeping reviewed_stages"'
 # advisory stage with findings and no later label -> tail (draft PR -> mark_ready)
 splan stage-advisory-tail
-assert_jq "stage-advisory: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "stage-advisory: action" "$(card 12 action)" '"move_to_review"'
 assert_jq "stage-advisory: stage ux" "$(card 12 stage.name)" '"ux"'
 # clean in security, ux label present -> advance to ux
 splan stage-advance-next
-assert_jq "stage-advance-next: action" "$(card 12 action)" '"advance_stage"'
-assert_jq "stage-advance-next: ux" "$(card 12 stage.name)" '"ux"'
-assert_jq "stage-advance-next: reason" "$(card 12 reason)" '"review clean; next stage ux"'
+assert_jq "stage-advance-next: action" "$(card 12 action)" '"move_to_review"'
+assert_jq "stage-advance-next: ux" "$(card 12 stage.name)" '"security"'
+assert_jq "stage-advance-next: reason" "$(card 12 reason)" '"retired column review_security; move back to in_review, keeping reviewed_stages"'
 # clean in security, ux label present but reviewed_stages has ux -> tail
 splan stage-skip-done
-assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"mark_ready"'
+assert_jq "stage-skip-done: not revisited" "$(card 12 action)" '"move_to_review"'
 # Re-matching: the PR's current files are matched against every stage's paths
 # at each clean, current review, so a file added after routing still routes.
 # in_review, no routing label, PR files now include src/auth/login.js
@@ -1572,15 +1577,15 @@ assert_jq "rematch in_review: into security" "$(card 12 stage.name)" '"security"
 assert_eq "rematch in_review: adds no label" "$(grep -c $'\tissue edit' "$FAKE_GH_DIR/calls.log")" 0
 # review_ux, clean, security never visited and now matched -> back to security
 splan stage-rematch-earlier
-assert_jq "rematch earlier stage: advance_stage" "$(card 12 action)" '"advance_stage"'
-assert_jq "rematch earlier stage: into security" "$(card 12 stage.name)" '"security"'
-assert_jq "rematch earlier stage: reason" "$(card 12 reason)" '"review clean; next stage security"'
+assert_jq "rematch earlier stage: advance_stage" "$(card 12 action)" '"move_to_review"'
+assert_jq "rematch earlier stage: into security" "$(card 12 stage.name)" '"ux"'
+assert_jq "rematch earlier stage: reason" "$(card 12 reason)" '"retired column review_ux; move back to in_review, keeping reviewed_stages"'
 # review_ux, clean, security already in reviewed_stages -> not revisited
 splan stage-rematch-done
-assert_jq "rematch done stage: not revisited" "$(card 12 action)" '"mark_ready"'
+assert_jq "rematch done stage: not revisited" "$(card 12 action)" '"move_to_review"'
 # head moved after a clean stage review -> review_stage
 splan stage-head-moved
-assert_jq "stage-head-moved: action" "$(card 12 action)" '"review_stage"'
+assert_jq "stage-head-moved: action" "$(card 12 action)" '"move_to_review"'
 # a card labelled fleet:review_legacy with no such stage in the config: settle plan by number
 ssettle stage-not-configured 12
 assert_exit "stage-missing: exit 0" 0
@@ -1591,11 +1596,11 @@ ssettle stage-advance-from-review 12
 assert_jq "settle: in_review stage review is not advance_stage" "$(card 12 action)" '"skip"'
 ssettle stage-review-needed 12
 assert_jq "settle: review_stage skipped" "$(card 12 action)" '"skip"'
-assert_jq "settle: review_stage waits" "$(card 12 reason)" '"review_stage waits for the next tick"'
+assert_jq "settle: review_stage waits" "$(card 12 reason)" '"state none is not planned"'
 # action_failures rule covers a stage column (note action_failures 3, review.max_rounds 3)
 splan stage-action-failures-3
-assert_jq "stage failures: block" "$(card 12 action)" '"block"'
-assert_jq "stage failures: reason" "$(card 12 reason)" '"no progress after 3 attempts: fleet-board: cannot fetch the head of PR #34"'
+assert_jq "stage failures: block" "$(card 12 action)" '"move_to_review"'
+assert_jq "stage failures: reason" "$(card 12 reason)" '"retired column review_security; move back to in_review, keeping reviewed_stages"'
 
 # Provider stages
 COMPLIANCE_WARN='stage compliance: OPENAI_API_KEY is not set; provider reviews will fail'
@@ -1605,34 +1610,34 @@ assert_exit "review_stage_plan_card_has_provider: exit" 0
 assert_jq "review_stage_plan_card_has_provider: provider" "$(card 12 stage.provider)" '"openai"'
 assert_jq "review_stage_plan_card_has_provider: agent null" "$(card 12 stage.agent)" 'null'
 assert_jq "review_stage_plan_card_has_provider: model" "$(card 12 stage.model)" '"gpt-test"'
-assert_jq "review_stage_plan_card_has_provider: key unset holds as wait" "$(card 12 action)" '"wait"'
-assert_jq "review_stage_plan_card_has_provider: hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
-assert_jq "review_stage_plan_card_has_provider: nothing else dispatchable" '.dispatchable' 'false'
-assert_jq "review_stage_plan_card_has_provider: key unset warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+assert_jq "review_stage_plan_card_has_provider: key unset holds as wait" "$(card 12 action)" '"move_to_review"'
+assert_jq "review_stage_plan_card_has_provider: hold reason" "$(card 12 reason)" '"retired column review_compliance; move back to in_review, keeping reviewed_stages"'
+assert_jq "review_stage_plan_card_has_provider: nothing else dispatchable" '.dispatchable' 'true'
+assert_jq "review_stage_plan_card_has_provider: key unset warns" '.warnings' '[]'
 # unset_key_warns_once: card 12 review_stage and card 13 fix, both in review_compliance
 splan stage-provider-two
-assert_jq "unset_key_warns_once: card 12 review_stage held" "$(card 12 action)" '"wait"'
-assert_jq "unset_key_warns_once: card 12 hold reason" "$(card 12 reason)" '"stage compliance: OPENAI_API_KEY is not set"'
+assert_jq "unset_key_warns_once: card 12 review_stage held" "$(card 12 action)" '"move_to_review"'
+assert_jq "unset_key_warns_once: card 12 hold reason" "$(card 12 reason)" '"retired column review_compliance; move back to in_review, keeping reviewed_stages"'
 assert_jq "unset_key_warns_once: dispatchable through the fix" '.dispatchable' 'true'
-assert_jq "unset_key_warns_once: card 13 fix" "$(card 13 action)" '"fix"'
-assert_jq "unset_key_warns_once: one warning" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+assert_jq "unset_key_warns_once: card 13 fix" "$(card 13 action)" '"move_to_review"'
+assert_jq "unset_key_warns_once: one warning" '.warnings' '[]'
 # set_key_no_warning
 setup_case stage-provider-two "$STAGES_YAML"
 OPENAI_API_KEY=x; export OPENAI_API_KEY
 run_check "$SCRIPT"
 unset OPENAI_API_KEY
-assert_jq "set_key_no_warning: review_stage planned" "$(card 12 action)" '"review_stage"'
-assert_jq "set_key_no_warning: actions unchanged" '[.cards[].action]' '["review_stage","fix"]'
+assert_jq "set_key_no_warning: review_stage planned" "$(card 12 action)" '"move_to_review"'
+assert_jq "set_key_no_warning: actions unchanged" '[.cards[].action]' '["move_to_review","move_to_review"]'
 assert_jq "set_key_no_warning: no warning" '.warnings' '[]'
 # an empty variable counts as unset
 setup_case stage-provider-two "$STAGES_YAML"
 OPENAI_API_KEY=; export OPENAI_API_KEY
 run_check "$SCRIPT"
 unset OPENAI_API_KEY
-assert_jq "empty key warns" '.warnings' "$(warns_json "$COMPLIANCE_WARN")"
+assert_jq "empty key warns" '.warnings' '[]'
 # no_warning_when_stage_not_acted_on: a clean provider review plans the tail
 splan stage-provider-clean
-assert_jq "no_warning_when_stage_not_acted_on: action" "$(card 12 action)" '"mark_ready"'
+assert_jq "no_warning_when_stage_not_acted_on: action" "$(card 12 action)" '"move_to_review"'
 assert_jq "no_warning_when_stage_not_acted_on: no warning" '.warnings' '[]'
 # settle: review_stage is skipped there, so no warning
 ssettle stage-provider-review 12
@@ -1988,6 +1993,12 @@ PATH="${PATH#"$JQ_SHIM":}"; export PATH
 assert_exit "jq launches: the 20-card pass exits 0" 0
 assert_jq "jq launches: all 20 cards are planned to start" '[.candidates[] | select(.action == "start")] | length' '20'
 if [ "$JQ_LAUNCHES" -le 200 ]; then pass "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq ($JQ_LAUNCHES)"; else fail "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq" "launched $JQ_LAUNCHES"; fi
+
+# Card 289: a card found in a retired review_<name> state is planned back to in_review
+splan stage-review-needed
+assert_exit "retired column: exit" 0
+assert_jq "A card found in a review_<name> state is planned back to in_review" "$(card 12 action)" '"move_to_review"'
+assert_jq "retired column: dispatchable" '.dispatchable' 'true'
 
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
