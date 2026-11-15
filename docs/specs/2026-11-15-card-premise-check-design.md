@@ -1,8 +1,9 @@
 # Card premise check: design
 
 Date: 2026-11-15
-Status: draft, awaiting the owner's approval
-Source: brainstorm from `docs/retros/2026-11-15-operator-session-learnings.md` (sections 3 and 4)
+Status: approved by the owner on 2026-11-15
+Source: a brainstorm from the operator session's field notes of 2026-11-14 to 2026-11-15
+(sections 3 and 4), which are kept outside this repository
 Related cards: #464 (epics, a separate design), #469 (follow-up drafting, covered here)
 
 ## Intent
@@ -37,8 +38,8 @@ without a person wherever that is safe.
   an implementor starts on it.
 - A card that only needs another card first gets that dependency and waits, with no person
   involved.
-- A card that is already built reaches the owner as a one-step confirmation, with evidence
-  the supervisor produced itself.
+- A card that is already built reaches the owner as a one-step confirmation, with the
+  command and output the check session produced for each acceptance item.
 - A card that needs rewriting reaches the owner as one specific proposal to approve or edit.
 - A follow-up a role files becomes a card that could be built as filed, or is closed as a
   duplicate or as already fixed.
@@ -301,8 +302,8 @@ From `.fleet-board/usage.jsonl` and the cards' comments, after a week of runs:
 ## Testing
 
 - Offline suites with the existing fakes: the stamp on each creation route, the
-  moved-ground comparison, each verdict's handling, the supervisor's own test run before a
-  close, the cap, and both config settings. A planner scenario goes in the tick-plan suite
+  moved-ground comparison, each verdict's handling, the owner's approve and confirm
+  commands, the cap, and both config settings. A planner scenario goes in the tick-plan suite
   for its area.
 - One live behavioural scenario for the check session, run only when the owner asks, since
   it costs usage.
@@ -311,8 +312,7 @@ From `.fleet-board/usage.jsonl` and the cards' comments, after a week of runs:
 ## Left to the builder
 
 - Field names, the report's exact sections, the script and module layout.
-- How the default-branch checkout for the session and the supervisor's test runs is made
-  and cleaned up.
+- How the default-branch checkout for the session is made and cleaned up.
 - How the board page shows a proposal and the approve button.
 - How the work splits into PR-sized cards.
 - The docs changes.
