@@ -722,6 +722,23 @@ def test_reviewer_findings_record_last_review(base):
     assert b.note()['last_verified'].startswith('VERIFIED:')
 
 
+def test_reviewer_report_with_findings_on_a_card_moved_out_of_blocked_sets_state_in_review(base):
+    # A person moved the card from Blocked to In review: the note still says blocked. The one review that
+    # follows must leave state in_review, or the planner plans another review every cycle.
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'blocked', 'blocked_from': 'in_review', 'branch': BRANCH,
+                'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    started = begin(b, 'review', state='in_review', round=1)
+    assert started.kind == 'session' and started.action.role == 'reviewer'
+    outcome = run_role(b, started)
+    assert outcome.progressed is True, outcome
+    assert b.note()['last_review']['important'] == 1
+    assert b.note()['state'] == 'in_review', b.note()
+
+
 def test_reviewer_round_one_uses_the_base_even_after_an_earlier_review(base):
     # Retargeted from the manager agent's review row (test-weakened-test-scope.sh, test-weakened-test-examples.sh):
     # in round 1 prev_sha is the base from worktree.sh review, never note.last_review.sha.
