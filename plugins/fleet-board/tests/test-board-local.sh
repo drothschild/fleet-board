@@ -227,10 +227,11 @@ YML
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name review_security'
 assert_stdout_exact "local review stage name" "Review: security"
 
-# merging sits after the review stages and before human_qa, with the name "Merging"
+# merging sits after in_review and before human_qa, with the name "Merging"
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; printf "%s\n" "$FB_STATES"'
-assert_stdout_exact "FB_STATES with one stage: in_review, the stage, merging, human_qa" \
-  "backlog ready in_progress in_review review_security merging human_qa blocked done wont_do"
+# a configured stage adds no column (card 289): merging follows in_review
+assert_stdout_exact "FB_STATES with one stage: in_review, merging, human_qa (no stage column)" \
+  "backlog ready in_progress in_review merging human_qa blocked done wont_do"
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name merging; fb_valid_state merging && echo valid'
 assert_stdout_exact "merging has the default name Merging and is a valid state" $'Merging\nvalid'
 
