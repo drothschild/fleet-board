@@ -524,7 +524,10 @@ card_input() {
     outside="$(sed -n "s/^fleet-board: warning: \(manager note on #$n names a worktree outside .*\)$/\1/p" "$NOTE_ERR" | head -1)"
   fi
   if [ -z "$failed" ]; then
-    if nf="$(jq -r '"\(.pr | tojson)", (.branch // ""), (.accepted != null)' <<<"$note")"; then
+    if [ "$note" = '{}' ]; then
+      nf=$'null\n\nfalse' # no note: the same three fields, without a jq launch
+      { IFS= read -r pr; IFS= read -r note_branch; IFS= read -r note_accepted; } <<<"$nf"
+    elif nf="$(jq -r '"\(.pr | tojson)", (.branch // ""), (.accepted != null)' <<<"$note")"; then
       { IFS= read -r pr; IFS= read -r note_branch; IFS= read -r note_accepted; } <<<"$nf"
     else
       failed="note.sh parse $n (unparsable)"
