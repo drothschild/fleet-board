@@ -152,13 +152,13 @@ board silently. (My call.)
 
 ### 3. The check session
 
-A headless, read-only session on a checkout of the current default branch. It gets the
-card, the list of open cards with their pull requests and branches, and the planner
-persona's working rules (`skills/planner/references/persona.md`), which already say how a
-good card is written.
+A headless session on a checkout of the current default branch, which it does not change.
+It gets the card, the list of open cards with their states and pull requests, and the
+planner persona's working rules (`skills/planner/references/persona.md`), which already say
+how a good card is written.
 
-It posts one fixed-shape report on the card, checked by `parse-report.sh` under a new role,
-with exactly one verdict:
+It ends with one fixed-shape report, checked by `parse-report.sh` under a new role and
+posted on the card as other roles' reports are, with exactly one verdict:
 
 | Verdict | Meaning | What the report must carry |
 |---|---|---|

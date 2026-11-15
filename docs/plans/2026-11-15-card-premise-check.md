@@ -67,7 +67,7 @@ code, and correct the card if they disagree. In particular:
 - Produces: `fl_premise_json <by> [<sha>]`: prints the stamp object for `<sha>`, or for the current default head; `null` when neither is available.
 - Produces: `fl_scope_text <body>`: prints the text of the body's `## Scope` section (heading excluded, up to the next `## ` heading, ignoring headings inside a code fence), or nothing. `fl_split_body` has no such finder today; this is new.
 - Produces: `premise.sh stamp <n> --by <by> [--sha <40-hex>]`: writes the stamp; exit 0, 2 usage, 3 card unreadable. `premise.sh show <n>`: prints the stored `premise` (or `null`).
-- Produces: environment variable `FLEET_BOARD_ACTOR`. When it is `supervisor`, `move.sh` and `edit.sh` do not stamp. `create.sh` always stamps, whoever runs it, so a card the supervisor files (the "main is red" card, a follow-up) is stamped at creation. Task 4 makes the supervisor set it.
+- Produces: environment variable `FLEET_BOARD_ACTOR`. When it is `supervisor`, `move.sh` and `edit.sh` do not stamp. `create.sh` always stamps, whoever runs it, so a card the supervisor files (the "main is red" card, a follow-up) is stamped at creation. Task 4 makes the supervisor set it for the scripts it runs. `tests/test-premise.sh` starts with `unset FLEET_BOARD_ACTOR`, so it behaves the same wherever it is run.
 - Every route that creates a card goes through `create.sh` (`import-plan.sh`, the board page, `file-followups.sh`, `verify-main.sh`). `import-github.sh` writes card files itself; its cards have no stamp and are checked before they start, which is acceptable.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test-premise.sh`, using a temp git repo with an `origin` remote and a store made by `init.sh`, as `test-board-local.sh` sets one up. Each "unchanged" case first seeds a stamp with a known old sha, so it can fail:
@@ -105,7 +105,7 @@ fl_scope_text:            a "## Scope" heading inside a ``` fence is not taken a
 
 **Interfaces:**
 - Consumes: `premise` field, `fl_default_head` (Task 1); `fb_card_scope_paths` and the Scope path rule in `board-lib.sh`.
-- Produces: config `premise_check: {enabled: true}` (boolean; `config.sh` refuses anything else with `premise_check.enabled must be true or false`) and `models.checker` (string, default `"sonnet"`).
+- Produces: config `premise_check: {enabled: false}` (boolean; `config.sh` refuses anything else with `premise_check.enabled must be true or false`) and `models.checker` (string, default `"sonnet"`). **The default is `false` in this task.** Until Task 4 the scheduler and driver do not know `check_premise` (an unknown action goes to attention and is never admitted), and until Task 6 three of the four verdicts are failed checks. A default of `true` here would stall every unstamped Ready card on any board running the plugin in between, this repository's included. Task 6 flips the default to `true`.
 - Produces: `premise.sh moved <n>`: prints `{moved: bool, reason: string|null, head: <40-hex>|null, paths: [..]}`.
   - Default head unreadable: `moved` false, `reason` null, `head` null.
   - No stamp: `moved` true, `no premise stamp`.
@@ -114,7 +114,8 @@ fl_scope_text:            a "## Scope" heading inside a ``` fence is not taken a
   - The card's paths are its Scope paths plus every backticked span in its acceptance items that, taken whole, passes the Scope path rule. A directory path covers its descendants. `supervisor.scope_ignore` is not applied here.
   - Exit 1 only when the card cannot be read.
 - Produces: plan action `check_premise`, with the `moved` reason as its reason.
-- `tests/tick-plan-lib.sh`: `setup_case` writes `premise_check: {enabled: false}` into the case config unless the case's extra YAML sets the key. Its repos have no `origin`, and every existing Ready-start scenario in the planner suites must keep planning `start`.
+- The planner's per-card field for the `moved` result is named `premise_moved`, so it is not confused with the card's `premise` stamp.
+- `tests/tick-plan-lib.sh`: `setup_case` writes `premise_check: {enabled: false}` into the case config unless the case's extra YAML sets the key. This matters once Task 6 flips the default: every existing Ready-start scenario in the planner suites must keep planning `start`.
 
 - [ ] **Step 1: Write the failing tests.**
 
@@ -139,7 +140,8 @@ premise-moved:       Ready card, stamp behind, Scope file changed -> action "che
 premise-fresh:       stamp at head -> action "start"
 premise-no-stamp:    -> action "check_premise", reason "no premise stamp"
 premise-disabled:    premise_check.enabled false, no stamp -> action "start"
-premise-default-lib: a case with no extra YAML and no stamp -> action "start" (setup_case turned the check off)
+premise-default-lib: after setup_case with no extra YAML, the case's config file sets premise_check.enabled false;
+                     with extra YAML that sets it true, the file keeps true
 premise-deps-first:  unmet dependency and no stamp -> action "wait" (the dependency reason), not check_premise
 premise-stacked:     a stacked start (stacking.enabled, one unmet in-review parent) -> action "start"; no check for a stacked child
 premise-lint-first:  card lint fails and no stamp -> "skip_card_lint"
@@ -148,10 +150,10 @@ premise-scope-free:  two Ready cards with overlapping Scope, both unstamped -> b
 premise-failures:    note.action_failures == max_rounds and no stamp -> "block" (the existing rule wins)
 ```
 
-In `tests/test-config.sh`: `premise_check.enabled: "yes"` is refused with the message above; defaults print `enabled: true` and `models.checker: "sonnet"`.
+In `tests/test-config.sh`: `premise_check.enabled: "yes"` is refused with the message above; defaults print `enabled: false` and `models.checker: "sonnet"`.
 
-- [ ] **Step 2: Run** `test-premise.sh`, `test-tick-plan-ready.sh` and `test-config.sh`. Expected: the new cases fail.
-- [ ] **Step 3: Implement.** In the per-card gathering for a Ready card that has acceptance, passes lint and has no unmet dependency, call `premise.sh moved` once and pass the result into the card object as `premise`. In `decide`, where the Ready branch would return a non-stacked `start`, return `act("check_premise"; $c.premise.reason)` when `premise_check.enabled` and `$c.premise.moved`. Keep the `Scope lists no paths` wait ahead of it, and do not apply the Scope-overlap wait to it.
+- [ ] **Step 2: Run** `test-premise.sh`, `test-tick-plan-ready.sh` and `test-config.sh`. Expected: the `moved` cases, `premise-moved`, `premise-no-stamp`, `premise-scope-free` and the config cases fail. The other planner cases (`-fresh`, `-disabled`, `-deps-first`, `-stacked`, `-lint-first`, `-no-scope`, `-failures`) assert behaviour that holds today; they are guards. Show each can fail in Step 4 by breaking the rule it guards for one run, and say so in the PR.
+- [ ] **Step 3: Implement.** In the per-card gathering for a Ready card that has acceptance, passes lint and has no unmet dependency, call `premise.sh moved` once and pass the result into the card object as `premise_moved`. In `decide`, where the Ready branch would return a non-stacked `start`, return `act("check_premise"; $c.premise_moved.reason)` when `premise_check.enabled` and `$c.premise_moved.moved`. Keep the `Scope lists no paths` wait ahead of it, and do not apply the Scope-overlap wait to it.
 - [ ] **Step 4: Run** the three suites, then `bash plugins/fleet-board/tests/test-tick-plan.sh` (the aggregate of all six planner suites), `test-stack-plan.sh` and `test-scope-reservations.sh`. This task changes what every Ready card plans by default, so those are touched suites here. Expected: `failed: 0` in each.
 - [ ] **Step 5: Commit.**
 
@@ -175,7 +177,7 @@ In `tests/test-config.sh`: `premise_check.enabled: "yes"` is refused with the me
 | `fixed` | `## Evidence`, one line: ``- `<command>` :: <one line of output>`` | `evidence: [{command, output}]` |
 | `drafted` | `## Why`, `## Proposed scope`, `## Proposed acceptance`; optional `## Repro`: ``- `<command>` :: failed|passed :: <one line of output>`` | `why`, `proposal`, `repro: {command, result, output}` or `null` |
 
-- Rejections (exit 1; every stderr line carries the script's `parse-report: ` prefix): `role checker does not allow status: <s> in mode <m>`, `role checker requires ## <section> for status <s>`, `## Card must hold exactly one card number (#<n>)`, `## Proposed scope and ## Proposed acceptance must both be present or both absent`, `## Proposed acceptance has no bullet`, `## Proposed scope names no repository path` (the text yields no path under `fb_card_scope_paths`; such a card could never start), `## Evidence has no entry`, `## Evidence item must be an acceptance item number`.
+- Rejections (exit 1; every stderr line carries the script's `parse-report: ` prefix): `checker status <s> is not allowed in mode <m>`, `checker report needs ## <section> for status <s>` (worded unlike the other roles' `role <r> does not allow status` and `role <r> requires` lines, because `driver._RULES` matches those by an earlier wildcard row and would quote the wrong rule back to the session), `## Card must hold exactly one card number (#<n>)`, `## Proposed scope and ## Proposed acceptance must both be present or both absent`, `## Proposed acceptance has no bullet`, `## Proposed scope names no repository path` (the text yields no path under `fb_card_scope_paths`; such a card could never start), `## Evidence has no entry`, `## Evidence item must be an acceptance item number`.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test-parse-report.sh`: one accepted fixture per status (seven), asserting the JSON keys above with `jq`; one rejected fixture per message above, asserting exit 1 and the exact stderr line; `--role checker` with no `--mode` exits 2; `--role checker` with a reviewer status (`clean`) rejected; `--mode check` with `--role reviewer` still refused as today.
 - [ ] **Step 2: Run** `bash plugins/fleet-board/tests/test-parse-report.sh`. Expected: the new cases fail with the unknown-role usage error.
@@ -187,16 +189,17 @@ In `tests/test-config.sh`: `premise_check.enabled: "yes"` is refused with the me
 
 **Files:**
 - Create: `scripts/supervisor/defaults/premise-check-prompt.md`
-- Modify: `scripts/worktree.sh`, `scripts/supervisor/resolver.py`, `scripts/supervisor/roles.py`, `scripts/supervisor/driver.py`, `scripts/supervisor/scheduler.py`, `scripts/supervisor/scripts.py`, `scripts/supervisor/service.py` (or wherever the supervisor process starts), `fixtures/supervisor/driver_cases.py`, `fixtures/supervisor/scheduler_cases.py`, `fixtures/supervisor/resolver_cases.py`, `fixtures/supervisor/roles_cases.py`, `fixtures/supervisor/lifecycle_cases.py`, `tests/test-worktree.sh`
+- Modify: `scripts/worktree.sh`, `scripts/adapters/local/list.sh`, `scripts/supervisor/resolver.py`, `scripts/supervisor/roles.py`, `scripts/supervisor/driver.py`, `scripts/supervisor/scheduler.py`, `scripts/supervisor/scripts.py`, `fixtures/supervisor/driver_cases.py`, `fixtures/supervisor/scheduler_cases.py`, `fixtures/supervisor/resolver_cases.py`, `fixtures/supervisor/roles_cases.py`, `fixtures/supervisor/candidates_cases.py`, `tests/test-worktree.sh`, `tests/test-board-local.sh`
 
 **Interfaces:**
 - Consumes: plan action `check_premise` (Task 2); `parse-report.sh --role checker --mode check` (Task 3); `premise.sh stamp --sha` (Task 1).
-- Produces: `worktree.sh premise <n>`: fetches the default branch, makes or refreshes a detached worktree `<base>/<n>-premise` at its head, runs `worktrees.setup` when it creates one (as `review` does), prints `{path, head}`. The name is `-premise`, not `-check`, because a card whose title slugs to `check` already owns `<base>/<n>-check`. The driver removes it with the path form, `worktree.sh remove <n> <path>`; the no-path form would also remove the card's implementation worktree. Update the Invariants line in `CLAUDE.md` that says worktree removal runs only in `cleanup-done.sh`.
+- Produces: `worktree.sh premise <n>`: fetches the default branch, makes or refreshes a detached worktree `<base>/<n>-premise_check` at its head, runs `worktrees.setup` when it creates one (as `review` does), prints `{path, head}`. The underscore is deliberate: a card's implementation worktree is `<base>/<n>-<slug>` and a slug is `[a-z0-9-]`, so no card title can collide with it. The driver removes it with the path form, `worktree.sh remove <n> <path>`; the no-path form would also remove the card's implementation worktree. (The path form also removes the card's review checkouts, which a Ready or Backlog card does not have.) Update the Invariants line in `CLAUDE.md` that says worktree removal runs only in `cleanup-done.sh`.
 - Produces: `resolver.resolve` returns `Dispatch('claude', None, CLAUDE, <models.checker>, False)` for `check_premise` and (Task 8) `draft_followup`.
 - Produces: `roles.command` with `dispatch.agent is None`: the argv has no `--agent` (today it would put `None` there) and carries `--tools Read,Write,Bash,Grep,Glob` placed before `--permission-mode`, because `--tools` is variadic and needs an option after it (see `board-web.py`). Permission mode, output format and `--max-turns` as for any role.
-- Produces: `ROLE_ACTIONS` and `_ROLE_OF` in `driver.py` gain `check_premise -> 'checker'`; `scheduler.SCOPE_FREE_ACTIONS` gains `check_premise`.
-- Produces: `scripts.ALLOWED` gains `premise.sh`; `driver._FLAGS` gains `--by`, `--sha` and, if absent, `--mode`.
-- Produces: the supervisor sets `os.environ['FLEET_BOARD_ACTOR'] = 'supervisor'` once at process start, so every child inherits it: the driver's scripts, the loop's cancel-path moves (`loop.py`) and the merge lane (`merging.py`).
+- Produces: `ROLE_ACTIONS` and `_ROLE_OF` in `driver.py` gain `check_premise -> 'checker'`; the scheduler's `_ACTION_CLASS` and `SCOPE_FREE_ACTIONS` gain `check_premise` (an action missing from `_ACTION_CLASS` goes to attention and is never admitted).
+- Produces: `scripts.ALLOWED` gains `premise.sh`; `driver._FLAGS` gains `--by` and `--sha` (`--mode` is already there).
+- Produces: `FLEET_BOARD_ACTOR=supervisor` in the environment that `scripts.run_argv` and `scripts.spawn_argv` build for a child (`scripts/supervisor/scripts.py`). That covers the driver's scripts, the loop's cancel-path moves (`loop.py`) and the merge lane (`merging.py`). It is not set in `os.environ`: `_launch` copies that into every role session, and a role running `tests/test-premise.sh` would then see `supervisor`. One side effect, accepted: `supervisor stuck --release` moves a card through the same runner, so that move does not stamp and the card is checked before it starts.
+- Produces: `scripts/adapters/local/list.sh` rows gain `state` and `pr_url` beside `number`, `title` and `url` (existing readers take only number and title). Today state is only implied by a row's position.
 - Produces: the prompt. `role_prompt` is in `driver.py` and builds `## <label>` sections from `_SECTIONS` and `_LABELS`; it renders no template and raises for an unknown role. Add a `checker` entry to both. Its inputs: card number, title, body, acceptance items (numbered), the mode, the checkout path, the scripts directory, the instructions (the text of `defaults/premise-check-prompt.md`, passed as one input the way the merger persona is), the planner persona's working rules (`skills/planner/references/persona.md`), and the open cards as `#<n> <state> <title>` lines with ` PR <url>` appended when the card has a `pr_url` (read from `board-list.sh`; `_open_cards` today gives only number and title).
 - The instructions file tells the session: work only in the checkout; change no file in it; run what it needs; end with the report as its final reply, in the shape for its mode.
 - Produces: report handling. As for every role, the report is the session's final reply: `finish` → `_reconcile` → `_check(run, self._file_report(c, result.report_text))`. Reuse `_check` with `--role checker --mode <mode>` (as the merger passes its mode); it already re-dispatches once and records a second rejection. Where `_apply` is called for other roles, call `CardDriver._settle_premise(c, run, parsed)`. Wrap a failure's error text as `premise check failed: <first line>; move the card to Ready to start it without a check`.
@@ -232,11 +235,11 @@ test_follow_up_lines_in_a_checker_report_file_nothing    no file-followups.sh ca
 test_an_unhandled_verdict_is_a_failed_check             status needs -> 'verdict needs is not handled yet'
 ```
 
-In `scheduler_cases.py`: a `check_premise` row is admitted beside a `start` row of another card whose Scope overlaps it; `check_premise` is in the classified actions. In `resolver_cases.py` and `roles_cases.py`: the dispatch and argv above. In `lifecycle_cases.py` (or the suite that starts the service): after start, `os.environ['FLEET_BOARD_ACTOR'] == 'supervisor'`.
+In `scheduler_cases.py`: a `check_premise` row is admitted beside a `start` row of another card whose Scope overlaps it; `check_premise` is in the classified actions. In `resolver_cases.py` and `roles_cases.py`: the dispatch and argv above. In `candidates_cases.py` (it already exercises the runner): `run_argv(root, ['sh', '-c', 'printf %s "$FLEET_BOARD_ACTOR"'])` prints `supervisor`, and `os.environ` has no `FLEET_BOARD_ACTOR` afterwards. In `tests/test-board-local.sh`: a `board-list.sh` row carries the card's `state` and `pr_url`.
 
-In `tests/test-worktree.sh`: `premise 12` prints a path ending `/12-premise` and the default head; a second call moves it to a newer head; setup runs on creation only; `remove 12 <that path>` deletes it and leaves `<base>/12-some-slug` in place; a path outside the base is refused.
+In `tests/test-worktree.sh`: `premise 12` prints a path ending `/12-premise_check` and the default head; a second call moves it to a newer head; setup runs on creation only; `remove 12 <that path>` deletes it and leaves `<base>/12-some-slug` in place; a path outside the base is refused.
 
-- [ ] **Step 2: Run** `test-supervisor-driver.sh`, `test-supervisor-scheduler.sh`, `test-supervisor-resolver.sh`, `test-supervisor-roles.sh`, the lifecycle suite and `test-worktree.sh`. Expected: the new cases fail.
+- [ ] **Step 2: Run** `test-supervisor-driver.sh`, `test-supervisor-scheduler.sh`, `test-supervisor-resolver.sh`, `test-supervisor-roles.sh`, the suite that runs `candidates_cases.py`, `test-worktree.sh` and `test-board-local.sh`. Expected: the new cases fail.
 - [ ] **Step 3: Implement.** `_do_check_premise` follows `_dispatch_merger`'s shape (resolve, build inputs, `role_prompt`, `_launch`) with no persona guard.
 - [ ] **Step 4: Run** the same suites. Expected: all pass.
 - [ ] **Step 5: Commit.**
@@ -282,13 +285,14 @@ test_a_question_resets_the_failure_count_and_records_blocked_from_ready
 
 **Files:**
 - Create: `scripts/premise-settle.sh`, `tests/test-premise-settle.sh`
-- Modify: `scripts/supervisor/driver.py`, `scripts/supervisor/scripts.py`, `fixtures/supervisor/driver_cases.py`, `scripts/adapters/local/move.sh`, `hooks/gate.sh`, `hooks/gate-lex.awk` (if the lexer needs the new command), `tests/test-gate.sh`, `README.md` (the `## Gates` list)
+- Modify: `scripts/supervisor/driver.py`, `scripts/supervisor/scripts.py`, `fixtures/supervisor/driver_cases.py`, `scripts/adapters/local/move.sh`, `scripts/config-defaults.json`, `tests/test-config.sh`, `hooks/gate.sh`, `hooks/gate-lex.awk` (if the lexer needs the new command), `tests/test-gate.sh`, `README.md` (the `## Gates` list)
 
 **Interfaces:**
 - Consumes: `CardDriver._premise_question` (Task 5); parsed `evidence`, `summary`, `proposal` (Task 3); `premise.sh stamp`, `fl_scope_text` (Task 1).
 - Produces: card field `proposal`: `null`, or `{kind: "rewrite", scope: string, acceptance: [string, ..], summary: string, head: <40-hex>, at}` or `{kind: "close", evidence: [{item: <number>, command, output}], head, at}`.
 - Produces: `premise-settle.sh propose <n> <json-file>`, the driver's only use of the script (add `premise-settle.sh` to `scripts.ALLOWED`).
-- Produces: `premise-settle.sh approve <n>`: the card must be Blocked with a `rewrite` proposal whose scope yields a path. In this order: replace the body's `## Scope` section with the proposal's scope (add the section when the body has none), replace the acceptance, keep `blocked_by`, clear `proposal`, move the card to Ready, then stamp `--by approve`. The stamp comes after the move, because the move itself stamps `by: move`.
+- Produces: `premise-settle.sh approve <n>`: the card must be Blocked with a `rewrite` proposal whose scope yields a path. In this order: replace the body's `## Scope` section with the proposal's scope (add the section when the body has none), replace the acceptance, keep `blocked_by`, clear `proposal`, move the card to Ready, then stamp `--by approve --sha <proposal.head>`. The stamp comes after the move, because the move itself stamps `by: move`; it carries the head the session saw, so files that changed since the proposal was written still trigger a check. To test a proposed scope for paths, wrap the text under a `## Scope` heading before `fb_card_scope_paths`, which reads only under that heading.
+- Produces: the default of `premise_check.enabled` becomes `true` in `scripts/config-defaults.json`. From this task every verdict is handled, so the check is safe to run everywhere. `tests/test-premise-settle.sh` starts with `unset FLEET_BOARD_ACTOR`.
 - Produces: `premise-settle.sh confirm <n>`: the card must be Blocked with a `close` proposal. Adds label `fleet:closed-as-built`, clears `proposal`, moves the card to Done, and appends `{card, decision: "confirmed", at}` to `<board.dir>/premise-decisions.jsonl` (beside `usage.jsonl`, so it is per repository).
 - Produces: `premise-settle.sh reject <n>`: clears `proposal` and appends `decision: "rejected"`. `move.sh` does the same when a card with a proposal leaves Blocked by a person's move (not with `FLEET_BOARD_ACTOR=supervisor`), so "move it back to Ready" is a rejection.
 - Exit codes: 0 done; 1 the card is not Blocked, has no proposal of that kind (`card #<n> has no <rewrite|close> proposal to <approve|confirm>`), or the proposed scope names no path (`card #<n>: the proposed Scope names no repository path`); 2 usage; 3 card unreadable.
@@ -299,7 +303,7 @@ test_a_question_resets_the_failure_count_and_records_blocked_from_ready
 `tests/test-premise-settle.sh`:
 
 ```
-approve replaces Scope and acceptance, keeps blocked_by, lands in ready, proposal null, stamp by == "approve"
+approve replaces Scope and acceptance, keeps blocked_by, lands in ready, proposal null, stamp by == "approve" and sha == proposal.head
 approve on a body with no ## Scope adds the section
 approve on a Ready card / a close proposal / no proposal -> exit 1, the exact message, card unchanged
 approve of a proposal whose scope has no path -> exit 1, the exact message, card unchanged
@@ -329,6 +333,8 @@ test_stale_without_a_proposal_blocks_with_the_summary
 test_no_verdict_stamps_except_go
 ```
 
+`tests/test-config.sh`: the default of `premise_check.enabled` is now `true`. Then run `bash plugins/fleet-board/tests/test-tick-plan.sh`, `test-stack-plan.sh` and `test-scope-reservations.sh` in Step 4: with the default on they must still print `failed: 0`, which is what Task 2's `setup_case` change is for.
+
 `tests/test-gate.sh`: `bash …/premise-settle.sh approve 12`, `confirm 12` and `reject 12` are blocked with the G4 message (also behind `cd x &&` and with an absolute path); `propose 12 f.json` and `premise.sh show 12` are allowed; with no `.fleet-board.yml` the gate is inert.
 
 - [ ] **Step 2: Run** the three suites. Expected: the new cases fail.
@@ -357,16 +363,17 @@ test_no_verdict_stamps_except_go
 ### Task 8: Follow-ups are drafted
 
 **Files:**
-- Modify: `scripts/file-followups.sh`, `scripts/board-create.sh`, `scripts/adapters/local/create.sh`, `scripts/premise.sh`, `scripts/tick-plan.sh`, `scripts/config-defaults.json`, `scripts/config.sh`, `scripts/supervisor/driver.py`, `scripts/supervisor/state.py`, `scripts/supervisor/scheduler.py`, `scripts/supervisor/resolver.py`, `scripts/supervisor/scripts.py`, `scripts/supervisor/defaults/premise-check-prompt.md`, `tests/test-followups.sh`, `tests/test-premise.sh`, `tests/test-tick-plan-followups.sh`, `tests/test-config.sh`, `fixtures/supervisor/driver_cases.py`, `fixtures/supervisor/state_cases.py`, `fixtures/supervisor/scheduler_cases.py`
+- Modify: `scripts/file-followups.sh`, `scripts/board-create.sh`, `scripts/adapters/local/create.sh`, `scripts/adapters/local/read.sh`, `scripts/adapters/local/list.sh`, `tests/test-board-local.sh`, `scripts/premise.sh`, `scripts/tick-plan.sh`, `scripts/config-defaults.json`, `scripts/config.sh`, `scripts/supervisor/driver.py`, `scripts/supervisor/state.py`, `scripts/supervisor/scheduler.py`, `scripts/supervisor/resolver.py`, `scripts/supervisor/scripts.py`, `scripts/supervisor/defaults/premise-check-prompt.md`, `tests/test-followups.sh`, `tests/test-premise.sh`, `tests/test-tick-plan-followups.sh`, `tests/test-config.sh`, `fixtures/supervisor/driver_cases.py`, `fixtures/supervisor/state_cases.py`, `fixtures/supervisor/scheduler_cases.py`
 
 **Interfaces:**
 - Consumes: the session, prompt and report of Tasks 3 and 4 in mode `draft`; `premise.sh stamp`, `worktree.sh premise`; `card-lint.sh`.
 - Produces: config `followups.auto_ready` (`"bugs"` default, or `"none"`; refused otherwise with `followups.auto_ready must be bugs or none`) and `followups.auto_ready_cap` (non-negative integer, default 5). `followups.status` keeps its meaning.
 - Produces: card field `followup`: `null`, or `{draft: "pending"|"done"|"failed", kind: "bug"|"out_of_scope", entry: <object>, from: <card number>}`. `entry` is the parsed item `file-followups.sh` receives: `{title, detail}` for an out-of-scope item, `{title, repro, expected, observed}` for a bug.
-- Produces: `board-create.sh` and `create.sh` accept `--followup-file <json-file>` and store it as `followup`.
+- Produces: `board-create.sh` and `create.sh` accept `--followup-file <json-file>` and store it as `followup` (`board-create.sh` refuses unknown flags, so it needs its own branch for this one). `read.sh` returns `followup`; its output is a fixed projection, so without this the driver cannot see the record. `list.sh` rows gain `followup_draft` (the `draft` value or null), so the planner finds pending cards in its one existing listing pass.
+- Produces: `scripts.ALLOWED` gains `card-lint.sh`, called with `c.soft` because it exits 1 on a lint failure. `ROLE_ACTIONS`, `_ROLE_OF` (`draft_followup -> 'checker'`), the scheduler's `_ACTION_CLASS` and `SCOPE_FREE_ACTIONS` gain `draft_followup`.
 - Produces: `premise.sh apply-draft <n> <json-file>`: from `{why, scope, acceptance: [..]}` writes the body as `## Why` and `## Scope` sections, replaces the acceptance and sets `followup.draft` to `done`. `premise.sh set-followup <n> <draft-value>`: sets `followup.draft`. Neither stamps.
 - `file-followups.sh`, with `premise_check.enabled` true: files every new card in Backlog with `--followup-file` and `draft: "pending"`, whatever `followups.status` says, and posts neither of today's two "Filed in Backlog" comments. With it false: exactly today's behaviour, and no `followup` field. The "main is red" card `verify-main.sh` files is untouched in both cases.
-- Planner: `tick-plan.sh` lists `ready in_progress in_review <stages> merging blocked` today, and a Backlog card that reached `decide` would be a `skip`. With `premise_check.enabled`, also read Backlog, but emit a card only when its `followup.draft` is `"pending"`, so the per-card cost does not grow with the Backlog. Such a card plans `draft_followup` (reason `follow-up awaits a draft`); the action is scope-free and resolves like `check_premise`.
+- Planner: `tick-plan.sh` lists `ready in_progress in_review <stages> merging blocked` today, and a Backlog card that reached `decide` would be a `skip`. With `premise_check.enabled`, also list Backlog, but keep only rows whose `followup_draft` is `"pending"` before any per-card read, so the cost does not grow with the Backlog. Such a card plans `draft_followup` (reason `follow-up awaits a draft`); the action is scope-free and resolves like `check_premise`.
 - Produces: `State.followups_auto_ready` (integer, starts at 0 each supervisor run), `State.take_auto_ready(cap) -> bool` (true and counts one when under the cap), and `followups_auto_ready: {count, cap}` in the snapshot.
 - The draft prompt adds to Task 4's inputs: the `entry` object, the filing card's number, and every card on the board in every state as `#<n> <state> <title>` lines (closed ones included, since #374 duplicated #361).
 - Driver, by draft verdict:
@@ -378,6 +385,8 @@ test_no_verdict_stamps_except_go
 - [ ] **Step 1: Write the failing tests.**
 
 `tests/test-followups.sh`: with the check enabled, a bug item and an out-of-scope item both land in Backlog with `followup.draft == "pending"`, the right `kind`, `from`, and `entry` equal to the input item, and no Backlog comment; with it disabled, the existing assertions hold unchanged and `.followup` is absent; an item linked to an existing card creates nothing, as today.
+
+`tests/test-board-local.sh`: `board-read.sh` returns a card's `followup`, and a `board-list.sh` row carries `followup_draft`.
 
 `tests/test-premise.sh`: `apply-draft` writes the Why and Scope sections and the acceptance, sets `draft` to `done` and leaves the stamp alone; a file whose acceptance is not a list exits 2; `set-followup 12 failed` sets it and `set-followup 12 nonsense` exits 2.
 
@@ -421,7 +430,7 @@ test_a_draft_that_keeps_failing_is_marked_failed_and_left_as_filed
 **Interfaces:**
 - Consumes: every verdict path of Tasks 4, 5, 6 and 8.
 - Produces: one event per settled verdict, text `premise #<n>: <verdict> -> <what was done>`, where the second part is one of `stamped`, `depends on #<m>`, `asked: close as already built`, `asked: approve rewrite`, `asked: could not settle`, `closed as duplicate of #<m>`, `closed as already fixed`, `drafted, to Ready`, `drafted, in Backlog`.
-- Produces: snapshot key `premise: {checked, go, needs, built, stale, drafted, auto_ready, failed}` (counts for this run), printed by `supervisor status` as one line `Premise checks: <checked> run, <go> go, <needs> needs, <built> built, <stale> stale; follow-ups: <drafted> drafted, <auto_ready> of <cap> to Ready`.
+- Produces: snapshot key `premise: {checked, go, needs, built, stale, drafted, failed}` (counts for this run). The count of follow-ups sent to Ready stays only in Task 8's `followups_auto_ready`. `supervisor status` prints both as one line `Premise checks: <checked> run, <go> go, <needs> needs, <built> built, <stale> stale; follow-ups: <drafted> drafted, <auto_ready> of <cap> to Ready`.
 - The usage ledger already records each session's role and column, so `supervisor usage` and the board's column totals include checker sessions with no change here.
 
 - [ ] **Step 1: Write the failing tests.** Driver cases: each verdict test from earlier tasks also asserts its event text. State cases: the counts and the snapshot key. The supervisor CLI suite: the status line above. `tests/test-supervisor-ui.sh` shapes: regenerate through `dump_real_shapes.py` so the page's harness sees the new snapshot keys. `tests/test-premise-docs.sh`: the README has a `## Premise check` section naming `premise_check.enabled`, `models.checker`, `followups.auto_ready`, `followups.auto_ready_cap`, `premise-settle.sh approve`, `premise-settle.sh confirm` and `fleet:closed-as-built`.
@@ -433,7 +442,7 @@ test_a_draft_that_keeps_failing_is_marked_failed_and_left_as_filed
 ## After the last task
 
 - Move plan card #469 to Won't do with a link to this plan.
-- Confirm the repo's own `.fleet-board.yml` does not turn the check off; the design requires it on here.
+- Confirm the shipped default of `premise_check.enabled` is `true` (Task 6 flips it) and that the repo's own `.fleet-board.yml` does not turn the check off; the design requires it on here.
 - One live behavioural scenario for the check session (`behavioral-*.sh` style, against `SANDBOX_REPO`): a card whose acceptance already holds gets `built` with evidence; a card naming a moved file gets `stale` with a proposal. It costs usage, so run it only when the owner asks.
 - After a week of runs, measure against the spec's "How we will know it worked": blocked reports that say the acceptance already exists or a dependency is unmerged; the share of follow-ups a person had to rewrite; `checker` session time against the implementor time those blocks used to cost; and the confirmed-to-rejected ratio in `premise-decisions.jsonl`, which decides whether closing can later go unattended.
 - Tell the owner to restart the Claude app, the supervisor and the board page after the plugin updates.
