@@ -112,7 +112,10 @@ def case_persona_append_still_starts_the_merger_session(sub):
 def case_merger_prompt_holds_the_inline_persona_append_exactly_once(sub):
     b = merger_board(sub, config={'merge': {'persona_append': 'Also run make deploy.'}})
     assert merger_started(b).session is not None
-    assert b.prompt(1).count('Also run make deploy.') == 1, b.prompt(1)
+    prompt = b.prompt(1)
+    # the prompt's Config section echoes the config; the persona text is what sits between these headings
+    section = prompt[prompt.index('## Persona\n'):prompt.index('## Persona hash')]
+    assert section.count('Also run make deploy.') == 1, section
 
 
 def case_a_local_merger_persona_file_still_starts_the_merger_session(sub):
