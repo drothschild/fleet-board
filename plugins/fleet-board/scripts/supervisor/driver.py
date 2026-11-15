@@ -15,6 +15,7 @@ starts with "-"). A failed step ends the action; earlier steps stand. A failure 
 uncounted action merges `action_failures + 1` and the first stderr line into the card's manager note.
 """
 import calendar
+import datetime
 import hashlib
 import json
 import os
@@ -463,6 +464,16 @@ class _Run:
         return self.dispatch.runner in _SCRIPT_RUNNERS
 
 
+_PREDATES_LINE = 'skipped: the latest report predates the PR head'
+
+
+def _parse_time(text):
+    """A UTC ISO-8601 timestamp (`2026-03-01T12:00:00Z`, optional fraction or +00:00) as an aware datetime."""
+    text = text.strip().replace('Z', '+00:00')
+    value = datetime.datetime.fromisoformat(re.sub(r'(\.\d{1,6})\d*', r'\1', text))
+    return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
+
+
 _SECTIONS = {
     'implementor': ('number', 'title', 'body', 'acceptance', 'open_cards', 'worktree', 'branch', 'note', 'config',
                     'scripts'),
@@ -830,6 +841,26 @@ class CardDriver:
                 return body
         return ''
 
+    def _report_predates_head(self, c, pr, card):
+        """True when the latest report was posted before the PR head's commit. A claim describes the head its
+        report was written at, so an older report gives the reviewer nothing to re-check. Unreadable dates
+        keep the report, as before."""
+        posted = None
+        for comment in reversed(card.get('comments') or []):
+            body = comment.get('body') if isinstance(comment, dict) else None
+            if (isinstance(body, str) and re.search(r'(?m)^## Status', body) and re.search(r'(?m)^VERIFIED:', body)
+                    and not re.search(r'(?m)^## Acceptance map', body)):
+                posted = comment.get('created_at')
+                break
+        head = self.gh(self.root, 'pr', 'view', str(pr), '--repo', c.repo(), '--json', 'commits', '--jq',
+                       '.commits[-1].committedDate')
+        if posted is None or head.timed_out or head.rc != 0:
+            return False
+        try:
+            return _parse_time(posted) < _parse_time(head.stdout.strip())
+        except (ValueError, TypeError):
+            return False
+
     @staticmethod
     def _severe(findings):
         return [{'severity': f['severity'], 'text': f.get('text', '')} for f in (findings or [])
@@ -923,9 +954,10 @@ class CardDriver:
         previous = last.get('sha') if isinstance(last.get('sha'), str) and _SHA.fullmatch(last['sha']) else None
         findings = self._severe(last.get('findings')) if run.round >= 2 else []
         report = self._latest_report(card)
+        stale = bool(report) and self._report_predates_head(c, pr, card)
         accepted = accepted_sha(note)
         if d.runner in _SCRIPT_RUNNERS:
-            return self._script_args(c, run, pr, previous, findings, report, accepted)
+            return self._script_args(c, run, pr, previous, findings, None if stale else report, accepted)
         # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
         extra = (stage,) if name == 'review_stage' and stage else ()
         data = _json(c.step('worktree.sh', 'review', c.n, pr, *extra).stdout)
@@ -944,6 +976,9 @@ class CardDriver:
         diff = self.gh(self.root, 'pr', 'diff', str(pr), '--repo', c.repo())
         if diff.timed_out or diff.rc != 0:
             raise _Fail(_first_line(diff.stderr) or 'gh pr diff failed')
+        if stale:
+            report = ('none: the latest report predates the PR head, so there is no claim to re-check. '
+                      'Write `## Claim check` as exactly `%s`.' % _PREDATES_LINE)
         inputs.update(pr=pr, diff=diff.stdout, report=report, worktree=data['path'], round=run.round,
                       prev_sha=prev_sha, findings=self._lines(findings))
         if stage:
@@ -966,9 +1001,12 @@ class CardDriver:
             args += ['--stage', stage, '--round', run.round, '--prev-sha', previous]
             if run.round >= 2:
                 args += ['--findings', c._file(findings)]
-            args += ['--impl-report', c._file(report)]
+            if report is not None:
+                args += ['--impl-report', c._file(report)]
         else:
-            args += ['--round', run.round, '--impl-report', c._file(report)]
+            args += ['--round', run.round]
+            if report is not None:
+                args += ['--impl-report', c._file(report)]
             if run.round >= 2:
                 if previous is None:
                     raise _Fail('no previous review sha for round %d' % run.round)
