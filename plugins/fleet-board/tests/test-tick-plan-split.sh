@@ -72,11 +72,12 @@ OLD="$SCRIPT_DIR/test-tick-plan.sh"
 if [ ! -e "$OLD" ]; then
   pass "test-tick-plan.sh holds no scenario, so no scenario runs twice"
 elif sed -n 2p "$OLD" | grep -q '^# fleet-board: aggregate runner' \
+    && ! grep -qE '^[[:space:]]*(\.|source)[[:space:]].*tick-plan-lib\.sh' "$OLD" \
     && ! grep -qE '^[[:space:]]*(assert_[a-z_]+|plan|splan|setup_case)[[:space:]]' "$OLD"; then
   pass "test-tick-plan.sh holds no scenario, so no scenario runs twice"
 else
   fail "test-tick-plan.sh holds no scenario, so no scenario runs twice" \
-    "test-tick-plan.sh is not a marked aggregate runner, or it holds an assert_, plan or setup_case line"
+    "test-tick-plan.sh is not a marked aggregate runner, sources tick-plan-lib.sh (CI skips it, so a scenario there never runs), or holds an assert_, plan or setup_case line"
 fi
 
 if [ "${#SUITES[@]}" -ge 1 ]; then

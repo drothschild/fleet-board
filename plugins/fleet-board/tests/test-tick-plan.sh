@@ -25,7 +25,7 @@ for suite in "$SCRIPT_DIR"/test-tick-plan-*.sh; do
   grep -Eq '^\. +"?\$SCRIPT_DIR/tick-plan-lib\.sh"?' "$suite" || continue
   suites=$((suites + 1))
   echo "== $name"
-  out="$(bash "$suite" 2>&1)"
+  out="$("${BASH:-bash}" "$suite" 2>&1)"   # the same bash this runner runs under (3.2 on macOS)
   rc=$?
   printf '%s\n' "$out"
   line="$(printf '%s\n' "$out" | grep -E '^passed: [0-9]+ +failed: [0-9]+' | tail -1)"

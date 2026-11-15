@@ -1468,7 +1468,7 @@ def test_an_evidence_review_is_kept_in_reviews_under_evidence(base):
 
 def test_a_stage_review_at_the_same_head_keeps_the_evidence_record(base):
     # The evidence reviewer reported at the head, then a stage reports at the same head: last_review is the
-    # stage's record, and note.reviews keeps both, so a fresh plan replans neither (test-tick-plan.sh
+    # stage's record, and note.reviews keeps both, so a fresh plan replans neither (test-tick-plan-stages.sh
     # parallel-stage-after-evidence and parallel-all-reported feed the planner this note shape)
     evidence = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'stage': None, 'agent': None,
                 'model': None, 'provider': None, 'findings': []}
