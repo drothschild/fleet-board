@@ -1715,7 +1715,7 @@ api GET /api/board
 assert_code 200
 assert_body "/api/board card summaries carry repo: a card of another repo reports that repo" '.cards[]|select(.number==2)|.repo' 'acme/other'
 assert_body "/api/board card summaries carry repo: a card naming no repo reports board.repo" '.cards[]|select(.number==1)|.repo' 'acme/toy'
-assert_body "/api/board lists repos from config" '.repos|tojson' '["acme/other"]'
+assert_body "/api/board lists repos from config" '.repos|join(",")' 'acme/other'
 stop_server
 
 jq -n '{states: [{key: "ready", name: "Ready"}], run: null, repo: "acme/toy", repos: ["acme/other"], escalation: null,
