@@ -899,6 +899,12 @@ def finish_planner_turn(id: str, pdir: Path, proc, out_path: Path, err_path: Pat
     record_planner_usage("planner", out_path, started_at=started_at)
 
 
+PLANNER_DENY_READS = (
+    "Read(**/.env)", "Read(**/.env.*)", "Read(**/*.pem)", "Read(**/*.key)", "Read(**/id_*)",
+    "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(**/.ssh/**)", "Read(**/.aws/**)",
+)
+
+
 def send_planner_message(id: str, text: str):
     cfg, _ = ctx()
     pdir = planner_dir(id)
@@ -930,11 +936,16 @@ def send_planner_message(id: str, text: str):
             argv = [
                 os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
                 "--output-format", "stream-json", "--verbose",
-                "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
-                # --tools takes a variadic value: keep an option after it so the prompt is not read as a tool name
+                # the planner reads untrusted web text, so it never uses headless.permission_mode:
+                # dontAsk denies every call that would prompt; only WebSearch is pre-approved
+                "--permission-mode", "dontAsk",
+                # --tools, --allowedTools and --disallowedTools take variadic values: keep an option
+                # after each so the prompt is not read as a tool name
                 # WebSearch lets it research practice for a card. No WebFetch: with Read it would be a way to send
                 # what it reads to a URL a web page names. It still cannot write or run anything.
                 "--tools", "Read,Grep,Glob,WebSearch",
+                "--allowedTools", "WebSearch",
+                "--disallowedTools", ",".join(PLANNER_DENY_READS),
                 "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
                 "--append-system-prompt", persona,
             ]
