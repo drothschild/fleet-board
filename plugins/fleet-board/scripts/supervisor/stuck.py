@@ -62,9 +62,8 @@ def _dirs(root, config):
 
 
 def _states(config):
-    stages = ['review_' + s['name'] for s in (config.get('review') or {}).get('stages') or []
-              if isinstance(s, dict) and isinstance(s.get('name'), str)]
-    return list(FIXED_BEFORE) + stages + list(FIXED_AFTER)
+    # the review_<stage> columns are retired: board-list.sh --all prints only the fixed states
+    return list(FIXED_BEFORE) + list(FIXED_AFTER)
 
 
 def checked_states(config):

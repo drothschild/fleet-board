@@ -479,7 +479,15 @@ def start_import(plan_text: str, status: str) -> str:
         argv = [
             os.environ.get("FLEET_BOARD_CLAUDE") or "claude", "-p",
             "--output-format", "stream-json", "--verbose",
-            "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
+            # the plan can carry outside text, so this session never uses headless.permission_mode:
+            # dontAsk denies every call that would prompt; only the preview's own commands are pre-approved
+            "--permission-mode", "dontAsk",
+            # --tools and --allowedTools take variadic values: keep an option after each so the prompt
+            # is not read as a tool name
+            "--tools", "Read,Grep,Glob,Write,Bash",
+            "--allowedTools", "Bash(mktemp *)", "Bash(cp *)", "Bash(bash *import-plan.sh *)",
+            "Write(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
+            "Write(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
         plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
