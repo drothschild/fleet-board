@@ -173,6 +173,15 @@ class Lifecycle(unittest.TestCase):
         self.assertIsNone(s.reserve(3, ['src/core']))
         s.release(99)  # releasing an absent card is a no-op
 
+    def test_reserve_exempt_owners_are_not_overlap_checked(self):
+        s = self.state
+        self.assertIsNone(s.reserve(11, ['src/a']))
+        self.assertIsNone(s.reserve(20, ['src/b']))
+        self.assertIsNone(s.reserve(12, ['src/a/x'], exempt=(11,)))
+        self.assertEqual(s.reservations[12], ['src/a/x'])
+        self.assertEqual(s.reserve(13, ['src/b/x'], exempt=(11,)), 20)
+        self.assertNotIn(13, s.reservations)
+
     def test_reserve_drops_scope_ignore_paths_on_both_sides(self):
         s = self.state
         ignore = ['plugins/*/.claude-plugin/plugin.json']
