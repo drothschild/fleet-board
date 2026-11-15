@@ -941,6 +941,8 @@ def send_planner_message(id: str, text: str):
                 "--permission-mode", "dontAsk",
                 # --tools, --allowedTools and --disallowedTools take variadic values: keep an option
                 # after each so the prompt is not read as a tool name
+                # WebSearch lets it research practice for a card. No WebFetch: with Read it would be a way to send
+                # what it reads to a URL a web page names. It still cannot write or run anything.
                 "--tools", "Read,Grep,Glob,WebSearch",
                 "--allowedTools", "WebSearch",
                 "--disallowedTools", ",".join(PLANNER_DENY_READS),

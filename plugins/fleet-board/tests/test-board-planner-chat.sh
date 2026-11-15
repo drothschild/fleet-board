@@ -226,7 +226,7 @@ tools_of() {
 
 echo "Case: a planner turn's argv limits the built-in tools to Read, Grep, Glob and WebSearch"
 got="$(tools_of 1)"
-if [ "$got" = "Read,Grep,Glob,WebSearch" ]; then pass "first planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch"; else fail "first planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch" "got '$got'"; fi
+if [ "$got" = "Read,Grep,Glob,WebSearch" ]; then pass "first planner turn passes --tools Read,Grep,Glob,WebSearch"; else fail "first planner turn passes --tools Read,Grep,Glob,WebSearch" "got '$got'"; fi
 
 echo "Case: a planner turn's argv does not include Bash, Write, Edit or NotebookEdit among its allowed tools"
 got="$(tools_of 1)"
@@ -239,9 +239,9 @@ fi
 echo "Case: a resumed planner turn carries the same tool limit as the first turn"
 got="$(tools_of 2)"
 if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -qx -e '--resume' && [ "$got" = "Read,Grep,Glob,WebSearch" ]; then
-  pass "resumed planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch"
+  pass "resumed planner turn passes --tools Read,Grep,Glob,WebSearch"
 else
-  fail "resumed planner turn passes --tools Read,Grep,Glob,WebSearch,WebSearch" "got '$got'"
+  fail "resumed planner turn passes --tools Read,Grep,Glob,WebSearch" "got '$got'"
 fi
 
 echo "Case: the argument after the --tools list is an option or --, never the prompt"
