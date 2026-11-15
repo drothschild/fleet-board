@@ -134,8 +134,9 @@
 # Paths are backticked spans or plain-text tokens in that section with no
 # whitespace and a "/" or an extension (leading "(" and trailing . , : ; )
 # stripped); a card naming none starts as usual.
-# At most one merge is planned per tick: the lowest card number; the other
-# cards that would merge wait ("one merge per tick: #<n> merges first").
+# Every card that can merge plans merge; the scheduler keeps the lane to one merge at a
+# time and skips a held merge for the next. In settle mode (--settle-merge) only the
+# lowest named card merges ("one merge per tick: #<n> merges first").
 #
 # The decision table itself is the single jq program below.
 #
@@ -1150,7 +1151,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
          then act("update_branch"; "version not above base: \($c.version_stale | join(", "))")
        elif $d00.action == "merge" and $verify_pending
          then act("wait"; "successful main verification required before another merge")
-       elif $d00.action == "merge" and $merger != $c.number
+       elif $settle and $d00.action == "merge" and $merger != $c.number
          then act("wait"; "one merge per tick: #\($merger) merges first")
        else $d00 end) as $d0
     # Settle mode keeps only the steps that start no agent
