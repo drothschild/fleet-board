@@ -208,6 +208,17 @@ fl_note_pr_info() {
     end' < "$1"
 }
 
+# fl_check_repo <repo|"">: exit 2 unless <repo> is empty (the card belongs to board.repo)
+# or is board.repo or one of the repos listed in board.repos.
+fl_check_repo() {
+  [ -n "$1" ] || return 0
+  jq -e --arg r "$1" --argjson cfg "$FLEET_CFG" '
+    ($r | ascii_downcase) as $x
+    | (($cfg.board.repo // "") | ascii_downcase) == $x
+      or any(($cfg.board.repos // [])[]; (.repo | ascii_downcase) == $x)' >/dev/null 2>&1 <<<null \
+    || fb_die 2 "repo $1 is not board.repo or listed in board.repos"
+}
+
 # fl_check_blocked_by <self-number|""> <json>: exit 2 unless <json> is an array
 # of positive integers naming cards that exist in the store, none of them the
 # card itself.

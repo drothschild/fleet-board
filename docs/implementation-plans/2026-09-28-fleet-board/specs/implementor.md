@@ -11,6 +11,7 @@ The implementor takes one Ready card and turns its acceptance items (the card's 
 - **Branch name:** the card's branch.
 - **Config JSON:** the parsed project config. It includes `commands.test_one`, a command template with a `{file}` placeholder (for example `node --test {file}`), and the optional `commands.typecheck` and `commands.lint`. It also includes `test_paths`, the globs that identify test files (for example `test/**/*.test.js`).
 - **Manager note:** set when this is a continuation. It may record that a PR already exists, and its number, along with the branch, round and earlier `VERIFIED:` line.
+- **Open cards:** the open cards of the board other than the card being worked on, one `#<n> <title>` line per card (`none` when there are none). Cards in `done` or `wont_do` are not listed.
 - **Scripts directory:** the absolute path of the fleet-board scripts directory. It holds `board-comment.sh`, `board-read.sh`, `parse-report.sh` and `pr-body-check.sh`.
 
 ## 3. Required behavior
@@ -90,7 +91,7 @@ In every example below, `commands.test_one` is `node --test {file}` and `test_pa
 
 12. **Lists out-of-scope discoveries.** Work worth doing that this card does not cover goes under `Out of scope:` in `## For the card`, one `- <title> :: <one-line description with a backticked check command and its expected result>` entry per item. Such work is neither done silently in this card nor left unmentioned. The manager turns each entry into a card.
 
-13. **Lists bugs it observed outside the card's diff.** A defect the implementor ran into outside its own diff goes under `Bugs found:`, as `- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>`. Examples: a pre-existing failing behavior, or a lint error in an untouched file.
+13. **Lists bugs it observed outside the card's diff.** A defect the implementor ran into outside its own diff goes under `Bugs found:`, as `- <title> :: repro: `<command>` :: expected: <text> :: observed: <text>`. Examples: a pre-existing failing behavior, or a lint error in an untouched file. Before writing an `Out of scope:` or `Bugs found:` entry, check `## Open cards`: when an open card already covers the problem, the entry uses that card's title word for word (without the `#<n>`), so the supervisor links the existing card instead of filing a new one; otherwise it uses its own title.
     - The repro is a command it actually ran.
     - `observed` is that command's real output.
     - A failure caused by the card's own change is never a Bug found. If still unresolved, it is a Finding. Filing the bugs is the manager's job.
