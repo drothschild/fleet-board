@@ -604,8 +604,8 @@ assert_stdout_exact_jq "stage required_passes 5 kept" '.review.stages[0].require
 # (board is already a key in invalid_field_case's base, so this one builds its own repo)
 REPO="$(printf 'board:\n  repo: a/b\n  states: { review_x: "X Review" }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
-assert_exit "field-validation board.states names no stage: exit 5" "5"
-assert_stderr_contains "field-validation board.states names no stage: names the field" "board.states key review_x names no stage"
+assert_exit "field-validation board.states review_<name> key is retired, not refused: exit 0" "0"
+assert_stderr_contains "field-validation board.states review_<name> key is retired, not refused: warns" "board.states.review_x is retired"
 REPO="$(printf 'board:\n  repo: a/b\n  states: { review_security: "Sec" }\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "stages: board.states may map a stage" 0
@@ -1028,6 +1028,24 @@ REPO="$(printf 'board:\n  repo: a/b\nstacking: { enabled: true }\n' | make_inlin
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" stacking.enabled
 assert_stdout_exact "fb_cfg stacking.enabled prints true with stacking: { enabled: true }" "true"
 check_case "stacking: { enabled: \"yes\" } is refused as a config error" 'stacking: { enabled: "yes" }' 5 "stacking.enabled must be boolean"
+
+# Card 289: the per-stage review columns are retired
+REPO="$(printf 'board:\n  repo: a/b\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO")
+STATES_OUT="$(. "$SCRIPT_DIR/../scripts/board-lib.sh" && unset FB_CFG_FOR FB_STATES_MEMO && FLEET_CFG="$(bash "$SCRIPT" --dir "$REPO")" && fb_set_states && echo "$FB_STATES")"
+case " $STATES_OUT " in
+  *" review_security "*) fail "FB_STATES holds no review_<name> state for a configured stage" "FB_STATES: $STATES_OUT" ;;
+  *" in_review "*) pass "FB_STATES holds no review_<name> state for a configured stage" ;;
+  *) fail "FB_STATES holds no review_<name> state for a configured stage" "FB_STATES has no in_review (load failed?): '$STATES_OUT'" ;;
+esac
+REPO="$(printf 'board:\n  repo: a/b\n  states: { review_security: "Sec" }\nreview: { stages: [ { name: security, agent: a } ] }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "config.sh warns, without failing, on a board.states.review_<name> key: exit 0" 0
+assert_stderr_contains "config.sh warns, without failing, on a board.states.review_<name> key: warning" "warning: board.states.review_security is retired"
+REPO="$(printf 'board:\n  repo: a/b\n  states: { review_gone: "Gone" }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "config.sh warns on a board.states.review_<name> key naming no stage: exit 0" 0
+assert_stderr_contains "config.sh warns on a board.states.review_<name> key naming no stage: warning" "warning: board.states.review_gone is retired"
 
 # Test 34: board.repos lists the other repos on the board
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"

@@ -713,6 +713,8 @@ function renderCard(c, repo) {
     li.appendChild(el("div", "card-meta blocked-by", "blocked by " + open.map(function (b) { return "#" + b; }).join(", ")));
   }
   const parts = [];
+  const home = S.board && S.board.repo;
+  if (typeof c.repo === "string" && c.repo && c.repo !== home) parts.push(document.createTextNode(clean(c.repo, 100)));
   if (note && note.round != null) parts.push(document.createTextNode("round " + note.round));
   const prNum = prNumber(c.pr_url);
   if (prNum !== null) {

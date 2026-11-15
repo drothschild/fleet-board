@@ -2159,3 +2159,23 @@ Evidence: `evidence/author-documentation-reviewer.init.json`. The manifest line 
 Evidence: `evidence/author-blast-radius-reviewer.init.json`. The manifest line is a clean-room output (no `exception:` note).
 
 **Behavioral check.** `tests/behavioral-blast-radius.sh` (run with `FLEET_BOARD_BEHAVIORAL=1`, one sonnet session, cost $0.0314 over 9 turns) runs the agent on a fixture PR that renames `compute_total` to `calculate_total` in two files while `report.sh`, outside the diff, still calls the old name. Result: 5 checks passed, 0 failed: the init event shows no user plugin, a report was posted, `parse-report.sh --role stage-reviewer` accepts it, a `[Critical]` finding names `report.sh:4` (quoting the failed read-only run), and the review worktree stayed clean. The session runs without `--bare`: on Claude Code 2.1.323 `--bare` does not load plugin agents (`--agent fleet-board:merger` is also not found with it), so the fresh empty `CLAUDE_CONFIG_DIR` is what keeps user plugins out.
+
+### Revision 32 (2026-11-14, card 393): open cards in the implementor, reviewer and fixer prompts
+
+**Cause.** Roles reported `Bugs found:` and `Out of scope:` items without knowing what was already on the board, so a reworded title became a new card (cards 381-384 copied 378 and 379). `file-followups.sh` already treats an exact title match as a duplicate.
+
+**Spec changes** (hand edits): `specs/{implementor,reviewer,fixer}.md` gain the `## Open cards` input (one `#<n> <title>` line per open card other than the card itself, `none` when there are none; `done` and `wont_do` cards are not listed) and the rule that, before writing a `Bugs found:` or `Out of scope:` entry, the role checks `## Open cards` and uses a covering card's title word for word.
+
+**Run.** Three isolated in-place edits, `claude -p --bare --settings "$FB_BARE_SETTINGS" --model opus --tools "Read,Edit" --permission-mode acceptEdits --strict-mcp-config --max-turns 40 --max-budget-usd 1.50 --add-dir <staging> --output-format stream-json --verbose`, fresh empty `CLAUDE_CONFIG_DIR`, no MCP servers, `< /dev/null`, Claude Code 2.1.323. The staging dir held `edit-req.md` (not committed) and a copy of the updated spec; each run read those and its target and edited only its target (path audit PASS). Init events list only built-in `cc-plugin-*` plugins and tools exactly `Edit` and `Read`. One deviation: `apiKeySource` was `ANTHROPIC_API_KEY`, not `apiKeyHelper`. Evidence: `evidence/author-{implementor,reviewer,fixer}.r32.init.json`.
+
+| Output | Turns | Cost (USD) |
+|---|---|---|
+| `agents/implementor.md` | 7 | 0.1627 |
+| `agents/reviewer.md` | 6 | 0.1792 |
+| `agents/fixer.md` | 6 | 0.1435 |
+
+**Not clean-room.** `scripts/supervisor/driver.py` (`_open_cards`, reading `board-list.sh --all`) and its tests; the manifest lines keep their `exception:` notes with this revision prepended.
+
+**Known limits.** About 100 open cards add roughly 6 KB to every role prompt; closed cards are not listed; a role that rewords the title anyway still files a duplicate.
+
+**Behavioral check.** `tests/behavioral-reviewer-open-cards.sh` (run with `FLEET_BOARD_BEHAVIORAL=1`, one opus session, not run in CI) gives the reviewer a fixture PR whose lint command runs a failing `chained-merge-tests.sh` outside the diff, with `#378 Chained merge tests fail on origin/main` under `## Open cards`. Result: 5 checks passed, 0 failed; the `Bugs found:` entry used the title `Chained merge tests fail on origin/main` word for word.

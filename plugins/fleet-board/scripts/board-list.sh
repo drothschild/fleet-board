@@ -16,5 +16,6 @@ if [ "${1:-}" = "--all" ]; then
 fi
 [ $# -eq 1 ] || fb_die 2 "usage: board-list.sh [--allow-truncated] <state>"
 fb_load_config # before the state check: the valid states include the config's review stages
-fb_valid_state "$1" || fb_die 2 "invalid state: $1"
+# a retired review_<stage> column is still listable: a card may be left in one
+fb_valid_state "$1" || [ -n "$(fb_stage_of_state "$1")" ] || fb_die 2 "invalid state: $1"
 exec bash "$FLEET_SCRIPTS/adapters/local/list.sh" "$@"
