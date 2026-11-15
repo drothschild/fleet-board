@@ -932,7 +932,9 @@ def send_planner_message(id: str, text: str):
                 "--output-format", "stream-json", "--verbose",
                 "--permission-mode", str((cfg.get("headless") or {}).get("permission_mode") or "auto"),
                 # --tools takes a variadic value: keep an option after it so the prompt is not read as a tool name
-                "--tools", "Read,Grep,Glob",
+                # WebSearch lets it research practice for a card. No WebFetch: with Read it would be a way to send
+                # what it reads to a URL a web page names. It still cannot write or run anything.
+                "--tools", "Read,Grep,Glob,WebSearch",
                 "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
                 "--append-system-prompt", persona,
             ]
