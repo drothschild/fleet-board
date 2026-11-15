@@ -761,9 +761,16 @@ function renderCard(c, repo) {
     li.appendChild(t);
   }
 
-  const labels = Array.isArray(c.labels) ? c.labels : [];
-  if (labels.length) {
+  const allLabels = Array.isArray(c.labels) ? c.labels : [];
+  const labels = allLabels.filter(function (l) { return !isPriorityLabel(l); });
+  const mark = priorityMarker(allLabels);
+  if (labels.length || mark) {
     const ul = el("ul", "labels");
+    if (mark) {
+      const pl = el("li", "label prio-li");
+      pl.appendChild(mark);
+      ul.appendChild(pl);
+    }
     for (const l of labels) ul.appendChild(el("li", "label", l));
     li.appendChild(ul);
   }
@@ -1112,11 +1119,61 @@ function renderBodyPreview() {
   $("dr-preview").replaceChildren(md($("dr-body").value));
 }
 
+// --- priority ------------------------------------------------------------------
+
+const PRIORITY_PREFIX = "fleet:priority:";
+const PRIORITY_TIP = "Priority orders the supervisor's work. \u25B2 goes ahead of normal cards and \u25BC goes after them, " +
+  "but only among actions of the same kind: work already underway (fix, review), then board steps and merges, then new starts. " +
+  "A card that has waited 15 minutes moves up one step, so a waiting normal card catches up with a new high one. " +
+  "Priority never skips dependencies, Scope overlap, capacity or the merge lane.";
+const isPriorityLabel = function (l) { return typeof l === "string" && l.indexOf(PRIORITY_PREFIX) === 0; };
+
+// priorityMarker(labels) -> a small tile marker for a high or low card, or null.
+function priorityMarker(labels) {
+  const high = labels.indexOf(PRIORITY_PREFIX + "high") !== -1;
+  const low = labels.indexOf(PRIORITY_PREFIX + "low") !== -1;
+  if (!high && !low) return null;
+  const m = el("span", "prio-mark", high && low ? "\u25B2\u25BC" : high ? "\u25B2" : "\u25BC");
+  m.title = PRIORITY_TIP;
+  return m;
+}
+
+// renderPriority(): the two toggle buttons and the two-labels warning follow d.labels.
+function renderPriority() {
+  const d = S.drawer;
+  if (!d) return;
+  const high = d.labels.indexOf(PRIORITY_PREFIX + "high") !== -1;
+  const low = d.labels.indexOf(PRIORITY_PREFIX + "low") !== -1;
+  [["dr-prio-high", "High priority", high], ["dr-prio-low", "Low priority", low]].forEach(function (r) {
+    const b = $(r[0]);
+    b.setAttribute("aria-label", r[1]);
+    b.setAttribute("aria-pressed", r[2] ? "true" : "false");
+    b.title = PRIORITY_TIP;
+  });
+  const warn = $("dr-prio-warn");
+  warn.textContent = "Two priority labels: the supervisor sets this card aside until one is removed";
+  warn.hidden = !(high && low);
+}
+
+// setPriority(which): toggles high or low; with both set, leaves just that one.
+function setPriority(which) {
+  const d = S.drawer;
+  if (!d) return;
+  const name = PRIORITY_PREFIX + which;
+  const only = d.labels.filter(isPriorityLabel);
+  const wasOn = only.length === 1 && only[0] === name;
+  d.labels = d.labels.filter(function (l) { return !isPriorityLabel(l); });
+  if (!wasOn) d.labels.push(name);
+  renderLabels();
+  updateDirty();
+}
+
 function renderLabels() {
   const d = S.drawer;
   const ul = $("dr-labels");
   const frag = document.createDocumentFragment();
   d.labels.forEach(function (name, i) {
+    if (isPriorityLabel(name)) return;
     const li = el("li", "label");
     li.appendChild(el("span", null, name));
     const x = el("button", "label-x", "×");
@@ -1132,6 +1189,7 @@ function renderLabels() {
     frag.appendChild(li);
   });
   ul.replaceChildren(frag);
+  renderPriority();
 }
 
 function addLabel() {
@@ -1822,6 +1880,8 @@ function bindDrawer() {
     renderBodyPreview();
     updateDirty();
   });
+  $("dr-prio-high").addEventListener("click", function () { setPriority("high"); });
+  $("dr-prio-low").addEventListener("click", function () { setPriority("low"); });
   $("dr-label-input").addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       e.preventDefault();

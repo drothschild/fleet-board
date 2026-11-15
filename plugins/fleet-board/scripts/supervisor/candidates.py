@@ -17,8 +17,14 @@ def _last_line(text):
     return lines[-1].strip() if lines else ''
 
 
-def fetch(root, run=scripts.run, now=time.time):
-    result = run(root, 'tick-plan.sh', '--candidates')
+def fetch_card(root, card, run=scripts.run, now=time.time):
+    """The row tick-plan.sh --candidates --card plans for one card (never a start: that needs the whole board)."""
+    return fetch(root, run, now, card=card)
+
+
+def fetch(root, run=scripts.run, now=time.time, card=None):
+    args = ('--candidates',) if card is None else ('--candidates', '--card', str(int(card)))
+    result = run(root, 'tick-plan.sh', *args)
     if result.timed_out:
         return Batch([], None, 'tick-plan.sh timed out')
     if result.rc == 0:
