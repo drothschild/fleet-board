@@ -152,6 +152,24 @@ run_in "$REPO" "$BASH_EXE" "$SCRIPTS/note.sh" get 13
 assert_exit "labels: note.sh get 13 exits 0" 0
 assert_eq "labels: an accept by a login other than the gh login is not rewritten" "$(jq -r '.accepted.login' <<<"$LAST_OUT" 2>/dev/null)" "alice"
 
+echo "import-github: a retired stage label imports into in_review (card 289)"
+# A configured stage's old label (fleet:review_<stage>) and a board.states.review_<stage> name both
+# import into in_review: the per-stage columns are retired, as the planner moves such a card back.
+setup_repo labels "$(printf '  states: { review_perf: "perf-review" }\nreview:\n  stages:\n    - name: security\n      agent: "acme:security-reviewer"\n    - name: perf\n      agent: "acme:perf-reviewer"')"
+STAGE_FX="$(mktemp -d)"; CLEANUP_DIRS+=("$STAGE_FX")
+jq '(.[] | select(.number == 15) | .labels) = [{name: "fleet:review_security"}]
+    | (.[] | select(.number == 14) | .labels) = [{name: "perf-review"}]' "$FIX/labels/issues.json" > "$STAGE_FX/issues.json"
+TAB="$(printf '\t')"
+sed -e "s#${TAB}\.\./\.\./labels/#${TAB}$FIX/../labels/#" -e "s#${TAB}issues\.json#${TAB}$STAGE_FX/issues.json#" \
+    -e "s#${TAB}comments-#${TAB}$FIX/labels/comments-#" "$FIX/labels/routes" > "$STAGE_FX/routes"
+printf 'api --paginate repos/acme/toy/issues/15/comments\t0\t%s\n' "$FIX/../labels/comments-none.json" >> "$STAGE_FX/routes"
+FAKE_GH_ROUTES="$STAGE_FX/routes"; export FAKE_GH_ROUTES
+run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy
+assert_exit "stage label: exits 0" 0
+assert_eq "stage label: fleet:review_security imports into in_review" "$(jq -r .state "$STORE/cards/15.json" 2>/dev/null)" "in_review"
+assert_eq "stage label: the board.states name of review_perf imports into in_review" "$(jq -r .state "$STORE/cards/14.json" 2>/dev/null)" "in_review"
+assert_eq "stage label: the stage label is dropped like a state label" "$(jq -c .labels "$STORE/cards/15.json" 2>/dev/null)" '[]'
+
 echo "import-github: refuses a store that has cards"
 BEFORE="$(cat "$STORE/cards/12.json")"
 run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy
@@ -231,7 +249,8 @@ setup_repo projects "$(printf '  states: { in_progress: "In progress" }\nreview:
 run_in "$REPO" "$BASH_EXE" "$IMPORT" --repo acme/toy --project 1
 assert_exit "projects: exits 0" 0
 assert_eq "projects: one line per imported card" "$(printf '%s\n' "$LAST_OUT" | grep -c .)" "3"
-assert_eq "projects: #21 state from Review: <stage>" "$(jq -r .state "$STORE/cards/21.json" 2>/dev/null)" "review_security"
+# The per-stage review columns are retired (card 289): a configured stage's column imports into in_review
+assert_eq "projects: #21 in Review: <stage> imports into in_review" "$(jq -r .state "$STORE/cards/21.json" 2>/dev/null)" "in_review"
 assert_eq "projects: #20 state Done" "$(jq -r .state "$STORE/cards/20.json" 2>/dev/null)" "done"
 assert_eq "projects: #19 state from a configured column name" "$(jq -r .state "$STORE/cards/19.json" 2>/dev/null)" "in_progress"
 assert_eq "projects: an issue off the project is not imported" "$([ -e "$STORE/cards/22.json" ] && echo yes)" ""
@@ -246,8 +265,8 @@ assert_eq "projects: #21 no pr_url from an untrusted note" "$(jq -r .pr_url "$ST
 assert_eq "projects: next" "$(tr -d '[:space:]' < "$STORE/next")" "22"
 assert_eq "projects: owner defaults to the repo owner" "$(grep -c 'project item-list 1 --owner acme --format json' "$FAKE_GH_DIR/calls.log")" "1"
 no_write_calls "projects: the fake logged no write verb"
-run_in "$REPO" "$BASH_EXE" "$SCRIPTS/board-list.sh" review_security
-assert_eq "projects: the imported card lists in its stage column" "$(jq -c '[.[].number]' <<<"$LAST_OUT" 2>/dev/null)" "[21]"
+run_in "$REPO" "$BASH_EXE" "$SCRIPTS/board-list.sh" in_review
+assert_eq "projects: the imported card lists in In Review" "$(jq -c '[.[].number]' <<<"$LAST_OUT" 2>/dev/null)" "[21]"
 
 echo "import-github: an unknown Projects column stops the run"
 setup_repo projects
