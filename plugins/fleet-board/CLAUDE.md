@@ -39,10 +39,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   dependency outside this board stays in the body as prose. `migrate-card-fields.sh
   [--dry-run]` upgrades an older store in place (idempotent).
   Canonical states (`FB_STATES` in `board-lib.sh`, set by `fb_load_config`, not a
-  constant): backlog ready in_progress in_review, then `review_<name>` for each
-  `review.stages` entry in config order, then human_qa blocked done wont_do
-  (`FB_STATES_FIXED` is the list without stages); board names come from `board.states.*` or
-  the default (`Review: <name>` for a stage).
+  constant): backlog ready in_progress in_review human_qa blocked done wont_do
+  (stages are not states); board names come from `board.states.*` or the default.
 - **Active marker** (`fb_mark_active` in `board-lib.sh`). `worktree.sh create|review`
   and `stage-review.sh` write `<board.dir>/active/<n>`; the `comment` verb removes it
   for validated CLI role reports. Web comments and notes leave it in place. `stage-review.sh`
@@ -134,6 +132,15 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `tick-plan.sh`, the scheduler's reservation and occupied checks (`stack.ancestors` of the candidate), and
   `State.reserve(card, paths, ignore=None, exempt=())`, where owners in `exempt` are not overlap-checked
   (`loop._begin` passes the row's ancestors). Suite: `tests/test-stack-plan.sh`.
+- **Stacked start branch and PR retarget.** `worktree.sh create <n> <branch> <path> [<start-branch>]`: the
+  start branch must match `fleet/<n>-<slug>` (else exit 2); a branch that exists neither locally nor on origin is
+  created from origin's copy of it, and a missing one exits 1 (`fleet-board: origin/<start-branch> does not
+  exist`) with no worktree and no branch; an existing branch ignores the argument. The driver's `start` for a
+  row with `stack` passes `stack.base` as that fourth argument and merges the note's `stack`
+  `{parent, base, start (the sha of origin's copy of the base), attention: null}`; `start_review` for a card
+  whose note has `stack` runs `gh pr edit <pr> --repo <repo> --base <stack.base>` before `review-stages.sh
+  route`, and a failed edit fails the action with `route` not called. A row with `stack` null and a card without
+  `stack` behave as before.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
   `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;
@@ -172,9 +179,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   column, while a label-only stage (empty `paths`) still can. A failed `match` is
   `lookup failed: review-stages.sh match <pr>`. `next` prints the next stage after `--after` that the card's labels route to and
   `--done` does not list. `setup` has nothing to create on the local store (exit 0). Tick plan:
-  a clean, current review with a next stage plans `advance_stage` (move to
-  `review_<stage>`, note `stage`, `round: 1`, `reviewed_stages`); a stage column's
-  reviews are `review_stage`; an advisory stage's findings count as clean. The plan
+  stages review in parallel with the evidence reviewer while the card is In Review. A card found in a
+  retired stage column is planned `move_to_review`, and `advance_stage` applies only to such leftovers; an advisory stage's findings count as clean. The plan
   card's `stage` is the config's stage object whole. Reports use
   `parse-report.sh --role stage-reviewer` (Status clean|findings, Findings, For the
   card, one VERIFIED line; no Acceptance map, Mutation or Claim check).
@@ -390,6 +396,21 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - Offline suites: `bash plugins/fleet-board/tests/test-<name>.sh` (fakes: `fake-gh.sh`,
   `fake-claude.sh`, fixtures under `fixtures/`). `test-no-tick-system.sh` pins that the tick system stays
   gone. Run only the suite you touched.
+- The planner (`scripts/tick-plan.sh`) is tested by six suites that share one helper file,
+  `tests/tick-plan-lib.sh` (`setup_case`, `plan`, `splan`, `settle`, the assertions, the fake-gh
+  setup and the scenario builders). Each scenario lives in exactly one suite; run only the one for
+  the rule you changed:
+  `test-tick-plan-ready.sh` (Ready start, in-progress, dependency gate),
+  `test-tick-plan-review.sh` (in_review: review, fix, escalation, human QA, drift, re-review),
+  `test-tick-plan-merging.sh` (merging, update_branch, settle mode, merge only reviewed heads),
+  `test-tick-plan-followups.sh` (blocked, pending follow-ups, lookup and action failures),
+  `test-tick-plan-scope.sh` (scope overlap, version bumps, base fetch, the candidates cost pass),
+  `test-tick-plan-stages.sh` (review stages and their gates).
+  `test-tick-plan-split.sh` pins that shape; add a new scenario to the suite for its area and a
+  new helper to the lib, never a copy into a suite. `test-tick-plan.sh` holds no scenario: it
+  runs all six and prints their combined total, for the whole planner or a card that names it.
+  Its second line marks it as an aggregate runner, so CI's `.github/scripts/run-suites.sh`
+  skips it and no suite runs twice.
 - After any change under this directory: `bash plugins/fleet-board/tests/test-clean-room.sh`
   must pass.
 - `behavioral-*.sh` are live: they run real headless sessions against `SANDBOX_REPO` and

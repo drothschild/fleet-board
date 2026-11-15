@@ -827,7 +827,7 @@ assert_stdout_exact_jq "reviewer string is unchanged" '.models.reviewer' '"opus"
 REPO="$(make_test_repo supervisor-default.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "supervisor defaults accepted" 0
-assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":5,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"session_log_days":14,"provider_concurrency":{},"scope_ignore":[],"version_files":[],"version_bump":"pr","version_bump_paths":["**"]}'
+assert_stdout_exact_jq "supervisor exact defaults" '.supervisor' '{"reconcile_interval_seconds":30,"min_plan_gap_seconds":30,"progress_timeout_seconds":900,"attempt_timeout_seconds":7200,"shutdown_grace_seconds":30,"retry_backoff_seconds":60,"aging_seconds":900,"session_log_days":14,"provider_concurrency":{},"scope_ignore":[],"version_files":[],"version_bump":"pr","version_bump_paths":["**"]}'
 assert_stdout_exact_jq "supervisor defaults carry no enabled, start_on_boot or heartbeat key" '.supervisor | [has("enabled"), has("start_on_boot"), has("heartbeat_interval_seconds"), has("heartbeat_timeout_seconds")]' '[false,false,false,false]'
 REPO="$(make_test_repo supervisor-caps.yml)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
@@ -849,6 +849,21 @@ for k in reconcile_interval_seconds progress_timeout_seconds attempt_timeout_sec
     invalid_field_case "supervisor $k rejects $v" "supervisor: { $k: $v }" "supervisor.$k must be a positive integer"
   done
 done
+# supervisor.reconcile_interval_seconds has a floor of 10; supervisor.min_plan_gap_seconds is a non-negative integer
+invalid_field_case "supervisor reconcile_interval_seconds 2 is under the floor" "supervisor: { reconcile_interval_seconds: 2 }" "10 second floor"
+REPO="$(printf 'board: { repo: a/b }\nsupervisor: { reconcile_interval_seconds: 10 }\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
+assert_exit "supervisor reconcile_interval_seconds 10 meets the floor" 0
+for v in -1 1.5 null '"5"' '[]'; do
+  invalid_field_case "supervisor min_plan_gap_seconds rejects $v" "supervisor: { min_plan_gap_seconds: $v }" "supervisor.min_plan_gap_seconds must be a non-negative integer"
+done
+# the docs list the new key and the new default
+if grep -F '`supervisor.min_plan_gap_seconds` | `30`' "${SCRIPT_DIR}/../docs/config.md" >/dev/null \
+   && grep -F '`supervisor.reconcile_interval_seconds` | `30`' "${SCRIPT_DIR}/../docs/config.md" >/dev/null; then
+  pass "docs/config.md lists min_plan_gap_seconds and the reconcile default of 30"
+else
+  fail "docs/config.md lists min_plan_gap_seconds and the reconcile default of 30" "rows missing"
+fi
 for v in -1 1.5 null '"5"' '[]'; do
   invalid_field_case "supervisor session_log_days rejects $v" "supervisor: { session_log_days: $v }" "supervisor.session_log_days must be a non-negative integer"
 done

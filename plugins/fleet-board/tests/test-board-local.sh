@@ -227,10 +227,11 @@ YML
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name review_security'
 assert_stdout_exact "local review stage name" "Review: security"
 
-# merging sits after the review stages and before human_qa, with the name "Merging"
+# merging sits after in_review and before human_qa, with the name "Merging"
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; printf "%s\n" "$FB_STATES"'
-assert_stdout_exact "FB_STATES with one stage: in_review, the stage, merging, human_qa" \
-  "backlog ready in_progress in_review review_security merging human_qa blocked done wont_do"
+# a configured stage adds no column (card 289): merging follows in_review
+assert_stdout_exact "FB_STATES with one stage: in_review, merging, human_qa (no stage column)" \
+  "backlog ready in_progress in_review merging human_qa blocked done wont_do"
 run_check_in "$REPO" "$BASH_EXE" -c '. "$SCRIPTS/board-lib.sh"; fb_load_config; fb_state_name merging; fb_valid_state merging && echo valid'
 assert_stdout_exact "merging has the default name Merging and is a valid state" $'Merging\nvalid'
 
@@ -518,7 +519,7 @@ assert_exit "edit adding a new missing ref exits 2" 2
 assert_stderr_contains "edit names the new missing ref" "#98"
 assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 99
 jq '.blocked_by = []' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
-# a body edit is the whole truth about the sections: removing one clears its field
+# a body without a section leaves that field alone; a body with one sets it
 jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 printf 'Why\n\n## Acceptance\n- a1\n\n## Depends on\n- #1\n' > "$bf"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
@@ -528,18 +529,30 @@ assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 printf 'Why\n' > "$bf"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
 assert_exit "body edit without sections exit 0" 0
-assert_card_json 2 '.acceptance|length' 0
-assert_card_json 2 '.blocked_by|length' 0
+assert_card_json 2 '.acceptance|join("|")' a1
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 assert_card_json 2 '.body|rtrimstr("\n")' Why
-jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 printf -- '- from flag\n' > "$REPO/acc3.txt"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf" --acceptance-file "$REPO/acc3.txt"
 assert_card_json 2 '.acceptance|join("|")' 'from flag'
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
+# clearing a field takes an explicit flag
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[]'
 assert_card_json 2 '.blocked_by|length' 0
+assert_card_json 2 '.acceptance|join("|")' 'from flag'
+: > "$REPO/empty-acc.txt"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --acceptance-file "$REPO/empty-acc.txt"
+assert_card_json 2 '.acceptance|length' 0
 jq '.acceptance = ["a1"] | .blocked_by = [1]' "$REPO/.fleet-board/cards/2.json" > "$REPO/c.tmp" && mv "$REPO/c.tmp" "$REPO/.fleet-board/cards/2.json"
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf" --blocked-by-json '[1]'
 assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
-assert_card_json 2 '.acceptance|length' 0
+assert_card_json 2 '.acceptance|join("|")' a1
+seed_card 3 backlog 'Third' 'three'
+printf 'Why\n\n## Depends on\n- #3\n' > "$bf"
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --body-file "$bf"
+assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 3
+assert_card_json 2 '.acceptance|join("|")' a1
+run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --blocked-by-json '[1]'
 run_check_in "$REPO" bash "$SCRIPTS/adapters/local/edit.sh" 2 --title-file "$tf"
 assert_card_json 2 '.blocked_by|map(tostring)|join(",")' 1
 # a dependency line that starts with a reference but carries a note is refused

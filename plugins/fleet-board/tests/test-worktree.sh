@@ -555,6 +555,50 @@ assert_false "prune-remove: configured stage checkout gone" test -e "$BASE/12-re
 assert_false "prune-remove: unconfigured stage checkout gone" test -e "$BASE/12-review-ux"
 assert_false "prune-remove: evidence checkout gone" test -e "$BASE/12-review"
 
+# ---------------------------------------------------------------------------
+# create with a start branch (stacking): the new branch starts at origin's copy
+# of the start branch; a missing start branch fails; an existing card branch
+# keeps its head; a start branch must pass the card-branch name rule
+setup_case false
+git -C "$SEED" checkout -q -b fleet/30-parent
+commit_file "$SEED" parent.txt "parent" "PAR"
+SHA_PAR="$(git -C "$SEED" rev-parse HEAD)"
+git -C "$SEED" push -q "$ORIGIN" fleet/30-parent 2>/dev/null
+git -C "$SEED" checkout -q main
+
+WT31="$BASE/31-child"
+run_wt create 31 fleet/31-child "$WT31" fleet/30-parent
+assert_exit "create-start-branch: exit" 0
+assert_stdout_exact "create-start-branch: prints the path" "$WT31"
+assert_eq "create-start-branch: branch at the head of origin's start branch" \
+  "$(git -C "$REPO" rev-parse --verify --quiet refs/heads/fleet/31-child)" "$SHA_PAR"
+assert_eq "create-start-branch: worktree is on the new branch" "$(git -C "$WT31" symbolic-ref --short HEAD 2>/dev/null)" "fleet/31-child"
+
+WT32="$BASE/32-orphan"
+run_wt create 32 fleet/32-orphan "$WT32" fleet/99-missing
+assert_exit "create-start-branch-missing: exit" 1
+case "$LAST_ERR" in
+  *"fleet-board: origin/fleet/99-missing does not exist"*) pass "create-start-branch-missing: stderr names the start branch" ;;
+  *) fail "create-start-branch-missing: stderr names the start branch" "stderr: $LAST_ERR" ;;
+esac
+assert_false "create-start-branch-missing: no worktree" test -e "$WT32"
+assert_false "create-start-branch-missing: no branch" git -C "$REPO" show-ref --verify --quiet refs/heads/fleet/32-orphan
+
+WT33="$BASE/33-existing"
+git -C "$REPO" branch fleet/33-existing "$SHA_B"
+run_wt create 33 fleet/33-existing "$WT33" fleet/30-parent
+assert_exit "create-start-branch-existing-branch: exit" 0
+assert_eq "create-start-branch-existing-branch: head kept" "$(git -C "$WT33" rev-parse HEAD 2>/dev/null)" "$SHA_B"
+
+WT34="$BASE/34-bad"
+run_wt create 34 fleet/34-bad "$WT34" main
+assert_exit "create-start-branch-main: exit" 2
+assert_false "create-start-branch-main: no worktree" test -e "$WT34"
+run_wt create 34 fleet/34-bad "$WT34" "fleet/30-parent; id"
+assert_exit "create-start-branch-injection: exit" 2
+assert_false "create-start-branch-injection: no worktree" test -e "$WT34"
+assert_false "create-start-branch-injection: no branch" git -C "$REPO" show-ref --verify --quiet refs/heads/fleet/34-bad
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

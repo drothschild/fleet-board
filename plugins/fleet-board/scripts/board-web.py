@@ -463,6 +463,13 @@ def start_import(plan_text: str, status: str) -> str:
     cfg, _ = ctx()
     id = new_import_id()
     idir = state_dir(APP["root"], cfg) / "imports" / id
+    # the allow rules below embed these paths; a character a permission rule reads specially would
+    # loosen them, so refuse instead of running with a changed rule
+    scripts_path = script("import-plan.sh")
+    for label, p in (("import directory", str(idir)), ("scripts directory", scripts_path)):
+        if re.search(r"[ *()]", p):
+            raise ApiError(500, "the %s path %s contains a space, *, ( or ), which the import's "
+                                "permission rules cannot name safely" % (label, p))
     with _IMPORT_LOCK:
         if idir.exists():
             raise ApiError(409, "import %s already exists" % id)
@@ -485,7 +492,9 @@ def start_import(plan_text: str, status: str) -> str:
             # --tools and --allowedTools take variadic values: keep an option after each so the prompt
             # is not read as a tool name
             "--tools", "Read,Grep,Glob,Write,Bash",
-            "--allowedTools", "Bash(mktemp *)", "Bash(cp *)", "Bash(bash *import-plan.sh *)",
+            "--allowedTools", "Bash(mktemp *)",
+            "Bash(cp * %s)" % (idir / "cards.json"),
+            "Bash(bash %s *)" % script("import-plan.sh"),
             "Write(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
             "Write(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
@@ -1334,24 +1343,6 @@ def create_card(params, body):
     return 200, created
 
 
-FENCE_RE = re.compile(r"^ {0,3}(```|~~~)")
-ACC_HEAD_RE = re.compile(r"^##[ \t]+Acceptance([ \t].*)?$")
-DEP_HEAD_RE = re.compile(r"^##[ \t]+depends[ \t]+on[ \t]*$", re.I)
-
-
-def body_sections(text: str) -> tuple:
-    """(has an Acceptance section, has a Depends on section) outside code
-    fences, by fl_split_body's heading rules."""
-    acc = dep = fence = False
-    for line in text.split("\n"):
-        if FENCE_RE.match(line):
-            fence = not fence
-        elif not fence:
-            acc = acc or bool(ACC_HEAD_RE.match(line))
-            dep = dep or bool(DEP_HEAD_RE.match(line))
-    return acc, dep
-
-
 def require_acceptance(body: dict):
     v = body.get("acceptance")
     if v is None:
@@ -1404,14 +1395,6 @@ def edit_card(params, body):
     acceptance = require_acceptance(body)
     blocked_by = require_blocked_by(dir, n, body, card_blocked_by(card))
     pr_url = require_pr_url(cfg, card, body)
-    if text is not None:
-        # edit.sh treats a body as the whole truth about its sections: a prose
-        # body would clear the fields. Keep them unless the body carries one.
-        has_acc, has_dep = body_sections(text)
-        if acceptance is None and not has_acc:
-            acceptance = card_acceptance(card)
-        if blocked_by is None and not has_dep:
-            blocked_by = card_blocked_by(card)
     paths = []
     try:
         args = ["bash", script("adapters/local/edit.sh"), str(n)]
