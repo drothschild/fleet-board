@@ -2000,6 +2000,20 @@ assert_exit "retired column: exit" 0
 assert_jq "A card found in a review_<name> state is planned back to in_review" "$(card 12 action)" '"move_to_review"'
 assert_jq "retired column: dispatchable" '.dispatchable' 'true'
 
+# Card 425: a --candidates row carries the card's repo, else board.repo
+cand_scope "- src/a.py"
+assert_jq "candidate repo: a card without repo carries board.repo" "(.candidates[] | select(.number == 14)).repo" '"acme/toy"'
+setup_case ready-start
+dir="$FAKE_GH_DIR/scope"; mkdir -p "$dir"
+scope_issue "$dir" 14 ready "- src/a.py"
+scope_routes "$dir" "14" ""
+candidate_empty_human_qa_route
+store_sync
+jq '. + {repo: "acme/other"}' "$REPO/.fleet-board/cards/14.json" > "$dir/card-14.tmp" && mv "$dir/card-14.tmp" "$REPO/.fleet-board/cards/14.json"
+rm -f "$REPO/.fleet-board/.from-routes" # keep the edited card: store_sync must not rebuild it from the routes
+run_check "$SCRIPT" --candidates
+assert_jq "candidate repo: a card with repo set carries that repo" "(.candidates[] | select(.number == 14)).repo" '"acme/other"'
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
