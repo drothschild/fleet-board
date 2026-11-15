@@ -608,6 +608,14 @@ if start_server "$REPO"; then
   set_fields 3 '.pr_url = "https://github.com/Acme/TOY/pull/5"'
   api GET /api/cards/3
   assert_body "a board.repo pr_url in another case still reads" '.pr_url' 'https://github.com/Acme/TOY/pull/5'
+  set_fields 3 '.repo = "acme/other" | .pr_url = "https://github.com/acme/other/pull/5"'
+  api GET /api/cards/3
+  assert_body "a pr_url on the card's repo reads, not null" '.pr_url' 'https://github.com/acme/other/pull/5'
+  api GET /api/board
+  assert_body "a pr_url on the card's repo reads in the summary" '.cards[]|select(.number==3)|.pr_url' 'https://github.com/acme/other/pull/5'
+  set_fields 3 '.pr_url = "https://github.com/acme/toy/pull/5"'
+  api GET /api/cards/3
+  assert_body "a pr_url on a repo other than the card's own reads as null" '.pr_url' null
 
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr"; fi
   stop_server
