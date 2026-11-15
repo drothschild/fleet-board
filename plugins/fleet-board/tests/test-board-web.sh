@@ -676,7 +676,13 @@ if setup_case; then
   assert_body "import id is the test override" '.import_id' fixed
   wait_for 'api GET /api/import/fixed; body_is .state ready'
   if grep -q -- '/fleet-board:import-plan .*plan.md --preview .*cards.json --status ready' "$FAKE_CLAUDE_DIR/args.log"; then pass "prompt names the skill, preview file and status"; else fail "prompt names the skill, preview file and status" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
-  if grep -q -- '--permission-mode acceptEdits' "$FAKE_CLAUDE_DIR/args.log"; then pass "permission mode from config"; else fail "permission mode from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--permission-mode dontAsk' "$FAKE_CLAUDE_DIR/args.log" && ! grep -q -- 'acceptEdits' "$FAKE_CLAUDE_DIR/args.log"; then pass "import preview runs in dontAsk even when config sets acceptEdits"; else fail "import preview runs in dontAsk even when config sets acceptEdits" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--tools Read,Grep,Glob,Write,Bash --' "$FAKE_CLAUDE_DIR/args.log" && ! grep -Eq -- '--tools [^ ]*(Edit|NotebookEdit)' "$FAKE_CLAUDE_DIR/args.log"; then pass "import tools are Read,Grep,Glob,Write,Bash without Edit or NotebookEdit"; else fail "import tools are Read,Grep,Glob,Write,Bash without Edit or NotebookEdit" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  allowed="$(sed -n 's/.*--allowedTools \(.*\) --max-turns.*/\1/p' "$FAKE_CLAUDE_DIR/args.log" | head -1)"
+  if [ -n "$allowed" ] && printf '%s' "$allowed" | grep -q 'Bash(mktemp \*)' && printf '%s' "$allowed" | grep -q 'Bash(cp \*)' && printf '%s' "$allowed" | grep -q 'Bash(bash \*import-plan.sh \*)' \
+     && [ "$(printf '%s' "$allowed" | tr ' ' '\n' | grep -c .)" = 5 ] && printf '%s' "$allowed" | grep -q 'Write(//[^ ]*/imports/fixed/\*\*)' \
+     && ! printf '%s' "$allowed" | tr ' ' '\n' | grep -Eqx 'Bash|Write'; then pass "import allowedTools are exactly the preview commands and two Write rules"; else fail "import allowedTools are exactly the preview commands and two Write rules" "allowed: $allowed"; fi
+  if grep -q -- '--allowedTools .* --max-turns .* /fleet-board:import-plan' "$FAKE_CLAUDE_DIR/args.log"; then pass "an option follows each variadic list, before the prompt"; else fail "an option follows each variadic list, before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '--max-turns 7' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   api GET /api/import/fixed
