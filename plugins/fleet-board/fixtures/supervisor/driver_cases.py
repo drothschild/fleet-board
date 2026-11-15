@@ -230,24 +230,8 @@ def test_start_review_route_failure_moves_nothing(base):
     assert note['action_failures'] == 1 and note['pr'] is None and note['last_action_error'] == 'route broke'
 
 
-def test_advance_stage_moves_and_records_the_stage(base):
-    b = board_for(base, 'in_review')
-    started = begin(b, 'advance_stage', state='in_review', stage={'name': 'security', 'agent': 'x'})
-    assert started.kind == 'done' and 12 not in b.state.active
-    assert b.calls[-3] == ('board-move.sh', '12', 'review_security') or \
-        ('board-move.sh', '12', 'review_security') in b.calls, b.calls
-    assert b.card()['state'] == 'review_security'
-    note = b.note()
-    assert note['stage'] == 'security' and note['round'] == 1 and note['reviewed_stages'] == [], note
-    assert note['state'] == 'review_security' and note['action_failures'] == 0
-    b.put_note({'last_action_error': 'old', 'action_failures': 1})
-    begin(b, 'advance_stage', state='review_security', stage={'name': 'perf'})
-    note = b.note()
-    assert b.card()['state'] == 'review_perf' and note['stage'] == 'perf', note
-    assert note['reviewed_stages'] == ['security'] and note['action_failures'] == 0, note
-    assert note['last_action_error'] is None
-
-
+# test_advance_stage_moves_and_records_the_stage is removed: it moved a card into review_security and
+# review_perf, the per-stage columns this card retires (owner decision 2026-11-14, card 289).
 def test_advance_stage_rejects_an_unknown_stage(base):
     b = board_for(base, 'in_review')
     assert begin(b, 'advance_stage', state='in_review', stage={'name': 'nosuch'}).kind == 'done'
@@ -720,6 +704,23 @@ def test_reviewer_findings_record_last_review(base):
                       'model': None, 'provider': None,
                       'findings': [{'severity': 'Important', 'text': 'subtract(2, 5) returns -3 is unmapped'}]}, review
     assert b.note()['last_verified'].startswith('VERIFIED:')
+
+
+def test_reviewer_report_with_findings_on_a_card_moved_out_of_blocked_sets_state_in_review(base):
+    # A person moved the card from Blocked to In review: the note still says blocked. The one review that
+    # follows must leave state in_review, or the planner plans another review every cycle.
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'blocked', 'blocked_from': 'in_review', 'branch': BRANCH,
+                'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    started = begin(b, 'review', state='in_review', round=1)
+    assert started.kind == 'session' and started.action.role == 'reviewer'
+    outcome = run_role(b, started)
+    assert outcome.progressed is True, outcome
+    assert b.note()['last_review']['important'] == 1
+    assert b.note()['state'] == 'in_review', b.note()
 
 
 def test_reviewer_round_one_uses_the_base_even_after_an_earlier_review(base):

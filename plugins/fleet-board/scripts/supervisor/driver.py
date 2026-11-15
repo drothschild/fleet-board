@@ -78,7 +78,7 @@ Started = namedtuple('Started', 'kind action')
 Outcome = namedtuple('Outcome', 'card progressed redispatch provider_failure')
 
 SCRIPT_ACTIONS = frozenset((
-    'advance_stage', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
+    'advance_stage', 'move_to_review', 'update_branch', 'block', 'to_human_qa', 'mark_ready', 'verify_main', 'finish', 'unblock',
     'file_pending', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
@@ -1170,6 +1170,11 @@ class CardDriver:
             reviews = dict(note.get('reviews')) if isinstance(note.get('reviews'), dict) else {}
             reviews[run.stage or 'evidence'] = patch['last_review']
             patch['reviews'] = reviews
+            # A card a person moved out of Blocked still has state blocked in its note; this review is the one
+            # the planner asked for, so record the column the card is in, or the planner plans it again
+            if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \
+                    and run.prior != 'blocked':
+                patch['state'] = run.prior
             if not run.stage and isinstance(c.row.get('models'), dict):
                 final['models'] = c.row['models']
         if role == 'implementor' and _posint(parsed.get('pr')):
@@ -1293,6 +1298,14 @@ class CardDriver:
             reviewed.append(leaving[len('review_'):])
         c.move(target)
         c.merge(dict(_RESET, state=target, stage=name, round=1, reviewed_stages=reviewed))
+
+    def _do_move_to_review(self, c):
+        # a card found in a retired review_<name> column goes back to in_review; reviewed_stages stays
+        leaving = c.state_name(c.row.get('state'))
+        if not leaving.startswith('review_'):
+            raise _Invalid('state', leaving)
+        c.move('in_review')
+        c.merge(dict(_RESET, state='in_review', stage=None))
 
     def _do_update_branch(self, c):
         branch, worktree = c.branch(), c.worktree()
