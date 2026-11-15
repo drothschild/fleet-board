@@ -230,6 +230,7 @@ def run():
     test_glob_segments_and_jq_parity()
     test_one_cards_reviewers_are_admitted_together()
     test_a_writer_and_the_reviewers_of_one_card_exclude_each_other()
+    test_a_stacked_child_is_not_held_by_its_ancestors_scope()
     print('scheduler cases passed')
 
 
@@ -603,6 +604,23 @@ def test_a_writer_and_the_reviewers_of_one_card_exclude_each_other():
     r = Scheduler(clock=lambda: 0).admit([candidate(7, 'review', paths=[]), candidate(7, 'fix', paths=[])],
                                          limits=LIMITS)
     assert len(r['admitted']) == 1, r
+
+
+def test_a_stacked_child_is_not_held_by_its_ancestors_scope():
+    child = dict(candidate(12, paths=['src/a.py']), stack={'parent': 11, 'base': 'fleet/11-x', 'ancestors': [11, 10]})
+    for owner in (11, 10):
+        r = Scheduler(clock=lambda: 0).admit([child], reservations=[{'card': owner, 'paths': ['src/a.py']}], limits=LIMITS)
+        assert [x['number'] for x in r['admitted']] == [12], r['waits']
+    r = Scheduler(clock=lambda: 0).admit([child], reservations=[{'card': 20, 'paths': ['src/a.py']}], limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope reserved by #20', r
+    held = [{'number': 11, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'start'}]
+    assert [x['number'] for x in Scheduler(clock=lambda: 0).admit([child], active=held, limits=LIMITS)['admitted']] == [12]
+    held[0]['number'] = 20
+    r = Scheduler(clock=lambda: 0).admit([child], active=held, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+    plain = Scheduler(clock=lambda: 0).admit([candidate(12, paths=['src/a.py'])],
+                                             reservations=[{'card': 11, 'paths': ['src/a.py']}], limits=LIMITS)
+    assert plain['waits'][0]['reason'] == 'scope reserved by #11', plain
 
 
 if __name__ == '__main__':

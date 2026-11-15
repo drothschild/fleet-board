@@ -15,7 +15,7 @@
 #     {"number", "title", "state", "action", "reason", "branch", "worktree", "pr",
 #      "head_sha", "round", "models": {"implementor","reviewer","fixer"}, "escalated",
 #      "needs_human_qa": bool|null, "stage": object|null,
-#      "comment_needed": bool|null}]}
+#      "comment_needed": bool|null, "stack": object|null}]}
 #
 # stage is the config's stage object whole (as config.sh prints it: name,
 # agent, provider, model, paths, label, advisory, max_rounds, brief,
@@ -107,6 +107,18 @@
 # dependency warns "#<n>: unrecognized dependency line: <line>" and is
 # ignored; a dependency closed as not planned (or at Status Won't Do) warns
 # "#<n> depends on <ref>, which was closed as not planned".
+#
+# Stacked start (stacking.enabled, default false; off changes nothing): a ready card that would
+# wait on dependencies starts instead (reason "ready, stacked on #<parent>") when exactly one
+# dependency is unmet, its status is in_review, human_qa, merging or review_*, its manager note
+# (note.sh get) has a valid branch and pr, and gh pr view <pr> --json state says OPEN. A failed
+# lookup means the card waits with the dependency reason; the note and PR state are looked up only
+# for a ready card with exactly one unmet dependency. The row's "stack" is {parent, base (the
+# parent's branch), ancestors (the parent, then each further note stack.parent up the chain; at
+# most 20 hops, stopping on a repeat)}; every other row, and a --candidates row of a card that
+# does not start stacked, has stack null (the key is always there). The Scope checks (the
+# ready-card overlap check and the reservations of the plan) skip the cards in ancestors, never
+# the other cards, siblings included.
 #
 # Conflicting PRs: an open PR whose mergeable state is CONFLICTING, on an
 # in_progress or in_review card, plans update_branch (reason "PR #<pr> has
@@ -320,6 +332,9 @@ FB_STATES_MEMO="$FB_STATES"; export FB_STATES_MEMO
 HAS_STAGES=false
 [ -n "$(fb_stage_states)" ] && HAS_STAGES=true
 
+# stacking.enabled (default false): a Ready card whose one unmet dependency is in review may start on it
+STACKING="$(jq -r 'if .stacking.enabled == true then "true" else "false" end' <<<"$FLEET_CFG")" || fb_die 1 "cannot read stacking.enabled"
+
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
@@ -410,6 +425,40 @@ drift_lookup() {
     '{merge: $m, test_edit: $t, unreviewed: $u, from: $from, head: $head}'
 }
 
+# stack_lookup <deps_unmet-json>: for a Ready card with exactly one unmet dependency, prints
+# {parent, base, ancestors} when the card may start stacked on it, and fails otherwise (any failed
+# lookup fails closed: the card waits with its dependency reason). The dependency's status is in_review,
+# human_qa, merging or review_*; its note (note.sh get) holds a valid branch and pr; gh says the PR is
+# OPEN. ancestors: the parent, then each further stack.parent read from the notes up the chain (at most
+# 20 further hops, stopping on a repeat).
+stack_lookup() {
+  local ref status repo num pnote branch pr out ancestors hop nxt
+  [ "$(jq -r 'length' <<<"$1")" = 1 ] || return 1
+  { IFS= read -r ref; IFS= read -r status; } <<<"$(jq -r '.[0].ref, .[0].status' <<<"$1")"
+  case "$status" in in_review|human_qa|merging|review_*) ;; *) return 1 ;; esac
+  repo="${ref%#*}"; num="${ref##*#}"
+  fb_valid_number "$num" || return 1
+  [ "$(printf '%s' "$repo" | tr 'A-Z' 'a-z')" = "$(printf '%s' "$FLEET_REPO" | tr 'A-Z' 'a-z')" ] || return 1
+  pnote="$(bash "$FLEET_SCRIPTS/note.sh" get "$num" 2>/dev/null)" || return 1
+  { IFS= read -r branch; IFS= read -r pr; } <<<"$(jq -r '
+    (if (.branch | type) == "string" and (.branch | test("\\Afleet/[0-9]+-[a-z0-9-]{1,40}\\z")) then .branch else "" end),
+    (if (.pr | type) == "number" and .pr == (.pr | floor) and .pr > 0 then (.pr | tostring) else "" end)' <<<"$pnote" 2>/dev/null)"
+  [ -n "$branch" ] && [ -n "$pr" ] || return 1
+  out="$(gh pr view "$pr" --repo "$FLEET_REPO" --json state 2>/dev/null)" || return 1
+  [ "$(jq -r '.state // empty' <<<"$out" 2>/dev/null)" = OPEN ] || return 1
+  ancestors="[$num]"
+  hop=0
+  while [ "$hop" -lt 20 ]; do
+    nxt="$(jq -r 'if (.stack | type) == "object" and (.stack.parent | type) == "number" then (.stack.parent | tostring) else "" end' <<<"$pnote" 2>/dev/null)" || return 1
+    [ -n "$nxt" ] || break
+    [ "$(jq -r --argjson x "$nxt" 'index($x) != null' <<<"$ancestors")" = false ] || break
+    ancestors="$(jq -c --argjson x "$nxt" '. + [$x]' <<<"$ancestors")" || return 1
+    pnote="$(bash "$FLEET_SCRIPTS/note.sh" get "$nxt" 2>/dev/null)" || return 1
+    hop=$((hop + 1))
+  done
+  jq -cn --argjson p "$num" --arg b "$branch" --argjson a "$ancestors" '{parent: $p, base: $b, ancestors: $a}'
+}
+
 # card_input <state> <n> <title-json>: prints one JSON object holding every
 # input the decision needs. The first failed lookup is recorded in
 # lookup_failed and no further lookups are made for the card.
@@ -418,7 +467,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels card_labels='[]' state_revision=null
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
-  local drift=null scope='[]'
+  local drift=null scope='[]' stack=null
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels routed_last=null
   local have_matched=false parallel='[]'
@@ -738,10 +787,17 @@ card_input() {
     fi
   fi
 
+  # Stacking: only a Ready card with exactly one unmet dependency is looked up further
+  if [ "$STACKING" = true ] && [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_deps" -eq 0 ] \
+     && [ "$(jq -r 'length' <<<"$deps_unmet")" = 1 ]; then
+    stack="$(stack_lookup "$deps_unmet")" || stack=null
+    [ -n "$stack" ] || stack=null
+  fi
+
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --argjson stack "$stack" \
     --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson routed_last "$routed_last" --argjson parallel "$parallel" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
@@ -751,7 +807,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope,
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, stack: $stack,
       stage: $stage, next_stage: $next_stage, routed_last_stage: $routed_last, parallel_stages: $parallel}'
 }
 
@@ -1014,7 +1070,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         elif $c.state == "ready" then
           if $c.has_acceptance then
             if ($c.deps_unmet | length) > 0
-            then act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))")
+            then (if $c.stack != null then act("start"; "ready, stacked on #\($c.stack.parent)")
+                  else act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))") end)
             else act("start"; "ready, with acceptance criteria") end
           else act("skip_no_acceptance"; "no acceptance criteria") end
         # update-branch.sh recorded the files of an aborted conflicting merge: the
@@ -1162,6 +1219,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     # A ready card that would start waits when an open card names one of its Scope paths
     | (if $d00.action == "start"
         then (first($open[] | select(.number != $c.number) | . as $o
+                # a stacked child is not held by the scope of its ancestors
+                | select(((($c.stack // {}).ancestors // []) | index($o.number)) == null)
                 | overlap(($c.scope_paths // [] | pg_drop($ign)); ($o.scope_paths // [] | pg_drop($ign))) as $p
                 | select($p != null) | {num: $o.number, path: $p}) // null)
         else null end) as $ov
@@ -1206,6 +1265,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                      then $n.merge_retry.after else null end),
        # merge: the red checks that merge goes past (the driver records them in the note)
        ignored_checks: (if $d.action == "merge" then ($c.pr_info.statusCheckRollup | ic_used($cfg.merge.ignore_checks; $today)) else null end),
+       stack: (if $d.action == "start" then $c.stack else null end),
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) or is_merging($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files
@@ -1244,18 +1304,20 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
   ] as $planned
   # --candidates --card: a single card is planned without the board, so it never starts
   | ($planned | map(if $no_start and .action == "start"
-      then . + {action: "wait", reason: "a Ready card starts only in the board-wide pass (the Scope overlap check needs the whole board)", waiting_on: []}
+      then . + {action: "wait", reason: "a Ready card starts only in the board-wide pass (the Scope overlap check needs the whole board)", waiting_on: [], stack: null}
       else . end)) as $planned
   # Reserve only starts that actually survived every gate. A waiting card
   # contributes no reservation, so it cannot unnecessarily serialize others.
   | (if $candidates then {cards:$planned} else reduce ($planned | sort_by(.number)[]) as $card ({cards:[], reserved:[]};
       (first($all[] | select(.number == $card.number)).scope_paths // [] | pg_drop($ign)) as $paths
       | (if $card.action == "start" then
-          first(.reserved[] | . as $r | overlap($paths; $r.paths) as $p
+          first(.reserved[] | . as $r
+            | select(((($card.stack // {}).ancestors // []) | index($r.number)) == null)
+            | overlap($paths; $r.paths) as $p
             | select($p != null) | {number:$r.number,path:$p}) // null
          else null end) as $overlap
       | if $overlap != null then
-          .cards += [$card + {action:"wait", reason:"Scope overlaps #\($overlap.number) on \($overlap.path)", waiting_on:[]}]
+          .cards += [$card + {action:"wait", reason:"Scope overlaps #\($overlap.number) on \($overlap.path)", waiting_on:[], stack:null}]
         else .cards += [$card]
           | if $card.action == "start" then .reserved += [{number:$card.number,paths:$paths}] else . end
         end) end) as $selected
@@ -1272,7 +1334,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             dependencies:($source.deps_unmet // []),stage:$card.stage,head_sha:$card.head_sha,round:$card.round,
             priority:(if ($priority_labels|length)>1 then "conflict" elif ($priority_labels|length)==1 then ($priority_labels[0]|sub("fleet:priority:";"")) else "normal" end),
             priority_conflict:(($priority_labels|length)>1),state_revision:$source.state_revision,
-            title:$card.title,state:$card.state,branch:$card.branch,worktree:$card.worktree,pr:$card.pr,
+            stack:$card.stack,title:$card.title,state:$card.state,branch:$card.branch,worktree:$card.worktree,pr:$card.pr,
             models:$card.models,escalated:$card.escalated,findings:$card.findings,waiting_on:$card.waiting_on,
             needs_human_qa:$card.needs_human_qa,comment_needed:$card.comment_needed,lint:$card.lint,
             lint_marker:$card.lint_marker,ignored_checks:$card.ignored_checks,retry_after:$card.retry_after} ]}
