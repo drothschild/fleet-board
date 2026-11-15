@@ -598,7 +598,7 @@ assert_stderr_line "stage-reviewer done: not allowed" "parse-report: role stage-
 run_parse --role stage-reviewer "$REPORTS/reviewer-missing-mutation.md"
 assert_exit "stage-reviewer: a full reviewer report without Mutation passes" 0
 run_parse --role nope "$REPORTS/stage-reviewer-ok.md"
-assert_stderr_line "usage names the role" "parse-report: usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger] [--mode after_merge|refusal] [--commits-since-review <n>] <file>"
+assert_stderr_line "usage names the role" "parse-report: usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger|checker] [--mode after_merge|refusal|check|draft] [--commits-since-review <n>] <file>"
 
 # --- merger role -------------------------------------------------------------
 echo "merger"
