@@ -249,12 +249,13 @@ def test_every_planned_action_is_classified():
     from supervisor.scheduler import _ACTION_CLASS
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
                 1: ['start_review', 'unblock', 'update_branch', 'advance_stage', 'to_human_qa', 'mark_ready',
-                    'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal'],
+                    'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
+                    'move_to_review'],
                 2: ['start']}
     for klass, actions in expected.items():
         for action in actions:
             assert _ACTION_CLASS.get(action) == klass, action
-    assert len(_ACTION_CLASS) == 19
+    assert len(_ACTION_CLASS) == sum(len(actions) for actions in expected.values())
     for number, action in enumerate(expected[0] + expected[1] + expected[2], 1):
         result = admit_one(Scheduler(clock=lambda: 0), candidate(number, action), lane_free=True)
         assert [x['number'] for x in result['admitted']] == [number], action
