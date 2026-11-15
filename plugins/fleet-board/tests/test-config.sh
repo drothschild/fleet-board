@@ -1047,6 +1047,25 @@ CLEANUP_DIRS+=("$REPO"); run_config "$REPO"
 assert_exit "config.sh warns on a board.states.review_<name> key naming no stage: exit 0" 0
 assert_stderr_contains "config.sh warns on a board.states.review_<name> key naming no stage: warning" "warning: board.states.review_gone is retired"
 
+# Test 34: board.repos lists the other repos on the board
+REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
+CLEANUP_DIRS+=("$REPO"); run_config "$REPO" board.repos
+assert_stdout_exact "A config without board.repos reads it as []" "[]"
+repos_case() { # NAME EXPECTED_EXIT ENTRIES_YAML
+  REPO="$(printf 'board:\n  repo: a/b\n  repos:\n%s\n' "$3" | make_inline_repo)"
+  CLEANUP_DIRS+=("$REPO")
+  run_config "$REPO" --check
+  assert_exit "$1: exit $2" "$2"
+  [ "$2" = "0" ] || assert_stderr_contains "$1: message" "board.repos"
+}
+repos_case "An entry whose repo is not owner/name makes config.sh exit 5" 5 $'    - repo: notaslug\n      path: /abs/x'
+repos_case "Two entries with the same repo (case-insensitive) make config.sh exit 5" 5 $'    - repo: o/n\n      path: /abs/x\n    - repo: O/N\n      path: /abs/y'
+repos_case "An entry whose repo equals board.repo makes config.sh exit 5" 5 $'    - repo: a/b\n      path: /abs/x'
+repos_case "An entry with no path makes config.sh exit 5" 5 $'    - repo: o/n'
+repos_case "An entry whose path is not absolute makes config.sh exit 5" 5 $'    - repo: o/n\n      path: rel/x'
+repos_case "An entry whose path contains a .. segment makes config.sh exit 5" 5 $'    - repo: o/n\n      path: /abs/../x'
+repos_case "A valid board.repos entry is accepted" 0 $'    - repo: o/n\n      path: /abs/x'
+
 echo ""
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
