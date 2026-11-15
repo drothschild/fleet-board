@@ -904,7 +904,7 @@ class Chained(unittest.TestCase):
         # merging row still judges last_review.stage, a separate card.)
         clean = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'findings': []}
         self.put_note({'state': 'in_review', 'branch': lc.BRANCH[12], 'pr': 34, 'round': 1,
-                       'reviewed_stages': ['security'], 'last_review': dict(clean, stage='security'),
+                       'reviewed_stages': [], 'last_review': dict(clean, stage='security'),
                        'reviews': {'evidence': dict(clean), 'security': dict(clean, stage='security')}})
         self.state = state.State('run-1')
         self.lane = merging.MergeLane(self.root, self.state, run=self.script, spawn=self.spawn)
