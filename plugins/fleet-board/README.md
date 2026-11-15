@@ -55,7 +55,7 @@ Then run `/fleet-board:init`, get `.fleet-board.yml` onto the default branch (ro
    | review | In Review | The reviewer's report on the card |
    | hand-off | Human QA, or a ready PR | Human QA with a "What to check" comment, or the PR marked ready for review |
 
-   With `review.stages` configured and a PR that matches a stage, the clean In Review card goes to `Review: <name>` instead of Human QA, and the stage's report appears on it next. Human QA or the ready PR follows once every stage is clean ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
+   With `review.stages` configured and a PR that matches a stage, the stage reviews in parallel with the evidence reviewer while the card stays In Review, and its report appears on the card. Human QA or the ready PR follows once every routed reviewer is clean at the head ([details](docs/config.md#reviewstages)). Under `merge.policy: auto` a clean, green PR that needs no Human QA goes to `merging` and is merged instead.
 
 8. **Release Human QA by hand** on the board page: check the change, merge the PR, and move the card to Done (or back to Ready). No agent can do this; the gate blocks it.
 
@@ -275,7 +275,7 @@ bash <scripts directory>/import-github.sh --repo OWNER/NAME --dry-run
 - `--dry-run` prints one line per card and writes nothing; run it first.
 - `--force` imports into a store that already has cards, overwriting the imported numbers and leaving other cards. A card that is in Human QA in the store is kept as it is, with a warning. Without it the import refuses a non-empty store.
 
-Each card keeps its issue number, title, dates, labels (without the `fleet:<state>` ones), comments and manager note (re-authored to the local login). Acceptance and dependencies are split into the fields; a dependency on an issue that is not imported, or in another repo, stays in the body as prose with a warning. An issue with no state label, or not on the project, is not a card and is skipped with a warning; a Projects column that maps to no state stops the run (map it in `board.states`, or add the review stage).
+Each card keeps its issue number, title, dates, labels (without the `fleet:<state>` ones), comments and manager note (re-authored to the local login). Acceptance and dependencies are split into the fields; a dependency on an issue that is not imported, or in another repo, stays in the body as prose with a warning. An issue with no state label, or not on the project, is not a card and is skipped with a warning; a Projects column that maps to no state stops the run (map it in `board.states`; a retired stage column maps into In Review).
 
 ## Known issues
 

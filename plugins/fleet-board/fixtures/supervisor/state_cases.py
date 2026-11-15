@@ -1,6 +1,7 @@
 """In-memory supervisor state and scope contract tests."""
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
@@ -297,6 +298,19 @@ class Lifecycle(unittest.TestCase):
         self.assertNotIn('session', snap['active'][1])
         import json
         json.dumps(snap)
+
+    def test_a_running_role_action_in_the_status_reply_has_a_log_field_holding_the_session_jsonl_path(self):
+        act = action(1)
+        act.session = types.SimpleNamespace(log_path='/logs/card-1-start.jsonl')
+        self.state.begin(act)
+        snap = self.state.snapshot()
+        self.assertEqual(snap['active'][1]['log'], '/logs/card-1-start.jsonl')
+        self.assertNotIn('session', snap['active'][1])
+
+    def test_an_action_that_runs_only_a_script_with_no_session_has_log_null_in_the_status_reply(self):
+        self.state.begin(action(2, kind='script'))
+        self.assertIn('log', self.state.snapshot()['active'][2])
+        self.assertIsNone(self.state.snapshot()['active'][2]['log'])
 
 
 if __name__ == '__main__':

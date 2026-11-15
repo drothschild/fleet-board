@@ -351,6 +351,16 @@ class _Ctx:
             raise _Invalid('pr', value)
         return value
 
+    def stack(self):
+        """The start row's stack object ({parent, base}) or None."""
+        value = self.row.get('stack')
+        if value is None:
+            return None
+        if (not isinstance(value, dict) or not _posint(value.get('parent'))
+                or not isinstance(value.get('base'), str) or not _BRANCH.fullmatch(value['base'])):
+            raise _Invalid('stack', value)
+        return value
+
     def repo(self):
         value = (self.config.get('board') or {}).get('repo')
         if not isinstance(value, str) or not _REPO.fullmatch(value) or value.startswith('-'):
@@ -734,7 +744,16 @@ class CardDriver:
         patch = {'state': 'in_progress', 'branch': branch, 'worktree': worktree, 'round': 0,
                  'implementor_attempts': 1, 'cancelled': None}
         patch.update(c.models_patch())
-        c.step('worktree.sh', 'create', c.n, branch, worktree)
+        stack = c.stack()
+        if stack is None:
+            c.step('worktree.sh', 'create', c.n, branch, worktree)
+        else:
+            c.step('worktree.sh', 'create', c.n, branch, worktree, stack['base'])
+            head = self.git(self.root, 'rev-parse', '--verify', 'refs/remotes/origin/%s^{commit}' % stack['base'])
+            start = head.stdout.strip()
+            if head.timed_out or head.rc != 0 or not re.fullmatch(r'[0-9a-f]{40}', start):
+                raise _Fail('could not read origin/%s for the stacked start' % stack['base'])
+            patch['stack'] = {'parent': stack['parent'], 'base': stack['base'], 'start': start, 'attention': None}
         c.move('in_progress')
         c.merge(patch)
         return self._dispatch_role(c, prior='in_progress')
@@ -750,8 +769,25 @@ class CardDriver:
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         return self._dispatch_role(c, prior='in_progress')
 
+    def _stack_of(self, c):
+        """The card's noted `stack`, read directly so the call log of start_review keeps `route` first."""
+        got = scripts.run(self.root, 'note.sh', 'get', c.n, env=self.env)
+        data = _json(got.stdout) if got.rc == 0 else None
+        if not isinstance(data, dict):
+            raise _Fail('note.sh get printed no manager note')
+        return data.get('stack')
+
     def _do_start_review(self, c):
         pr = c.pr()
+        stack = self._stack_of(c)
+        if stack:
+            base = stack.get('base') if isinstance(stack, dict) else None
+            if not isinstance(base, str) or not _BRANCH.fullmatch(base):
+                raise _Invalid('stack', stack)
+            edit = self.gh(self.root, 'pr', 'edit', str(pr), '--repo', c.repo(), '--base', base)
+            if edit.timed_out or edit.rc != 0:
+                raise _Fail('could not retarget PR %s to %s: %s' % (
+                    pr, base, 'timed out' if edit.timed_out else _first_line(edit.stderr) or 'gh exited %d' % edit.rc))
         c.step('review-stages.sh', 'route', c.n, pr)
         c.move('in_review')
         c.merge({'state': 'in_review', 'round': 1, 'pr': pr})
