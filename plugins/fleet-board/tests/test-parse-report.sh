@@ -319,6 +319,17 @@ run_parse --role reviewer "$REPORTS/reviewer-mutation-skipped-other.md"
 assert_exit "reviewer-mutation-skipped-other --role reviewer: exit 1" 1
 assert_stderr_line "reviewer-mutation-skipped-other: quotes the line" "parse-report: malformed ## Mutation line: skipped: not configured"
 
+run_parse --role reviewer "$REPORTS/reviewer-ok.md"
+PREDATES_FILE="$(mktemp)"
+sed -e '/^claim: /d' -e '/^command: /d' -e '/^result: /d' -e 's/^matches: yes$/skipped: the latest report predates the PR head/' "$REPORTS/reviewer-ok.md" > "$PREDATES_FILE"
+run_parse --role reviewer "$PREDATES_FILE"
+assert_exit "reviewer claim check 'skipped: the latest report predates the PR head' --role reviewer: exit 0" 0
+assert_jq "reviewer claim check predates-head: .claim.skipped is true" '.claim.skipped == true'
+sed -e 's/predates the PR head/predates something else/' "$PREDATES_FILE" > "$PREDATES_FILE.other"
+run_parse --role reviewer "$PREDATES_FILE.other"
+assert_exit "reviewer claim check with other skipped text: exit 1" 1
+rm -f "$PREDATES_FILE" "$PREDATES_FILE.other"
+
 run_parse --role reviewer "$REPORTS/reviewer-claim-free-text.md"
 assert_exit "reviewer-claim-free-text --role reviewer: exit 1" 1
 assert_stderr_line "reviewer-claim-free-text: quotes the line" "parse-report: malformed ## Claim check line: I re-ran node --test test/calc.test.js and it passed."

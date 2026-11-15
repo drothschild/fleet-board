@@ -220,6 +220,60 @@ def test_start_review_routes_moves_and_notes(base):
     assert note['round'] == 1 and note['pr'] == 34 and note['state'] == 'in_review', note
 
 
+STACK = {'parent': 7, 'base': 'fleet/7-parent-card'}
+START_SHA = 'a' * 40
+
+
+def test_start_with_stack_creates_from_the_parent_branch_and_notes_the_stack(base):
+    b = board_for(base)
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.git_result = lambda *a: ok(START_SHA + '\n') if a[0] == 'rev-parse' else ok('')
+    started = begin(b, 'start', stack=STACK)
+    assert started.kind == 'session', b.state.events
+    assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree, 'fleet/7-parent-card'), b.calls
+    stack = b.note()['stack']
+    assert stack == {'parent': 7, 'base': 'fleet/7-parent-card', 'start': START_SHA, 'attention': None}, stack
+
+
+def test_start_with_stack_null_makes_the_calls_it_makes_today(base):
+    b = board_for(base)
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    started = begin(b, 'start', stack=None)
+    assert started.kind == 'session'
+    assert b.scripts_called() == ['worktree.sh', 'board-move.sh', 'board-read.sh'], b.calls
+    assert b.calls[0] == ('worktree.sh', 'create', '12', BRANCH, b.worktree)
+    assert b.git_calls == [] and b.note()['stack'] is None
+
+
+def test_start_review_with_stack_retargets_the_pr_before_route(base):
+    b = board_for(base, 'in_progress')
+    b.put_note({'stack': {'parent': 7, 'base': 'fleet/7-parent-card', 'start': START_SHA, 'attention': None}})
+    order = []
+    b.stubs['review-stages.sh'] = lambda *a: (order.append('route'), ok('[]\n'))[1]
+    b.stubs['worktree.sh'] = ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234', 'base': 'bace000'}))
+    b.gh_result = lambda *a: (order.append('gh') if a[:2] == ('pr', 'edit') else None, ok())[1]
+    started = begin(b, 'start_review', state='in_progress')
+    assert started.kind == 'session'
+    assert b.gh_calls[0] == ('pr', 'edit', '34', '--repo', 'acme/toy', '--base', 'fleet/7-parent-card'), b.gh_calls
+    assert order == ['gh', 'route'], order
+
+
+def test_start_review_with_stack_fails_when_the_retarget_fails(base):
+    b = board_for(base, 'in_progress')
+    b.put_note({'stack': {'parent': 7, 'base': 'fleet/7-parent-card', 'start': START_SHA, 'attention': None}})
+    b.gh_result = fail_with('gh broke\n')
+    assert begin(b, 'start_review', state='in_progress').kind == 'done'
+    assert 'review-stages.sh' not in [c[0] for c in b.calls], b.calls
+    assert b.card()['state'] == 'in_progress' and b.note()['action_failures'] == 1
+
+
+def test_start_review_without_stack_makes_no_gh_pr_edit_call(base):
+    b = board_for(base, 'in_progress')
+    b.stubs['worktree.sh'] = ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': 'abc1234', 'base': 'bace000'}))
+    assert begin(b, 'start_review', state='in_progress').kind == 'session'
+    assert not [c for c in b.gh_calls if c[:2] == ('pr', 'edit')], b.gh_calls
+
+
 def test_start_review_route_failure_moves_nothing(base):
     b = board_for(base, 'in_progress')
     b.stubs['review-stages.sh'] = fail_with('route broke\n')
@@ -1468,7 +1522,7 @@ def test_an_evidence_review_is_kept_in_reviews_under_evidence(base):
 
 def test_a_stage_review_at_the_same_head_keeps_the_evidence_record(base):
     # The evidence reviewer reported at the head, then a stage reports at the same head: last_review is the
-    # stage's record, and note.reviews keeps both, so a fresh plan replans neither (test-tick-plan.sh
+    # stage's record, and note.reviews keeps both, so a fresh plan replans neither (test-tick-plan-stages.sh
     # parallel-stage-after-evidence and parallel-all-reported feed the planner this note shape)
     evidence = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'stage': None, 'agent': None,
                 'model': None, 'provider': None, 'findings': []}

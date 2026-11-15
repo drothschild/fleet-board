@@ -73,7 +73,8 @@ Run every command inside the review worktree at the PR head unless a step says o
 
 5. **Claim check (`review.verify_claim`).**
    - **When `review.verify_claim` is false:** execute no claim. `## Claim check` contains exactly the line `skipped: review.verify_claim is off`.
-   - **When `review.verify_claim` is true:** pick one load-bearing claim from the latest implementor or fixer report. Prefer its `VERIFIED:` line. Otherwise pick another specific, checkable assertion, such as a count, a pass/fail result, or a command's output. If the preferred claim's command could run the whole suite, pick another load-bearing claim whose command is scoped to one file.
+   - **When the dispatch says the latest report predates the PR head:** execute no claim, whatever `review.verify_claim` says. A claim describes the head its report was written at, and the head has moved on. `## Claim check` contains exactly the line `skipped: the latest report predates the PR head`.
+   - **When `review.verify_claim` is true and the report does not predate the PR head:** pick one load-bearing claim from the latest implementor or fixer report. Prefer its `VERIFIED:` line. Otherwise pick another specific, checkable assertion, such as a count, a pass/fail result, or a command's output. If the preferred claim's command could run the whole suite, pick another load-bearing claim whose command is scoped to one file.
      - Execute the claim's command yourself, at the PR head, on unmutated code. Reading the source or trusting the report never replaces execution.
      - For a claim like "X only reads A, B and C", execute X with a distinct marker in every field and inspect what it reads and outputs. Do not infer exclusivity from the source.
      - `## Claim check` contains exactly four lines, each key once:

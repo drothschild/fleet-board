@@ -170,7 +170,8 @@ fi
 #                    or "skipped: review.mutation is off".
 #   ## Claim check   one each of "claim: <text>", "command: `<cmd>`",
 #                    "result: <text>", "matches: yes|no"; or only
-#                    "skipped: review.verify_claim is off".
+#                    "skipped: review.verify_claim is off" or
+#                    "skipped: the latest report predates the PR head".
 #   ## Resolutions   "- <finding> :: fixed" or "- <finding> :: not fixed: <why>".
 #                    The boundary is the first " :: " followed by an outcome, so
 #                    " :: " may appear inside the finding and inside the why.
@@ -363,7 +364,7 @@ sec == "Mutation" {
 }
 sec == "Claim check" {
   if (t == "") next
-  if (t == "skipped: review.verify_claim is off") { print "claim\tskipped"; cskip++; next }
+  if (t == "skipped: review.verify_claim is off" || t == "skipped: the latest report predates the PR head") { print "claim\tskipped"; cskip++; next }
   if (t ~ /^(claim|command|result|matches):/) {
     key = substr(t, 1, index(t, ":") - 1)
     val = trim(substr(t, index(t, ":") + 1))

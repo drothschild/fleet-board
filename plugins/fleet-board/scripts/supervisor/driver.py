@@ -15,6 +15,7 @@ starts with "-"). A failed step ends the action; earlier steps stand. A failure 
 uncounted action merges `action_failures + 1` and the first stderr line into the card's manager note.
 """
 import calendar
+import datetime
 import hashlib
 import json
 import os
@@ -351,6 +352,16 @@ class _Ctx:
             raise _Invalid('pr', value)
         return value
 
+    def stack(self):
+        """The start row's stack object ({parent, base}) or None."""
+        value = self.row.get('stack')
+        if value is None:
+            return None
+        if (not isinstance(value, dict) or not _posint(value.get('parent'))
+                or not isinstance(value.get('base'), str) or not _BRANCH.fullmatch(value['base'])):
+            raise _Invalid('stack', value)
+        return value
+
     def repo(self):
         value = (self.config.get('board') or {}).get('repo')
         if not isinstance(value, str) or not _REPO.fullmatch(value) or value.startswith('-'):
@@ -451,6 +462,16 @@ class _Run:
     @property
     def script(self):
         return self.dispatch.runner in _SCRIPT_RUNNERS
+
+
+_PREDATES_LINE = 'skipped: the latest report predates the PR head'
+
+
+def _parse_time(text):
+    """A UTC ISO-8601 timestamp (`2026-03-01T12:00:00Z`, optional fraction or +00:00) as an aware datetime."""
+    text = text.strip().replace('Z', '+00:00')
+    value = datetime.datetime.fromisoformat(re.sub(r'(\.\d{1,6})\d*', r'\1', text))
+    return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
 
 
 _SECTIONS = {
@@ -734,7 +755,16 @@ class CardDriver:
         patch = {'state': 'in_progress', 'branch': branch, 'worktree': worktree, 'round': 0,
                  'implementor_attempts': 1, 'cancelled': None}
         patch.update(c.models_patch())
-        c.step('worktree.sh', 'create', c.n, branch, worktree)
+        stack = c.stack()
+        if stack is None:
+            c.step('worktree.sh', 'create', c.n, branch, worktree)
+        else:
+            c.step('worktree.sh', 'create', c.n, branch, worktree, stack['base'])
+            head = self.git(self.root, 'rev-parse', '--verify', 'refs/remotes/origin/%s^{commit}' % stack['base'])
+            start = head.stdout.strip()
+            if head.timed_out or head.rc != 0 or not re.fullmatch(r'[0-9a-f]{40}', start):
+                raise _Fail('could not read origin/%s for the stacked start' % stack['base'])
+            patch['stack'] = {'parent': stack['parent'], 'base': stack['base'], 'start': start, 'attention': None}
         c.move('in_progress')
         c.merge(patch)
         return self._dispatch_role(c, prior='in_progress')
@@ -750,8 +780,25 @@ class CardDriver:
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         return self._dispatch_role(c, prior='in_progress')
 
+    def _stack_of(self, c):
+        """The card's noted `stack`, read directly so the call log of start_review keeps `route` first."""
+        got = scripts.run(self.root, 'note.sh', 'get', c.n, env=self.env)
+        data = _json(got.stdout) if got.rc == 0 else None
+        if not isinstance(data, dict):
+            raise _Fail('note.sh get printed no manager note')
+        return data.get('stack')
+
     def _do_start_review(self, c):
         pr = c.pr()
+        stack = self._stack_of(c)
+        if stack:
+            base = stack.get('base') if isinstance(stack, dict) else None
+            if not isinstance(base, str) or not _BRANCH.fullmatch(base):
+                raise _Invalid('stack', stack)
+            edit = self.gh(self.root, 'pr', 'edit', str(pr), '--repo', c.repo(), '--base', base)
+            if edit.timed_out or edit.rc != 0:
+                raise _Fail('could not retarget PR %s to %s: %s' % (
+                    pr, base, 'timed out' if edit.timed_out else _first_line(edit.stderr) or 'gh exited %d' % edit.rc))
         c.step('review-stages.sh', 'route', c.n, pr)
         c.move('in_review')
         c.merge({'state': 'in_review', 'round': 1, 'pr': pr})
@@ -793,6 +840,26 @@ class CardDriver:
                     and not re.search(r'(?m)^## Acceptance map', body)):
                 return body
         return ''
+
+    def _report_predates_head(self, c, pr, card):
+        """True when the latest report was posted before the PR head's commit. A claim describes the head its
+        report was written at, so an older report gives the reviewer nothing to re-check. Unreadable dates
+        keep the report, as before."""
+        posted = None
+        for comment in reversed(card.get('comments') or []):
+            body = comment.get('body') if isinstance(comment, dict) else None
+            if (isinstance(body, str) and re.search(r'(?m)^## Status', body) and re.search(r'(?m)^VERIFIED:', body)
+                    and not re.search(r'(?m)^## Acceptance map', body)):
+                posted = comment.get('created_at')
+                break
+        head = self.gh(self.root, 'pr', 'view', str(pr), '--repo', c.repo(), '--json', 'commits', '--jq',
+                       '.commits[-1].committedDate')
+        if posted is None or head.timed_out or head.rc != 0:
+            return False
+        try:
+            return _parse_time(posted) < _parse_time(head.stdout.strip())
+        except (ValueError, TypeError):
+            return False
 
     @staticmethod
     def _severe(findings):
@@ -887,9 +954,10 @@ class CardDriver:
         previous = last.get('sha') if isinstance(last.get('sha'), str) and _SHA.fullmatch(last['sha']) else None
         findings = self._severe(last.get('findings')) if run.round >= 2 else []
         report = self._latest_report(card)
+        stale = bool(report) and self._report_predates_head(c, pr, card)
         accepted = accepted_sha(note)
         if d.runner in _SCRIPT_RUNNERS:
-            return self._script_args(c, run, pr, previous, findings, report, accepted)
+            return self._script_args(c, run, pr, previous, findings, None if stale else report, accepted)
         # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
         extra = (stage,) if name == 'review_stage' and stage else ()
         data = _json(c.step('worktree.sh', 'review', c.n, pr, *extra).stdout)
@@ -908,6 +976,9 @@ class CardDriver:
         diff = self.gh(self.root, 'pr', 'diff', str(pr), '--repo', c.repo())
         if diff.timed_out or diff.rc != 0:
             raise _Fail(_first_line(diff.stderr) or 'gh pr diff failed')
+        if stale:
+            report = ('none: the latest report predates the PR head, so there is no claim to re-check. '
+                      'Write `## Claim check` as exactly `%s`.' % _PREDATES_LINE)
         inputs.update(pr=pr, diff=diff.stdout, report=report, worktree=data['path'], round=run.round,
                       prev_sha=prev_sha, findings=self._lines(findings))
         if stage:
@@ -930,9 +1001,12 @@ class CardDriver:
             args += ['--stage', stage, '--round', run.round, '--prev-sha', previous]
             if run.round >= 2:
                 args += ['--findings', c._file(findings)]
-            args += ['--impl-report', c._file(report)]
+            if report is not None:
+                args += ['--impl-report', c._file(report)]
         else:
-            args += ['--round', run.round, '--impl-report', c._file(report)]
+            args += ['--round', run.round]
+            if report is not None:
+                args += ['--impl-report', c._file(report)]
             if run.round >= 2:
                 if previous is None:
                     raise _Fail('no previous review sha for round %d' % run.round)

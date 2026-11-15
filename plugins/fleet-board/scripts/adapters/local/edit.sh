@@ -5,7 +5,8 @@
 # (or an empty file argument, or --labels-json null) leaves that field unchanged.
 # A body with "## Acceptance" / "## Depends on" sections is split into the card
 # fields unless --acceptance-file / --blocked-by-json is given; a body without
-# a section clears that field (the body is the whole truth about its sections). --pr-url sets
+# a section leaves that field as it is. To clear a field pass --blocked-by-json '[]'
+# or an empty --acceptance-file. --pr-url sets
 # pr_url with source "person"; an empty U clears both.
 # --repo sets the card repo (board.repo or a board.repos entry); an empty R clears it.
 set -uo pipefail
@@ -54,8 +55,9 @@ if [ -n "$BODY_FILE" ]; then
   SPLIT="$(fl_split_body "$BODY_FILE")" || exit 1
   fl_check_bad_deps "$SPLIT"
   fl_fold_outside "$SPLIT" "#$N" > "$BODYTMP" || exit 1
-  [ "$ACC" != null ] || ACC="$(jq -c .acceptance <<<"$SPLIT")"
-  [ "$BLOCKED" != null ] || BLOCKED="$(jq -c .blocked_by <<<"$SPLIT")"
+  # a section the body lacks leaves its field alone; an empty section reads as lacking
+  [ "$ACC" != null ] || ! jq -e ".acceptance|length > 0" >/dev/null <<<"$SPLIT" || ACC="$(jq -c .acceptance <<<"$SPLIT")"
+  [ "$BLOCKED" != null ] || ! jq -e "(.blocked_by + .outside)|length > 0" >/dev/null <<<"$SPLIT" || BLOCKED="$(jq -c .blocked_by <<<"$SPLIT")"
 fi
 if [ "$BLOCKED" != null ]; then
   BLOCKED="$(fl_uniq_json <<<"$BLOCKED")"

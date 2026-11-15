@@ -83,7 +83,7 @@ Cards a fleet run files (out-of-scope items, bugs, and the P0 "main is red" card
 
 ## `review.stages`
 
-Empty by default, so every existing config keeps its behavior. Each entry adds a board column after In Review, with its own reviewer, for checks the evidence reviewer does not make (security, UX, compliance). A stage names either an `agent` (a Claude subagent) or a `provider` (see [`providers`](#providers)); it sets exactly one.
+Each entry adds a reviewer for checks the evidence reviewer does not make (security, UX, compliance). Stages review in parallel with the evidence reviewer while the card is In Review; there is no column per stage. A card merges only when every routed reviewer is clean at the head. A stage names either an `agent` (a Claude subagent) or a `provider` (see [`providers`](#providers)); it sets exactly one.
 
 ```yaml
 review:
@@ -96,6 +96,9 @@ review:
       label: needs-security-review    # default: needs-<name>-review
       advisory: false                 # default false
       max_rounds: 2                   # default: review.max_rounds
+      default: false                  # true routes the stage to every card
+      enabled: true                   # false never routes it
+      required_passes: 1              # 1 to 5; accepted and validated
       brief: "Focus on authz, secrets, injection."  # optional; passed verbatim
     - name: compliance
       provider: openai                # instead of agent
@@ -105,11 +108,20 @@ review:
       max_diff_bytes: 400000          # default 400000
 ```
 
-A stage is the state `review_<name>`, in config order between `in_review` and `human_qa`. Its column is named `Review: <name>` by default; `board.states.review_<name>` renames it; a `review_` key naming no stage is rejected.
+**Built-in stages.** Every project gets the built-in `documentation` and `blast_radius` stages. A project entry of the same name replaces the built-in, and `{name: documentation, enabled: false}` turns one off (this repo's config turns both off):
 
-**Routing.** A stage applies to a card when the card carries the stage's label, or when a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next plan retries. A person can add a label before a stage begins to force a visit; a stage already reviewed is not visited again. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
+```yaml
+review:
+  stages:
+    - {name: documentation, enabled: false}
+    - {name: blast_radius, enabled: false}
+```
 
-**Re-matching.** Routing adds labels once, but a fixer's commit or a later push can touch a stage's `paths` after it. So at every clean, current review (in In Review or a stage column) `tick-plan.sh` runs `review-stages.sh match <pr>`, which reads the PR's files now and adds no label, and counts each stage those files match as routed. The next stage is the first one in config order that is routed, is not the current column and is not in the note's `reviewed_stages`; it can be a stage before the current column that was never visited. The trade-off: removing a label skips a stage only when its `paths` do not match the PR's current files. A stage whose globs match cannot be skipped that way; a label-only stage (empty `paths`) still can. A failed `match` skips the card for that plan (`lookup failed: review-stages.sh match <pr>`).
+`default: true` routes a stage to every card; `enabled: false` never routes it. `required_passes` (1 to 5) is accepted and validated; today one clean report meets a stage. A stage is not a board state: a `board.states.review_<name>` key is warned about.
+
+**Routing.** A stage applies to a card when `default: true` is set, the card carries the stage's label, or a file the PR changes matches one of its `paths` globs (the rule `needs-human-qa.sh` uses). A stage with `enabled: false` never applies. `review-stages.sh route <card> <pr>` adds each missing label and never removes one. It runs when the card moves from In Progress to In Review, before the move, so a failure leaves the card in In Progress and the next plan retries. A person can add a label to force a stage. When `gh` lists fewer files than the PR changes, every stage is routed, with a warning.
+
+**Re-matching.** A fixer's commit or a later push can touch a stage's `paths` after routing. So at each plan for an In Review card `tick-plan.sh` runs `review-stages.sh match <pr>`, which reads the PR's files now and adds no label, and counts each stage those files match as routed. Every routed stage is reviewed in parallel with the evidence reviewer, at the current head, and the card leaves In Review only when each of them is clean at that head. Removing a label skips a stage only when its `paths` do not match the PR's current files; a label-only stage (empty `paths`) can still be skipped that way. A failed `match` skips the card for that plan (`lookup failed: review-stages.sh match <pr>`).
 
 **Setup.** After adding or changing stages, run `bash <scripts>/review-stages.sh setup` (`init.sh` prints this command when it finishes; it does not run it). On the local store there is nothing to create (routing labels are added to a card when it is routed), so it exits 0.
 
@@ -201,7 +213,8 @@ The supervisor reads `limits.concurrency`, `max_hours`, `max_tokens`, `max_token
 
 | Key | Default | Meaning |
 |---|---|---|
-| `supervisor.reconcile_interval_seconds` | `5` | seconds between planning cycles when nothing else wakes the supervisor |
+| `supervisor.reconcile_interval_seconds` | `30` | seconds between planning cycles when nothing else wakes the supervisor; `config.sh` exits 5 below the 10 second floor |
+| `supervisor.min_plan_gap_seconds` | `30` | a board-wide planning pass starts no sooner than this after the previous one ended, and no sooner than that pass's own duration, so planning never takes more than half the loop's time. A wake-up does not shorten the gap: a session that ends has its card planned alone at once, and `resume` still runs a board-wide pass at once. `supervisor status --json` reports the last pass as `last_plan` (`ended_at`, `seconds`) |
 | `supervisor.progress_timeout_seconds` | `900` | seconds a role session may go without output before it is stopped (script actions have no progress timeout) |
 | `supervisor.attempt_timeout_seconds` | `7200` | seconds one action may run in all; must exceed `shutdown_grace_seconds` |
 | `supervisor.shutdown_grace_seconds` | `30` | seconds a stopped session gets to exit before it is killed |

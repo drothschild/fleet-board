@@ -343,6 +343,8 @@ VALIDATION_SCRIPT='
         . as $root | .supervisor as $sup |
         (("reconcile_interval_seconds", "progress_timeout_seconds", "attempt_timeout_seconds", "shutdown_grace_seconds", "retry_backoff_seconds", "aging_seconds") as $k
           | $sup[$k] as $v | if ($v | type) != "number" or ($v | floor) != $v or $v <= 0 then "supervisor.\($k) must be a positive integer" else empty end),
+        (if ($sup.reconcile_interval_seconds | type) == "number" and ($sup.reconcile_interval_seconds | floor) == $sup.reconcile_interval_seconds and $sup.reconcile_interval_seconds > 0 and $sup.reconcile_interval_seconds < 10 then "supervisor.reconcile_interval_seconds must be at least 10 (the 10 second floor)" else empty end),
+        (if ($sup.min_plan_gap_seconds | type) != "number" or ($sup.min_plan_gap_seconds | floor) != $sup.min_plan_gap_seconds or $sup.min_plan_gap_seconds < 0 then "supervisor.min_plan_gap_seconds must be a non-negative integer" else empty end),
         (if ($sup.session_log_days | type) != "number" or ($sup.session_log_days | floor) != $sup.session_log_days or $sup.session_log_days < 0 then "supervisor.session_log_days must be a non-negative integer" else empty end),
         (if ($sup.attempt_timeout_seconds | type) == "number" and ($sup.shutdown_grace_seconds | type) == "number" and $sup.attempt_timeout_seconds <= $sup.shutdown_grace_seconds then "supervisor.attempt_timeout_seconds must exceed shutdown_grace_seconds" else empty end),
         (if ($sup.provider_concurrency | type) != "object" then "supervisor.provider_concurrency must be an object"
