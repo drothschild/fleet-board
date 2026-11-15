@@ -2,7 +2,7 @@
 # worktree.sh - creates, refreshes and removes a card's git worktrees.
 #
 # Usage:
-#   worktree.sh create <n> <branch> <path>
+#   worktree.sh create <n> <branch> <path> [<start-branch>]
 #       Fetches origin. When <path> is already a worktree of this repo on
 #       <branch>, prints the path and stops (resumption). Otherwise adds a
 #       worktree at <path>: on the local branch when it exists, else tracking
@@ -18,6 +18,11 @@
 #         fleet-board: branch <branch> is checked out at <other path>; remove that worktree (git worktree remove, or git worktree prune when its directory is gone) or restore worktrees.dir
 #       or, when the other checkout is the repository's main checkout,
 #         fleet-board: branch <branch> is checked out at <path>, the repository's main checkout; switch that checkout to another branch
+#       With a <start-branch> (it must match the card-branch rule fleet/<n>-<slug>, else
+#       exit 2), a branch that exists neither locally nor on origin is created from
+#       origin's copy of <start-branch> instead of origin/HEAD; when that is missing the
+#       call exits 1 with "fleet-board: origin/<start-branch> does not exist" and adds no
+#       worktree and no branch. When the branch already exists the argument is ignored.
 #   worktree.sh review <n> <pr> [<stage>]
 #       Fetches the PR head (into refs/fleet-board/pull/<pr>) and puts a
 #       detached worktree <base>/<n>-review on it, creating it (and running
@@ -55,14 +60,17 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> | review <n> <pr> [<stage>] | remove <n> [<worktree-path>]"; }
+usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage>] | remove <n> [<worktree-path>]"; }
 
 [ $# -ge 2 ] || usage
 CMD="$1"
 N="$2"
 fb_valid_number "$N" || fb_die 2 "card number must be numeric, got: $N"
 case "$CMD" in
-  create) [ $# -eq 4 ] || usage ;;
+  create) [ $# -eq 4 ] || [ $# -eq 5 ] || usage
+    if [ $# -eq 5 ]; then
+      [[ "$5" =~ ^fleet/[0-9]+-[a-z0-9-]{1,40}$ ]] || fb_die 2 "start branch must match fleet/<n>-<slug>, got: $5"
+    fi ;;
   review) [ $# -eq 3 ] || [ $# -eq 4 ] || usage; fb_valid_number "$3" || fb_die 2 "PR number must be numeric, got: $3"
     if [ $# -eq 4 ]; then
       case "$4" in
@@ -159,7 +167,11 @@ case "$CMD" in
     elif g show-ref --verify --quiet "refs/remotes/origin/$B"; then
       g worktree add -q --track -b "$B" "$P" "origin/$B" >&2 || fb_die 1 "cannot add a worktree tracking origin/$B at $P"
     else
-      if g rev-parse --verify --quiet "refs/remotes/origin/HEAD^{commit}" >/dev/null; then START=origin/HEAD
+      if [ $# -eq 5 ]; then
+        g rev-parse --verify --quiet "refs/remotes/origin/$5^{commit}" >/dev/null \
+          || fb_die 1 "origin/$5 does not exist"
+        START="origin/$5"
+      elif g rev-parse --verify --quiet "refs/remotes/origin/HEAD^{commit}" >/dev/null; then START=origin/HEAD
       elif g rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" >/dev/null; then START=origin/main
       else fb_die 1 "neither origin/HEAD nor origin/main exists"
       fi
