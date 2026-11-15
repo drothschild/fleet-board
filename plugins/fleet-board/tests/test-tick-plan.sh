@@ -1474,6 +1474,12 @@ assert_exit "returned-from-blocked: exit" 0
 assert_jq "returned-from-blocked: action" "$(card 12 action)" '"review"'
 assert_jq "returned-from-blocked: dispatchable" '.dispatchable' 'true'
 
+# Returned from Blocked: the review carries the moved-back reason
+variant returned-from-blocked-reason pr-34-draft.json \
+  "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"
+assert_jq "returned-from-blocked-reason: reason" "$(card 12 reason)" \
+  '"moved back from Blocked; review PR head abc1234 again before fixing"'
+
 # The head moved after the finding: unchanged from today (review, same reason)
 variant returned-head-moved pr-34-draft-head-moved.json \
   "{\"state\":\"blocked\",\"blocked_from\":\"in_review\",\"blocked_findings\":[{\"severity\":\"Important\",\"text\":\"subtract ignores negatives\"}],$BASE_NOTE,$LR}"

@@ -1170,6 +1170,11 @@ class CardDriver:
             reviews = dict(note.get('reviews')) if isinstance(note.get('reviews'), dict) else {}
             reviews[run.stage or 'evidence'] = patch['last_review']
             patch['reviews'] = reviews
+            # A card a person moved out of Blocked still has state blocked in its note; this review is the one
+            # the planner asked for, so record the column the card is in, or the planner plans it again
+            if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \
+                    and run.prior != 'blocked':
+                patch['state'] = run.prior
             if not run.stage and isinstance(c.row.get('models'), dict):
                 final['models'] = c.row['models']
         if role == 'implementor' and _posint(parsed.get('pr')):
