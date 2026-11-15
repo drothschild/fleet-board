@@ -1328,7 +1328,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
          | (first($actual_scope[] | select(.number == $card.number)) // {paths:[],unknown:false}) as $actual
          | ([$source.labels[]? | (if type == "object" then .name else . end)
              | select(. == "fleet:priority:high" or . == "fleet:priority:normal" or . == "fleet:priority:low")] | unique) as $priority_labels
-         | {number:$card.number,action:$card.action,reason:$card.reason,
+         | {number:$card.number,repo:($source.repo // $cfg.board.repo),action:$card.action,reason:$card.reason,
             preconditions:{state:$source.state,head_sha:$card.head_sha,round:$card.round,stage:$card.stage,dependencies:$source.deps_unmet,state_revision:$source.state_revision},
             declared_paths:($source.scope_paths // []),actual_paths:($actual.paths // []),scope_complete:(($actual.unknown // false) | not),
             dependencies:($source.deps_unmet // []),stage:$card.stage,head_sha:$card.head_sha,round:$card.round,
