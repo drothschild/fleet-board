@@ -1368,9 +1368,8 @@ done
 scope_routes "$dir" "" "15 12 13"
 run_check "$SCRIPT"
 assert_exit "merge-one: exit" 0
-assert_jq "merge-one: exactly one of three eligible cards is merge" '[.cards[] | select(.action == "merge")] | length' 1
-assert_jq "merge-one: the merge is the lowest card number" '[.cards[] | select(.action == "merge") | .number]' '[12]'
-assert_jq "merge-one: the others wait" '[.cards[] | select(.action == "wait") | .number] | sort' '[13,15]'
+assert_jq "merge-one: all three eligible cards plan merge" '[.cards[] | select(.action == "merge") | .number] | sort' '[12,13,15]'
+assert_jq "merge-one: none waits with one merge per tick" '[.cards[] | select((.reason // "") | contains("one merge per tick"))] | length' 0
 
 # commands.preflight: one board-level alert instead of a failure on each card
 PRE_DIR="$(mktemp -d)"; CLEANUP_DIRS+=("$PRE_DIR")
