@@ -249,6 +249,12 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
       fi
       wt_dir="$(fb_cfg worktrees.dir)"; [ -n "$wt_dir" ] || wt_dir=../.fleet-worktrees
       case "$wt_dir" in /*) ;; *) wt_dir="$FLEET_ROOT/$wt_dir" ;; esac
+      # Resolved as worktree.sh resolves its base: it refuses a path with a ".." segment, and
+      # this repository's own worktrees.dir is ../.fleet-worktrees
+      if ! wt_dir="$(mkdir -p "$wt_dir" && cd "$wt_dir" && pwd -P)"; then
+        fail "$n" "cannot resolve the worktrees directory, so the lane cannot raise the versions; not merged"
+        continue
+      fi
       bump_wt="$wt_dir/${bump_branch#fleet/}"
       if ! bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null \
          || ! bash "$FLEET_SCRIPTS/update-branch.sh" "$n" "$pr" "$bump_branch" "$bump_wt" \
