@@ -54,8 +54,8 @@ Persona = namedtuple('Persona', 'text warnings')
 def resolve_persona(root, config):
     """The persona text a merger session gets, and a list of warnings.
     merge.persona replaces the base (else <root>/.fleet-board/merger.md when present, else the shipped default);
-    merge.persona_append follows it. A configured file that is missing falls back (default for persona, nothing
-    for the append) and adds a warning naming the path."""
+    merge.persona_append is inline text added after it (never a path; null or blank adds nothing). A configured
+    persona file that is missing falls back to the default and adds a warning naming the path."""
     root = Path(root)
     merge = (config or {}).get('merge')
     merge = merge if isinstance(merge, dict) else {}
@@ -79,10 +79,9 @@ def resolve_persona(root, config):
             base = local.read_text(errors='replace')
     if base is None:
         base = DEFAULT_PERSONA.read_text(errors='replace')
-    if merge.get('persona_append') is not None:
-        extra = read(merge['persona_append'], 'merge.persona_append')
-        if extra is not None:
-            base = base.rstrip('\n') + '\n\n' + extra
+    append = merge.get('persona_append')
+    if isinstance(append, str) and append.strip():
+        base = base.rstrip('\n') + '\n\n' + append.strip('\n') + '\n'
     return Persona(base, warnings)
 
 
