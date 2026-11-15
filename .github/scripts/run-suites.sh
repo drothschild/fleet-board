@@ -8,6 +8,11 @@ total=0; failed=0; failed_names=""
 # shellcheck disable=SC2086
 for suite in $pattern; do
   [ -f "$suite" ] || continue
+  # An aggregate runner (test-tick-plan.sh) only re-runs suites this glob already runs
+  if sed -n 2p "$suite" | grep -q '^# fleet-board: aggregate runner'; then
+    printf '%s ... SKIP (aggregate runner)\n' "$suite"
+    continue
+  fi
   total=$((total + 1))
   if "$BASH" "$suite" > /dev/null 2>&1; then
     printf '%s ... PASS\n' "$suite"
