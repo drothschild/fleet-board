@@ -31,6 +31,7 @@ jq -c --arg m "$FB_MARKER" --arg me "$ME" --arg s "$STATE" --arg url "$(fl_url "
     acceptance: (.acceptance // []),
     blocked_by: (.blocked_by // []),
     pr_url: (.pr_url // null),
+    repo: (.repo // null),
     labels: (.labels // []),
     manager_note: (if $n then ($n.body | sub("^[^\n]*\n"; "")) else null end),
     manager_note_id: (if $n then $n.id else null end),
