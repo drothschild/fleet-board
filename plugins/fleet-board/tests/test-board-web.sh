@@ -608,6 +608,14 @@ if start_server "$REPO"; then
   set_fields 3 '.pr_url = "https://github.com/Acme/TOY/pull/5"'
   api GET /api/cards/3
   assert_body "a board.repo pr_url in another case still reads" '.pr_url' 'https://github.com/Acme/TOY/pull/5'
+  set_fields 3 '.repo = "acme/other" | .pr_url = "https://github.com/acme/other/pull/5"'
+  api GET /api/cards/3
+  assert_body "a pr_url on the card's repo reads, not null" '.pr_url' 'https://github.com/acme/other/pull/5'
+  api GET /api/board
+  assert_body "a pr_url on the card's repo reads in the summary" '.cards[]|select(.number==3)|.pr_url' 'https://github.com/acme/other/pull/5'
+  set_fields 3 '.pr_url = "https://github.com/acme/toy/pull/5"'
+  api GET /api/cards/3
+  assert_body "a pr_url on a repo other than the card's own reads as null" '.pr_url' null
 
   if grep -q Traceback "$TMP/server.err"; then fail "no traceback on stderr" "$(cat "$TMP/server.err")"; else pass "no traceback on stderr"; fi
   stop_server
@@ -668,7 +676,13 @@ if setup_case; then
   assert_body "import id is the test override" '.import_id' fixed
   wait_for 'api GET /api/import/fixed; body_is .state ready'
   if grep -q -- '/fleet-board:import-plan .*plan.md --preview .*cards.json --status ready' "$FAKE_CLAUDE_DIR/args.log"; then pass "prompt names the skill, preview file and status"; else fail "prompt names the skill, preview file and status" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
-  if grep -q -- '--permission-mode acceptEdits' "$FAKE_CLAUDE_DIR/args.log"; then pass "permission mode from config"; else fail "permission mode from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--permission-mode dontAsk' "$FAKE_CLAUDE_DIR/args.log" && ! grep -q -- 'acceptEdits' "$FAKE_CLAUDE_DIR/args.log"; then pass "import preview runs in dontAsk even when config sets acceptEdits"; else fail "import preview runs in dontAsk even when config sets acceptEdits" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  if grep -q -- '--tools Read,Grep,Glob,Write,Bash --' "$FAKE_CLAUDE_DIR/args.log" && ! grep -Eq -- '--tools [^ ]*(Edit|NotebookEdit)' "$FAKE_CLAUDE_DIR/args.log"; then pass "import tools are Read,Grep,Glob,Write,Bash without Edit or NotebookEdit"; else fail "import tools are Read,Grep,Glob,Write,Bash without Edit or NotebookEdit" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  allowed="$(sed -n 's/.*--allowedTools \(.*\) --max-turns.*/\1/p' "$FAKE_CLAUDE_DIR/args.log" | head -1)"
+  if [ -n "$allowed" ] && printf '%s' "$allowed" | grep -q 'Bash(mktemp \*)' && printf '%s' "$allowed" | grep -q 'Bash(cp \*)' && printf '%s' "$allowed" | grep -q 'Bash(bash \*import-plan.sh \*)' \
+     && [ "$(printf '%s' "$allowed" | grep -o '\(Bash\|Write\)(' | wc -l | tr -d ' ')" = 5 ] && [ "$(printf '%s' "$allowed" | grep -o 'Write(' | wc -l | tr -d ' ')" = 2 ] && printf '%s' "$allowed" | grep -q 'Write(//[^ ]*/imports/fixed/\*\*)' \
+     && ! printf '%s' "$allowed" | grep -Eq '(^| )(Bash|Write)( |$)'; then pass "import allowedTools are exactly the preview commands and two Write rules"; else fail "import allowedTools are exactly the preview commands and two Write rules" "allowed: $allowed"; fi
+  if grep -q -- '--allowedTools .* --max-turns .* /fleet-board:import-plan' "$FAKE_CLAUDE_DIR/args.log"; then pass "an option follows each variadic list, before the prompt"; else fail "an option follows each variadic list, before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '--max-turns 7' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   api GET /api/import/fixed
@@ -1685,6 +1699,44 @@ api GET /api/cards/2/transcripts/tr-session
 assert_code 404
 assert_body "a deleted log file is reported as missing" '.error' '*log file is missing*'
 stop_server
+
+# Card 426: the board page shows a card's repo and lists the configured repos.
+echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
+RP_REPO="$(new_repo "board:
+  repo: acme/toy
+  repos:
+    - repo: acme/other
+      path: /tmp/other-checkout
+worktrees:
+  dir: .fw")"
+mkdir -p "$RP_REPO/.fleet-board/cards"
+REPO="$RP_REPO"
+seed_card 1 ready "Home card" "Body."
+jq '. + {repo: "acme/other"}' "$RP_REPO/.fleet-board/cards/1.json" > "$RP_REPO/.fleet-board/cards/2.json.tmp"
+jq '.number = 2 | .title = "Other card"' "$RP_REPO/.fleet-board/cards/2.json.tmp" > "$RP_REPO/.fleet-board/cards/2.json"
+rm -f "$RP_REPO/.fleet-board/cards/2.json.tmp"
+echo 3 > "$RP_REPO/.fleet-board/next"
+start_server "$RP_REPO"
+api GET /api/board
+assert_code 200
+assert_body "/api/board card summaries carry repo: a card of another repo reports that repo" '.cards[]|select(.number==2)|.repo' 'acme/other'
+assert_body "/api/board card summaries carry repo: a card naming no repo reports board.repo" '.cards[]|select(.number==1)|.repo' 'acme/toy'
+assert_body "/api/board lists repos from config" '.repos|join(",")' 'acme/other'
+stop_server
+
+jq -n '{states: [{key: "ready", name: "Ready"}], run: null, repo: "acme/toy", repos: ["acme/other"], escalation: null,
+  cards: [{number: 5, title: "Foreign card", state: "ready", known: true, labels: [], repo: "acme/other"},
+          {number: 6, title: "Home card", state: "ready", known: true, labels: [], repo: "acme/toy"}]}' > "$REV_TMP/board.json"
+RP_OUT="$(node "$SCRIPT_DIR/board-dom-harness.js" "$SCRIPTS/board-web/static/board.js" "$REV_TMP/board.json" ready 2>&1)"
+case "$(printf '%s' "$RP_OUT" | jq -r '[.groups[].cards[]|select(contains("Foreign card"))]|join("|")' 2>/dev/null)" in
+  *"acme/other"*) pass "the page shows a tile of another repo with its repo name" ;;
+  *) fail "the page shows a tile of another repo with its repo name" "$RP_OUT" ;;
+esac
+case "$(printf '%s' "$RP_OUT" | jq -r '[.groups[].cards[]|select(contains("Home card"))]|join("|")' 2>/dev/null)" in
+  *"Home card"*"acme/toy"*) fail "the page shows no repo name on a tile of the board's own repo" "$RP_OUT" ;;
+  *"Home card"*) pass "the page shows no repo name on a tile of the board's own repo" ;;
+  *) fail "the page shows no repo name on a tile of the board's own repo" "tile did not render: $RP_OUT" ;;
+esac
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

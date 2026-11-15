@@ -657,6 +657,16 @@ run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
 assert_stderr_contains "bad json note warns" "warning"
 assert_card_json 1 '.pr_url' 'https://github.com/acme/toy/pull/51'
 
+echo "Test: pr_url from a note uses the card's repo"
+setup_case; seed_card 1 in_progress 'Other repo PR' 'body'
+jq '.repo = "acme/other"' "$REPO/.fleet-board/cards/1.json" > "$REPO/c1.tmp" && mv "$REPO/c1.tmp" "$REPO/.fleet-board/cards/1.json"
+npr="$(mktemp)"; CLEANUP_DIRS+=("$npr")
+printf '```json\n{"round":1,"pr":7}\n```\n' > "$npr"
+run_check_in "$REPO" "$SCRIPTS/board-note.sh" 1 "$npr"
+assert_exit "note pr on a card of another repo exit 0" 0
+assert_card_json 1 '.pr_url' 'https://github.com/acme/other/pull/7'
+assert_card_json 1 '.pr_url_source' note
+
 # --- atomic write ---
 atomic_write_case
 
@@ -811,6 +821,32 @@ for s in comment note; do
   esac
 done
 if grep -q '^fl_next_comment_id()' "$SCRIPTS/adapters/local/local-lib.sh"; then pass "local-lib.sh defines fl_next_comment_id"; else fail "local-lib.sh defines fl_next_comment_id" "missing"; fi
+
+# --- cards carry an optional repo (card 419) ---
+setup_case
+cat > "$REPO/.fleet-board.yml" <<'YML'
+board:
+  repo: acme/toy
+  repos:
+    - repo: acme/other
+      path: /tmp/other-checkout
+worktrees:
+  dir: .fw
+YML
+rf="$REPO/body.md"; printf 'Prose only\n' > "$rf"
+run_check_in "$REPO" bash -c '. "$1/board-lib.sh"; fb_load_config; shift; exec bash "$FLEET_SCRIPTS/adapters/local/create.sh" "$@"' _ "$SCRIPTS" 'In other' "$rf" --repo acme/other
+assert_exit "creating a card with a repo listed in board.repos exits 0" 0
+assert_card_json 1 '.repo' 'acme/other'
+run_check_in "$REPO" bash -c '. "$1/board-lib.sh"; fb_load_config; shift; exec bash "$FLEET_SCRIPTS/adapters/local/create.sh" "$@"' _ "$SCRIPTS" 'In unknown' "$rf" --repo acme/nope
+assert_exit "creating a card with a repo not listed in board.repos exits 2" 2
+[ ! -e "$REPO/.fleet-board/cards/2.json" ] && pass "refused repo create writes no card" || fail "refused repo create writes no card" "cards/2.json exists"
+run_check_in "$REPO" bash -c '. "$1/board-lib.sh"; fb_load_config; shift; exec bash "$FLEET_SCRIPTS/adapters/local/create.sh" "$@"' _ "$SCRIPTS" 'Home' "$rf"
+assert_exit "creating a card without a repo exits 0" 0
+run_check_in "$REPO" "$SCRIPTS/board-read.sh" 2
+assert_json "reading a card with no repo key returns repo null" '.repo|tostring' 'null'
+run_check_in "$REPO" bash -c '. "$1/board-lib.sh"; fb_load_config; shift; exec bash "$FLEET_SCRIPTS/adapters/local/create.sh" "$@"' _ "$SCRIPTS" 'Cross repo dep' "$rf" --repo acme/other --blocked-by 2
+assert_exit "a blocked_by naming a card of another repo on this board is accepted" 0
+assert_card_json 3 '.blocked_by|map(tostring)|join(",")' 2
 
 echo ""
 echo "-----------------------------------"
