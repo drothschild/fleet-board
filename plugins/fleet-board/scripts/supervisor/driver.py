@@ -974,6 +974,13 @@ class CardDriver:
             return self._script_args(c, run, pr, previous, findings, None if stale else report, accepted)
         # A stage reviewer gets its own checkout, so reviewers of one card running together never share one
         extra = (stage,) if name == 'review_stage' and stage else ()
+        # A stacked card is reviewed against its parent branch: worktree.sh prints the merge-base with it
+        stack = note.get('stack')
+        if isinstance(stack, dict):
+            sbase = stack.get('base')
+            if not isinstance(sbase, str) or not _BRANCH.fullmatch(sbase):
+                raise _Invalid('stack', stack)
+            extra += (sbase,)
         data = _json(c.step('worktree.sh', 'review', c.n, pr, *extra).stdout)
         if not (isinstance(data, dict) and isinstance(data.get('path'), str) and os.path.isabs(data['path'])
                 and isinstance(data.get('sha'), str) and _SHA.fullmatch(data['sha'])):
