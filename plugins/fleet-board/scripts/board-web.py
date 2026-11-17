@@ -1329,9 +1329,18 @@ def create_card(params, body):
     if state is not None:
         if state not in [s["key"] for s in states(cfg)]:
             raise ApiError(400, "invalid state: %s" % state)
+    repo = require_str(body, "repo", required=False)
+    if repo is not None:
+        board_cfg = cfg.get("board") or {}
+        listed = [r["repo"] for r in (board_cfg.get("repos") or [])
+                  if isinstance(r, dict) and isinstance(r.get("repo"), str)]
+        if repo != board_cfg.get("repo") and repo not in listed:
+            raise ApiError(400, "unknown repo: %s" % repo)
     paths = [temp_text(text)]
     try:
         argv = ["bash", script("board-create.sh"), title, paths[0]]
+        if repo is not None and repo != (cfg.get("board") or {}).get("repo"):
+            argv += ["--repo", repo]
         for label in labels:
             argv += ["--label", label]
         if acceptance is not None:
