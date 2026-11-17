@@ -896,6 +896,30 @@ run_note get 12; assert_stdout_exact "reviews: a non-hex sha rejected" "{}"
 set_note_json '{"reviews":["security"]}'
 run_note get 12; assert_stdout_exact "reviews: a list rejected" "{}"
 
+# review_passes: per stage, the pass records at the current head (pass 1 to 5, a 40-hex sha, integer counts)
+SHA40=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+rp_put() { # <label> <expected exit> <expected posted> <pass> <sha> <critical> <important>
+  setup_case
+  jq -cn --arg s "$5" --argjson p "$4" --argjson c "$6" --argjson i "$7" \
+    '{state:"in_review",round:1,review_passes:{security:[{pass:$p,round:1,sha:$s,critical:$c,important:$i,findings:[]}]}}' > "$FAKE_GH_DIR/rp.json"
+  clear_inputs
+  run_note put 12 "$FAKE_GH_DIR/rp.json"
+  assert_exit "review_passes $1: exit" "$2"
+  assert_eq "review_passes $1: bodies posted" "$(input_count)" "$3"
+}
+rp_put "a valid record is accepted" 0 1 2 "$SHA40" 0 1
+rp_put "pass 5 is accepted" 0 1 5 "$SHA40" 0 0
+rp_put "pass 6 is refused" 1 0 6 "$SHA40" 0 0
+assert_stderr_contains "review_passes: pass 6 names the field" "review_passes"
+rp_put "pass 0 is refused" 1 0 0 "$SHA40" 0 0
+rp_put "a 7-hex sha is refused" 1 0 1 abc1234 0 0
+assert_stderr_contains "review_passes: short sha names the field" "review_passes"
+rp_put "a non-hex sha is refused" 1 0 1 "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz" 0 0
+rp_put "a fractional critical count is refused" 1 0 1 "$SHA40" 1.5 0
+rp_put "a string important count is refused" 1 0 1 "$SHA40" 0 '"1"'
+set_note_json '{"review_passes":["security"]}'
+run_note get 12; assert_stdout_exact "review_passes: a list rejected" "{}"
+
 set_note_json '{"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"stage":"compliance","provider":"openai"}}'
 run_note get 12
 assert_eq "last_review.provider: kept" "$(jq -c .last_review.provider <<<"$LAST_OUT")" '"openai"'
