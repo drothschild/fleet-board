@@ -36,7 +36,7 @@ else
   fail "Declared sits between Adapted and Weakened"
 fi
 check "Declared: names the card's Test changes section" "$DECL" '## Test changes'
-check "Declared: names the test by file and exact name" "$DECL" 'exact name'
+check "Declared: names the test by file and exact name" "$DECL" 'exact test name'
 check "Declared: form matches (changes:)" "$DECL" 'changes:'
 check "Declared: form matches (removed:)" "$DECL" 'removed:'
 check "Declared: required by the Acceptance item the bullet names" "$DECL" 'Acceptance item'
