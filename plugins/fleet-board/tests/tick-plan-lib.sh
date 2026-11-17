@@ -103,6 +103,7 @@ no_builtin_stages() {
 }
 
 # setup_case <case> [extra YAML appended to the config]
+# premise_check.enabled is written false unless the extra YAML sets the key.
 setup_case() {
   REPO="$(mktemp -d)"
   git init -q "$REPO"
@@ -113,6 +114,15 @@ setup_case() {
     [ -n "${3:-}" ] && printf '%s\n' "$3"
     printf 'worktrees:\n  dir: .fw\n'
     printf 'human_qa_paths: ["src/components/**"]\n'
+    # the premise check is off unless the case turns it on (it plans check_premise in place of start)
+    case "
+${2:-}
+${3:-}
+" in
+      *'
+premise_check:'*) ;;
+      *) printf 'premise_check:\n  enabled: false\n' ;;
+    esac
     printf '%s\n' "$(no_builtin_stages "${2:-}")"
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
