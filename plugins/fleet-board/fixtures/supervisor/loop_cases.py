@@ -1050,6 +1050,16 @@ class WholeRepoScope(LoopCase):
         self.assertEqual([x['number'] for x in out['admitted']], [5])
         self.assertEqual([w for w in out['waits'] if ' on /' in w['reason']], [])
 
+    def test_a_slash_on_both_sides_does_not_make_two_cards_overlap(self):
+        sched = scheduler.Scheduler(clock=lambda: 0)
+        cand = {'number': 5, 'action': 'start', 'provider': 'claude', 'declared_paths': ['/', 'src/a.py'],
+                'actual_paths': [], 'scope_complete': True, 'priority': 'normal', 'eligible_since': 0,
+                'preconditions': {'state': 'ready', 'head_sha': None}}
+        out = sched.admit([cand], active=[{'number': 9, 'provider': 'claude', 'paths': ['/', 'docs/b']}],
+                          limits={'global': 2, 'providers': {'claude': 2}, 'per_card': 1})
+        self.assertEqual([x['number'] for x in out['admitted']], [5])
+        self.assertEqual([w for w in out['waits'] if ' on /' in w['reason']], [])
+
     def test_a_refused_scope_counts_one_failure_each_time(self):
         row = dict(number=12, action='start', provider='claude', declared_paths=['/abs/path'], actual_paths=[])
         self.sup._begin(row)
