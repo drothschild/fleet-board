@@ -16,8 +16,8 @@
 # masked, is the clean three-way merge of the masked parents. Only the top-level
 # "version" and a marketplace's plugins[].version may change, each to a semver
 # value strictly above the old one (for a merge: the three-way result of the two
-# sides, or above both); any other "version", such as a nested source pin, must
-# stay as it was (a merge: the three-way result). A repeated key is refused.
+# sides, above both, or sv_resolve(branch; base), the value update-branch.sh
+# keeps); any other "version", such as a nested source pin, must stay as it was (a merge: the three-way result). A repeated key is refused.
 # Prints "unreviewed" for anything else:
 # a non-merge commit, a merge that needed conflict resolution or carries extra
 # changes, a chain that does not lead back to <reviewed-sha>, or commits git
@@ -99,7 +99,8 @@ raise_ok() {
 # resolve_ok <ours> <theirs> <base> <result>: exit 0 when the four parse and every
 # "version" value in the result is the three-way merge of the two sides over the
 # base (the side that changed it, or both when they agree), or an allowed key whose
-# value is semver and strictly above both sides' values
+# value is semver and either strictly above both sides' values or what versions.jq's
+# sv_resolve gives for them (ours = the branch side, theirs = the base side)
 resolve_ok() {
   jq -e -n --slurpfile o "$1" --slurpfile t "$2" --slurpfile w "$3" --slurpfile r "$4" "$VJQ $VKEYS"'
     ($o | length) == 1 and ($t | length) == 1 and ($w | length) == 1 and ($r | length) == 1
@@ -109,7 +110,7 @@ resolve_ok() {
           | (if $x == $y then [$x] elif $x == $v then [$y] elif $y == $v then [$x] else [] end) as $e
           | ($e | length == 1 and .[0] == $z)
             or (vk_ok($p) and ($z | sv_valid) and ($x | sv_valid) and ($y | sv_valid)
-                and sv_cmp($z; $x) > 0 and sv_cmp($z; $y) > 0)))' >/dev/null 2>&1
+                and ((sv_cmp($z; $x) > 0 and sv_cmp($z; $y) > 0) or $z == sv_resolve($x; $y)))))' >/dev/null 2>&1
 }
 # vcount_ok <file>: exit 0 when every "version" string key jq sees is on a line of
 # its own and no key is repeated (jq keeps only the last of duplicate keys)
