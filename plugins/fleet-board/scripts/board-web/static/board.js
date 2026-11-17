@@ -927,6 +927,7 @@ async function openDrawer(n, opener) {
   showDrawer();
   if (n === null) {
     renderDrawer(null);
+    fillRepoPicker();
     history.replaceState(null, "", "/");
     $("dr-title").focus();
     return;
@@ -960,6 +961,8 @@ function clearDrawer(n) {
   $("dr-pr-input").value = "";
   $("dr-comment").value = "";
   $("dr-state").replaceChildren();
+  $("dr-repo").replaceChildren();
+  $("dr-repo").hidden = true;
   $("dr-preview").replaceChildren();
   $("dr-labels").replaceChildren();
   $("dr-acc").replaceChildren();
@@ -1098,6 +1101,24 @@ function renderHold(card) {
   const hold = card && card.hold && typeof card.hold.reason === "string" ? card.hold : null;
   p.hidden = !hold;
   p.textContent = hold ? "Held: " + hold.reason + (hold.until ? " (until " + hold.until + ")" : "") : "";
+}
+
+// fillRepoPicker(): the new-card Repo select, shown only when the board lists other repos.
+function fillRepoPicker() {
+  const sel = $("dr-repo");
+  const home = S.board && S.board.repo;
+  const others = (S.board && Array.isArray(S.board.repos) ? S.board.repos : []).filter(function (r) {
+    return typeof r === "string" && r && r !== home;
+  });
+  sel.replaceChildren();
+  sel.hidden = !(home && others.length);
+  if (sel.hidden) return;
+  for (const r of [home].concat(others)) {
+    const opt = el("option", null, r);
+    opt.value = r;
+    sel.appendChild(opt);
+  }
+  sel.value = home;
 }
 
 function fillStateSelect(current) {
@@ -1717,10 +1738,12 @@ async function saveDrawer() {
   }
   setDrawerBusy(true);
   if (d.n === null) {
-    const r = await writeApi("POST", "/api/cards", {
+    const payload = {
       title: e.title, body: e.body, labels: e.labels, state: e.state,
       acceptance: e.acceptance, blocked_by: e.blocked_by,
-    });
+    };
+    if (!$("dr-repo").hidden) payload.repo = $("dr-repo").value;
+    const r = await writeApi("POST", "/api/cards", payload);
     if (S.drawer !== d) return;
     setDrawerBusy(false);
     fetchBoard(true);
