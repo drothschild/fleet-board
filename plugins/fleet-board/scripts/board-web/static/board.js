@@ -941,6 +941,7 @@ async function openDrawer(n, opener) {
   renderDrawer(card);
   $("dr-title").focus();
   loadCardUsage(d);
+  loadCardTranscripts(d);
 }
 
 const DRAWER_FIELDS = ["dr-title", "dr-state", "dr-body", "dr-label-input", "dr-acc-input", "dr-blk-input",
@@ -973,6 +974,8 @@ function clearDrawer(n) {
   $("dr-meta").replaceChildren();
   setDrawerFields(false);
   clearCardUsage();
+  $("dr-transcripts-sec").hidden = true;
+  $("dr-transcripts").replaceChildren();
   updateDirty();
 }
 
@@ -3346,7 +3349,6 @@ function renderCardUsage(u) {
       row.appendChild(el("span", "dr-usage-what", [a.action, a.role, a.model].map(function (v) { return clean(v || "unknown", 80); }).join(" · ")));
       row.appendChild(el("span", "dr-usage-counts", "input " + countText(a.input) + " · output " + countText(a.output) +
         " · cache read " + countText(a.cache_read) + " · cache write " + countText(a.cache_write)));
-      row.appendChild(el("span", "dr-usage-log", a.log ? "log " + clean(a.log, 200) : "no log"));
       ul.appendChild(row);
     }
     li.appendChild(ul);
@@ -3354,6 +3356,35 @@ function renderCardUsage(u) {
   }
   if (!ol.children.length) ol.appendChild(el("li", "dr-usage-none", "No usage recorded for this card yet."));
   $("dr-usage-cols").replaceChildren(ol);
+}
+
+// loadCardTranscripts(d): the drawer's Transcripts list, one link per session, each opening in a new tab.
+async function loadCardTranscripts(d) {
+  if (!d || d.n === null) return;
+  const seq = (d.trSeq = (d.trSeq || 0) + 1);
+  let r;
+  try {
+    r = await api("GET", "/api/cards/" + d.n + "/transcripts");
+  } catch (e) {
+    r = null;
+  }
+  if (S.drawer !== d || seq !== d.trSeq) return;
+  if (!r || !r.ok || !Array.isArray(r.data)) return;
+  const frag = document.createDocumentFragment();
+  for (const t of r.data.slice(0, 200)) {
+    if (!t || typeof t !== "object" || typeof t.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(t.id)) continue;
+    const li = el("li", "dr-transcript");
+    const a = el("a", "dr-transcript-link", [t.action, t.role].filter(Boolean).map(function (v) { return clean(v, 60); }).join(" · ") || t.id);
+    a.setAttribute("href", "/api/cards/" + d.n + "/transcripts/" + t.id);
+    a.setAttribute("target", "_blank");
+    a.setAttribute("rel", "noopener");
+    li.appendChild(a);
+    if (t.running) li.appendChild(el("span", "dr-transcript-running", "running"));
+    frag.appendChild(li);
+  }
+  if (!frag.children.length) frag.appendChild(el("li", "dr-transcript-none", "No transcripts yet."));
+  $("dr-transcripts-sec").hidden = false;
+  $("dr-transcripts").replaceChildren(frag);
 }
 
 // --- start -------------------------------------------------------------------
