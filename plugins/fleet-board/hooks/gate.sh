@@ -628,10 +628,10 @@ use_dir() {
       && p="$(fb_cfg merge.policy)" \
       && printf 'policy\t%s\nrepo\t%s\nignore\t%s\n' "$p" "$(fb_cfg board.repo)" "$(fb_cfg merge.ignore_checks)" \
       && for s in $FB_STATES; do printf 'state\t%s\t%s\n' "$s" "$(fb_state_name "$s")"; done)" || info=""
-    DIR_POLICY[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "policy" { print $2; exit }')"
-    DIR_REPO[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "repo" { print $2; exit }')"
-    DIR_IGNORE[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "ignore" { print $2; exit }')"
-    DIR_QA[n]="$(printf '%s\n' "$info" | awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }')"
+    DIR_POLICY[n]="$(awk -F'\t' '$1 == "policy" { print $2; exit }' <<<"$info")"
+    DIR_REPO[n]="$(awk -F'\t' '$1 == "repo" { print $2; exit }' <<<"$info")"
+    DIR_IGNORE[n]="$(awk -F'\t' '$1 == "ignore" { print $2; exit }' <<<"$info")"
+    DIR_QA[n]="$(awk -F'\t' '$1 == "state" && $2 == "human_qa" { print $3; exit }' <<<"$info")"
     case "${DIR_POLICY[n]}" in
       human|auto) ;;
       *) block "could not verify the board config; blocking to be safe" ;;
