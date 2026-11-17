@@ -113,7 +113,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage`, `update_branch`, `after_merge` and `merge_refusal` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `after_merge`, `merge_refusal` and `merge` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
