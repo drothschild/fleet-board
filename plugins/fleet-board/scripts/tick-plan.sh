@@ -693,7 +693,8 @@ card_input() {
     fi
     # The evidence reviewer is judged on its own record: a stage record in last_review is replaced by
     # reviews.evidence (null when there is none), as the In Review row does
-    if [ -z "$failed" ]; then
+    # (a note with no reviews map, on a board with stages, is a sequential-model note: its last_review stands)
+    if [ -z "$failed" ] && { [ "$HAS_STAGES" != true ] || [ "$(jq -r '(.reviews | type) == "object"' <<<"$note")" = true ]; }; then
       note="$(jq -c 'if (.last_review | type) == "object" and (.last_review.stage // null) != null
                      then .last_review = (if (.reviews | type) == "object" and (.reviews.evidence | type) == "object"
                                           then .reviews.evidence else null end)
