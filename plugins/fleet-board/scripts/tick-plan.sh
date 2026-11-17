@@ -614,12 +614,17 @@ card_input() {
       # reviewed_stages: a stage whose own report is current (this head, this round) and clean
       # (an advisory stage's findings count as clean) is done, so the card is not held for it
       if [ "$st" = in_review ] && [ "$info" != null ]; then
-        # (reviewed_stages does not count here: a stage whose record at the head has findings is not done)
+        # A stage is done when its own record at the head is clean, or when reviewed_stages lists it and
+        # its record at the head (if any) has no findings: a listed stage whose current record holds
+        # Critical or Important findings is not done
         done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
           '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd
-           | [$cfg.review.stages[] | select(.name as $s | ($rv[$s] // null) as $r
-               | $r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)
-                 and (.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0))) | .name] | unique' \
+           | [(.reviewed_stages // [])[] | strings] as $done
+           | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // null) as $r
+               | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
+               | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
+               | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
+               | .name] | unique' \
           <<<"$note" 2>/dev/null)" || done_stages='[]'
       fi
       # With no stages configured there is no next stage, and no call. Else
@@ -665,14 +670,18 @@ card_input() {
      && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
     labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
     if [ "$HAS_STAGES" = true ] && [ "$(jq -r '.last_review != null' <<<"$note")" = true ]; then
-      # As the In Review row judges: a routed stage is done only by its own clean record at the head
-      # (note.reviews[<stage>], or last_review when it is that stage's record); an advisory stage's
-      # findings count as clean. reviewed_stages does not count.
+      # As the In Review row judges: a routed stage is done when its own record at the head
+      # (note.reviews[<stage>], or last_review when it is that stage's record) is clean, or when
+      # reviewed_stages lists it and its record at the head (if any) has no findings; an advisory
+      # stage's findings count as clean.
       if ! done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
              '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd | (.last_review // null) as $lr
-              | [$cfg.review.stages[] | select(.name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
-                  | $r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)
-                    and (.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0))) | .name] | unique' <<<"$note" 2>/dev/null)"; then
+              | [(.reviewed_stages // [])[] | strings] as $done
+              | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
+                  | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
+                  | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
+                  | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
+                  | .name] | unique' <<<"$note" 2>/dev/null)"; then
         failed="note.sh parse $n (unparsable)"
       elif ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
         failed="review-stages.sh match $pr"
