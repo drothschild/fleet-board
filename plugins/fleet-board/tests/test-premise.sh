@@ -182,5 +182,78 @@ SCOPE_NONE="$(
 )"
 eq "fl_scope_text: a fenced heading alone gives nothing" "$SCOPE_NONE" ""
 
+echo "Test: premise.sh moved"
+# mkcard2 <repo> <title> <body file> <acceptance file> -> card number
+mkcard2() {
+  inrepo "$1" bash "$SCRIPTS/board-create.sh" "$2" "$3" --acceptance-file "$4" 2>/dev/null | jq -r .number
+}
+# stampat <repo> <n> <sha>
+stampat() {
+  local f="$1/.fleet-board/cards/$2.json"
+  jq --arg s "$3" '.premise = {sha: $s, at: "2020-01-01T00:00:00Z", by: "create"}' "$f" > "$f.t" && mv "$f.t" "$f"
+}
+# push_commit <repo name> <path>: a commit touching <path> on the default branch, fetched into the clone
+push_commit() {
+  local seed="$WORK/$1-seed"
+  mkdir -p "$seed/$(dirname "$2")"
+  printf 'change %s\n' "$RANDOM" > "$seed/$2"
+  git -C "$seed" add "$2"
+  git -C "$seed" -c user.email=t@t -c user.name=t commit -q -m "touch $2"
+  git -C "$seed" push -q origin main 2>/dev/null
+  git -C "$WORK/$1" fetch -q origin 2>/dev/null
+  git -C "$WORK/$1" remote set-head origin main >/dev/null 2>&1
+}
+moved() { inrepo "$1" bash "$SCRIPTS/premise.sh" moved "$2" 2>/dev/null; }
+
+NOREM="$WORK/noremote-moved"; git init -q -b main "$NOREM"; setup_store "$NOREM"
+N="$(mkcard "$NOREM" "no remote moved")"
+eq "moved, no origin ref: moved false, reason null, head null" "$(moved "$NOREM" "$N" | jq -c '[.moved, .reason, .head]')" '[false,null,null]'
+
+MR="$(mkrepo moved-repo)"
+N="$(mkcard "$MR" "no stamp")"
+jq 'del(.premise)' "$MR/.fleet-board/cards/$N.json" > "$MR/.fleet-board/cards/$N.json.t" && mv "$MR/.fleet-board/cards/$N.json.t" "$MR/.fleet-board/cards/$N.json"
+eq "moved, no stamp: moved true" "$(moved "$MR" "$N" | jq -c .moved)" true
+eq "moved, no stamp: reason" "$(moved "$MR" "$N" | jq -c .reason)" '"no premise stamp"'
+eq "moved, no stamp: head is the default head" "$(moved "$MR" "$N" | jq -c .head)" "\"$(head_of "$MR" refs/remotes/origin/main)\""
+N="$(mkcard "$MR" "unknown commit")"; stampat "$MR" "$N" 0000000000000000000000000000000000000000
+eq "moved, unknown commit: moved true" "$(moved "$MR" "$N" | jq -c .moved)" true
+eq "moved, unknown commit: reason" "$(moved "$MR" "$N" | jq -c .reason)" '"premise stamp commit is unknown"'
+
+BASE_SHA="$(head_of "$MR" refs/remotes/origin/main)"
+N_SAME="$(mkcard "$MR" "head equals stamp")"; stampat "$MR" "$N_SAME" "$BASE_SHA"
+eq "moved, head equals stamp: moved false" "$(moved "$MR" "$N_SAME" | jq -c '[.moved, .reason]')" '[false,null]'
+
+printf '## Why\nx\n\n## Scope\n- `src/`\n' > "$WORK/body-dir.md"
+printf -- '- `test/a.test.js` passes\n' > "$WORK/acc-path.md"
+printf -- '- `npm test -- --grep add` passes\n- `curl localhost:3000/health` prints ok\n' > "$WORK/acc-cmds.md"
+N_FILE="$(mkcard "$MR" "scope file")"; stampat "$MR" "$N_FILE" "$BASE_SHA"
+N_DIR="$(mkcard2 "$MR" "scope dir" "$WORK/body-dir.md" "$WORK/acc0.md")"; stampat "$MR" "$N_DIR" "$BASE_SHA"
+N_ACC="$(mkcard2 "$MR" "acceptance path" "$WORK/body-newscope.md" "$WORK/acc-path.md")"; stampat "$MR" "$N_ACC" "$BASE_SHA"
+N_CMD="$(mkcard2 "$MR" "acceptance commands" "$WORK/body-newscope.md" "$WORK/acc-cmds.md")"; stampat "$MR" "$N_CMD" "$BASE_SHA"
+
+push_commit moved-repo docs/x.md
+eq "moved, unrelated file: moved false" "$(moved "$MR" "$N_FILE" | jq -c '[.moved, .reason]')" '[false,null]'
+eq "moved, unrelated file: head is the new default head" "$(moved "$MR" "$N_FILE" | jq -c .head)" "\"$(head_of "$MR" refs/remotes/origin/main)\""
+
+push_commit moved-repo src/a.js
+eq "moved by a Scope file: reason" "$(moved "$MR" "$N_FILE" | jq -c '[.moved, .reason]')" '[true,"ground moved: src/a.js"]'
+eq "moved by a Scope file: paths holds the changed path" "$(moved "$MR" "$N_FILE" | jq -c '.paths | index("src/a.js") != null')" true
+
+push_commit moved-repo src/deep/b.js
+eq "moved by a Scope directory: a file under it" "$(moved "$MR" "$N_DIR" | jq -c .moved)" true
+eq "moved by a Scope directory: reason starts with ground moved" "$(moved "$MR" "$N_DIR" | jq -r '.reason | startswith("ground moved: src/")')" true
+
+push_commit moved-repo test/a.test.js
+eq "moved by an acceptance path in backticks" "$(moved "$MR" "$N_ACC" | jq -c .moved)" true
+
+# acceptance spans that are commands add no path; the Scope file src/b.js did not change
+eq "acceptance command spans: moved is false" "$(moved "$MR" "$N_CMD" | jq -c .moved)" false
+inrepo "$MR" bash "$SCRIPTS/premise.sh" moved "$N_CMD" >/dev/null 2>&1
+eq "acceptance command spans: exit 0" "$?" 0
+eq "acceptance command spans: paths holds neither command" \
+  "$(moved "$MR" "$N_CMD" | jq -c '[.paths[] | select(test("npm|curl|[ ]"))] | length')" 0
+inrepo "$MR" bash "$SCRIPTS/premise.sh" moved 99999 >/dev/null 2>&1
+eq "moved, unreadable card: exit 1" "$?" 1
+
 printf '\npassed: %s  failed: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

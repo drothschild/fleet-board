@@ -178,4 +178,103 @@ plan_scope "$(printf -- '- /etc/passwd\n- //\n- ../x/y\n- a/../b')"
 assert_jq "scope-dropped: a Ready card whose Scope yields only dropped tokens plans wait" "$(card 14 action)" '"wait"'
 assert_jq "scope-dropped: the reason is Scope lists no paths" "$(card 14 reason)" '"Scope lists no paths"'
 
+# ---------------------------------------------------------------------------
+# Premise check: a Ready card whose ground moved plans check_premise, not start.
+# The cards are built at run time (scope_issue), with the default branch as origin refs
+# in the case repo and the stamp carried in the issue fixture's "premise" member.
+PM_ON="$(printf 'premise_check:\n  enabled: true')"
+PM_OFF="$(printf 'premise_check:\n  enabled: false')"
+# pm_setup <extra YAML> <path touched on the default branch>: the case, with origin/main one commit past the base
+pm_setup() {
+  setup_case ready-start "$1"
+  PM_DIR="$FAKE_GH_DIR/pm"; mkdir -p "$PM_DIR"
+  PM_BASE="$(git -C "$REPO" rev-parse HEAD)"
+  mkdir -p "$REPO/$(dirname "$2")"
+  printf 'x\n' > "$REPO/$2"
+  git -C "$REPO" add "$2"; git -C "$REPO" commit -q -m "touch $2"
+  PM_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" update-ref refs/remotes/origin/main "$PM_HEAD"
+  git -C "$REPO" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+}
+# pm_issue <n> <column> <scope text or NONE> <stamp sha or empty> [<depends-on card number>]
+pm_issue() {
+  scope_issue "$PM_DIR" "$1" "$2" "$3"
+  jq -c --arg s "$4" --arg d "${5:-}" '
+    (if $s == "" then . else .premise = {sha: $s, at: "2026-01-01T00:00:00Z", by: "create"} end)
+    | (if $d == "" then . else .body += "\n## Depends on\n- #\($d)\n" end)' \
+    "$PM_DIR/issue-$1.json" > "$PM_DIR/issue-$1.new" && mv "$PM_DIR/issue-$1.new" "$PM_DIR/issue-$1.json"
+}
+PM_SCOPE='- Modify `src/calc.js`: the change'
+PM_OTHER='- Modify `src/other.js`: the change'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" "$PM_BASE"; scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-moved: a Scope file changed since the stamp plans check_premise" "$(card 12 action)" '"check_premise"'
+assert_jq "premise-moved: the reason names the path" "$(card 12 reason)" '"ground moved: src/calc.js"'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" "$PM_HEAD"; scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-fresh: a card stamped at the head plans start" "$(card 12 action)" '"start"'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""; scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-no-stamp: a card with no stamp plans check_premise" "$(card 12 action)" '"check_premise"'
+assert_jq "premise-no-stamp: the reason" "$(card 12 reason)" '"no premise stamp"'
+
+pm_setup "$PM_OFF" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""; scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-disabled: with premise_check.enabled false an unstamped card plans start" "$(card 12 action)" '"start"'
+
+# setup_case turns the check off unless the case's extra YAML sets the key
+setup_case ready-start
+assert_eq "premise-default-lib: no extra YAML, the config file sets premise_check.enabled false" \
+  "$(grep -A1 '^premise_check:' "$REPO/.fleet-board.yml" | grep -c 'enabled: false')" 1
+setup_case ready-start "$PM_ON"
+assert_eq "premise-default-lib: extra YAML that sets it true is kept" \
+  "$(grep -A1 '^premise_check:' "$REPO/.fleet-board.yml" | grep -c 'enabled: true')" 1
+assert_eq "premise-default-lib: the key appears once when the extra YAML sets it" "$(grep -c '^premise_check:' "$REPO/.fleet-board.yml")" 1
+
+# the other gates come first, with no stamp
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_OTHER" "" 20
+scope_routes "$PM_DIR" "12" ""
+printf 'issue view 20 --repo acme/toy --json state,stateReason\t0\t%s/common/dep-open.json\n' "$TICK" >> "$PM_DIR/routes"
+run_check "$SCRIPT"
+assert_jq "premise-deps-first: an unmet dependency plans wait, not check_premise" "$(card 12 action)" '"wait"'
+
+PM_STACK_ON="$(printf 'stacking:\n  enabled: true\n%s' "$PM_ON")"
+pm_setup "$PM_STACK_ON" src/calc.js
+pm_issue 11 in_review "$PM_OTHER" "$PM_HEAD"
+pm_issue 12 ready "$PM_SCOPE" "" 11
+scope_review_note "$PM_DIR" 11
+scope_routes "$PM_DIR" "12" "11"
+printf '{"state":"OPEN"}\n' > "$PM_DIR/pr-state.json"
+printf 'pr view 33 --repo acme/toy --json state\t0\t%s/pr-state.json\n' "$PM_DIR" >> "$PM_DIR/routes"
+run_check "$SCRIPT"
+assert_jq "premise-stacked: a stacked child plans start, with no check" "$(card 12 action)" '"start"'
+assert_jq "premise-stacked: stacked on its parent" "$(card 12 reason)" '"ready, stacked on #11"'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""
+sed -i.bak 's/- it works/- The slider looks right on device/' "$PM_DIR/issue-12.json"
+scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-lint-first: a card that fails card lint plans skip_card_lint" "$(card 12 action)" '"skip_card_lint"'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready NONE ""; scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-no-scope: no Scope paths waits" "$(card 12 action)" '"wait"'
+assert_jq "premise-no-scope: the reason" "$(card 12 reason)" '"Scope lists no paths"'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""; pm_issue 14 ready "$PM_SCOPE" ""
+scope_routes "$PM_DIR" "12 14" ""; run_check "$SCRIPT"
+assert_jq "premise-scope-free: overlapping unstamped cards both plan check_premise" \
+  '[.cards[] | select(.number == 12 or .number == 14) | .action]' '["check_premise","check_premise"]'
+
+pm_setup "$PM_ON" src/calc.js
+pm_issue 12 ready "$PM_SCOPE" ""
+cp "$TICK/action-failures-ready-3/comments-12.json" "$PM_DIR/comments-12.json"
+scope_routes "$PM_DIR" "12" ""; run_check "$SCRIPT"
+assert_jq "premise-failures: action_failures at max_rounds blocks an unstamped card" "$(card 12 action)" '"block"'
+
 tp_finish

@@ -75,7 +75,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
 - **Tick plan** (`scripts/tick-plan.sh`). Prints one JSON plan: an action per card from a
   single jq decision table (start, continue_implementor, start_review, review, fix,
   mark_ready, merge, verify_main, finish, after_merge, merge_refusal, rerun_checks, checks_failed, to_human_qa, file_pending, block, unblock,
-  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage). A clean, current review in In Review
+  skip, skip_no_acceptance, skip_card_lint, wait, advance_stage, review_stage, check_premise). A clean, current review in In Review
   with `merge.policy: auto`, a non-draft PR, no human QA need, no pending check and a red check that
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
@@ -102,6 +102,14 @@ no file here. The gate's residual bypasses and false positives are listed in the
   every other `"version"` must equal the three-way result, and no key may be repeated
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
+- **Premise check** (`premise_check.enabled`, default false; `models.checker`, default sonnet).
+  With it on, a Ready card that would plan a non-stacked `start` (acceptance, lint clean, no unmet
+  dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
+  `moved` true, with its reason (`ground moved: <path>`, `no premise stamp`, `premise stamp commit is
+  unknown`) as the plan reason. `moved` is false with no default head (no `origin`). The `Scope lists
+  no paths` wait still comes first and the Scope-overlap wait does not apply. Until the card that
+  handles the verdicts lands, the scheduler does not run `check_premise`. `tests/tick-plan-lib.sh`
+  `setup_case` writes `premise_check.enabled: false` unless the case's extra YAML sets the key.
 - **Declared Scope parsing.** `tick-plan.sh` reads a card's `## Scope` section for backticked
   spans and plain-text path tokens (no whitespace, holding a `/` or ending in an extension;
   leading `(` and trailing `.,:;)` stripped). A token ending in `/` is a directory scope.

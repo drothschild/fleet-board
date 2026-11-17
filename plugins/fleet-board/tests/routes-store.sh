@@ -38,6 +38,8 @@
 # does not list it is left out (the listing, not the issue, says which cards
 # a column holds).
 #
+# An issue fixture's "premise" object becomes the card's premise stamp.
+#
 # The store is rebuilt from scratch on every call (the old fake gh answered
 # every read from the fixtures too, whatever a script wrote before), so a
 # suite calls it before each run. A routes file with no card route
@@ -141,7 +143,7 @@ for f in "$WORK"/issue-*; do
        labels: [.labels[]?.name | select(startswith("fleet:") | not)],
        next_comment_id: (($c | map(.id) | max // 0) + 1),
        comments: [$c[] | {id, author: .user.login, body, created_at: (.created_at // "2026-01-01T00:00:00Z")}],
-       created_at: "2026-01-01T00:00:00Z"}' "$f")"
+       created_at: "2026-01-01T00:00:00Z"} + (if (.premise | type) == "object" then {premise} else {} end)' "$f")"
 done
 for f in "$WORK"/broken-*; do
   [ -e "$f" ] || continue

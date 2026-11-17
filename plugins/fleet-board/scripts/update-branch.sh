@@ -52,6 +52,9 @@
 #                   branch with git reset --keep to the head it had before this
 #                   run, so the next run merges again instead of finding nothing
 #                   to do. A refused reset --keep is reported; the exit stays 1.
+# Before it merges the base, the script brings the branch up to origin/<branch>: behind it
+# fast-forwards, ahead (unpushed commits) it keeps them and pushes them, diverged it exits 1
+# with a message naming the branch and changes nothing.
 # Exit codes: 0 done (clean merge), 1 a git, gh or board step failed or the
 # merge conflicted (the manager counts the failure), 2 usage error.
 
@@ -255,6 +258,24 @@ CUR="$(git -C "$WT" symbolic-ref -q --short HEAD)" || CUR=""
 [ "$CUR" = "$BRANCH" ] || fb_die 1 "$WT has ${CUR:-a detached HEAD} checked out, not $BRANCH"
 
 git -C "$WT" fetch origin || fb_die 1 "git fetch origin failed in $WT"
+
+# Catch up with origin/<branch> before merging the base: a commit pushed from elsewhere
+# leaves the worktree behind, and anything committed on that old head would be rejected
+# as not a fast-forward. Behind: fast-forward. Ahead (unpushed commits): keep them, they
+# are pushed below. Diverged: refuse and change nothing.
+LOCAL0="$(git -C "$WT" rev-parse HEAD)" || fb_die 1 "cannot read HEAD in $WT"
+REMOTE0="$(git -C "$WT" rev-parse -q --verify "refs/remotes/origin/$BRANCH" 2>/dev/null)" || REMOTE0=""
+if [ -n "$REMOTE0" ] && [ "$LOCAL0" != "$REMOTE0" ]; then
+  if git -C "$WT" merge-base --is-ancestor "$REMOTE0" "$LOCAL0" 2>/dev/null; then
+    : # ahead of origin: the unpushed commits are kept
+  elif git -C "$WT" merge-base --is-ancestor "$LOCAL0" "$REMOTE0" 2>/dev/null; then
+    git -C "$WT" merge -q --ff-only "$REMOTE0" >/dev/null \
+      || fb_die 1 "cannot fast-forward $BRANCH to origin/$BRANCH in $WT"
+  else
+    fb_die 1 "$BRANCH has diverged from origin/$BRANCH in $WT (local $LOCAL0, origin $REMOTE0); nothing was changed, a person or the fixer must reconcile them"
+  fi
+fi
+
 BEFORE="$(git -C "$WT" rev-parse HEAD)" || fb_die 1 "cannot read HEAD in $WT"
 
 MERGE_STARTED=1
