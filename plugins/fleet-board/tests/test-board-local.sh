@@ -350,7 +350,7 @@ scope_of() { bash -c '. "$1/board-lib.sh"; fb_card_scope_paths "$2"' _ "$SCRIPTS
 scope_check() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
 scope_check "scope: a bare / between paths is not a path" "$(scope_of $'## Scope\n- a/b.py / c.py\n')" '["a/b.py","c.py"]'
 scope_check "scope: absolute, slashes-only, dot and .. tokens are dropped, relative paths kept" \
-  "$(scope_of $'## Scope\n- /etc/passwd // . ./x ../y a/../b docs/ src/a.sh `plugins/x/y.md`\n')" '["docs/","plugins/x/y.md","src/a.sh"]'
+  "$(scope_of $'## Scope\n- /etc/passwd // . ../y a/../b a/./b docs/ src/a.sh `plugins/x/y.md`\n')" '["docs/","plugins/x/y.md","src/a.sh"]'
 scope_check "scope: a plain-text route after a path is not a path" \
   "$(scope_of $'## Scope\n- plugins/fleet-board/scripts/board-web.py: GET /api/cards/<n>/transcripts\n')" '["plugins/fleet-board/scripts/board-web.py"]'
 seed_card 8 backlog 'Dropped only' $'Work.\n\n## Scope\n- /etc/passwd\n- //\n- ../x\n'

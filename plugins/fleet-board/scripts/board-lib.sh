@@ -229,7 +229,7 @@ fb_card_has_acceptance() {
 # . , : ; ) stripped), with no whitespace that holds a "/" or ends in a file
 # extension. Prints [] when there is none or the body cannot be parsed.
 # The Scope parser as a jq program over the string $b (shared with tick-plan.sh's one-call card read)
-FB_SCOPE_JQ='def relative: (startswith("/") | not) and ((split("/") | any(. == "." or . == "..")) | not);
+FB_SCOPE_JQ='def relative: (startswith("/") | not) and ((sub("^([.]/)+"; "") | split("/") | any(. == "." or . == "..")) | not);
     $b | split("\n") | reduce .[] as $l ({in: false, paths: []};
       if ($l | test("^##[ \t]+Scope[ \t]*$")) then .in = true
       elif ($l | test("^##[ \t]")) then .in = false
