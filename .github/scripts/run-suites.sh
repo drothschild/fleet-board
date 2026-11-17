@@ -4,12 +4,30 @@
 # Usage: bash .github/scripts/run-suites.sh 'plugins/fleet-board/tests/test-*.sh'
 #
 # Suites run in parallel, SUITE_JOBS at a time (default: the number of CPUs).
-# Each suite's output is captured to its own file, so results are printed in
-# glob order, one line per suite, as when they ran one after another; a failed
-# suite's captured output is shown once (it is not run a second time).
-# SUITE_JOBS=1 runs them one at a time.
+# Each suite's output is captured to its own file. While they run, a "start" and
+# a "done" line per suite go to stderr, so a suite that hangs is the one with a
+# start and no done. The summary is then printed in glob order, one line per
+# suite, as when they ran one after another; a failed suite's captured output is
+# shown once (it is not run a second time). SUITE_JOBS=1 runs them one at a time.
+# A suite that never reported (its worker was killed, or xargs stopped early) is
+# listed as NOT RUN and fails the run.
 set -uo pipefail
 unset CDPATH
+
+# Worker mode, called by xargs: run suite <n> of <work>/list, keep its output and exit code.
+if [ "${1:-}" = "--one" ]; then
+  n="$2"; work="$3"
+  suite="$(sed -n "${n}p" "$work/list")"
+  printf 'start %s\n' "$suite" >&2
+  start=$(date +%s)
+  "$BASH" "$suite" > "$work/$n.out" 2>&1 < /dev/null
+  rc=$?
+  secs=$(( $(date +%s) - start ))
+  printf '%s %s\n' "$rc" "$secs" > "$work/$n.rc"
+  printf 'done  %s (exit %s, %ss)\n' "$suite" "$rc" "$secs" >&2
+  exit 0   # a suite's own failure never stops the others
+fi
+
 pattern="${1:?usage: run-suites.sh GLOB}"
 jobs="${SUITE_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
 case "$jobs" in ''|*[!0-9]*|0) jobs=2 ;; esac
@@ -32,25 +50,21 @@ done
 total="$(grep -c . "$work/list")"
 if [ "$total" -eq 0 ]; then echo "suites: 0, failed: 0"; echo "no suites matched $pattern"; exit 1; fi
 
-# One worker per line number: run the suite, keep its output and exit code.
-# A suite's own failure never stops the others (xargs gets exit 0 back).
-run_one() {
-  n="$1"; work="$2"
-  suite="$(sed -n "${n}p" "$work/list")"
-  start=$(date +%s)
-  "$BASH" "$suite" > "$work/$n.out" 2>&1
-  printf '%s %s\n' "$?" "$(( $(date +%s) - start ))" > "$work/$n.rc"
-  return 0
-}
-export -f run_one
-seq 1 "$total" | xargs -P "$jobs" -I{} "$BASH" -c 'run_one "$1" "$2"' _ {} "$work"
+echo "::group::progress ($total suites, $jobs at a time)"
+seq 1 "$total" | xargs -P "$jobs" -I{} "$BASH" "$0" --one {} "$work"
+echo "::endgroup::"
 
 failed=0
+notrun=0
 n=0
 while IFS= read -r suite; do
   n=$((n + 1))
-  rc=1; secs=?
-  [ -f "$work/$n.rc" ] && read -r rc secs < "$work/$n.rc"
+  if [ ! -f "$work/$n.rc" ]; then
+    notrun=$((notrun + 1))
+    printf '%s ... NOT RUN (no result: its worker was killed or the run stopped early)\n' "$suite"
+    continue
+  fi
+  read -r rc secs < "$work/$n.rc"
   if [ "$rc" = 0 ]; then
     printf '%s ... PASS (%ss)\n' "$suite" "$secs"
   else
@@ -64,5 +78,5 @@ while IFS= read -r suite; do
     echo "::endgroup::"
   fi
 done < "$work/list"
-echo "suites: $total, failed: $failed (run $jobs at a time)"
-[ "$failed" -eq 0 ]
+echo "suites: $total, failed: $failed, not run: $notrun (run $jobs at a time)"
+[ "$failed" -eq 0 ] && [ "$notrun" -eq 0 ]
