@@ -298,6 +298,78 @@ $OUT3
 EOF4
 case "$OUT3" in *"ok   "*|*"FAIL "*) ;; *) fail "idle close driver produced results" "$OUT3" ;; esac
 
+echo "Case: chat view docks as a drawer"
+CSSFLAT="$(tr '\n' ' ' < "$STATIC/board.css")"
+CHATRULE="$(printf '%s' "$CSSFLAT" | grep -o '\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}' | head -1)"
+if printf '%s' "$CHATRULE" | grep -Eq 'width: *570px' && printf '%s' "$CHATRULE" | grep -Eq 'right: *0' && printf '%s' "$CHATRULE" | grep -Eq 'transform: *none'; then
+  pass "board.css has a .pl-modal[data-view=\"chat\"] .pl-panel rule with width: 570px, right: 0 and transform: none"
+else
+  fail "board.css has a .pl-modal[data-view=\"chat\"] .pl-panel rule with width: 570px, right: 0 and transform: none" "rule: $CHATRULE"
+fi
+MEDIA="$(printf '%s' "$CSSFLAT" | grep -o '@media (max-width: 720px) {[^@]*\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}' | head -1 | grep -o '\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}')"
+if printf '%s' "$MEDIA" | grep -Eq 'width: *100vw'; then
+  pass "Inside the max-width: 720px media block, the chat-view .pl-panel rule sets width: 100vw"
+else
+  fail "Inside the max-width: 720px media block, the chat-view .pl-panel rule sets width: 100vw" "media: $MEDIA"
+fi
+
+DRIVER4="$(mktemp)"
+trap 'rm -f "$DRIVER" "$PATCHED" "$DRIVER2" "$DRIVER3" "$DRIVER4"' EXIT
+cat > "$DRIVER4" <<'JS'
+"use strict";
+const path = require("node:path");
+const loadBoard = require(process.argv[2]);
+const boardJs = path.join(process.argv[3], "board.js");
+process.on("unhandledRejection", () => {});
+const ok = (name, cond, info) => console.log((cond ? "ok   " : "FAIL ") + name + (cond ? "" : "\t" + info));
+(async () => {
+  const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+  const h = loadBoard(boardJs, async (url, opts) => {
+    let data;
+    if (url === "/api/board") data = {repo: "acme/toy", states, cards: [], run: {state: "idle"}};
+    else if (url === "/api/run") data = {state: "idle"};
+    else if (url === "/api/planner" && opts.method === "POST") data = {id: "c1"};
+    else if (url === "/api/planner/c1/messages") data = {ok: true};
+    else if (url === "/api/planner/c1/draft") data = {import_id: "imp7"};
+    else if (url === "/api/planner/c1") data = {running: false, turns: [{role: "user", text: "p"}, {role: "assistant", text: "r"}]};
+    else if (url === "/api/import/imp7") data = {state: "ready", elapsed_s: 1, table: "t", cards: {cards: [{key: "a", title: "A"}]}};
+    else throw new Error("Unexpected request: " + opts.method + " " + url);
+    return {ok: true, status: 200, json: async () => data};
+  });
+  const runTimers = async () => { const t = h.timers.splice(0); for (const fn of t) { try { await fn(); } catch (e) {} } await h.flush(); };
+  h.ctx.matchMedia = () => ({matches: true});
+  await h.flush();
+  try {
+    const S = h.ctx.__test.S;
+    const view = () => h.$("planner-modal").dataset.view;
+    await h.$("plan-btn").fire("click");
+    ok("Opening the planner sets #planner-modal data-view to chat", view() === "chat", "data-view=" + view());
+    h.$("pl-input").value = "a plan";
+    await h.$("pl-send").fire("click");
+    await runTimers();
+    await runTimers();
+    await h.$("pl-draft").fire("click");
+    await runTimers();
+    ok("Pressing Draft cards from the chat sets #planner-modal data-view to draft", !!S.imp && view() === "draft", "imp=" + !!S.imp + " data-view=" + view());
+    h.$("imp-fly").remove = () => {};
+    await h.$("imp-discard").fire("click");
+    ok("Leaving Draft cards and going back to the chat sets #planner-modal data-view back to chat", !!S.pl && !S.imp && view() === "chat", "pl=" + !!S.pl + " imp=" + !!S.imp + " data-view=" + view());
+  } catch (e) {
+    ok("data-view driver ran without an error", false, String(e && e.message || e));
+  }
+})();
+JS
+OUT4="$(node "$DRIVER4" "$PATCHED" "$STATIC" 2>&1)"
+while IFS= read -r line; do
+  case "$line" in
+    "ok   "*) pass "${line#ok   }" ;;
+    "FAIL "*) fail "${line#FAIL }" "" ;;
+  esac
+done <<EOF5
+$OUT4
+EOF5
+case "$OUT4" in *"ok   "*|*"FAIL "*) ;; *) fail "data-view driver produced results" "$OUT4" ;; esac
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

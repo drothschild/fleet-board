@@ -640,8 +640,22 @@ button, select, input, textarea { font: inherit; color: inherit; }
   overflow: hidden;
 }
 
+/* The chat is a narrow column, so it docks on the right like the card drawer. */
+.pl-modal[data-view="chat"] .pl-panel {
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: auto;
+  transform: none;
+  width: 570px;
+  height: auto;
+  border-width: 0 0 0 1px;
+  border-radius: 0;
+}
+
 @media (max-width: 720px) {
   .pl-panel { top: 0; left: 0; transform: none; width: 100vw; height: 100vh; border: 0; border-radius: 0; }
+  .pl-modal[data-view="chat"] .pl-panel { width: 100vw; height: 100vh; border-width: 0; }
 }
 
 /* --- import view --------------------------------------------------------- */
