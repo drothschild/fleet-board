@@ -211,6 +211,7 @@ eq "moved, no origin ref: moved false, reason null, head null" "$(moved "$NOREM"
 
 MR="$(mkrepo moved-repo)"
 N="$(mkcard "$MR" "no stamp")"
+jq 'del(.premise)' "$MR/.fleet-board/cards/$N.json" > "$MR/.fleet-board/cards/$N.json.t" && mv "$MR/.fleet-board/cards/$N.json.t" "$MR/.fleet-board/cards/$N.json"
 eq "moved, no stamp: moved true" "$(moved "$MR" "$N" | jq -c .moved)" true
 eq "moved, no stamp: reason" "$(moved "$MR" "$N" | jq -c .reason)" '"no premise stamp"'
 eq "moved, no stamp: head is the default head" "$(moved "$MR" "$N" | jq -c .head)" "\"$(head_of "$MR" refs/remotes/origin/main)\""
