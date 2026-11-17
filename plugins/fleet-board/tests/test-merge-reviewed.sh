@@ -863,6 +863,17 @@ run_merge
 assert_exit "bump paths match: exit 0" 0
 assert_eq "bump paths match: the version is raised" "$(remote_version)" 0.28.4
 
+echo "version_bump: merge - a failed raise reports the script's own reason, not git's push output"
+setup_bump ""
+printf '#!/bin/sh\nexit 1\n' > "$BARE/hooks/pre-receive"; chmod +x "$BARE/hooks/pre-receive"
+finalize
+run_merge
+assert_exit "failed raise: exit 1" 1
+assert_eq "failed raise: stderr ends with the lane's own line" \
+  "$(printf '%s\n' "$LAST_ERR" | grep -v '^$' | tail -1 | grep -c 'the lane could not raise the versions of PR #34; not merged')" 1
+assert_eq "failed raise: stderr holds no line starting To" "$(printf '%s\n' "$LAST_ERR" | grep -c '^To ')" 0
+assert_eq "failed raise: nothing merged" "$(cnt "pr merge")" 0
+
 echo "version_bump: merge - a refused merge, then the base moves"
 setup_bump ""
 printf 'pr merge *\t1\t-\n' | cat - "$R" > "$R.new" && mv "$R.new" "$R"
