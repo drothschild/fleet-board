@@ -1663,7 +1663,8 @@ def test_a_stage_report_carrying_pass_is_recorded_in_review_passes_beside_review
     first = {'pass': 1, 'round': 1, 'sha': head, 'critical': 0, 'important': 0, 'findings': []}
     b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
                 'worktree': b.worktree, 'last_review': LAST_REVIEW, 'review_passes': {'security': [first]}})
-    worktree_ok(b)
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': head, 'base': 'bace000'})
+                                           if a[0] == 'review' else b.worktree + '\n')
     b.gh_result = ok('diff --git a/x b/x\n+line\n')
     b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
     started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=head, **{'pass': 2})
