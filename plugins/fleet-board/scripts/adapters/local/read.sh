@@ -10,6 +10,7 @@ fl_require_store
 # the third the read.
 CARD_FILE="$(fl_card_file "$1")"
 [ -f "$CARD_FILE" ] || fb_die 1 "card #$1 not found in $(fl_cards_dir)"
+CARD="$(cat "$CARD_FILE")"
 RES="$(jq -cr --arg m "$FB_MARKER" --arg me "$ME" --arg url "$(fl_url "$1")" --arg states "$FB_STATES" '
   def find_note:
     [(.comments // [])[] | select((.body | type) == "string" and (.body | startswith($m))) | select(.author == $me)] | last;
@@ -33,7 +34,7 @@ RES="$(jq -cr --arg m "$FB_MARKER" --arg me "$ME" --arg url "$(fl_url "$1")" --a
       manager_note_id: (if $n then $n.id else null end),
       item_id: null,
       comments: [(.comments // [])[] | {id, author, body, created_at}]
-    }' "$CARD_FILE" 2>/dev/null)" \
+    }' <<<"$CARD" 2>/dev/null)" \
   || fb_die 1 "card #$1 is not valid JSON: $CARD_FILE"
 STATE="${RES%%$'\n'*}"; RES="${RES#*$'\n'}"
 KNOWN="${RES%%$'\n'*}"; RES="${RES#*$'\n'}"
