@@ -216,5 +216,38 @@ assert_jq "merging drift: a conflict-resolving merge of main plans skip" "$(card
 plan_real nonmerge merging
 assert_jq "merging drift: a non-merge commit after the review plans skip" "$(card 12 action)" '"skip"'
 
+# A merging card judged by reviews[<stage>], as the In Review row judges it: every routed stage has a
+# clean record at the head, and the evidence reviewer is clean at the head. last_review holds whichever
+# report came last, so a stage-less (evidence) record there must not skip a card routed to a stage.
+# merging_note <note-json>: the merging-routed-first case with that note, routed to security
+merging_note() {
+  setup_case merging-routed-first "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  jq -cn --arg note "$1" '[{id: 555, user: {login: "fleet-bot"},
+    body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: merging\n\n```json\n" + $note + "\n```\n"),
+    created_at: "2026-09-28T00:01:00Z"}]' > "$d/comments.json"
+  sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-12.json#	$d/comments.json#" "$TICK/merging-routed-first/routes" > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+M_CLEAN='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
+M_HEAD='"state":"merging","branch":"fleet/12-add-subtract","pr":34,"round":1,"stage":null'
+
+merging_note "{$M_HEAD,\"reviewed_stages\":[],\"last_review\":$M_CLEAN,\"reviews\":{\"evidence\":$M_CLEAN,\"security\":$(jq -c '.stage="security"' <<<"$M_CLEAN")}}"
+assert_jq "merging reviews[]: routed to security, evidence and security clean at the head, last_review the evidence record, plans merge" "$(card 12 action)" '"merge"'
+
+merging_note "{$M_HEAD,\"reviewed_stages\":[],\"last_review\":$M_CLEAN,\"reviews\":{\"evidence\":$M_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":1,\"stage\":\"security\"}}}"
+assert_jq "merging reviews[]: security holding an Important finding at the head plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging reviews[]: the Important finding's reason names the security stage" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'security')" '1'
+
+merging_note "{$M_HEAD,\"reviewed_stages\":[],\"last_review\":$M_CLEAN,\"reviews\":{\"evidence\":$M_CLEAN}}"
+assert_jq "merging reviews[]: no reviews.security record plans skip" "$(card 12 action)" '"skip"'
+assert_jq "merging reviews[]: the missing record's reason names security as not reviewed yet" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'security not reviewed yet')" '1'
+
+merging_note "{$M_HEAD,\"reviewed_stages\":[\"security\"],\"last_review\":$M_CLEAN,\"reviews\":{\"evidence\":$M_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":1,\"important\":0,\"stage\":\"security\"}}}"
+assert_jq "merging reviews[]: reviewed_stages listing security does not hide a Critical finding in reviews.security (skip)" "$(card 12 action)" '"skip"'
+assert_jq "merging reviews[]: that skip's reason names security" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'security')" '1'
+
 
 tp_finish
