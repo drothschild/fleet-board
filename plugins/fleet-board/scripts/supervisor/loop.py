@@ -440,10 +440,11 @@ class Supervisor:
         self._merger_hold &= planned | active   # a card the planner no longer plans a merger for releases it
         return self.state.lane is None and not self._merger_hold and not active
 
-    def _count_exception(self, card, action_name, exc):
-        """An exception that escaped the driver is one no-progress failure of the card (best effort)."""
+    def _count_exception(self, card, action_name, exc, text=None):
+        """An exception that escaped the driver is one no-progress failure of the card (best effort).
+        `text` replaces the default `Type: first line` message."""
         first = (str(exc).splitlines() or [''])[0]
-        message = re.sub(r'[\x00-\x1f\x7f]', ' ', '%s: %s' % (type(exc).__name__, first)).strip()[:200]
+        message = re.sub(r'[\x00-\x1f\x7f]', ' ', text if text is not None else '%s: %s' % (type(exc).__name__, first)).strip()[:200]
         self.state.event('action_failed', card=card, action=action_name, error=message)
         if type(card) is not int or card <= 0:
             return
@@ -806,10 +807,13 @@ class Supervisor:
         elif not free:
             try:
                 ignore = ((self.config or {}).get('supervisor') or {}).get('scope_ignore') or []
-                scope = scopes.normalize(scopes.drop_ignored(list(row.get('declared_paths') or [])
-                                                             + list(row.get('actual_paths') or []), ignore), self.root)
+                raw = list(row.get('declared_paths') or []) + list(row.get('actual_paths') or [])
+                kept = scopes.drop_blank(raw)
+                if raw and not kept:
+                    raise ValueError('invalid scope path')   # never the whole repository by accident
+                scope = scopes.normalize(scopes.drop_ignored(kept, ignore), self.root)
             except ValueError as exc:
-                self.state.event('action_failed', card=number, action=name, error='scope: %s' % exc)
+                self._count_exception(number, name, exc, 'scope: %s' % exc)
                 return
             stack = row.get('stack')
             ancestors = stack.get('ancestors') if isinstance(stack, dict) else None
