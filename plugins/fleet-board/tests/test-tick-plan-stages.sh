@@ -312,12 +312,12 @@ for row in in-review merging; do
     '[{"name":"lint-docs","reason":"docs lint is flaky","until":"2026-12-31","state":"red"},{"name":"ci/legacy-lint","reason":"legacy status","until":"2026-11-11","state":"red"}]'
   assert_jq "$row-ignore: no expiry warning" '.warnings' '[]'
   plan $row-ignore-red "$(IGN_YAML 2026-12-31 2026-11-10)"
-  assert_jq "$row-ignore-expired: an expired entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"rerun_checks"')"
+  assert_jq "$row-ignore-expired: an expired entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
   assert_jq "$row-ignore-expired: warning names the entry and its date" '.warnings' '["merge.ignore_checks entry ci/legacy-?int expired 2026-11-10"]'
   plan $row-ignore-pending "$(IGN_YAML 2026-12-31 2026-12-31)"
   assert_jq "$row-ignore-pending: a pending check never counts as green" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
   plan $row-ignore-other-red "$(IGN_YAML 2026-12-31 2026-12-31)"
-  assert_jq "$row-ignore-other-red: a red check no entry matches still blocks" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"rerun_checks"')"
+  assert_jq "$row-ignore-other-red: a red check no entry matches still blocks" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
 done
 # pending: true lets a matching check that is still running count as green
 IGN_PENDING_YAML() { # IGN_PENDING_YAML <until>
@@ -332,7 +332,7 @@ for row in in-review merging; do
   plan $row-ignore-pending "$(IGN_PENDING_YAML 2026-11-10)"
   assert_jq "$row-ignore-pending: an expired pending entry no longer counts" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
   plan $row-ignore-other-red "$(IGN_PENDING_YAML 2026-12-31)"
-  assert_jq "$row-ignore-pending: pending: true does not cover a red check it does not name" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"rerun_checks"')"
+  assert_jq "$row-ignore-pending: pending: true does not cover a red check it does not name" "$(card 12 action)" "$([ $row = merging ] && echo '"skip"' || echo '"wait"')"
   plan $row-ignore-red "$(IGN_PENDING_YAML 2026-12-31)"
   assert_jq "$row-ignore-pending: a pending: true entry also covers a red check of the same name" "$(card 12 action)" '"merge"'
   assert_jq "$row-ignore-pending: that red check is recorded as red" "$(card 12 ignored_checks)" \
@@ -345,7 +345,7 @@ STAR_YAML() { # STAR_YAML [pending]: one "*" entry, with pending: true when aske
   return 0
 }
 plan in-review-ignore-startup "$AUTO"
-assert_jq "check-states: STARTUP_FAILURE and STALE are not green without an entry" "$(card 12 action)" '"rerun_checks"'
+assert_jq "check-states: STARTUP_FAILURE and STALE are not green without an entry" "$(card 12 action)" '"wait"'
 plan in-review-ignore-startup "$(STAR_YAML)"
 assert_jq "check-states: a red-only entry covers STARTUP_FAILURE and STALE" "$(card 12 action)" '"merge"'
 plan in-review-ignore-startup "$(STAR_YAML pending)"
@@ -357,17 +357,17 @@ assert_jq "check-states: an unknown conclusion never merges, even under * with p
 plan in-review-ignore-noconclusion "$(STAR_YAML pending)"
 assert_jq "check-states: COMPLETED with a null conclusion never merges, even under * with pending: true" "$(card 12 action)" '"wait"'
 plan in-review-ignore-nameless "$(STAR_YAML pending)"
-assert_jq "check-states: a red check with no name is never ignored, even under *" "$(card 12 action)" '"rerun_checks"'
+assert_jq "check-states: a red check with no name is never ignored, even under *" "$(card 12 action)" '"wait"'
 unset FLEET_BOARD_TODAY
 plan in-review-merge-auto "$AUTO"
 assert_jq "ignore_checks: an ordinary merge ignores nothing" "$(card 12 ignored_checks)" '[]'
 plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)" 
 assert_jq "ignore_checks: case-sensitive glob (unchanged config matches)" "$(card 12 action)" '"merge"'
 plan in-review-ignore-red "$(printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "LINT-*"\n      reason: r\n      until: 2026-12-31\n')"
-assert_jq "ignore_checks: glob matching is case-sensitive" "$(card 12 action)" '"rerun_checks"'
+assert_jq "ignore_checks: glob matching is case-sensitive" "$(card 12 action)" '"wait"'
 export FLEET_BOARD_TODAY=2027-01-01
 plan in-review-ignore-red "$(IGN_YAML 2026-12-31 2026-12-31)"
-assert_jq "ignore_checks: today is injectable (FLEET_BOARD_TODAY)" "$(card 12 action)" '"rerun_checks"'
+assert_jq "ignore_checks: today is injectable (FLEET_BOARD_TODAY)" "$(card 12 action)" '"wait"'
 unset FLEET_BOARD_TODAY
 
 # A keyed refusal leaves pending_merge at the same head: the planner must not re-plan merge every cycle

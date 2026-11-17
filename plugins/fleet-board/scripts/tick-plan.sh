@@ -1235,7 +1235,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif $c.needs_human_qa != false then act("skip"; "human-QA need unknown")
           elif $c.pr_info.isDraft then act("mark_ready"; "no Critical/Important findings; PR is a draft")
           elif $cfg.merge.policy == "auto" and ($c.pr_info | green) then act("merge"; "clean review, green checks, merge.policy auto")
-          elif $cfg.merge.policy == "auto" and ($c.pr_info | any_pending | not) and ($c.pr_info | red_checks | length) > 0 then
+          elif $cfg.merge.policy == "auto" and ($c.pr_info | any_pending | not) and ($c.pr_info | red_checks | length) > 0
+               and (($c.pr_info.headRefOid // "") | type == "string" and test("^[0-9a-f]{40}$")) then
             ($c.pr_info | red_checks | map(.name) | join(", ")) as $names
             | ($c.pr_info.headRefOid // "") as $h
             | if ($n.checks_rerun.sha // null) != null and ($h | type) == "string" and $h != "" and $n.checks_rerun.sha == $h
