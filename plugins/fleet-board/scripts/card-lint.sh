@@ -51,6 +51,51 @@ BODY="${BODY//$'\r'/}"
 
 FOUND=0
 
+# "## Test changes": each bullet names one existing test as
+#   - <file>: "<test name>" changes|removed: <why>
+# with the file listed in "## Scope" and present at the card's base.
+# A body without the section is not checked.
+TC_LINES="$(awk '
+  /^##[ \t]+Test changes([ \t].*)?$/ { in_s = 1; next }
+  /^##[ \t]/ { in_s = 0 }
+  in_s && /^- / { print }
+' <<<"$BODY")"
+if [ -n "$TC_LINES" ]; then
+  TC_SCOPE="$(awk '
+    /^##[ \t]+Scope([ \t].*)?$/ { in_s = 1; next }
+    /^##[ \t]/ { in_s = 0 }
+    in_s && /^- / { sub(/^- +/, ""); gsub(/`/, ""); print $1 }
+  ' <<<"$BODY")"
+  TC_BASE=HEAD
+  for ref in origin/HEAD origin/main; do
+    if git rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1; then TC_BASE="$ref"; break; fi
+  done
+  TC_RE='^- ([^[:space:]:]+): "([^"]+)" (changes|removed): .+$'
+  while IFS= read -r line; do
+    if [[ ! "$line" =~ $TC_RE ]]; then
+      printf 'test-changes: %s: want - <test file path>: "<exact test name>" changes|removed: <why>\n' "$line"
+      FOUND=1
+      continue
+    fi
+    tc_file="${BASH_REMATCH[1]}"
+    tc_in_scope=0
+    while IFS= read -r sp; do
+      [ -n "$sp" ] || continue
+      case "$sp" in
+        */) case "$tc_file" in "$sp"*) tc_in_scope=1 ;; esac ;;
+        *) [ "$sp" = "$tc_file" ] && tc_in_scope=1 ;;
+      esac
+    done <<<"$TC_SCOPE"
+    if [ "$tc_in_scope" -eq 0 ]; then
+      printf 'test-changes: %s: the file is not listed in ## Scope\n' "$line"
+      FOUND=1
+    elif ! git cat-file -e "$TC_BASE:$tc_file" 2>/dev/null; then
+      printf 'test-changes: %s: the file does not exist at the base (%s)\n' "$line" "$TC_BASE"
+      FOUND=1
+    fi
+  done <<<"$TC_LINES"
+fi
+
 # A card with an acceptance field: the items are the Acceptance section
 if [ -n "$READ" ]; then
   # one jq: the item count, then each item as one line
