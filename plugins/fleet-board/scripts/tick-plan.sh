@@ -1380,6 +1380,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
       if $c.state == "in_review" and ($row.action == "fix" or $row.action == "review" or $row.action == "review_stage") then
         if ($ps | length) == 0 then
           (if $row.action == "review" then $row
+           elif $row.action == "fix" and $row.findings != null then $row
            elif (($evf + $sf) | length) > 0
            then ($evf + $sf) as $all
                 | $row + {action: "fix", stage: null, findings: $all,

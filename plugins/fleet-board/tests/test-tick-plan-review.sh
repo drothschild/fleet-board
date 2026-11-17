@@ -300,4 +300,9 @@ review_note "{$FR_HEAD,\"round\":2,\"last_review\":$SEC_IMP,\"reviews\":{\"evide
 assert_jq "one fixer pass: after the fix both review and review_stage are planned" \
   '[.cards[] | select(.number == 12) | .action] | sort' '["review","review_stage"]'
 
+# A merge-conflict fix keeps its conflicted-files findings when a routed stage has findings at the head
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$R_CLEAN,\"conflicted_files\":[\"src/calc.js\"],\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$SEC_IMP}}"
+assert_jq "one fixer pass: a conflict fix keeps its conflicted-files findings beside a stage finding" \
+  "$FIXES[0].findings | map(.text)" '["merge conflict in src/calc.js"]'
+
 tp_finish
