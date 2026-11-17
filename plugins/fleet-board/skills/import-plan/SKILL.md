@@ -44,7 +44,9 @@ Group plan tasks into PR-sized cards (one reviewable PR each). For each card wri
   across repos. The script infers each card's blockers (`blocked_by`) from them. Use `depends_on` (card keys or
   `owner/repo#N`) only for a dependency no interface shows.
 
-Write `{"cards": [...]}` to a file in the system temp directory (create it with `mktemp`).
+Write `{"cards": [...]}` to a cards file. Without `--preview`, that is a file in the system temp
+directory (create it with `mktemp`). With `--preview <file>`, write it with the Write tool to
+`cards.draft.json` in the directory of `<file>`, and use that file as the cards file below.
 
 ## Step 3: Dry run
 
@@ -55,7 +57,7 @@ bash <scripts>/import-plan.sh <cards file> --dry-run
 Show the user the table (title, repo, depends on, labels). Fix the cards file and rerun
 if a dependency or title is wrong. Nothing is created in this step.
 
-With `--preview <file>`, copy the cards file to `<file>` after a clean dry run, print the table,
+With `--preview <file>`, dry-run `cards.draft.json` in the directory of `<file>`, then copy it to `<file>` after a clean dry run, print the table,
 and stop: do not run Step 4, do not ask.
 
 ## Step 4: Confirm and create

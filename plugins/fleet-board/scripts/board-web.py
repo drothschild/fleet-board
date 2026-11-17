@@ -475,7 +475,9 @@ def start_import(plan_text: str, status: str) -> str:
     # the allow rules below embed these paths; a character a permission rule reads specially would
     # loosen them, so refuse instead of running with a changed rule
     scripts_path = script("import-plan.sh")
-    for label, p in (("import directory", str(idir)), ("scripts directory", scripts_path)):
+    # the check runs on the resolved paths, the strings the rules are built from
+    real_idir = os.path.realpath(str(idir))
+    for label, p in (("import directory", real_idir), ("scripts directory", os.path.realpath(scripts_path))):
         if re.search(r"[ *()]", p):
             raise ApiError(500, "the %s path %s contains a space, *, ( or ), which the import's "
                                 "permission rules cannot name safely" % (label, p))
@@ -501,12 +503,11 @@ def start_import(plan_text: str, status: str) -> str:
             # --tools and --allowedTools take variadic values: keep an option after each so the prompt
             # is not read as a tool name
             "--tools", "Read,Grep,Glob,Write,Bash",
-            "--allowedTools", "Bash(mktemp *)",
-            "Bash(cp * %s)" % (idir / "cards.json"),
+            "--allowedTools", "Bash(cp %s %s)" % (idir / "cards.draft.json", idir / "cards.json"),
             "Bash(bash %s *)" % script("import-plan.sh"),
             # file writes are checked against Edit(path) rules only: a Write(path) rule never matches
-            "Edit(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
-            "Edit(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
+            "Edit(//%s/**)" % real_idir.strip("/"),
+            "Read(//%s/**)" % real_idir.strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
         plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
