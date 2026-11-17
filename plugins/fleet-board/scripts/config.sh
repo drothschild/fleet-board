@@ -418,6 +418,8 @@ VALIDATION_SCRIPT='
        else empty end),
       (if (.stacking | type) != "object" then "stacking must be an object"
        elif (.stacking.enabled | type) != "boolean" then "stacking.enabled must be boolean" else empty end),
+      (if (.premise_check | type) != "object" then "premise_check must be an object"
+       elif (.premise_check.enabled | type) != "boolean" then "premise_check.enabled must be true or false" else empty end),
       (if (.worktrees | type) == "object" then
         (if (.worktrees.mutate_on_copy | type) != "boolean" then "worktrees.mutate_on_copy must be boolean" else empty end)
       else empty end),
@@ -441,7 +443,7 @@ VALIDATION_SCRIPT='
          else empty end)
       else empty end),
       (if (.models | type) == "object" then
-        (("implementor", "fixer", "merger") as $r
+        (("implementor", "fixer", "merger", "checker") as $r
           | if (.models[$r] | type) != "string" or .models[$r] == "" then "models.\($r) must be a non-empty string" else empty end),
         (.models.reviewer as $r
          | if ($r | type) == "object" then
