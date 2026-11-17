@@ -97,14 +97,26 @@ no file here. The gate's residual bypasses and false positives are listed in the
   every other `"version"` must equal the three-way result, and no key may be repeated
   (`scripts/review-drift.sh <reviewed-sha> <head-sha>` prints `reviewed` or `unreviewed`;
   a failed check reads as unreviewed). `update-branch.sh` keeps `last_review` as it is.
+- Every script the supervisor runs (`scripts.run_argv`, `spawn_argv`) sees `FLEET_BOARD_ACTOR=supervisor`; it is
+  never set in `os.environ`, which every role session copies. `board-list.sh` rows carry `state` and `pr_url`.
 - **Premise check** (`premise_check.enabled`, default false; `models.checker`, default sonnet).
   With it on, a Ready card that would plan a non-stacked `start` (acceptance, lint clean, no unmet
   dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
   `moved` true, with its reason (`ground moved: <path>`, `no premise stamp`, `premise stamp commit is
   unknown`) as the plan reason. `moved` is false with no default head (no `origin`). The `Scope lists
-  no paths` wait still comes first and the Scope-overlap wait does not apply. Until the card that
-  handles the verdicts lands, the scheduler does not run `check_premise`. `tests/tick-plan-lib.sh`
-  `setup_case` writes `premise_check.enabled: false` unless the case's extra YAML sets the key.
+  no paths` wait still comes first and the Scope-overlap wait does not apply. The supervisor runs
+  `check_premise` (`CardDriver._do_check_premise`): `worktree.sh premise <n>` makes a detached checkout
+  `<base>/<n>-premise_check` of the default branch, and a session with no agent file (`Read,Write,Bash,Grep,Glob`
+  through `--tools`, placed before `--permission-mode`; `models.checker`) gets the instructions in
+  `scripts/supervisor/defaults/premise-check-prompt.md`. Its final reply is checked with `parse-report.sh --role
+  checker --mode check`; the driver posts an accepted report and `_settle_premise` acts on it. `go` stamps
+  `premise.sh stamp <n> --by check --sha <head worktree.sh printed>` and records note `premise_check`
+  `{head, verdict, at}`; any other verdict is, for now, a failed check. An empty reply, a twice-rejected report
+  and any other failure count one `action_failures` with the error `premise check failed: <first line>; move the
+  card to Ready to start it without a check`. A digest of the card's state, body, acceptance and `blocked_by`
+  is kept at launch and compared at the end: a change drops the verdict (one `premise` event, no stamp, no move,
+  no failure); a comment or note write is not a change. A checker's `Out of scope:` and `Bugs found:` lines file
+  nothing. `tests/tick-plan-lib.sh` `setup_case` writes `premise_check.enabled: false` unless the case's extra YAML sets the key.
 - **Declared Scope parsing.** `tick-plan.sh` reads a card's `## Scope` section for backticked
   spans and plain-text path tokens (no whitespace, holding a `/` or ending in an extension;
   leading `(` and trailing `.,:;)` stripped). A token ending in `/` is a directory scope.
@@ -113,7 +125,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   paths hold new starts, while existing work can continue. Selected starts reserve
   scope in ascending card-number order; a waiting card reserves nothing. Normalized
   directory scopes cover descendants with path-boundary matching. `start_review`, `review`,
-  `review_stage`, `update_branch`, `after_merge` and `merge_refusal` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
+  `review_stage`, `update_branch`, `after_merge`, `merge_refusal` and `check_premise` (`scheduler.SCOPE_FREE_ACTIONS`) reserve no scope and are never
   scope-checked against other cards; they still take a slot and one action per card, except that one card's
   reviewer actions (`scheduler.REVIEWER_ACTIONS`: `start_review`, `review`, `review_stage`) run together, one per
   reviewer (the evidence reviewer, one per stage): the scheduler holds a running reviewer's own row, and holds
@@ -393,7 +405,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `tick-plan.sh --settle-merge`); under `human` it makes no call. It binds each merge to its
   planned head and requires literal `main_check.ok == true`. No role session merges, and nothing
   adds permission rules or `--dangerously-skip-permissions`. Worktree removal runs in
-  `cleanup-done.sh`, by hand, outside any Claude session. It reads a done card's note only when
+  `cleanup-done.sh`, by hand, outside any Claude session, and in the supervisor's driver for one checkout only:
+  the premise check's `<n>-premise_check` (`worktree.sh remove <n> <path>`, the path form, which leaves the
+  card's own worktree). It reads a done card's note only when
   the worktrees base holds a `<n>-*` entry (a local prefilter), so its cost scales with the local
   dirs, not the Done column; keep any new per-card network call behind that prefilter.
 - `ROLE_ISOLATION: none` (decided Phase 5); nothing reads `FLEET_BOARD_ISOLATE`.

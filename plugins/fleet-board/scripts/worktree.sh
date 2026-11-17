@@ -35,6 +35,13 @@
 #       Before preparing its checkout, review removes the card's <n>-review-<stage> checkouts and
 #       copies whose stage is not in the configured review.stages (git worktree remove, then a
 #       prune; a path resolving outside <base> is left in place with a warning).
+#   worktree.sh premise <n>
+#       Fetches origin and puts a detached worktree <base>/<n>-premise_check on the
+#       head of the default branch (origin/HEAD, else origin/main), creating it (and
+#       running worktrees.setup once) or checking the new head out in it. Prints
+#       {"path":..,"head":<40-hex>}. The underscore is deliberate: a card's own worktree
+#       is <base>/<n>-<slug> and a slug is [a-z0-9-], so no title can name this one.
+#       Remove it with the path form of remove, which leaves the card's own worktree.
 #   worktree.sh remove <n> [<worktree-path>]
 #       Removes <worktree-path>, which must be the card's own directory: a
 #       direct child of <base> named <n>-* (as given and after symlinks are
@@ -60,7 +67,7 @@ set -uo pipefail
 unset CDPATH # a relative cd must not follow CDPATH (it would also echo the path)
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage>] | remove <n> [<worktree-path>]"; }
+usage() { fb_die 2 "usage: worktree.sh create <n> <branch> <path> [<start-branch>] | review <n> <pr> [<stage>] | premise <n> | remove <n> [<worktree-path>]"; }
 
 [ $# -ge 2 ] || usage
 CMD="$1"
@@ -77,6 +84,7 @@ case "$CMD" in
         copy|[!a-z]*|*[!a-z0-9_]*|"") fb_die 2 "stage name must match [a-z][a-z0-9_]* and not be copy, got: $4" ;;
       esac
     fi ;;
+  premise) [ $# -eq 2 ] || usage ;;
   remove) [ $# -eq 2 ] || [ $# -eq 3 ] || usage ;;
   *) usage ;;
 esac
@@ -234,6 +242,24 @@ case "$CMD" in
     fb_mark_active "$N"
     jq -nc --arg p "$RV" --arg c "$COPY" --arg s "$SHA" --arg b "$MB" \
       '{path: $p, copy: (if $c == "null" then null else $c end), sha: $s, base: $b}'
+    ;;
+
+  premise)
+    PV="$BASE/$N-premise_check"
+    g fetch -q origin >&2 || fb_die 1 "git fetch origin failed"
+    if g rev-parse --verify --quiet "refs/remotes/origin/HEAD^{commit}" >/dev/null; then START=origin/HEAD
+    elif g rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" >/dev/null; then START=origin/main
+    else fb_die 1 "neither origin/HEAD nor origin/main exists"
+    fi
+    SHA="$(g rev-parse --verify --quiet "$START^{commit}")" || fb_die 1 "cannot resolve $START"
+    if [ -L "$PV" ] || [ -e "$PV" ]; then
+      is_our_worktree "$PV" || fb_die 1 "$PV exists and is not a worktree of this repository"
+      git -C "$PV" checkout -q --force --detach "$SHA" >&2 || fb_die 1 "cannot check out $SHA in $PV"
+    else
+      g worktree add -q --detach "$PV" "$SHA" >&2 || fb_die 1 "cannot add the premise worktree $PV"
+      run_setup "$PV"
+    fi
+    jq -nc --arg p "$PV" --arg s "$SHA" '{path: $p, head: $s}'
     ;;
 
   remove)
