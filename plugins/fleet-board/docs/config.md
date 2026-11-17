@@ -241,6 +241,16 @@ A card's declared Scope is read from its `## Scope` section: backticked spans, a
 
 Left empty (the default), none of this runs and every conflict goes to the fixer.
 
+### `supervisor.allow_api_key`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `supervisor.allow_api_key` | `false` | `false`: `ANTHROPIC_API_KEY` is removed from the environment of every Claude session the fleet starts (role sessions, Planner sessions and import sessions), so they use your normal Claude login. `true`: the key is kept, for a project that means to bill it, such as clean-room authoring, where `claude -p --bare` needs it |
+
+`config.sh` exits 5 unless `allow_api_key` is `true` or `false`. A provider review stage's own key variable (`providers.<name>.api_key_env`) is not touched; only `ANTHROPIC_API_KEY` is removed.
+
+**Warning.** `fleet-board up` and `fleet-board supervisor start` print one warning line on stderr when they start with `ANTHROPIC_API_KEY` set. With `allow_api_key` off it says the key will not reach the fleet's sessions; with it on, it says the sessions will bill the key. With the variable unset they print nothing.
+
 ### `supervisor.version_bump` and `supervisor.version_bump_paths`
 
 | Key | Default | Meaning |

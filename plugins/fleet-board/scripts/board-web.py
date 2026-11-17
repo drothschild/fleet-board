@@ -88,6 +88,15 @@ def config_path(root: str) -> Path:
     return Path(env) if env else Path(root) / ".fleet-board.yml"
 
 
+def claude_env(cfg: dict) -> dict:
+    """The environment for a Claude session this page starts: ANTHROPIC_API_KEY is dropped (so the session uses
+    the person's login) unless supervisor.allow_api_key is true."""
+    env = dict(os.environ)
+    if (cfg.get("supervisor") or {}).get("allow_api_key") is not True:
+        env.pop("ANTHROPIC_API_KEY", None)
+    return env
+
+
 def load_config(root: str, scripts: str) -> dict:
     """The merged config from config.sh, cached by the config file's mtime."""
     try:
@@ -509,7 +518,7 @@ def start_import(plan_text: str, status: str) -> str:
             with os.fdopen(ofd, "wb") as out, os.fdopen(efd, "wb") as err:
                 proc = _IMPORTS[id] = subprocess.Popen(
                     argv, cwd=APP["root"], stdin=subprocess.DEVNULL, stdout=out, stderr=err,
-                    start_new_session=True,
+                    start_new_session=True, env=claude_env(cfg),
                 )
         except OSError as exc:
             raise ApiError(500, "cannot start %s: %s" % (argv[0], exc))
@@ -982,7 +991,8 @@ def send_planner_message(id: str, text: str):
             efd = os.open(str(err_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(ofd, "wb") as out, os.fdopen(efd, "wb") as err:
                 proc = subprocess.Popen(argv, cwd=APP["root"], stdin=subprocess.DEVNULL,
-                                        stdout=out, stderr=err, start_new_session=True)
+                                        stdout=out, stderr=err, start_new_session=True,
+                                        env=os.environ if codex else claude_env(cfg))
         except OSError as exc:
             raise ApiError(500, "cannot start %s: %s" % (argv[0], exc))
         turns = read_turns(pdir)

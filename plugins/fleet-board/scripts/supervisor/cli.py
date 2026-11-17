@@ -142,6 +142,8 @@ def main(argv=None, *, env=None, stdout=None, stderr=None, transport=None):
         return 2
     root = None
     try:
+        if args.command == "start":
+            _warn_api_key(_board_root(env), env, stderr)
         if args.command == "start" and args.detach:
             return _detach(_board_root(env), env, stdout, stderr, ignore_stuck=args.ignore_stuck)
         if args.command == "start":
@@ -208,6 +210,22 @@ def _process_env(env):
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _warn_api_key(root, env, stderr):
+    """One line when ANTHROPIC_API_KEY is set: say whether the fleet's sessions will see it."""
+    if not env.get("ANTHROPIC_API_KEY"):
+        return
+    try:
+        allowed = (loop.config_loader(root)().get("supervisor") or {}).get("allow_api_key") is True
+    except Exception:  # noqa: BLE001 - an invalid config is reported by the start itself
+        allowed = False
+    if allowed:
+        print("supervisor: warning: ANTHROPIC_API_KEY is set and supervisor.allow_api_key is on; the fleet's "
+              "sessions will bill that key", file=stderr)
+    else:
+        print("supervisor: warning: ANTHROPIC_API_KEY is set; the key will not reach the fleet's sessions "
+              "(set supervisor.allow_api_key: true to use it)", file=stderr)
 
 
 def _detach(root, env, stdout, stderr, ignore_stuck=False):
