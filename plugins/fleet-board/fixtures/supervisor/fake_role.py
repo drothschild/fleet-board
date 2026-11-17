@@ -54,7 +54,10 @@ def main():
     d = Path(os.environ['FAKE_ROLE_DIR'])
     count = d / 'count'
     n = int(count.read_text()) + 1 if count.exists() else 1
-    count.write_text('%d\n' % n)
+    # Replaced in one step: a test polling the count (loop_cases.count) never reads it half-written
+    tmp = d / ('.count.%d' % os.getpid())
+    tmp.write_text('%d\n' % n)
+    os.replace(str(tmp), str(count))
     plan = {}
     for name in ('%d.json' % n, 'default.json'):
         if (d / name).exists():

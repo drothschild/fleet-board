@@ -40,7 +40,8 @@ D="${FAKE_CLAUDE_DIR:?fake-claude: FAKE_CLAUDE_DIR not set}"
 N=0
 [ -f "$D/count" ] && N="$(cat "$D/count")"
 N=$((N + 1))
-printf '%d\n' "$N" > "$D/count"
+# Replaced in one step (mv), so a test polling the count never reads it half-written
+printf '%d\n' "$N" > "$D/.count.$$" && mv -f "$D/.count.$$" "$D/count"
 [ -f "$D/$N.ignore-term" ] && trap '' TERM
 
 if [ "$N" -gt "${FAKE_CLAUDE_MAX_CALLS:-30}" ]; then
