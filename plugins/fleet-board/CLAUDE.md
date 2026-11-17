@@ -184,6 +184,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   card's `stage` is the config's stage object whole. Reports use
   `parse-report.sh --role stage-reviewer` (Status clean|findings, Findings, For the
   card, one VERIFIED line; no Acceptance map, Mutation or Claim check).
+- **Checker report** (`parse-report.sh --role checker --mode check|draft`). The role of the
+  premise check and of follow-up drafting. Mode `check` allows Status go|needs|built|stale; mode `draft`
+  duplicate|fixed|drafted; no `--mode` is a usage error (exit 2). Role sections by status: `## Card`
+  (needs, duplicate; one `#<n>`), `## Evidence` (built, fixed), `## What changed` with optional
+  `## Proposed scope` and `## Proposed acceptance` (stale; both or neither), `## Why`,
+  `## Proposed scope`, `## Proposed acceptance` and optional `## Repro` (drafted). The JSON adds `card`,
+  `evidence`, `summary`, `proposal`, `why` and `repro`.
 - **Provider stages** (`scripts/stage-review.sh <n> <pr> --stage <name> --round <r>
   [--prev-sha] [--findings] [--impl-report] [--card-file] [--diff-file] [--no-post]`).
   Run by the supervisor's driver in place of a role session. It builds the prompt
