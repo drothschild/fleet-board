@@ -610,9 +610,10 @@ card_input() {
                         and ($stage.advisory == true or ((($lr.critical // 0) + ($lr.important // 0)) == 0))' <<<"$note")" = true ]; then
       labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
       done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings]' <<<"$note" 2>/dev/null)" || done_stages='[]'
-      # In in_review the routed stages review in parallel and report into note.reviews, not
-      # reviewed_stages: a stage whose own report is current (this head, this round) and clean
-      # (an advisory stage's findings count as clean) is done, so the card is not held for it
+      # In in_review the routed stages review in parallel and report into note.reviews; reviewed_stages
+      # (kept by a card that came back from a retired stage column) still counts unless the stage's own
+      # current record has findings. A stage whose own report is current (this head, this round) and
+      # clean (an advisory stage's findings count as clean) is done, so the card is not held for it
       if [ "$st" = in_review ] && [ "$info" != null ]; then
         # A stage is done when its own record at the head is clean, or when reviewed_stages lists it and
         # its record at the head (if any) has no findings: a listed stage whose current record holds
@@ -662,9 +663,10 @@ card_input() {
     fi
   fi
 
-  # A merging card (an open PR): stages are routed per card, so it merges only once every routed stage has
-  # its own clean record at the head (next_stage, computed as the In Review row computes it, with --done =
-  # the stages whose reviews[<stage>] record is clean at the head) and the evidence reviewer is clean. The human-QA question is asked for every such card, as the review row
+  # A merging card (an open PR): stages are routed per card, so it merges only once every routed stage is
+  # done (next_stage, computed as the In Review row computes it, with --done = the stages whose own record
+  # is clean at the head, plus those reviewed_stages lists whose record at the head has no findings) and
+  # the evidence reviewer is clean. The human-QA question is asked for every such card, as the review row
   # asks it (a lookup failure: lookup_failed, so the card is skipped); the merge needs the answer false.
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = merging ] && [ "$info" != null ] \
      && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
