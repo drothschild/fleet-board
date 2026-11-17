@@ -27,10 +27,15 @@ check_rule() { # <label> <file>: a mutation rule that uses commands.test_case
   else
     fail "$label: a single-case run counts only after it passes at the unmutated head"
   fi
-  if has "$f" 'exactly one test ran'; then
-    pass "$label: a single-case run counts only when exactly one test ran"
+  if has "$f" 'mutant run also shows exactly one test ran, which failed'; then
+    pass "$label: the mutant run must also show exactly one test, which failed"
   else
-    fail "$label: a single-case run counts only when exactly one test ran"
+    fail "$label: the mutant run must also show exactly one test, which failed"
+  fi
+  if has "$f" 'before you save the baseline' || has "$f" 'before it saves the baseline'; then
+    pass "$label: the single-case check runs before the baseline is saved, not after a restore"
+  else
+    fail "$label: the single-case check runs before the baseline is saved, not after a restore"
   fi
 }
 
@@ -57,6 +62,11 @@ if grep -cE '^\| `commands\.test_case` \|' "$PLUGIN/README.md" >/dev/null; then
   pass "README.md: the config table has a commands.test_case row"
 else
   fail "README.md: the config table has a commands.test_case row"
+fi
+if has "$PLUGIN/docs/config.md" "go test -v -run '^{name}\$' ./\$(dirname {file})" && ! has "$PLUGIN/docs/config.md" "-run '^{name}\$' ./..."; then
+  pass "docs/config.md: the go example prints one line per test and stays in the file's package"
+else
+  fail "docs/config.md: the go example prints one line per test and stays in the file's package"
 fi
 if has "$PLUGIN/docs/config.md" 'commands.test_case'; then
   pass "docs/config.md: documents commands.test_case"
