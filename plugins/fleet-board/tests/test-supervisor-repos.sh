@@ -39,18 +39,18 @@ def loader(root):
 
 r = repos.resolve(home, cfg, None, loader)
 check('A card with repo: null resolves to the home root and the home config',
-      r.error is None and r.root == home and r.config is cfg, vars(r))
+      r.error is None and r.root == home and r.config is cfg, r._asdict())
 
 r = repos.resolve(home, cfg, 'acme/widgets', loader)
 check('A card with a listed repo resolves to its path and that checkout\'s .fleet-board.yml',
-      r.error is None and r.root == good and r.config == {'name': 'cfg-of-' + good}, vars(r))
+      r.error is None and r.root == good and r.config == {'name': 'cfg-of-' + good}, r._asdict())
 
 r = repos.resolve(home, cfg, 'acme/noconf', loader)
 check('A listed repo whose path has no .fleet-board.yml returns an error naming the path',
-      r.error is not None and noconf in r.error, vars(r))
+      r.error is not None and noconf in r.error, r._asdict())
 
 r = repos.resolve(home, cfg, 'acme/mismatch', loader)
 check('A listed repo whose checkout origin is not that repo returns an error',
-      r.error is not None and 'acme/mismatch' in r.error, vars(r))
+      r.error is not None and 'acme/mismatch' in r.error, r._asdict())
 sys.exit(1 if failed else 0)
 PY
