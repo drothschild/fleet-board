@@ -306,7 +306,7 @@ if printf '%s' "$CHATRULE" | grep -Eq 'width: *570px' && printf '%s' "$CHATRULE"
 else
   fail "board.css has a .pl-modal[data-view=\"chat\"] .pl-panel rule with width: 570px, right: 0 and transform: none" "rule: $CHATRULE"
 fi
-MEDIA="$(printf '%s' "$CSSFLAT" | grep -o '@media (max-width: 720px) { *\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}' | head -1)"
+MEDIA="$(printf '%s' "$CSSFLAT" | grep -o '@media (max-width: 720px) {[^@]*\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}' | head -1 | grep -o '\.pl-modal\[data-view="chat"\] \.pl-panel *{[^}]*}')"
 if printf '%s' "$MEDIA" | grep -Eq 'width: *100vw'; then
   pass "Inside the max-width: 720px media block, the chat-view .pl-panel rule sets width: 100vw"
 else

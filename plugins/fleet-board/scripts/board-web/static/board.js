@@ -2465,7 +2465,9 @@ function setPlannerBusy(busy) {
 
 // syncPlannerModal(): the popup shows while the chat or the Draft cards view is open.
 function syncPlannerModal() {
-  $("planner-modal").hidden = !(S.pl || S.imp);
+  const modal = $("planner-modal");
+  modal.hidden = !(S.pl || S.imp);
+  modal.dataset.view = S.imp ? "draft" : "chat";
 }
 
 async function openPlanner() {
