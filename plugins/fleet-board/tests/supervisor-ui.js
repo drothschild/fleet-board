@@ -236,7 +236,8 @@ async function main() {
     assert.ok(text.indexOf("in_progress")>=0&&text.indexOf("in_progress")<text.indexOf("in_review"),"columns out of order");
     assert.ok(rows[0].textContent.includes("implement")&&rows[0].textContent.includes("implementor")&&rows[0].textContent.includes("opus"),"action, role, model missing: "+rows[0].textContent);
     assert.match(rows[0].textContent,/input 100/); assert.match(rows[0].textContent,/output 20/); assert.match(rows[0].textContent,/cache read 0/); assert.match(rows[0].textContent,/cache write 0/);
-    assert.ok(rows[0].textContent.includes("logs/impl-1.log"),"log reference missing");
+    // card 404: the plain-text log path left the drill-down; the drawer's Transcripts list links each session
+    assert.ok(!rows[0].textContent.includes("logs/impl-1.log"),"the drill-down still shows a log path: "+rows[0].textContent);
     assert.match(rows[1].textContent,/input unknown/); assert.match(rows[1].textContent,/cache read unknown/); assert.match(rows[1].textContent,/cache write 5/);
     assert.doesNotMatch(rows[1].textContent,/null|input 0\b|cache read 0\b/,"an unknown count shown as null or 0");
     assert.ok(rows[1].textContent.includes(hostile),"hostile model was dropped"); assert.match(h.$("dr-usage-total").textContent,/≥ 1,000 \(some usage unknown\)/);
