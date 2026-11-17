@@ -1968,6 +1968,10 @@ def test_the_launch_column_stays_ready_while_the_ledger_column_is_in_progress(ba
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
+    # FLEET_TEST_ONLY=<name> runs that one test (commands.test_case); a name that matches nothing runs none
+    only = os.environ.get('FLEET_TEST_ONLY')
+    if only:
+        names = [n for n in names if n == only]
     failed = 0
     for name in names:
         sub = tempfile.mkdtemp(dir=base)
