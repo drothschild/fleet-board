@@ -197,6 +197,10 @@ one_object() {
 # ({} printed).
 note_from_card() {
   local card="$1" body block note rc field wt
+  # Fast path, no jq: a card as board-read.sh prints it (compact, an object) whose manager_note is null has no note
+  case "$card" in
+    '{'*'"manager_note":null,'*'}') echo '{}'; return 0 ;;
+  esac
   body="$(jq -r 'if type == "object" then .manager_note // empty else error("not a card") end' <<<"$card" 2>/dev/null)" \
     || { printf 'fleet-board: cannot parse card #%s\n' "$N" >&2; return 1; }
   if [ -z "$body" ]; then echo '{}'; return 0; fi

@@ -471,7 +471,7 @@ card_input() {
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels routed_last=null
   local have_matched=false parallel='[]'
-  local fields c_labels c_rev c_acc c_marker c_scope c_nodeps=false nf note_branch='' note_accepted=false
+  local fields c_labels c_rev c_acc c_marker c_scope c_repo="" c_nodeps=false nf note_branch='' note_accepted=false
 
   # A review column: in_review, or the column of a configured review stage
   # (a review_<name> state whose stage is not configured stays unplanned)
@@ -502,8 +502,9 @@ card_input() {
         | (try ([(.comments // [])[] | (.body // \"\") | contains(\$m)] | any | tostring) catch \"\") as \$marker
         | (try (\$b | $FB_SCOPE_JQ | tojson) catch \"[]\") as \$scope
         | ((.blocked_by // []) == []) as \$nodeps
+        | ((.repo // \"\") | tostring) as \$repo
         | \"body=\(\$body | @sh)\", \"c_labels=\(\$labels | @sh)\", \"c_rev=\(\$rev | @sh)\", \"c_acc=\(\$acc)\",
-          \"c_marker=\(\$marker | @sh)\", \"c_scope=\(\$scope | @sh)\", \"c_nodeps=\(\$nodeps)\"" <<<"$read" 2>/dev/null)"; then
+          \"c_marker=\(\$marker | @sh)\", \"c_scope=\(\$scope | @sh)\", \"c_repo=\(\$repo | @sh)\", \"c_nodeps=\(\$nodeps)\"" <<<"$read" 2>/dev/null)"; then
       eval "$fields"
       state_revision="$c_rev"
       if [ -z "$c_labels" ]; then
@@ -524,7 +525,10 @@ card_input() {
     outside="$(sed -n "s/^fleet-board: warning: \(manager note on #$n names a worktree outside .*\)$/\1/p" "$NOTE_ERR" | head -1)"
   fi
   if [ -z "$failed" ]; then
-    if nf="$(jq -r '"\(.pr | tojson)", (.branch // ""), (.accepted != null)' <<<"$note")"; then
+    if [ "$note" = '{}' ]; then
+      nf=$'null\n\nfalse' # no note: the same three fields, without a jq launch
+      { IFS= read -r pr; IFS= read -r note_branch; IFS= read -r note_accepted; } <<<"$nf"
+    elif nf="$(jq -r '"\(.pr | tojson)", (.branch // ""), (.accepted != null)' <<<"$note")"; then
       { IFS= read -r pr; IFS= read -r note_branch; IFS= read -r note_accepted; } <<<"$nf"
     else
       failed="note.sh parse $n (unparsable)"
@@ -797,7 +801,7 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --argjson stack "$stack" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" \
     --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson routed_last "$routed_last" --argjson parallel "$parallel" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
@@ -807,7 +811,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, stack: $stack,
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack,
       stage: $stage, next_stage: $next_stage, routed_last_stage: $routed_last, parallel_stages: $parallel}'
 }
 
@@ -1328,7 +1332,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
          | (first($actual_scope[] | select(.number == $card.number)) // {paths:[],unknown:false}) as $actual
          | ([$source.labels[]? | (if type == "object" then .name else . end)
              | select(. == "fleet:priority:high" or . == "fleet:priority:normal" or . == "fleet:priority:low")] | unique) as $priority_labels
-         | {number:$card.number,action:$card.action,reason:$card.reason,
+         | {number:$card.number,repo:($source.repo // $cfg.board.repo),action:$card.action,reason:$card.reason,
             preconditions:{state:$source.state,head_sha:$card.head_sha,round:$card.round,stage:$card.stage,dependencies:$source.deps_unmet,state_revision:$source.state_revision},
             declared_paths:($source.scope_paths // []),actual_paths:($actual.paths // []),scope_complete:(($actual.unknown // false) | not),
             dependencies:($source.deps_unmet // []),stage:$card.stage,head_sha:$card.head_sha,round:$card.round,
