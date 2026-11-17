@@ -676,11 +676,23 @@ card_input() {
       # (note.reviews[<stage>], or last_review when it is that stage's record) is clean, or when
       # reviewed_stages lists it and its record at the head (if any) has no findings; an advisory
       # stage's findings count as clean.
-      if ! done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
+      # A stage record at an older head still counts when every commit since is a clean merge of main
+      # (review-drift.sh, as the drift allowance of the rows); a failed check reads as not covered
+      covered='[]'
+      head_oid="$(jq -r '.headRefOid // empty | strings' <<<"$info" 2>/dev/null)"
+      if [ -n "$head_oid" ]; then
+        for rsha in $(jq -r '[(.reviews | if type == "object" then .[] else empty end), .last_review | objects | .sha // empty | strings] | unique | .[]' <<<"$note" 2>/dev/null); do
+          case "$head_oid" in "$rsha"*) continue ;; esac
+          if [ "$(bash "$FLEET_SCRIPTS/review-drift.sh" "$rsha" "$head_oid" 2>/dev/null)" = reviewed ]; then
+            covered="$(jq -c --arg s "$rsha" '. + [$s]' <<<"$covered")"
+          fi
+        done
+      fi
+      if ! done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" --argjson covered "$covered" \
              '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd | (.last_review // null) as $lr
               | [(.reviewed_stages // [])[] | strings] as $done
               | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
-                  | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
+                  | ($r != null and (($r.sha // "") == $info.headRefOid or (($covered | index($r.sha // "")) != null)) and (($r.round // 0) >= $rd)) as $cur
                   | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
                   | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
                   | .name] | unique' <<<"$note" 2>/dev/null)"; then
