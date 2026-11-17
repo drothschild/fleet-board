@@ -12,11 +12,12 @@
     { "name": "blast_radius", "agent": "fleet-board:blast-radius-reviewer", "default": true }
   ],
   "providers": {},
-  "models": { "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "merger": "sonnet", "escalate_after_rounds": 2, "escalation": null },
+  "models": { "implementor": "sonnet", "reviewer": "opus", "fixer": "sonnet", "merger": "sonnet", "checker": "sonnet", "escalate_after_rounds": 2, "escalation": null },
   "supervisor": { "reconcile_interval_seconds": 30, "min_plan_gap_seconds": 30, "progress_timeout_seconds": 900, "attempt_timeout_seconds": 7200, "shutdown_grace_seconds": 30, "retry_backoff_seconds": 60, "aging_seconds": 900, "session_log_days": 14,"provider_concurrency": {}, "scope_ignore": [], "version_files": [], "version_bump": "pr", "version_bump_paths": ["**"], "allow_api_key": false },
   "limits": { "concurrency": 6, "max_hours": 8, "max_tokens": 20000000, "max_tokens_per_card": null, "max_turns": 200, "rate_limit_max_wait": 3600, "rate_limit_margin": 5 },
   "planner": { "persona": null, "persona_append": null, "provider": "claude", "model": null },
   "followups": { "status": "ready" },
   "headless": { "permission_mode": "auto" },
-  "stacking": { "enabled": false }
+  "stacking": { "enabled": false },
+  "premise_check": { "enabled": false }
 }
