@@ -28,7 +28,7 @@ count_is() { # name file pattern expected
 stages_section() { awk '/^## `review.stages`/{f=1;next} /^## /{f=0} f' "$CONFIG_MD"; }
 
 section_has() { # name text
-  if stages_section | grep -qF -- "$2"; then pass "$1"; else fail "$1 (missing: $2)"; fi
+  if stages_section | grep -cF -- "$2" >/dev/null; then pass "$1"; else fail "$1 (missing: $2)"; fi
 }
 
 echo "config.md no longer says a stage adds a board column or is the state review_<name>"
@@ -51,7 +51,7 @@ count_is "README: no 'goes to Review: <name>'" "$README" 'goes to .Review: <name
 count_is "README: no 'add the review stage'" "$README" 'add the review stage' 0
 
 echo "CLAUDE.md's canonical-states line drops review_<name> and the text names move_to_review"
-if grep -A3 'Canonical states' "$CLAUDE_MD" | grep -qF 'review_<name>'; then
+if grep -A3 'Canonical states' "$CLAUDE_MD" | grep -cF 'review_<name>' >/dev/null; then
   fail "CLAUDE.md: canonical states still list review_<name>"
 else pass "CLAUDE.md: canonical states do not list review_<name>"; fi
 if grep -qF 'move_to_review' "$CLAUDE_MD"; then pass "CLAUDE.md: names move_to_review"; else fail "CLAUDE.md: names move_to_review"; fi
