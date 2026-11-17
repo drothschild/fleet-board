@@ -276,7 +276,7 @@ assert_exit "red checks: exit" 0
 assert_jq "red checks: a clean current review with a red check and no checks_rerun plans rerun_checks" "$(card 12 action)" '"rerun_checks"'
 assert_jq "red checks: the reason names the PR, the head's first 7 characters and the check" "$(card 12 reason)" \
   '"PR #34 checks failed at abc1234 (test-suite); re-running the failed jobs once"'
-assert_jq "red checks: rerun_checks is dispatchable" "$(card 12 dispatchable)" 'true'
+assert_jq "red checks: rerun_checks is dispatchable" ".dispatchable" 'true'
 
 plan in-review-red-rerun-same "$AUTO"
 assert_jq "red checks: checks_rerun at the PR head plans checks_failed" "$(card 12 action)" '"checks_failed"'

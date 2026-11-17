@@ -17,9 +17,9 @@ plan in-review-merge-auto "$(printf 'merge:\n  policy: auto')"
 assert_jq "in-review-merge-auto: action" "$(card 12 action)" '"merge"'
 assert_jq "in-review-merge-auto: dispatchable" '.dispatchable' 'true'
 
-# auto policy with a red rollup waits
+# auto policy with a red rollup re-runs its failed checks once
 plan in-review-merge-auto-red "$(printf 'merge:\n  policy: auto')"
-assert_jq "in-review-merge-auto-red: action" "$(card 12 action)" '"wait"'
+assert_jq "in-review-merge-auto-red: action" "$(card 12 action)" '"rerun_checks"'
 
 # AC4.7 merged-verify
 plan merged-verify
