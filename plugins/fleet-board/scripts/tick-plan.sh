@@ -335,6 +335,9 @@ HAS_STAGES=false
 # stacking.enabled (default false): a Ready card whose one unmet dependency is in review may start on it
 STACKING="$(jq -r 'if .stacking.enabled == true then "true" else "false" end' <<<"$FLEET_CFG")" || fb_die 1 "cannot read stacking.enabled"
 
+# premise_check.enabled (default false): a Ready card whose ground moved plans check_premise, not start
+PREMISE_CHECK="$(jq -r 'if .premise_check.enabled == true then "true" else "false" end' <<<"$FLEET_CFG")" || fb_die 1 "cannot read premise_check.enabled"
+
 WT_DIR="$FLEET_ROOT/$(fb_cfg worktrees.dir)"
 BASE="$(mkdir -p "$WT_DIR" && cd "$WT_DIR" && pwd -P)" || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
 [ -n "$BASE" ] || fb_die 1 "cannot resolve the worktrees directory $WT_DIR"
@@ -467,7 +470,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels card_labels='[]' state_revision=null
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
-  local drift=null scope='[]' stack=null
+  local drift=null scope='[]' stack=null premise_moved=null
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
   local have_matched=false parallel='[]' stage_findings='[]'
@@ -693,11 +696,23 @@ card_input() {
       # (note.reviews[<stage>], or last_review when it is that stage's record) is clean, or when
       # reviewed_stages lists it and its record at the head (if any) has no findings; an advisory
       # stage's findings count as clean.
-      if ! done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
+      # A stage record at an older head still counts when every commit since is a clean merge of main
+      # (review-drift.sh, as the drift allowance of the rows); a failed check reads as not covered
+      covered='[]'
+      head_oid="$(jq -r '.headRefOid // empty | strings' <<<"$info" 2>/dev/null)"
+      if [ -n "$head_oid" ]; then
+        for rsha in $(jq -r '[(.reviews | if type == "object" then .[] else empty end), .last_review | objects | .sha // empty | strings] | unique | .[]' <<<"$note" 2>/dev/null); do
+          case "$head_oid" in "$rsha"*) continue ;; esac
+          if [ "$(bash "$FLEET_SCRIPTS/review-drift.sh" "$rsha" "$head_oid" 2>/dev/null)" = reviewed ]; then
+            covered="$(jq -c --arg s "$rsha" '. + [$s]' <<<"$covered")"
+          fi
+        done
+      fi
+      if ! done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" --argjson covered "$covered" \
              '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd | (.last_review // null) as $lr
               | [(.reviewed_stages // [])[] | strings] as $done
               | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
-                  | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
+                  | ($r != null and (($r.sha // "") == $info.headRefOid or (($covered | index($r.sha // "")) != null)) and (($r.round // 0) >= $rd)) as $cur
                   | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
                   | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
                   | .name] | unique' <<<"$note" 2>/dev/null)"; then
@@ -839,10 +854,19 @@ card_input() {
     [ -n "$stack" ] || stack=null
   fi
 
+  # Premise check: a Ready card that could start (acceptance, lint clean, no unmet dependency)
+  # is asked whether a file it names changed on the default branch since its stamp. A failed
+  # lookup reads as not moved: the planner never fails on it.
+  if [ "$PREMISE_CHECK" = true ] && [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_acc" = true ] \
+     && [ "$lint_gate" = false ] && [ "$(jq -r 'length' <<<"$deps_unmet")" = 0 ]; then
+    premise_moved="$(bash "$FLEET_SCRIPTS/premise.sh" moved "$n" 2>/dev/null | jq -c 'select(type == "object" and (.moved | type) == "boolean")' 2>/dev/null)" || premise_moved=null
+    [ -n "$premise_moved" ] || premise_moved=null
+  fi
+
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson premise_moved "$premise_moved" \
     --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
@@ -852,7 +876,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack,
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, premise_moved: $premise_moved,
       stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
 }
 
@@ -1117,6 +1141,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             if ($c.deps_unmet | length) > 0
             then (if $c.stack != null then act("start"; "ready, stacked on #\($c.stack.parent)")
                   else act("wait"; "waits for \([$c.deps_unmet[] | "\(.ref) (\(.status))"] | join(", "))") end)
+            elif $cfg.premise_check.enabled == true and ($c.premise_moved.moved // false)
+            then act("check_premise"; $c.premise_moved.reason)
             else act("start"; "ready, with acceptance criteria") end
           else act("skip_no_acceptance"; "no acceptance criteria") end
         # update-branch.sh recorded the files of an aborted conflicting merge: the
@@ -1267,7 +1293,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                 | overlap(($c.scope_paths // [] | pg_drop($ign)); ($o.scope_paths // [] | pg_drop($ign))) as $p
                 | select($p != null) | {num: $o.number, path: $p}) // null)
         else null end) as $ov
-    | (if $d00.action == "start" and (($c.scope_paths // []) | length) == 0 then act("wait"; "Scope lists no paths")
+    | (if ($d00.action == "start" or $d00.action == "check_premise") and (($c.scope_paths // []) | length) == 0 then act("wait"; "Scope lists no paths")
        elif $d00.action == "start" and $unknown_scope != null then act("wait"; "Scope unknown for #\($unknown_scope.number): PR file lookup failed or incomplete")
        elif $ov != null then act("wait"; "Scope overlaps #\($ov.num) on \($ov.path)")
        elif ($d00.action == "review" or $d00.action == "review_stage" or $d00.action == "merge") and $c.version_needs != null

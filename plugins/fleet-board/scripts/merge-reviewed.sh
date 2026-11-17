@@ -256,9 +256,13 @@ while [ -n "$NUMS" ] && [ "$ATTEMPTS" -lt "$LIMIT" ]; do
         continue
       fi
       bump_wt="$wt_dir/${bump_branch#fleet/}"
-      if ! bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null \
+      bump_err="$TMPD/bump.stderr"
+      if ! bash "$FLEET_SCRIPTS/worktree.sh" create "$n" "$bump_branch" "$bump_wt" </dev/null >/dev/null 2>"$bump_err" \
          || ! bash "$FLEET_SCRIPTS/update-branch.sh" "$n" "$pr" "$bump_branch" "$bump_wt" \
-              --lane-bump "$level" --bump-paths "$(jq -c '.supervisor.version_bump_paths // ["**"]' <<<"$FLEET_CFG")" </dev/null >/dev/null; then
+              --lane-bump "$level" --bump-paths "$(jq -c '.supervisor.version_bump_paths // ["**"]' <<<"$FLEET_CFG")" </dev/null >/dev/null 2>>"$bump_err"; then
+        # git's progress output (the "To https://..." push line) stays out of our stderr; the failing step's own
+        # lines are quoted before the lane's reason, which is the last line written
+        grep -v '^To ' "$bump_err" | sed 's/^/  /' >&2
         fail "$n" "the lane could not raise the versions of PR #$pr; not merged"
         continue
       fi

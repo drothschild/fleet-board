@@ -249,5 +249,27 @@ merging_note "{$M_HEAD,\"reviewed_stages\":[\"security\"],\"last_review\":$M_CLE
 assert_jq "merging reviews[]: reviewed_stages listing security does not hide a Critical finding in reviews.security (skip)" "$(card 12 action)" '"skip"'
 assert_jq "merging reviews[]: that skip's reason names security" "$(jq -r "$(card 12 reason)" <<<"$LAST_OUT" | grep -c 'security')" '1'
 
+# A routed stage's clean record at an older head, covered only by clean merges of main, still plans merge.
+# merging_drift_stage <kind>: the plan_real <kind> merging commits, the card routed to security (with its
+# stage config), and clean evidence and security records at the older head (the reviewed commit)
+merging_drift_stage() {
+  local r d note rec
+  plan_real "$1" merging
+  d="$FAKE_GH_DIR/real"
+  r="$(git -C "$REPO" rev-parse HEAD~1)"
+  { printf 'board:\n  repo: acme/toy\nworktrees:\n  dir: .fw\nhuman_qa_paths: ["src/components/**"]\n'
+    no_builtin_stages "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"; echo; } > "$REPO/.fleet-board.yml"
+  rec="{\"round\":1,\"sha\":\"$r\",\"critical\":0,\"important\":0,\"findings\":[]}"
+  note="{$M_HEAD,\"reviewed_stages\":[],\"last_review\":$rec,\"reviews\":{\"evidence\":$rec,\"security\":$(jq -c '.stage="security"' <<<"$rec")}}"
+  jq -cn --arg note "$note" '[{id: 555, user: {login: "fleet-bot"},
+    body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: merging\n\n```json\n" + $note + "\n```\n"),
+    created_at: "2026-09-28T00:01:00Z"}]' > "$d/comments.json"
+  sed -i.bak "s#common/issue-12-merging.json#common/issue-12-merging-security.json#" "$d/routes"
+  run_check "$SCRIPT"
+}
+merging_drift_stage clean
+assert_jq "merging drift stage: stage records at an older head covered only by a clean merge of main plans merge" "$(card 12 action)" '"merge"'
+merging_drift_stage nonmerge
+assert_jq "merging drift stage: stage records at an older head with a non-merge commit after them plans skip" "$(card 12 action)" '"skip"'
 
 tp_finish
