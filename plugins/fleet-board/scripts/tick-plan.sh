@@ -473,17 +473,8 @@ card_input() {
   local have_matched=false parallel='[]'
   local fields c_labels c_rev c_acc c_marker c_scope c_repo="" c_nodeps=false nf note_branch='' note_accepted=false
 
-  # A review column: in_review, or the column of a configured review stage
-  # (a review_<name> state whose stage is not configured stays unplanned)
-  if [ "$st" = in_review ]; then
-    review_col=true
-  else
-    case "$st" in
-      review_*)
-        stage="$(fb_stage_of_state "$st")" || stage=""
-        if [ -n "$stage" ]; then review_col=true; else stage=null; fi ;;
-    esac
-  fi
+  # The review column is in_review; the review_<name> stage columns are retired
+  [ "$st" = in_review ] && review_col=true
 
   if [ "${4:-}" = FAILED ]; then
     failed="board-read.sh $n"
