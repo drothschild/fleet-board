@@ -504,8 +504,9 @@ def start_import(plan_text: str, status: str) -> str:
             "--allowedTools", "Bash(mktemp *)",
             "Bash(cp * %s)" % (idir / "cards.json"),
             "Bash(bash %s *)" % script("import-plan.sh"),
-            "Write(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
-            "Write(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
+            # file writes are checked against Edit(path) rules only: a Write(path) rule never matches
+            "Edit(//%s/**)" % os.path.realpath(tempfile.gettempdir()).strip("/"),
+            "Edit(//%s/**)" % os.path.realpath(str(idir)).strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
         plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
