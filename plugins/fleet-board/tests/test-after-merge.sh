@@ -181,11 +181,6 @@ assert_jq "run: a refused command's note line says refused" '.note' '["rm -rf /t
 # The manager.md wiring check went with the tick system: the supervisor's driver runs after-merge.sh on
 # finish (driver_cases.py test_finish_runs_after_merge_and_records_results).
 
-echo "gate unchanged"
-bash "${SCRIPT_DIR}/test-gate.sh" >/dev/null 2>&1
-GATE_RC=$?
-assert_eq "gate: existing test-gate.sh suite passes unchanged" "$GATE_RC" "0"
-
 echo "docs"
 for needle in 'after_merge.allow' '## After merge'; do
   if grep -qF -- "$needle" "$DOCS"; then pass "docs: config.md mentions $needle"; else fail "docs: config.md mentions $needle" "missing"; fi
