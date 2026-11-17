@@ -1022,6 +1022,8 @@ class CardDriver:
         sup = c.config.get('supervisor') or {}
         env = dict(os.environ)
         env.update(self.env)
+        if sup.get('allow_api_key') is not True:
+            env.pop('ANTHROPIC_API_KEY', None)   # the fleet bills the person's login, not a stray key
         env.setdefault('FLEET_BOARD_RUN_ID', str(self.state.run_id))
         argv = self.roles.command(d, run.prompt, c.config, self.plugin_dir, stage_args=run.stage_args)
         mode = None if run.script else ((c.config.get('headless') or {}).get('permission_mode') or 'auto')

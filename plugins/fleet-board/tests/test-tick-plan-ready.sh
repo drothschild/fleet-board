@@ -173,5 +173,9 @@ assert_jq "deps-other-card-starts: the other card starts" "$(card 14 action)" '"
 assert_jq "deps-other-card-starts: dispatchable reflects the other card" '.dispatchable' 'true'
 assert_jq "deps-other-card-starts: a card with no dependencies has waiting_on null" "$(card 14 waiting_on)" 'null'
 
+# A Scope whose only tokens are dropped (absolute, slashes only, . or .. segments) lists no paths
+plan_scope "$(printf -- '- /etc/passwd\n- //\n- ../x/y\n- a/../b')"
+assert_jq "scope-dropped: a Ready card whose Scope yields only dropped tokens plans wait" "$(card 14 action)" '"wait"'
+assert_jq "scope-dropped: the reason is Scope lists no paths" "$(card 14 reason)" '"Scope lists no paths"'
 
 tp_finish

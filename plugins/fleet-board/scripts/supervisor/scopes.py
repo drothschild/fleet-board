@@ -67,6 +67,12 @@ def glob_match(pattern, path):
     return re.fullmatch(glob_regex(pattern), _clean(path)) is not None
 
 
+def drop_blank(paths):
+    """Drop the non-empty paths that clean to `""` (`/`, `//`, `./`): normalize() reads `""` as the
+    whole repository, which a declared path must never mean by accident. A real `""` is kept."""
+    return [p for p in list(paths or []) if not (isinstance(p, str) and p != '' and _clean(p) == '')]
+
+
 def drop_ignored(paths, patterns):
     """Drop the paths matching a `supervisor.scope_ignore` glob (case-sensitive).
 
@@ -74,6 +80,7 @@ def drop_ignored(paths, patterns):
     returned unchanged: an empty scope means the whole repository, which would reserve more.
     """
     paths = list(paths or [])
+    paths = drop_blank(paths) or paths
     if not patterns or not paths:
         return paths
     rx = [re.compile(glob_regex(g)) for g in patterns]

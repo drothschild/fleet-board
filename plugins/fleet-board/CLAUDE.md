@@ -31,7 +31,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Card JSON keys: `number`, `title`, `body` (prose only), `state` (canonical, else read as
   null with a warning), `labels`, `acceptance` (array of strings), `blocked_by` (array of
   card numbers on this board), `pr_url`, `pr_url_source` (`note`, `person` or null),
-  `created_at`, `updated_at`, `next_comment_id`, `comments`. Every write goes through
+  `created_at`, `updated_at`, `next_comment_id`, `comments`, `premise` (null, or `{sha, at, by}` stamped by create, edit of acceptance or Scope, move into ready, or `premise.sh stamp`; `FLEET_BOARD_ACTOR=supervisor` stops edit and move stamping). Every write goes through
   `fl_write_card` under `fb_lock`. `fl_split_body` moves `## Acceptance` and `## Depends on`
   sections out of a body into the fields (first real heading wins, not inside a fence);
   `read` returns the stored prose and the fields side by side, never a rendered section.
@@ -322,7 +322,14 @@ no file here. The gate's residual bypasses and false positives are listed in the
     no tick-stop file and no marker clearing: Start always launches (or resumes) the supervisor, and
     `/api/board`'s `run` is `{state, supervisor}` plus the `stuck_*` fields. Each `/api/board` card summary
     carries `hold` (`{reason, source, until}` or `null`) taken from the one status read `get_board` makes, and
-    the tile shows it as "Held: <reason>". Status is
+    the tile shows it as "Held: <reason>".
+    `GET /api/cards/<n>/transcripts` lists the card's sessions as `[{id, action, role, attempt, ended_at, running}]`:
+    the supervisor's running ones first (`running: true`, `ended_at: null`), then this repo's usage-ledger entries
+    newest first; a log outside the sessions directory is left out. `GET /api/cards/<n>/transcripts/<id>` answers
+    the session's rendered log as plain text (`<id>` is the log's file stem). It is 404 `no such session for card <n>: <id>`
+    when no ledger line of that card has that stem, and 404 `the log file is missing for session <id>` when the
+    line exists but its file does not. A running session's text is a snapshot of the log as read at that request. The supervisor status carries `log` on each running action (`active[]`), the
+    path of that session's log, or null when it has none; the list reads it to find running sessions. Status is
     `Service.status_view()`; `tests/test-supervisor-ui.sh` feeds real service output
     (`fixtures/supervisor/dump_real_shapes.py`) to the DOM harness so UI and service cannot drift.
 - **Merging and the merger** (Phase 4; spec section 6). `merging` is a fixed state between the
