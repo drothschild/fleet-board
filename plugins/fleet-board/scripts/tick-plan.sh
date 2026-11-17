@@ -581,7 +581,7 @@ card_input() {
               | [$cfg.review.stages[] | select(.name as $s | .label as $x | ($m | index($s)) != null or ($l | index($x)) != null)
                  # A stage has reported at this head when its own record (note.reviews), or else last_review, covers it
                  | select(.name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
-                          | ($r != null and (($r.sha // "") == $info.headRefOid or (($covered | index($r.sha // "")) != null)) and (($r.round // 0) >= ($note.round // 0))) | not)
+                          | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= ($note.round // 0))) | not)
                  | .name]' 2>/dev/null)"; then
         parallel='[]'; failed="review-stages.sh match $pr (unexpected answer)"
       else
@@ -622,7 +622,7 @@ card_input() {
           '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd
            | [(.reviewed_stages // [])[] | strings] as $done
            | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // null) as $r
-               | ($r != null and (($r.sha // "") == $info.headRefOid or (($covered | index($r.sha // "")) != null)) and (($r.round // 0) >= $rd)) as $cur
+               | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
                | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
                | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
                | .name] | unique' \
