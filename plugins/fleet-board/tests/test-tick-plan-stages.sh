@@ -407,6 +407,8 @@ plan merging-open-merge "$AUTO"
 assert_jq "merging human QA: a PR needing none is asked and answers false" "$(card 12 needs_human_qa)" 'false'
 plan merging-stage-remaining "$AUTO"
 assert_jq "merging last stage: a stage record with no stages configured plans skip" "$(card 12 action)" '"skip"'
+plan merging-stage-remaining-evidence "$AUTO"
+assert_jq "merging last stage: with no stages configured, a clean evidence record in reviews merges whatever last_review holds" "$(card 12 action)" '"merge"'
 plan merging-advisory-last "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
 assert_jq "merging last stage: the last stage's review still merges" "$(card 12 action)" '"merge"'
 

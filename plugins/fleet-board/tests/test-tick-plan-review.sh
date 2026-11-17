@@ -243,4 +243,30 @@ run_check "$SCRIPT" extra
 assert_exit "usage: arguments rejected" 2
 
 
+# A stage counts as done in In Review only by its own clean record at the head: a stage listed in
+# reviewed_stages (kept when a card moves back from a retired stage column) with a Critical finding
+# in reviews.security is not done, and the card is not merged.
+# review_note <note-json>: the parallel-all-reported case on an open, green PR routed to security
+review_note() {
+  setup_case parallel-all-reported "$(printf '%s\n%s' "$AUTO" "$STAGES_ADVISORY_YAML")"
+  local d="$FAKE_GH_DIR/routes.d"
+  mkdir -p "$d"
+  jq -cn --arg note "$1" '[{id: 555, user: {login: "fleet-bot"},
+    body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n" + $note + "\n```\n"),
+    created_at: "2026-09-28T00:01:00Z"}]' > "$d/comments.json"
+  sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-12.json#	$d/comments.json#" \
+      -e "s#issue-12-in_review-security-ux#issue-12-in_review-security#" -e "s#pr-34-draft#pr-34-open-green#" \
+      "$TICK/parallel-all-reported/routes" > "$d/routes"
+  FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
+  run_check "$SCRIPT"
+}
+R_CLEAN='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
+review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[\"security\"],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":1,\"important\":0,\"stage\":\"security\"}}}"
+assert_exit "reviewed_stages vs reviews: exit" 0
+assert_jq "reviewed_stages vs reviews: a stage in reviewed_stages with a Critical finding in reviews.security is not merged" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
+assert_jq "reviewed_stages vs reviews: the card is held for security, not merged (wait)" "$(card 12 action)" '"wait"'
+review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
+assert_jq "reviewed_stages vs reviews: a clean security record at the head still merges" "$(card 12 action)" '"merge"'
+
+
 tp_finish

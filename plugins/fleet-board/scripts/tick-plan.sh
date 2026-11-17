@@ -469,7 +469,7 @@ card_input() {
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
   local drift=null scope='[]' stack=null
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
-  local stage=null next_stage=null nxt done_stages review_col=false matched next_labels routed_last=null
+  local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
   local have_matched=false parallel='[]'
   local fields c_labels c_rev c_acc c_marker c_scope c_repo="" c_nodeps=false nf note_branch='' note_accepted=false
 
@@ -610,15 +610,22 @@ card_input() {
                         and ($stage.advisory == true or ((($lr.critical // 0) + ($lr.important // 0)) == 0))' <<<"$note")" = true ]; then
       labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
       done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings]' <<<"$note" 2>/dev/null)" || done_stages='[]'
-      # In in_review the routed stages review in parallel and report into note.reviews, not
-      # reviewed_stages: a stage whose own report is current (this head, this round) and clean
-      # (an advisory stage's findings count as clean) is done, so the card is not held for it
+      # In in_review the routed stages review in parallel and report into note.reviews; reviewed_stages
+      # (kept by a card that came back from a retired stage column) still counts unless the stage's own
+      # current record has findings. A stage whose own report is current (this head, this round) and
+      # clean (an advisory stage's findings count as clean) is done, so the card is not held for it
       if [ "$st" = in_review ] && [ "$info" != null ]; then
-        done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" --argjson done "$done_stages" \
+        # A stage is done when its own record at the head is clean, or when reviewed_stages lists it and
+        # its record at the head (if any) has no findings: a listed stage whose current record holds
+        # Critical or Important findings is not done
+        done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
           '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd
-           | $done + [$cfg.review.stages[] | select(.name as $s | ($rv[$s] // null) as $r
-               | $r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)
-                 and (.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0))) | .name] | unique' \
+           | [(.reviewed_stages // [])[] | strings] as $done
+           | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // null) as $r
+               | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
+               | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
+               | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
+               | .name] | unique' \
           <<<"$note" 2>/dev/null)" || done_stages='[]'
       fi
       # With no stages configured there is no next stage, and no call. Else
@@ -656,16 +663,27 @@ card_input() {
     fi
   fi
 
-  # A merging card (an open PR): stages are routed per card, so it merges only once no routed stage
-  # remains (next_stage, computed as the review columns compute it, with --done = reviewed_stages plus
-  # the last review's stage) and only on a review of its last routed or visited stage (routed_last; null
-  # when it was routed to none). The human-QA question is asked for every such card, as the review row
+  # A merging card (an open PR): stages are routed per card, so it merges only once every routed stage is
+  # done (next_stage, computed as the In Review row computes it, with --done = the stages whose own record
+  # is clean at the head, plus those reviewed_stages lists whose record at the head has no findings) and
+  # the evidence reviewer is clean. The human-QA question is asked for every such card, as the review row
   # asks it (a lookup failure: lookup_failed, so the card is skipped); the merge needs the answer false.
   if [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = merging ] && [ "$info" != null ] \
      && [ "$(jq -r '.state' <<<"$info")" = OPEN ]; then
     labels="$(jq -c '[(.labels // [])[] | strings]' <<<"$read" 2>/dev/null)" || labels='[]'
     if [ "$HAS_STAGES" = true ] && [ "$(jq -r '.last_review != null' <<<"$note")" = true ]; then
-      if ! done_stages="$(jq -c '[(.reviewed_stages // [])[] | strings] + [(.last_review.stage // empty) | strings] | unique' <<<"$note" 2>/dev/null)"; then
+      # As the In Review row judges: a routed stage is done when its own record at the head
+      # (note.reviews[<stage>], or last_review when it is that stage's record) is clean, or when
+      # reviewed_stages lists it and its record at the head (if any) has no findings; an advisory
+      # stage's findings count as clean.
+      if ! done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
+             '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd | (.last_review // null) as $lr
+              | [(.reviewed_stages // [])[] | strings] as $done
+              | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
+                  | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
+                  | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
+                  | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
+                  | .name] | unique' <<<"$note" 2>/dev/null)"; then
         failed="note.sh parse $n (unparsable)"
       elif ! matched="$(bash "$FLEET_SCRIPTS/review-stages.sh" match "$pr")"; then
         failed="review-stages.sh match $pr"
@@ -680,12 +698,18 @@ card_input() {
             failed="review-stages.sh next $n (unexpected answer)"
           fi
         fi
-        [ -n "$failed" ] || routed_last="$(jq -cn --argjson cfg "$FLEET_CFG" --argjson l "$next_labels" --argjson d "$done_stages" \
-          '[$cfg.review.stages[] | select(.label as $x | .name as $y | any($l[]; . == $x) or any($d[]; . == $y)) | .name] | last // null')" \
-          || failed="review-stages.sh next $n (unexpected answer)"
       else
         failed="review-stages.sh next $n"
       fi
+    fi
+    # The evidence reviewer is judged on its own record: a stage record in last_review is replaced by
+    # reviews.evidence (null when there is none), as the In Review row does
+    # (a note with no reviews map, on a board with stages, is a sequential-model note: its last_review stands)
+    if [ -z "$failed" ] && { [ "$HAS_STAGES" != true ] || [ "$(jq -r '(.reviews | type) == "object"' <<<"$note")" = true ]; }; then
+      note="$(jq -c 'if (.last_review | type) == "object" and (.last_review.stage // null) != null
+                     then .last_review = (if (.reviews | type) == "object" and (.reviews.evidence | type) == "object"
+                                          then .reviews.evidence else null end)
+                     else . end' <<<"$note")" || failed="note.sh parse $n (unparsable)"
     fi
     if [ -z "$failed" ]; then
       nhq="$(bash "$FLEET_SCRIPTS/needs-human-qa.sh" --labels "$labels" "$n" "$pr")" || { nhq=null; failed="needs-human-qa.sh $n $pr"; }
@@ -802,7 +826,7 @@ card_input() {
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" \
-    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson routed_last "$routed_last" --argjson parallel "$parallel" \
+    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -812,7 +836,7 @@ card_input() {
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack,
-      stage: $stage, next_stage: $next_stage, routed_last_stage: $routed_last, parallel_stages: $parallel}'
+      stage: $stage, next_stage: $next_stage, parallel_stages: $parallel}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -1124,12 +1148,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           # QA; the PR not a draft, its checks green, and merge.policy auto.
           elif $cfg.merge.policy != "auto" then act("skip"; "merge.policy is not auto; supervisor decides")
           elif $lr == null then act("skip"; "no review recorded for the merging card; supervisor decides")
-          # Stages are routed per card: no routed stage may remain, and the review must be that of the
-          # last stage the card was routed to or visited (null when it was routed to none, or no stages are configured)
+          # Stages are routed per card: every routed stage needs its own clean record at the head
+          # (next_stage names one that has none); $lr is the evidence record
           elif $c.next_stage != null
             then act("skip"; "routed stage \($c.next_stage) not reviewed yet; supervisor decides")
-          elif ($lr.stage // null) != ($c.routed_last_stage // null)
-            then act("skip"; "the last review is not from the last stage the card was routed to; supervisor decides")
           elif ((($lr.stage // null) as $ls | any(($cfg.review.stages // [])[]; .name == $ls and .advisory == true)) | not) and $ci > 0
             then act("skip"; "the last review has \($ci) Critical/Important findings; supervisor decides")
           elif head_moved($c; $lr) and ($c.drift == null or $c.drift.unreviewed)
