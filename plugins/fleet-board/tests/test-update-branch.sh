@@ -742,6 +742,71 @@ assert_eq "real git rejected push: no last_update recorded" "$(grep -c 'last_upd
 real_run
 assert_exit "real git rejected push: the next run fails too" 1
 assert_eq "real git rejected push: still no last_update" "$(grep -c 'last_update' "$RG_LOG")" 0
+# A branch tip pushed from a second clone: the worktree catches up before the base merge
+rg_other_commit() { # <content>: a commit on origin/fleet/12-x pushed from a second clone
+  rm -rf "$RG/wt2"
+  git clone -q -b fleet/12-x "$RG/remote.git" "$RG/wt2" 2>/dev/null
+  git -C "$RG/wt2" config user.email t@e; git -C "$RG/wt2" config user.name T
+  echo "$1" > "$RG/wt2/src/x.txt"
+  git -C "$RG/wt2" commit -q -am "other $1"; git -C "$RG/wt2" push -q origin fleet/12-x
+}
+real_run_bump() {
+  local out err
+  out="$(mktemp)"; err="$(mktemp)"
+  (cd "$RG/wt" && PATH="$RG_SCRIPTS/.bin:$ORIG_PATH" bash "$RG_SCRIPTS/update-branch.sh" 12 34 fleet/12-x "$RG/wt" \
+    --lane-bump patch --bump-paths '["src/**"]') > "$out" 2> "$err"
+  LAST_EXIT=$?
+  LAST_OUT="$(cat "$out")"; LAST_ERR="$(cat "$err")"; rm -f "$out" "$err"
+}
+
+real_setup
+rg_other_commit "from the second clone"
+OTHER_SHA="$(rg_remote)"
+real_run_bump
+assert_exit "stale worktree, lane bump: exit 0" 0
+assert_eq "stale worktree, lane bump: origin's branch contains the pushed commit" \
+  "$(git -C "$RG/remote.git" merge-base --is-ancestor "$OTHER_SHA" refs/heads/fleet/12-x && echo yes || echo no)" yes
+assert_eq "stale worktree, lane bump: the raise sits on top of the pushed commit" \
+  "$(git -C "$RG/remote.git" rev-parse refs/heads/fleet/12-x~1)" "$OTHER_SHA"
+assert_eq "stale worktree, lane bump: origin has the raised version" \
+  "$(git -C "$RG/remote.git" show refs/heads/fleet/12-x:plugins/a/.claude-plugin/plugin.json | jq -r .version)" 0.1.1
+assert_eq "stale worktree, lane bump: the remote equals local" "$(rg_remote)" "$(rg_local)"
+
+real_setup
+rg_other_commit "from the second clone"
+OTHER_SHA="$(rg_remote)"
+real_run
+assert_exit "stale worktree, no lane bump: exit 0" 0
+assert_eq "stale worktree, no lane bump: local has the pushed commit" \
+  "$(git -C "$RG/wt" merge-base --is-ancestor "$OTHER_SHA" HEAD && echo yes || echo no)" yes
+assert_eq "stale worktree, no lane bump: the remote is unchanged" "$(rg_remote)" "$OTHER_SHA"
+
+# Diverged: refused, nothing changes
+real_setup
+echo "local only" > "$RG/wt/src/y.txt"; git -C "$RG/wt" commit -q -am "local only"
+rg_other_commit "from the second clone"
+LOCAL_SHA="$(rg_local)"; REMOTE_SHA="$(rg_remote)"
+real_run
+assert_eq "diverged: exit non-zero" "$([ "$LAST_EXIT" != 0 ] && echo yes || echo no)" yes
+assert_eq "diverged: the message names the branch and says diverged" \
+  "$(printf '%s\n' "$LAST_ERR" | grep -Ec 'fleet/12-x.*diverged|diverged.*fleet/12-x')" 1
+assert_eq "diverged: local is unchanged" "$(rg_local)" "$LOCAL_SHA"
+assert_eq "diverged: the remote is unchanged" "$(rg_remote)" "$REMOTE_SHA"
+assert_eq "diverged: the worktree is clean" "$(git -C "$RG/wt" status --porcelain | wc -l | tr -d ' ')" 0
+real_run_bump
+assert_eq "diverged, lane bump: exit non-zero" "$([ "$LAST_EXIT" != 0 ] && echo yes || echo no)" yes
+assert_eq "diverged, lane bump: local is unchanged" "$(rg_local)" "$LOCAL_SHA"
+assert_eq "diverged, lane bump: the remote is unchanged" "$(rg_remote)" "$REMOTE_SHA"
+
+# Ahead of origin: the unpushed commits are kept and pushed
+real_setup
+echo "local only" > "$RG/wt/src/y.txt"; git -C "$RG/wt" commit -q -am "local only"
+LOCAL_SHA="$(rg_local)"
+real_run
+assert_exit "ahead of origin: exit 0" 0
+assert_eq "ahead of origin: local keeps its commit" "$(git -C "$RG/wt" merge-base --is-ancestor "$LOCAL_SHA" HEAD && echo yes || echo no)" yes
+assert_eq "ahead of origin: the commit is pushed" "$(rg_remote)" "$(rg_local)"
+
 PATH="$ORIG_PATH"
 
 echo "-----------------------------------"

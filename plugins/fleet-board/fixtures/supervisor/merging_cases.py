@@ -191,6 +191,27 @@ class Merging(MergeCase):
         self.assertEqual(self.mode(), 'running')
         self.assertIsNone(self.b.state.lane)
 
+    def test_the_fleet_board_line_is_the_refusal_reason_not_gits_first_stderr_line(self):
+        self.inspect = dict(OPEN)
+        self.stderr('To https://github.com/acme/toy.git\n'
+                    'fleet-board: warning: #12: the lane could not raise the versions of PR #34; not merged; '
+                    'leaving the card for the next tick\n', 1)
+        self.start()
+        self.until(lambda: self.mergers, what='the refusal hook')
+        card, mode, detail = self.mergers[0]
+        self.assertEqual((card, mode), (12, 'refused'))
+        want = ('fleet-board: warning: #12: the lane could not raise the versions of PR #34; not merged; '
+                'leaving the card for the next tick')
+        self.assertEqual(detail['reason'], want)
+        self.assertEqual(self.b.note(12)['merge_refusal']['reason'], want)
+
+    def test_a_merged_event_reason_is_not_a_git_push_line(self):
+        self.stderr('To https://github.com/acme/toy.git\nfleet-board: merged PR #34\n', 0)
+        self.start()
+        self.until(lambda: self.mergers, what='the merged hook')
+        self.assertEqual(self.mergers[0][1], 'merged')
+        self.assertEqual(self.mergers[0][2]['reason'], 'fleet-board: merged PR #34')
+
     def test_unclear_result_pauses_the_board(self):
         self.inspect = {'status': 'unmatched'}
         self.stderr('boom\n', 1)

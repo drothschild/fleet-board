@@ -40,6 +40,16 @@ def _line(text):
     return ''
 
 
+def _own_line(text):
+    """The last line the script wrote that starts with `fleet-board:` (its own message, not git's), or ''."""
+    found = ''
+    for line in (text or '').splitlines():
+        line = _CONTROL.sub(' ', line).strip()
+        if line.startswith('fleet-board:'):
+            found = line[:300]
+    return found
+
+
 def _json(text):
     try:
         return json.loads(text)
@@ -136,7 +146,7 @@ class MergeLane:
     @staticmethod
     def _detail(candidate, result, **extra):
         detail = {'pr': candidate['pr'], 'head': candidate['head_sha'], 'rc': result.rc,
-                  'reason': _line(result.stderr) or _line(result.stdout) or 'merge-reviewed.sh exited %d' % result.rc,
+                  'reason': _own_line(result.stderr) or _line(result.stderr) or _line(result.stdout) or 'merge-reviewed.sh exited %d' % result.rc,
                   'ignored_checks': candidate.get('ignored_checks') or []}
         detail.update(extra)
         return detail
