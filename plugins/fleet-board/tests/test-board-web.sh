@@ -1818,6 +1818,52 @@ case "$(printf '%s' "$RP_OUT" | jq -r '[.groups[].cards[]|select(contains("Home 
   *) fail "the page shows no repo name on a tile of the board's own repo" "tile did not render: $RP_OUT" ;;
 esac
 
+echo "Case: a Planner session and an import session get no ANTHROPIC_API_KEY unless supervisor.allow_api_key is on"
+KEY_FAKE="$TMP/fake-key-claude.sh"
+KEY_LOG="$TMP/key-env.log"
+cat > "$KEY_FAKE" <<'EOF'
+#!/bin/bash
+printf '%s\n' "${ANTHROPIC_API_KEY-UNSET}" >> "$KEY_LOG"
+echo '{"type":"result","result":"ok"}'
+EOF
+chmod +x "$KEY_FAKE"
+key_sessions() { # key_sessions LABEL: start one import and one Planner session, then read what each saw
+  local label="$1" n
+  : > "$KEY_LOG"
+  export FLEET_BOARD_TEST_IMPORT_ID="key-import-$label" FLEET_BOARD_TEST_PLANNER_ID="key-planner-$label"
+  api POST /api/import '{"plan":"# Plan\n## Task 1: A\n","status":"ready"}'
+  api POST /api/planner '{}'
+  local pid; pid="$(jq -r '.id' "$BODY_FILE")"
+  api POST "/api/planner/$pid/messages" '{"text":"hello"}'
+  wait_for 'n=$(wc -l < "$KEY_LOG"); [ "$n" -ge 2 ]'
+  sleep 0.5
+}
+export FLEET_BOARD_CLAUDE="$KEY_FAKE" KEY_LOG ANTHROPIC_API_KEY=sk-test-key-436
+LOCAL_YML_SAVED="$LOCAL_YML"
+if setup_case; then
+  key_sessions off
+  if [ "$(wc -l < "$KEY_LOG" | tr -d ' ')" = 2 ] && ! grep -q 'sk-test-key-436' "$KEY_LOG" && [ "$(grep -c '^UNSET$' "$KEY_LOG")" = 2 ]; then
+    pass "import and Planner sessions run without ANTHROPIC_API_KEY when allow_api_key is off"
+  else
+    fail "import and Planner sessions run without ANTHROPIC_API_KEY when allow_api_key is off" "saw: $(cat "$KEY_LOG")"
+  fi
+  stop_server
+fi
+LOCAL_YML="$LOCAL_YML_SAVED
+supervisor:
+  allow_api_key: true"
+if setup_case; then
+  key_sessions on
+  if [ "$(grep -c '^sk-test-key-436$' "$KEY_LOG")" = 2 ]; then
+    pass "import and Planner sessions keep ANTHROPIC_API_KEY when allow_api_key is true"
+  else
+    fail "import and Planner sessions keep ANTHROPIC_API_KEY when allow_api_key is true" "saw: $(cat "$KEY_LOG")"
+  fi
+  stop_server
+fi
+LOCAL_YML="$LOCAL_YML_SAVED"
+unset FLEET_BOARD_CLAUDE ANTHROPIC_API_KEY FLEET_BOARD_TEST_IMPORT_ID FLEET_BOARD_TEST_PLANNER_ID
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

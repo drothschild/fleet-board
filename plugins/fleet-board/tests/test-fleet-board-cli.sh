@@ -701,6 +701,47 @@ check "up: after supervisor.log is renamed and recreated, a new line still appea
 sleep 0.5
 check "up: after Ctrl-C and the drain, no process following the log is still running" 0 "$(pgrep -f "tail.*$SL_LOGS/supervisor.log" | wc -l | tr -d ' ')"
 
+# ANTHROPIC_API_KEY warning: `supervisor start` (which `up` runs with --detach) prints one stderr line
+# when the key is set, naming it; none when it is unset. cli.main runs with the start itself stubbed.
+AK_PY="$TMP/ak-warning.py"
+cat > "$AK_PY" <<'PY'
+import io, os, pathlib, sys
+from unittest import mock
+sys.path.insert(0, os.environ['SCRIPTS_DIR'])
+from supervisor import cli
+root = pathlib.Path(sys.argv[1])
+env = {'PATH': os.environ['PATH']}
+if os.environ['KEYSET'] == '1':
+    env['ANTHROPIC_API_KEY'] = 'sk-test-key-436'
+err = io.StringIO()
+args = ['start'] + (['--detach'] if os.environ['EXTRA'] else [])
+with mock.patch.object(cli, '_board_root', return_value=root), \
+     mock.patch.object(cli, '_start', return_value=0), mock.patch.object(cli, '_detach', return_value=0):
+    cli.main(args, env=env, stdout=io.StringIO(), stderr=err)
+sys.stdout.write(err.getvalue())
+PY
+for allow in off on; do
+  AK_REPO="$TMP/ak-$allow"; mkdir -p "$AK_REPO"
+  printf 'board:\n  repo: a/b\n' > "$AK_REPO/.fleet-board.yml"
+  [ "$allow" = on ] && printf 'supervisor:\n  allow_api_key: true\n' >> "$AK_REPO/.fleet-board.yml"
+  for extra in "" "--detach"; do
+    for keyset in 1 0; do
+      out="$(cd "$AK_REPO" && PYTHONDONTWRITEBYTECODE=1 SCRIPTS_DIR="$SCRIPTS" KEYSET=$keyset EXTRA="$extra" python3 "$AK_PY" "$AK_REPO" 2>&1)"
+      name="supervisor start $extra (allow_api_key $allow, key set=$keyset)"
+      if [ "$keyset" = 0 ]; then
+        check "$name: prints no warning" "" "$out"
+      else
+        check "$name: prints one warning line naming ANTHROPIC_API_KEY" 1 "$(printf '%s\n' "$out" | grep -c 'ANTHROPIC_API_KEY')"
+        check "$name: prints only that line" 1 "$(printf '%s\n' "$out" | grep -c .)"
+        case "$allow" in
+          off) contains "$name: says the key will not reach the sessions" "not reach" "$out" ;;
+          on)  contains "$name: says the sessions will bill the key" "bill" "$out" ;;
+        esac
+      fi
+    done
+  done
+done
+
 echo ""
 echo "-----------------------------------"
 echo "passed: $PASS   failed: $FAIL"

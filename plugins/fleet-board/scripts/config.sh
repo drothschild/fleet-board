@@ -364,6 +364,7 @@ VALIDATION_SCRIPT='
             else (first($v[] | select(. as $g | try (("" | test("\\A(?:" + ($g | pg_regex) + ")\\z")) | false) catch true)) // null) as $bad
               | if $bad != null then "supervisor.\($k) entry \($bad | tojson) is not a valid glob" else empty end
             end),
+        (if ($sup.allow_api_key | type) != "boolean" then "supervisor.allow_api_key must be true or false" else empty end),
         (if ($sup.version_bump != "pr" and $sup.version_bump != "merge") then "supervisor.version_bump must be pr or merge" else empty end),
         # version_bump_paths: globs too, but "**" (every path) is its default, so wildcard-only entries are fine
         ($sup.version_bump_paths as $v
