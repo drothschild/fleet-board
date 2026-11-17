@@ -148,6 +148,55 @@ run_check "$LINT" abc
 assert_eq "non-numeric: exit 2" "$LAST_EXIT" 2
 
 echo ""
+echo "Test: card-lint.sh ## Test changes"
+echo ""
+# lint_tc <body-file> [file-at-base ...]: lint a body in a repo whose base holds those files
+lint_tc() {
+  local body="$1"; shift
+  setup_card "$body"
+  local f
+  for f in "$@"; do
+    mkdir -p "$REPO/$(dirname "$f")"
+    printf '#!/usr/bin/env bash\n' > "$REPO/$f"
+    git -C "$REPO" add "$f"
+  done
+  git -C "$REPO" commit -q --allow-empty -m "base files"
+  run_check "$LINT" --body-file "$body"
+}
+TCF=plugins/fleet-board/tests/test-x.sh
+# tc_body <bullet>: a body with the Scope listing $TCF and that one Test changes bullet
+tc_body() {
+  local b; b="$(mktemp)"; CLEANUP_DIRS+=("$b")
+  printf '## Scope\n- %s\n\n## Test changes\n%s\n\n## Acceptance\n- clamp returns 3\n' "$TCF" "$1" > "$b"
+  TC_BODY="$b"
+}
+lint_tc "$FIX/test-changes-ok.md" "$TCF"
+assert_eq "Test changes: a bullet with its file in Scope and at the base lints clean (exit)" "$LAST_EXIT" 0
+assert_eq "Test changes: a bullet with its file in Scope and at the base prints nothing" "$LAST_OUT" ""
+lint_tc "$FIX/ok-with-human-qa.md"
+assert_eq "Test changes: the same card without the section lints clean as today" "$LAST_EXIT" 0
+tc_body '- plugins/fleet-board/tests/test-x.sh: "gone case" removed: Acceptance item 3 drops it'
+lint_tc "$TC_BODY" "$TCF"
+assert_eq "Test changes: a removed: bullet lints clean" "$LAST_EXIT" 0
+tc_body '- plugins/fleet-board/tests/test-x.sh: old case changes: Acceptance item 2'
+lint_tc "$TC_BODY" "$TCF"
+assert_eq "Test changes: a bullet with no quoted test name fails (exit)" "$LAST_EXIT" 1
+assert_contains "Test changes: no quoted test name names the line" "$LAST_OUT" "old case changes: Acceptance item 2"
+tc_body '- plugins/fleet-board/tests/test-x.sh: "old case" is different: Acceptance item 2'
+lint_tc "$TC_BODY" "$TCF"
+assert_eq "Test changes: a bullet with neither changes: nor removed: fails (exit)" "$LAST_EXIT" 1
+assert_contains "Test changes: neither form names the line" "$LAST_OUT" "is different: Acceptance item 2"
+tc_body '- plugins/fleet-board/tests/test-y.sh: "old case" changes: Acceptance item 2'
+lint_tc "$TC_BODY" "$TCF" plugins/fleet-board/tests/test-y.sh
+assert_eq "Test changes: a file not in Scope fails (exit)" "$LAST_EXIT" 1
+assert_contains "Test changes: a file not in Scope names the line" "$LAST_OUT" "test-y.sh"
+tc_body '- plugins/fleet-board/tests/test-x.sh: "old case" changes: Acceptance item 2'
+lint_tc "$TC_BODY"
+assert_eq "Test changes: a file that does not exist at the base fails (exit)" "$LAST_EXIT" 1
+assert_contains "Test changes: a missing file names the line" "$LAST_OUT" "old case"
+assert_contains "Test changes: a missing file names the rule" "$LAST_OUT" "test-changes"
+
+echo ""
 echo "Test: tick-plan.sh skip_card_lint"
 echo ""
 

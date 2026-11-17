@@ -688,12 +688,11 @@ if setup_case; then
   if grep -q -- '--permission-mode dontAsk' "$FAKE_CLAUDE_DIR/args.log" && ! grep -q -- 'acceptEdits' "$FAKE_CLAUDE_DIR/args.log"; then pass "import preview runs in dontAsk even when config sets acceptEdits"; else fail "import preview runs in dontAsk even when config sets acceptEdits" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '--tools Read,Grep,Glob,Write,Bash --' "$FAKE_CLAUDE_DIR/args.log" && ! grep -Eq -- '--tools [^ ]*(Edit|NotebookEdit)' "$FAKE_CLAUDE_DIR/args.log"; then pass "import tools are Read,Grep,Glob,Write,Bash without Edit or NotebookEdit"; else fail "import tools are Read,Grep,Glob,Write,Bash without Edit or NotebookEdit" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   allowed="$(sed -n 's/.*--allowedTools \(.*\) --max-turns.*/\1/p' "$FAKE_CLAUDE_DIR/args.log" | head -1)"
-  if [ -n "$allowed" ] && printf '%s' "$allowed" | grep -q 'Bash(mktemp \*)' && printf '%s' "$allowed" | grep -qF "Bash(cp * $TMP/logs/web/acme-toy/imports/fixed/cards.json)" && ! printf '%s' "$allowed" | grep -qF 'Bash(cp *)' \
-     && printf '%s' "$allowed" | grep -qF "Bash(bash $SCRIPTS/import-plan.sh *)" && ! printf '%s' "$allowed" | grep -qF '*import-plan.sh' \
-     && [ "$(printf '%s' "$allowed" | grep -o '\(Bash\|Write\)(' | wc -l | tr -d ' ')" = 5 ] && [ "$(printf '%s' "$allowed" | grep -o 'Write(' | wc -l | tr -d ' ')" = 2 ] && printf '%s' "$allowed" | grep -q 'Write(//[^ ]*/imports/fixed/\*\*)' \
-     && ! printf '%s' "$allowed" | grep -Eq '(^| )(Bash|Write)( |$)'; then pass "import allowedTools are exactly the preview commands and two Write rules"; else fail "import allowedTools are exactly the preview commands and two Write rules" "allowed: $allowed"; fi
-  expected_tmp_rule="Write(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)"
-  if printf '%s' "$allowed" | grep -qF "$expected_tmp_rule" && ! printf '%s' "$allowed" | grep -qF 'Write(///**)'; then pass "import allowedTools pin the temp directory Write rule to the resolved temp path"; else fail "import allowedTools pin the temp directory Write rule to the resolved temp path" "want $expected_tmp_rule; allowed: $allowed"; fi
+  real_idir="$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]).strip("/"))' "$TMP/logs/web/acme-toy/imports/fixed")"
+  want_allowed="Bash(cp $TMP/logs/web/acme-toy/imports/fixed/cards.draft.json $TMP/logs/web/acme-toy/imports/fixed/cards.json) Bash(bash $SCRIPTS/import-plan.sh *) Edit(//$real_idir/**) Read(//$real_idir/**)"
+  if [ -n "$allowed" ] && [ "$allowed" = "$want_allowed" ] \
+     && ! printf '%s' "$allowed" | grep -q 'mktemp' && ! printf '%s' "$allowed" | grep -q 'Write(' \
+     && ! printf '%s' "$allowed" | grep -qF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)"; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
   if grep -q -- '--allowedTools .* --max-turns .* /fleet-board:import-plan' "$FAKE_CLAUDE_DIR/args.log"; then pass "an option follows each variadic list, before the prompt"; else fail "an option follows each variadic list, before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '--max-turns 7' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
@@ -909,6 +908,23 @@ if setup_case; then
   assert_body "the refusal names the path" '.error' '*log dir*'
   sleep 1
   if [ ! -e "$FAKE_CLAUDE_DIR/args.log" ]; then pass "no claude session is started for a refused path"; else fail "no claude session is started for a refused path" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  stop_server
+fi
+unset LOG_DIR_OVERRIDE FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
+
+echo "Case: import refuses a state directory reached through a symlink to a path with a space"
+export FLEET_BOARD_CLAUDE="$FAKE_IMPORT_CLAUDE" FAKE_CLAUDE_DIR IMPORT_FIXTURE
+export FLEET_BOARD_TEST_IMPORT_ID=linked
+rm -f "$FAKE_CLAUDE_DIR/args.log"
+mkdir -p "$TMP/real log dir"
+ln -s "$TMP/real log dir" "$TMP/linklogs"
+LOG_DIR_OVERRIDE="$TMP/linklogs"
+if setup_case; then
+  api POST /api/import '{"plan":"x","status":"backlog"}'
+  assert_code 500
+  assert_body "the symlink refusal names the resolved path" '.error' '*real log dir*'
+  sleep 1
+  if [ ! -e "$FAKE_CLAUDE_DIR/args.log" ]; then pass "no claude session is started for a symlinked path with a space"; else fail "no claude session is started for a symlinked path with a space" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   stop_server
 fi
 unset LOG_DIR_OVERRIDE FLEET_BOARD_CLAUDE FLEET_BOARD_TEST_IMPORT_ID
