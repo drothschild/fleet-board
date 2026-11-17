@@ -255,7 +255,7 @@ review_note() {
     body: ("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n" + $note + "\n```\n"),
     created_at: "2026-09-28T00:01:00Z"}]' > "$d/comments.json"
   sed -e "s#	\.\./#	$TICK/#" -e "s#	comments-12.json#	$d/comments.json#" \
-      -e "s#issue-12-in_review-security-ux#issue-12-in_review-security#" -e "s#pr-34-draft#pr-34-open-green#" \
+      -e "s#issue-12-in_review-security-ux#issue-12-in_review-${2:-security}#" -e "s#pr-34-draft#pr-34-open-green#" \
       "$TICK/parallel-all-reported/routes" > "$d/routes"
   FAKE_GH_ROUTES="$d/routes"; export FAKE_GH_ROUTES
   run_check "$SCRIPT"
@@ -264,9 +264,45 @@ R_CLEAN='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[\"security\"],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":1,\"important\":0,\"stage\":\"security\"}}}"
 assert_exit "reviewed_stages vs reviews: exit" 0
 assert_jq "reviewed_stages vs reviews: a stage in reviewed_stages with a Critical finding in reviews.security is not merged" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
-assert_jq "reviewed_stages vs reviews: the card is held for security, not merged (wait)" "$(card 12 action)" '"wait"'
+assert_jq "reviewed_stages vs reviews: the card is fixed for security's finding, not merged (fix)" "$(card 12 action)" '"fix"'
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
 assert_jq "reviewed_stages vs reviews: a clean security record at the head still merges" "$(card 12 action)" '"merge"'
 
+# One fixer pass for every reviewer's findings. Card 12 is routed to security (blocking); with the
+# issue "security-ux" it is routed to ux (advisory) as well.
+fr_imp() { printf '{"round":1,"sha":"abc1234","critical":0,"important":1,%s"findings":[{"severity":"Important","text":"%s"}]}' "$1" "$2"; }
+FR_HEAD='"state":"in_review","branch":"fleet/12-add-subtract","pr":34'
+EV_IMP="$(fr_imp '' 'evidence flaw')"
+SEC_IMP="$(fr_imp '"stage":"security",' 'security flaw')"
+UX_IMP="$(fr_imp '"stage":"ux",' 'ux flaw')"
+FIXES='[.cards[] | select(.number == 12 and .action == "fix")]'
+
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$SEC_IMP,\"reviews\":{\"evidence\":$EV_IMP,\"security\":$SEC_IMP}}"
+assert_jq "one fixer pass: findings from both reviewers plan one fix row" "$FIXES | length" '1'
+assert_jq "one fixer pass: the row lists both findings, each labelled with its reviewer" "$FIXES[0].findings | map({reviewer, text})" \
+  '[{"reviewer":"evidence","text":"evidence flaw"},{"reviewer":"security","text":"security flaw"}]'
+
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$SEC_IMP,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$SEC_IMP}}"
+assert_jq "one fixer pass: a clean evidence record with a security finding plans fix" "$FIXES | length" '1'
+assert_jq "one fixer pass: the finding is labelled security" "$FIXES[0].findings | map({reviewer, text})" '[{"reviewer":"security","text":"security flaw"}]'
+
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$EV_IMP,\"reviews\":{\"evidence\":$EV_IMP}}"
+assert_jq "one fixer pass: an evidence finding with no security record at the head plans no fix" "$FIXES | length" '0'
+assert_jq "one fixer pass: security is planned to review" '[.cards[] | select(.number == 12 and .action == "review_stage") | .stage.name]' '["security"]'
+
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$UX_IMP,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$R_CLEAN,\"ux\":$UX_IMP}}" security-ux
+assert_jq "one fixer pass: an advisory stage's findings cause no fix" "$FIXES | length" '0'
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$UX_IMP,\"reviews\":{\"evidence\":$EV_IMP,\"security\":$R_CLEAN,\"ux\":$UX_IMP}}" security-ux
+assert_jq "one fixer pass: an advisory stage's findings are left out of the row" "$FIXES[0].findings | map(.reviewer)" '["evidence"]'
+
+# After a fix moves the head (records at round 1, the card at round 2), every routed reviewer reviews again
+review_note "{$FR_HEAD,\"round\":2,\"last_review\":$SEC_IMP,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$SEC_IMP}}"
+assert_jq "one fixer pass: after the fix both review and review_stage are planned" \
+  '[.cards[] | select(.number == 12) | .action] | sort' '["review","review_stage"]'
+
+# A merge-conflict fix keeps its conflicted-files findings when a routed stage has findings at the head
+review_note "{$FR_HEAD,\"round\":1,\"last_review\":$R_CLEAN,\"conflicted_files\":[\"src/calc.js\"],\"reviews\":{\"evidence\":$R_CLEAN,\"security\":$SEC_IMP}}"
+assert_jq "one fixer pass: a conflict fix keeps its conflicted-files findings beside a stage finding" \
+  "$FIXES[0].findings | map(.text)" '["merge conflict in src/calc.js"]'
 
 tp_finish

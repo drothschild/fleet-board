@@ -285,6 +285,9 @@ echo "tick-plan.sh: the accepted baseline"
 # tick_case <note-json> <pr-head>: card 12 in In Review with the given note
 tick_case() {
   setup_case "$IN_REVIEW"
+  # No routed stages: these cases test the accepted baseline alone. With a stage routed and not yet
+  # reviewed at the head, an evidence finding plans review_stage before fix (card 287)
+  printf 'review:\n  stages:\n    - name: documentation\n      enabled: false\n    - name: blast_radius\n      enabled: false\n' >> "$REPO/.fleet-board.yml"
   set_note_json "$1"
   printf '{"isDraft":true,"state":"OPEN","mergedAt":null,"statusCheckRollup":[],"headRefOid":"%s"}\n' "$2" > "$FAKE_GH_DIR/pr-view.json"
   # The PR's files, for review-stages.sh match (the planner's built-in stage routing)

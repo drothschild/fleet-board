@@ -1014,6 +1014,25 @@ def test_a_fix_in_in_review_takes_the_evidence_findings_when_a_stage_reported_la
     assert '- [Important] no test' in b.prompt()
 
 
+def test_a_two_reviewer_fix_briefs_the_fixer_with_the_plan_rows_findings_and_raises_the_round_once(base):
+    # The plan row's findings carry both reviewers' entries, each labelled; the fixer's brief lists both,
+    # and the pass raises the round by one, not by one per reviewer
+    b = board_for(base, 'in_review')
+    seed_fix(b)
+    b.put_note({'last_review': STAGE_CLEAN, 'reviews': {'evidence': LAST_REVIEW, 'security': STAGE_CLEAN}})
+    b.plans({'report': 'fixer-ok'})
+    rows = [{'severity': 'Important', 'text': 'evidence flaw', 'reviewer': 'evidence'},
+            {'severity': 'Critical', 'text': 'security flaw', 'reviewer': 'security'}]
+    started = begin(b, 'fix', state='in_review', round=1, findings=rows)
+    assert started.kind == 'session' and started.action.role == 'fixer', started
+    prompt = b.prompt()
+    assert '[Important] (evidence) evidence flaw' in prompt and '[Critical] (security) security flaw' in prompt, prompt
+    assert run_role(b, started) == driver.Outcome(12, True, False, None)
+    note = b.note()
+    assert note['round'] == 2, 'one fixer pass raises the round by exactly one: %s' % note
+    assert note['last_review']['sha'] == 'abc1234' and note.get('conflicted_files') is None, note
+
+
 def test_review_for_judges_each_reviewer_on_its_own_record(base):
     baseline = {'round': 0, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'stage': None}
     note = {'last_review': baseline, 'reviews': {'evidence': LAST_REVIEW, 'security': STAGE_CLEAN}}
