@@ -899,12 +899,11 @@ class Chained(unittest.TestCase):
         self.gh_dir = gh_dir
         self.env = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'CHAIN_GH_DIR': str(gh_dir),
                     'FLEET_BOARD_USER': 'fleet-bot', 'FLEET_BOARD_VERIFY_MAIN': str(verify)}
-        # Both reviewers clean at the head; the security stage reviewer finished last, so last_review
-        # holds its record. (A card whose evidence review finished last is skipped in merging: the
-        # merging row still judges last_review.stage, a separate card.)
+        # Both reviewers clean at the head; the evidence review finished last, so last_review holds its
+        # record (no stage), as the merging row judges the card by reviews[] like the In Review row.
         clean = {'round': 1, 'sha': 'abc1234', 'critical': 0, 'important': 0, 'findings': []}
         self.put_note({'state': 'in_review', 'branch': lc.BRANCH[12], 'pr': 34, 'round': 1,
-                       'reviewed_stages': [], 'last_review': dict(clean, stage='security'),
+                       'reviewed_stages': [], 'last_review': dict(clean),
                        'reviews': {'evidence': dict(clean), 'security': dict(clean, stage='security')}})
         self.state = state.State('run-1')
         self.lane = merging.MergeLane(self.root, self.state, run=self.script, spawn=self.spawn)

@@ -264,7 +264,7 @@ R_CLEAN='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[\"security\"],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":1,\"important\":0,\"stage\":\"security\"}}}"
 assert_exit "reviewed_stages vs reviews: exit" 0
 assert_jq "reviewed_stages vs reviews: a stage in reviewed_stages with a Critical finding in reviews.security is not merged" "$(card 12 action | sed 's/^/(/; s/$/ != "merge")/')" 'true'
-assert_jq "reviewed_stages vs reviews: security is planned for review again" "$(card 12 action)" '"review_stage"'
+assert_jq "reviewed_stages vs reviews: the card is held for security, not merged (wait)" "$(card 12 action)" '"wait"'
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
 assert_jq "reviewed_stages vs reviews: a clean security record at the head still merges" "$(card 12 action)" '"merge"'
 
