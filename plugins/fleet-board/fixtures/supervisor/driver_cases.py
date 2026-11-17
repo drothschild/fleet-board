@@ -1972,6 +1972,11 @@ if __name__ == '__main__':
     only = os.environ.get('FLEET_TEST_ONLY')
     if only:
         names = [n for n in names if n == only]
+        # Announce the filter, and fail when it selects nothing (as unittest does), so a stray variable never
+        # makes the suite look green while running nothing
+        sys.stderr.write('FLEET_TEST_ONLY=%s: %d test(s) selected\n' % (only, len(names)))
+        if not names:
+            sys.exit(5)
     failed = 0
     for name in names:
         sub = tempfile.mkdtemp(dir=base)
