@@ -250,7 +250,7 @@ def test_every_planned_action_is_classified():
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
                 1: ['start_review', 'unblock', 'update_branch', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
-                    'move_to_review'],
+                    'move_to_review', 'check_premise'],
                 2: ['start']}
     for klass, actions in expected.items():
         for action in actions:

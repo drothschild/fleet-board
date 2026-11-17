@@ -2045,7 +2045,7 @@ def test_the_card_changed_during_the_check_drops_the_verdict(base):
     finish_all(b, started)
     assert not stamps(b) and 'board-move.sh' not in b.scripts_called(), b.calls
     note = b.note()
-    assert note['action_failures'] == 0 and note.get('premise_check') is None, note
+    assert not note.get('action_failures') and note.get('premise_check') is None, note
     dropped = [e for e in b.state.events if 'premise verdict dropped: card changed' in json.dumps(e)]
     assert len(dropped) == 1, list(b.state.events)
     assert not [e for e in b.state.events if e['type'] == 'action_failed'], list(b.state.events)
