@@ -27,11 +27,11 @@ check() {
 section="$(awk '/^### Writing a card/{f=1;next} f && /^##/{exit} f' "$README")"
 
 r=bad
-printf '%s\n' "$section" | grep -qF "Move the whole chain to Ready; each card starts once its dependencies are Done." && r=ok
+printf '%s\n' "$section" | grep -cF "Move the whole chain to Ready; each card starts once its dependencies are Done." >/dev/null && r=ok
 check "card-writing section says to move the whole chain to Ready" "$r"
 
 r=bad
-printf '%s\n' "$section" | grep -E "Backlog.*promotes|promotes.*Backlog" | grep -qi "nothing" && r=ok
+printf '%s\n' "$section" | grep -E "Backlog.*promotes|promotes.*Backlog" | grep -ci "nothing" >/dev/null && r=ok
 check "card-writing section says nothing promotes a Backlog card" "$r"
 
 # The key table has rows for the providers map and a stage's provider key.
@@ -45,7 +45,7 @@ check "key table has a review.stages[].provider row" "$r"
 
 # The Config section's key table has a row for the review stages list.
 r=bad
-awk '/^## Config/{f=1;next} f && /^## /{exit} f' "$README" | grep -qF '| `review.stages` |' && r=ok
+awk '/^## Config/{f=1;next} f && /^## /{exit} f' "$README" | grep -cF '| `review.stages` |' >/dev/null && r=ok
 check "config table has a review.stages row" "$r"
 
 # settle.sh is gone (0.27.0): run by hand beside a running supervisor it moved cards and marked PRs ready
@@ -53,7 +53,7 @@ check "config table has a review.stages row" "$r"
 DOCS_DIR="${SCRIPT_DIR}/../docs"
 GATES="${GATES_FILE:-${DOCS_DIR}/gates.md}"
 # The upgrade notes may say it was removed; nothing else in the README names it.
-r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -q 'settle\.sh' || r=ok
+r=bad; awk '/^### Upgrading from an earlier version$/{u=1;next} u && /^#/{u=0} !u' "$README" | grep -c 'settle\.sh' >/dev/null || r=ok
 check "README does not mention settle.sh outside its upgrade notes" "$r"
 r=bad; grep -q 'settle\.sh' "$GATES" || r=ok
 check "gates.md does not mention settle.sh" "$r"
@@ -80,7 +80,7 @@ check "overnight.md says the after-merge steps run before the merger" "$r"
 # The local-board spec's adapter table: comment removes the active marker only for a validated role report.
 SPEC="${SPEC_FILE:-${SCRIPT_DIR}/../../../docs/specs/2026-11-06-local-board-design.md}"
 r=bad
-grep -E '^\| `comment <n> <body-file>` \|' "$SPEC" | grep -qF 'removes `active/<n>` only for a validated role report' && r=ok
+grep -E '^\| `comment <n> <body-file>` \|' "$SPEC" | grep -cF 'removes `active/<n>` only for a validated role report' >/dev/null && r=ok
 check "spec comment row says the marker is removed only for a validated role report" "$r"
 
 # The CLI supervisor design lives at docs/specs/ and is the path the plugin docs name.
