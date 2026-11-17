@@ -268,5 +268,34 @@ assert_jq "reviewed_stages vs reviews: the card is held for security, not merged
 review_note "{\"state\":\"in_review\",\"branch\":\"fleet/12-add-subtract\",\"pr\":34,\"round\":1,\"reviewed_stages\":[],\"last_review\":$R_CLEAN,\"reviews\":{\"evidence\":$R_CLEAN,\"security\":{\"round\":1,\"sha\":\"abc1234\",\"critical\":0,\"important\":0,\"stage\":\"security\"}}}"
 assert_jq "reviewed_stages vs reviews: a clean security record at the head still merges" "$(card 12 action)" '"merge"'
 
+# ---------------------------------------------------------------------------
+# A clean-reviewed PR whose checks finished red: re-run once, then hand the failure to a fixer
+HEAD40=abc1234000000000000000000000000000000000
+plan in-review-red-first "$AUTO"
+assert_exit "red checks: exit" 0
+assert_jq "red checks: a clean current review with a red check and no checks_rerun plans rerun_checks" "$(card 12 action)" '"rerun_checks"'
+assert_jq "red checks: the reason names the PR, the head's first 7 characters and the check" "$(card 12 reason)" \
+  '"PR #34 checks failed at abc1234 (test-suite); re-running the failed jobs once"'
+assert_jq "red checks: rerun_checks is dispatchable" "$(card 12 dispatchable)" 'true'
+
+plan in-review-red-rerun-same "$AUTO"
+assert_jq "red checks: checks_rerun at the PR head plans checks_failed" "$(card 12 action)" '"checks_failed"'
+assert_jq "red checks: the checks_failed reason" "$(card 12 reason)" \
+  '"PR #34 checks still red at abc1234 after a re-run (test-suite)"'
+
+plan in-review-red-rerun-older "$AUTO"
+assert_jq "red checks: checks_rerun naming an older head plans rerun_checks again" "$(card 12 action)" '"rerun_checks"'
+
+plan in-review-red-pending "$AUTO"
+assert_jq "red checks: a red check beside a pending check waits" "$(card 12 action)" '"wait"'
+assert_jq "red checks: the wait reason is unchanged" "$(card 12 reason)" '"waiting for a human merge or green checks"'
+
+export FLEET_BOARD_TODAY=2026-11-11
+plan in-review-ignore-red "$(printf 'merge:\n  policy: auto\n  ignore_checks:\n    - name: "lint-*"\n      reason: r\n      until: 2026-12-31\n    - name: "ci/legacy-?int"\n      reason: r\n      until: 2026-12-31\n')"
+assert_jq "red checks: a red check matched by an unexpired ignore entry still merges" "$(card 12 action)" '"merge"'
+unset FLEET_BOARD_TODAY
+
+plan in-review-red-findings "$AUTO"
+assert_jq "red checks: Important findings with red checks plan fix, not rerun_checks" "$(card 12 action)" '"fix"'
 
 tp_finish
