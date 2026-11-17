@@ -29,6 +29,11 @@ RES="$(jq -cr --arg m "$FB_MARKER" --arg me "$ME" --arg url "$(fl_url "$1")" --a
       blocked_by: (.blocked_by // []),
       pr_url: (.pr_url // null),
       repo: (.repo // null),
+      premise: (.premise as $p
+        | if ($p | type) == "object" and ($p.sha | type) == "string" and ($p.sha | test("^[0-9a-f]{40}$"))
+             and ($p.at | type) == "string"
+             and (["create","edit","move","check","approve"] | index($p.by)) != null
+          then $p else null end),
       labels: (.labels // []),
       manager_note: (if $n then ($n.body | sub("^[^\n]*\n"; "")) else null end),
       manager_note_id: (if $n then $n.id else null end),

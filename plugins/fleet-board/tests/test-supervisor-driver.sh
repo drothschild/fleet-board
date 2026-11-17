@@ -260,6 +260,46 @@ def case_open_cards_read_none_when_there_are_no_other_open_cards(sub):
     assert open_cards_section(start_prompt(b)) == 'none'
 
 
+def launched_env(b, key='sk-test-key-436'):
+    """Begin a start action with ANTHROPIC_API_KEY in the supervisor's environment; return the env the
+    role session was launched with."""
+    import os
+    seen = {}
+    real = b.driver.roles.launch
+
+    def spy(argv, **kw):
+        seen['env'] = dict(kw['env'])
+        return real(argv, **kw)
+
+    b.driver.roles.launch = spy
+    b.stubs['worktree.sh'] = dc.ok(b.worktree + '\n')
+    b.plans({'report': 'implementor-ok'})
+    saved = os.environ.get('ANTHROPIC_API_KEY')
+    os.environ['ANTHROPIC_API_KEY'] = key
+    try:
+        started = dc.begin(b, 'start')
+        dc.wait_for(started)
+    finally:
+        if saved is None:
+            os.environ.pop('ANTHROPIC_API_KEY', None)
+        else:
+            os.environ['ANTHROPIC_API_KEY'] = saved
+    return seen['env']
+
+
+def case_a_role_session_has_no_anthropic_api_key_when_allow_api_key_is_unset(sub):
+    env = launched_env(dc.board_for(sub))
+    assert 'ANTHROPIC_API_KEY' not in env, sorted(env)
+    assert env.get('PATH') and env.get('FLEET_BOARD_RUN_ID'), sorted(env)
+
+
+def case_a_role_session_keeps_anthropic_api_key_when_allow_api_key_is_true(sub):
+    cfg = dict(dc.CONFIG, supervisor={'allow_api_key': True})
+    env = launched_env(dc.board_for(sub, config=cfg))
+    assert env.get('ANTHROPIC_API_KEY') == 'sk-test-key-436', sorted(env)
+    assert env.get('PATH') and env.get('FLEET_BOARD_RUN_ID'), sorted(env)
+
+
 failed = 0
 for name, fn in sorted(globals().items()):
     if name.startswith('case_'):

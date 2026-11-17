@@ -251,3 +251,42 @@ fl_add_qa_section() {
       else ($b | sub("\n+$"; "")) as $t
         | (if $t == "" then "" else $t + "\n\n" end) + "## Human QA\n" end'
 }
+
+# fl_default_head: prints the 40-hex commit of the local ref of the default branch
+# (origin/HEAD, else origin/main), without a fetch. Exit 1 when it cannot be read.
+fl_default_head() {
+  local ref sha
+  for ref in refs/remotes/origin/HEAD refs/remotes/origin/main; do
+    sha="$(git -C "$FLEET_ROOT" rev-parse --verify -q "$ref^{commit}" 2>/dev/null)" || continue
+    case "$sha" in
+      *[!0-9a-f]*|'') continue ;;
+    esac
+    [ "${#sha}" -eq 40 ] || continue
+    printf '%s\n' "$sha"; return 0
+  done
+  return 1
+}
+
+# fl_premise_json <by> [<sha>]: prints the premise stamp object for <sha>, or for the
+# current default head; null when neither is available.
+fl_premise_json() {
+  local sha="${2:-}"
+  [ -n "$sha" ] || sha="$(fl_default_head)" || { echo null; return 0; }
+  jq -nc --arg s "$sha" --arg b "$1" --arg now "$(fl_now)" '{sha: $s, at: $now, by: $b}'
+}
+
+# fl_scope_text <body>: prints the text of the body's "## Scope" section (heading
+# excluded, up to the next "## " heading), ignoring headings inside a code fence;
+# nothing when there is none.
+fl_scope_text() {
+  jq -nr --arg b "$1" '
+    reduce ($b | split("\n"))[] as $l ({fence: false, in: false, done: false, out: []};
+      if ($l | test("^[ ]{0,3}(```|~~~)")) then
+        .fence = (.fence | not) | (if .in then .out += [$l] else . end)
+      elif .fence then (if .in then .out += [$l] else . end)
+      elif ($l | test("^##[ \t]+Scope[ \t]*$")) and (.done | not) then .in = true
+      elif ($l | test("^##[ \t]")) then (if .in then .in = false | .done = true else . end)
+      elif .in then .out += [$l]
+      else . end)
+    | .out | join("\n")'
+}
