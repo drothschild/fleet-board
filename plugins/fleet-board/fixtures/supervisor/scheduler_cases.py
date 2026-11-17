@@ -651,5 +651,20 @@ def test_an_after_merge_still_takes_a_provider_slot():
     assert r['admitted'] == [] and r['waits'][0]['reason'] == 'global capacity', r
 
 
+def test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it():
+    start = candidate(11, 'start', paths=['src/a.sh'])
+    check = candidate(12, 'check_premise', paths=['src/a.sh'])
+    r = Scheduler(clock=lambda: 0).admit([start, check], limits=LIMITS)
+    assert sorted(x['number'] for x in r['admitted']) == [11, 12], (r['admitted'], r['waits'])
+    r = Scheduler(clock=lambda: 0).admit([check], active=[{'number': 11, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                           'action': 'start'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [12], r['waits']
+    r = Scheduler(clock=lambda: 0).admit([candidate(13, 'start', paths=['src/a.sh'])],
+                                         active=[{'number': 12, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                  'action': 'check_premise'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [13], r['waits']
+
+
 if __name__ == '__main__':
+    test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it()
     run()
