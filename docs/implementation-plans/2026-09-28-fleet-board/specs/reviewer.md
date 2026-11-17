@@ -15,6 +15,7 @@ The manager passes exactly these, and nothing else (in particular, no transcript
 - **Review worktree path**, an absolute path to a git worktree checked out at the PR head.
 - **Config JSON**, containing:
   - `commands.test_one` — a single-file test command with a `{file}` placeholder (for example `node --test {file}`);
+  - `commands.test_case` — optional; a single-test command with `{file}` and `{name}` placeholders, used only for mutants;
   - `commands.typecheck` and `commands.lint` — optional;
   - `review.mutation` and `review.verify_claim` — booleans;
   - `test_paths` — the path patterns that identify test files;
@@ -49,7 +50,7 @@ All commands run inside the review worktree at the PR head unless stated otherwi
 3. **Mutation** (`review.mutation`).
    - **When `review.mutation` is false:** no mutant is made, and `## Mutation` contains exactly the line `skipped: review.mutation is off`.
    - **When `review.mutation` is true:** for every Acceptance item mapped to a test (`UNMAPPED`, `CHECKED` and `NOT_APPLICABLE` items get no mutant), the reviewer makes exactly one mutant: a small change in the **implementation code** that the mapped test covers, chosen so that it breaks that item's behavior (for example flipping an operator, changing a constant, or removing a branch). Test files are never mutated.
-     - It runs only the mapped test and expects red: the single mapped test case when the runner selects it by exact name and the output shows exactly one test ran, else only the mapped test's file, never the other touched test files.
+     - It runs only the mapped test and expects red: the single mapped test case when the runner selects it by exact name and the output shows exactly one test ran, else only the mapped test's file. With `commands.test_case` set, that command (`{file}` the mapped test's file, `{name}` its exact name) is the single-case run, and it counts only when it first passes at the unmutated head and exactly one test ran, never the other touched test files.
      - Before the first mutant it saves `git status --porcelain` as the baseline. It restores every mutated file with `git checkout -- <file>` and confirms `git status --porcelain` prints exactly the baseline before making the next mutant. It does not re-run the test after a restore: a worktree back at the baseline is the unmutated head that step 2 already ran green. In a `mutate_on_copy` copy, which has no `.git`, it restores each file by copying it back from the review worktree and confirms it with `cmp -s`.
      - It classifies the mutant as exactly one of: **killed** (the mapped test went red), **survived** (the mapped test stayed green), or **invalid** (the mutant did not compile or run, so the test result says nothing about the assertion). If the mapped test was already red on the unmutated code, no meaningful mutant is possible and the item is counted invalid; the red test is already a step-2 finding.
      - Each survivor produces one `[Critical]` finding naming the item, the file mutated, the change made and the test that stayed green.

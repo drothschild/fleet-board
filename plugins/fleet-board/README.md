@@ -123,6 +123,7 @@ More on how planning, notes, follow-ups and the `main` check work: [docs/config.
 | `board.terminal_command` | `["open", "-a", "Terminal", "{dir}"]` | the command the card's "Open terminal" link runs; `{dir}` is the card's directory ([details](docs/config.md#boardterminal_command)) |
 | `board.states` | `{}` | maps a state to the name the board shows ([details](docs/config.md#boardstates)) |
 | `commands.test_one` | none | runs one test file; `{file}` is replaced by its path |
+| `commands.test_case` | none | runs one named test, for the reviewer's mutants; `{file}` and `{name}` are replaced (see docs/config.md) |
 | `commands.typecheck` | none | run by roles, and on `main` after a merge |
 | `commands.lint` | none | run by roles |
 | `commands.preflight` | none | checks the environment before each plan; a non-zero exit holds every card and warns with the last 20 lines of output |

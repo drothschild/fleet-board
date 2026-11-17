@@ -14,6 +14,10 @@ Unset by default. A command that checks the environment works, for example that 
 
 Recipes: `test -n "$OPENAI_API_KEY"` holds the board while a provider key is unset, and `review-stages.sh setup` (nothing to create on the local store) exits 0.
 
+## `commands.test_case`
+
+Unset by default. A command that runs one named test, with `{file}` (the test file) and `{name}` (the test's exact name) placeholders. The reviewer uses it only for mutants, so a mutant runs one test in place of the whole mapped file. A run counts only when it first passes at the unmutated head and its output shows exactly one test ran; otherwise the reviewer runs the file. Examples: `node --test --test-name-pattern '^{name}$' {file}`, `pytest {file} -k {name}`, `npx jest {file} -t '^{name}$'`, `go test -run '^{name}$' ./...`. Leave it unset when the test files are fast or the runner cannot select one test.
+
 ## `merge.policy`
 
 Under `human`, the gate blocks every `gh pr merge`, and clean PRs wait to be merged by hand. Under `auto`, the supervisor merges a PR whose review is clean, whose checks are green, and whose card doesn't need Human QA: the card moves to `merging` and `scripts/merge-reviewed.sh` merges it outside any Claude session (see [overnight.md](overnight.md#merges-under-mergepolicy-auto)). Merges stay human by default (`human`).
