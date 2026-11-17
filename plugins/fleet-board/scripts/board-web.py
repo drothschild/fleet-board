@@ -475,9 +475,11 @@ def start_import(plan_text: str, status: str) -> str:
     # the allow rules below embed these paths; a character a permission rule reads specially would
     # loosen them, so refuse instead of running with a changed rule
     scripts_path = script("import-plan.sh")
-    # the check runs on the resolved paths, the strings the rules are built from
+    # the rules are built from both the paths as written and the resolved ones: check every string
     real_idir = os.path.realpath(str(idir))
-    for label, p in (("import directory", real_idir), ("scripts directory", os.path.realpath(scripts_path))):
+    for label, p in (("import directory", str(idir)), ("import directory", real_idir),
+                     ("scripts directory", scripts_path),
+                     ("scripts directory", os.path.realpath(scripts_path))):
         if re.search(r"[ *()]", p):
             raise ApiError(500, "the %s path %s contains a space, *, ( or ), which the import's "
                                 "permission rules cannot name safely" % (label, p))
