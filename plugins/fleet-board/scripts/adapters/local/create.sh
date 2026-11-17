@@ -64,8 +64,9 @@ LABELS_JSON="$(printf '%s\n' ${labels[@]+"${labels[@]}"} | jq -R . | jq -sc 'map
 jq -n --argjson n "$N" --arg t "$TITLE" --rawfile b "$BODYTMP" \
   --arg s "$STATE" --argjson l "$LABELS_JSON" --arg now "$(fl_now)" \
   --argjson acc "$ACC" --argjson blk "$BLOCKED" --arg repo "$REPO" \
+  --argjson prem "$(fl_premise_json create)" \
   '{number: $n, title: $t, body: $b, acceptance: $acc, blocked_by: $blk, pr_url: null, pr_url_source: null,
-    state: $s, labels: $l, next_comment_id: 1, comments: [], created_at: $now}
+    state: $s, labels: $l, next_comment_id: 1, comments: [], created_at: $now, premise: $prem}
     + (if $repo == "" then {} else {repo: $repo} end)' > "$TMP" \
   || fb_die 1 "cannot build card #$N"
 fl_write_card "$N" "$TMP" || exit 1

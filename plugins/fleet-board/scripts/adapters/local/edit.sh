@@ -82,11 +82,24 @@ if jq -e --argjson c "$CARD" 'type == "array" and index("needs-human-qa") != nul
     SET_BODY=1
   fi
 fi
+# A changed acceptance or Scope section re-stamps the card, unless the supervisor edits it
+PREM=null
+if [ "${FLEET_BOARD_ACTOR:-}" != supervisor ]; then
+  CHANGED=0
+  if [ "$ACC" != null ] && ! jq -e --argjson a "$ACC" '(.acceptance // []) == $a' >/dev/null 2>&1 <<<"$CARD"; then CHANGED=1; fi
+  if [ "$SET_BODY" = 1 ]; then
+    OLDSCOPE="$(fl_scope_text "$(jq -j '.body // ""' <<<"$CARD")")"
+    NEWSCOPE="$(fl_scope_text "$(cat "$BODYTMP")")"
+    [ "$OLDSCOPE" = "$NEWSCOPE" ] || CHANGED=1
+  fi
+  [ "$CHANGED" = 0 ] || PREM="$(fl_premise_json edit)"
+fi
 jq --rawfile t "${TITLE_FILE:-/dev/null}" --rawfile b "$BODYTMP" \
   --arg title_file "$TITLE_FILE" --argjson set_body "$SET_BODY" \
   --argjson l "$LABELS" --argjson acc "$ACC" --argjson blk "$BLOCKED" \
-  --argjson pr_set "$PR_SET" --arg pr "$PR_URL" --argjson repo_set "$REPO_SET" --arg repo "$REPO_VAL" --arg now "$(fl_now)" '
-  (if $title_file != "" then .title = ($t | sub("\n+$"; "")) else . end)
+  --argjson pr_set "$PR_SET" --arg pr "$PR_URL" --argjson repo_set "$REPO_SET" --arg repo "$REPO_VAL" --arg now "$(fl_now)" --argjson prem "$PREM" '
+  (if $prem != null then .premise = $prem else . end)
+  | (if $title_file != "" then .title = ($t | sub("\n+$"; "")) else . end)
   | (if $set_body == 1 then .body = $b else . end)
   | (if $l != null then .labels = $l else . end)
   | (if $acc != null then .acceptance = $acc else . end)

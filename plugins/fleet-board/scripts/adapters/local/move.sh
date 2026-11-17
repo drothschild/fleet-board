@@ -22,7 +22,11 @@ fi
 [ "$(jq -r '.state // ""' <<<"$CARD")" = "$TARGET" ] && exit 0
 TMP="$(mktemp)" || fb_die 1 "cannot create a temporary file"
 trap 'rm -f "$TMP"; fb_lock_release "$FB_LOCK"' EXIT
-jq --arg s "$TARGET" --arg now "$(fl_now)" '.state = $s | .updated_at = $now' <<<"$CARD" > "$TMP" \
+# Into Ready from another state re-stamps the card, unless the supervisor moves it
+PREM=null
+if [ "$TARGET" = ready ] && [ "${FLEET_BOARD_ACTOR:-}" != supervisor ]; then PREM="$(fl_premise_json move)"; fi
+jq --arg s "$TARGET" --arg now "$(fl_now)" --argjson prem "$PREM" \
+  '.state = $s | .updated_at = $now | (if $prem != null then .premise = $prem else . end)' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
 # Out of Blocked: a merger attention's leftovers go, so a person never edits the note

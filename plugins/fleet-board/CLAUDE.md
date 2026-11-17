@@ -31,7 +31,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Card JSON keys: `number`, `title`, `body` (prose only), `state` (canonical, else read as
   null with a warning), `labels`, `acceptance` (array of strings), `blocked_by` (array of
   card numbers on this board), `pr_url`, `pr_url_source` (`note`, `person` or null),
-  `created_at`, `updated_at`, `next_comment_id`, `comments`. Every write goes through
+  `created_at`, `updated_at`, `next_comment_id`, `comments`, `premise` (null, or `{sha, at, by}` stamped by create, edit of acceptance or Scope, move into ready, or `premise.sh stamp`; `FLEET_BOARD_ACTOR=supervisor` stops edit and move stamping). Every write goes through
   `fl_write_card` under `fb_lock`. `fl_split_body` moves `## Acceptance` and `## Depends on`
   sections out of a body into the fields (first real heading wins, not inside a fence);
   `read` returns the stored prose and the fields side by side, never a rendered section.
