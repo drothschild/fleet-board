@@ -180,6 +180,9 @@ invalid_field() {
             and (.parent | type == "number" and . == floor and . > 0)
             and (. as $l | ["parent_head", "squash", "sha"] | all(.[]; $l[.] | type == "string" and test("\\A[0-9a-f]{40}\\z"))))
           | not) then "landed"
+    elif (.checks_rerun | . == null or (type == "object" and (.sha | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+            and (.checks | type == "array" and all(.[]; type == "string"))
+            and (.at | type == "string" and clean and length > 0)) | not) then "checks_rerun"
     elif (.pending_followups | . == null or type == "object" | not) then "pending_followups"
     elif (.pending_followups | . == null or (.pr | nint) | not) then "pending_followups.pr"
     elif (.worktree | . == null or . == $base or startswith($base + "/") | not) then "worktree-outside-base"

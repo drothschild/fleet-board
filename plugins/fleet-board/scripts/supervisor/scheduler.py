@@ -27,7 +27,8 @@ _WORK_CLASS = 1
 # stage review reads the PR, and a branch update merges the base into the card's own branch. They take
 # a slot and wait for their own card, but neither wait on another card's scope nor block one, so a
 # writer never holds them up.
-SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'after_merge', 'merge_refusal'})
+SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'after_merge', 'merge_refusal',
+                               'rerun_checks', 'checks_failed'})
 # The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
 # `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
 REVIEWER_ACTIONS = frozenset({'start_review', 'review', 'review_stage'})
