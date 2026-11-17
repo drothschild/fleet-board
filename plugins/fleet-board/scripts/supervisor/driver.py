@@ -812,7 +812,10 @@ class CardDriver:
     def _do_fix(self, c):
         branch, worktree = c.branch(), c.worktree()
         conflict = c.row.get('findings')
-        if conflict:
+        if self._labelled(conflict):
+            conflict = None
+            c.merge({'branch': branch, 'worktree': worktree})
+        elif conflict:
             if not isinstance(conflict, list) or not all(
                     isinstance(f, dict) and f.get('severity') in _SEVERE + ('Minor',) and isinstance(f.get('text'), str)
                     for f in conflict):
@@ -863,12 +866,23 @@ class CardDriver:
 
     @staticmethod
     def _severe(findings):
-        return [{'severity': f['severity'], 'text': f.get('text', '')} for f in (findings or [])
-                if isinstance(f, dict) and f.get('severity') in _SEVERE]
+        return [dict({'severity': f['severity'], 'text': f.get('text', '')},
+                     **({'reviewer': f['reviewer']} if isinstance(f.get('reviewer'), str) else {}))
+                for f in (findings or []) if isinstance(f, dict) and f.get('severity') in _SEVERE]
+
+    @classmethod
+    def _labelled(cls, findings):
+        """The plan row's findings when they are review findings (each names its reviewer), else [].
+        A merge-conflict row's findings name no reviewer."""
+        if not isinstance(findings, list) or not findings or not all(
+                isinstance(f, dict) and isinstance(f.get('reviewer'), str) for f in findings):
+            return []
+        return cls._severe(findings)
 
     @staticmethod
     def _lines(findings):
-        return '\n'.join('- [%s] %s' % (f['severity'], f['text']) for f in findings) or 'none'
+        return '\n'.join('- [%s] %s%s' % (f['severity'], '(%s) ' % f['reviewer'] if f.get('reviewer') else '', f['text'])
+                         for f in findings) or 'none'
 
     def _dispatch_role(self, c, prior=None, conflict=None):
         """Launch the role for the action `c` just prepared and record it as `action.session`."""
@@ -899,7 +913,7 @@ class CardDriver:
                 inputs['note'] = note
             run.round = note.get('round') if isinstance(note.get('round'), int) else 0
         elif role == 'fixer':
-            findings = conflict or self._severe(review_for(note, None, c.row.get('state')).get('findings'))
+            findings = conflict or self._labelled(c.row.get('findings')) or self._severe(review_for(note, None, c.row.get('state')).get('findings'))
             if not findings:
                 raise _Fail('no Critical/Important findings to fix')
             inputs.update(pr=c.pr(note.get('pr')), worktree=c.worktree(), findings=self._lines(findings))
