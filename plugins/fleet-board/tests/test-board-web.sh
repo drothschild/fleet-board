@@ -1727,6 +1727,59 @@ assert_code 404
 assert_body "a deleted log file is reported as missing" '.error' '*log file is missing*'
 stop_server
 
+# Card 402: GET /api/cards/<n>/transcripts lists the card's sessions from the usage ledger.
+echo "Case: GET /api/cards/<n>/transcripts lists the card's sessions"
+setup_case
+SESS="$TMP/logs/sessions"
+mkdir -p "$SESS"
+ledger_line() { # <card> <action> <role> <ended_at> <log>
+  jq -nc --argjson c "$1" --arg a "$2" --arg r "$3" --arg e "$4" --arg l "$5" \
+    '{run_id:"r1",card:$c,kind:"card",column:"in_progress",action:$a,role:$r,provider:"claude",model:"sonnet",input:1,output:1,cache_write:0,cache_read:0,started_at:"2026-01-01T00:00:00Z",ended_at:$e,log:$l}'
+}
+{
+  ledger_line 2 start implementor 2026-01-01T00:01:00Z "$SESS/card-2-start-1000-1.jsonl"
+  ledger_line 2 review reviewer 2026-01-01T00:03:00Z "$SESS/card-2-review-3000-2.jsonl"
+  ledger_line 1 start implementor 2026-01-01T00:02:00Z "$SESS/card-1-start-2000-1.jsonl"
+  ledger_line 2 fix fixer 2026-01-01T00:04:00Z "/elsewhere/card-2-fix-4000-1.jsonl"
+} > "$REPO/.fleet-board/usage.jsonl"
+api GET /api/cards/2/transcripts
+assert_code 200
+assert_body "the card's transcripts list only its own in-sessions-directory ledger entries" '[.[].id]|join(",")' 'card-2-review-3000-2,card-2-start-1000-1'
+assert_body "the list is newest first with action, role, attempt, end time and id" \
+  '.[0]|[.action,.role,.attempt,.ended_at,.id]|map(tostring)|join("|")' 'review|reviewer|2|2026-01-01T00:03:00Z|card-2-review-3000-2'
+assert_body "a ledger entry whose log path is outside the sessions directory is left out" '[.[]|select(.id=="card-2-fix-4000-1")]|length' 0
+api GET /api/cards/3/transcripts
+assert_code 200
+assert_body "a card with no sessions returns an empty list" 'length' 0
+stop_server
+
+echo "Case: the running session leads the transcripts list and is not listed twice"
+RT_OUT="$(SCRIPTS="$SCRIPTS" RT_REPO="$REPO" SESS="$SESS" FLEET_BOARD_LOG_DIR="$TMP/logs" python3 -I - <<'PYEOF'
+import importlib.util, json, os
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.APP.update(root=os.environ["RT_REPO"], scripts=os.environ["SCRIPTS"])
+sess = os.environ["SESS"]
+def status(log):
+    return {"phase": "running", "desired_mode": "running", "pid": 1,
+            "active": [{"card": 2, "action": "fix", "role": "fixer", "log": log}]}
+m.supervisor_status = lambda: status(sess + "/card-2-fix-5000-1.jsonl")
+code, body = m.get_transcripts({"n": 2}, None)
+print("first|%s|%s" % (body[0]["id"], body[0].get("running")))
+print("count|%d" % len(body))
+print("later|%s" % body[1].get("running"))
+# the same session now also in the ledger: listed once
+with open(os.path.join(os.environ["RT_REPO"], ".fleet-board", "usage.jsonl"), "a") as f:
+    f.write(json.dumps({"run_id":"r1","card":2,"kind":"card","column":"in_progress","action":"fix","role":"fixer","provider":"claude","model":"sonnet","input":1,"output":1,"cache_write":0,"cache_read":0,"started_at":"2026-01-01T00:04:00Z","ended_at":"2026-01-01T00:06:00Z","log":sess + "/card-2-fix-5000-1.jsonl"}, separators=(",", ":")) + "\n")
+code, body = m.get_transcripts({"n": 2}, None)
+print("dups|%d" % len([x for x in body if x["id"] == "card-2-fix-5000-1"]))
+PYEOF
+)"
+rt_line() { printf '%s\n' "$RT_OUT" | grep "^$1|" | head -n1; }
+[ "$(rt_line first)" = "first|card-2-fix-5000-1|True" ] && pass "while a supervisor runs, the card's running session appears first, marked running" || fail "while a supervisor runs, the card's running session appears first, marked running" "$RT_OUT"
+[ "$(rt_line later)" = "later|False" ] && pass "ledger sessions are not marked running" || fail "ledger sessions are not marked running" "$RT_OUT"
+[ "$(rt_line dups)" = "dups|1" ] && pass "a session that has ended and reached the ledger is listed once, not twice" || fail "a session that has ended and reached the ledger is listed once, not twice" "$RT_OUT"
+
 # Card 426: the board page shows a card's repo and lists the configured repos.
 echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
 RP_REPO="$(new_repo "board:

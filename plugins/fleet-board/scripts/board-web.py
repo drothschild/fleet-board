@@ -1726,6 +1726,54 @@ class PlainText(str):
     """A controller result sent as text/plain instead of JSON."""
 
 
+def _log_sessions_dir():
+    return (supervisor_paths.log_dir() / "sessions").resolve()
+
+
+def _inside(path, directory):
+    try:
+        Path(path).resolve().relative_to(directory)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def _attempt_of(stem):
+    """The attempt number a session's file stem ends with (card-<n>-<action>-<ms>-<attempt>), else None."""
+    tail = stem.rsplit("-", 1)[-1]
+    return int(tail) if tail.isdigit() else None
+
+
+def get_transcripts(params, body):
+    """The card's sessions: the supervisor's running one first (marked running), then this repo's usage-ledger
+    entries newest first. A ledger log outside the sessions directory is left out."""
+    n = params["n"]
+    cfg, _ = ctx()
+    board_dir = (cfg.get("board") or {}).get("dir") or supervisor_usage.DEFAULT_DIR
+    sessions = _log_sessions_dir()
+    out, seen = [], set()
+    status = supervisor_status()
+    for a in (status or {}).get("active") or []:
+        log = a.get("log") if isinstance(a, dict) else None
+        if isinstance(a, dict) and a.get("card") == n and log and _inside(log, sessions) and log not in seen:
+            seen.add(log)
+            stem = Path(log).stem
+            out.append({"id": stem, "action": a.get("action"), "role": a.get("role"),
+                        "attempt": _attempt_of(stem), "ended_at": None, "running": True})
+    lines, _skipped = supervisor_usage.read(APP["root"], board_dir)
+    ended = []
+    for line in lines:
+        log = line.get("log")
+        if line["card"] != n or not log or log in seen or not _inside(log, sessions):
+            continue
+        seen.add(log)
+        stem = Path(log).stem
+        ended.append({"id": stem, "action": line["action"], "role": line["role"], "attempt": _attempt_of(stem),
+                      "ended_at": line["ended_at"], "running": False})
+    ended.sort(key=lambda e: e["ended_at"] or "", reverse=True)
+    return 200, out + ended
+
+
 def get_transcript(params, body):
     """The rendered session log of one of this card's ledger lines; the id is the log's file stem."""
     cfg, _ = ctx()
@@ -1942,6 +1990,7 @@ ROUTES = [
     ("GET", r"/api/usage", get_usage),
     ("GET", r"/api/stuck", get_stuck),
     ("GET", r"/api/cards/(?P<n>\d+)/usage", get_card_usage),
+    ("GET", r"/api/cards/(?P<n>\d+)/transcripts", get_transcripts),
     ("GET", r"/api/cards/(?P<n>\d+)/transcripts/(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)", get_transcript),
     ("POST", r"/api/supervisor/(?P<action>start|pause|resume|stop)", supervisor_command),
     ("POST", r"/api/planner", post_planner),

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # parse-report.sh - validate a fleet-board role report and convert it to JSON.
 #
-# Usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger]
-#                        [--mode after_merge|refusal] [--commits-since-review <n>] <file>
+# Usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger|checker]
+#                        [--mode after_merge|refusal|check|draft] [--commits-since-review <n>] <file>
 #
 # The report shape. This script is the enforced definition; the role
 # agents and the manager follow it (line rules: see Pass 1 below):
@@ -32,7 +32,18 @@
 # The merger (the role after a merge or a refused merge) has no required role
 # sections and needs --mode: after_merge allows Status done|attention, refusal
 # allows retry|fix|attention; any other status for the mode is rejected.
-# --mode is accepted only with --role merger.
+# The checker (the premise check, and the drafting of a follow-up) needs --mode
+# check|draft. Status for mode check: go|needs|built|stale; for mode draft:
+# duplicate|fixed|drafted. Role sections by status: needs and duplicate hold
+# ## Card with exactly one #<n> (JSON card); built holds ## Evidence, one line
+# "- <item number> :: `<command>` :: <output>" per acceptance item; fixed holds
+# ## Evidence with one line "- `<command>` :: <output>"; stale holds ## What
+# changed and optionally ## Proposed scope and ## Proposed acceptance, both or
+# neither (the scope must name a repository path); drafted holds ## Why,
+# ## Proposed scope, ## Proposed acceptance and optionally ## Repro
+# "- `<command>` :: failed|passed :: <output>". The checker's JSON adds card,
+# evidence, summary, proposal, why and repro as the status needs.
+# --mode is accepted only with --role merger and --role checker.
 # Section contents are checked whenever a section is present, with or without
 # --role.
 #
@@ -51,7 +62,7 @@
 set -uo pipefail
 unset CDPATH
 
-USAGE="usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger] [--mode after_merge|refusal] [--commits-since-review <n>] <file>"
+USAGE="usage: parse-report.sh [--role implementor|reviewer|fixer|stage-reviewer|merger|checker] [--mode after_merge|refusal|check|draft] [--commits-since-review <n>] <file>"
 
 ROLE=""
 MODE=""
@@ -96,7 +107,7 @@ if [ -z "$FILE" ]; then
 fi
 
 case "$ROLE" in
-  ""|implementor|reviewer|fixer|stage-reviewer|merger) ;;
+  ""|implementor|reviewer|fixer|stage-reviewer|merger|checker) ;;
   *)
     echo "parse-report: unknown role: $ROLE" >&2
     echo "parse-report: $USAGE" >&2
@@ -111,6 +122,16 @@ case "$ROLE:$MODE" in
     exit 2
     ;;
   merger:*)
+    echo "parse-report: unknown mode: $MODE" >&2
+    echo "parse-report: $USAGE" >&2
+    exit 2
+    ;;
+  checker:check|checker:draft) ;;
+  checker:"")
+    echo "parse-report: role checker needs --mode check|draft" >&2
+    exit 2
+    ;;
+  checker:*)
     echo "parse-report: unknown mode: $MODE" >&2
     echo "parse-report: $USAGE" >&2
     exit 2
@@ -312,6 +333,17 @@ sec == "For the card" {
   }
   next
 }
+role == "checker" && (sec == "Card" || sec == "Evidence" || sec == "What changed" || sec == "Proposed scope" || sec == "Proposed acceptance" || sec == "Why" || sec == "Repro") {
+  if (t == "") next
+  if (sec == "Card") { rest = line; while (match(rest, /#[0-9]+/)) { print "cnum\t" substr(rest, RSTART + 1, RLENGTH - 1); rest = substr(rest, RSTART + RLENGTH) } }
+  else if (sec == "Evidence") print "evl\t" t
+  else if (sec == "What changed") print "wch\t" t
+  else if (sec == "Proposed scope") print "psc\t" t
+  else if (sec == "Proposed acceptance") print "pac\t" t
+  else if (sec == "Why") print "why\t" t
+  else print "rep\t" t
+  next
+}
 sec == "PR" {
   if (!pr_seen && match(line, /#[0-9]+/)) { print "pr\t" substr(line, RSTART + 1, RLENGTH - 1); pr_seen = 1 }
   next
@@ -433,6 +465,9 @@ VER_COUNT=0
 VER_LINE=""
 BUG_ERRORS=0
 SHAPE_ERRORS=()
+CARD_COUNT=0; CARD_N=""; EVL=(); WCH=""; PSC=""; PAC=""; WHY=""; REP=()
+NL='
+'
 while IFS= read -r rec; do
   kind="${rec%%"$TAB"*}"
   rest="${rec#*"$TAB"}"
@@ -442,6 +477,13 @@ while IFS= read -r rec; do
     ver) VER_COUNT=$((VER_COUNT + 1)); VER_LINE="$rest" ;;
     bugerr) BUG_ERRORS=$((BUG_ERRORS + 1)) ;;
     err) SHAPE_ERRORS+=("$rest") ;;
+    cnum) CARD_COUNT=$((CARD_COUNT + 1)); CARD_N="$rest" ;;
+    evl) EVL+=("$rest") ;;
+    rep) REP+=("$rest") ;;
+    wch) WCH="${WCH:+$WCH$NL}$rest" ;;
+    psc) PSC="${PSC:+$PSC$NL}$rest" ;;
+    pac) PAC="${PAC:+$PAC$NL}$rest" ;;
+    why) WHY="${WHY:+$WHY$NL}$rest" ;;
   esac
 done <<EOF
 $RECORDS
@@ -458,6 +500,7 @@ if has_section "Status"; then
   case "$STATUS" in
     done|blocked|clean|findings|not_reproducible) ;;
     retry|fix|attention) [ -n "$ROLE" ] || ERRORS+=("unknown status: $STATUS") ;;
+    go|needs|built|stale|duplicate|fixed|drafted) [ "$ROLE" = checker ] || ERRORS+=("unknown status: $STATUS") ;;
     *) ERRORS+=("unknown status: $STATUS") ;;
   esac
   # Status values by role; an unknown word is reported once, above.
@@ -465,6 +508,11 @@ if has_section "Status"; then
     implementor:not_reproducible|reviewer:not_reproducible|stage-reviewer:not_reproducible|implementor:retry|implementor:fix|implementor:attention|fixer:retry|fixer:fix|fixer:attention|reviewer:retry|reviewer:fix|reviewer:attention|stage-reviewer:retry|stage-reviewer:fix|stage-reviewer:attention) ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
     implementor:clean|implementor:findings|fixer:clean|fixer:findings|reviewer:done|reviewer:blocked|stage-reviewer:done|stage-reviewer:blocked)
       ERRORS+=("role $ROLE does not allow status: $STATUS") ;;
+    checker:*)
+      case "$MODE:$STATUS" in
+        check:go|check:needs|check:built|check:stale|draft:duplicate|draft:fixed|draft:drafted) ;;
+        *) ERRORS+=("checker status $STATUS is not allowed in mode $MODE") ;;
+      esac ;;
     merger:*)
       case "$MODE:$STATUS" in
         after_merge:done|after_merge:attention|refusal:retry|refusal:fix|refusal:attention) ;;
@@ -517,6 +565,89 @@ if [ "${#SHAPE_ERRORS[@]}" -gt 0 ]; then
   ERRORS+=("${SHAPE_ERRORS[@]}")
 fi
 
+# The checker's role sections, by status. EXTRA holds the records that pass 3
+# adds for the parsed entries (evi, rep).
+EXTRA=""
+if [ "$ROLE" = checker ]; then
+  need() { has_section "$1" || { ERRORS+=("checker report needs ## $1 for status $STATUS"); return 1; }; }
+  EV_BUILT_RE='^-[[:space:]]+([0-9]+)[[:space:]]+::[[:space:]]+`([^`]+)`[[:space:]]+::[[:space:]]+(.+)$'
+  EV_ITEM_RE='^-[[:space:]]+[0-9]+[[:space:]]+::'
+  EV_FIXED_RE='^-[[:space:]]+`([^`]+)`[[:space:]]+::[[:space:]]+(.+)$'
+  REP_RE='^-[[:space:]]+`([^`]+)`[[:space:]]+::[[:space:]]+(failed|passed)[[:space:]]+::[[:space:]]+(.+)$'
+  # Checks both proposed sections: a scope that names a path, and an acceptance bullet.
+  check_proposal() {
+    local line any=0 scope_paths
+    scope_paths="$(. "$(dirname "$0")/board-lib.sh" 2>/dev/null; fb_card_scope_paths "$(printf '## Scope\n%s\n' "$PSC")")"
+    [ "$scope_paths" = "[]" ] || [ -z "$scope_paths" ] && ERRORS+=("## Proposed scope names no repository path")
+    while IFS= read -r line; do
+      case "$line" in "- "*) any=1 ;; esac
+    done <<EOT
+$PAC
+EOT
+    [ "$any" -eq 1 ] || ERRORS+=("## Proposed acceptance has no bullet")
+  }
+  case "$MODE:$STATUS" in
+    check:needs|draft:duplicate)
+      if need "Card" && [ "$CARD_COUNT" -ne 1 ]; then
+        ERRORS+=("## Card must hold exactly one card number (#<n>)")
+      fi ;;
+    check:built)
+      if need "Evidence"; then
+        if [ "${#EVL[@]}" -eq 0 ]; then
+          ERRORS+=("## Evidence has no entry")
+        else
+          for e in "${EVL[@]}"; do
+            if [[ "$e" =~ $EV_BUILT_RE ]]; then
+              EXTRA="${EXTRA}evi${TAB}${BASH_REMATCH[1]}${TAB}${BASH_REMATCH[2]}${TAB}${BASH_REMATCH[3]}
+"
+            elif [[ "$e" =~ $EV_ITEM_RE ]]; then
+              ERRORS+=("malformed ## Evidence line (want - <number> :: \`<command>\` :: <output>): $e")
+            else
+              ERRORS+=("## Evidence item must be an acceptance item number")
+            fi
+          done
+        fi
+      fi ;;
+    draft:fixed)
+      if need "Evidence"; then
+        if [ "${#EVL[@]}" -eq 0 ]; then
+          ERRORS+=("## Evidence has no entry")
+        else
+          for e in "${EVL[@]}"; do
+            if [[ "$e" =~ $EV_FIXED_RE ]]; then
+              EXTRA="${EXTRA}evi${TAB}${TAB}${BASH_REMATCH[1]}${TAB}${BASH_REMATCH[2]}
+"
+            else
+              ERRORS+=("malformed ## Evidence line (want - \`<command>\` :: <output>): $e")
+            fi
+          done
+        fi
+      fi ;;
+    check:stale)
+      need "What changed" >/dev/null
+      if has_section "Proposed scope" && has_section "Proposed acceptance"; then
+        check_proposal
+      elif has_section "Proposed scope" || has_section "Proposed acceptance"; then
+        ERRORS+=("## Proposed scope and ## Proposed acceptance must both be present or both absent")
+      fi ;;
+    draft:drafted)
+      need "Why" >/dev/null
+      need "Proposed scope" >/dev/null
+      need "Proposed acceptance" >/dev/null
+      if has_section "Proposed scope" && has_section "Proposed acceptance"; then check_proposal; fi
+      if has_section "Repro"; then
+        if [ "${#REP[@]}" -ne 1 ]; then
+          ERRORS+=("## Repro must hold exactly one entry (- \`<command>\` :: failed|passed :: <output>)")
+        elif [[ "${REP[0]}" =~ $REP_RE ]]; then
+          EXTRA="${EXTRA}rpr${TAB}${BASH_REMATCH[1]}${TAB}${BASH_REMATCH[2]}${TAB}${BASH_REMATCH[3]}
+"
+        else
+          ERRORS+=("malformed ## Repro line (want - \`<command>\` :: failed|passed :: <output>): ${REP[0]}")
+        fi
+      fi ;;
+  esac
+fi
+
 if [ "${#ERRORS[@]}" -gt 0 ]; then
   for e in "${ERRORS[@]}"; do
     echo "parse-report: $e" >&2
@@ -525,7 +656,9 @@ if [ "${#ERRORS[@]}" -gt 0 ]; then
 fi
 
 # Pass 3 (jq): assemble the JSON from the records.
-printf '%s\n' "$RECORDS" | jq -Rn \
+printf '%s\n%s\n' "$RECORDS" "$EXTRA" | jq -Rn \
+  --arg role "$ROLE" \
+  --arg card_n "$CARD_N" --arg why "$WHY" --arg wch "$WCH" --arg psc "$PSC" --arg pac "$PAC" \
   --arg ver_line "$VER_LINE" \
   --arg ver_cmd "$VER_CMD" \
   --arg ver_num "$VER_NUM" '
@@ -571,4 +704,15 @@ printf '%s\n' "$RECORDS" | jq -Rn \
       resolutions: (if has("Resolutions")
                     then recs("res") | map({finding: .[1], outcome: (.[2] // ""), why: ((.[3] // "") | nul)})
                     else null end)
-    }'
+    }
+  + (if $role != "checker" then {} else
+      (($pac | split("\n") | map(select(startswith("- ")) | .[2:] | sub("^ +"; "") | sub(" +$"; ""))) ) as $acc
+      | ({scope: $psc, acceptance: $acc}) as $prop
+      | (recs("status") | .[0][1]) as $st
+      | (if $st == "needs" or $st == "duplicate" then {card: ($card_n | tonumber)} else {} end)
+      + (if $st == "built" then {evidence: (recs("evi") | map({item: (.[1] | tonumber), command: .[2], output: .[3]}))}
+         elif $st == "fixed" then {evidence: (recs("evi") | map({command: .[2], output: .[3]}))} else {} end)
+      + (if $st == "stale" then {summary: $wch, proposal: (if has("Proposed scope") then $prop else null end)} else {} end)
+      + (if $st == "drafted" then {why: $why, proposal: $prop,
+           repro: (recs("rpr") | if length > 0 then {command: .[0][1], result: .[0][2], output: .[0][3]} else null end)} else {} end)
+    end)'
