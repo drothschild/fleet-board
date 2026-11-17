@@ -232,7 +232,8 @@ def run():
     test_a_writer_and_the_reviewers_of_one_card_exclude_each_other()
     test_a_stacked_child_is_not_held_by_its_ancestors_scope()
     test_after_merge_and_merge_refusal_are_not_held_by_another_cards_scope()
-    test_a_merge_still_waits_on_an_overlapping_active_implementor()
+    test_a_merge_is_not_held_by_another_cards_scope()
+    test_a_merge_still_waits_while_its_own_card_has_a_reviewer_running()
     test_an_after_merge_still_takes_a_provider_slot()
     print('scheduler cases passed')
 
@@ -335,8 +336,8 @@ def test_a_held_merge_does_not_stop_the_next_merge():
     rows = [candidate(12, 'merge', paths=['src/shared.py']), candidate(13, 'merge', paths=['docs/other.md'])]
     active = [{'number': 99, 'provider': 'claude', 'paths': ['src/shared.py'], 'action': 'implement'}]
     result = Scheduler(clock=lambda: 0).admit(rows, active=active, limits=LIMITS, lane_free=True)
-    assert [x['number'] for x in result['admitted']] == [13], 'card 13 is admitted past the held merge'
-    assert {w['number']: w['reason'] for w in result['waits']} == {12: 'scope or card conflict'}
+    assert [x['number'] for x in result['admitted']] == [12], 'card 12 is admitted despite card 99 on its scope'
+    assert {w['number']: w['reason'] for w in result['waits']} == {13: 'merge lane busy'}, 'only one merge per call'
     assert len([x for x in result['admitted'] if x['action'] == 'merge']) == 1
 
 
@@ -638,10 +639,19 @@ def test_after_merge_and_merge_refusal_are_not_held_by_another_cards_scope():
     assert [x['number'] for x in r['admitted']] == [12], r['waits']
 
 
-def test_a_merge_still_waits_on_an_overlapping_active_implementor():
-    r = Scheduler(clock=lambda: 0).admit([candidate(12, 'merge', paths=['src/a.sh'])],
-        active=[{'number': 99, 'provider': 'claude', 'paths': ['src/a.sh'], 'action': 'implement'}], limits=LIMITS, lane_free=True)
-    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+def test_a_merge_is_not_held_by_another_cards_scope():
+    row = candidate(12, 'merge', paths=['src/a.sh'])
+    holder = [{'number': 99, 'provider': 'claude', 'paths': ['src/a.sh'], 'action': 'implement'}]
+    r = Scheduler(clock=lambda: 0).admit([row], active=holder, limits=LIMITS, lane_free=True)
+    assert [x['number'] for x in r['admitted']] == [12], r['waits']
+    r = Scheduler(clock=lambda: 0).admit([row], reservations=[{'card': 99, 'paths': ['src/a.sh']}], limits=LIMITS, lane_free=True)
+    assert [x['number'] for x in r['admitted']] == [12], r['waits']
+
+
+def test_a_merge_still_waits_while_its_own_card_has_a_reviewer_running():
+    reviewer = [{'number': 12, 'provider': 'claude', 'paths': [], 'action': 'review'}]
+    r = Scheduler(clock=lambda: 0).admit([candidate(12, 'merge', paths=['src/a.sh'])], active=reviewer, limits=LIMITS, lane_free=True)
+    assert r['admitted'] == [] and r['waits'], r
 
 
 def test_an_after_merge_still_takes_a_provider_slot():

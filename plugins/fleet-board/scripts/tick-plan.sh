@@ -473,7 +473,7 @@ card_input() {
   local drift=null scope='[]' stack=null premise_moved=null
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
-  local have_matched=false parallel='[]'
+  local have_matched=false parallel='[]' stage_findings='[]'
   local fields c_labels c_rev c_acc c_marker c_scope c_repo="" c_nodeps=false nf note_branch='' note_accepted=false
 
   # A review column: in_review, or the column of a configured review stage
@@ -589,6 +589,23 @@ card_input() {
         parallel='[]'; failed="review-stages.sh match $pr (unexpected answer)"
       else
         have_matched=true
+        # The Critical and Important findings of every routed, non-advisory stage whose own record covers
+        # this head, each labelled with the stage name (the fix row lists them with the evidence reviewer's).
+        # A record that counts findings but lists none gets one entry saying so.
+        stage_findings="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" --argjson l "$labels" --argjson info "$info" \
+          '(.last_review // null) as $lr | (.round // 0) as $rd
+           | (if (.reviews | type) == "object" then .reviews else {} end) as $rv
+           | [$cfg.review.stages[] | select(.advisory != true)
+              | select(.name as $s | .label as $x | ($m | index($s)) != null or ($l | index($x)) != null)
+              | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
+              | select($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd))
+              | [($r.findings // [])[]? | select(type == "object" and (.severity == "Critical" or .severity == "Important"))
+                 | {severity, text: (.text // ""), reviewer: $s}] as $fs
+              | if ($fs | length) > 0 then $fs[]
+                elif (($r.critical // 0) + ($r.important // 0)) > 0
+                then {severity: (if ($r.critical // 0) > 0 then "Critical" else "Important" end),
+                      text: "\(($r.critical // 0) + ($r.important // 0)) Critical/Important findings; see the \($s) report", reviewer: $s}
+                else empty end]' <<<"$note" 2>/dev/null)" || stage_findings='[]'
       fi
       # The evidence reviewer is judged on its own report: a stage report written later to last_review
       # must not make it look unreviewed (which replanned it, and then the stage, forever). Only a stage
@@ -850,7 +867,7 @@ card_input() {
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
     --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson premise_moved "$premise_moved" \
-    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" \
+    --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
       invalid_note: (if $invalid == "" then null else $invalid end),
@@ -860,7 +877,7 @@ card_input() {
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
       pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, premise_moved: $premise_moved,
-      stage: $stage, next_stage: $next_stage, parallel_stages: $parallel}'
+      stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
 }
 
 if [ "$SETTLE" = true ]; then
@@ -1339,18 +1356,40 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
     # Parallel review: an in_review card plans the evidence reviewer (review) and one review_stage
     # per routed stage that has not reported at this head, all on the same head. The rows share the card number.
     | ($c.parallel_stages // []) as $ps
-    | if $c.state == "in_review" and ($row.action == "review" or $row.action == "review_stage") then
+    # One fixer pass: once every routed reviewer has a record at the head, a fix row carries the
+    # Critical and Important findings of all of them (the evidence reviewer, and each non-advisory
+    # stage), each labelled with its reviewer. While a stage is still to report, the card plans
+    # that review, not the fix.
+    | ($c.stage_findings // []) as $sf
+    | (if $c.state == "in_review" and ($cfg.review.stages | length) > 0 and $row.action == "fix" and $row.findings == null
+       then [($n.last_review.findings // [])[]? | select(type == "object" and (.severity == "Critical" or .severity == "Important"))
+             | {severity, text: (.text // ""), reviewer: "evidence"}] as $efs
+            | (if ($efs | length) > 0 then $efs
+               else [{severity: (if ($n.last_review.critical // 0) > 0 then "Critical" else "Important" end),
+                      text: "\(($n.last_review.critical // 0) + ($n.last_review.important // 0)) Critical/Important findings; see the evidence report",
+                      reviewer: "evidence"}] end)
+       else [] end) as $evf
+    | def stage_rows:
+        $ps[] as $sn | first($cfg.review.stages[] | select(.name == $sn)) as $sg
+        | ($sg.provider != null and any($unset[]; . == $sn)) as $held
+        | $row + {key_held: $held, stage: $sg,
+                  action: (if $held then "wait" else "review_stage" end),
+                  reason: (if $held then "stage \($sn): \($cfg.providers[$sg.provider].api_key_env) is not set"
+                           else "round \($round) of \($sn) not reviewed yet; reviews run in parallel at this head" end),
+                  findings: null};
+      if $c.state == "in_review" and ($row.action == "fix" or $row.action == "review" or $row.action == "review_stage") then
         if ($ps | length) == 0 then
           (if $row.action == "review" then $row
+           elif $row.action == "fix" and $row.findings != null then $row
+           elif (($evf + $sf) | length) > 0
+           then ($evf + $sf) as $all
+                | $row + {action: "fix", stage: null, findings: $all,
+                          reason: "\($all | length) Critical/Important findings from \([$all[].reviewer] | unique | length) reviewer(s) in round \($round)"}
+           elif $row.action == "fix" then $row
            else $row + {action: "wait", reason: "routed stage review pending; no stage to plan", stage: null} end)
+        elif $row.action == "fix" and ($evf | length) == 0 then $row
         else
-          ((if $row.action == "review" then $row else empty end),
-           ($ps[] as $sn | first($cfg.review.stages[] | select(.name == $sn)) as $sg
-            | ($sg.provider != null and any($unset[]; . == $sn)) as $held
-            | $row + {key_held: $held, stage: $sg,
-                      action: (if $held then "wait" else "review_stage" end),
-                      reason: (if $held then "stage \($sn): \($cfg.providers[$sg.provider].api_key_env) is not set"
-                               else "round \($round) of \($sn) not reviewed yet; reviews run in parallel at this head" end)}))
+          ((if $row.action == "review" then $row else empty end), stage_rows)
         end
       else $row end
   ] as $planned
