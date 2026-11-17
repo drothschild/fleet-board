@@ -129,3 +129,10 @@ def overlap(a, b):
             if not x or not y or x == y or x.startswith(y + '/') or y.startswith(x + '/'):
                 return True
     return False
+
+
+def same_repo(a, b):
+    """True unless both repos are named and differ (owner/name, case-insensitive).
+
+    A claim naming no repo is the board's own repo, so it conflicts as before."""
+    return not a or not b or str(a).lower() == str(b).lower()
