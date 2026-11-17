@@ -345,6 +345,19 @@ for from in in_progress blocked; do
   assert_exit "move to ready from $from allowed for a card with no Scope paths" 0
   assert_card_state 7 ready
 done
+# fb_card_scope_paths keeps repo-relative paths only
+scope_of() { bash -c '. "$1/board-lib.sh"; fb_card_scope_paths "$2"' _ "$SCRIPTS" "$1"; }
+scope_check() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1" "expected '$3', got '$2'"; fi; }
+scope_check "scope: a bare / between paths is not a path" "$(scope_of $'## Scope\n- a/b.py / c.py\n')" '["a/b.py","c.py"]'
+scope_check "scope: absolute, slashes-only, dot and .. tokens are dropped, relative paths kept" \
+  "$(scope_of $'## Scope\n- /etc/passwd // . ./x ../y a/../b docs/ src/a.sh `plugins/x/y.md`\n')" '["docs/","plugins/x/y.md","src/a.sh"]'
+scope_check "scope: a plain-text route after a path is not a path" \
+  "$(scope_of $'## Scope\n- plugins/fleet-board/scripts/board-web.py: GET /api/cards/<n>/transcripts\n')" '["plugins/fleet-board/scripts/board-web.py"]'
+seed_card 8 backlog 'Dropped only' $'Work.\n\n## Scope\n- /etc/passwd\n- //\n- ../x\n'
+jq '.acceptance = ["it works"] | .blocked_by = []' "$REPO/.fleet-board/cards/8.json" > "$REPO/eight.tmp" && mv "$REPO/eight.tmp" "$REPO/.fleet-board/cards/8.json"
+run_check_in "$REPO" "$SCRIPTS/board-move.sh" 8 ready
+assert_exit "move to ready refused when every Scope token is dropped" 1
+assert_card_state 8 backlog
 run_check_in "$REPO" "$SCRIPTS/board-move.sh" 1 review_security
 assert_exit "move to an unknown state exit 2" 2
 assert_card_state 1 in_progress

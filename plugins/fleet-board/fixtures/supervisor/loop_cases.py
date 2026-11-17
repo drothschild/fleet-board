@@ -1032,6 +1032,33 @@ class ScopeIgnore(LoopCase):
                          'the reservation leaves the ignored manifest out and filters the held scopes too')
 
 
+class WholeRepoScope(LoopCase):
+    def test_a_declared_path_that_cleans_to_empty_never_reserves_the_whole_repository(self):
+        seen = []
+        row = dict(number=12, action='fix', provider='claude', declared_paths=['/', 'src/a.py'], actual_paths=[])
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append(p) or 99):
+            self.sup._begin(row)
+        self.assertEqual(seen, [['src/a.py']], 'a declared "/" is dropped, not reserved as the whole repository')
+
+    def test_a_scheduler_candidate_declaring_slash_does_not_overlap_on_the_whole_repository(self):
+        sched = scheduler.Scheduler(clock=lambda: 0)
+        cand = {'number': 5, 'action': 'start', 'provider': 'claude', 'declared_paths': ['/', 'src/a.py'],
+                'actual_paths': [], 'scope_complete': True, 'priority': 'normal', 'eligible_since': 0,
+                'preconditions': {'state': 'ready', 'head_sha': None}}
+        out = sched.admit([cand], active=[{'number': 9, 'provider': 'claude', 'paths': ['docs/b']}],
+                          limits={'global': 2, 'providers': {'claude': 2}, 'per_card': 1})
+        self.assertEqual([x['number'] for x in out['admitted']], [5])
+        self.assertEqual([w for w in out['waits'] if ' on /' in w['reason']], [])
+
+    def test_a_refused_scope_counts_one_failure_each_time(self):
+        row = dict(number=12, action='start', provider='claude', declared_paths=['/abs/path'], actual_paths=[])
+        self.sup._begin(row)
+        self.assertEqual(self.b.note().get('action_failures'), 1)
+        self.assertEqual(self.b.note().get('last_action_error'), 'scope: invalid scope path')
+        self.sup._begin(row)
+        self.assertEqual(self.b.note().get('action_failures'), 2)
+
+
 class ReadOnlyScope(LoopCase):
     def test_a_read_only_action_reserves_no_scope(self):
         for action, provider in (('start_review', 'claude'), ('review', 'claude'), ('review_stage', 'claude'),
