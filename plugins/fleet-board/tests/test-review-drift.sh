@@ -348,8 +348,7 @@ echo "== update-branch keeps a branch version that is already above main's"
 keepmerge 0.1.3 0.1.2 0.1.3
 H="$(git rev-parse HEAD)"
 assert_eq "kept branch version above main's is reviewed" "$(drift)" reviewed
-git checkout -q main
-assert_eq "the same merge is unreviewed from a checkout of main" "$(drift "$H")" unreviewed
+assert_eq "origin/main itself is unreviewed" "$(drift main)" unreviewed
 
 echo "== a merge resolving to main's version, below the branch's raise"
 keepmerge 0.1.3 0.1.2 0.1.2
