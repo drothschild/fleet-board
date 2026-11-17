@@ -324,6 +324,52 @@ awk 'BEGIN{n=0} /"version"/{n++; if(n==1){sub(/"0.1.0"/,"\"../../evil\"")} else 
 git commit -q -am "Raise versions above origin/main"
 assert_eq "a hidden duplicate version key is unreviewed" "$(drift)" unreviewed
 
+# keepmerge <branch-version> <main-version> <resolved-version> [describe]: the
+# branch (reviewed at R) gets a single-parent raise of both manifests, main raises
+# both too, and main is merged into the branch with the conflicts resolved to
+# <resolved-version> (update-branch.sh's sv_resolve value is the higher side when
+# it is above main's). With a fourth argument the merge also edits a description.
+keepmerge() {
+  setup "$VF"
+  setv plugins/a/.claude-plugin/plugin.json "$1"; setv .claude-plugin/marketplace.json "$1"
+  git commit -q -am "Raise versions above origin/main"
+  git checkout -q main
+  printf 'zero\n' > other.txt; setv plugins/a/.claude-plugin/plugin.json "$2"; setv .claude-plugin/marketplace.json "$2"
+  git add -A; git commit -q -m "main moves"
+  git checkout -q feat
+  git merge -q --no-edit main >/dev/null 2>&1
+  git checkout -q --ours -- plugins/a/.claude-plugin/plugin.json .claude-plugin/marketplace.json 2>/dev/null
+  setv plugins/a/.claude-plugin/plugin.json "$3"; setv .claude-plugin/marketplace.json "$3"
+  if [ -n "${4:-}" ]; then sed -i.bak 's/plugin a/plugin A/' plugins/a/.claude-plugin/plugin.json; rm -f plugins/a/.claude-plugin/plugin.json.bak; fi
+  git add -A; git commit -q -m "Merge branch 'main' into feat"
+}
+
+echo "== update-branch keeps a branch version that is already above main's"
+keepmerge 0.1.3 0.1.2 0.1.3
+H="$(git rev-parse HEAD)"
+assert_eq "kept branch version above main's is reviewed" "$(drift)" reviewed
+git checkout -q main
+assert_eq "the same merge is unreviewed from a checkout of main" "$(drift "$H")" unreviewed
+
+echo "== a merge resolving to main's version, below the branch's raise"
+keepmerge 0.1.3 0.1.2 0.1.2
+assert_eq "resolution to main's value is unreviewed" "$(drift)" unreviewed
+
+echo "== a merge resolving above both sides"
+keepmerge 0.1.3 0.1.2 0.1.4
+assert_eq "resolution above both sides is reviewed" "$(drift)" reviewed
+
+echo "== a kept branch version plus a description change"
+keepmerge 0.1.3 0.1.2 0.1.3 describe
+assert_eq "kept version plus a description change is unreviewed" "$(drift)" unreviewed
+
+echo "== a branch raise equal to main's raise (no conflict)"
+keepmerge 0.1.2 0.1.2 0.1.2
+assert_eq "agreeing sides are reviewed as before" "$(drift)" reviewed
+
+echo "== review-drift.sh keeps one sv_resolve"
+assert_eq "no second definition of sv_resolve" "$(grep -c 'def sv_resolve' "$SCRIPT")" 0
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
