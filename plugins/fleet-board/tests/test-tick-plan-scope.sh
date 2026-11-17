@@ -231,7 +231,7 @@ JQ_LAUNCHES="$(wc -l < "$JQ_COUNT" | tr -d ' ')"
 PATH="${PATH#"$JQ_SHIM":}"; export PATH
 assert_exit "jq launches: the 20-card pass exits 0" 0
 assert_jq "jq launches: all 20 cards are planned to start" '[.candidates[] | select(.action == "start")] | length' '20'
-if [ "$JQ_LAUNCHES" -le 200 ]; then pass "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq ($JQ_LAUNCHES)"; else fail "jq launches: one --candidates pass over 20 Ready cards launches at most 200 jq" "launched $JQ_LAUNCHES"; fi
+if [ "$JQ_LAUNCHES" -le 145 ]; then pass "jq launches: one --candidates pass over 20 Ready cards launches at most 145 jq ($JQ_LAUNCHES)"; else fail "jq launches: one --candidates pass over 20 Ready cards launches at most 145 jq" "launched $JQ_LAUNCHES"; fi
 
 
 # Card 425: a --candidates row carries the card's repo, else board.repo
