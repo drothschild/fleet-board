@@ -1042,7 +1042,8 @@ class ScopeIgnore(LoopCase):
                    actual_paths=['plugins/fleet-board/.claude-plugin/plugin.json'])
         with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: seen.append((p, kw)) or 99):
             self.sup._begin(row)
-        self.assertEqual(seen, [(['src/a.py'], {'ignore': ['plugins/*/.claude-plugin/plugin.json']})],
+        self.assertEqual(seen, [(['src/a.py'], {'ignore': ['plugins/*/.claude-plugin/plugin.json'],
+                                 'repo': None, 'home_repo': 'acme/toy'})],
                          'the reservation leaves the ignored manifest out and filters the held scopes too')
 
 
