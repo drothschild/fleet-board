@@ -493,7 +493,7 @@ RG_SCRIPTS=""
 real_scripts() { # a copy of scripts/ with note.sh and board-comment.sh logging to $RG/log
   RG_SCRIPTS="$(mktemp -d)"; CLEANUP_DIRS+=("$RG_SCRIPTS")
   cp -R "$SCRIPT_DIR/../scripts/." "$RG_SCRIPTS/"
-  printf '#!/usr/bin/env bash\n[ "$1" = get ] && { printf "%%s\\n" "${RG_NOTE_JSON:-{}}"; exit 0; }\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
+  printf '#!/usr/bin/env bash\n[ "$1" = get ] && { printf "%%s\\n" "${RG_NOTE_JSON:-null}"; exit 0; }\nprintf "note %%s %%s\\n" "$1" "$(cat "$3")" >> "$RG_LOG"\nexit "${RG_NOTE_RC:-0}"\n' > "$RG_SCRIPTS/note.sh"
   printf '#!/usr/bin/env bash\nprintf "comment %%s\\n" "$1" >> "$RG_LOG"\n' > "$RG_SCRIPTS/board-comment.sh"
   mkdir -p "$RG_SCRIPTS/.bin"
   printf '#!/usr/bin/env bash\necho main\n' > "$RG_SCRIPTS/.bin/gh"
