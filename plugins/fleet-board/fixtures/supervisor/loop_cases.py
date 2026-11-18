@@ -1135,9 +1135,11 @@ class StackedAncestors(LoopCase):
         stacked, plain = calls
         self.assertEqual(stacked[0], 12)
         self.assertEqual(stacked[1]['exempt'], (11, 10))
+        self.assertEqual(stacked[1]['ancestors'], (11, 10))
         self.assertEqual(self.sup._claim_ancestors[12], [11, 10])
         self.assertEqual(plain[0], 13)
         self.assertNotIn('exempt', plain[1])
+        self.assertNotIn('ancestors', plain[1])
         self.assertNotIn(13, self.sup._claim_ancestors)
 
     def test_reservations_carry_the_ancestors_and_a_card_without_has_no_ancestors_key(self):
