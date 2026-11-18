@@ -183,6 +183,24 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(s.reserve(13, ['src/b/x'], exempt=(11,)), 20)
         self.assertNotIn(13, s.reservations)
 
+    def test_reserve_succeeds_when_the_only_overlapping_owner_is_stacked_on_the_card(self):
+        s = self.state
+        self.assertIsNone(s.reserve(12, ['src/a'], ancestors=(11,)))
+        self.assertIsNone(s.reserve(11, ['src/a/x']))
+        self.assertEqual(s.reservations[11], ['src/a/x'])
+
+    def test_reserve_succeeds_past_a_grandchild_stacked_on_the_card(self):
+        s = self.state
+        self.assertIsNone(s.reserve(13, ['src/a'], ancestors=(12, 11)))
+        self.assertIsNone(s.reserve(11, ['src/a']))
+
+    def test_reserve_still_refuses_a_sibling_or_an_unrelated_card(self):
+        s = self.state
+        self.assertIsNone(s.reserve(12, ['src/a'], ancestors=(10,)))
+        self.assertEqual(s.reserve(13, ['src/a'], ancestors=(10,)), 12)
+        self.assertEqual(s.reserve(14, ['src/a']), 12)
+        self.assertEqual(s.reserve(10, ['src/a'], ancestors=(9,)), None)
+
     def test_reserve_drops_scope_ignore_paths_on_both_sides(self):
         s = self.state
         ignore = ['plugins/*/.claude-plugin/plugin.json']
