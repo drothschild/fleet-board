@@ -53,7 +53,7 @@
 #                   run, so the next run merges again instead of finding nothing
 #                   to do. A refused reset --keep is reported; the exit stays 1.
 # A stacked card (manager note stack.base, a fleet/<n>-<slug> branch with an origin copy) whose
-# PR targets another branch is first retargeted to origin/<stack.base> (gh pr edit --base), which is
+# PR targets another branch is first retargeted to <stack.base> (gh pr edit --base), which is
 # then the base this script merges; never under --lane-bump. A failed edit exits 1 before any merge.
 # Before it merges the base, the script brings the branch up to origin/<branch>: behind it
 # fast-forwards, ahead (unpushed commits) it keeps them and pushes them, diverged it exits 1

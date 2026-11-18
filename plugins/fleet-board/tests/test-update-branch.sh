@@ -807,7 +807,7 @@ assert_exit "ahead of origin: exit 0" 0
 assert_eq "ahead of origin: local keeps its commit" "$(git -C "$RG/wt" merge-base --is-ancestor "$LOCAL_SHA" HEAD && echo yes || echo no)" yes
 assert_eq "ahead of origin: the commit is pushed" "$(rg_remote)" "$(rg_local)"
 
-# Stacked card: the parent branch (note.stack.base) is merged along with the base
+# Stacked card: the PR is retargeted to the parent branch (note.stack.base), which is then merged as the base
 STACK_NOTE='{"stack":{"parent":11,"base":"fleet/11-parent","start":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","attention":null}}'
 rg_parent() { # <file> <content>: a commit on origin/fleet/11-parent, pushed from seed
   rg_git -C "$RG/seed" checkout -q -B parent origin/main
