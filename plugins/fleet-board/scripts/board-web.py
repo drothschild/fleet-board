@@ -12,8 +12,8 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
 FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_CODEX (the codex binary a codex Planner
-chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (when set, the import
-session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
+chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (replaces the plugin
+directory the import session loads, by default the plugin root of these scripts: `--plugin-dir <dir>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one), FLEET_BOARD_CREATE (tests only: the script
 that creates the previewed cards, in place of import-plan.sh).
 """
