@@ -57,7 +57,7 @@ def test_unlisted_script_is_refused(base):
             continue
         raise AssertionError('unlisted script ran: ' + name)
     assert 'tick-plan.sh' in scripts.ALLOWED and 'board-list.sh' in scripts.ALLOWED, scripts.ALLOWED
-    assert len(scripts.ALLOWED) == 21, len(scripts.ALLOWED)
+    assert len(scripts.ALLOWED) == 22, len(scripts.ALLOWED)
 
 
 def test_stack_land_is_an_allowed_script(base):
