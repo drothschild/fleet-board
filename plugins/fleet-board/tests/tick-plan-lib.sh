@@ -16,6 +16,108 @@ TICK="$SCRIPT_DIR/../fixtures/gh/tick"
 # The absolute scripts dir, as tick-plan.sh resolves its own (cd && pwd)
 SCRIPTS_ABS="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
 
+# FLEET_TEST_ONLY=<exact check name> runs only the scenario that holds that check (commands.test_case).
+# At load, the suite file ($0) is scanned for the one assertion whose quoted name is that name: line L.
+# P is the last scenario-opening call before it (a lib or suite helper that reaches setup_case). Helpers
+# called from a suite line outside [P, L] do nothing (tp_skip, from BASH_LINENO); inside, everything
+# runs, but only the selected check prints and counts. Empty or unset: nothing here changes a run.
+TP_ONLY="${FLEET_TEST_ONLY:-}"
+TP_P=0
+TP_L=0
+TP_OPENERS=""
+TP_AWK='
+function iscall(line, name,   re) {
+  if (line ~ /^[ \t]*#/) return 0
+  re = "(^|[;&|({!]|[ \t](then|do|else|if|elif))[ \t]*([A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+)*" name "([ \t;&|)]|$)"
+  return line ~ re
+}
+FNR == 1 { fileno++; cur = "" }
+{
+  line = $0
+  if (fileno == 2) { S[FNR] = line; ns = FNR }
+  if (cur != "") {
+    body[cur] = body[cur] "\n" line
+    if (fileno == 2) fnl[FNR] = 1
+    if (line ~ /^[}]/) cur = ""
+    next
+  }
+  if (line ~ /^[A-Za-z_][A-Za-z0-9_]*[(][)] *[{]/) {
+    nm = line; sub(/[(].*/, "", nm); isfn[nm] = 1
+    rest = line; sub(/^[^{]*[{]/, "", rest)
+    body[nm] = body[nm] "\n" rest
+    if (fileno == 2) fnl[FNR] = 1
+    if (rest !~ /[}][ \t]*$/) cur = nm
+  }
+}
+END {
+  name = ENVIRON["TP_NAME"]
+  op["setup_case"] = 1
+  do {
+    ch = 0
+    for (f in isfn) {
+      if (f in op) continue
+      n = split(body[f], bl, "\n")
+      for (i = 1; i <= n; i++) {
+        hit = 0
+        for (o in op) if (iscall(bl[i], o)) { hit = 1; break }
+        if (hit) { op[f] = 1; ch = 1; break }
+      }
+    }
+  } while (ch)
+  cnt = 0; L = 0; nfn = 0
+  for (i = 1; i <= ns; i++) {
+    if (S[i] ~ /^[ \t]*#/) continue
+    idx = index(S[i], "\"" name "\"")
+    if (idx > 0 && substr(S[i], 1, idx - 1) ~ /(^|[^A-Za-z0-9_])(assert_[a-z_]+|pass)[ \t]+$/) {
+      if (fnl[i]) nfn++; else { cnt++; if (!L) L = i }
+    }
+  }
+  P = 1
+  for (i = L; i >= 1 && L; i--) {
+    if (fnl[i]) continue
+    hit = 0
+    for (o in op) if (iscall(S[i], o)) { hit = 1; break }
+    if (hit) { P = i; break }
+  }
+  print cnt, L, P, nfn
+  list = ""
+  for (o in op) list = list " " o
+  print list
+}'
+if [ -n "$TP_ONLY" ]; then
+  tp_sel="$(TP_NAME="$TP_ONLY" awk "$TP_AWK" "$SCRIPT_DIR/tick-plan-lib.sh" "$0")"
+  read -r tp_count TP_L TP_P tp_nfn <<<"$(printf '%s\n' "$tp_sel" | sed -n 1p)"
+  TP_OPENERS="$(printf '%s\n' "$tp_sel" | sed -n 2p)"
+  if [ "$tp_count" = 0 ]; then
+    if [ "$tp_nfn" != 0 ]; then
+      echo "FLEET_TEST_ONLY=$TP_ONLY: 0 test(s) selected (the check is inside a function; select a check outside functions)" >&2
+    else
+      echo "FLEET_TEST_ONLY=$TP_ONLY: 0 test(s) selected" >&2
+    fi
+    exit 5
+  fi
+  if [ "$tp_count" -gt 1 ]; then
+    echo "FLEET_TEST_ONLY=$TP_ONLY matches $tp_count checks" >&2
+    exit 5
+  fi
+fi
+
+# tp_skip: succeeds when FLEET_TEST_ONLY is set and the suite line that reached this helper (the
+# outermost frame called from the suite file) lies outside the selected window
+tp_skip() {
+  [ -n "$TP_ONLY" ] || return 1
+  local i ln=""
+  i=$(( ${#BASH_SOURCE[@]} - 2 ))
+  while [ "$i" -ge 0 ]; do
+    if [ "${BASH_SOURCE[$((i + 1))]}" = "$0" ]; then ln="${BASH_LINENO[$i]}"; break; fi
+    i=$((i - 1))
+  done
+  [ -n "$ln" ] || return 1
+  [ "$ln" -lt "$TP_P" ] || [ "$ln" -gt "$TP_L" ]
+}
+# tp_mine <check name>: under FLEET_TEST_ONLY only the selected check reports
+tp_mine() { [ -z "$TP_ONLY" ] || [ "$1" = "$TP_ONLY" ]; }
+
 unset FLEET_BOARD_CONFIG FAKE_GH_DELAY FLEET_BOARD_LOCK_WAIT || true
 
 PASS=0
@@ -39,8 +141,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2"; }
+pass() { tp_skip && return 0; tp_mine "$1" || return 0; PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
+fail() { tp_skip && return 0; tp_mine "$1" || return 0; FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2"; }
 
 assert_exit() {
   if [ "$LAST_EXIT" = "$2" ]; then pass "$1"; else fail "$1" "expected exit $2, got $LAST_EXIT (stderr: $LAST_ERR)"; fi
@@ -176,6 +278,10 @@ echo ""
 tp_finish() {
   echo "-----------------------------------"
   printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
+  if [ -n "$TP_ONLY" ] && [ $((PASS + FAIL)) -eq 0 ]; then
+    echo "FLEET_TEST_ONLY=$TP_ONLY: the selected check did not run" >&2
+    exit 1
+  fi
   [ "$FAIL" -eq 0 ] || exit 1
 }
 
@@ -536,3 +642,22 @@ unset OPENAI_API_KEY || true
 splan() { plan "$1" "$STAGES_YAML"; }
 ssettle() { settle "$1" "$2" "$STAGES_YAML"; }
 COMPLIANCE_WARN='stage compliance: OPENAI_API_KEY is not set; provider reviews will fail'
+
+# FLEET_TEST_ONLY: gate every helper that sets up, runs or asserts, so a suite line outside the
+# selected window does nothing; a skipped setup's variables get a scratch value so suite code that
+# reads them (set -u) still runs
+if [ -n "$TP_ONLY" ]; then
+  tp_gate() {
+    eval "tp_orig_$1() $(declare -f "$1" | sed 1d)"
+    eval "$1() { tp_skip && return 0; tp_orig_$1 \"\$@\"; }"
+  }
+  tp_scratch="$(mktemp -d)"
+  CLEANUP_DIRS+=("$tp_scratch")
+  REPO="$tp_scratch"; FAKE_GH_DIR="$tp_scratch"; BIN="$tp_scratch/bin"; BASE="$tp_scratch"
+  FAKE_GH_ROUTES="$tp_scratch/routes"; DONE_CASE_DIR="$tp_scratch"
+  for tp_f in $TP_OPENERS run_check assert_exit assert_stdout_exact assert_stderr_exact assert_stderr_not_contains \
+    assert_eq assert_jq scope_issue scope_routes scope_review_note candidate_empty_human_qa_route; do
+    if declare -F "$tp_f" >/dev/null; then tp_gate "$tp_f"; fi
+  done
+  echo "FLEET_TEST_ONLY=$TP_ONLY: 1 test(s) selected" >&2
+fi
