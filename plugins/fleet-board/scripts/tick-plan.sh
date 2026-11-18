@@ -1643,7 +1643,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             stack:$card.stack,title:$card.title,state:$card.state,branch:$card.branch,worktree:$card.worktree,pr:$card.pr,
             models:$card.models,escalated:$card.escalated,findings:$card.findings,waiting_on:$card.waiting_on,
             needs_human_qa:$card.needs_human_qa,comment_needed:$card.comment_needed,lint:$card.lint,
-            lint_marker:$card.lint_marker,ignored_checks:$card.ignored_checks,retry_after:$card.retry_after} ]}
+            lint_marker:$card.lint_marker,ignored_checks:$card.ignored_checks,retry_after:$card.retry_after,
+            red_checks:$card.red_checks,pass:$card.pass} ]}
      else
   {dispatchable: (($settle | not) and ($pre == "") and any($cards[];
         (.action != "skip" and .action != "wait" and .action != "file_pending" and .action != "skip_no_acceptance" and .action != "skip_card_lint")
