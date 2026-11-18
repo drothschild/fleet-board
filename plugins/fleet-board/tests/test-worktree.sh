@@ -599,6 +599,24 @@ assert_exit "create-start-branch-injection: exit" 2
 assert_false "create-start-branch-injection: no worktree" test -e "$WT34"
 assert_false "create-start-branch-injection: no branch" git -C "$REPO" show-ref --verify --quiet refs/heads/fleet/34-bad
 
+# ---------------------------------------------------------------------------
+# review with a base branch: base is the merge-base of origin's copy of that branch and the head
+git -C "$SEED" checkout -q -b fleet/11-parent "$SHA_A"
+commit_file "$SEED" parent.txt "parent" "Q"
+SHA_Q="$(git -C "$SEED" rev-parse HEAD)"
+git -C "$SEED" checkout -q -b pr9 "$SHA_Q"
+commit_file "$SEED" child.txt "child" "C"
+SHA_C="$(git -C "$SEED" rev-parse HEAD)"
+git -C "$SEED" push -q "$ORIGIN" fleet/11-parent "pr9:refs/pull/9/head" 2>/dev/null
+run_wt review 12 9 fleet/11-parent
+assert_exit "review-base: exit" 0
+assert_eq "review-base: sha is the PR head" "$(jqc .sha)" "\"$SHA_C\""
+assert_eq "review-base: base is the parent branch head the child was cut from" "$(jqc .base)" "\"$SHA_Q\""
+run_wt review 12 9
+assert_eq "review-base: without the argument the base is the merge-base with origin/main" "$(jqc .base)" "\"$SHA_A\""
+run_wt review 12 9 fleet/99-nosuch
+assert_exit "review-base: a base branch missing on origin exits 1" 1
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

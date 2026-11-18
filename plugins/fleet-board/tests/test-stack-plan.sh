@@ -155,7 +155,8 @@ routes() {
       pr="$(cat "$DIR/pr-$n" 2>/dev/null)"
       if [ -n "$pr" ]; then
         st="$(cat "$DIR/prstate-$n" 2>/dev/null)"; st="${st:-OPEN}"
-        jq -cn --arg s "$st" '{isDraft: false, state: $s, mergedAt: null, statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}], headRefOid: "abc1234"}' > "$DIR/prview-$n.json"
+        jq -cn --arg s "$st" --arg h "$(cat "$DIR/head-$n" 2>/dev/null || echo abc1234)" --argjson d "$(cat "$DIR/draft-$n" 2>/dev/null || echo false)" \
+          '{isDraft: $d, state: $s, mergedAt: null, statusCheckRollup: [{__typename: "CheckRun", conclusion: "SUCCESS"}], headRefOid: $h}' > "$DIR/prview-$n.json"
         jq -cn --arg s "$st" '{state: $s}' > "$DIR/prstate-json-$n.json"
         [ -f "$DIR/files-$n.json" ] || files "$n" src/parent-only.sh
         printf 'pr view %s --repo acme/toy --json isDraft,state,mergedAt,statusCheckRollup,headRefOid\t0\t%s/prview-%s.json\n' "$pr" "$DIR" "$n"
@@ -320,6 +321,107 @@ routes
 run_check "$SCRIPT"
 assert_jq "no candidate: a plain ready card starts" "$(card 12 action)" '"start"'
 assert_eq "no candidate: the fake gh log holds no pr view --json state call" "$(call_count pr view 33 --repo acme/toy --json state)" 0
+
+# --- Rows for a card whose note has stack (390) ---
+CLEAN_LR=',"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
+stack_att() { printf ',"stack":{"parent":%s,"base":"fleet/%s-card","start":"%s","attention":"%s"}' "$1" "$1" "$START40" "$2"; }
+
+# stack_git <yes|no>: an origin with the default branch and fleet/11-card; child head is written for card 12 and
+# contains the parent branch head when the argument is yes
+stack_git() {
+  local org def p c
+  org="$(mktemp -d)"; CLEANUP_DIRS+=("$org")
+  git init -q --bare "$org"
+  git -C "$REPO" remote add origin "$org"
+  def="$(git -C "$REPO" symbolic-ref --short HEAD)"
+  git -C "$REPO" checkout -q -b fleet/11-card
+  printf 'p\n' > "$REPO/parent.txt"; git -C "$REPO" add parent.txt; git -C "$REPO" commit -q -m "parent work"
+  p="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" checkout -q "$def"
+  git -C "$REPO" checkout -q -b fleet/12-card
+  printf 'c\n' > "$REPO/child.txt"; git -C "$REPO" add child.txt; git -C "$REPO" commit -q -m "child work"
+  if [ "$1" = yes ]; then git -C "$REPO" merge -q --no-edit -m "Merge origin/fleet/11-card into fleet/12-card" fleet/11-card >/dev/null; fi
+  c="$(git -C "$REPO" rev-parse HEAD)"
+  git -C "$REPO" push -q origin "$def" fleet/11-card fleet/12-card 2>/dev/null
+  git -C "$REPO" fetch -q origin 2>/dev/null
+  printf '%s\n' "$c" > "$DIR/head-12"
+}
+
+# child_board <config yaml> <parent column> <child note extras> [<child column>]: parent 11 and stacked child 12
+child_board() {
+  setup_case ready-start "$1"
+  mk 11 "$2" - - "$(note "$2" 11)"
+  mk "${5:-12}" "${4:-in_review}" 'src/child.sh' - "$(note "${4:-in_review}" 12 "$3")"
+}
+
+echo "Test: rows for a stacked child"
+for mode in on off; do
+  if [ "$mode" = on ]; then CFG="$ON"; else CFG=""; fi
+  child_board "$CFG" wont_do "$(stack_of 11)"
+  routes
+  run_check "$SCRIPT"
+  assert_jq "$mode: parent wont_do: child skips" "$(card 12 action)+\" \"+$(card 12 reason)" '"skip stacked on #11, which was closed without merging; a person decides"'
+
+  child_board "$CFG" in_review "$(stack_of 11)"
+  prstate 11 CLOSED
+  routes
+  run_check "$SCRIPT"
+  assert_jq "$mode: parent PR CLOSED: child skips" "$(card 12 action)+\" \"+$(card 12 reason)" '"skip stacked on #11, which was closed without merging; a person decides"'
+
+  child_board "$CFG" in_review "$CLEAN_LR$(stack_att 11 'parent head moved twice')"
+  routes
+  run_check "$SCRIPT"
+  assert_jq "$mode: attention set: child skips" "$(card 12 action)+\" \"+$(card 12 reason)" '"skip landing needs attention: parent head moved twice; a person decides"'
+
+  child_board "$CFG" in_review "$(stack_of 11)"
+  stack_git no
+  routes
+  run_check "$SCRIPT"
+  assert_jq "$mode: PR head lacks the parent branch head: update_branch" "$(card 12 action)+\" \"+$(card 12 reason)" '"update_branch parent branch fleet/11-card moved"'
+
+  child_board "$CFG" in_review "$(stack_of 11)"
+  stack_git yes
+  routes
+  run_check "$SCRIPT"
+  assert_jq "$mode: PR head contains the parent branch head: not update_branch" "$(card 12 action)" '"review"'
+
+  child_board "$CFG" blocked "$(stack_of 11)"
+  routes
+  run_check "$SCRIPT"
+  assert_jq "$mode: no review yet, parent blocked: child is still planned review" "$(card 12 action)" '"review"'
+done
+
+echo "Test: a clean current review of a stacked child waits for the parent"
+POLICY="$(printf 'stacking:\n  enabled: true\nmerge:\n  policy: auto\nhuman_qa_paths:\n  - "src/qa/**"')"
+# review_case <stacked|plain> <to_human_qa|mark_ready|merge>
+review_case() {
+  local extra="$CLEAN_LR"
+  [ "$1" = stacked ] && extra="$CLEAN_LR$(stack_of 11)"
+  setup_case ready-start "$POLICY"
+  mk 11 in_review - - "$(note in_review 11)"
+  mk 12 in_review 'src/child.sh' - "$(note in_review 12 "$extra")"
+  case "$2" in
+    to_human_qa) files 12 src/qa/x.sh ;;
+    mark_ready) files 12 src/child.sh; printf 'true\n' > "$DIR/draft-12" ;;
+    merge) files 12 src/child.sh ;;
+  esac
+  routes
+  run_check "$SCRIPT"
+}
+for act in to_human_qa mark_ready merge; do
+  review_case plain "$act"
+  assert_jq "unstacked: $act" "$(card 12 action)" "\"$act\""
+  review_case stacked "$act"
+  assert_jq "stacked: clean review where an unstacked card plans $act: wait" "$(card 12 action)+\" \"+$(card 12 reason)" '"wait waits for #11 to merge"'
+done
+
+echo "Test: a stacked child in merging"
+setup_case ready-start "$POLICY"
+mk 11 in_review - - "$(note in_review 11)"
+mk 12 merging 'src/child.sh' - "$(note merging 12 "$CLEAN_LR$(stack_of 11)")"
+routes
+run_check "$SCRIPT"
+assert_jq "merging: skip until the parent merges" "$(card 12 action)+\" \"+$(card 12 reason)" '"skip waits for #11 to merge"'
 
 # Scheduler and State: python snippets (the suites' own cases live in fixtures/supervisor)
 py_check() {
