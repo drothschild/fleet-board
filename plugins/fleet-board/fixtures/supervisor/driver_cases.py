@@ -95,9 +95,9 @@ class Board:
         """Script names in call order, without the note reads and merges."""
         return [c[0] for c in self.calls if c[0] != 'note.sh']
 
-    def seed(self, number, card_state='ready', body='', acceptance=('does it',)):
+    def seed(self, number, card_state='ready', body='', acceptance=('does it',), blocked_by=()):
         card = {'number': number, 'title': 'Add subtract', 'body': body, 'state': card_state, 'labels': [],
-                'acceptance': list(acceptance), 'blocked_by': [], 'next_comment_id': 1, 'comments': [],
+                'acceptance': list(acceptance), 'blocked_by': list(blocked_by), 'next_comment_id': 1, 'comments': [],
                 'created_at': '2026-01-01T00:00:00Z'}
         (self.root / '.fleet-board' / 'cards' / ('%d.json' % number)).write_text(json.dumps(card))
 
@@ -2222,13 +2222,116 @@ def test_follow_up_lines_in_a_checker_report_file_nothing(base):
 
 def test_an_unhandled_verdict_is_a_failed_check(base):
     b = premise_board(base)
-    b.plans(check_plan('checker-needs'))
+    b.plans(check_plan('checker-built'))
     started = begin_check(b)
     finish_all(b, started)
     note = b.note()
     assert note['action_failures'] == 1, note
-    assert note['last_action_error'] == 'premise check failed: verdict needs is not handled yet' + FAILED_SUFFIX, note
+    assert note['last_action_error'] == 'premise check failed: verdict built is not handled yet' + FAILED_SUFFIX, note
     assert not stamps(b), b.calls
+
+
+QUESTION = 'Waiting for a person: the premise check could not settle this card.'
+
+
+def needs_board(base, other_state='in_review', other=40, **kw):
+    b = premise_board(base, **kw)
+    if other_state is not None:
+        b.seed(other, other_state, blocked_by=kw.get('other_blocked_by', ()))
+    b.plans(check_plan('checker-needs'))
+    return b
+
+
+def needs_run(b):
+    finish_all(b, begin_check(b))
+
+
+def asked(b, text):
+    note = b.note()
+    assert b.card()['state'] == 'blocked', b.card()['state']
+    assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
+    posted = [t for t in b.comments() if t.startswith(QUESTION)]
+    assert len(posted) == 1 and text in posted[0], b.comments()
+    assert not stamps(b), b.calls
+    assert not [c for c in b.calls if c[:2] == ('premise.sh', 'add-dep')], b.calls
+
+
+def test_needs_adds_the_dependency_and_leaves_the_card_ready(base):
+    b = needs_board(base, 'in_review')
+    needs_run(b)
+    assert ('premise.sh', 'add-dep', '12', '40') in b.calls, b.calls
+    assert 'Premise check: needs #40, which is in_review. Added as a dependency.' in b.comments(), b.comments()
+    assert not [c for c in b.calls if c[0] == 'board-move.sh'], b.calls
+    assert b.card()['state'] == 'ready' and 40 in b.card()['blocked_by'], b.card()
+    assert not stamps(b), b.calls
+    assert b.note()['action_failures'] == 0
+
+
+def test_needs_a_card_already_listed_changes_nothing_and_asks(base):
+    b = premise_board(base, blocked_by=[40])
+    b.seed(40, 'in_review')
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_needs_a_backlog_card_asks(base):
+    b = needs_board(base, 'backlog')
+    needs_run(b)
+    asked(b, 'needs #40, which is backlog')
+
+
+def test_needs_a_closed_card_asks(base):
+    for closed in ('done', 'wont_do'):
+        sub = Path(base) / closed
+        sub.mkdir()
+        b = needs_board(sub, closed)
+        needs_run(b)
+        asked(b, 'needs #40, which is ' + closed)
+
+
+def needs_text(number):
+    return (PLUGIN / 'fixtures' / 'reports' / 'checker-needs.md').read_text().replace('#40', '#%d' % number)
+
+
+def test_needs_a_missing_card_asks(base):
+    b = premise_board(base)
+    b.plans(check_plan(needs_text(999)))
+    needs_run(b)
+    asked(b, 'needs #999, which does not exist')
+
+
+def test_needs_itself_asks(base):
+    b = premise_board(base)
+    b.plans(check_plan(needs_text(12)))
+    needs_run(b)
+    asked(b, 'needs #12, which is the card itself')
+
+
+def test_needs_a_card_that_depends_on_this_one_asks(base):
+    b = premise_board(base)
+    b.seed(40, 'in_review', blocked_by=[12])
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_needs_a_card_that_depends_on_this_one_through_another_asks(base):
+    b = premise_board(base)
+    b.seed(40, 'in_review', blocked_by=[41])
+    b.seed(41, 'in_review', blocked_by=[12])
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_a_question_resets_the_failure_count_and_records_blocked_from_ready(base):
+    b = needs_board(base, 'backlog')
+    b.put_note({'action_failures': 2, 'last_action_error': 'old'})
+    needs_run(b)
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert note['blocked_from'] == 'ready' and note['state'] == 'blocked', note
 
 
 HEAD40 = 'abc1234' + '0' * 33
