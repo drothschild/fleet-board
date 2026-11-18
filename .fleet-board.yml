@@ -17,8 +17,8 @@ limits:
   concurrency: 20
 models:
   reviewer: opus
-# The built-in stages run one after another (advance_stage -> review_<name>) until parallel
-# review (cards 284 and 285) lands; card 394 removes these two entries then.
+# The built-in review stages are off in this repo; card 394 re-enables them (removes these two
+# entries) now that parallel review (cards 284 and 285) has landed.
 # Needs plugin 0.29.69 or newer: older config.sh rejects a stage with no agent or provider.
 review:
   stages:
