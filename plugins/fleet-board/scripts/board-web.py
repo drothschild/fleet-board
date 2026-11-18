@@ -1119,6 +1119,8 @@ def card_summary(cfg: dict, dir: Path, card: dict, owned: set, state_of: dict, k
         "blocked_by": blk,
         "blocked": any(state_of.get(b) != "done" for b in blk),
         "hold": hold_from_status(status, card.get("number")),
+        "stacked_on": card_stack(note)[0],
+        "stack_attention": card_stack(note)[1],
         "reviewers": card_reviewers(cfg, card, note),
         "repo": card_repo(cfg, card) or None,
     }
@@ -1141,7 +1143,19 @@ def card_detail(cfg: dict, dir: Path, n: int) -> dict:
     out["pr_url"] = card_pr_url(cfg, card, note)
     out["worktree"] = card_worktree(note)
     out["hold"] = card_hold(n)
+    out["stacked_on"], out["stack_attention"] = card_stack(note)
     return out
+
+
+def card_stack(note):
+    """(stacked_on, stack_attention) from the note's stack object: the parent number or None, and a string or None."""
+    stack = note.get("stack") if isinstance(note, dict) else None
+    if not isinstance(stack, dict):
+        return None, None
+    parent = stack.get("parent")
+    attention = stack.get("attention")
+    return (parent if is_int(parent) and not isinstance(parent, bool) else None,
+            attention if isinstance(attention, str) else None)
 
 
 def card_hold(n: int):
