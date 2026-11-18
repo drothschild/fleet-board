@@ -23,7 +23,7 @@ check() { # <name> <file> <fixed string>
 # The update-branch paragraph of docs/config.md (the "Conflicting PRs." paragraph)
 section() { grep -F '**Conflicting PRs.**' "$ROOT/docs/config.md"; }
 check_section() { # <name> <fixed string>
-  if section | grep -qF -- "$2"; then PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"
+  if section | grep -cF -- "$2" >/dev/null; then PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"
   else FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       the Conflicting PRs paragraph lacks: %s\n' "$2"; fi
 }
 

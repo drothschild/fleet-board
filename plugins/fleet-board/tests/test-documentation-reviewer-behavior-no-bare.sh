@@ -12,19 +12,19 @@ fail() { printf 'not ok - %s\n  %s\n' "$1" "$2"; FAILS=$((FAILS + 1)); }
 
 code="$(grep -v '^[[:space:]]*#' "$TARGET")"
 
-if printf '%s\n' "$code" | grep -q -- '--bare'; then
+if printf '%s\n' "$code" | grep -c -- '--bare' >/dev/null; then
   fail "the documentation reviewer claude argv does not pass --bare" "$(printf '%s\n' "$code" | grep -n -- '--bare')"
 else
   pass "the documentation reviewer claude argv does not pass --bare"
 fi
 
-if printf '%s\n' "$code" | grep -q 'CLAUDE_CONFIG_DIR="\$(mktemp -d)"'; then
+if printf '%s\n' "$code" | grep -c 'CLAUDE_CONFIG_DIR="\$(mktemp -d)"' >/dev/null; then
   pass "the session still runs with a fresh CLAUDE_CONFIG_DIR"
 else
   fail "the session still runs with a fresh CLAUDE_CONFIG_DIR" "assignment missing"
 fi
 
-if printf '%s\n' "$code" | grep -q -- '--settings "\$SETTINGS"'; then
+if printf '%s\n' "$code" | grep -c -- '--settings "\$SETTINGS"' >/dev/null; then
   pass "the session still passes the isolated --settings"
 else
   fail "the session still passes the isolated --settings" "--settings missing"

@@ -14,7 +14,7 @@ fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; printf '       %s\n' "$2
 rules="$(awk '/^## /{s=($0=="## Working rules")} s' "$PERSONA" 2>/dev/null)"
 
 t1="the shipped persona has a working rule saying the planner never creates, moves or edits cards"
-if printf '%s\n' "$rules" | grep -Eiq '^- .*never creates?, moves? or edits? cards'; then pass "$t1"
+if printf '%s\n' "$rules" | grep -Eic '^- .*never creates?, moves? or edits? cards' >/dev/null; then pass "$t1"
 else fail "$t1" "no working rule matching 'never create, move or edit cards'"; fi
 
 t2="the shipped persona tells the user to press Draft cards to turn the conversation into cards"

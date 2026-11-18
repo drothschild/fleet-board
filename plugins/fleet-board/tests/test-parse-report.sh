@@ -53,7 +53,7 @@ assert_stderr_not_contains() {
 
 # One whole line of stderr equals $2 exactly
 assert_stderr_line() {
-  if printf '%s\n' "$LAST_ERR" | grep -Fxq -- "$2"; then
+  if printf '%s\n' "$LAST_ERR" | grep -Fxc -- "$2" >/dev/null; then
     pass "$1"
   else
     fail "$1" "expected a stderr line exactly '$2', got: '$LAST_ERR'"
