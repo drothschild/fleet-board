@@ -384,7 +384,7 @@ if setup_case; then
   assert_code 200
   api GET /static/index.html
   assert_code 200
-  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -q 'Import plan' "$SCRIPTS/board-web/static/index.html"; then
+  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -c 'Import plan' "$SCRIPTS/board-web/static/index.html" >/dev/null; then
     fail "index.html no longer contains the Import plan button" "import-btn or the text Import plan still present"
   else
     pass "index.html no longer contains the Import plan button"
@@ -691,9 +691,14 @@ if setup_case; then
   real_idir="$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]).strip("/"))' "$TMP/logs/web/acme-toy/imports/fixed")"
   want_allowed="Bash(cp $TMP/logs/web/acme-toy/imports/fixed/cards.draft.json $TMP/logs/web/acme-toy/imports/fixed/cards.json) Bash(bash $SCRIPTS/import-plan.sh *) Edit(//$real_idir/**) Read(//$real_idir/**)"
   if [ -n "$allowed" ] && [ "$allowed" = "$want_allowed" ] \
-     && ! printf '%s' "$allowed" | grep -q 'mktemp' && ! printf '%s' "$allowed" | grep -q 'Write(' \
-     && ! printf '%s' "$allowed" | grep -qF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)"; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
+     && ! printf '%s' "$allowed" | grep -c 'mktemp' >/dev/null && ! printf '%s' "$allowed" | grep -c 'Write(' >/dev/null \
+     && ! printf '%s' "$allowed" | grep -cF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)" >/dev/null; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
   if grep -q -- '--allowedTools .* --max-turns .* /fleet-board:import-plan' "$FAKE_CLAUDE_DIR/args.log"; then pass "an option follows each variadic list, before the prompt"; else fail "an option follows each variadic list, before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
+  ARGV_FILE="$TMP/logs/web/acme-toy/imports/fixed/session.argv"
+  if [ -s "$ARGV_FILE" ] && [ "$(head -1 "$ARGV_FILE")" = "$FAKE_IMPORT_CLAUDE" ] && [ "$(tail -1 "$ARGV_FILE")" = "<prompt>" ] && ! grep -q 'import-plan .*plan.md' "$ARGV_FILE"; then pass "the session argv is written to the import folder with the prompt shortened"; else fail "the session argv is written to the import folder with the prompt shortened" "file: $(cat "$ARGV_FILE" 2>/dev/null)"; fi
+  if grep -qxF "Bash(bash $SCRIPTS/import-plan.sh *)" "$ARGV_FILE" 2>/dev/null; then pass "the session argv holds the import-plan.sh allow rule"; else fail "the session argv holds the import-plan.sh allow rule" "file: $(cat "$ARGV_FILE" 2>/dev/null)"; fi
+  after_allowed="$(awk '/^--allowedTools$/ {f=1; next} f && /^(Bash|Edit|Read)\(/ {next} f {print; exit}' "$ARGV_FILE" 2>/dev/null)"
+  if [ -n "$after_allowed" ] && [ "$(awk '/^--allowedTools$/ {f=1; next} f && /^(Bash|Edit|Read)\(/ {n++; next} f {print n; exit}' "$ARGV_FILE")" = 4 ] && [ "${after_allowed#--}" != "$after_allowed" ]; then pass "an option, not a value, follows the four allowedTools rules in the argv file"; else fail "an option, not a value, follows the four allowedTools rules in the argv file" "next: $after_allowed"; fi
   if grep -q -- '--max-turns 7' "$FAKE_CLAUDE_DIR/args.log"; then pass "max turns from config"; else fail "max turns from config" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   if grep -q -- '-p --output-format stream-json --verbose' "$FAKE_CLAUDE_DIR/args.log"; then pass "headless stream-json flags"; else fail "headless stream-json flags" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   api GET /api/import/fixed
@@ -1155,8 +1160,8 @@ PORT="$(free_port)"
 FLEET_BOARD_LOG_DIR="$TMP/launch-logs" "$BASH_EXE" "$SCRIPTS/board-web.sh" --repo "$LOCAL_WT" --port "$PORT" > "$LAUNCH_OUT" 2> "$TMP/launch.err" < /dev/null &
 SERVER_PID=$!
 i=0
-while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; do sleep 0.1; i=$((i + 1)); done
-if head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; then
+while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -c '^listening on http://127\.0\.0\.1:[0-9][0-9]*$' >/dev/null; do sleep 0.1; i=$((i + 1)); done
+if head -n 1 "$LAUNCH_OUT" | grep -c '^listening on http://127\.0\.0\.1:[0-9][0-9]*$' >/dev/null; then
   pass "board-web.sh starts the server"
 else
   fail "board-web.sh starts the server" "stdout: $(cat "$LAUNCH_OUT"); stderr: $(cat "$TMP/launch.err")"
@@ -1717,7 +1722,7 @@ ms_absent "a card outside Merging shows no merge step text" "Merging PR" in_revi
 rm -rf "$MS_TMP"
 
 # Card 409: the card view serves a session log through supervisor/sessiontext.py.
-if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -q .; then
+if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -c . >/dev/null; then
   pass "a python script besides sessiontext.py calls sessiontext"
 else
   fail "a python script besides sessiontext.py calls sessiontext" "no caller found under $SCRIPTS"
@@ -1917,6 +1922,31 @@ if [ "$(jq 'has("repo")' "$CR_REPO/.fleet-board/cards/$CR_N.json")" = false ]; t
 else
   fail "the stored home-repo card has no repo key" "$(cat "$CR_REPO/.fleet-board/cards/$CR_N.json")"
 fi
+stop_server
+
+echo "Case: card payload has stacked_on and stack_attention"
+ST_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$ST_REPO/.fleet-board/cards" "$ST_REPO/.fleet-board/active"
+echo 4 > "$ST_REPO/.fleet-board/next"
+ST_FENCE='```'
+st_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"stack":%s}\n%s\n' "$ST_FENCE" "$1" "$ST_FENCE"
+}
+ST_C1="$(jq -n --arg b "$(st_note '{"parent":11,"base":"fleet/11-parent","start":"0123456789abcdef0123456789abcdef01234567","attention":"parent closed unmerged"}')" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$ST_REPO" seed_card 1 in_progress "Stacked" "b" "$ST_C1"
+REPO="$ST_REPO" seed_card 2 in_progress "Unstacked" "b"
+start_server "$ST_REPO"
+api GET /api/board
+assert_code 200
+assert_body "board payload: stacked_on is 11 for a stacked card" '.cards[]|select(.number==1)|.stacked_on' 11
+assert_body "board payload: stacked_on is null for an unstacked card" '.cards[]|select(.number==2)|.stacked_on|tojson' null
+assert_body "board payload: stack_attention is the text for a stacked card" '.cards[]|select(.number==1)|.stack_attention' 'parent closed unmerged'
+assert_body "board payload: stack_attention is null for an unstacked card" '.cards[]|select(.number==2)|.stack_attention|tojson' null
+api GET /api/cards/1
+assert_body "detail payload: stacked_on is 11 for a stacked card" '.stacked_on' 11
+assert_body "detail payload: stack_attention for a stacked card" '.stack_attention' 'parent closed unmerged'
+api GET /api/cards/2
+assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
 stop_server
 
 echo ""

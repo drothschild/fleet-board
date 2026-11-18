@@ -21,14 +21,14 @@ n="$(grep -c 'QA section' "$REVIEWER")"
 if [ "$n" -ge 1 ]; then pass "reviewer.md mentions the QA section"; else fail "reviewer.md mentions the QA section"; fi
 
 # The report rules name a Minor finding for a QA section bullet that no longer matches.
-if grep 'QA section' "$REVIEWER" | grep -q '\[Minor\]'; then
+if grep 'QA section' "$REVIEWER" | grep -c '\[Minor\]' >/dev/null; then
   pass "a Minor finding is named for a QA section bullet that no longer matches the change"
 else
   fail "a Minor finding is named for a QA section bullet that no longer matches the change"
 fi
 
 # A change a person would need to check with no bullet is also Minor.
-if grep -i 'QA section' "$REVIEWER" | grep -qi 'no bullet'; then
+if grep -i 'QA section' "$REVIEWER" | grep -ci 'no bullet' >/dev/null; then
   pass "a Minor finding is named for a change with no QA section bullet"
 else
   fail "a Minor finding is named for a change with no QA section bullet"
@@ -36,7 +36,7 @@ fi
 
 # The clean-room guard passes with the change recorded.
 out="$(bash "$SCRIPT_DIR/test-clean-room.sh" 2>&1)"
-if printf '%s\n' "$out" | grep -q 'FAIL'; then
+if printf '%s\n' "$out" | grep -c 'FAIL' >/dev/null; then
   fail "test-clean-room.sh prints no failure"
 else
   pass "test-clean-room.sh prints no failure"

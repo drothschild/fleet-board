@@ -27,7 +27,7 @@ while IFS="$(printf '\t')" read -r id class _rest; do
   [ -z "$id" ] && continue
   case "$id" in \#*) continue ;; esac
   for m in on off; do
-    if grep -qE "^\| ${id} \|.*\| ${m} \|" "$DOC" || grep -qE "^\| ${class} \|.*\| ${m} \|" "$DOC"; then
+    if grep -qE "^\| ${id} \|.*\| ${m} \|" "$DOC" || grep -cE "^\| ${class} \|.*\| ${m} \|" "$DOC" >/dev/null; then
       pass "results table has a row for $id with mutation $m"
     else
       fail "results table has a row for $id with mutation $m" "row absent"

@@ -125,7 +125,7 @@ else
   else
     fail "parse-report.sh --role stage-reviewer accepts it" "$(cat "$RUN/parse.err")"
   fi
-  if sed -n '/^## Findings/,/^## For the card/p' "$F" | grep -E '^- \[(Critical|Important|Minor)\]' | grep -q 'report\.sh'; then
+  if sed -n '/^## Findings/,/^## For the card/p' "$F" | grep -E '^- \[(Critical|Important|Minor)\]' | grep -c 'report\.sh' >/dev/null; then
     pass "a finding names the caller outside the diff (report.sh)"
   else
     fail "a finding names the caller outside the diff (report.sh)" "no such finding in $F"

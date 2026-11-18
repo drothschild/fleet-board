@@ -93,5 +93,51 @@ NODE
 node "$HDR_JS" "$JS" || FAIL=$((FAIL + 1))
 rm -f "$HDR_JS"
 
+# Drawer: stacked on #<parent>, and the attention text.
+STK_JS="$(mktemp)"
+cat >"$STK_JS" <<'NODE'
+"use strict";
+const assert = require("node:assert/strict");
+const path = require("node:path");
+const loadBoard = require(path.join(process.env.DIR, "board-interaction-harness.js"));
+const JS = path.join(process.env.DIR, "../scripts/board-web/static/board.js");
+const states = [{key: "backlog", name: "Backlog"}, {key: "ready", name: "Ready"}];
+const mk = (number, extra) => ({number, title: "Card " + number, body: "", labels: [], comments: [],
+  acceptance: [], blocked_by: [], blocks: [], state: "ready", known: true, ...extra});
+const allText = n => (n.textContent || "") + (n.children || []).map(allText).join("");
+let fails = 0;
+async function test(name, fn) { try { await fn(); console.log("ok - " + name); } catch (e) { fails++; console.log("FAIL - " + name + ": " + e.message); } }
+async function drawerText(card) {
+  const h = loadBoard(JS, async (url) => {
+    let data = {}, m;
+    if (url === "/api/board") data = {repo: "acme/toy", states, cards: [{...card}], run: {state: "idle"}};
+    else if ((m = /^\/api\/cards\/(\d+)$/.exec(url))) data = {...card};
+    return {ok: true, status: 200, json: async () => data};
+  });
+  await h.flush();
+  await h.ctx.openDrawer(card.number);
+  await h.flush();
+  const el = h.$("dr-stack");
+  return el && !el.hidden ? allText(el) : "";
+}
+(async () => {
+  await test("the drawer renders stacked on #11 for stacked_on 11", async () => {
+    const t = await drawerText(mk(1, {stacked_on: 11, stack_attention: null}));
+    assert.ok(t.includes("stacked on #11"), t);
+  });
+  await test("the drawer renders nothing for stacked_on null", async () => {
+    const t = await drawerText(mk(1, {stacked_on: null, stack_attention: null}));
+    assert.equal(t, "");
+  });
+  await test("the drawer shows the attention text when stack_attention is set", async () => {
+    const t = await drawerText(mk(1, {stacked_on: 11, stack_attention: "parent closed unmerged"}));
+    assert.ok(t.includes("parent closed unmerged"), t);
+  });
+  process.exit(fails ? 1 : 0);
+})();
+NODE
+DIR="$DIR" node "$STK_JS" || FAIL=$((FAIL + 1))
+rm -f "$STK_JS"
+
 echo "$FAIL failing groups"
 [ "$FAIL" -eq 0 ]

@@ -127,7 +127,7 @@ api POST /api/planner/conv1/messages '{"text":"second question"}'
 assert_code 200 "second message accepted"
 wait_idle conv1
 argv2="$(sed -n 2p "$ARGV_LOG" | tr '\037' '\n')"
-if printf '%s\n' "$argv2" | grep -A1 -x -e '--resume' | grep -qx 'sess-1'; then pass "second turn passes --resume sess-1"; else fail "second turn passes --resume sess-1" "$argv2"; fi
+if printf '%s\n' "$argv2" | grep -A1 -x -e '--resume' | grep -cx 'sess-1' >/dev/null; then pass "second turn passes --resume sess-1"; else fail "second turn passes --resume sess-1" "$argv2"; fi
 
 echo "Case: GET returns user and assistant turns in order, running true while a reply is in progress"
 api GET /api/planner/conv1
@@ -193,7 +193,7 @@ model_of() {
   # prints the value following --model in argv line $1, or NONE when the flag is absent
   local a
   a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
-  if printf '%s\n' "$a" | grep -qx -e '--model'; then printf '%s\n' "$a" | grep -A1 -x -e '--model' | sed -n 2p; else echo NONE; fi
+  if printf '%s\n' "$a" | grep -cx -e '--model' >/dev/null; then printf '%s\n' "$a" | grep -A1 -x -e '--model' | sed -n 2p; else echo NONE; fi
 }
 LINES_BEFORE="$(wc -l < "$ARGV_LOG" | tr -d ' ')"
 
@@ -221,7 +221,7 @@ if [ "$got" = haiku ]; then pass "changed planner.model haiku -> --model haiku o
 tools_of() {
   local a
   a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
-  if printf '%s\n' "$a" | grep -qx -e '--tools'; then printf '%s\n' "$a" | grep -A1 -x -e '--tools' | sed -n 2p; else echo NONE; fi
+  if printf '%s\n' "$a" | grep -cx -e '--tools' >/dev/null; then printf '%s\n' "$a" | grep -A1 -x -e '--tools' | sed -n 2p; else echo NONE; fi
 }
 
 echo "Case: a planner turn's argv limits the built-in tools to Read, Grep, Glob and WebSearch"
@@ -230,7 +230,7 @@ if [ "$got" = "Read,Grep,Glob,WebSearch" ]; then pass "first planner turn passes
 
 echo "Case: a planner turn's argv does not include Bash, Write, Edit or NotebookEdit among its allowed tools"
 got="$(tools_of 1)"
-if [ "$got" != NONE ] && ! printf '%s\n' "$got" | tr ', ' '\n\n' | grep -qxE 'Bash|Write|Edit|NotebookEdit'; then
+if [ "$got" != NONE ] && ! printf '%s\n' "$got" | tr ', ' '\n\n' | grep -cxE 'Bash|Write|Edit|NotebookEdit' >/dev/null; then
   pass "planner turn tool list holds none of Bash, Write, Edit, NotebookEdit"
 else
   fail "planner turn tool list holds none of Bash, Write, Edit, NotebookEdit" "tools: '$got'"
@@ -238,7 +238,7 @@ fi
 
 echo "Case: a resumed planner turn carries the same tool limit as the first turn"
 got="$(tools_of 2)"
-if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -qx -e '--resume' && [ "$got" = "Read,Grep,Glob,WebSearch" ]; then
+if sed -n 2p "$ARGV_LOG" | tr '\037' '\n' | grep -cx -e '--resume' >/dev/null && [ "$got" = "Read,Grep,Glob,WebSearch" ]; then
   pass "resumed planner turn passes --tools Read,Grep,Glob,WebSearch"
 else
   fail "resumed planner turn passes --tools Read,Grep,Glob,WebSearch" "got '$got'"
@@ -254,7 +254,7 @@ done
 flag_of() {
   local a
   a="$(sed -n "${1}p" "$ARGV_LOG" | tr '\037' '\n')"
-  if printf '%s\n' "$a" | grep -qx -e "$2"; then printf '%s\n' "$a" | grep -A1 -x -e "$2" | sed -n 2p; else echo NONE; fi
+  if printf '%s\n' "$a" | grep -cx -e "$2" >/dev/null; then printf '%s\n' "$a" | grep -A1 -x -e "$2" | sed -n 2p; else echo NONE; fi
 }
 
 echo "Case: the first and the resumed planner turn pass --permission-mode dontAsk"
@@ -281,7 +281,7 @@ echo "Case: both turns carry --disallowedTools naming the secret-file Read rules
 for ln in 1 2; do
   got="$(flag_of $ln --disallowedTools)"
   for rule in 'Read(**/.env)' 'Read(**/.env.*)' 'Read(**/*.pem)' 'Read(**/*.key)' 'Read(~/.ssh/**)' 'Read(~/.aws/**)'; do
-    if printf '%s\n' "$got" | tr ',' '\n' | grep -qxF -e "$rule"; then pass "turn $ln --disallowedTools names $rule"; else fail "turn $ln --disallowedTools names $rule" "got '$got'"; fi
+    if printf '%s\n' "$got" | tr ',' '\n' | grep -cxF -e "$rule" >/dev/null; then pass "turn $ln --disallowedTools names $rule"; else fail "turn $ln --disallowedTools names $rule" "got '$got'"; fi
   done
 done
 
@@ -312,7 +312,7 @@ if [ "$dtools" = "Read,Grep,Glob,Write,Bash" ] && [ "$dmode" = dontAsk ]; then
 else
   fail "draft session argv passes --tools Read,Grep,Glob,Write,Bash in dontAsk" "tools '$dtools', mode '$dmode'"
 fi
-if printf '%s\n' "$dargv" | grep -qE 'WebSearch|WebFetch'; then
+if printf '%s\n' "$dargv" | grep -cE 'WebSearch|WebFetch' >/dev/null; then
   fail "draft session argv names no web tool" "$dargv"
 else
   pass "draft session argv names no web tool"

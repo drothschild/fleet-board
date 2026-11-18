@@ -34,7 +34,7 @@ echo "agents/documentation-reviewer.md is listed in the clean-room manifest and 
 if [ -f "$AGENT" ]; then pass "agent file exists"; else fail "agent file exists"; fi
 line="$(awk '$1 !~ /^#/ && $2 == "agents/documentation-reviewer.md" {print; exit}' "$MANIFEST" 2>/dev/null)"
 if [ -n "$line" ]; then pass "manifest lists agents/documentation-reviewer.md"; else fail "manifest lists agents/documentation-reviewer.md"; fi
-if [ -n "$line" ] && ! printf '%s' "$line" | grep -q '# exception:'; then
+if [ -n "$line" ] && ! printf '%s' "$line" | grep -c '# exception:' >/dev/null; then
   pass "manifest line is a clean-room output, not an exception"
 else
   fail "manifest line is a clean-room output, not an exception"

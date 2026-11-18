@@ -41,7 +41,7 @@ echo "clean-room manifest check"
 # 1. passes on an unmodified tree and reports the manifest check
 R="$(fresh_copy ok)"
 run_guard "$R"
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qi 'manifest'; then
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -ci 'manifest' >/dev/null; then
   pass "guard passes on the current tree and runs the manifest check"
 else
   fail "guard passes on the current tree and runs the manifest check" "rc=$RC"
@@ -51,7 +51,7 @@ fi
 R="$(fresh_copy byte)"
 printf 'x' >>"$R/plugins/fleet-board/agents/fixer.md"
 run_guard "$R"
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep 'FAIL' | grep -q 'agents/fixer.md'; then
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep 'FAIL' | grep -c 'agents/fixer.md' >/dev/null; then
   pass "guard fails when one byte of a clean-room agent file changes"
 else
   fail "guard fails when one byte of a clean-room agent file changes" "rc=$RC"
@@ -65,7 +65,7 @@ if [ -f "$M" ]; then
   grep -v 'agents/reviewer.md' "$M" >"$M.new" && mv "$M.new" "$M"
 fi
 run_guard "$R"
-if [ -f "$M" ] && [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep 'FAIL' | grep -q 'agents/reviewer.md'; then
+if [ -f "$M" ] && [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep 'FAIL' | grep -c 'agents/reviewer.md' >/dev/null; then
   pass "guard fails when a clean-room file is missing from the manifest"
 else
   fail "guard fails when a clean-room file is missing from the manifest" "rc=$RC manifest-exists=$([ -f "$M" ] && echo yes || echo no)"
@@ -75,7 +75,7 @@ fi
 R="$(fresh_copy nospecs)"
 rm -rf "$R/$SPECS_REL"
 run_guard "$R"
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -i 'manifest' | grep -qi 'skip'; then
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -i 'manifest' | grep -ci 'skip' >/dev/null; then
   pass "manifest check skips with a message when the specs directory is absent"
 else
   fail "manifest check skips with a message when the specs directory is absent" "rc=$RC"
@@ -109,7 +109,7 @@ if [ -n "$REAL_SHASUM" ]; then
   RC=$?
   if ! PATH="$BIN" command -v sha256sum >/dev/null 2>&1 \
      && [ "$RC" -eq 0 ] && grep -q -- '-a 256' "$TMP/shasum.log" 2>/dev/null \
-     && printf '%s' "$OUT" | grep -q 'hash matches manifest'; then
+     && printf '%s' "$OUT" | grep -c 'hash matches manifest' >/dev/null; then
     pass "manifest check falls back to shasum -a 256 when sha256sum is absent"
   else
     fail "manifest check falls back to shasum -a 256 when sha256sum is absent" "rc=$RC"
