@@ -12,8 +12,8 @@ never writes a card file itself. Binds 127.0.0.1 only; the first stdout line is
 Environment: FLEET_BOARD_LOG_DIR (parent of the runtime data, default ~/.fleet-board),
 FLEET_BOARD_CLAUDE (the claude binary the
 import session runs, default `claude`), FLEET_BOARD_CODEX (the codex binary a codex Planner
-chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (when set, the import
-session gets `--plugin-dir <value>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
+chat runs, default `codex`), FLEET_BOARD_PLUGIN_DIR (replaces the plugin
+directory the import session loads, by default the plugin root of these scripts: `--plugin-dir <dir>`), FLEET_BOARD_TEST_IMPORT_ID (tests only: used as
 the import id instead of a generated one), FLEET_BOARD_CREATE (tests only: the script
 that creates the previewed cards, in place of import-plan.sh).
 """
@@ -512,9 +512,11 @@ def start_import(plan_text: str, status: str) -> str:
             "Read(//%s/**)" % real_idir.strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
-        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
-        if plugin_dir:
-            argv += ["--plugin-dir", plugin_dir]
+        # The session loads the plugin this page runs, so the skill sends it to the script path the allow rule above
+        # names: a session that loaded another install (a different version, or the cache while this page runs from a
+        # checkout) was refused its dry run in dontAsk mode. FLEET_BOARD_PLUGIN_DIR overrides it.
+        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR") or os.path.dirname(os.path.dirname(scripts_path))
+        argv += ["--plugin-dir", plugin_dir]
         argv.append(prompt)
         # the exact command line, one argument per line and the prompt shortened, so a permission
         # denial can be traced to the options the session really got
