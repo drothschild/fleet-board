@@ -68,9 +68,12 @@ setup_case() {
     printf 'merge:\n  policy: %s\n' "$1"
     [ -n "${2:-}" ] && printf '%s\n' "$2"
     # these cases are about merging, not the built-in review stages: disable both
-    case "${2:-}" in *'review:'*) ;; *) printf 'review:\n  stages:\n' ;; esac
-    printf '    - name: documentation\n      enabled: false\n'
-    printf '    - name: blast_radius\n      enabled: false\n'
+    # (MR_KEEP_BUILTINS=1 leaves them on, as every new project has them)
+    if [ "${MR_KEEP_BUILTINS:-}" != 1 ]; then
+      case "${2:-}" in *'review:'*) ;; *) printf 'review:\n  stages:\n' ;; esac
+      printf '    - name: documentation\n      enabled: false\n'
+      printf '    - name: blast_radius\n      enabled: false\n'
+    fi
   } > "$REPO/.fleet-board.yml"
   git -C "$REPO" add .fleet-board.yml
   git -C "$REPO" commit -q -m "initial"
@@ -938,6 +941,39 @@ run_merge
 assert_exit "head moved after base-moved failure: exit 1" 1
 assert_eq "head moved after base-moved failure: no retry" "$(cnt "pr merge 34 ")" 1
 unset FAKE_MERGE_FAILS FAKE_MERGE_MOVE_HEAD
+
+echo "built-in review stages on: merge only when evidence, documentation and blast_radius are all clean at the head"
+bi_note() { # <documentation record json or empty> <blast_radius record json or empty>
+  local ev='{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
+  jq -cn --argjson ev "$ev" --arg d "$1" --arg b "$2" '
+    {state:"in_review",branch:"fleet/12-add-subtract",pr:34,round:1,reviewed_stages:[],last_review:$ev,
+     reviews:({evidence:$ev}
+       + (if $d != "" then {documentation:($d|fromjson)} else {} end)
+       + (if $b != "" then {blast_radius:($b|fromjson)} else {} end))}'
+}
+BI_CLEAN_DOC='{"round":1,"stage":"documentation","sha":"abc1234","critical":0,"important":0,"findings":[]}'
+BI_CLEAN_BLAST='{"round":1,"stage":"blast_radius","sha":"abc1234","critical":0,"important":0,"findings":[]}'
+BI_CRIT_DOC='{"round":1,"stage":"documentation","sha":"abc1234","critical":1,"important":0,"findings":[{"severity":"Critical","text":"x"}]}'
+MR_KEEP_BUILTINS=1
+setup_case auto
+card 12 in_review "$(bi_note "$BI_CLEAN_DOC" "$BI_CLEAN_BLAST")"
+pr 34 false "$GREEN"
+finalize
+run_merge
+assert_exit "built-ins on, all three clean at the head: exit 0" 0
+assert_eq "built-ins on, all three clean at the head: gh pr merge 34 --squash ran once" "$(cnt "pr merge 34 --repo acme/toy --squash")" 1
+assert_eq "built-ins on, all three clean at the head: the card moves to done" "$(moved_done)" 1
+setup_case auto
+card 12 in_review "$(bi_note "$BI_CLEAN_DOC" "")"
+pr 34 false "$GREEN"
+finalize
+no_merge "built-ins on, no blast_radius record"
+setup_case auto
+card 12 in_review "$(bi_note "$BI_CRIT_DOC" "$BI_CLEAN_BLAST")"
+pr 34 false "$GREEN"
+finalize
+no_merge "built-ins on, a Critical documentation record"
+unset MR_KEEP_BUILTINS
 
 echo ""
 echo "-----------------------------------"
