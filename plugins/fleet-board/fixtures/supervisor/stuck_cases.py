@@ -109,6 +109,20 @@ class Kinds(StuckCase):
         self.assertTrue(found[0].detail)
         self.assertEqual(self.kinds(live_cards={12}), [], 'a card the running supervisor owns is not stuck')
 
+    def test_an_in_progress_card_the_supervisor_never_started_is_not_stuck(self):
+        # a person moved it here by hand: its note records no branch, worktree, PR or attempt
+        self.b.seed(12, 'in_progress')
+        self.assertEqual(self.kinds(), [], 'a hand-moved card has no session to have lost')
+        self.b.put_note({'stuck': {'kind': 'in_flight', 'detail': 'd', 'at': 't'}})
+        self.assertEqual(self.kinds(), [], 'an old stuck note does not make a never-started card stuck')
+
+    def test_an_in_progress_card_with_any_record_of_a_start_is_still_in_flight(self):
+        for n, record in ((12, {'branch': dc.BRANCH}), (13, {'implementor_attempts': 1}),
+                          (14, {'worktree': str(self.worktree(14))}), (15, {'pr': 34})):
+            self.b.seed(n, 'in_progress')
+            self.b.put_note(record, n)
+        self.assertEqual(self.kinds(), [(12, 'in_flight'), (13, 'in_flight'), (14, 'in_flight'), (15, 'in_flight')])
+
     def test_a_clean_board_finds_nothing(self):
         self.b.seed(12, 'ready')
         self.b.seed(13, 'in_review')
