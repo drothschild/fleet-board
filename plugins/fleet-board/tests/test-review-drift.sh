@@ -369,6 +369,66 @@ assert_eq "agreeing sides are reviewed as before" "$(drift)" reviewed
 echo "== review-drift.sh keeps one sv_resolve"
 assert_eq "no second definition of sv_resolve" "$(grep -c 'def sv_resolve' "$SCRIPT")" 0
 
+echo "== --landing: the bridge commit of a stacked child (card 391)"
+BRIDGE="$SCRIPT_DIR/../scripts/stack-bridge.sh"
+# dl <head> [<parent_head>:<squash>]: the verdict for R..head, with main published first
+dl() {
+  local h; h="$(git rev-parse "$1")"
+  git push -q origin main 2>/dev/null; git fetch -q origin 2>/dev/null
+  if [ -n "${2:-}" ]; then PATH="$BIN:$PATH" bash "$SCRIPT" "$R" "$h" --landing "$2" 2>/dev/null
+  else PATH="$BIN:$PATH" bash "$SCRIPT" "$R" "$h" 2>/dev/null; fi
+}
+# lsetup [later]: main, a parent branch par (PH = its final head), a child kid cut from par
+# (R = its reviewed commit), the squash SQ of par on main, and the bridge B on kid.
+# With "later" par gets a second commit after kid was cut, which kid merges before the bridge.
+lsetup() {
+  setup ""
+  git checkout -q main; git checkout -q -b par
+  printf 'p1\n' > par.txt; git add par.txt; git commit -q -m "parent one"
+  git checkout -q -b kid
+  printf 'kid\n' > kid.txt; git add kid.txt; git commit -q -m "kid work"
+  R="$(git rev-parse HEAD)"
+  if [ "${1:-}" = later ]; then
+    git checkout -q par; printf 'p2\n' > par2.txt; git add par2.txt; git commit -q -m "parent two"
+    git checkout -q kid; git merge -q --no-edit -m "Merge branch 'par' into kid" par
+  fi
+  PH="$(git rev-parse par)"
+  git checkout -q main; git merge -q --squash par >/dev/null 2>&1; git commit -q -m "squash parent"
+  SQ="$(git rev-parse HEAD)"
+  git push -q origin main; git checkout -q kid
+  B="$(bash "$BRIDGE" commit "$REPO" "$PH" "$SQ")"
+}
+
+lsetup
+assert_eq "setup: the bridge commit has the squash as second parent" "$(git rev-parse "$B^2")" "$SQ"
+assert_eq "the bridge commit without --landing is unreviewed" "$(dl kid)" unreviewed
+assert_eq "the bridge commit with the right pair is reviewed" "$(dl kid "$PH:$SQ")" reviewed
+git checkout -q main; git checkout -q -b side; printf 'x\n' > x.txt; git add x.txt; git commit -q -m "side"
+OTHER="$(git rev-parse HEAD)"; git checkout -q kid
+assert_eq "a wrong parent_head (not an ancestor of the first parent) is unreviewed" "$(dl kid "$OTHER:$SQ")" unreviewed
+assert_eq "a malformed pair is unreviewed" "$(dl kid "$PH")" unreviewed
+
+lsetup
+SQ2="$(git commit-tree "$SQ^{tree}" -p "$(git rev-parse "$SQ^")" -m "a squash that never reached main")"
+git checkout -q -b kid2 "$R"
+B2="$(bash "$BRIDGE" commit "$REPO" "$PH" "$SQ2")"
+assert_eq "setup: kid2 is bridged to a squash off main" "$(git rev-parse "$B2^2")" "$SQ2"
+assert_eq "a squash that is not on the default branch is unreviewed" "$(dl kid2 "$PH:$SQ2")" unreviewed
+
+lsetup
+git checkout -q -b kid3 "$B"; printf 'extra\n' > extra.txt; git add extra.txt; git commit -q --amend --no-edit
+assert_eq "a bridge commit whose tree differs by one file is unreviewed" "$(dl kid3 "$PH:$SQ")" unreviewed
+
+lsetup
+git checkout -q main; printf 'zero\n' > zero.txt; git add zero.txt; git commit -q -m "main moves"
+git checkout -q kid; git merge -q --no-edit -m "Merge branch 'main' into kid" main
+assert_eq "without --landing a merge above the bridge is still unreviewed" "$(dl kid)" unreviewed
+assert_eq "--landing: a clean merge of main above the bridge is reviewed" "$(dl kid "$PH:$SQ")" reviewed
+
+lsetup later
+assert_eq "without --landing a merge of the parent branch below the bridge is unreviewed" "$(dl kid)" unreviewed
+assert_eq "--landing: a clean merge of the parent branch below the bridge is reviewed" "$(dl kid "$PH:$SQ")" reviewed
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
