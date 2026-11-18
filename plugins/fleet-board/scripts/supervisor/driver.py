@@ -1280,6 +1280,20 @@ class CardDriver:
                 patch['review_passes'] = passes
                 patch['reviews'][run.stage] = dict(patch['last_review'], **{'pass': number})
                 patch['last_review'] = patch['reviews'][run.stage]
+            # finding_rounds: per reviewer, the rounds in which it reported Critical or Important findings. One
+            # more per card round (last_round keeps a repeat report of the same round from counting twice, as a
+            # required_passes pass does), never fewer; a clean report and an advisory stage leave it alone
+            stage_row = c.row.get('stage') if isinstance(c.row.get('stage'), dict) else {}
+            record = patch['last_review']
+            if (record['critical'] or record['important']) and stage_row.get('advisory') is not True \
+                    and isinstance(run.round, int):
+                counts = dict(note.get('finding_rounds')) if isinstance(note.get('finding_rounds'), dict) else {}
+                mine = counts.get(run.stage or 'evidence')
+                mine = mine if isinstance(mine, dict) else {}
+                if not (isinstance(mine.get('last_round'), int) and mine['last_round'] >= run.round):
+                    counts[run.stage or 'evidence'] = {'count': (mine.get('count') if isinstance(mine.get('count'), int)
+                                                                 else 0) + 1, 'last_round': run.round}
+                    patch['finding_rounds'] = counts
             # A card a person moved out of Blocked still has state blocked in its note; this review is the one
             # the planner asked for, so record the column the card is in, or the planner plans it again
             if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \
