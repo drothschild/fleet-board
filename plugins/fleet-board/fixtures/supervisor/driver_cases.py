@@ -2220,15 +2220,87 @@ def test_follow_up_lines_in_a_checker_report_file_nothing(base):
     assert b.note().get('pending_followups') is None
 
 
-def test_an_unhandled_verdict_is_a_failed_check(base):
-    b = premise_board(base)
-    b.plans(check_plan('checker-built'))
-    started = begin_check(b)
-    finish_all(b, started)
+BUILT_QUESTION = 'Waiting for a person: close as already built?'
+REWRITE_QUESTION = 'Waiting for a person: approve this rewrite?'
+TWO_ITEMS = ('adds two numbers', 'subtracts them')
+
+
+def verdict_run(b, report):
+    b.plans(check_plan(report))
+    finish_all(b, begin_check(b))
+
+
+def test_built_blocks_with_the_evidence_and_never_closes(base):
+    b = premise_board(base, acceptance=TWO_ITEMS)
+    verdict_run(b, 'checker-built')
+    card = b.card()
+    assert card['state'] == 'blocked', card['state']
+    assert ('board-move.sh', '12', 'done') not in b.calls, b.calls
+    assert [c[:3] for c in b.calls if c[0] == 'premise-settle.sh'] == [('premise-settle.sh', 'propose', '12')], b.calls
+    assert card['proposal']['kind'] == 'close' and card['proposal']['head'] == PREMISE_HEAD, card['proposal']
+    assert [e['item'] for e in card['proposal']['evidence']] == [1, 2], card['proposal']
+    posted = [t for t in b.comments() if t.startswith(BUILT_QUESTION)]
+    assert len(posted) == 1, b.comments()
+    for item, command, output in (
+            ('adds two numbers', 'bash plugins/fleet-board/tests/test-premise.sh', 'failed: 0'),
+            ('subtracts them', 'grep -c checker plugins/fleet-board/scripts/parse-report.sh', '4')):
+        assert item in posted[0] and command in posted[0] and output in posted[0], posted[0]
     note = b.note()
-    assert note['action_failures'] == 1, note
-    assert note['last_action_error'] == 'premise check failed: verdict built is not handled yet' + FAILED_SUFFIX, note
+    assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
     assert not stamps(b), b.calls
+
+
+def test_built_missing_evidence_for_an_item_is_a_plain_question(base):
+    b = premise_board(base, acceptance=('adds two numbers', 'subtracts them', 'multiplies them'))
+    verdict_run(b, 'checker-built')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    assert [t for t in b.comments() if t.startswith(QUESTION)], b.comments()
+    assert not [t for t in b.comments() if t.startswith(BUILT_QUESTION)], b.comments()
+    assert ('board-move.sh', '12', 'done') not in b.calls and not stamps(b), b.calls
+
+
+def test_built_evidence_for_an_item_number_the_card_lacks_is_a_plain_question(base):
+    b = premise_board(base, acceptance=('adds two numbers',))
+    verdict_run(b, 'checker-built')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    assert [t for t in b.comments() if t.startswith(QUESTION)], b.comments()
+    assert not [t for t in b.comments() if t.startswith(BUILT_QUESTION)], b.comments()
+
+
+def test_stale_with_a_proposal_blocks_with_the_rewrite(base):
+    b = premise_board(base, acceptance=TWO_ITEMS, body='## Scope\n- `src/calc.js`\n')
+    verdict_run(b, 'checker-stale')
+    card = b.card()
+    assert card['state'] == 'blocked', card['state']
+    assert card['proposal']['kind'] == 'rewrite' and card['proposal']['head'] == PREMISE_HEAD, card['proposal']
+    assert card['proposal']['acceptance'] == ['stamp writes the head', 'stamp refuses a missing card'], card['proposal']
+    posted = [t for t in b.comments() if t.startswith(REWRITE_QUESTION)]
+    assert len(posted) == 1, b.comments()
+    text = posted[0]
+    assert 'plugins/fleet-board/scripts/premise.sh now owns the stamp.' in text, text
+    for part in ('src/calc.js', 'adds two numbers', 'Change `plugins/fleet-board/scripts/premise.sh` only.',
+                 'stamp writes the head'):
+        assert part in text, (part, text)
+    assert text.index('now owns the stamp') < text.index('src/calc.js') < text.index('Change `plugins/'), text
+    assert ('board-move.sh', '12', 'ready') not in b.calls and not stamps(b), b.calls
+
+
+def test_stale_without_a_proposal_blocks_with_the_summary(base):
+    b = premise_board(base)
+    verdict_run(b, 'checker-stale-no-proposal')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    posted = [t for t in b.comments() if t.startswith(QUESTION)]
+    assert len(posted) == 1 and 'The script moved.' in posted[0], b.comments()
+    assert not stamps(b), b.calls
+
+
+def test_no_verdict_stamps_except_go(base):
+    for report in ('checker-built', 'checker-stale', 'checker-stale-no-proposal'):
+        with tempfile.TemporaryDirectory() as sub:
+            b = premise_board(Path(sub), acceptance=TWO_ITEMS, body='## Scope\n- `src/calc.js`\n')
+            verdict_run(b, report)
+            assert not stamps(b), (report, b.calls)
+            assert b.card().get('premise') is None, (report, b.card())
 
 
 QUESTION = 'Waiting for a person: the premise check could not settle this card.'
