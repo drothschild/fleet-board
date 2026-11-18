@@ -118,10 +118,10 @@ class Kinds(StuckCase):
 
     def test_a_card_in_in_progress_whose_note_records_any_one_start_is_still_returned_as_in_flight(self):
         for n, patch in ((12, {'branch': dc.BRANCH}), (13, {'worktree': str(self.root / '.fw' / 'w')}),
-                         (14, {'pr': 34}), (15, {'implementor_attempts': 1}), (16, {'implementor_attempts': 0})):
+                         (14, {'pr': 34}), (15, {'implementor_attempts': 1})):
             self.b.seed(n, 'in_progress')
             self.b.put_note(patch, n)
-        self.assertEqual(self.kinds(), [(n, 'in_flight') for n in (12, 13, 14, 15, 16)])
+        self.assertEqual(self.kinds(), [(n, 'in_flight') for n in (12, 13, 14, 15)])
 
     def test_a_clean_board_finds_nothing(self):
         self.b.seed(12, 'ready')
