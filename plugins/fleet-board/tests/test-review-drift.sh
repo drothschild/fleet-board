@@ -369,6 +369,36 @@ assert_eq "agreeing sides are reviewed as before" "$(drift)" reviewed
 echo "== review-drift.sh keeps one sv_resolve"
 assert_eq "no second definition of sv_resolve" "$(grep -c 'def sv_resolve' "$SCRIPT")" 0
 
+echo "== --also-base: a merge of the parent branch of a stacked card"
+# parent_merge <clean|conflict>: a parent branch fleet/11-parent cut from main, published to origin, and a merge of it into feat
+parent_merge() {
+  setup "$VF"
+  git checkout -q -b fleet/11-parent main
+  if [ "$1" = conflict ]; then printf 'one\ntwo\nthree\nPARENT\n' > src.txt; else printf 'parent\n' > parent.txt; git add parent.txt; fi
+  git commit -q -am "parent work"
+  git push -q origin fleet/11-parent 2>/dev/null
+  git checkout -q feat
+  if [ "$1" = conflict ]; then
+    git merge -q --no-edit fleet/11-parent >/dev/null 2>&1
+    printf 'one\ntwo\nthree\nfour PARENT\n' > src.txt; git add -A
+    git commit -q -m "Merge origin/fleet/11-parent into feat"
+  else
+    git merge -q --no-edit -m "Merge origin/fleet/11-parent into feat" fleet/11-parent >/dev/null 2>&1
+  fi
+}
+# drift_also <ref>: the verdict for R..HEAD with --also-base <ref>
+drift_also() {
+  local h; h="$(git rev-parse HEAD)"
+  git push -q origin main 2>/dev/null; git fetch -q origin 2>/dev/null
+  PATH="$BIN:$PATH" bash "$SCRIPT" "$R" "$h" --also-base "$1" 2>/dev/null
+}
+parent_merge clean
+assert_eq "also-base: a clean merge of the parent branch is unreviewed without the option" "$(drift)" unreviewed
+assert_eq "also-base: a clean merge of the parent branch is reviewed with the option" "$(drift_also origin/fleet/11-parent)" reviewed
+assert_eq "also-base: a ref that cannot be resolved is unreviewed" "$(drift_also origin/fleet/99-nosuch)" unreviewed
+parent_merge conflict
+assert_eq "also-base: a merge of the parent branch that needed conflict resolution is unreviewed" "$(drift_also origin/fleet/11-parent)" unreviewed
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ]
