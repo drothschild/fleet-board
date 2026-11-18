@@ -80,7 +80,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `merge.ignore_checks` does not cover plans `rerun_checks` (no `checks_rerun` for the PR head: the driver runs
   `gh run rerun <id> --failed` per red check and notes `checks_rerun {sha, checks, at}`) or, with `checks_rerun.sha`
   at the head, `checks_failed` (the driver records the red checks as one Important finding in `last_review`, so the
-  planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`). Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
+  planner plans `fix`). Both rows, in the plan and in `--candidates` (from which the supervisor admits), carry `red_checks` (each red check's `name` and `detailsUrl`); a `review_stage` row there also carries its `pass`. Neither starts an agent. Precedence: failed lookup, invalid note, file_pending,
   the `action_failures` rules, then the table. `action_failures` bound: at `max_rounds`
   consecutive no-progress actions the card is blocked; at `2*max_rounds` (or `max_rounds`
   for a blocked card awaiting unblock) it is skipped for a person, who clears it with
@@ -186,7 +186,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   and the gate pass `--also-base origin/<stack.base>` for a card whose note has `stack`.
   `worktree.sh review <n> <pr> [<stage>] [<base-branch>]`: a `fleet/<n>-<slug>` argument makes `base` the
   merge-base of origin's copy of that branch and the head (exit 1 when origin lacks it); the driver passes
-  `stack.base` for a card with `stack`. `update-branch.sh` retargets a stacked card's PR to `stack.base` (`gh pr edit --base`) when the PR targets another branch and origin has `stack.base`, so the fixer, which merges the PR's base, merges the branch the update merges; its conflict error names the ref that conflicted. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
+  `stack.base` for a card with `stack`. `update-branch.sh` retargets a stacked card's PR to `stack.base` (`gh pr edit --base`) when the PR targets another branch and origin has `stack.base` (never under `--lane-bump`), and then merges that as its base, so the fixer, which merges the PR's base, merges the branch the update merges; its conflict error names the ref that conflicted. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
   `test-worktree.sh`, `test-gate.sh`, `driver_cases.py`.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
