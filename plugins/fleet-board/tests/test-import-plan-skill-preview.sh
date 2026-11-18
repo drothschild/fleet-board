@@ -26,11 +26,20 @@ step2="$(awk '/^## Step 2/{s=1;next} /^## /{s=0} s' "$SKILL")"
 atleast1 "step 3 says a preview session may run only the dry run and the cp" \
   "$(printf '%s\n' "$step3" | grep -c -i 'only .*dry run.*cp\|only the commands')"
 atleast1 "step 3 says a denied other command is not a reason to skip the dry run" \
-  "$(printf '%s\n' "$step3" | grep -c -i 'denied')"
+  "$(printf '%s\n' "$step3" | grep -c 'run the dry run anyway')"
+atleast1 "step 3 says what to do when the dry run itself is denied" \
+  "$(printf '%s\n' "$step3" | grep -c 'dry run itself is denied')"
+atleast1 "step 3 tells a session that is denied the dry run to report that and stop" \
+  "$(printf '%s\n' "$step3" | grep -c 'report that and stop')"
 atleast1 "step 2 sends device checks to a ## Human QA section in why" \
   "$(printf '%s\n' "$step2" | grep -c '## Human QA')"
 atleast1 "step 2 keeps device checks out of acceptance" \
   "$(printf '%s\n' "$step2" | grep -c -i 'never in .acceptance\|not in .acceptance\|out of .acceptance')"
+
+atleast1 "step 2 requires the needs-human-qa label with a Human QA section" \
+  "$(printf '%s\n' "$step2" | grep -c 'needs-human-qa')"
+atleast1 "step 2 keeps file paths out of Human QA bullets" \
+  "$(printf '%s\n' "$step2" | grep -c -i 'no file paths')"
 
 echo "passed: $PASS failed: $FAIL"
 [ "$FAIL" -eq 0 ]
