@@ -17,6 +17,9 @@
   --amber: #a8650c;
   --amber-soft: #fbf0dc;
   --amber-line: #e8c98f;
+  --stack: #6d3fc0;
+  --stack-soft: #efe8fb;
+  --stack-line: #cdb9ee;
   --grey-soft: #eceef1;
   --warn: #b4442d;
   --toast-bg: #1c1f24;
@@ -46,6 +49,9 @@
     --amber: #e3a54a;
     --amber-soft: #3a2d17;
     --amber-line: #6e5426;
+    --stack: #b79cf2;
+    --stack-soft: #2b2340;
+    --stack-line: #55447f;
     --grey-soft: #2a2e33;
     --warn: #f08a72;
     --toast-bg: #e7e9ec;
@@ -261,6 +267,11 @@ button, select, input, textarea { font: inherit; color: inherit; }
 .card.blocked { border-color: var(--amber-line); box-shadow: inset 3px 0 0 var(--amber); }
 .card.active.blocked { border-color: var(--accent); }
 .card-meta.blocked-by { color: var(--amber); font-weight: 500; }
+/* a card started early on its parent: a violet edge and the parent number */
+.card.stacked { border-color: var(--stack-line); box-shadow: inset 3px 0 0 var(--stack); }
+.card.active.stacked { border-color: var(--accent); }
+.card-meta.stacked-on { color: var(--stack); font-weight: 500; }
+.card-meta.stack-attention { color: var(--amber); font-weight: 500; }
 
 .labels { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px; }
 .label {
@@ -490,6 +501,9 @@ button, select, input, textarea { font: inherit; color: inherit; }
 /* blocked by and the pull request, side by side */
 .dr-pair { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 28px; }
 .dr-field { min-width: 0; }
+.dr-col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.dr-stack-link { color: var(--stack); font: 600 11.5px/1.5 var(--mono); }
+.dr-stack-attn { margin: 6px 0 0; font-size: 12px; color: var(--amber); font-weight: 500; }
 .dr-blk .label { gap: 5px; }
 .blk-chip.open { border-color: var(--amber-line); background: var(--amber-soft); color: var(--amber); }
 .blk-chip.done { color: var(--muted); }

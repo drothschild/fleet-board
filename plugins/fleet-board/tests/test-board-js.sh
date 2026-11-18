@@ -19,6 +19,8 @@ check "board.js has no regex lookbehind" bash -c "! grep -q '(?<' '$JS'"
 check "node --check passes on board.js" node --check "$JS"
 check "board.css has no card-now rule" bash -c "! grep -q 'card-now' '$CSS'"
 
+check "index.html has a labelled Stacked on drawer field with a parent link" bash -c "grep -q 'id=\"dr-stack-h\" class=\"dr-h\">Stacked on<' '$DIR/../scripts/board-web/static/index.html' && grep -q 'id=\"dr-stack-link\"' '$DIR/../scripts/board-web/static/index.html'"
+
 node "$DIR/board-js-harness.js" "$JS" || FAIL=$((FAIL + 1))
 
 # Column header reviewer line: a second node script with its own small DOM shim.
@@ -118,7 +120,8 @@ async function drawerText(card) {
   await h.ctx.openDrawer(card.number);
   await h.flush();
   const el = h.$("dr-stack");
-  return el && !el.hidden ? allText(el) : "";
+  // the harness's getElementById nodes are detached, so read the field's parts by id
+  return el && !el.hidden ? ["Stacked on", h.$("dr-stack-link"), h.$("dr-stack-attn")].map(n => typeof n === "string" ? n : (n.hidden ? "" : allText(n))).join(" ") : "";
 }
 (async () => {
   await test("In the drawer, the stacked line is a labelled Stacked on field with the parent as a link", async () => {
