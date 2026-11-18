@@ -44,6 +44,10 @@ Group plan tasks into PR-sized cards (one reviewable PR each). For each card wri
   across repos. The script infers each card's blockers (`blocked_by`) from them. Use `depends_on` (card keys or
   `owner/repo#N`) only for a dependency no interface shows.
 
+A check no agent can run (on a device, on an iPhone, Human QA, simulator, by hand) stays out of `acceptance`:
+card lint refuses it (`manual-check`). Put those checks in `why`, after the problem, under a
+`## Human QA` heading with one `- ` bullet each (the card has no separate Human QA field).
+
 Write `{"cards": [...]}` to a cards file. Without `--preview`, that is a file in the system temp
 directory (create it with `mktemp`). With `--preview <file>`, write it with the Write tool to
 `cards.draft.json` in the directory of `<file>`, and use that file as the cards file below.
@@ -56,6 +60,11 @@ bash <scripts>/import-plan.sh <cards file> --dry-run
 
 Show the user the table (title, repo, depends on, labels). Fix the cards file and rerun
 if a dependency or title is wrong. Nothing is created in this step.
+
+A `--preview` session runs with only the commands in this skill pre-approved: the dry run above
+and the final `cp`. Run them exactly as written. Any other command (`git`, `ls`, `grep`) may be
+denied; a denied command is not a reason to skip the dry run, so use Read, Grep and Glob instead and
+run the dry run anyway. Never report the shell as blocked without having run the dry run.
 
 With `--preview <file>`, dry-run `cards.draft.json` in the directory of `<file>`, then copy it to `<file>` after a clean dry run, print the table,
 and stop: do not run Step 4, do not ask.
