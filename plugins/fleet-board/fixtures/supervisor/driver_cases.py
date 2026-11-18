@@ -785,6 +785,29 @@ def test_continue_implementor_counts_the_attempt_first(base):
     assert run_role(b, started).progressed is True
 
 
+def test_review_of_a_stacked_card_passes_stack_base_to_worktree_review(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree,
+                'stack': {'parent': 7, 'base': 'fleet/7-parent-card', 'start': START_SHA, 'attention': None}})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    started = begin(b, 'review', state='in_review', round=1)
+    assert started.kind == 'session' and started.action.role == 'reviewer'
+    assert ('worktree.sh', 'review', '12', '34', 'fleet/7-parent-card') in b.calls, b.calls
+    assert ('worktree.sh', 'review', '12', '34') not in b.calls, b.calls
+
+
+def test_review_of_an_unstacked_card_passes_no_base_to_worktree_review(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'reviewer-findings'})
+    assert begin(b, 'review', state='in_review', round=1).kind == 'session'
+    assert ('worktree.sh', 'review', '12', '34') in b.calls, b.calls
+
+
 def test_reviewer_findings_record_last_review(base):
     b = board_for(base, 'in_review')
     b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'branch': BRANCH, 'worktree': b.worktree})

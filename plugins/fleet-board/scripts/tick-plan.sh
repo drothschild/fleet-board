@@ -410,7 +410,7 @@ landing_args() {
 # Prints null when there is no reviewed sha, the head has not moved, or a
 # lookup fails.
 drift_lookup() {
-  local from head cmp chain sha files f merge=false tedit=false unrev=true verdict
+  local from head cmp chain sha files f merge=false tedit=false unrev=true verdict also sbase
   from="$(jq -r '.last_review.sha // empty | strings' <<<"$1" 2>/dev/null)" || return 1
   head="$(jq -r '.headRefOid // empty | strings' <<<"$2" 2>/dev/null)" || return 1
   [ -n "$from" ] && [ -n "$head" ] || { echo null; return 0; }
@@ -440,11 +440,65 @@ drift_lookup() {
   done <<<"$chain"
   # Reviewed unless a commit since is something other than a clean merge of main
   # (review-drift.sh); a failed check reads as unreviewed
+  also=()
+  sbase="$(stack_base_of "$1")" && [ -n "$sbase" ] && also=(--also-base "origin/$sbase")
   # shellcheck disable=SC2046
-  verdict="$(bash "$FLEET_SCRIPTS/review-drift.sh" "$from" "$head" $(landing_args "$1") 2>/dev/null)" || verdict=unreviewed
+  verdict="$(bash "$FLEET_SCRIPTS/review-drift.sh" "$from" "$head" $(landing_args "$1") ${also[@]+"${also[@]}"} 2>/dev/null)" || verdict=unreviewed
   [ "$verdict" = reviewed ] && unrev=false
   jq -cn --argjson m "$merge" --argjson t "$tedit" --argjson u "$unrev" --arg from "$from" --arg head "$head" \
     '{merge: $m, test_edit: $t, unreviewed: $u, from: $from, head: $head}'
+}
+
+# stack_base_of <note-json>: prints the branch of the note's stack, when it is a valid card branch
+stack_base_of() {
+  jq -r 'if (.stack | type) == "object" and (.stack.base | type) == "string"
+            and (.stack.base | test("\\Afleet/[0-9]+-[a-z0-9-]{1,40}\\z")) then .stack.base else "" end' <<<"$1" 2>/dev/null
+}
+
+# stack_fetch <base>: refreshes origin's copy of a stack base, at most once per 60 s per branch
+# (the stamp lives beside the plan's version-fetch stamp); a failed fetch leaves the local ref in use
+stack_fetch() {
+  local stamp now last
+  stamp="$(fb_git_common_dir .)/fleet-board-stack-fetch-$(printf '%s' "$1" | tr '/' '_')"
+  now="$(date +%s)"; last="$(cat "$stamp" 2>/dev/null)" || last=0
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  [ $((now - last)) -ge 60 ] || return 0
+  printf '%s\n' "$now" > "$stamp" 2>/dev/null || true
+  git fetch -q origin "$1" >/dev/null 2>&1 || true
+}
+
+# stack_state <note-json> <pr> <pr-info-json>: for a card whose note has stack, prints {closed, moved}.
+# closed: the parent card is wont_do, or its PR is CLOSED. moved: origin's copy of the parent branch
+# exists and its head is not an ancestor of the PR head. Fails when a lookup fails (the card is then
+# skipped as a failed lookup, never read as safe).
+stack_state() {
+  local parent base pstate pnote ppr pout closed=false moved=false head
+  parent="$(jq -r 'if (.stack | type) == "object" and (.stack.parent | type) == "number" then (.stack.parent | tostring) else "" end' <<<"$1" 2>/dev/null)" || return 1
+  base="$(stack_base_of "$1")" || return 1
+  [ -n "$parent" ] && [ -n "$base" ] || return 1
+  fb_valid_number "$parent" || return 1
+  pstate="$(bash "$FLEET_SCRIPTS/board-read.sh" "$parent" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" || return 1
+  if [ "$pstate" = wont_do ]; then
+    closed=true
+  else
+    pnote="$(bash "$FLEET_SCRIPTS/note.sh" get "$parent" 2>/dev/null)" || return 1
+    ppr="$(jq -r 'if (.pr | type) == "number" and .pr == (.pr | floor) and .pr > 0 then (.pr | tostring) else "" end' <<<"$pnote" 2>/dev/null)" || return 1
+    if [ -n "$ppr" ]; then
+      pout="$(gh pr view "$ppr" --repo "$FLEET_REPO" --json state 2>/dev/null)" || return 1
+      [ "$(jq -r '.state // empty' <<<"$pout" 2>/dev/null)" = CLOSED ] && closed=true
+    fi
+  fi
+  head="$(jq -r 'if .state == "OPEN" then (.headRefOid // "" | strings) else "" end' <<<"$3" 2>/dev/null)" || head=""
+  case "$head" in *[!0-9a-f]*) head="" ;; esac
+  if [ "$closed" = false ] && [ -n "$head" ]; then
+    stack_fetch "$base"
+    if git rev-parse -q --verify "refs/remotes/origin/$base^{commit}" >/dev/null 2>&1; then
+      git cat-file -e "$head^{commit}" 2>/dev/null || git fetch -q origin "refs/pull/$2/head" >/dev/null 2>&1 || true
+      if git cat-file -e "$head^{commit}" 2>/dev/null \
+         && ! git merge-base --is-ancestor "refs/remotes/origin/$base" "$head" 2>/dev/null; then moved=true; fi
+    fi
+  fi
+  jq -cn --argjson c "$closed" --argjson m "$moved" '{closed: $c, moved: $m}'
 }
 
 # stack_lookup <deps_unmet-json>: for a Ready card with exactly one unmet dependency, prints
@@ -489,7 +543,7 @@ card_input() {
   local failed="" read="" note='{}' has_acc=false marker=false pr=null info=null invalid="" outside="" mergeable=null
   local blocking_merged=null nhq=null body branch bpr out cmd found labels card_labels='[]' state_revision=null
   local deps_unmet='[]' deps_warn='[]' refs checked has_deps accepted_mine=null me
-  local drift=null scope='[]' stack=null premise_moved=null land=false lparent lread
+  local drift=null scope='[]' stack=null premise_moved=null stack_st=null land=false lparent lread
   local lint='[]' lint_gate=false lint_marker=null lint_commented=false lint_out lint_rc digest
   local stage=null next_stage=null nxt done_stages review_col=false matched next_labels
   local have_matched=false parallel='[]' stage_findings='[]'
@@ -588,6 +642,11 @@ card_input() {
       mergeable="$(gh pr view "$pr" --repo "$FLEET_REPO" --json mergeable 2>/dev/null \
         | jq -c 'if (.mergeable | type) == "string" then .mergeable else null end' 2>/dev/null)" || mergeable=null
       [ -n "$mergeable" ] || mergeable=null
+    fi
+    # A card whose note has stack: is its parent closed, has the parent branch moved past the PR head
+    if [ -z "$failed" ] && [ "$(jq -r '(.stack | type) == "object"' <<<"$note")" = true ]; then
+      stack_st="$(stack_state "$note" "$pr" "$info")" || { stack_st=null; failed="stack lookup for the parent of #$n"; }
+      [ -n "$stack_st" ] || stack_st=null
     fi
     # Parallel review: an in_review card's routed stages (matched files plus the stage
     # labels the card carries, in config order) review the head together with the
@@ -742,8 +801,9 @@ card_input() {
       if [ -n "$head_oid" ]; then
         for rsha in $(jq -r '[(.reviews | if type == "object" then .[] else empty end), .last_review | objects | .sha // empty | strings] | unique | .[]' <<<"$note" 2>/dev/null); do
           case "$head_oid" in "$rsha"*) continue ;; esac
+          also=(); sbase="$(stack_base_of "$note")" && [ -n "$sbase" ] && also=(--also-base "origin/$sbase")
           # shellcheck disable=SC2046
-          if [ "$(bash "$FLEET_SCRIPTS/review-drift.sh" "$rsha" "$head_oid" $(landing_args "$note") 2>/dev/null)" = reviewed ]; then
+          if [ "$(bash "$FLEET_SCRIPTS/review-drift.sh" "$rsha" "$head_oid" $(landing_args "$note") ${also[@]+"${also[@]}"} 2>/dev/null)" = reviewed ]; then
             covered="$(jq -c --arg s "$rsha" '. + [$s]' <<<"$covered")"
           fi
         done
@@ -921,7 +981,7 @@ card_input() {
   jq -cn --arg st "$st" --argjson n "$n" --argjson title "$title" --argjson card_labels "$card_labels" --argjson state_revision "$state_revision" --arg failed "$failed" --arg invalid "$invalid" \
     --arg outside "$outside" --argjson deps_unmet "$deps_unmet" --argjson deps_warn "$deps_warn" \
     --argjson has_acc "$has_acc" --argjson lint "$lint" --argjson lint_gate "$lint_gate" --argjson lint_commented "$lint_commented" --argjson lint_marker "$lint_marker" --argjson marker "$marker" --argjson note "$note" \
-    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson land "$land" --argjson premise_moved "$premise_moved" \
+    --argjson pr "$pr" --argjson info "$info" --argjson mergeable "$mergeable" --argjson bm "$blocking_merged" --argjson amine "$accepted_mine" --argjson nhq "$nhq" --argjson drift "$drift" --argjson scope "$scope" --arg repo "${c_repo:-}" --argjson stack "$stack" --argjson stack_state "$stack_st" --argjson land "$land" --argjson premise_moved "$premise_moved" \
     --argjson stage "$stage" --argjson next_stage "$next_stage" --argjson parallel "$parallel" --argjson stage_findings "$stage_findings" \
     '{number: $n, title: $title, state: $st, labels: $card_labels, state_revision:$state_revision,
       lookup_failed: (if $failed == "" then null else $failed end),
@@ -931,7 +991,7 @@ card_input() {
       has_acceptance: $has_acc, lint: $lint, lint_gate: $lint_gate, lint_marker: $lint_marker,
       lint_commented: $lint_commented,
       skip_marker: $marker, note: $note, pr: $pr,
-      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, land: $land, premise_moved: $premise_moved,
+      pr_info: $info, mergeable: $mergeable, accepted_mine: $amine, blocking_merged: $bm, needs_human_qa: $nhq, drift: $drift, scope_paths: $scope, repo: (if $repo == "" then null else $repo end), stack: $stack, stack_state: $stack_state, land: $land, premise_moved: $premise_moved,
       stage: $stage, next_stage: $next_stage, parallel_stages: $parallel, stage_findings: $stage_findings}'
 }
 
@@ -1176,6 +1236,14 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
       | ($n.last_action_error // "no error recorded") as $err
       | if $c.lookup_failed != null then act("skip"; "lookup failed: \($c.lookup_failed)")
         elif $c.invalid_note != null then act("skip"; "invalid manager note: \($c.invalid_note)")
+        # A stacked card (note.stack) whose parent was closed without merging, or whose landing needs
+        # attention, waits for a person, before every other row
+        elif ($c.state == "in_progress" or is_review($c) or is_merging($c)) and ($n.stack | type) == "object"
+             and ($c.stack_state.closed // false) == true
+          then act("skip"; "stacked on #\($n.stack.parent), which was closed without merging; a person decides")
+        elif ($c.state == "in_progress" or is_review($c) or is_merging($c)) and ($n.stack | type) == "object"
+             and ($n.stack.attention // null) != null
+          then act("skip"; "landing needs attention: \($n.stack.attention); a person decides")
         # A role session tripped the role guard: a person clears note.role_guard first
         elif ($n.role_guard.status // null) == "attention"
           then act("skip"; "role guard needs attention (\($n.role_guard.reason // "no reason recorded")); a person clears it")
@@ -1217,6 +1285,10 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
              and ($c.pr_info.state // null) == "OPEN" and $c.mergeable == "CONFLICTING"
           then act("update_branch"; "PR #\($c.pr) has merge conflicts with its base branch")
+        # A stacked card with a PR head that does not contain its parent branch head: merge the parent branch in
+        elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
+             and ($c.pr_info.state // null) == "OPEN" and ($n.stack | type) == "object" and ($c.stack_state.moved // false) == true
+          then act("update_branch"; "parent branch \($n.stack.base) moved")
         elif $c.state == "in_progress" then
           if $c.pr != null then act("start_review"; "PR #\($c.pr) exists")
           elif $tries >= $max then act("block"; "implementor produced no PR after \($tries) attempts")
@@ -1240,6 +1312,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
             else act("after_merge"; "PR #\($c.pr) merged and main verified; the merger runs the after-merge steps") end
           elif $c.pr_info.state == "CLOSED" then act("block"; "PR #\($c.pr) closed without a merge")
           elif $c.pr_info.state != "OPEN" then act("skip"; "PR #\($c.pr) is \($c.pr_info.state | ascii_downcase) without a merge")
+          # A stacked child merges after its parent does
+          elif ($n.stack | type) == "object" then act("skip"; "waits for #\($n.stack.parent) to merge")
           elif $n.merge_operation != null then act("skip"; "merge in flight or refused; supervisor decides")
           # A keyed refusal leaves pending_merge at the same head: the merger session decides
           # (and clears merge_refusal), the planner must not re-plan the same refused merge every cycle
@@ -1307,6 +1381,8 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
           elif $c.next_stage != null and $c.state == "in_review"
             then act("review_stage"; "routed stage \($c.next_stage) not reviewed yet at this head")
           elif $c.next_stage != null then act("advance_stage"; "review clean; next stage \($c.next_stage)")
+          # Clean, current, no stage left: a stacked child waits for its parent to merge
+          elif ($n.stack | type) == "object" then act("wait"; "waits for #\($n.stack.parent) to merge")
           elif $c.needs_human_qa == true then act("to_human_qa"; "no Critical/Important findings; needs human QA")
           elif $c.needs_human_qa != false then act("skip"; "human-QA need unknown")
           elif $c.pr_info.isDraft then act("mark_ready"; "no Critical/Important findings; PR is a draft")
