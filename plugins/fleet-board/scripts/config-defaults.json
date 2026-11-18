@@ -19,5 +19,5 @@
   "followups": { "status": "ready" },
   "headless": { "permission_mode": "auto" },
   "stacking": { "enabled": false },
-  "premise_check": { "enabled": false }
+  "premise_check": { "enabled": true }
 }

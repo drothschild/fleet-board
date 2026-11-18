@@ -31,7 +31,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   Card JSON keys: `number`, `title`, `body` (prose only), `state` (canonical, else read as
   null with a warning), `labels`, `acceptance` (array of strings), `blocked_by` (array of
   card numbers on this board), `pr_url`, `pr_url_source` (`note`, `person` or null),
-  `created_at`, `updated_at`, `next_comment_id`, `comments`, `premise` (null, or `{sha, at, by}` stamped by create, edit of acceptance or Scope, move into ready, or `premise.sh stamp`; `FLEET_BOARD_ACTOR=supervisor` stops edit and move stamping). Every write goes through
+  `created_at`, `updated_at`, `next_comment_id`, `comments`, `proposal` (null, or `{kind: rewrite|close, head, at, ...}` set by `premise-settle.sh propose`), `premise` (null, or `{sha, at, by}` stamped by create, edit of acceptance or Scope, move into ready, or `premise.sh stamp`; `FLEET_BOARD_ACTOR=supervisor` stops edit and move stamping). Every write goes through
   `fl_write_card` under `fb_lock`. `fl_split_body` moves `## Acceptance` and `## Depends on`
   sections out of a body into the fields (first real heading wins, not inside a fence);
   `read` returns the stored prose and the fields side by side, never a rendered section.
@@ -108,7 +108,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   a malformed pair counts as none. `update-branch.sh` keeps `last_review` as it is.
 - Every script the supervisor runs (`scripts.run_argv`, `spawn_argv`) sees `FLEET_BOARD_ACTOR=supervisor`; it is
   never set in `os.environ`, which every role session copies. `board-list.sh` rows carry `state` and `pr_url`.
-- **Premise check** (`premise_check.enabled`, default false; `models.checker`, default sonnet).
+- **Premise check** (`premise_check.enabled`, default true; `models.checker`, default sonnet).
   With it on, a Ready card that would plan a non-stacked `start` (acceptance, lint clean, no unmet
   dependency) asks `premise.sh moved <n>` and plans `check_premise` instead when it returns
   `moved` true, with its reason (`ground moved: <path>`, `no premise stamp`, `premise stamp commit is
@@ -120,7 +120,7 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `scripts/supervisor/defaults/premise-check-prompt.md`. Its final reply is checked with `parse-report.sh --role
   checker --mode check`; the driver posts an accepted report and `_settle_premise` acts on it. `go` stamps
   `premise.sh stamp <n> --by check --sha <head worktree.sh printed>` and records note `premise_check`
-  `{head, verdict, at}`. `needs` (`_premise_needs`) reads the named card with `board-read.sh`: when it is in flight (`ready`, `in_progress`, `in_review`, any `review_*`, `merging`, `human_qa`), not already in `blocked_by`, and neither it nor a card it depends on (any depth) depends on this card, the driver runs `premise.sh add-dep <n> <m>`, comments `Premise check: needs #<m>, which is <state>. Added as a dependency.` and leaves the card Ready with no stamp. Otherwise (`backlog`, `done`, `wont_do`, missing, the card itself, already listed, or a cycle) `_premise_question` moves the card to Blocked, writes the note `blocked_from: ready` with `action_failures` 0, and comments `Waiting for a person: the premise check could not settle this card.` plus the reason. Any other verdict is, for now, a failed check. An empty reply, a twice-rejected report
+  `{head, verdict, at}`. `needs` (`_premise_needs`) reads the named card with `board-read.sh`: when it is in flight (`ready`, `in_progress`, `in_review`, any `review_*`, `merging`, `human_qa`), not already in `blocked_by`, and neither it nor a card it depends on (any depth) depends on this card, the driver runs `premise.sh add-dep <n> <m>`, comments `Premise check: needs #<m>, which is <state>. Added as a dependency.` and leaves the card Ready with no stamp. Otherwise (`backlog`, `done`, `wont_do`, missing, the card itself, already listed, or a cycle) `_premise_question` moves the card to Blocked, writes the note `blocked_from: ready` with `action_failures` 0, and comments `Waiting for a person: the premise check could not settle this card.` plus the reason. `built` and `stale` reach the owner as one proposal: the driver stores it with `premise-settle.sh propose <n> <file>` (the only call it makes to that script), moves the card to Blocked (`blocked_from: ready`), and comments `Waiting for a person: close as already built?` (a `close` proposal, only when the evidence covers every acceptance item and names none the card lacks, listing each item with its command and output) or `Waiting for a person: approve this rewrite?` (a `rewrite` proposal from a `stale` verdict that has one: the summary, then the current and proposed Scope and acceptance). A `built` verdict with missing or unknown items, and a `stale` one with no proposal, ask `Waiting for a person: the premise check could not settle this card.` with the reason and store nothing. Only `go` writes a stamp. The fleet never moves a card to done or rewrites its Scope or acceptance on a verdict: `premise-settle.sh approve <n>` (Blocked, `rewrite` proposal whose Scope names a path: replaces the body's `## Scope` and the acceptance, keeps `blocked_by`, clears `proposal`, moves to ready, stamps `by approve` with the proposal's `head`), `confirm <n>` (Blocked, `close` proposal: label `fleet:closed-as-built`, done) and `reject <n>` are run by a person (gate rule G4); `confirm` and `reject` append `{card, decision, at}` to `<board.dir>/premise-decisions.jsonl`, and a person's move out of Blocked (not `FLEET_BOARD_ACTOR=supervisor`) clears the proposal as a `reject`. An empty reply, a twice-rejected report
   and any other failure count one `action_failures` with the error `premise check failed: <first line>; move the
   card to Ready to start it without a check`. A digest of the card's state, body, acceptance and `blocked_by`
   is kept at launch and compared at the end: a change drops the verdict (one `premise` event, no stamp, no move,
@@ -316,7 +316,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   the default branch (`origin/HEAD` without the prefix, else main; `merge-reviewed.sh`
   refuses the same with `PR #<pr> targets <base>, not <default>; not merged`; an unreadable
   base is a refusal in both). G3: moving to ready needs a non-empty
-  `acceptance` field on the card. Fails closed on anything it cannot resolve. It is a text check:
+  `acceptance` field on the card. G4: `premise-settle.sh approve`, `confirm` and `reject` are blocked
+  (`propose` is allowed). Fails closed on anything it cannot resolve. It is a text check:
   documented residual bypasses (scripts run from files, other HTTP clients, push-merges,
   obfuscation) and false positives are listed in the plan's `rehearsal-notes.md`
   (Phase 4). Policy: add a residual to that list, do not claim the hook covers it.

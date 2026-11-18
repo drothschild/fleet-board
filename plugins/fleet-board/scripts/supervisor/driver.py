@@ -114,6 +114,9 @@ _RESET = {'action_failures': 0, 'last_action_error': None}
 CHECK_INSTRUCTIONS = Path(__file__).resolve().parent / 'defaults' / 'premise-check-prompt.md'
 _CHECK_FAILED = 'premise check failed: %s; move the card to Ready to start it without a check'
 _CHECK_FAILED_PREFIX = 'premise check failed: '
+_PREMISE_UNSETTLED = 'Waiting for a person: the premise check could not settle this card.'
+_PREMISE_CLOSE = 'Waiting for a person: close as already built?'
+_PREMISE_REWRITE = 'Waiting for a person: approve this rewrite?'
 _SEVERE = ('Critical', 'Important')
 _SKIP_MARKER = '<!-- fleet-board:skip-no-acceptance -->'
 _CLEAN = re.compile(r'[^\x00-\x1f\x7f]+')
@@ -1434,7 +1437,8 @@ class CardDriver:
 
     def _settle_premise(self, c, run, parsed):
         """Act on a checker's verdict. Its follow-up lines (Out of scope, Bugs found) are ignored: a check files
-        nothing. `go` and `needs` are handled so far; any other verdict is a failed check."""
+        nothing. `go` and `needs` settle on their own; `built` and `stale` reach the owner as one proposal to decide
+        (only a person approves or confirms it, with premise-settle.sh)."""
         status = parsed.get('status')
         try:
             c.comment(Path(run.report_file).read_text())
@@ -1442,8 +1446,12 @@ class CardDriver:
             c.warn('checker report not posted: %s' % exc)
         if status == 'needs':
             return self._premise_needs(c, parsed)
+        if status == 'built':
+            return self._premise_built(c, run, parsed)
+        if status == 'stale':
+            return self._premise_stale(c, run, parsed)
         if status != 'go':
-            raise _Fail('verdict %s is not handled yet' % status)
+            raise _Fail('verdict %s is not handled' % status)
         c.step('premise.sh', 'stamp', c.n, '--by', 'check', '--sha', run.head)
         c.merge(dict(_RESET, premise_check={'head': run.head, 'verdict': status, 'at': _iso(self.clock())}))
 
@@ -1494,11 +1502,75 @@ class CardDriver:
         c.comment('Premise check: needs #%d, which is %s. Added as a dependency.' % (m, state))
         c.merge(dict(_RESET))
 
-    def _premise_question(self, c, text, proposal=None):
-        """Block the card for a person: the check could not settle it."""
+    def _premise_question(self, c, text, proposal=None, title=_PREMISE_UNSETTLED):
+        """Block the card for a person: the check could not settle it, or found a proposal for them to decide.
+        The proposal is stored first, so a card is never Blocked with a question and no proposal to answer."""
+        if proposal is not None:
+            c.step('premise-settle.sh', 'propose', c.n, c._file(proposal))
         c.move('blocked')
         c.merge(dict(_RESET, state='blocked', blocked_from='ready'))
-        c.comment('Waiting for a person: the premise check could not settle this card.\n\n%s' % text)
+        c.comment('%s\n\n%s' % (title, text))
+
+    @staticmethod
+    def _scope_section(body):
+        """The text of a body's `## Scope` section, ignoring headings inside a code fence."""
+        out, fence, inside = [], False, False
+        for line in (body or '').split('\n'):
+            if re.match(r'^ {0,3}(```|~~~)', line):
+                fence = not fence
+            elif not fence and re.match(r'^##[ \t]+Scope[ \t]*$', line) and not inside:
+                inside = True
+                continue
+            elif not fence and re.match(r'^##[ \t]', line) and inside:
+                break
+            if inside:
+                out.append(line)
+        return '\n'.join(out).strip()
+
+    def _premise_built(self, c, run, parsed):
+        """A built verdict: with evidence for every acceptance item, a close proposal for a person to confirm."""
+        card = self._premise_card(c, c.n) or {}
+        items = [a for a in (card.get('acceptance') or []) if isinstance(a, str)]
+        evidence = [e for e in (parsed.get('evidence') or []) if isinstance(e, dict)]
+        got = sorted({e.get('item') for e in evidence if _posint(e.get('item'))})
+        missing = [i for i in range(1, len(items) + 1) if i not in got]
+        unknown = [i for i in got if i > len(items)]
+        if not items or missing or unknown:
+            problems = []
+            if missing:
+                problems.append('no evidence for acceptance item %s' % ', '.join(str(i) for i in missing))
+            if unknown:
+                problems.append('evidence for item %s, which the card does not have' % ', '.join(str(i) for i in unknown))
+            return self._premise_question(c, 'The check reported the card as already built, but %s.'
+                                          % ('; '.join(problems) or 'the card has no acceptance items'))
+        lines = ['The check found that every acceptance item already holds on the default branch (%s).' % run.head[:7], '']
+        for e in sorted(evidence, key=lambda e: e['item']):
+            lines += ['%d. %s' % (e['item'], items[e['item'] - 1]),
+                      '   command: `%s`' % e.get('command', ''), '   output: %s' % e.get('output', '')]
+        lines += ['', 'Run `premise-settle.sh confirm %d` in a terminal (or use the board page) to close it as built, '
+                      'or move the card to Ready to reject this and start it anyway.' % c.n]
+        proposal = {'kind': 'close', 'head': run.head,
+                    'evidence': [{'item': e['item'], 'command': e.get('command', ''), 'output': e.get('output', '')}
+                                 for e in evidence]}
+        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_CLOSE)
+
+    def _premise_stale(self, c, run, parsed):
+        """A stale verdict: a rewrite proposal when the checker gave one, else its summary as a plain question."""
+        summary = (parsed.get('summary') or '').strip()
+        proposed = parsed.get('proposal')
+        if not isinstance(proposed, dict):
+            return self._premise_question(c, summary or 'The check found the card stale and proposed no rewrite.')
+        card = self._premise_card(c, c.n) or {}
+        current = [a for a in (card.get('acceptance') or []) if isinstance(a, str)]
+        acceptance = [a for a in (proposed.get('acceptance') or []) if isinstance(a, str)]
+        scope = proposed.get('scope') or ''
+        lines = [summary, '', 'Current Scope:', self._scope_section(card.get('body')), '',
+                 'Current acceptance:'] + ['- ' + a for a in current] + [
+                 '', 'Proposed Scope:', scope, '', 'Proposed acceptance:'] + ['- ' + a for a in acceptance] + [
+                 '', 'Run `premise-settle.sh approve %d` in a terminal (or use the board page) to apply it, '
+                     'or move the card to Ready to reject it and start it as it is.' % c.n]
+        proposal = {'kind': 'rewrite', 'head': run.head, 'scope': scope, 'acceptance': acceptance, 'summary': summary}
+        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_REWRITE)
 
     def _blocked(self, run, parsed, final):
         c = run.c
