@@ -1919,6 +1919,31 @@ else
 fi
 stop_server
 
+echo "Case: card payload has stacked_on and stack_attention"
+ST_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$ST_REPO/.fleet-board/cards" "$ST_REPO/.fleet-board/active"
+echo 4 > "$ST_REPO/.fleet-board/next"
+ST_FENCE='```'
+st_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"stack":%s}\n%s\n' "$ST_FENCE" "$1" "$ST_FENCE"
+}
+ST_C1="$(jq -n --arg b "$(st_note '{"parent":11,"base":"fleet/11-parent","start":"0123456789abcdef0123456789abcdef01234567","attention":"parent closed unmerged"}')" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$ST_REPO" seed_card 1 in_progress "Stacked" "b" "$ST_C1"
+REPO="$ST_REPO" seed_card 2 in_progress "Unstacked" "b"
+start_server "$ST_REPO"
+api GET /api/board
+assert_code 200
+assert_body "board payload: stacked_on is 11 for a stacked card" '.cards[]|select(.number==1)|.stacked_on' 11
+assert_body "board payload: stacked_on is null for an unstacked card" '.cards[]|select(.number==2)|.stacked_on|tojson' null
+assert_body "board payload: stack_attention is the text for a stacked card" '.cards[]|select(.number==1)|.stack_attention' 'parent closed unmerged'
+assert_body "board payload: stack_attention is null for an unstacked card" '.cards[]|select(.number==2)|.stack_attention|tojson' null
+api GET /api/cards/1
+assert_body "detail payload: stacked_on is 11 for a stacked card" '.stacked_on' 11
+assert_body "detail payload: stack_attention for a stacked card" '.stack_attention' 'parent closed unmerged'
+api GET /api/cards/2
+assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
+stop_server
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
