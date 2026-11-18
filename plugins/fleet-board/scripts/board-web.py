@@ -512,9 +512,11 @@ def start_import(plan_text: str, status: str) -> str:
             "Read(//%s/**)" % real_idir.strip("/"),
             "--max-turns", str((cfg.get("limits") or {}).get("max_turns") or 200),
         ]
-        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR")
-        if plugin_dir:
-            argv += ["--plugin-dir", plugin_dir]
+        # The session loads the plugin this page runs, so the skill sends it to the script path the allow rule above
+        # names: a session that loaded another install (a different version, or the cache while this page runs from a
+        # checkout) was refused its dry run in dontAsk mode. FLEET_BOARD_PLUGIN_DIR overrides it.
+        plugin_dir = os.environ.get("FLEET_BOARD_PLUGIN_DIR") or os.path.dirname(os.path.dirname(scripts_path))
+        argv += ["--plugin-dir", plugin_dir]
         argv.append(prompt)
         # the exact command line, one argument per line and the prompt shortened, so a permission
         # denial can be traced to the options the session really got

@@ -811,7 +811,9 @@ EOF
   # skill's script path is the one the allow rule names; a session that loaded another install was denied its dry run
   # (card 501). FLEET_BOARD_PLUGIN_DIR overrides it.
   PLUGIN_ROOT_OF_SCRIPTS="$(dirname "$SCRIPTS")"
-  if [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | tr '\n' '|')" = "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS|" ]; then pass "without FLEET_BOARD_PLUGIN_DIR the session gets exactly one --plugin-dir, the plugin root of the page's scripts"; else fail "without FLEET_BOARD_PLUGIN_DIR the session gets exactly one --plugin-dir, the plugin root of the page's scripts" "want $PLUGIN_ROOT_OF_SCRIPTS; args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  # args.log holds one line per session so far: each has exactly one --plugin-dir, and it is that root
+  if [ "$(grep -c . "$FAKE_CLAUDE_DIR/args.log")" = "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | grep -c .)" ] \
+     && [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | sort -u)" = "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS" ]; then pass "without FLEET_BOARD_PLUGIN_DIR every session gets exactly one --plugin-dir, the plugin root of the page's scripts"; else fail "without FLEET_BOARD_PLUGIN_DIR every session gets exactly one --plugin-dir, the plugin root of the page's scripts" "want $PLUGIN_ROOT_OF_SCRIPTS; args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   if grep -qxF -- "--plugin-dir" "$TMP/logs/web/acme-toy/imports/fixed/session.argv" 2>/dev/null && grep -qxF -- "$PLUGIN_ROOT_OF_SCRIPTS" "$TMP/logs/web/acme-toy/imports/fixed/session.argv"; then pass "session.argv records the --plugin-dir"; else fail "session.argv records the --plugin-dir" "file: $(cat "$TMP/logs/web/acme-toy/imports/fixed/session.argv" 2>/dev/null)"; fi
   if grep -q -- "--plugin-dir $PLUGIN_ROOT_OF_SCRIPTS .*/fleet-board:import-plan" "$FAKE_CLAUDE_DIR/args.log"; then pass "--plugin-dir comes before the prompt"; else fail "--plugin-dir comes before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   : > "$FAKE_CLAUDE_DIR/args.log"
@@ -820,7 +822,7 @@ EOF
   FLEET_BOARD_PLUGIN_DIR=/x start_server "$REPO"
   api POST /api/import '{"plan":"x","status":"backlog"}'; assert_code 200
   wait_for 'api GET /api/import/fixed7; body_is .state ready'
-  if [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | tr '\n' '|')" = "--plugin-dir /x|" ]; then pass "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x"; else fail "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
+  if [ "$(grep -c . "$FAKE_CLAUDE_DIR/args.log")" = 1 ] && [ "$(grep -o -- '--plugin-dir [^ ]*' "$FAKE_CLAUDE_DIR/args.log" | tr '\n' '|')" = "--plugin-dir /x|" ]; then pass "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x"; else fail "FLEET_BOARD_PLUGIN_DIR=/x replaces the default: exactly one --plugin-dir, /x" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
   if grep -q -- '--plugin-dir /x ' "$FAKE_CLAUDE_DIR/args.log"; then pass "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv"; else fail "FLEET_BOARD_PLUGIN_DIR=/x adds --plugin-dir /x to the session argv" "args: $(cat "$FAKE_CLAUDE_DIR/args.log")"; fi
 
   # A session outliving a server restart is still running, then ready.
