@@ -154,7 +154,9 @@ An epic is a folder in the board's store, `<board.dir>/epics/<id>/`:
 
 - `id` comes from a counter of its own, `<board.dir>/epics/next`, allocated the way card
   numbers are. An epic is shown as `E<id>` so it never reads as a card number. **(My call.)**
-- `state` is `open`, `complete` or `closed`. It becomes `complete` when the epic has at
+- `state` is `open`, `complete` or `closed`. Only `open` and `closed` are stored;
+  `complete` is worked out each time the epic is read, so it cannot go stale. (Settled in
+  the plan.) It becomes `complete` when the epic has at
   least one child, every child is in Done or Won't do, and every merged child has a log
   line (section 2). The owner can close an epic at any time. A new child reopens a complete
   epic. **(My call.)**
@@ -181,7 +183,11 @@ that exist. `board-read.sh` returns it. Setting or changing it does not stamp th
 The board server reads epic files directly and writes only through this script, as it does
 for cards.
 
-The gate refuses every verb except `read`, `list` and `report` inside a Claude session, the
+The plans add three more verbs: `pending` (merged children not yet recorded), `fail` (the
+record's failure counter) and `relations` (section 6).
+
+The gate refuses every verb except the read-only ones (`read`, `list`, `pending`, `report`,
+`relations`) inside a Claude session, the
 way rule G4 refuses the premise approvals. The supervisor and the board server are not
 sessions, so they can run them. Without this, any role with a shell could rewrite the
 design its siblings are given. **(My call.)**
@@ -191,8 +197,11 @@ design its siblings are given. **(My call.)**
 When a card with an `epic` has merged and reached Done, the scheduler plans a new action,
 `record_epic`, for it.
 
-- **When.** For a card in Done that has an `epic`, a merged pull request, and no
-  `epic_recorded` entry in its note. The record runs after the card is finished, so it
+- **When.** For a card in Done that has an `epic`, a merged pull request, and no line for
+  it in the epic's log. The log is the one record of what has been recorded; the card's
+  note holds nothing for this, so the scheduler reads no Done card's note. A Done child
+  whose pull request was closed without merging gets a `skipped` log line and no session.
+  The step can be turned off with `epics.record`. (Settled in the plan.) The record runs after the card is finished, so it
   never sits between a merge and its after-merge steps and never holds the merge lane. It
   also covers a child that a person merged from Human QA or moved to Done by hand, which
   the merged rows of the table never see. This is a new set of cards for the scheduler to
@@ -231,18 +240,19 @@ When a card with an `epic` has merged and reached Done, the scheduler plans a ne
 - **What the supervisor does with it.** Under the epic's lock, `epic.sh record` appends one
   line to `log.jsonl` (`card`, `pr`, `merge_commit`, `at`, `built`, `decisions`,
   `departures`, `design_rev`). With `revised`, the current `design.md` is copied to
-  `revisions/`, the new one is written and `design_rev` goes up by one. The card's note
-  gets `epic_recorded {head, design_rev}`. Anything other than `holds` under `## Intent`
-  adds an `attention` entry to the epic.
+  `revisions/`, the new one is written and `design_rev` goes up by one. The log line and
+  the design are written together or not at all, and the write is refused when the design
+  revision moved while the session ran. Anything other than `holds` under `## Intent` adds
+  an `attention` entry to the epic.
 - **Affected siblings.** Each card named under `## Affects` that is a child of the same epic
   and has no pull request yet has its premise stamp cleared, so the premise check runs
   before it starts. This covers a decision that is not visible in the files a card names.
   **(My call.)**
-- **Failure.** A failed or rejected session counts on a counter of its own in the card's
-  note, not on `action_failures`, whose limit would move a Done card to Blocked. After
-  three failures the supervisor appends a log line marked `unrecorded` with the card and
-  pull request, adds an `attention` entry to the epic, and sets `epic_recorded` so the
-  record is not planned again. The card stays in Done throughout. **(My call.)**
+- **Failure.** A failed or rejected session counts on a counter of its own, kept in the
+  epic's folder, not on `action_failures`, whose limit would move a Done card to Blocked.
+  After three failures the supervisor appends a log line marked `unrecorded` with the card
+  and pull request and adds an `attention` entry to the epic; the log line is what stops
+  the record being planned again. The card stays in Done throughout. **(My call.)**
 
 The session never changes the intent. If what was built contradicts the intent, it says so
 under `## Intent` and the epic is flagged for the owner.
