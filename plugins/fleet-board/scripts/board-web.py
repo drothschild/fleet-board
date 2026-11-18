@@ -516,6 +516,9 @@ def start_import(plan_text: str, status: str) -> str:
         if plugin_dir:
             argv += ["--plugin-dir", plugin_dir]
         argv.append(prompt)
+        # the exact command line, one argument per line and the prompt shortened, so a permission
+        # denial can be traced to the options the session really got
+        write_private(idir / "session.argv", "\n".join(argv[:-1] + ["<prompt>"]) + "\n")
         try:
             ofd = os.open(str(idir / "session.jsonl"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             efd = os.open(str(idir / "session.err"), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
