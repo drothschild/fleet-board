@@ -166,6 +166,24 @@ no file here. The gate's residual bypasses and false positives are listed in the
   whose note has `stack` runs `gh pr edit <pr> --repo <repo> --base <stack.base>` before `review-stages.sh
   route`, and a failed edit fails the action with `route` not called. A row with `stack` null and a card without
   `stack` behave as before.
+- **Stacked child follows its parent** (rows for a card whose note has `stack`, stacking on or off; with
+  `stacking.enabled` off nothing else changes). `tick-plan.sh`, for a card in in_progress, a review column or
+  merging: (1) parent card wont_do, or the parent's PR CLOSED: skip, `stacked on #<parent>, which was closed
+  without merging; a person decides`, before every row except an invalid note; (2) `stack.attention` set: skip,
+  `landing needs attention: <attention>; a person decides`; (3) PR open and origin's copy of `stack.base` exists
+  but its head is not an ancestor of the PR head (`git merge-base --is-ancestor`, after a fetch of the base
+  throttled to one per 60 s per branch): update_branch, `parent branch <stack.base> moved`, planned after the
+  CONFLICTING row; (4) review clean and current with no stage left, where an unstacked card plans
+  to_human_qa, mark_ready or merge: wait, `waits for #<parent> to merge`; (5) merging: skip, `waits for
+  #<parent> to merge`. A failed parent lookup is a failed lookup (the card is skipped). A stacked card with no
+  review yet is still planned review. `review-drift.sh <reviewed-sha> <head-sha> [--also-base <ref>]`: a clean
+  merge whose second parent is an ancestor of the ref counts as a clean merge of the default branch (its
+  subject need only say merge); a ref that does not resolve after one fetch prints unreviewed. `tick-plan.sh`
+  and the gate pass `--also-base origin/<stack.base>` for a card whose note has `stack`.
+  `worktree.sh review <n> <pr> [<stage>] [<base-branch>]`: a `fleet/<n>-<slug>` argument makes `base` the
+  merge-base of origin's copy of that branch and the head (exit 1 when origin lacks it); the driver passes
+  `stack.base` for a card with `stack`. Suites: `tests/test-stack-plan.sh`, `test-review-drift.sh`,
+  `test-worktree.sh`, `test-gate.sh`, `driver_cases.py`.
 - **Stack bridge** (`scripts/stack-bridge.sh tree|commit`, pure git, never pushes). `tree <repo>
   <parent-head> <ours> <theirs>` prints the `git merge-tree --write-tree --merge-base` tree;
   `commit <worktree> <parent-head> <squash-sha>` builds a merge commit (parents HEAD, squash;

@@ -3307,7 +3307,7 @@ function cardActivityLine(c) {
 
 const ACTION_WORDS = {
   review: "Reviewing", fix: "Fixing", start: "Starting", continue_implementor: "Continuing implementor",
-  update_branch: "Updating branch", merge: "Merging", after_merge: "Post-merge steps",
+  update_branch: "Updating branch", merge: "Merging", land: "Landing", after_merge: "Post-merge steps",
 };
 
 // activityWords(c, a): readable words for the running action; a Merging card names its merge step.

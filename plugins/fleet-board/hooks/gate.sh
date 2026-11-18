@@ -763,7 +763,12 @@ check_reviewed() {
   from="$(jq -r '.last_review.sha // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
     || block "could not verify the manager note of card #$n; blocking to be safe"
   [ -n "$from" ] && [ -n "$oid" ] || return 0
-  lookup "the commits of PR $ref since its last review" bash "$S/review-drift.sh" "$from" "$oid"
+  # A stacked card also counts clean merges of its parent branch (origin's copy of stack.base)
+  local also=() sbase
+  sbase="$(jq -r '.stack.base // "" | strings' <<<"$LOOKUP_OUT" 2>/dev/null)" \
+    || block "could not verify the manager note of card #$n; blocking to be safe"
+  [ -z "$sbase" ] || also=(--also-base "origin/$sbase")
+  lookup "the commits of PR $ref since its last review" bash "$S/review-drift.sh" "$from" "$oid" ${also[@]+"${also[@]}"}
   [ "$LOOKUP_OUT" = reviewed ] \
     || block "PR $ref head ${oid:0:7} has commits after the last review at ${from:0:7} that are not clean merges of main; review it before merging"
   return 0

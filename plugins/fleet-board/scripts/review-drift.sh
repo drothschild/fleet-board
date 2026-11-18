@@ -2,7 +2,12 @@
 # review-drift.sh - tells whether a PR head that moved past the last reviewed
 # sha still counts as reviewed.
 #
-# Usage: review-drift.sh <reviewed-sha> <head-sha>
+# Usage: review-drift.sh <reviewed-sha> <head-sha> [--also-base <ref>]
+#
+# With --also-base <ref> (a stacked card passes origin's copy of its parent branch), a clean
+# merge whose second parent is an ancestor of <ref> counts exactly as a clean merge of the
+# base branch does (its subject then only has to say "merge"). A <ref> that cannot be
+# resolved, even after one fetch, prints "unreviewed".
 #
 # Prints "reviewed" when every commit the PR made after <reviewed-sha> (the
 # first-parent chain from <head-sha> down to it) is a merge of main whose tree
@@ -31,7 +36,14 @@ set -uo pipefail
 unset CDPATH
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/board-lib.sh"
 
-[ $# -eq 2 ] || fb_die 2 "usage: review-drift.sh <reviewed-sha> <head-sha>"
+USAGE="usage: review-drift.sh <reviewed-sha> <head-sha> [--also-base <ref>]"
+ALSO=""
+if [ $# -eq 4 ] && [ "$3" = --also-base ]; then
+  ALSO="$4"
+  case "$ALSO" in ''|-*|*[!A-Za-z0-9/._-]*) fb_die 2 "--also-base needs a plain ref name, got: $ALSO" ;; esac
+elif [ $# -ne 2 ]; then
+  fb_die 2 "$USAGE"
+fi
 FROM="$1"; HEAD_SHA="$2"
 case "$FROM$HEAD_SHA" in *[!0-9a-fA-F]*|'') fb_die 2 "shas must be hex" ;; esac
 
@@ -39,6 +51,17 @@ fb_load_config
 
 case "$HEAD_SHA" in "$FROM"*) echo reviewed; exit 0 ;; esac
 case "$FROM" in "$HEAD_SHA"*) echo reviewed; exit 0 ;; esac
+
+# The extra base ref must resolve (after one fetch) or nothing counts as reviewed
+ALSO_SHA=""
+if [ -n "$ALSO" ]; then
+  ALSO_SHA="$(git rev-parse -q --verify "$ALSO^{commit}" 2>/dev/null)" || ALSO_SHA=""
+  if [ -z "$ALSO_SHA" ]; then
+    git fetch -q origin </dev/null >/dev/null 2>&1 || true
+    ALSO_SHA="$(git rev-parse -q --verify "$ALSO^{commit}" 2>/dev/null)" || ALSO_SHA=""
+  fi
+  [ -n "$ALSO_SHA" ] || { echo unreviewed; exit 0; }
+fi
 
 cmp="$(gh api "repos/$FLEET_REPO/compare/$FROM...$HEAD_SHA")" || fb_die 1 "cannot compare $FROM...$HEAD_SHA"
 chain="$(jq -r --arg head "$HEAD_SHA" '
@@ -181,6 +204,9 @@ on_base() {
   ref="$(base_ref)" && git merge-base --is-ancestor "$1" "$ref" 2>/dev/null
 }
 
+# on_also <sha>: exit 0 when --also-base was given and the commit is an ancestor of it
+on_also() { [ -n "$ALSO_SHA" ] && git merge-base --is-ancestor "$1" "$ALSO_SHA" 2>/dev/null; }
+
 oldest_parent=""
 count=0
 TAB="$(printf '\t')"
@@ -195,10 +221,14 @@ while IFS="$TAB" read -r sha parents subject; do
     echo unreviewed; exit 0
   fi
   [ $# -eq 2 ] || { echo unreviewed; exit 0; }
-  case "$subject" in *[Mm]erge*main*) ;; *) echo unreviewed; exit 0 ;; esac
   need "$sha" "$1" "$2" || { echo unreviewed; exit 0; }
-  # the subject says main; the second parent must be on it
-  on_base "$2" || { echo unreviewed; exit 0; }
+  # the subject says main and the second parent is on the base branch; or, for --also-base, the
+  # subject says merge and the second parent is on that ref
+  if on_also "$2" && case "$subject" in *[Mm]erge*) true ;; *) false ;; esac; then :
+  else
+    case "$subject" in *[Mm]erge*main*) ;; *) echo unreviewed; exit 0 ;; esac
+    on_base "$2" || { echo unreviewed; exit 0; }
+  fi
   # exit 1 is a conflict: the merge needed a resolution, reviewed unless it was
   # version lines only; any other exit is an error
   mt="$(git merge-tree --write-tree --name-only "$1" "$2" 2>/dev/null)"; mrc=$?
