@@ -89,6 +89,8 @@ def _ancestors(row):
     """The card numbers (as strings) of a stacked candidate's `stack.ancestors`; none for any other row."""
     stack = row.get('stack')
     found = stack.get('ancestors') if isinstance(stack, dict) else None
+    if found is None:   # a reservation or running claim carries its card's ancestors directly
+        found = row.get('ancestors')
     return {str(x) for x in found} if isinstance(found, list) else set()
 
 
@@ -388,6 +390,7 @@ class Scheduler:
             exempt = _ancestors(c)   # a stacked child's start is not held by its ancestors' scope
             reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
                              and str(x.get('card', x.get('number'))) not in exempt
+                             and str(number) not in _ancestors(x)   # a card stacked on this one never holds it
                              and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                              and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
@@ -396,6 +399,7 @@ class Scheduler:
             conflict = next((x for x in occupied if (same_card(x, number) and not _share_card(c, x))
                              or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
                                  and str(x.get('number')) not in exempt
+                                 and str(number) not in _ancestors(x)
                                  and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                                  and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:

@@ -65,6 +65,7 @@ class Supervisor:
     def __init__(self, root, *, config_loader, state, driver, scheduler, fetch=candidates.fetch,
                  fetch_card=candidates.fetch_card, clock=time.time, mono=time.monotonic, run=scripts.run, merge_lane=None, ignored=None):
         self.root = Path(root)
+        self._claim_ancestors = {}   # card -> the cards it is stacked on (a stacked child's ancestors)
         self._claim_repo = {}   # card -> the repo its admitted row named; state keeps paths only
         self.config_loader = config_loader
         self.state = state
@@ -772,6 +773,8 @@ class Supervisor:
                   for a in self.state.all_actions()]
         for claim in claims:
             self._with_repo(claim, claim['number'])
+            if self._claim_ancestors.get(claim['number']):
+                claim['ancestors'] = list(self._claim_ancestors[claim['number']])
         return claims
 
     def _reservations(self):
@@ -779,6 +782,8 @@ class Supervisor:
         held = [{'card': card, 'paths': list(paths)} for card, paths in list(self.state.reservations.items())]
         for item in held:
             self._with_repo(item, item['card'])
+            if self._claim_ancestors.get(item['card']):
+                item['ancestors'] = list(self._claim_ancestors[item['card']])
         return held
 
     def _with_repo(self, claim, card):
@@ -821,8 +826,12 @@ class Supervisor:
             exempt = tuple(a for a in ancestors if isinstance(a, int)) if isinstance(ancestors, list) else ()
             # only a stacked child passes `exempt`: every other call is the one it always was
             repos = dict(repo=row.get('repo'), home_repo=self._repo())
-            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt, **repos) if exempt \
+            held = self.state.reserve(number, scope, ignore=ignore, exempt=exempt, ancestors=exempt, **repos) if exempt \
                 else self.state.reserve(number, scope, ignore=ignore, **repos)
+            if exempt:
+                self._claim_ancestors[number] = list(exempt)
+            else:
+                self._claim_ancestors.pop(number, None)
             if held is not None:
                 return
             reserved = True
