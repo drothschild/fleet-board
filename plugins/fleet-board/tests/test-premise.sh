@@ -255,5 +255,22 @@ eq "acceptance command spans: paths holds neither command" \
 inrepo "$MR" bash "$SCRIPTS/premise.sh" moved 99999 >/dev/null 2>&1
 eq "moved, unreadable card: exit 1" "$?" 1
 
+echo "Test: premise.sh add-dep"
+N="$(mkcard "$REPO" "add dep")"; M="$(mkcard "$REPO" "dep target")"
+f="$REPO/.fleet-board/cards/$N.json"
+jq --argjson m "$M" '.blocked_by = [$m]' "$f" > "$f.t" && mv "$f.t" "$f"
+D="$(mkcard "$REPO" "second dep")"
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" add-dep "$N" "$D" >/dev/null 2>&1
+eq "add-dep: exit 0" "$?" 0
+eq "add-dep: appends to blocked_by, keeping the rest" "$(jq -c .blocked_by "$f")" "[$M,$D]"
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" add-dep "$N" "$D" >/dev/null 2>&1
+eq "add-dep repeated: exit 0" "$?" 0
+eq "add-dep repeated: changes nothing" "$(jq -c .blocked_by "$f")" "[$M,$D]"
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" add-dep "$N" "$N" >/dev/null 2>&1
+eq "add-dep of the card itself: exit 2" "$?" 2
+inrepo "$REPO" bash "$SCRIPTS/premise.sh" add-dep "$N" 99999 >/dev/null 2>&1
+eq "add-dep of a missing card: exit 2" "$?" 2
+eq "add-dep refused: blocked_by unchanged" "$(jq -c .blocked_by "$f")" "[$M,$D]"
+
 printf '\npassed: %s  failed: %s\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
