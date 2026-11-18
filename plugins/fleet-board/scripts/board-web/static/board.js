@@ -1993,7 +1993,7 @@ async function pressPremise(btn, actions, err, url, body) {
   const d = S.drawer;
   if (!d || d.premiseBusy) return;
   d.premiseBusy = true;
-  actions.children.forEach(function (b) { b.disabled = true; });
+  Array.from(actions.children).forEach(function (b) { b.disabled = true; });
   err.hidden = true;
   const r = await writeApi("POST", url, body);
   d.premiseBusy = false;
@@ -2002,7 +2002,7 @@ async function pressPremise(btn, actions, err, url, body) {
     return;
   }
   if (!r.ok) {
-    actions.children.forEach(function (b) { b.disabled = false; });
+    Array.from(actions.children).forEach(function (b) { b.disabled = false; });
     err.textContent = errorText(r);
     err.hidden = false;
     return;
