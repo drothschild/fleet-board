@@ -1084,6 +1084,7 @@ function renderDrawer(card) {
   renderBodyPreview();
   renderDrawerMeta();
   renderHold(card);
+  renderStack(card);
   setAcceptError("");
   syncAccept();
   $("dr-comments-sec").hidden = isNew;
@@ -1101,6 +1102,15 @@ function renderHold(card) {
   const hold = card && card.hold && typeof card.hold.reason === "string" ? card.hold : null;
   p.hidden = !hold;
   p.textContent = hold ? "Held: " + hold.reason + (hold.until ? " (until " + hold.until + ")" : "") : "";
+}
+
+// renderStack(card | null): "stacked on #<parent>" and any landing attention, shown only for a stacked card.
+function renderStack(card) {
+  const p = $("dr-stack");
+  const on = card && Number.isInteger(card.stacked_on) ? card.stacked_on : null;
+  p.hidden = on === null;
+  p.textContent = on === null ? "" : "stacked on #" + on +
+    (typeof card.stack_attention === "string" && card.stack_attention ? " · landing needs attention: " + card.stack_attention : "");
 }
 
 // fillRepoPicker(): the new-card Repo select, shown only when the board lists other repos.

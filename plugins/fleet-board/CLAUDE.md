@@ -161,6 +161,13 @@ no file here. The gate's residual bypasses and false positives are listed in the
   3 conflict (paths on stdout), 4 git older than 2.40, 1 other failure (parent head not an
   ancestor of HEAD, changes to tracked files), 2 usage; on 3 or 4 nothing changes. A squash already in
   HEAD prints HEAD and adds no commit. Nothing calls it yet.
+- **Stacking display** (no new note field). `status.sh` appends ` · stacked on #<stack.parent>` to a card's
+  line when its note has `stack`, then ` · landing needs attention: <stack.attention>` when that is a string; a
+  card without `stack` prints as before. The board server's card summary and detail carry `stacked_on` (the
+  parent number or null) and `stack_attention` (string or null) from the note's `stack`; the drawer's
+  `dr-stack` line shows `stacked on #<parent>` and the attention text, hidden when `stacked_on` is null.
+  README "Stacked pull requests" documents the feature and the three stops (checked by
+  `tests/test-readme-claims.sh`).
 - **Version files** (`supervisor.version_files`, default `[]`, `scripts/versions.jq`,
   `scripts/version-lib.sh`). Off when empty. `update-branch.sh` resolves conflicts in
   matching JSON files whose hunks hold only pairwise-identical `"version"` lines, each
