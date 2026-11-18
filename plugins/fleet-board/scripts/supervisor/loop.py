@@ -799,7 +799,7 @@ class Supervisor:
             return
         if name == 'after_merge':
             self._merger_hold.discard(number)   # its session (an active action) holds the lane from here
-        free = row.get('provider') == 'scripts' and name != 'update_branch'
+        free = row.get('provider') == 'scripts' and name not in ('update_branch', 'land')
         reserved = False
         if not free and name in SCOPE_FREE_ACTIONS:
             # Reads files or writes only its own branch: it holds a slot (state.active) but no scope.
