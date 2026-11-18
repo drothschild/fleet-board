@@ -158,6 +158,17 @@ invalid_field() {
             and (.value.sha | . == null or (type == "string" and test("\\A[0-9a-f]+\\z")))
             and (.value.stage | . == null or (type == "string" and test("\\A[a-z][a-z0-9_]*\\z")))
             and (.value.provider | . == null or (type == "string" and test("\\A[a-z][a-z0-9_-]*\\z"))))) | not) then "reviews"
+    # review_passes: per stage, the pass records at one head (pass 1 to 5, a 40-hex sha, integer counts)
+    elif (.review_passes | . == null or (type == "object" and all(to_entries[];
+            (.key | test("\\A[a-z][a-z0-9_]*\\z")) and (.value | type == "array" and all(.[];
+              type == "object"
+              and (.pass | type == "number" and . == floor and . >= 1 and . <= 5)
+              and (.round | . == null or (type == "number" and . == floor and . >= 0))
+              and (.sha | type == "string" and test("\\A[0-9a-f]{40}\\z"))
+              and (.critical | . == null or (type == "number" and . == floor and . >= 0))
+              and (.important | . == null or (type == "number" and . == floor and . >= 0))
+              and (.findings | . == null or type == "array")))))
+          | not) then "review_passes"
     elif (.blocked_from | . == null or . == "ready" or . == "in_progress" or . == "in_review" or . == "merging"
             or (type == "string" and test("\\Areview_[a-z][a-z0-9_]*\\z")) | not) then "blocked_from"
     elif (.accepted | . == null or (type == "object" and (.login | type == "string" and clean and length > 0)

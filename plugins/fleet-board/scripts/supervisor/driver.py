@@ -1260,6 +1260,19 @@ class CardDriver:
             reviews = dict(note.get('reviews')) if isinstance(note.get('reviews'), dict) else {}
             reviews[run.stage or 'evidence'] = patch['last_review']
             patch['reviews'] = reviews
+            # A stage report for pass i of required_passes is also kept in review_passes[stage], the pass records at
+            # the reviewed head: a record at another head, or an earlier record of the same pass, is dropped
+            number = c.row.get('pass')
+            if run.stage and _posint(number) and re.fullmatch(r'[0-9a-f]{40}', str(patch['last_review'].get('sha'))):
+                record = {'pass': number}
+                record.update({k: patch['last_review'][k] for k in ('round', 'sha', 'critical', 'important', 'findings')})
+                passes = dict(note.get('review_passes')) if isinstance(note.get('review_passes'), dict) else {}
+                kept = [r for r in (passes.get(run.stage) or []) if isinstance(r, dict)
+                        and r.get('sha') == record['sha'] and r.get('pass') != number]
+                passes[run.stage] = sorted(kept + [record], key=lambda r: r['pass'])
+                patch['review_passes'] = passes
+                patch['reviews'][run.stage] = dict(patch['last_review'], **{'pass': number})
+                patch['last_review'] = patch['reviews'][run.stage]
             # A card a person moved out of Blocked still has state blocked in its note; this review is the one
             # the planner asked for, so record the column the card is in, or the planner plans it again
             if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \

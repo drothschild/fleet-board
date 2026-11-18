@@ -581,11 +581,22 @@ card_input() {
       elif ! parallel="$(jq -cn --argjson cfg "$FLEET_CFG" --argjson m "$matched" --argjson l "$labels" --argjson note "$note" --argjson info "$info" \
              '($note.last_review // null) as $lr
               | (if ($note.reviews | type) == "object" then $note.reviews else {} end) as $rv
+              | (if ($note.review_passes | type) == "object" then $note.review_passes else {} end) as $rp
               | [$cfg.review.stages[] | select(.name as $s | .label as $x | ($m | index($s)) != null or ($l | index($x)) != null)
-                 # A stage has reported at this head when its own record (note.reviews), or else last_review, covers it
-                 | select(.name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
-                          | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= ($note.round // 0))) | not)
-                 | .name]' 2>/dev/null)"; then
+                 | .name as $s | (.required_passes // 1) as $nreq | (.advisory == true) as $adv
+                 # required_passes 1: a stage has reported at this head when its own record (note.reviews), or else last_review, covers it
+                 # required_passes N: the pass records at this head; a finding ends the planning (the fixer takes it), else the missing passes are planned
+                 | if $nreq <= 1 then
+                     select(($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
+                            | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= ($note.round // 0))) | not)
+                     | {name: $s, pass: null}
+                   else
+                     [($rp[$s] // [])[]? | select(type == "object" and (.sha // "") == $info.headRefOid and ((.round // 0) >= ($note.round // 0)))] as $recs
+                     | ([$recs[] | select($adv | not) | select((.critical // 0) + (.important // 0) > 0)] | length) as $bad
+                     | ([$recs[] | select($adv or ((.critical // 0) + (.important // 0) == 0)) | .pass] | unique) as $clean
+                     | select($bad == 0)
+                     | ([range(1; $nreq + 1)] - $clean)[] | {name: $s, pass: .}
+                   end]' 2>/dev/null)"; then
         parallel='[]'; failed="review-stages.sh match $pr (unexpected answer)"
       else
         have_matched=true
@@ -593,19 +604,24 @@ card_input() {
         # this head, each labelled with the stage name (the fix row lists them with the evidence reviewer's).
         # A record that counts findings but lists none gets one entry saying so.
         stage_findings="$(jq -c --argjson cfg "$FLEET_CFG" --argjson m "$matched" --argjson l "$labels" --argjson info "$info" \
-          '(.last_review // null) as $lr | (.round // 0) as $rd
+          '(.last_review // null) as $lr | (.round // 0) as $rd | (.review_passes // {}) as $rps
            | (if (.reviews | type) == "object" then .reviews else {} end) as $rv
            | [$cfg.review.stages[] | select(.advisory != true)
               | select(.name as $s | .label as $x | ($m | index($s)) != null or ($l | index($x)) != null)
-              | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r
-              | select($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd))
-              | [($r.findings // [])[]? | select(type == "object" and (.severity == "Critical" or .severity == "Important"))
-                 | {severity, text: (.text // ""), reviewer: $s}] as $fs
-              | if ($fs | length) > 0 then $fs[]
-                elif (($r.critical // 0) + ($r.important // 0)) > 0
-                then {severity: (if ($r.critical // 0) > 0 then "Critical" else "Important" end),
-                      text: "\(($r.critical // 0) + ($r.important // 0)) Critical/Important findings; see the \($s) report", reviewer: $s}
-                else empty end]' <<<"$note" 2>/dev/null)" || stage_findings='[]'
+              | .name as $s | ($rv[$s] // (if ($lr.stage // null) == $s then $lr else null end)) as $r0
+              # every pass record at the head counts (a finding in any pass), beside the latest record of the stage
+              | ([$r0] + [($rps[$s] // [])[]?]) as $cand
+              | [$cand[] | select(type == "object" and (.sha // "") == $info.headRefOid and ((.round // 0) >= $rd))] as $recs
+              | select(($recs | length) > 0)
+              | [$recs[] | . as $r
+                 | [($r.findings // [])[]? | select(type == "object" and (.severity == "Critical" or .severity == "Important"))
+                    | {severity, text: (.text // ""), reviewer: $s}] as $fs
+                 | if ($fs | length) > 0 then $fs[]
+                   elif (($r.critical // 0) + ($r.important // 0)) > 0
+                   then {severity: (if ($r.critical // 0) > 0 then "Critical" else "Important" end),
+                         text: "\(($r.critical // 0) + ($r.important // 0)) Critical/Important findings; see the \($s) report", reviewer: $s}
+                   else empty end]
+              | reduce .[] as $e ([]; if index([$e]) != null then . else . + [$e] end) | .[]]' <<<"$note" 2>/dev/null)" || stage_findings='[]'
       fi
       # The evidence reviewer is judged on its own report: a stage report written later to last_review
       # must not make it look unreviewed (which replanned it, and then the stage, forever). Only a stage
@@ -639,12 +655,16 @@ card_input() {
         # its record at the head (if any) has no findings: a listed stage whose current record holds
         # Critical or Important findings is not done
         done_stages="$(jq -c --argjson cfg "$FLEET_CFG" --argjson info "$info" \
-          '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd
+          '(if (.reviews | type) == "object" then .reviews else {} end) as $rv | (.round // 0) as $rd | (.review_passes // {}) as $rps
            | [(.reviewed_stages // [])[] | strings] as $done
            | [$cfg.review.stages[] | . as $st | .name as $s | ($rv[$s] // null) as $r
                | ($r != null and ($r.sha // "") == $info.headRefOid and (($r.round // 0) >= $rd)) as $cur
                | ($st.advisory == true or ((($r.critical // 0) + ($r.important // 0)) == 0)) as $ok
-               | select(($cur and $ok) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
+               # required_passes N: done only when N distinct clean pass records exist at the head
+               | (($st.required_passes // 1) as $nreq
+                  | $nreq <= 1 or ([($rps[$s] // [])[]? | select(type == "object" and (.sha // "") == $info.headRefOid
+                       and ((.round // 0) >= $rd) and ($st.advisory == true or (((.critical // 0) + (.important // 0)) == 0))) | .pass] | unique | length) >= $nreq) as $enough
+               | select(($cur and $ok and $enough) or (($done | index($s)) != null and (($cur and ($ok | not)) | not)))
                | .name] | unique' \
           <<<"$note" 2>/dev/null)" || done_stages='[]'
       fi
@@ -1383,9 +1403,9 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                       reviewer: "evidence"}] end)
        else [] end) as $evf
     | def stage_rows:
-        $ps[] as $sn | first($cfg.review.stages[] | select(.name == $sn)) as $sg
+        $ps[] as $pe | $pe.name as $sn | first($cfg.review.stages[] | select(.name == $sn)) as $sg
         | ($sg.provider != null and any($unset[]; . == $sn)) as $held
-        | $row + {key_held: $held, stage: $sg,
+        | $row + {key_held: $held, stage: $sg, pass: $pe.pass,
                   action: (if $held then "wait" else "review_stage" end),
                   reason: (if $held then "stage \($sn): \($cfg.providers[$sg.provider].api_key_env) is not set"
                            else "round \($round) of \($sn) not reviewed yet; reviews run in parallel at this head" end),

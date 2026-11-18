@@ -476,4 +476,49 @@ assert_exit "retired column: exit" 0
 assert_jq "A card found in a review_<name> state is planned back to in_review" "$(card 12 action)" '"move_to_review"'
 assert_jq "retired column: dispatchable" '.dispatchable' 'true'
 
+# required_passes: a stage asks for N clean reports at one head. The cases are built here from
+# parallel-all-reported: the security stage asks for 3 passes, the PR is open and green, the head is HEAD40.
+TICK_REAL="$TICK"
+RPT="$(mktemp -d)"; CLEANUP_DIRS+=("$RPT")
+ln -s "$TICK_REAL/common" "$RPT/common"
+HEAD40=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+OLD40=0123456789abcdef0123456789abcdef01234567
+rp_rec() { jq -cn --arg s "$1" --argjson p "$2" --argjson i "${3:-0}" '{pass:$p,round:1,sha:$s,critical:0,important:$i,findings:[],stage:"security"}'; }
+rp_case() { # <name> <sha of the security records> <passes json array> (the last one is reviews.security)
+  local d="$RPT/rp-$1" ev ux note
+  mkdir -p "$d"
+  sed -e "s/parallel-all-reported/rp-$1/" -e 's|../common/pr-34-draft.json|pr-34.json|' -e "s|../../labels/|$TICK_REAL/../labels/|" "$TICK_REAL/parallel-all-reported/routes" > "$d/routes"
+  jq -c --arg h "$HEAD40" '.headRefOid = $h' "$TICK_REAL/common/pr-34-open-green.json" > "$d/pr-34.json"
+  ev="$(jq -cn --arg s "$HEAD40" '{round:1,sha:$s,critical:0,important:0,stage:null}')"
+  ux="$(jq -cn --arg s "$HEAD40" '{round:1,sha:$s,critical:0,important:0,stage:"ux"}')"
+  note="$(jq -cn --argjson ev "$ev" --argjson ux "$ux" --argjson ps "$3" \
+    '{state:"in_review",branch:"fleet/12-add-subtract",pr:34,round:1,last_review:$ev,
+      reviews:({evidence:$ev,ux:$ux} + (if ($ps | length) > 0 then {security: $ps[-1]} else {} end)),
+      review_passes:(if ($ps | length) > 0 then {security:$ps} else {} end)}')"
+  jq -cn --arg n "$note" '[{id:501,user:{login:"alice"},body:"Looks good to me.",created_at:"2026-09-28T00:00:00Z"},
+       {id:555,user:{login:"fleet-bot"},body:("<!-- fleet-board:manager-note -->\n### fleet-board manager note\nState: x\n\n```json\n"+$n+"\n```\n"),created_at:"2026-09-28T00:01:00Z"}]' \
+    > "$d/comments-12.json"
+}
+RP_YAML="$(printf '%s\n%s' "$AUTO" "$(sed 's/^      max_rounds: 2$/      max_rounds: 2\n      required_passes: 3/' <<<"$STAGES_YAML")")"
+rp_plan() { TICK="$RPT"; plan "rp-$1" "$RP_YAML"; TICK="$TICK_REAL"; }
+SEC_ROWS='[.cards[] | select(.number == 12 and .action == "review_stage" and .stage.name == "security") | .pass]'
+rp_case none "$HEAD40" '[]'
+rp_case two "$HEAD40" "[$(rp_rec "$HEAD40" 1),$(rp_rec "$HEAD40" 2)]"
+rp_case three "$HEAD40" "[$(rp_rec "$HEAD40" 1),$(rp_rec "$HEAD40" 2),$(rp_rec "$HEAD40" 3)]"
+rp_case finding "$HEAD40" "[$(rp_rec "$HEAD40" 1 1)]"
+rp_case old "$OLD40" "[$(rp_rec "$OLD40" 1),$(rp_rec "$OLD40" 2),$(rp_rec "$OLD40" 3)]"
+rp_plan none
+assert_exit "required_passes none: exit" 0
+assert_jq "required_passes: a stage with required_passes 3 and no pass at the head plans three review_stage rows, passes 1, 2 and 3" "$SEC_ROWS" '[1,2,3]'
+rp_plan two
+assert_jq "required_passes: clean passes 1 and 2 at the head plan one review_stage row with pass 3" "$SEC_ROWS" '[3]'
+assert_jq "required_passes: two clean passes of three do not plan merge" '[.cards[] | select(.number == 12 and .action == "merge")] | length' '0'
+rp_plan three
+assert_jq "required_passes: three clean pass records at the head count the stage as met and plan merge" "$(card 12 action)" '"merge"'
+rp_plan finding
+assert_jq "required_passes: one pass with an Important finding plans fix" "$(card 12 action)" '"fix"'
+assert_jq "required_passes: a finding plans no further review_stage row for the stage" '[.cards[] | select(.number == 12 and .action == "review_stage" and .stage.name == "security")] | length' '0'
+rp_plan old
+assert_jq "required_passes: three clean pass records at an older head do not count; three new rows at the current head" "$SEC_ROWS" '[1,2,3]'
+
 tp_finish

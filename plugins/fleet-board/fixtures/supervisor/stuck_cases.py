@@ -884,4 +884,6 @@ class SiblingReviewerMarkerTests(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    # FLEET_TEST_ONLY=<name> runs that one test method (commands.test_case); a name that matches nothing runs none
+    only = os.environ.get('FLEET_TEST_ONLY')
+    unittest.main(argv=[sys.argv[0]] + (['-k', '*.' + only] if only else []))

@@ -1653,6 +1653,46 @@ def test_the_evidence_and_a_stage_report_of_one_card_both_reach_note_reviews(bas
     assert b.state.actions_for(12) == [], b.state.active
 
 
+def test_a_stage_report_carrying_pass_is_recorded_in_review_passes_beside_reviews(base):
+    # A review_stage row planned for pass 2 of required_passes: the report lands in note.review_passes[stage]
+    # at the reviewed head, and note.reviews[stage] still holds the latest record
+    head = 'a' * 40
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None, 'required_passes': 3}
+    first = {'pass': 1, 'round': 1, 'sha': head, 'critical': 0, 'important': 0, 'findings': []}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW, 'review_passes': {'security': [first]}})
+    b.stubs['worktree.sh'] = lambda *a: ok(json.dumps({'path': b.worktree, 'copy': None, 'sha': head, 'base': 'bace000'})
+                                           if a[0] == 'review' else b.worktree + '\n')
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1, head_sha=head, **{'pass': 2})
+    assert started.kind == 'session', [e['payload'] for e in b.state.events]
+    b.driver.finish(started.action, wait_for(started))
+    note = b.note()
+    passes = note['review_passes']['security']
+    assert [p['pass'] for p in passes] == [1, 2], passes
+    assert passes[0] == first, passes
+    assert passes[1]['sha'] == head and passes[1]['round'] == 1 and passes[1]['critical'] == 0, passes
+    assert note['reviews']['security']['sha'] == head, note['reviews']
+    assert note['reviews']['security']['pass'] == 2, note['reviews']
+
+
+def test_a_stage_report_without_pass_leaves_review_passes_alone(base):
+    b = board_for(base, 'in_review')
+    stage = {'name': 'security', 'agent': 'sec-reviewer', 'model': 'opus', 'brief': 'Look for token leaks.',
+             'provider': None}
+    b.put_note({'round': 1, 'pr': 34, 'state': 'in_review', 'stage': None, 'branch': BRANCH,
+                'worktree': b.worktree, 'last_review': LAST_REVIEW})
+    worktree_ok(b)
+    b.gh_result = ok('diff --git a/x b/x\n+line\n')
+    b.plans({'report': 'stage-reviewer-ok', 'sleep': 1})
+    started = begin(b, 'review_stage', state='in_review', stage=stage, round=1)
+    b.driver.finish(started.action, wait_for(started))
+    assert 'review_passes' not in b.note() or b.note()['review_passes'] in (None, {}), b.note()
+
+
 def test_exit_2_from_the_checker_pauses_the_supervisor(base):
     b = board_for(base)
     started = started_implementor(b)
@@ -1971,6 +2011,15 @@ def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
 if __name__ == '__main__':
     base = sys.argv[1] if len(sys.argv) > 1 else tempfile.mkdtemp()
     names = sorted(n for n in dict(globals()) if n.startswith('test_'))
+    # FLEET_TEST_ONLY=<name> runs that one test (commands.test_case); a name that matches nothing runs none
+    only = os.environ.get('FLEET_TEST_ONLY')
+    if only:
+        names = [n for n in names if n == only]
+        # Announce the filter, and fail when it selects nothing (as unittest does), so a stray variable never
+        # makes the suite look green while running nothing
+        sys.stderr.write('FLEET_TEST_ONLY=%s: %d test(s) selected\n' % (only, len(names)))
+        if not names:
+            sys.exit(5)
     failed = 0
     for name in names:
         sub = tempfile.mkdtemp(dir=base)
