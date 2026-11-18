@@ -1833,6 +1833,13 @@ try:
     print("unknown|served")
 except m.ApiError as exc:
     print("unknown|%s" % exc.code)
+for odd in ({"active": 7}, {"active": [None, 5, {"card": 2, "log": None}, {"card": 2, "log": 9}]}, ["not", "a", "dict"]):
+    m.supervisor_status = lambda odd=odd: odd
+    try:
+        m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+        print("odd|served")
+    except m.ApiError as exc:
+        print("odd|%s" % exc.code)
 outside = os.path.join(os.path.dirname(sess), "elsewhere-2-review-7000-1.jsonl")
 open(outside, "w").write('{"type":"assistant","message":{"content":[{"type":"text","text":"secret"}]}}\n')
 m.supervisor_status = lambda: status(outside)
@@ -1855,6 +1862,7 @@ rs_line() { printf '%s\n' "$RS_OUT" | grep "^$1|" | head -n1; }
 [ "$(rs_line text)" = "text|yes" ] && pass "its text is the log as read now" || fail "its text is the log as read now" "$RS_OUT"
 [ "$(rs_line other)" = "other|404" ] && pass "another card cannot read a running session of this card" || fail "another card cannot read a running session of this card" "$RS_OUT"
 [ "$(rs_line unknown)" = "unknown|404" ] && pass "an id no running action names is still a 404" || fail "an id no running action names is still a 404" "$RS_OUT"
+[ "$(printf '%s\n' "$RS_OUT" | grep -c '^odd|404$')" = 3 ] && pass "a malformed supervisor status or a null/non-string log is a 404, never a 500" || fail "a malformed supervisor status or a null/non-string log is a 404, never a 500" "$RS_OUT"
 [ "$(rs_line outside)" = "outside|404" ] && pass "a running action whose log is outside the sessions directory is a 404" || fail "a running action whose log is outside the sessions directory is a 404" "$RS_OUT"
 [ "$(rs_line stopped)" = "stopped|404" ] && pass "with no supervisor, a session with no ledger line is a 404" || fail "with no supervisor, a session with no ledger line is a 404" "$RS_OUT"
 

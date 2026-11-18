@@ -1818,9 +1818,11 @@ def _running_log(n, stem):
     """The log path of this card's running session whose file stem is `stem`, from the supervisor status, else
     None. A session writes its ledger line only when it ends, so the list names it before the ledger can."""
     sessions = _log_sessions_dir()
-    for a in (supervisor_status() or {}).get("active") or []:
+    status = supervisor_status()
+    active = status.get("active") if isinstance(status, dict) else None
+    for a in active if isinstance(active, list) else []:
         log = a.get("log") if isinstance(a, dict) else None
-        if isinstance(a, dict) and a.get("card") == n and log and Path(log).stem == stem and _inside(log, sessions):
+        if isinstance(log, str) and log and a.get("card") == n and Path(log).stem == stem and _inside(log, sessions):
             return log
     return None
 
