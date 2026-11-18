@@ -259,6 +259,18 @@ assert_eq "origin unchanged" "$(og rev-parse "refs/heads/$BRANCH")" "$ORIGIN0"
 assert_eq "note unchanged" "$(note_stable 12)" "$NOTE0"
 assert_eq "no pr edit" "$(count_calls '^[0-9]+	pr edit ')" 0
 
+echo "Test: the parent's final head reaches the worktree only through refs/pull/<pr>/head"
+build "later-parent gone"
+rm -rf "$WT"
+git clone -q --no-local "$ORIGIN" "$WT" 2>/dev/null
+git -C "$WT" checkout -q "$BRANCH"
+git -C "$WT" remote set-head origin main >/dev/null 2>&1
+assert_eq "setup: the final head is not in the worktree" "$(wg cat-file -e "$PH^{commit}" >/dev/null 2>&1 && echo present || echo missing)" missing
+run "$CPR"
+assert_eq "exit 0" "$RC" 0
+assert_eq "the final head was fetched and is an ancestor of the landed head" "$(wg merge-base --is-ancestor "$PH" HEAD; echo $?)" 0
+assert_eq "origin has the landed head" "$(og rev-parse "refs/heads/$BRANCH")" "$(wg rev-parse HEAD)"
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
