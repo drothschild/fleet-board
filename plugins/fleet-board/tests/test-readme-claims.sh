@@ -104,17 +104,17 @@ check "README lists board.terminal_command and the Open terminal link" "$r"
 
 # The "Stacked pull requests" section names the switch, the git floor and the three stop cases.
 stack_sec="$(awk '/^#+ Stacked pull requests/{f=1;next} f && /^## /{exit} f' "$README")"
-r=bad; printf '%s\n' "$stack_sec" | grep -qF 'stacking.enabled' && r=ok
+r=bad; printf '%s\n' "$stack_sec" | grep -cF 'stacking.enabled' >/dev/null && r=ok
 check "README Stacked pull requests section names stacking.enabled" "$r"
-r=bad; printf '%s\n' "$stack_sec" | grep -qF 'git 2.40' && r=ok
+r=bad; printf '%s\n' "$stack_sec" | grep -cF 'git 2.40' >/dev/null && r=ok
 check "README Stacked pull requests section names git 2.40" "$r"
-r=bad; printf '%s\n' "$stack_sec" | grep -qi 'closed unmerged' && r=ok
+r=bad; printf '%s\n' "$stack_sec" | grep -ci 'closed unmerged' >/dev/null && r=ok
 check "README names the case: parent closed unmerged" "$r"
-r=bad; printf '%s\n' "$stack_sec" | grep -qi 'never merged' && r=ok
+r=bad; printf '%s\n' "$stack_sec" | grep -ci 'never merged' >/dev/null && r=ok
 check "README names the case: child followed commits that never merged" "$r"
-r=bad; printf '%s\n' "$stack_sec" | grep -qi 'conflict' && r=ok
+r=bad; printf '%s\n' "$stack_sec" | grep -ci 'conflict' >/dev/null && r=ok
 check "README names the case: a conflict while landing" "$r"
-r=bad; printf '%s\n' "$stack_sec" | grep -qF 'note.sh merge' && r=ok
+r=bad; printf '%s\n' "$stack_sec" | grep -cF 'note.sh merge' >/dev/null && r=ok
 check "README says to clear a stop with note.sh merge" "$r"
 
 # The overrides must work: a copy without the chain sentence, or one naming settle.sh, must fail.
