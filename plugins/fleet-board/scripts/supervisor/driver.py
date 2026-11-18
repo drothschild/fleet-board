@@ -1420,16 +1420,71 @@ class CardDriver:
 
     def _settle_premise(self, c, run, parsed):
         """Act on a checker's verdict. Its follow-up lines (Out of scope, Bugs found) are ignored: a check files
-        nothing. Only `go` is handled so far; any other verdict is a failed check."""
+        nothing. `go` and `needs` are handled so far; any other verdict is a failed check."""
         status = parsed.get('status')
         try:
             c.comment(Path(run.report_file).read_text())
         except (OSError, _Fail) as exc:
             c.warn('checker report not posted: %s' % exc)
+        if status == 'needs':
+            return self._premise_needs(c, parsed)
         if status != 'go':
             raise _Fail('verdict %s is not handled yet' % status)
         c.step('premise.sh', 'stamp', c.n, '--by', 'check', '--sha', run.head)
         c.merge(dict(_RESET, premise_check={'head': run.head, 'verdict': status, 'at': _iso(self.clock())}))
+
+    def _premise_card(self, c, number):
+        """Another card as board-read.sh prints it, or None when the board does not hold it."""
+        result = c.soft('board-read.sh', number)
+        if result.timed_out:
+            raise _Fail('board-read.sh timed out')
+        if result.rc != 0:
+            if 'not found' in (result.stderr or ''):
+                return None
+            raise _Fail(_first_line(result.stderr) or 'board-read.sh exited %d' % result.rc)
+        card = _json(result.stdout)
+        if not isinstance(card, dict):
+            raise _Fail('board-read.sh printed no card')
+        return card
+
+    def _premise_needs(self, c, parsed):
+        """A needs verdict: add the named card as a dependency when it is on its way to being built, else ask."""
+        m = parsed.get('card')
+        if not _posint(m):
+            raise _Fail('the needs verdict names no card')
+        if m == c.n:
+            return self._premise_question(c, 'needs #%d, which is the card itself' % m)
+        other = self._premise_card(c, m)
+        if other is None:
+            return self._premise_question(c, 'needs #%d, which does not exist' % m)
+        state = other.get('state')
+        in_flight = state in ('ready', 'in_progress', 'in_review', 'merging', 'human_qa') \
+            or (isinstance(state, str) and state.startswith('review_'))
+        if not in_flight:
+            return self._premise_question(c, 'needs #%d, which is %s' % (m, state))
+        own = self._premise_card(c, c.n) or {}
+        if m in (own.get('blocked_by') or []):
+            return self._premise_question(c, 'needs #%d, which is already a dependency of this card' % m)
+        seen, todo = set(), [m]
+        while todo:
+            number = todo.pop()
+            if number in seen:
+                continue
+            seen.add(number)
+            card = other if number == m else self._premise_card(c, number)
+            for dep in (card or {}).get('blocked_by') or []:
+                if dep == c.n:
+                    return self._premise_question(c, 'needs #%d, which depends on this card' % m)
+                todo.append(dep)
+        c.step('premise.sh', 'add-dep', c.n, m)
+        c.comment('Premise check: needs #%d, which is %s. Added as a dependency.' % (m, state))
+        c.merge(dict(_RESET))
+
+    def _premise_question(self, c, text, proposal=None):
+        """Block the card for a person: the check could not settle it."""
+        c.move('blocked')
+        c.merge(dict(_RESET, state='blocked', blocked_from='ready'))
+        c.comment('Waiting for a person: the premise check could not settle this card.\n\n%s' % text)
 
     def _blocked(self, run, parsed, final):
         c = run.c
