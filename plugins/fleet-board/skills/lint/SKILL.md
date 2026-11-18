@@ -34,7 +34,9 @@ repository.
 | `untestable-bullet` | an Acceptance bullet says "manual", "visually" or "looks" | rewrite as an assertion a test can make, or move it under `## Human QA` |
 | `dependency-cycle` | cards depend on each other; the detail names them | drop one dependency |
 | `unresolved-dependency` | a `blocked_by` entry is not a card on this board | correct the card number |
-| `missing-file` | a backticked path is not on the default branch | fix the path (lines that create or add a file are skipped) |
+| `missing-file` | a backticked path is not on the default branch | fix the path, or, for a file the card makes, name it as the first path on a line under a `## Creates` heading |
+
+A path named first on a line under `## Creates` counts as present everywhere in that card, and in every card that depends on it, directly or through other cards (a card on the board counts too). The heading is matched without regard to case. Only the first path on each line counts, so a second path on the same line is still checked. A misspelled path under `## Creates` is not caught, and the card and its dependents will not report it.
 
 `/fleet-board:import-plan` runs the same linter on its generated cards and refuses to create
 any card while one fails.

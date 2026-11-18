@@ -56,6 +56,7 @@ WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 LCARDS="" # the card files a board.repo ref resolves to (unset without a config)
 OUT="$WORK/out"; : > "$OUT"
 EDGES="$WORK/edges"; : > "$EDGES"
+EXTDEPS="$WORK/extdeps"; : > "$EXTDEPS" # "<id> <number>": a board card outside the set that <id> depends on
 IDS=()
 
 if [ -n "$BODIES" ]; then
@@ -147,6 +148,8 @@ for id in ${IDS[@]+"${IDS[@]}"}; do
     fi
     if [ -z "$LCARDS" ] || [ ! -f "$LCARDS/$num.json" ]; then
       emit "$id" unresolved-dependency "$tok does not exist"
+    else
+      printf '%s %s\n' "$id" "$num" >> "$EXTDEPS"
     fi
   done < <(if [ -f "$WORK/$id.read" ]; then
              jq -r --arg r "$REPO" '(.blocked_by // [])[] | $r + "#" + tostring' "$WORK/$id.read"
@@ -209,9 +212,25 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
       done
       todo="$next"
     done
-    CREATED="$(for k in $id $DEPS; do
-      [ -f "$WORK/$k.md" ] && awk 'tolower($0) ~ /^##[ \t]+creates[ \t]*$/ { s = 1; next } /^##/ { s = 0 } s' "$WORK/$k.md" | grep -Eo '`[^`]+`' | tr -d '`'
-    done)"
+    # board cards outside the set that this card, or a card it depends on in the set, depends on, and
+    # theirs in turn (read from the card files, each once)
+    EXTCARDS=""; ext_todo="$(for k in $id $DEPS; do awk -v n="$k" '$1 == n { print $2 }' "$EXTDEPS"; done)"
+    while [ -n "$ext_todo" ]; do
+      ext_next=""
+      for e in $ext_todo; do
+        case " $EXTCARDS " in *" $e "*) continue ;; esac
+        [ -n "$LCARDS" ] && [ -f "$LCARDS/$e.json" ] || continue
+        EXTCARDS="$EXTCARDS $e"
+        ext_next="$ext_next $(jq -r '(.blocked_by // [])[] | tostring' "$LCARDS/$e.json" 2>/dev/null)"
+      done
+      ext_todo="$ext_next"
+    done
+    # only the first backticked span of a line under "## Creates" is a path the card makes
+    CAWK='tolower($0) ~ /^##[ \t]+creates[ \t]*$/ { s = 1; next } /^##/ { s = 0 } s && match($0, /`[^`]+`/) { print substr($0, RSTART + 1, RLENGTH - 2) }'
+    CREATED="$({ for k in $id $DEPS; do
+      [ -f "$WORK/$k.md" ] && awk "$CAWK" "$WORK/$k.md"
+    done
+    for e in $EXTCARDS; do jq -r '.body // ""' "$LCARDS/$e.json" 2>/dev/null | awk "$CAWK"; done; })"
     inc=0
     while IFS= read -r line; do
       case "$line" in
