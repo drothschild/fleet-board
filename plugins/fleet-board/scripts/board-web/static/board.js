@@ -707,7 +707,16 @@ function renderCard(c, repo) {
   if (c.known === false) li.appendChild(el("div", "card-meta warn card-state", "state: " + c.state));
 
   const note = c.note || null;
-  const open = c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : [];
+  const stackedOn = Number.isInteger(c.stacked_on) ? c.stacked_on : null;
+  // the stack parent is shown as "stacked on", not as a second blocker
+  const open = (c.blocked && Array.isArray(c.open_blockers) ? c.open_blockers : []).filter(function (b) { return b !== stackedOn; });
+  if (stackedOn !== null) {
+    li.classList.add("stacked");
+    li.appendChild(el("div", "card-meta stacked-on", "stacked on #" + stackedOn));
+    if (typeof c.stack_attention === "string" && c.stack_attention) {
+      li.appendChild(el("div", "card-meta stack-attention", "landing needs attention: " + clean(c.stack_attention, 200)));
+    }
+  }
   if (open.length) {
     li.classList.add("blocked");
     li.appendChild(el("div", "card-meta blocked-by", "blocked by " + open.map(function (b) { return "#" + b; }).join(", ")));
@@ -1104,13 +1113,24 @@ function renderHold(card) {
   p.textContent = hold ? "Held: " + hold.reason + (hold.until ? " (until " + hold.until + ")" : "") : "";
 }
 
-// renderStack(card | null): "stacked on #<parent>" and any landing attention, shown only for a stacked card.
+// renderStack(card | null): the "Stacked on" field: the parent as a link that opens its drawer, and
+// any landing attention. Shown only for a stacked card.
 function renderStack(card) {
-  const p = $("dr-stack");
+  const field = $("dr-stack");
   const on = card && Number.isInteger(card.stacked_on) ? card.stacked_on : null;
-  p.hidden = on === null;
-  p.textContent = on === null ? "" : "stacked on #" + on +
-    (typeof card.stack_attention === "string" && card.stack_attention ? " · landing needs attention: " + card.stack_attention : "");
+  field.hidden = on === null;
+  const link = $("dr-stack-link");
+  const attn = $("dr-stack-attn");
+  link.textContent = on === null ? "" : "#" + on;
+  link.dataset.n = on === null ? "" : String(on);
+  const text = on !== null && typeof card.stack_attention === "string" && card.stack_attention
+    ? "landing needs attention: " + card.stack_attention : "";
+  attn.textContent = text;
+  attn.hidden = !text;
+  // one plain-text summary for assistive tech and text readers of the whole field
+  let sum = field.querySelector(".dr-stack-summary");
+  if (!sum) { sum = el("span", "sr-only dr-stack-summary"); field.appendChild(sum); }
+  sum.textContent = on === null ? "" : "stacked on #" + on + (text ? " " + text : "");
 }
 
 // fillRepoPicker(): the new-card Repo select, shown only when the board lists other repos.
@@ -1934,6 +1954,10 @@ function bindDrawer() {
     }
   });
   $("dr-acc-input").addEventListener("input", updateDirty);
+  $("dr-stack-link").addEventListener("click", function () {
+    const n = Number($("dr-stack-link").dataset.n);
+    if (Number.isInteger(n) && n > 0) openDrawer(n, $("dr-stack-link"));
+  });
   $("dr-blk-input").addEventListener("keydown", function (e) {
     if (e.key === "Enter") {
       e.preventDefault();
