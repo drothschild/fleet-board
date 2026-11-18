@@ -1218,6 +1218,24 @@ class PlannedActionsRun(LoopCase):
         self.finished()
 
 
+class TraceUnadmitted(LoopCase):
+    def _events(self):
+        return [e['payload'] for e in list(self.b.state.events) if e['type'] == 'not_admitted']
+
+    def test_a_card_first_held_leaves_its_event_that_cycle_and_a_repeat_or_a_change_is_counted_once(self):
+        rows = [{'number': 13, 'action': 'fix'}]
+
+        def result(reason):
+            return {'waits': [{'number': 13, 'reason': reason}], 'attention': []}
+        self.sup._trace_unadmitted(rows, result('global capacity'), [])
+        self.assertEqual([(e['card'], e['action'], e['reason']) for e in self._events()],
+                         [(13, 'fix', 'global capacity')])
+        self.sup._trace_unadmitted(rows, result('global capacity'), [])
+        self.assertEqual(len(self._events()), 1)
+        self.sup._trace_unadmitted(rows, result('provider capacity'), [])
+        self.assertEqual([e['reason'] for e in self._events()], ['global capacity', 'provider capacity'])
+
+
 if __name__ == '__main__':
     # FLEET_TEST_ONLY=<name> runs that one test method (commands.test_case); a name that matches nothing runs none
     only = os.environ.get('FLEET_TEST_ONLY')
