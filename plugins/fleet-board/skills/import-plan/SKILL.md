@@ -46,7 +46,8 @@ Group plan tasks into PR-sized cards (one reviewable PR each). For each card wri
 
 A check no agent can run (on a device, on an iPhone, Human QA, simulator, by hand) stays out of `acceptance`:
 card lint refuses it (`manual-check`). Put those checks in `why`, after the problem, under a
-`## Human QA` heading with one `- ` bullet each (the card has no separate Human QA field).
+`## Human QA` heading with one `- ` bullet each (the card has no separate Human QA field), with no file paths
+or `.md` names in the bullets, and add the `needs-human-qa` label to the card: without it the card never enters Human QA.
 
 Write `{"cards": [...]}` to a cards file. Without `--preview`, that is a file in the system temp
 directory (create it with `mktemp`). With `--preview <file>`, write it with the Write tool to
@@ -64,7 +65,7 @@ if a dependency or title is wrong. Nothing is created in this step.
 A `--preview` session runs with only the commands in this skill pre-approved: the dry run above
 and the final `cp`. Run them exactly as written. Any other command (`git`, `ls`, `grep`) may be
 denied; a denied command is not a reason to skip the dry run, so use Read, Grep and Glob instead and
-run the dry run anyway. Never report the shell as blocked without having run the dry run.
+run the dry run anyway. If the dry run itself is denied, report that and stop; do not claim a clean run.
 
 With `--preview <file>`, dry-run `cards.draft.json` in the directory of `<file>`, then copy it to `<file>` after a clean dry run, print the table,
 and stop: do not run Step 4, do not ask.
