@@ -34,7 +34,7 @@ CPR=22
 
 wg() { git -C "$WT" "$@"; }
 og() { git --git-dir="$ORIGIN" "$@"; }
-note() { bash "$SCRIPTS/note.sh" get "$1" 2>/dev/null; }
+note() { (cd "$REPO" && bash "$SCRIPTS/note.sh" get "$1" 2>/dev/null); }
 note_stable() { note "$1" | jq -S 'del(.updated_at)'; }
 gh_calls() { cat "$GHDIR/calls.log" 2>/dev/null || true; }
 count_calls() { gh_calls | grep -cE -- "$1" || true; }
