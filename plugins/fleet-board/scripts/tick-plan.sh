@@ -1332,14 +1332,16 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         # any conflict, fix, update_branch, start_review or review row; a stale conflicted_files does not stop it
         elif $c.land == true and ($c.state == "in_progress" or is_review($c))
           then act("land"; "#\($n.stack.parent) merged; land on \($default_branch)")
+        # A stacked child with an open parent (note.stack, not landed) does not follow main through the conflict
+        # rows: the divergence is the parent branch own work. Only the parent-moved row and land move it.
         # update-branch.sh recorded the files of an aborted conflicting merge: the
         # fixer resolves them (test files included), so update_branch is not
         # planned again while the PR still reads CONFLICTING
         elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
-             and ($c.pr_info.state // null) == "OPEN" and conflict_files($n) != []
+             and ($c.pr_info.state // null) == "OPEN" and conflict_files($n) != [] and ($n.stack | type) != "object"
           then act("fix"; "merge conflicts in \(conflict_files($n) | length) file(s): \(conflict_files($n) | join(", "))")
         elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
-             and ($c.pr_info.state // null) == "OPEN" and $c.mergeable == "CONFLICTING"
+             and ($c.pr_info.state // null) == "OPEN" and $c.mergeable == "CONFLICTING" and ($n.stack | type) != "object"
           then act("update_branch"; "PR #\($c.pr) has merge conflicts with its base branch")
         # A stacked card with a PR head that does not contain its parent branch head: merge the parent branch in
         elif ($c.state == "in_progress" or is_review($c)) and $c.pr != null
