@@ -496,7 +496,8 @@ no file here. The gate's residual bypasses and false positives are listed in the
   `test-tick-plan-merging.sh` (merging, update_branch, settle mode, merge only reviewed heads),
   `test-tick-plan-followups.sh` (blocked, pending follow-ups, lookup and action failures),
   `test-tick-plan-scope.sh` (scope overlap, version bumps, base fetch, the candidates cost pass),
-  `test-tick-plan-stages.sh` (review stages and their gates).
+  `test-tick-plan-stages.sh` (review stages and their gates),
+  `test-tick-plan-repos.sh` (a card of another repo: PR lookups and review stages come from that repo).
   `test-tick-plan-split.sh` pins that shape; add a new scenario to the suite for its area and a
   new helper to the lib, never a copy into a suite. `test-tick-plan.sh` holds no scenario: it
   runs all six and prints their combined total, for the whole planner or a card that names it.

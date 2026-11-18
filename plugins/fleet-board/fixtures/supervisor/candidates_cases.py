@@ -58,7 +58,16 @@ def test_unlisted_script_is_refused(base):
         raise AssertionError('unlisted script ran: ' + name)
     assert 'tick-plan.sh' in scripts.ALLOWED and 'board-list.sh' in scripts.ALLOWED, scripts.ALLOWED
     assert 'premise-settle.sh' in scripts.ALLOWED, scripts.ALLOWED
-    assert len(scripts.ALLOWED) == 22, len(scripts.ALLOWED)
+    assert len(scripts.ALLOWED) == 23, len(scripts.ALLOWED)
+
+
+def test_stack_land_is_an_allowed_script(base):
+    # the driver lands a stacked child through stack-land.sh; a refused name blocks the card after three failures
+    assert 'stack-land.sh' in scripts.ALLOWED, scripts.ALLOWED
+    try:
+        scripts.run(Path(base), 'stack-land.sh')
+    except ValueError as exc:
+        raise AssertionError('stack-land.sh refused: %s' % exc)
 
 
 def test_a_script_run_through_the_runner_sees_the_supervisor_as_its_actor(base):

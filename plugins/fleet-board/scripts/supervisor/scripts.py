@@ -13,6 +13,7 @@ ALLOWED = frozenset((
     'update-branch.sh', 'review-stages.sh', 'merge-reviewed.sh', 'verify-main.sh', 'after-merge.sh',
     'parse-report.sh', 'file-followups.sh', 'human-qa-handoff.sh', 'stage-review.sh',
     'evidence-review.sh', 'config.sh', 'deps.sh', 'cleanup-done.sh', 'premise.sh', 'premise-settle.sh',
+    'stack-land.sh',
 ))
 
 POST_KILL_WAIT = 5
