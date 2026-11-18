@@ -501,6 +501,26 @@ stack_state() {
   jq -cn --argjson c "$closed" --argjson m "$moved" '{closed: $c, moved: $m}'
 }
 
+# stack_chain <note-json>: for a card whose note has stack, prints {parent, base, ancestors}: the note's
+# parent, then each further note stack.parent up the chain (stopping on a repeat and after 20 hops). A parent
+# whose note cannot be read ends the chain there. Prints nothing when the note has no stack parent.
+stack_chain() {
+  local parent base ancestors hop nxt pnote
+  parent="$(jq -r 'if (.stack | type) == "object" and (.stack.parent | type) == "number" and .stack.parent == (.stack.parent | floor) and .stack.parent > 0 then (.stack.parent | tostring) else "" end' <<<"$1" 2>/dev/null)" || return 1
+  [ -n "$parent" ] || return 0
+  base="$(stack_base_of "$1")" || base=""
+  ancestors="[$parent]"; nxt="$parent"; hop=0
+  while [ "$hop" -lt 20 ]; do
+    pnote="$(bash "$FLEET_SCRIPTS/note.sh" get "$nxt" 2>/dev/null)" || break
+    nxt="$(jq -r 'if (.stack | type) == "object" and (.stack.parent | type) == "number" and .stack.parent == (.stack.parent | floor) and .stack.parent > 0 then (.stack.parent | tostring) else "" end' <<<"$pnote" 2>/dev/null)" || break
+    [ -n "$nxt" ] || break
+    [ "$(jq -r --argjson x "$nxt" 'index($x) != null' <<<"$ancestors")" = false ] || break
+    ancestors="$(jq -c --argjson x "$nxt" '. + [$x]' <<<"$ancestors")" || break
+    hop=$((hop + 1))
+  done
+  jq -cn --argjson p "$parent" --arg b "$base" --argjson a "$ancestors" '{parent: $p, base: (if $b == "" then null else $b end), ancestors: $a}'
+}
+
 # stack_lookup <deps_unmet-json>: for a Ready card with exactly one unmet dependency, prints
 # {parent, base, ancestors} when the card may start stacked on it, and fails otherwise (any failed
 # lookup fails closed: the card waits with its dependency reason). The dependency's status is in_review,
@@ -976,6 +996,13 @@ card_input() {
   if [ "$STACKING" = true ] && [ -z "$failed" ] && [ -z "$invalid" ] && [ "$st" = ready ] && [ "$has_deps" -eq 0 ] \
      && [ "$(jq -r 'length' <<<"$deps_unmet")" = 1 ]; then
     stack="$(stack_lookup "$deps_unmet")" || stack=null
+    [ -n "$stack" ] || stack=null
+  fi
+
+  # A card past Ready whose note has stack carries the chain of its ancestors on every row, so its fix,
+  # review, update_branch and land do not hold the cards it is stacked on
+  if [ "$st" != ready ] && [ -z "$failed" ] && [ -z "$invalid" ] && [ "$(jq -r '(.stack | type) == "object"' <<<"$note")" = true ]; then
+    stack="$(stack_chain "$note")" || stack=null
     [ -n "$stack" ] || stack=null
   fi
 
@@ -1511,7 +1538,7 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
                      then $n.merge_retry.after else null end),
        # merge: the red checks that merge goes past (the driver records them in the note)
        ignored_checks: (if $d.action == "merge" then ($c.pr_info.statusCheckRollup | ic_used($cfg.merge.ignore_checks; $today)) else null end),
-       stack: (if $d.action == "start" then $c.stack else null end),
+       stack: (if $d.action == "start" or $c.state != "ready" then $c.stack else null end),
        waiting_on: (if $c.state == "ready" and $d.action == "wait" then [$c.deps_unmet[].ref] else null end),
        needs_human_qa: (if is_review($c) or is_merging($c) then $c.needs_human_qa else null end),
        # fix on a conflicted card: its findings are the conflicted files
