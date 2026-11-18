@@ -262,7 +262,7 @@ def case_open_cards_read_none_when_there_are_no_other_open_cards(sub):
     assert open_cards_section(start_prompt(b)) == 'none'
 
 
-def launched_env(b, key='sk-test-key-436'):
+def launched_env(b, key='sk-test-key-436', **row):
     """Begin a start action with ANTHROPIC_API_KEY in the supervisor's environment; return the env the
     role session was launched with."""
     import os
@@ -279,7 +279,7 @@ def launched_env(b, key='sk-test-key-436'):
     saved = os.environ.get('ANTHROPIC_API_KEY')
     os.environ['ANTHROPIC_API_KEY'] = key
     try:
-        started = dc.begin(b, 'start')
+        started = dc.begin(b, 'start', **row)
         dc.wait_for(started)
     finally:
         if saved is None:
@@ -287,6 +287,19 @@ def launched_env(b, key='sk-test-key-436'):
         else:
             os.environ['ANTHROPIC_API_KEY'] = saved
     return seen['env']
+
+
+def case_a_session_for_a_card_of_another_repo_has_fleet_board_home_set_to_the_home_root(sub):
+    b = dc.board_for(sub)
+    env = launched_env(b, repo='acme/other')
+    assert env.get('FLEET_BOARD_HOME') == str(b.root), (env.get('FLEET_BOARD_HOME'), str(b.root))
+
+
+def case_a_session_for_a_home_repo_card_has_no_fleet_board_home(sub):
+    b = dc.board_for(sub)
+    assert 'FLEET_BOARD_HOME' not in launched_env(b, repo='acme/toy')
+    b = dc.board_for(tempfile.mkdtemp(dir=sub))
+    assert 'FLEET_BOARD_HOME' not in launched_env(b)
 
 
 def case_a_role_session_has_no_anthropic_api_key_when_allow_api_key_is_unset(sub):

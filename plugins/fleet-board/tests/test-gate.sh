@@ -1787,6 +1787,37 @@ run_hook bash.json "gh pr merge 20 --squash"
 assert_blocked "check-states: a red check with no name is never ignored" "PR #20 checks are not green"
 unset FLEET_BOARD_TODAY FB_TEST_TODAY
 
+# ---------------------------------------------------------------------------
+# FLEET_BOARD_HOME: a session in another repo's checkout reads the home board.
+# home_board_case <policy>: the reviewed-head case (clean merge, note on card 12) with its board
+# moved to a home root; the payload's cwd is a copy of the checkout with no board of its own,
+# whose merge.policy is <policy>.
+home_board_case() {
+  reviewed_head_case clean
+  HOME_ROOT="$FAKE_GH_DIR/home"; OTHER="$FAKE_GH_DIR/other"
+  mkdir -p "$HOME_ROOT"
+  cp -R "$REPO" "$OTHER"
+  mv "$OTHER/.fleet-board" "$HOME_ROOT/.fleet-board"
+  cp "$REPO/.fleet-board.yml" "$HOME_ROOT/.fleet-board.yml"
+  sed -i.bak "s/policy: auto/policy: $1/" "$OTHER/.fleet-board.yml"
+  rm -f "$OTHER/.fleet-board.yml.bak"
+  RUN_CWD="$OTHER"
+}
+
+home_board_case auto
+export FLEET_BOARD_HOME="$HOME_ROOT"
+run_hook bash.json "gh pr merge 4 --squash"
+assert_silent_allow "home-board: the note lookup for gh pr merge reads the home board"
+unset FLEET_BOARD_HOME
+run_hook bash.json "gh pr merge 4 --squash"
+assert_blocked "home-board: without FLEET_BOARD_HOME the cwd has no card store" "manager note"
+
+home_board_case human
+export FLEET_BOARD_HOME="$HOME_ROOT"
+run_hook bash.json "gh pr merge 4 --squash"
+assert_blocked "home-board: the cwd repo's merge.policy still applies" "merge.policy is human"
+unset FLEET_BOARD_HOME RUN_CWD
+
 echo "-----------------------------------"
 printf 'passed: %d   failed: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
