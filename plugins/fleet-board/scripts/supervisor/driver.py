@@ -1683,7 +1683,8 @@ class CardDriver:
         pr = c.pr(c.note().get('pr') if c.row.get('pr') is None else None)
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         c.step('update-branch.sh', c.n, pr, branch, worktree)
-        c.merge_soft(dict(_RESET))
+        # a clean update merged everything, so a conflict recorded earlier is stale
+        c.merge_soft(dict(_RESET, conflicted_files=None))
 
     def _do_land(self, c):
         # stack-land.sh: exit 3 (the parent has not landed on the default branch yet) and 4 (it set stack.attention
@@ -1699,7 +1700,8 @@ class CardDriver:
             return
         if result.rc != 0:
             raise _Fail(_first_line(result.stderr) or 'stack-land.sh exited %d' % result.rc)
-        c.merge_soft(dict(_RESET))
+        # a landing merged the parent and updated the branch cleanly: a conflict recorded before it is stale
+        c.merge_soft(dict(_RESET, conflicted_files=None))
 
     def _do_block(self, c):
         reason = c.row.get('reason')
