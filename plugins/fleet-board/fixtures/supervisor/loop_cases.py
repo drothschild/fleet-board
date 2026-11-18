@@ -1116,6 +1116,63 @@ class ReadOnlyScope(LoopCase):
             self.sup.state.active.pop(77, None)
 
 
+class StackedAncestors(LoopCase):
+    """The loop hands a stacked card's ancestors to the scheduler (characterization: the code predates these)."""
+
+    def row(self, number=12, **extra):
+        return dict(number=number, action='fix', provider='claude', declared_paths=['src/%d.py' % number],
+                    actual_paths=[], **extra)
+
+    def begin(self, row):
+        with mock.patch.object(self.sup.driver, 'begin', return_value=mock.Mock(kind='session')):
+            self.sup._begin(row)
+
+    def test_a_stacked_row_reserves_with_exempt_and_ancestors_and_a_plain_row_without(self):
+        calls = []
+        with mock.patch.object(self.sup.state, 'reserve', side_effect=lambda n, p, **kw: calls.append((n, kw))):
+            self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+            self.begin(self.row(13))
+        stacked, plain = calls
+        self.assertEqual(stacked[0], 12)
+        self.assertEqual(stacked[1]['exempt'], (11, 10))
+        self.assertEqual(stacked[1]['ancestors'], (11, 10))
+        self.assertEqual(self.sup._claim_ancestors[12], [11, 10])
+        self.assertEqual(plain[0], 13)
+        self.assertNotIn('exempt', plain[1])
+        self.assertNotIn('ancestors', plain[1])
+        self.assertNotIn(13, self.sup._claim_ancestors)
+
+    def test_reservations_carry_the_ancestors_and_a_card_without_has_no_ancestors_key(self):
+        self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+        self.begin(self.row(13))
+        held = {r['card']: r for r in self.sup._reservations()}
+        self.assertEqual(held[12]['ancestors'], [11, 10])
+        self.assertNotIn('ancestors', held[13])
+
+    def test_active_claims_carry_the_ancestors_and_another_card_has_no_ancestors_key(self):
+        from supervisor.state import Action
+        self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+        for n in (12, 77):
+            self.sup.state.active[n] = Action(card=n, action='fix', column='in_progress', role='implementor',
+                                              provider='claude', paths=['src/a.py'], started_at=0.0,
+                                              started_mono=0.0)
+        try:
+            claims = {c['number']: c for c in self.sup._active_claims()}
+        finally:
+            self.sup.state.active.pop(12, None)
+            self.sup.state.active.pop(77, None)
+        self.assertEqual(claims[12]['ancestors'], [11, 10])
+        self.assertNotIn('ancestors', claims[77])
+
+    def test_a_next_row_without_stack_ancestors_drops_the_recorded_ancestors(self):
+        self.begin(self.row(12, stack={'ancestors': [11, 10]}))
+        self.assertEqual({r['card']: r for r in self.sup._reservations()}[12]['ancestors'], [11, 10])
+        self.sup.state.release(12)
+        self.begin(self.row(12))
+        self.assertNotIn(12, self.sup._claim_ancestors)
+        self.assertNotIn('ancestors', {r['card']: r for r in self.sup._reservations()}[12])
+
+
 if __name__ == '__main__':
     # FLEET_TEST_ONLY=<name> runs that one test method (commands.test_case); a name that matches nothing runs none
     only = os.environ.get('FLEET_TEST_ONLY')
