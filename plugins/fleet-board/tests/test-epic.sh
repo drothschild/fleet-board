@@ -194,6 +194,16 @@ eq "clear-attention out of range: exit 1" "$RC" "1"
 run "$R" clear-attention 1 x
 eq "clear-attention bad index: exit 2" "$RC" "2"
 
+# --- unparsable card file ----------------------------------------------------
+R="$(mkrepo r7)"
+run "$R" create --title-file "$(title)"
+printf '{not json' > "$R/.fleet-board/cards/9.json"
+run "$R" read 1
+eq "read with an unparsable card: exit 1" "$RC" "1"
+run "$R" list
+eq "list with an unparsable card: exit 1" "$RC" "1"
+eq "list with an unparsable card: no output" "$OUT" ""
+
 # --- usage -------------------------------------------------------------------
 run "$R"
 eq "usage: no verb" "$RC" "2"
