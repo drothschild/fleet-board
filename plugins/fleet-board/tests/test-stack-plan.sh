@@ -518,6 +518,48 @@ u.reserve(11, ["src/a"])
 assert u.reserve(12, ["src/a"]) == 11, "no exempt: card 11 still holds it"
 '
 
+echo "Test: a stacked child with an open parent and a CONFLICTING PR (card 512)"
+# conflict_board <parent column> <child note extras>: parent 11, child 12 in review, child PR 34 reads CONFLICTING
+conflict_board() {
+  child_board "$ON" "$1" "$2"
+  routes
+  printf 'pr view 34 --repo acme/toy --json mergeable\t0\t%s/mergeable-12.json\n' "$DIR" >> "$DIR/routes"
+  printf '{"mergeable":"CONFLICTING"}\n' > "$DIR/mergeable-12.json"
+}
+plan12() { printf '%s+" "+%s' "$(card 12 action)" "$(card 12 reason)"; }
+
+conflict_board in_review "$(stack_of 11)"
+run_check "$SCRIPT"
+assert_jq "stacked child, parent 11 open, PR CONFLICTING: no update_branch naming the base branch" "$(card 12 action) != \"update_branch\" or ($(card 12 reason) | test(\"base branch\") | not)" 'true'
+
+conflict_board in_review "$(stack_of 11),\"conflicted_files\":[\"src/child.sh\"]"
+run_check "$SCRIPT"
+assert_jq "stacked child, parent 11 open, conflicted_files recorded: no fix for merge conflicts" "$(card 12 action) != \"fix\"" 'true'
+
+conflict_board in_review "$(stack_of 11)"
+stack_git no
+routes
+printf 'pr view 34 --repo acme/toy --json mergeable\t0\t%s/mergeable-12.json\n' "$DIR" >> "$DIR/routes"
+run_check "$SCRIPT"
+assert_jq "stacked child, CONFLICTING PR, parent branch moved: update_branch for the parent branch" "$(plan12)" '"update_branch parent branch fleet/11-card moved"'
+
+setup_case ready-start "$ON"
+mk 11 done - - "$(note done 11)"
+mk 12 in_review 'src/child.sh' - "$(note in_review 12 "$(stack_of 11)")"
+routes
+printf 'pr view 34 --repo acme/toy --json mergeable\t0\t%s/mergeable-12.json\n' "$DIR" >> "$DIR/routes"
+printf '{"mergeable":"CONFLICTING"}\n' > "$DIR/mergeable-12.json"
+run_check "$SCRIPT"
+assert_jq "stacked child, CONFLICTING PR, parent 11 done: land" "$(plan12)" '"land #11 merged; land on main"'
+
+conflict_board in_review ""
+run_check "$SCRIPT"
+assert_jq "no stack in the note, PR CONFLICTING: update_branch" "$(plan12)" '"update_branch PR #34 has merge conflicts with its base branch"'
+
+conflict_board in_review ",\"conflicted_files\":[\"src/child.sh\"]"
+run_check "$SCRIPT"
+assert_jq "no stack in the note, conflicted_files recorded: fix" "$(card 12 action)" '"fix"'
+
 echo ""
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
