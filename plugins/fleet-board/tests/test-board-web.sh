@@ -1801,6 +1801,54 @@ rt_line() { printf '%s\n' "$RT_OUT" | grep "^$1|" | head -n1; }
 [ "$(rt_line later)" = "later|False" ] && pass "ledger sessions are not marked running" || fail "ledger sessions are not marked running" "$RT_OUT"
 [ "$(rt_line dups)" = "dups|1" ] && pass "a session that has ended and reached the ledger is listed once, not twice" || fail "a session that has ended and reached the ledger is listed once, not twice" "$RT_OUT"
 
+# Card 481: a session the list marks running can be opened; its log is read as a snapshot (no ledger line yet).
+echo "Case: a running session's transcript is served, not a 404"
+RS_LOG_DIR="$TMP/logs"; mkdir -p "$RS_LOG_DIR/sessions"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"still working on it"}]}}' > "$RS_LOG_DIR/sessions/card-2-review-6000-1.jsonl"
+RS_OUT="$(SCRIPTS="$SCRIPTS" RT_REPO="$REPO" SESS="$RS_LOG_DIR/sessions" FLEET_BOARD_LOG_DIR="$RS_LOG_DIR" python3 -I - <<'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.APP.update(root=os.environ["RT_REPO"], scripts=os.environ["SCRIPTS"])
+sess = os.environ["SESS"]
+def status(log):
+    return {"phase": "running", "desired_mode": "running", "pid": 1,
+            "active": [{"card": 2, "action": "review", "role": "reviewer", "log": log}]}
+m.supervisor_status = lambda: status(sess + "/card-2-review-6000-1.jsonl")
+listed = [x["id"] for x in m.get_transcripts({"n": 2}, None)[1] if x.get("running")]
+print("listed|%s" % ",".join(listed))
+try:
+    code, body = m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("code|%s" % code)
+    print("text|%s" % ("yes" if "still working on it" in str(body) else "no"))
+except m.ApiError as exc:
+    print("code|%s" % exc.code)
+try:
+    m.get_transcript({"n": 1, "id": "card-2-review-6000-1"}, None)
+    print("other|served")
+except m.ApiError as exc:
+    print("other|%s" % exc.code)
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-9999-1"}, None)
+    print("unknown|served")
+except m.ApiError as exc:
+    print("unknown|%s" % exc.code)
+m.supervisor_status = lambda: None
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("stopped|served")
+except m.ApiError as exc:
+    print("stopped|%s" % exc.code)
+PYEOF
+)"
+rs_line() { printf '%s\n' "$RS_OUT" | grep "^$1|" | head -n1; }
+[ "$(rs_line listed)" = "listed|card-2-review-6000-1" ] && pass "the list marks the running session" || fail "the list marks the running session" "$RS_OUT"
+[ "$(rs_line code)" = "code|200" ] && pass "a session the list marks running is served with 200" || fail "a session the list marks running is served with 200" "$RS_OUT"
+[ "$(rs_line text)" = "text|yes" ] && pass "its text is the log as read now" || fail "its text is the log as read now" "$RS_OUT"
+[ "$(rs_line other)" = "other|404" ] && pass "another card cannot read a running session of this card" || fail "another card cannot read a running session of this card" "$RS_OUT"
+[ "$(rs_line unknown)" = "unknown|404" ] && pass "an id no running action names is still a 404" || fail "an id no running action names is still a 404" "$RS_OUT"
+[ "$(rs_line stopped)" = "stopped|404" ] && pass "with no supervisor, a session with no ledger line is a 404" || fail "with no supervisor, a session with no ledger line is a 404" "$RS_OUT"
+
 # Card 426: the board page shows a card's repo and lists the configured repos.
 echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
 RP_REPO="$(new_repo "board:
