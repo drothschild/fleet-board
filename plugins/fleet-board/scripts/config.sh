@@ -412,7 +412,9 @@ VALIDATION_SCRIPT='
         (if .planner.persona_append != null and (.planner.persona_append | type) != "string" then "planner.persona_append must be null or a string" else empty end)
       else empty end),
       (if (.followups | type) != "object" then "followups must be an object"
-       elif (.followups.status | type) != "string" or (.followups.status as $s | ($s == "ready" or $s == "backlog") | not) then "followups.status must be ready or backlog" else empty end),
+       elif (.followups.status | type) != "string" or (.followups.status as $s | ($s == "ready" or $s == "backlog") | not) then "followups.status must be ready or backlog"
+       elif (.followups.auto_ready | type) != "string" or (.followups.auto_ready as $s | ($s == "bugs" or $s == "none") | not) then "followups.auto_ready must be bugs or none"
+       elif (.followups.auto_ready_cap | type) != "number" or .followups.auto_ready_cap < 0 or .followups.auto_ready_cap != (.followups.auto_ready_cap | floor) then "followups.auto_ready_cap must be a non-negative integer" else empty end),
       (if (.after_merge | type) != "object" then "after_merge must be an object"
        elif (.after_merge.allow | type) != "array" or (.after_merge.allow | map(type != "string" or . == "") | any) then "after_merge.allow must be a list of non-empty strings"
        else empty end),

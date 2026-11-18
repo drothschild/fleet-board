@@ -1052,8 +1052,14 @@ if [ -n "$ONE_CARD" ]; then
 fi
 
 SEEN=" "
-for st in $([ "$SETTLE" = true ] || [ -n "$ONE_CARD" ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa)); do
+for st in $([ "$SETTLE" = true ] || [ -n "$ONE_CARD" ] || echo ready in_progress in_review $(fb_stage_states) merging blocked $([ "$CANDIDATES" = true ] && echo human_qa) $([ "$PREMISE_CHECK" = true ] && echo backlog)); do
   LIST="$(bash "$FLEET_SCRIPTS/board-list.sh" "$st")" || fb_die 1 "cannot list the $st column"
+  # Backlog is listed only for the follow-ups that await a draft: the rest is dropped before any per-card read,
+  # so the cost does not grow with the Backlog
+  if [ "$st" = backlog ]; then
+    LIST="$(jq -c 'if type == "array" then [.[] | select(.followup_draft == "pending")] else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
+      || fb_die 1 "cannot parse the $st column"
+  fi
   ROWS="$(jq -r 'if type == "array" then .[] | "\(.number)\t\((.title // "") | tojson)" else error("not a list") end' <<<"$LIST" 2>/dev/null)" \
     || fb_die 1 "cannot parse the $st column"
   NUMS="$(printf '%s\n' "$ROWS" | cut -f1)"
@@ -1276,6 +1282,11 @@ jq -s -c --slurpfile actual_scope "$SCOPE_FILE" --slurpfile version_scope "$VERS
         # A role session tripped the role guard: a person clears note.role_guard first
         elif ($n.role_guard.status // null) == "attention"
           then act("skip"; "role guard needs attention (\($n.role_guard.reason // "no reason recorded")); a person clears it")
+        # A follow-up filed in Backlog awaits its draft (the listing keeps only those): the check session drafts it
+        elif $c.state == "backlog" and $fails >= $max
+          then act("skip"; "follow-up draft made no progress after \($fails) attempts: \($err)")
+        elif $c.state == "backlog"
+          then act("draft_followup"; "follow-up awaits a draft")
         # Never let failure limits or follow-ups move an unverified merge out
         # of review, where the headless recovery pass can still find it.
         elif (is_review($c) or is_merging($c)) and $c.pr_info.state == "MERGED" and $n.main_check.ok != true
