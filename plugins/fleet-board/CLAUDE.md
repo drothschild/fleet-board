@@ -505,8 +505,9 @@ no file here. The gate's residual bypasses and false positives are listed in the
   skips it and no suite runs twice.
 - `test-supervisor-allowlist.sh` reads every literal `*.sh` name the supervisor package passes to
   `run`, `soft`, `step`, `spawn` or the script helpers and fails for any name missing from
-  `scripts.ALLOWED`. Driver tests stub scripts by name, so only this suite runs the real allowlist:
-  add a new script to `ALLOWED` when the supervisor first calls it.
+  `scripts.ALLOWED`. Driver tests stub scripts by name, so they never run the real allowlist: add a
+  new script to `ALLOWED` when the supervisor first calls it, and raise the `ALLOWED` count that
+  `fixtures/supervisor/candidates_cases.py` pins.
 - After any change under this directory: `bash plugins/fleet-board/tests/test-clean-room.sh`
   must pass.
 - `behavioral-*.sh` are live: they run real headless sessions against `SANDBOX_REPO` and

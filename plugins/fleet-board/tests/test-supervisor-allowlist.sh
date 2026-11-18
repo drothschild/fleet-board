@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Every literal script name the supervisor package passes to a script call must be in scripts.ALLOWED.
 # The driver's tests stub scripts by name, so nothing else runs the real allowlist.
-# FLEET_ALLOWLIST_SCRIPTS_PY overrides which scripts.py supplies ALLOWED (used to prove the suite can fail).
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN="$(cd "$HERE/.." && pwd)"
