@@ -28,7 +28,10 @@
 #                          branch of the card's own repo (with --bodies, the
 #                          <dir>/<id>.repo file names it). Lines under a
 #                          "## Creates" heading are skipped: they name files
-#                          the card makes. A path that the open PR (pr_url) of a
+#                          the card makes. The first backticked path on each such
+#                          line counts as present (whole-path match) everywhere in
+#                          that card and in every card that depends on it, directly
+#                          or through other cards, in the set or on the board. A path that the open PR (pr_url) of a
 #                          card in the linted card's blocked_by adds is not flagged.
 #
 # Exit codes: 0 pass, 1 lint failed, 2 usage error, 3 a card could not be read.
@@ -185,6 +188,37 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
     [ -n "$DEP_FILES" ] && grep -Fxq -- "$1" <<<"$DEP_FILES"
   }
   if [ "$FILECHECK" -eq 1 ]; then
+    # CREATED: the paths this card and every card it depends on (directly or
+    # through others, in the set or on the board) name first on a ## Creates line
+    CREATED="$WORK/created.$id"; : > "$CREATED"
+    seen=" $id "; queue="$id"
+    while [ -n "$queue" ]; do
+      k="${queue%% *}"; case "$queue" in *" "*) queue="${queue#* }" ;; *) queue="" ;; esac
+      if in_set "$k"; then tf="$WORK/$k.md"
+      elif [ -n "$LCARDS" ] && [ -f "$LCARDS/$k.json" ]; then
+        tf="$WORK/ext-$k.md"; jq -r '.body // ""' "$LCARDS/$k.json" > "$tf" 2>/dev/null
+      else continue; fi
+      awk '
+        /^##/ { s = (tolower($0) ~ /^##[ \t]+creates[ \t]*$/); next }
+        s && match($0, /`[^`]+`/) { print substr($0, RSTART + 1, RLENGTH - 2) }
+      ' "$tf" >> "$CREATED"
+      if [ -f "$WORK/$k.read" ]; then
+        deps="$(jq -r '(.blocked_by // [])[] | tostring' "$WORK/$k.read")"
+      elif in_set "$k"; then
+        deps="$(awk '
+          /^##[ \t]+[Dd]epends[ \t]+[Oo]n[ \t]*$/ { s = 1; next }
+          /^#/ { s = 0 }
+          s && /^[-*][ \t]+/ { l = $0; sub(/^[-*][ \t]+/, "", l); sub(/[ \t].*$/, "", l); print l }
+        ' "$tf")"
+      else
+        deps="$(jq -r '(.blocked_by // [])[] | tostring' "$LCARDS/$k.json" 2>/dev/null)"
+      fi
+      for d in $deps; do
+        case "$d" in "$REPO"#[0-9]*) [ -n "$REPO" ] && d="${d#*#}" ;; */*#[0-9]*) continue ;; '#'[0-9]*) d="${d#\#}" ;; esac
+        case "$seen" in *" $d "*) continue ;; esac
+        seen="$seen$d "; queue="$queue $d"; queue="${queue# }"
+      done
+    done
     inc=0
     while IFS= read -r line; do
       case "$line" in
@@ -195,6 +229,7 @@ $(jq -r 'select(.state == "OPEN") | .files[]?.path' <<<"$view" 2>/dev/null)"
         p="${span#\`}"; p="${p%\`}"
         grep -Eq '^[A-Za-z0-9_.@-][A-Za-z0-9_./@-]*/[A-Za-z0-9_.-]+\.[A-Za-z0-9]+$' <<<"$p" || continue
         case "$p" in http*|*..*) continue ;; esac
+        grep -Fxq -- "$p" "$CREATED" && continue
         rbranch || continue
         dep_pr_adds "$p" && continue
         where="$rbr"; [ "$remote" -eq 1 ] && where="$rbr of $crepo"

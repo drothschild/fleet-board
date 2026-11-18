@@ -26,9 +26,9 @@ ok "skill file exists"
 
 front="$(awk 'NR==1 && $0!="---"{exit} NR==1{next} /^---$/{exit} {print}' "$SKILL")"
 
-if printf '%s\n' "$front" | grep -qx 'name: qa'; then ok "frontmatter has name: qa"; else bad "frontmatter has name: qa"; fi
-if printf '%s\n' "$front" | grep -Eq '^description: *[^ ]'; then ok "frontmatter has a description"; else bad "frontmatter has a description"; fi
-if printf '%s\n' "$front" | grep -qx 'user-invocable: true'; then ok "frontmatter has user-invocable: true"; else bad "frontmatter has user-invocable: true"; fi
+if printf '%s\n' "$front" | grep -cx 'name: qa' >/dev/null; then ok "frontmatter has name: qa"; else bad "frontmatter has name: qa"; fi
+if printf '%s\n' "$front" | grep -Ec '^description: *[^ ]' >/dev/null; then ok "frontmatter has a description"; else bad "frontmatter has a description"; fi
+if printf '%s\n' "$front" | grep -cx 'user-invocable: true' >/dev/null; then ok "frontmatter has user-invocable: true"; else bad "frontmatter has user-invocable: true"; fi
 
 for term in 'commands.qa_build' 'board-create.sh' '--blocked-by'; do
   if grep -qF -- "$term" "$SKILL"; then ok "skill names $term"; else bad "skill names $term"; fi

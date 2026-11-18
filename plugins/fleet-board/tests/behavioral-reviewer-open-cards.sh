@@ -165,7 +165,7 @@ else
   fi
   # the Bugs found entries: unindented `- ` lines right after the `Bugs found:` header
   BUGS="$(awk '/^Bugs found:/{on=1; next} on && /^- /{print; next} on{exit}' "$F")"
-  if printf '%s\n' "$BUGS" | grep -qF -- "- $TITLE :: repro:"; then
+  if printf '%s\n' "$BUGS" | grep -cF -- "- $TITLE :: repro:" >/dev/null; then
     pass "a Bugs found entry uses the open card's title word for word"
   else
     fail "a Bugs found entry uses the open card's title word for word" "Bugs found was: ${BUGS:-<none>}"
