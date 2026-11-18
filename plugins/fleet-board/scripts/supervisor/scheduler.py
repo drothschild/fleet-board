@@ -343,6 +343,7 @@ class Scheduler:
         last_launch = limits.get('last_launch_at', self._last_launch)
         # supervisor.scope_ignore: paths every PR touches (version manifests) never overlap
         ignore = limits.get('scope_ignore') or []
+        home_repo = limits.get('home_repo') or None   # a missing repo on a claim is this repo
         for c in ordered:
             number = c.get('number')
             provider = c.get('provider') or 'default'
@@ -387,7 +388,7 @@ class Scheduler:
             exempt = _ancestors(c)   # a stacked child's start is not held by its ancestors' scope
             reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
                              and str(x.get('card', x.get('number'))) not in exempt
-                             and scopes.same_repo(c.get('repo'), x.get('repo'))
+                             and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                              and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
                 waits.append({'number': number, 'reason': 'scope reserved by #' + str(reserved.get('card', reserved.get('number')))})
@@ -395,7 +396,7 @@ class Scheduler:
             conflict = next((x for x in occupied if (same_card(x, number) and not _share_card(c, x))
                              or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
                                  and str(x.get('number')) not in exempt
-                                 and scopes.same_repo(c.get('repo'), x.get('repo'))
+                                 and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                                  and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
                 waits.append({'number': number, 'reason': 'scope or card conflict'}); continue
