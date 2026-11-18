@@ -248,4 +248,86 @@ rm -f "$REPO/.fleet-board/.from-routes" # keep the edited card: store_sync must 
 run_check "$SCRIPT" --candidates
 assert_jq "candidate repo: a card with repo set carries that repo" "(.candidates[] | select(.number == 14)).repo" '"acme/other"'
 
+# Card 511: every plan row of a stacked card carries stack.ancestors, not only its start
+SCRIPTS_ABS="$(cd "$SCRIPT_DIR/../scripts" && pwd)"
+STK_START=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+# stk_note <dir> <n> <note JSON>: card n's comments hold that manager note
+stk_note() {
+  jq -n --arg b "<!-- fleet-board:manager-note -->"$'\n'"### fleet-board manager note"$'\n\n```json\n'"$3"$'\n```\n' \
+    '[{id: 1, user: {login: "fleet-bot"}, body: $b, created_at: "2026-01-01T00:00:00Z"}]' > "$1/comments-$2.json"
+}
+# stk_chain <12's note extras> <10's note extras>: in_review cards 12 (note extras as given), 11 (stack parent 10) and 10
+stk_chain() {
+  setup_case ready-start "$(printf 'stacking:\n  enabled: true')"
+  local dir="$FAKE_GH_DIR/stk" n; mkdir -p "$dir"
+  for n in 10 11 12; do scope_issue "$dir" "$n" in_review "- src/c$n.sh"; done
+  stk_note "$dir" 10 "$(printf '{"state":"in_review","branch":"fleet/10-card","pr":32,"round":1%s}' "$2")"
+  stk_note "$dir" 11 "$(printf '{"state":"in_review","branch":"fleet/11-card","pr":33,"round":1,"stack":{"parent":10,"base":"fleet/10-card","start":"%s"}}' "$STK_START")"
+  stk_note "$dir" 12 "$(printf '{"state":"in_review","branch":"fleet/12-card","pr":34,"round":1%s}' "$1")"
+  scope_routes "$dir" "" "10 11 12"
+  printf '{"state":"OPEN"}\n' > "$dir/pstate.json"
+  printf 'pr view 33 --repo acme/toy --json state\t0\t%s/pstate.json\n' "$dir" >> "$dir/routes"
+}
+STK12=',"stack":{"parent":11,"base":"fleet/11-card","start":"'$STK_START'"}'
+LR_FIX=',"last_review":{"round":1,"sha":"abc1234","critical":0,"important":1,"findings":[{"severity":"Important","text":"x"}]}'
+LR_OK=',"last_review":{"round":1,"sha":"abc1234","critical":0,"important":0,"findings":[]}'
+anc12() { printf '(.cards[] | select(.number == 12)) | (.action + " " + (.stack.ancestors | tostring))'; }
+
+stk_chain "$STK12$LR_FIX" ""
+run_check "$SCRIPT"
+assert_exit "stack-rows: exit" 0
+assert_jq "stack-rows: a stacked in_review card with findings plans fix with stack.ancestors [11,10]" "$(anc12)" '"fix [11,10]"'
+
+stk_chain "$STK12" ""
+run_check "$SCRIPT"
+assert_jq "stack-rows: the review row carries stack.ancestors [11,10]" "$(anc12)" '"review [11,10]"'
+
+stk_chain "$STK12$LR_OK" ""
+d="$FAKE_GH_DIR/stk"; printf '{"mergeable":"CONFLICTING"}\n' > "$d/mergeable.json"
+{ printf 'pr view 34 --repo acme/toy --json mergeable\t0\t%s/mergeable.json\n' "$d"; cat "$d/routes"; } > "$d/routes2"
+FAKE_GH_ROUTES="$d/routes2"; export FAKE_GH_ROUTES
+run_check "$SCRIPT"
+assert_jq "stack-rows: the update_branch row carries stack.ancestors [11,10]" "$(anc12)" '"update_branch [11,10]"'
+
+stk_chain "$STK12$LR_OK" ""
+d="$FAKE_GH_DIR/stk"
+jq -n '{number: 11, title: "Card 11", html_url: "u", body: "Work.\n\n## Acceptance\n- it works\n", labels: [{name: "fleet:done"}]}' > "$d/issue-11.json"
+run_check "$SCRIPT"
+assert_jq "stack-rows: the land row carries stack.ancestors [11,10]" "$(anc12)" '"land [11,10]"'
+
+stk_chain "$LR_FIX" ""
+run_check "$SCRIPT"
+assert_jq "stack-rows: a card whose note has no stack plans stack null" "$(card 12 action)+\" \"+($(card 12 stack) | tostring)" '"fix null"'
+
+stk_chain "$STK12$LR_FIX" ',"stack":{"parent":11,"base":"fleet/11-card","start":"'$STK_START'"}'
+run_check "$SCRIPT"
+assert_exit "stack-repeat: a chain that repeats a card exits 0" 0
+assert_jq "stack-repeat: the chain stops at the repeat" "$(card 12 stack.ancestors)" '[11,10]'
+
+py_check() {
+  local desc="$1" out rc
+  out="$(PYTHONDONTWRITEBYTECODE=1 python3 -B -c "$2" "$SCRIPTS_ABS" 2>&1)"; rc=$?
+  if [ "$rc" -eq 0 ]; then pass "$desc"; else fail "$desc" "$out"; fi
+}
+PY_FIX='
+import sys
+sys.path.insert(0, sys.argv[1])
+from supervisor.scheduler import Scheduler
+LIMITS = {"global": 4, "providers": {"claude": 4}, "per_card": 1}
+def fix(n=12, anc=(11, 10)):
+    return {"number": n, "action": "fix", "provider": "claude", "declared_paths": ["src/a.py"], "actual_paths": [],
+            "scope_complete": True, "priority": "normal", "eligible_since": 0,
+            "preconditions": {"state": "in_review", "head_sha": None},
+            "stack": {"parent": 11, "base": "fleet/11-card", "ancestors": list(anc)}}
+'
+py_check "fix-scope: card 12's fix with ancestors [11,10] is not held by cards 11 and 10" "$PY_FIX"'
+r = Scheduler(clock=lambda: 0).admit([fix()], reservations=[{"card": 11, "paths": ["src/a.py"]}, {"card": 10, "paths": ["src/a.py"]}], limits=LIMITS)
+assert [x["number"] for x in r["admitted"]] == [12], r["waits"]
+'
+py_check "fix-scope: the same fix is still held by a card outside the chain, a sibling included" "$PY_FIX"'
+for other in (20, 13):
+    r = Scheduler(clock=lambda: 0).admit([fix()], reservations=[{"card": other, "paths": ["src/a.py"]}], limits=LIMITS)
+    assert r["admitted"] == [] and r["waits"][0]["reason"] == "scope reserved by #%d" % other, r
+'
+
 tp_finish
