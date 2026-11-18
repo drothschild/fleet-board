@@ -236,6 +236,9 @@ def run():
     test_one_cards_reviewers_are_admitted_together()
     test_a_writer_and_the_reviewers_of_one_card_exclude_each_other()
     test_a_stacked_child_is_not_held_by_its_ancestors_scope()
+    test_a_parent_fix_is_not_held_by_the_scope_of_a_card_stacked_on_it()
+    test_a_card_is_not_held_by_a_grandchild_stacked_on_its_child()
+    test_a_stacked_child_is_still_held_by_a_siblings_scope()
     test_after_merge_and_merge_refusal_are_not_held_by_another_cards_scope()
     test_a_merge_is_not_held_by_another_cards_scope()
     test_a_merge_still_waits_while_its_own_card_has_a_reviewer_running()
@@ -256,7 +259,7 @@ def test_every_planned_action_is_classified():
     expected = {0: ['continue_implementor', 'fix', 'review', 'review_stage'],
                 1: ['start_review', 'unblock', 'update_branch', 'land', 'advance_stage', 'to_human_qa', 'mark_ready',
                     'verify_main', 'finish', 'block', 'file_pending', 'merge', 'after_merge', 'merge_refusal',
-                    'move_to_review'],
+                    'move_to_review', 'check_premise', 'rerun_checks', 'checks_failed'],
                 2: ['start']}
     for klass, actions in expected.items():
         for action in actions:
@@ -648,6 +651,39 @@ def test_a_stacked_child_is_not_held_by_its_ancestors_scope():
     assert plain['waits'][0]['reason'] == 'scope reserved by #11', plain
 
 
+def test_a_parent_fix_is_not_held_by_the_scope_of_a_card_stacked_on_it():
+    fix = candidate(11, 'fix', paths=['src/a.py'])
+    res = [{'card': 12, 'paths': ['src/a.py'], 'ancestors': [11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], reservations=res, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+    res = [{'card': 20, 'paths': ['src/a.py'], 'ancestors': [30]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], reservations=res, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope reserved by #20', r
+    held = [{'number': 12, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'start', 'ancestors': [11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], active=held, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+    held[0]['ancestors'] = []
+    r = Scheduler(clock=lambda: 0).admit([fix], active=held, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope or card conflict', r
+
+
+def test_a_card_is_not_held_by_a_grandchild_stacked_on_its_child():
+    fix = candidate(11, 'fix', paths=['src/a.py'])
+    res = [{'card': 13, 'paths': ['src/a.py'], 'ancestors': [12, 11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], reservations=res, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+    held = [{'number': 13, 'provider': 'claude', 'paths': ['src/a.py'], 'action': 'start', 'ancestors': [12, 11]}]
+    r = Scheduler(clock=lambda: 0).admit([fix], active=held, limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [11], r['waits']
+
+
+def test_a_stacked_child_is_still_held_by_a_siblings_scope():
+    child = dict(candidate(12, paths=['src/a.py']), stack={'parent': 11, 'base': 'fleet/11-x', 'ancestors': [11]})
+    res = [{'card': 13, 'paths': ['src/a.py'], 'ancestors': [11]}]
+    r = Scheduler(clock=lambda: 0).admit([child], reservations=res, limits=LIMITS)
+    assert r['admitted'] == [] and r['waits'][0]['reason'] == 'scope reserved by #13', r
+
+
 def test_after_merge_and_merge_refusal_are_not_held_by_another_cards_scope():
     holder = [{'number': 99, 'provider': 'claude', 'paths': ['src/a.sh'], 'action': 'implement'}]
     for action in ('after_merge', 'merge_refusal'):
@@ -679,6 +715,20 @@ def test_an_after_merge_still_takes_a_provider_slot():
         limits={'global': 1, 'providers': {'*': 1}, 'per_card': 1},
         active=[{'number': 9, 'provider': 'claude', 'paths': ['z']}], lane_free=True)
     assert r['admitted'] == [] and r['waits'][0]['reason'] == 'global capacity', r
+
+
+def test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it():
+    start = candidate(11, 'start', paths=['src/a.sh'])
+    check = candidate(12, 'check_premise', paths=['src/a.sh'])
+    r = Scheduler(clock=lambda: 0).admit([start, check], limits=LIMITS)
+    assert sorted(x['number'] for x in r['admitted']) == [11, 12], (r['admitted'], r['waits'])
+    r = Scheduler(clock=lambda: 0).admit([check], active=[{'number': 11, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                           'action': 'start'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [12], r['waits']
+    r = Scheduler(clock=lambda: 0).admit([candidate(13, 'start', paths=['src/a.sh'])],
+                                         active=[{'number': 12, 'provider': 'claude', 'paths': ['src/a.sh'],
+                                                  'action': 'check_premise'}], limits=LIMITS)
+    assert [x['number'] for x in r['admitted']] == [13], r['waits']
 
 
 def _repo_row(number, repo, action='start'):
@@ -722,4 +772,5 @@ def test_a_missing_repo_on_a_reservation_means_the_home_repo():
 
 
 if __name__ == '__main__':
+    test_a_check_premise_row_is_admitted_beside_a_start_row_whose_scope_overlaps_it()
     run()

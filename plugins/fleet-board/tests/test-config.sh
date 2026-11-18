@@ -1055,10 +1055,10 @@ CLEANUP_DIRS+=("$REPO"); run_config "$REPO" stacking.enabled
 assert_stdout_exact "fb_cfg stacking.enabled prints true with stacking: { enabled: true }" "true"
 check_case "stacking: { enabled: \"yes\" } is refused as a config error" 'stacking: { enabled: "yes" }' 5 "stacking.enabled must be boolean"
 
-# premise_check.enabled defaults to false, accepts true, refuses anything else; models.checker defaults to sonnet
+# premise_check.enabled defaults to true, accepts false, refuses anything else; models.checker defaults to sonnet
 REPO="$(printf 'board:\n  repo: a/b\n' | make_inline_repo)"
 CLEANUP_DIRS+=("$REPO"); run_config "$REPO" premise_check.enabled
-assert_stdout_exact "fb_cfg premise_check.enabled prints false with no config key" "false"
+assert_stdout_exact "fb_cfg premise_check.enabled prints true with no config key" "true"
 run_config "$REPO" models.checker
 assert_stdout_exact "fb_cfg models.checker prints sonnet with no config key" "sonnet"
 REPO="$(printf 'board:\n  repo: a/b\npremise_check: { enabled: true }\n' | make_inline_repo)"

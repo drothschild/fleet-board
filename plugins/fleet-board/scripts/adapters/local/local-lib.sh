@@ -290,3 +290,30 @@ fl_scope_text() {
       else . end)
     | .out | join("\n")'
 }
+
+# fl_replace_scope <body> <scope>: prints the body with its "## Scope" section's text replaced by
+# <scope> (headings inside a code fence are ignored); a body with no Scope section gains one at the end.
+fl_replace_scope() {
+  jq -nr --arg b "$1" --arg s "$2" '
+    ($s | sub("\n+$"; "") | split("\n")) as $sl
+    | reduce ($b | split("\n"))[] as $l ({fence: false, in: false, done: false, seen: false, out: []};
+        if ($l | test("^[ ]{0,3}(```|~~~)")) then
+          .fence = (.fence | not) | (if .in then . else .out += [$l] end)
+        elif .fence then (if .in then . else .out += [$l] end)
+        elif ($l | test("^##[ \t]+Scope[ \t]*$")) and (.done | not) then
+          .in = true | .seen = true | .out += ["## Scope"] + $sl + [""]
+        elif ($l | test("^##[ \t]")) then
+          (if .in then .in = false | .done = true else . end) | .out += [$l]
+        elif .in then .
+        else .out += [$l] end)
+    | if .seen then .out | join("\n")
+      else (.out | join("\n") | sub("\n+$"; "")) as $t
+        | (if $t == "" then "" else $t + "\n\n" end) + "## Scope\n" + ($sl | join("\n")) + "\n" end'
+}
+
+# fl_premise_decision <n> <confirmed|rejected>: appends {card, decision, at} to
+# <board.dir>/premise-decisions.jsonl.
+fl_premise_decision() {
+  jq -nc --argjson n "$1" --arg d "$2" --arg now "$(fl_now)" '{card: $n, decision: $d, at: $now}' \
+    >> "$(fl_dir)/premise-decisions.jsonl" || fb_die 1 "cannot write $(fl_dir)/premise-decisions.jsonl"
+}

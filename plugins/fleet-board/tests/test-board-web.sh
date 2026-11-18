@@ -384,7 +384,7 @@ if setup_case; then
   assert_code 200
   api GET /static/index.html
   assert_code 200
-  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -q 'Import plan' "$SCRIPTS/board-web/static/index.html"; then
+  if grep -q 'id="import-btn"' "$SCRIPTS/board-web/static/index.html" || grep -c 'Import plan' "$SCRIPTS/board-web/static/index.html" >/dev/null; then
     fail "index.html no longer contains the Import plan button" "import-btn or the text Import plan still present"
   else
     pass "index.html no longer contains the Import plan button"
@@ -691,8 +691,8 @@ if setup_case; then
   real_idir="$(python3 -I -c 'import os,sys; print(os.path.realpath(sys.argv[1]).strip("/"))' "$TMP/logs/web/acme-toy/imports/fixed")"
   want_allowed="Bash(cp $TMP/logs/web/acme-toy/imports/fixed/cards.draft.json $TMP/logs/web/acme-toy/imports/fixed/cards.json) Bash(bash $SCRIPTS/import-plan.sh *) Edit(//$real_idir/**) Read(//$real_idir/**)"
   if [ -n "$allowed" ] && [ "$allowed" = "$want_allowed" ] \
-     && ! printf '%s' "$allowed" | grep -q 'mktemp' && ! printf '%s' "$allowed" | grep -q 'Write(' \
-     && ! printf '%s' "$allowed" | grep -qF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)"; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
+     && ! printf '%s' "$allowed" | grep -c 'mktemp' >/dev/null && ! printf '%s' "$allowed" | grep -c 'Write(' >/dev/null \
+     && ! printf '%s' "$allowed" | grep -cF "Edit(//$(python3 -I -c 'import os,tempfile; print(os.path.realpath(tempfile.gettempdir()).strip("/"))')/**)" >/dev/null; then pass "import allowedTools are exactly the four import-folder rules"; else fail "import allowedTools are exactly the four import-folder rules" "want: $want_allowed; allowed: $allowed"; fi
   if grep -q -- '--allowedTools .* --max-turns .* /fleet-board:import-plan' "$FAKE_CLAUDE_DIR/args.log"; then pass "an option follows each variadic list, before the prompt"; else fail "an option follows each variadic list, before the prompt" "args: $(cat "$FAKE_CLAUDE_DIR/args.log" 2>/dev/null)"; fi
   ARGV_FILE="$TMP/logs/web/acme-toy/imports/fixed/session.argv"
   if [ -s "$ARGV_FILE" ] && [ "$(head -1 "$ARGV_FILE")" = "$FAKE_IMPORT_CLAUDE" ] && [ "$(tail -1 "$ARGV_FILE")" = "<prompt>" ] && ! grep -q 'import-plan .*plan.md' "$ARGV_FILE"; then pass "the session argv is written to the import folder with the prompt shortened"; else fail "the session argv is written to the import folder with the prompt shortened" "file: $(cat "$ARGV_FILE" 2>/dev/null)"; fi
@@ -1160,8 +1160,8 @@ PORT="$(free_port)"
 FLEET_BOARD_LOG_DIR="$TMP/launch-logs" "$BASH_EXE" "$SCRIPTS/board-web.sh" --repo "$LOCAL_WT" --port "$PORT" > "$LAUNCH_OUT" 2> "$TMP/launch.err" < /dev/null &
 SERVER_PID=$!
 i=0
-while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; do sleep 0.1; i=$((i + 1)); done
-if head -n 1 "$LAUNCH_OUT" | grep -q '^listening on http://127\.0\.0\.1:[0-9][0-9]*$'; then
+while [ $i -lt 50 ] && ! head -n 1 "$LAUNCH_OUT" | grep -c '^listening on http://127\.0\.0\.1:[0-9][0-9]*$' >/dev/null; do sleep 0.1; i=$((i + 1)); done
+if head -n 1 "$LAUNCH_OUT" | grep -c '^listening on http://127\.0\.0\.1:[0-9][0-9]*$' >/dev/null; then
   pass "board-web.sh starts the server"
 else
   fail "board-web.sh starts the server" "stdout: $(cat "$LAUNCH_OUT"); stderr: $(cat "$TMP/launch.err")"
@@ -1722,7 +1722,7 @@ ms_absent "a card outside Merging shows no merge step text" "Merging PR" in_revi
 rm -rf "$MS_TMP"
 
 # Card 409: the card view serves a session log through supervisor/sessiontext.py.
-if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -q .; then
+if grep -rl sessiontext "$SCRIPTS" --include='*.py' | grep -v '/sessiontext\.py$' | grep -c . >/dev/null; then
   pass "a python script besides sessiontext.py calls sessiontext"
 else
   fail "a python script besides sessiontext.py calls sessiontext" "no caller found under $SCRIPTS"
@@ -1800,6 +1800,71 @@ rt_line() { printf '%s\n' "$RT_OUT" | grep "^$1|" | head -n1; }
 [ "$(rt_line first)" = "first|card-2-fix-5000-1|True" ] && pass "while a supervisor runs, the card's running session appears first, marked running" || fail "while a supervisor runs, the card's running session appears first, marked running" "$RT_OUT"
 [ "$(rt_line later)" = "later|False" ] && pass "ledger sessions are not marked running" || fail "ledger sessions are not marked running" "$RT_OUT"
 [ "$(rt_line dups)" = "dups|1" ] && pass "a session that has ended and reached the ledger is listed once, not twice" || fail "a session that has ended and reached the ledger is listed once, not twice" "$RT_OUT"
+
+# Card 481: a session the list marks running can be opened; its log is read as a snapshot (no ledger line yet).
+echo "Case: a running session's transcript is served, not a 404"
+RS_LOG_DIR="$TMP/logs"; mkdir -p "$RS_LOG_DIR/sessions"
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"still working on it"}]}}' > "$RS_LOG_DIR/sessions/card-2-review-6000-1.jsonl"
+RS_OUT="$(SCRIPTS="$SCRIPTS" RT_REPO="$REPO" SESS="$RS_LOG_DIR/sessions" FLEET_BOARD_LOG_DIR="$RS_LOG_DIR" python3 -I - <<'PYEOF'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("board_web", os.path.join(os.environ["SCRIPTS"], "board-web.py"))
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+m.APP.update(root=os.environ["RT_REPO"], scripts=os.environ["SCRIPTS"])
+sess = os.environ["SESS"]
+def status(log):
+    return {"phase": "running", "desired_mode": "running", "pid": 1,
+            "active": [{"card": 2, "action": "review", "role": "reviewer", "log": log}]}
+m.supervisor_status = lambda: status(sess + "/card-2-review-6000-1.jsonl")
+listed = [x["id"] for x in m.get_transcripts({"n": 2}, None)[1] if x.get("running")]
+print("listed|%s" % ",".join(listed))
+try:
+    code, body = m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("code|%s" % code)
+    print("text|%s" % ("yes" if "still working on it" in str(body) else "no"))
+except m.ApiError as exc:
+    print("code|%s" % exc.code)
+try:
+    m.get_transcript({"n": 1, "id": "card-2-review-6000-1"}, None)
+    print("other|served")
+except m.ApiError as exc:
+    print("other|%s" % exc.code)
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-9999-1"}, None)
+    print("unknown|served")
+except m.ApiError as exc:
+    print("unknown|%s" % exc.code)
+for odd in ({"active": 7}, {"active": [None, 5, {"card": 2, "log": None}, {"card": 2, "log": 9}]}, ["not", "a", "dict"]):
+    m.supervisor_status = lambda odd=odd: odd
+    try:
+        m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+        print("odd|served")
+    except m.ApiError as exc:
+        print("odd|%s" % exc.code)
+outside = os.path.join(os.path.dirname(sess), "elsewhere-2-review-7000-1.jsonl")
+open(outside, "w").write('{"type":"assistant","message":{"content":[{"type":"text","text":"secret"}]}}\n')
+m.supervisor_status = lambda: status(outside)
+try:
+    m.get_transcript({"n": 2, "id": "elsewhere-2-review-7000-1"}, None)
+    print("outside|served")
+except m.ApiError as exc:
+    print("outside|%s" % exc.code)
+m.supervisor_status = lambda: None
+try:
+    m.get_transcript({"n": 2, "id": "card-2-review-6000-1"}, None)
+    print("stopped|served")
+except m.ApiError as exc:
+    print("stopped|%s" % exc.code)
+PYEOF
+)"
+rs_line() { printf '%s\n' "$RS_OUT" | grep "^$1|" | head -n1; }
+[ "$(rs_line listed)" = "listed|card-2-review-6000-1" ] && pass "the list marks the running session" || fail "the list marks the running session" "$RS_OUT"
+[ "$(rs_line code)" = "code|200" ] && pass "a session the list marks running is served with 200" || fail "a session the list marks running is served with 200" "$RS_OUT"
+[ "$(rs_line text)" = "text|yes" ] && pass "its text is the log as read now" || fail "its text is the log as read now" "$RS_OUT"
+[ "$(rs_line other)" = "other|404" ] && pass "another card cannot read a running session of this card" || fail "another card cannot read a running session of this card" "$RS_OUT"
+[ "$(rs_line unknown)" = "unknown|404" ] && pass "an id no running action names is still a 404" || fail "an id no running action names is still a 404" "$RS_OUT"
+[ "$(printf '%s\n' "$RS_OUT" | grep -c '^odd|404$')" = 3 ] && pass "a malformed supervisor status or a null/non-string log is a 404, never a 500" || fail "a malformed supervisor status or a null/non-string log is a 404, never a 500" "$RS_OUT"
+[ "$(rs_line outside)" = "outside|404" ] && pass "a running action whose log is outside the sessions directory is a 404" || fail "a running action whose log is outside the sessions directory is a 404" "$RS_OUT"
+[ "$(rs_line stopped)" = "stopped|404" ] && pass "with no supervisor, a session with no ledger line is a 404" || fail "with no supervisor, a session with no ledger line is a 404" "$RS_OUT"
 
 # Card 426: the board page shows a card's repo and lists the configured repos.
 echo "Case: /api/board card summaries carry repo and the reply lists repos from config"
@@ -1922,6 +1987,31 @@ if [ "$(jq 'has("repo")' "$CR_REPO/.fleet-board/cards/$CR_N.json")" = false ]; t
 else
   fail "the stored home-repo card has no repo key" "$(cat "$CR_REPO/.fleet-board/cards/$CR_N.json")"
 fi
+stop_server
+
+echo "Case: card payload has stacked_on and stack_attention"
+ST_REPO="$(new_repo "$LOCAL_YML")"
+mkdir -p "$ST_REPO/.fleet-board/cards" "$ST_REPO/.fleet-board/active"
+echo 4 > "$ST_REPO/.fleet-board/next"
+ST_FENCE='```'
+st_note() {
+  printf '<!-- fleet-board:manager-note -->\n%sjson\n{"round":1,"stack":%s}\n%s\n' "$ST_FENCE" "$1" "$ST_FENCE"
+}
+ST_C1="$(jq -n --arg b "$(st_note '{"parent":11,"base":"fleet/11-parent","start":"0123456789abcdef0123456789abcdef01234567","attention":"parent closed unmerged"}')" '[{id: 1, author: "tester", body: $b, created_at: "2026-01-01T00:00:00Z"}]')"
+REPO="$ST_REPO" seed_card 1 in_progress "Stacked" "b" "$ST_C1"
+REPO="$ST_REPO" seed_card 2 in_progress "Unstacked" "b"
+start_server "$ST_REPO"
+api GET /api/board
+assert_code 200
+assert_body "board payload: stacked_on is 11 for a stacked card" '.cards[]|select(.number==1)|.stacked_on' 11
+assert_body "board payload: stacked_on is null for an unstacked card" '.cards[]|select(.number==2)|.stacked_on|tojson' null
+assert_body "board payload: stack_attention is the text for a stacked card" '.cards[]|select(.number==1)|.stack_attention' 'parent closed unmerged'
+assert_body "board payload: stack_attention is null for an unstacked card" '.cards[]|select(.number==2)|.stack_attention|tojson' null
+api GET /api/cards/1
+assert_body "detail payload: stacked_on is 11 for a stacked card" '.stacked_on' 11
+assert_body "detail payload: stack_attention for a stacked card" '.stack_attention' 'parent closed unmerged'
+api GET /api/cards/2
+assert_body "detail payload: stacked_on is null for an unstacked card" '.stacked_on|tojson' null
 stop_server
 
 echo ""

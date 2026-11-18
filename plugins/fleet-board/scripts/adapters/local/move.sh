@@ -25,10 +25,16 @@ trap 'rm -f "$TMP"; fb_lock_release "$FB_LOCK"' EXIT
 # Into Ready from another state re-stamps the card, unless the supervisor moves it
 PREM=null
 if [ "$TARGET" = ready ] && [ "${FLEET_BOARD_ACTOR:-}" != supervisor ]; then PREM="$(fl_premise_json move)"; fi
-jq --arg s "$TARGET" --arg now "$(fl_now)" --argjson prem "$PREM" \
-  '.state = $s | .updated_at = $now | (if $prem != null then .premise = $prem else . end)' <<<"$CARD" > "$TMP" \
+# Out of Blocked by a person: an open premise proposal is rejected (the supervisor's own move keeps it)
+CLEAR=false
+if [ "$FROM" = blocked ] && [ "${FLEET_BOARD_ACTOR:-}" != supervisor ] \
+    && jq -e '(.proposal | type) == "object"' <<<"$CARD" >/dev/null 2>&1; then CLEAR=true; fi
+jq --arg s "$TARGET" --arg now "$(fl_now)" --argjson prem "$PREM" --argjson clear "$CLEAR" \
+  '.state = $s | .updated_at = $now | (if $prem != null then .premise = $prem else . end)
+   | (if $clear then .proposal = null else . end)' <<<"$CARD" > "$TMP" \
   || fb_die 1 "cannot update card #$N"
 fl_write_card "$N" "$TMP" || exit 1
+[ "$CLEAR" = true ] && fl_premise_decision "$N" rejected
 # Out of Blocked: a merger attention's leftovers go, so a person never edits the note
 if [ "$(jq -r '.state // ""' <<<"$CARD")" = blocked ]; then
   PATCH="$(mktemp)" || fb_die 1 "cannot create a temporary file"

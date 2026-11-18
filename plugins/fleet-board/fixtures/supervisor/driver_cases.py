@@ -95,9 +95,9 @@ class Board:
         """Script names in call order, without the note reads and merges."""
         return [c[0] for c in self.calls if c[0] != 'note.sh']
 
-    def seed(self, number, card_state='ready', body='', acceptance=('does it',)):
+    def seed(self, number, card_state='ready', body='', acceptance=('does it',), blocked_by=()):
         card = {'number': number, 'title': 'Add subtract', 'body': body, 'state': card_state, 'labels': [],
-                'acceptance': list(acceptance), 'blocked_by': [], 'next_comment_id': 1, 'comments': [],
+                'acceptance': list(acceptance), 'blocked_by': list(blocked_by), 'next_comment_id': 1, 'comments': [],
                 'created_at': '2026-01-01T00:00:00Z'}
         (self.root / '.fleet-board' / 'cards' / ('%d.json' % number)).write_text(json.dumps(card))
 
@@ -328,6 +328,35 @@ def test_land_runs_worktree_then_stack_land(base):
     note = b.note()
     assert note['action_failures'] == 0 and note['last_action_error'] is None
     assert b.card()['state'] == 'in_review' and 'board-move.sh' not in b.scripts_called()
+
+
+def test_a_landing_clears_a_stale_conflicted_files(base):
+    # #476 (2026-11-18): a conflict recorded before the parent merged survived a clean landing, so the
+    # planner sent a fixer for a conflict that no longer existed and the card blocked itself
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = ok()
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert not b.note().get('conflicted_files'), b.note()
+
+
+def test_a_clean_update_branch_clears_a_stale_conflicted_files(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['update-branch.sh'] = ok()
+    assert begin(b, 'update_branch', state='in_review').kind == 'done'
+    assert not b.note().get('conflicted_files'), b.note()
+
+
+def test_a_landing_that_waits_keeps_conflicted_files(base):
+    b = board_for(base, 'in_review')
+    b.put_note({'conflicted_files': ['plugins/x/scripts.py']})
+    b.stubs['worktree.sh'] = ok(b.worktree + '\n')
+    b.stubs['stack-land.sh'] = fail_with('parent not landed yet\n', rc=3)
+    assert begin(b, 'land', state='in_review').kind == 'done'
+    assert b.note().get('conflicted_files') == ['plugins/x/scripts.py'], b.note()
 
 
 def test_land_without_a_pr_passes_a_dash(base):
@@ -979,7 +1008,17 @@ def test_rules_match_the_reporting_skill_table_cell_for_cell(base):
     import re
     briefer = {'role <role> requires ## <section>', 'out of scope entry needs <title> :: <detail>: <entry>'}
     # A rule the driver adds after the table: parse-report.sh emits it, the skill's table does not list it.
-    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>']
+    driver_only = ['status not_reproducible needs no commits since the reviewed head, found <n>',
+                   'checker status <s> is not allowed in mode <m>',
+                   'checker report needs ## <section> for status <s>',
+                   '## Card must hold exactly one card number (#<n>)',
+                   '## Proposed scope and ## Proposed acceptance must both be present or both absent',
+                   '## Proposed acceptance has no bullet',
+                   '## Proposed scope names no repository path',
+                   '## Evidence has no entry',
+                   '## Evidence item must be an acceptance item number',
+                   'malformed ## Evidence line (want - <number> :: `<command>` :: <output>): <line>',
+                   'malformed ## Evidence line (want - `<command>` :: <output>): <line>']
     lines = (PLUGIN / 'skills' / 'reporting' / 'SKILL.md').read_text().splitlines()
     start = [i for i, l in enumerate(lines) if l.startswith('| Rejection message')][0]
     rows = []
@@ -2034,6 +2073,368 @@ def test_the_launch_column_stays_ready_while_the_ledger_column_is_in_progress(ba
         wait_for(started)
 
 
+# premise check (card 473) -------------------------------------------------------------------------------
+PREMISE_HEAD = 'c' * 40
+CHECK_PROMPT = PLUGIN / 'scripts' / 'supervisor' / 'defaults' / 'premise-check-prompt.md'
+FAILED_SUFFIX = '; move the card to Ready to start it without a check'
+
+
+def premise_board(base, **kw):
+    b = board_for(base, **kw)
+    b.premise_path = str(b.root / '.fw' / '12-premise_check')
+    b.stubs['worktree.sh'] = lambda *a: (ok(json.dumps({'path': b.premise_path, 'head': PREMISE_HEAD}) + '\n')
+                                         if a[0] == 'premise' else ok())
+    return b
+
+
+def begin_check(b, **kw):
+    kw.setdefault('worktree', None)
+    kw.setdefault('reason', 'ground moved: src/calc.js')
+    return b.driver.begin(candidate('check_premise', **kw))
+
+
+def finish_all(b, started):
+    """Finish the session, and the one re-dispatch a rejected report earns."""
+    outcome = run_role(b, started)
+    while outcome.redispatch:
+        outcome = b.driver.finish(started.action, wait_for(started))
+    return outcome
+
+
+def check_plan(report, **kw):
+    return dict({'report': report, 'post': False}, **kw)
+
+
+def stamps(b):
+    return [c for c in b.calls if c[:2] == ('premise.sh', 'stamp')]
+
+
+def test_check_premise_starts_a_session_in_a_premise_worktree(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    assert started.kind == 'session' and started.action.role == 'checker', started
+    assert ('worktree.sh', 'premise', '12') in b.calls, b.calls
+    assert not [c for c in b.calls if c[:2] == ('worktree.sh', 'create')], b.calls
+    argv = b.fake_calls(1)[0]['argv']
+    assert None not in argv and '--agent' not in argv, argv
+    assert argv[argv.index('--tools') + 1] == 'Read,Write,Bash,Grep,Glob', argv
+    assert argv.index('--tools') < argv.index('--permission-mode'), argv
+    assert b.card()['state'] == 'ready' and 'board-move.sh' not in b.scripts_called()
+    finish_all(b, started)
+
+
+def test_the_checker_prompt_carries_the_card_and_the_board(base):
+    b = premise_board(base, acceptance=('adds two numbers', 'subtracts them'))
+    b.seed(40, 'in_review', acceptance=('x',))
+    card = b.card(40)
+    card.update(title='Other work', pr_url='https://github.com/acme/toy/pull/9')
+    (b.root / '.fleet-board' / 'cards' / '40.json').write_text(json.dumps(card))
+    b.seed(41, 'backlog', acceptance=('y',))
+    card = b.card(41)
+    card['title'] = 'Idea'
+    (b.root / '.fleet-board' / 'cards' / '41.json').write_text(json.dumps(card))
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    prompt = b.prompt()
+    for want in ('1. adds two numbers', '2. subtracts them',
+                 '#40 in_review Other work PR https://github.com/acme/toy/pull/9', '#41 backlog Idea',
+                 b.premise_path, CHECK_PROMPT.read_text(), '## Mode\ncheck', 'Add subtract'):
+        assert want in prompt, (want, prompt)
+    finish_all(b, started)
+
+
+def test_go_stamps_the_commit_the_session_saw(base):
+    b = premise_board(base)
+    b.put_note({'action_failures': 2, 'last_action_error': 'older'})
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    outcome = finish_all(b, started)
+    assert outcome.progressed is True, outcome
+    assert ('premise.sh', 'stamp', '12', '--by', 'check', '--sha', PREMISE_HEAD) in b.calls, b.calls
+    assert b.card()['premise']['sha'] == PREMISE_HEAD and b.card()['premise']['by'] == 'check'
+    note = b.note()
+    assert note['premise_check']['head'] == PREMISE_HEAD and note['premise_check']['verdict'] == 'go', note
+    assert note['premise_check']['at'], note
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert b.card()['state'] == 'ready' and 12 not in b.state.active
+    assert any('## Status' in c for c in b.comments()), 'the driver posts the accepted report'
+
+
+def assert_one_failed_check(b):
+    note = b.note()
+    assert note['action_failures'] == 1, note
+    assert note['last_action_error'].startswith('premise check failed: '), note
+    assert note['last_action_error'].endswith(FAILED_SUFFIX), note
+    assert not stamps(b), b.calls
+    parses = [c for c in b.calls if c[0] == 'parse-report.sh']
+    assert parses and all(c[1:5] == ('--role', 'checker', '--mode', 'check') for c in parses), parses
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert b.card()['state'] == 'ready'
+
+
+def test_an_empty_final_reply_counts_one_failure(base):
+    b = premise_board(base)
+    b.plans(check_plan(''), check_plan(''))
+    started = begin_check(b)
+    outcome = finish_all(b, started)
+    assert outcome.progressed is False, outcome
+    assert_one_failed_check(b)
+
+
+def test_a_report_rejected_twice_counts_one_failure(base):
+    b = premise_board(base)
+    b.plans(check_plan('not a report'), check_plan('still not a report'))
+    started = begin_check(b)
+    finish_all(b, started)
+    assert_one_failed_check(b)
+    assert len([c for c in b.calls if c[0] == 'parse-report.sh']) == 2, b.calls
+
+
+def test_the_card_changed_during_the_check_drops_the_verdict(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    card = b.card()
+    card['acceptance'] = ['something else entirely']
+    (b.root / '.fleet-board' / 'cards' / '12.json').write_text(json.dumps(card))
+    finish_all(b, started)
+    assert not stamps(b) and 'board-move.sh' not in b.scripts_called(), b.calls
+    note = b.note()
+    assert not note.get('action_failures') and note.get('premise_check') is None, note
+    dropped = [e for e in b.state.events if 'premise verdict dropped: card changed' in json.dumps(e)]
+    assert len(dropped) == 1, list(b.state.events)
+    assert not [e for e in b.state.events if e['type'] == 'action_failed'], list(b.state.events)
+    assert ('worktree.sh', 'remove', '12', b.premise_path) in b.calls, b.calls
+    assert 12 not in b.state.active
+
+
+def test_a_new_comment_alone_does_not_drop_the_verdict(base):
+    b = premise_board(base)
+    b.plans(check_plan('checker-go'))
+    started = begin_check(b)
+    note_file = Path(base) / 'comment.txt'
+    note_file.write_text('a person wrote this')
+    assert scripts.run(b.root, 'board-comment.sh', 12, str(note_file), env=b.env).rc == 0
+    finish_all(b, started)
+    assert len(stamps(b)) == 1, b.calls
+    assert not [e for e in b.state.events if 'verdict dropped' in json.dumps(e)], list(b.state.events)
+
+
+FOLLOWUP_GO = """## Status
+go
+
+## Findings
+- none
+
+## For the card
+Every item holds.
+Out of scope:
+- Tidy the readme :: `true` exits 0
+Bugs found:
+- A crash :: repro: `false` :: expected: exit 0 :: observed: exit 1
+
+VERIFIED: `true` -> 1 command ran
+"""
+
+
+def test_follow_up_lines_in_a_checker_report_file_nothing(base):
+    b = premise_board(base)
+    b.plans(check_plan(FOLLOWUP_GO))
+    started = begin_check(b)
+    finish_all(b, started)
+    assert 'file-followups.sh' not in b.scripts_called(), b.calls
+    assert len(stamps(b)) == 1, b.calls
+    assert b.note().get('pending_followups') is None
+
+
+BUILT_QUESTION = 'Waiting for a person: close as already built?'
+REWRITE_QUESTION = 'Waiting for a person: approve this rewrite?'
+TWO_ITEMS = ('adds two numbers', 'subtracts them')
+
+
+def verdict_run(b, report):
+    b.plans(check_plan(report))
+    finish_all(b, begin_check(b))
+
+
+def test_built_blocks_with_the_evidence_and_never_closes(base):
+    b = premise_board(base, acceptance=TWO_ITEMS)
+    verdict_run(b, 'checker-built')
+    card = b.card()
+    assert card['state'] == 'blocked', card['state']
+    assert ('board-move.sh', '12', 'done') not in b.calls, b.calls
+    assert [c[:3] for c in b.calls if c[0] == 'premise-settle.sh'] == [('premise-settle.sh', 'propose', '12')], b.calls
+    assert card['proposal']['kind'] == 'close' and card['proposal']['head'] == PREMISE_HEAD, card['proposal']
+    assert [e['item'] for e in card['proposal']['evidence']] == [1, 2], card['proposal']
+    posted = [t for t in b.comments() if t.startswith(BUILT_QUESTION)]
+    assert len(posted) == 1, b.comments()
+    for item, command, output in (
+            ('adds two numbers', 'bash plugins/fleet-board/tests/test-premise.sh', 'failed: 0'),
+            ('subtracts them', 'grep -c checker plugins/fleet-board/scripts/parse-report.sh', '4')):
+        assert item in posted[0] and command in posted[0] and output in posted[0], posted[0]
+    note = b.note()
+    assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
+    assert not stamps(b), b.calls
+
+
+def test_built_missing_evidence_for_an_item_is_a_plain_question(base):
+    b = premise_board(base, acceptance=('adds two numbers', 'subtracts them', 'multiplies them'))
+    verdict_run(b, 'checker-built')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    assert [t for t in b.comments() if t.startswith(QUESTION)], b.comments()
+    assert not [t for t in b.comments() if t.startswith(BUILT_QUESTION)], b.comments()
+    assert ('board-move.sh', '12', 'done') not in b.calls and not stamps(b), b.calls
+
+
+def test_built_evidence_for_an_item_number_the_card_lacks_is_a_plain_question(base):
+    b = premise_board(base, acceptance=('adds two numbers',))
+    verdict_run(b, 'checker-built')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    assert [t for t in b.comments() if t.startswith(QUESTION)], b.comments()
+    assert not [t for t in b.comments() if t.startswith(BUILT_QUESTION)], b.comments()
+
+
+def test_stale_with_a_proposal_blocks_with_the_rewrite(base):
+    b = premise_board(base, acceptance=TWO_ITEMS, body='## Scope\n- `src/calc.js`\n')
+    verdict_run(b, 'checker-stale')
+    card = b.card()
+    assert card['state'] == 'blocked', card['state']
+    assert card['proposal']['kind'] == 'rewrite' and card['proposal']['head'] == PREMISE_HEAD, card['proposal']
+    assert card['proposal']['acceptance'] == ['stamp writes the head', 'stamp refuses a missing card'], card['proposal']
+    posted = [t for t in b.comments() if t.startswith(REWRITE_QUESTION)]
+    assert len(posted) == 1, b.comments()
+    text = posted[0]
+    assert 'plugins/fleet-board/scripts/premise.sh now owns the stamp.' in text, text
+    for part in ('src/calc.js', 'adds two numbers', 'Change `plugins/fleet-board/scripts/premise.sh` only.',
+                 'stamp writes the head'):
+        assert part in text, (part, text)
+    assert text.index('now owns the stamp') < text.index('src/calc.js') < text.index('Change `plugins/'), text
+    assert ('board-move.sh', '12', 'ready') not in b.calls and not stamps(b), b.calls
+
+
+def test_stale_without_a_proposal_blocks_with_the_summary(base):
+    b = premise_board(base)
+    verdict_run(b, 'checker-stale-no-proposal')
+    assert b.card()['state'] == 'blocked' and not b.card().get('proposal'), b.card()
+    posted = [t for t in b.comments() if t.startswith(QUESTION)]
+    assert len(posted) == 1 and 'The script moved.' in posted[0], b.comments()
+    assert not stamps(b), b.calls
+
+
+def test_no_verdict_stamps_except_go(base):
+    for report in ('checker-built', 'checker-stale', 'checker-stale-no-proposal'):
+        with tempfile.TemporaryDirectory() as sub:
+            b = premise_board(Path(sub), acceptance=TWO_ITEMS, body='## Scope\n- `src/calc.js`\n')
+            verdict_run(b, report)
+            assert not stamps(b), (report, b.calls)
+            assert b.card().get('premise') is None, (report, b.card())
+
+
+QUESTION = 'Waiting for a person: the premise check could not settle this card.'
+
+
+def needs_board(base, other_state='in_review', other=40, **kw):
+    b = premise_board(base, **kw)
+    if other_state is not None:
+        b.seed(other, other_state, blocked_by=kw.get('other_blocked_by', ()))
+    b.plans(check_plan('checker-needs'))
+    return b
+
+
+def needs_run(b):
+    finish_all(b, begin_check(b))
+
+
+def asked(b, text):
+    note = b.note()
+    assert b.card()['state'] == 'blocked', b.card()['state']
+    assert note['blocked_from'] == 'ready' and note['action_failures'] == 0, note
+    posted = [t for t in b.comments() if t.startswith(QUESTION)]
+    assert len(posted) == 1 and text in posted[0], b.comments()
+    assert not stamps(b), b.calls
+    assert not [c for c in b.calls if c[:2] == ('premise.sh', 'add-dep')], b.calls
+
+
+def test_needs_adds_the_dependency_and_leaves_the_card_ready(base):
+    b = needs_board(base, 'in_review')
+    needs_run(b)
+    assert ('premise.sh', 'add-dep', '12', '40') in b.calls, b.calls
+    assert 'Premise check: needs #40, which is in_review. Added as a dependency.' in b.comments(), b.comments()
+    assert not [c for c in b.calls if c[0] == 'board-move.sh'], b.calls
+    assert b.card()['state'] == 'ready' and 40 in b.card()['blocked_by'], b.card()
+    assert not stamps(b), b.calls
+    assert b.note()['action_failures'] == 0
+
+
+def test_needs_a_card_already_listed_changes_nothing_and_asks(base):
+    b = premise_board(base, blocked_by=[40])
+    b.seed(40, 'in_review')
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_needs_a_backlog_card_asks(base):
+    b = needs_board(base, 'backlog')
+    needs_run(b)
+    asked(b, 'needs #40, which is backlog')
+
+
+def test_needs_a_closed_card_asks(base):
+    for closed in ('done', 'wont_do'):
+        sub = Path(base) / closed
+        sub.mkdir()
+        b = needs_board(sub, closed)
+        needs_run(b)
+        asked(b, 'needs #40, which is ' + closed)
+
+
+def needs_text(number):
+    return (PLUGIN / 'fixtures' / 'reports' / 'checker-needs.md').read_text().replace('#40', '#%d' % number)
+
+
+def test_needs_a_missing_card_asks(base):
+    b = premise_board(base)
+    b.plans(check_plan(needs_text(999)))
+    needs_run(b)
+    asked(b, 'needs #999, which does not exist')
+
+
+def test_needs_itself_asks(base):
+    b = premise_board(base)
+    b.plans(check_plan(needs_text(12)))
+    needs_run(b)
+    asked(b, 'needs #12, which is the card itself')
+
+
+def test_needs_a_card_that_depends_on_this_one_asks(base):
+    b = premise_board(base)
+    b.seed(40, 'in_review', blocked_by=[12])
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_needs_a_card_that_depends_on_this_one_through_another_asks(base):
+    b = premise_board(base)
+    b.seed(40, 'in_review', blocked_by=[41])
+    b.seed(41, 'in_review', blocked_by=[12])
+    b.plans(check_plan('checker-needs'))
+    needs_run(b)
+    asked(b, 'needs #40')
+
+
+def test_a_question_resets_the_failure_count_and_records_blocked_from_ready(base):
+    b = needs_board(base, 'backlog')
+    b.put_note({'action_failures': 2, 'last_action_error': 'old'})
+    needs_run(b)
+    note = b.note()
+    assert note['action_failures'] == 0 and note['last_action_error'] is None, note
+    assert note['blocked_from'] == 'ready' and note['state'] == 'blocked', note
+
+
 HEAD40 = 'abc1234' + '0' * 33
 RED = [{'name': 'test-suite', 'detailsUrl': 'https://github.com/acme/toy/actions/runs/123/job/456'}]
 
@@ -2075,6 +2476,38 @@ def test_checks_failed_hands_the_failure_to_the_fixer_as_an_important_finding(ba
 def test_rerun_checks_and_checks_failed_reserve_no_scope(base):
     from supervisor import scheduler
     assert {'rerun_checks', 'checks_failed'} <= scheduler.SCOPE_FREE_ACTIONS, scheduler.SCOPE_FREE_ACTIONS
+
+
+def _security_report(b, stage, round_, report):
+    out = {'status': 'posted', 'report_file': report_file(b, report), 'parsed': {}, 'provider': 'codex',
+           'model': 'gpt-5', 'input_tokens': 5, 'output_tokens': 6, 'attempts': 1}
+    fake_plugin(b, 0, json.dumps(out))
+    b.put_note({'round': round_})
+    run_role(b, begin(b, 'review_stage', state='in_review', stage=stage, round=round_))
+    return b.note()
+
+
+def test_a_stage_report_with_findings_counts_one_finding_round_per_card_round(base):
+    b, stage = provider_stage_board(base, 0, '')
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds'] == {'security': {'count': 1, 'last_round': 2}}, note.get('finding_rounds')
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 1, 'last_round': 2}, note.get('finding_rounds')
+    note = _security_report(b, stage, 3, 'stage-reviewer-findings')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+    note = _security_report(b, stage, 4, 'stage-reviewer-ok')
+    assert note['finding_rounds']['security'] == {'count': 2, 'last_round': 3}, note.get('finding_rounds')
+
+
+def test_an_advisory_stage_report_with_findings_is_not_counted(base):
+    b, stage = provider_stage_board(base, 0, '')
+    stage = dict(stage, advisory=True, max_rounds=1)
+    b.put_note({'state': 'in_review', 'stage': None, 'round': 2, 'last_review': LAST_REVIEW,
+                'reviews': {'evidence': LAST_REVIEW}})
+    note = _security_report(b, stage, 2, 'stage-reviewer-findings')
+    assert 'security' not in (note.get('finding_rounds') or {}), note.get('finding_rounds')
 
 
 if __name__ == '__main__':

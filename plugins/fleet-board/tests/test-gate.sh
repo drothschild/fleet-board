@@ -350,6 +350,32 @@ run_hook bash.json "board-move.sh 14 human_qa"
 assert_silent_allow "move-out-of-human-qa: board-move.sh 14 human_qa"
 
 # ---------------------------------------------------------------------------
+# G4: only a person approves, confirms or rejects a premise proposal
+setup_case human
+card_routes > "$ROUTES"
+mkdir -p "$REPO/x"
+G4MSG="only a person approves or confirms a premise proposal; run it in a terminal or use the board page"
+for c in "bash plugins/fleet-board/scripts/premise-settle.sh approve 12" \
+         "bash scripts/premise-settle.sh confirm 12" \
+         "premise-settle.sh reject 12" \
+         "cd x && bash ../scripts/premise-settle.sh approve 12" \
+         "bash /opt/fleet/plugins/fleet-board/scripts/premise-settle.sh confirm 12"; do
+  run_hook bash.json "$c"
+  assert_blocked "G4: $c" "fleet-board gate: $G4MSG"
+done
+for c in "bash scripts/premise-settle.sh propose 12 f.json" \
+         "bash scripts/premise.sh show 12" \
+         "cd x && bash ../scripts/premise-settle.sh propose 12 f.json"; do
+  run_hook bash.json "$c"
+  assert_silent_allow "G4 allows: $c"
+done
+setup_case none
+for c in "bash scripts/premise-settle.sh approve 12"; do
+  run_hook bash.json "$c"
+  assert_silent_allow "G4 is inert with no .fleet-board.yml: $c"
+done
+
+# ---------------------------------------------------------------------------
 # AC4.1 + AC4.3 shell-syntax-cannot-bypass
 setup_case human
 card_routes > "$ROUTES"
@@ -485,7 +511,7 @@ run_hook bash.json "gh pr merge 3"
 assert_blocked "local: auto policy blocks a draft PR" "draft"
 run_hook bash.json "gh issue edit 14 --add-label bug"
 assert_exit "local: gh issue edit on a local backend: hook exits 0" 0
-if printf '%s' "$LAST_ERR" | grep -Fq "could not verify the board config"; then
+if printf '%s' "$LAST_ERR" | grep -Fc "could not verify the board config" >/dev/null; then
   fail "local: backend local is not 'could not verify the board config'" "$LAST_ERR"
 else
   pass "local: backend local is not 'could not verify the board config'"

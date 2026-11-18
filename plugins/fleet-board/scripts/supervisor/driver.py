@@ -83,10 +83,10 @@ SCRIPT_ACTIONS = frozenset((
     'file_pending', 'rerun_checks', 'checks_failed', 'skip_no_acceptance', 'skip_card_lint', 'wait', 'skip',
 ))
 ROLE_ACTIONS = frozenset(('start', 'continue_implementor', 'start_review', 'review', 'review_stage', 'fix',
-                          'after_merge', 'merge_refusal'))
+                          'after_merge', 'merge_refusal', 'check_premise'))
 _ROLE_OF = {'start': 'implementor', 'continue_implementor': 'implementor', 'start_review': 'reviewer',
             'review': 'reviewer', 'review_stage': 'stage-reviewer', 'fix': 'fixer',
-            'after_merge': 'merger', 'merge_refusal': 'merger'}
+            'after_merge': 'merger', 'merge_refusal': 'merger', 'check_premise': 'checker'}
 # begin_merger's mode (the lane's outcome kind, or the report mode itself) -> the card action
 _MERGER_ACTION = {'merged': 'after_merge', 'after_merge': 'after_merge', 'refused': 'merge_refusal',
                   'refusal': 'merge_refusal'}
@@ -95,7 +95,7 @@ PR_FILES_LIMIT = 100   # gh pr view --json files lists at most this many: a full
 _CONFLICT = re.compile(r'conflict', re.I)
 _SCRIPT_RUNNERS = ('stage-review', 'evidence-review')
 _UNCOUNTED = frozenset(('wait', 'skip'))
-_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '-'))
+_FLAGS = frozenset(('--all', '--qa-summary', '--role', '--commits-since-review', '--mode', '--by', '--sha', '-'))
 _FIXED_BEFORE = ('backlog', 'ready', 'in_progress', 'in_review')
 _MERGING = ('merging',)
 _FIXED_AFTER = ('human_qa', 'blocked', 'done', 'wont_do')
@@ -111,6 +111,12 @@ _STAGE = re.compile(r'[a-z][a-z0-9_]*')
 _AFTER_MERGE = re.compile(r'(?m)^##[ \t]+After merge[ \t]*$')
 _NO_PROGRESS = re.compile(r'no progress after (\d+) attempts?: (.*)', re.S)
 _RESET = {'action_failures': 0, 'last_action_error': None}
+CHECK_INSTRUCTIONS = Path(__file__).resolve().parent / 'defaults' / 'premise-check-prompt.md'
+_CHECK_FAILED = 'premise check failed: %s; move the card to Ready to start it without a check'
+_CHECK_FAILED_PREFIX = 'premise check failed: '
+_PREMISE_UNSETTLED = 'Waiting for a person: the premise check could not settle this card.'
+_PREMISE_CLOSE = 'Waiting for a person: close as already built?'
+_PREMISE_REWRITE = 'Waiting for a person: approve this rewrite?'
 _SEVERE = ('Critical', 'Important')
 _SKIP_MARKER = '<!-- fleet-board:skip-no-acceptance -->'
 _CLEAN = re.compile(r'[^\x00-\x1f\x7f]+')
@@ -483,6 +489,8 @@ _SECTIONS = {
               'scripts'),
     'stage-reviewer': ('number', 'body', 'acceptance', 'pr', 'diff', 'report', 'worktree', 'config', 'stage_name',
                        'brief', 'round', 'prev_sha', 'findings', 'scripts', 'post'),
+    'checker': ('number', 'title', 'body', 'acceptance', 'mode', 'open_cards', 'checkout', 'scripts', 'instructions',
+                'working_rules', 'config'),
     'merger': ('number', 'title', 'pr', 'mode', 'pr_head', 'merge_commit', 'refusal', 'persona', 'persona_hash', 'config',
                'scripts'),
 }
@@ -493,6 +501,7 @@ _LABELS = {
     'prev_sha': 'Previous review sha (prev_sha)', 'findings': 'Findings', 'stage_name': 'Stage name',
     'brief': 'Stage brief', 'post': 'Posting your report', 'mode': 'Mode', 'pr_head': 'PR head (pr_head)',
     'merge_commit': 'Merge commit (merge_commit)',
+    'checkout': 'Checkout', 'instructions': 'Instructions', 'working_rules': "Planner's working rules",
     'refusal': 'Refusal', 'persona': 'Persona', 'persona_hash': 'Persona hash',
 }
 DIFF_FILE_LINES = 1500
@@ -590,6 +599,26 @@ _RULES = (
      "The fixer's Resolutions has at least one entry."),
     ('status not_reproducible needs no commits since the reviewed head, found <n>', 'A fixer that committed '
      'anything reports `done` or `blocked`; `not_reproducible` is only for a fixer that committed nothing.'),
+    ('checker status <s> is not allowed in mode <m>',
+     'In mode `check` the status is `go`, `needs`, `built` or `stale`; in mode `draft` it is `duplicate`, `fixed` or `drafted`.'),
+    ('checker report needs ## <section> for status <s>',
+     '`needs` needs `## Card`; `built` needs `## Evidence`; `stale` needs `## What changed`; `fixed` needs `## Evidence`; `drafted` needs `## Why`, `## Proposed scope` and `## Proposed acceptance`.'),
+    ('## Card must hold exactly one card number (#<n>)',
+     '`## Card` names exactly one card, as `#<n>`.'),
+    ('## Proposed scope and ## Proposed acceptance must both be present or both absent',
+     'A `stale` report gives both `## Proposed scope` and `## Proposed acceptance`, or neither.'),
+    ('## Proposed acceptance has no bullet',
+     '`## Proposed acceptance` holds at least one `- ` bullet.'),
+    ('## Proposed scope names no repository path',
+     'The proposed scope must name at least one repository path, or the card could never start.'),
+    ('## Evidence has no entry',
+     '`## Evidence` holds at least one entry.'),
+    ('## Evidence item must be an acceptance item number',
+     'Each `built` evidence line starts with the 1-based number of an acceptance item.'),
+    ('malformed ## Evidence line (want - <number> :: `<command>` :: <output>): <line>',
+     'A `built` evidence line is ``- <number> :: `<command>` :: <one line of output>``.'),
+    ('malformed ## Evidence line (want - `<command>` :: <output>): <line>',
+     'A `fixed` evidence line is ``- `<command>` :: <one line of output>``.'),
 )
 
 
@@ -737,7 +766,16 @@ class CardDriver:
             self.state.event('warning', message='cleanup-done.sh failed: ' + (
                 'timed out' if result.timed_out else _first_line(result.stderr) or 'exited %d' % result.rc))
 
+    @staticmethod
+    def _check_failure(message):
+        """A failed premise check's error text: the first line of the cause, and how the owner skips the check."""
+        if message.startswith(_CHECK_FAILED_PREFIX):
+            return message
+        return _CHECK_FAILED % (_first_line(message) or 'the check ended without a verdict')
+
     def _failed(self, ctx, action_name, message):
+        if action_name == 'check_premise':
+            message = self._check_failure(message)
         self.state.event('action_failed', card=ctx.n, action=action_name, error=message)
         if action_name in _UNCOUNTED:
             return
@@ -826,6 +864,60 @@ class CardDriver:
             c.merge({'branch': branch, 'worktree': worktree})
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         return self._dispatch_role(c, prior=c.row.get('state'), conflict=conflict)
+
+    def _do_check_premise(self, c):
+        """Run the premise check: a session with a shell, in a throwaway checkout of the default branch."""
+        card = self._read_card(c)
+        data = _json(c.step('worktree.sh', 'premise', c.n).stdout)
+        path = data.get('path') if isinstance(data, dict) else None
+        head = data.get('head') if isinstance(data, dict) else None
+        if not (isinstance(path, str) and os.path.isabs(path) and isinstance(head, str)
+                and re.fullmatch(r'[0-9a-f]{40}', head)):
+            raise _Fail('worktree.sh premise printed an unexpected result')
+        try:
+            dispatch = resolver.resolve(c.config, c.row)
+            if dispatch is None or dispatch.runner != 'claude':
+                raise _Fail('check_premise names no session')
+            if dispatch.model is not None and not (isinstance(dispatch.model, str) and _NAME.fullmatch(dispatch.model)):
+                raise _Invalid('model', dispatch.model)
+            run = _Run(c, c.action, dispatch, 'checker', '', prior='ready', mode='check', head=head, checkout=path,
+                       digest=self._card_digest(card),
+                       guard={'.fleet-board.yml': self._hash(self.root / '.fleet-board.yml')})
+            try:
+                working_rules = (self.plugin_dir / 'skills' / 'planner' / 'references' / 'persona.md').read_text()
+            except OSError:
+                working_rules = None
+            inputs = {'number': c.n, 'title': card.get('title'), 'body': card.get('body'),
+                      'acceptance': ''.join('%d. %s\n' % (i, a) for i, a in enumerate(card.get('acceptance') or [], 1))
+                      or 'none',
+                      'mode': run.mode, 'open_cards': self._open_cards(c, with_state=True), 'checkout': path,
+                      'scripts': str(self.plugin_dir / 'scripts'),
+                      'instructions': CHECK_INSTRUCTIONS.read_text(errors='replace'),
+                      'working_rules': working_rules, 'config': json.dumps(c.config, indent=2, sort_keys=True)}
+            run.prompt = run.base_prompt = role_prompt('checker', inputs, c.tmp)
+            run.attempts_before = None
+            self._launch(run)
+        except BaseException:
+            self._remove_checkout(c, path)
+            raise
+        return 'session'
+
+    @staticmethod
+    def _card_digest(card):
+        """What a check's verdict depends on: the card's state, body, acceptance and dependencies. A comment or a
+        note write is not a change."""
+        return hashlib.sha256(json.dumps({key: card.get(key) for key in ('state', 'body', 'acceptance', 'blocked_by')},
+                                         sort_keys=True).encode()).hexdigest()
+
+    def _remove_checkout(self, c, path):
+        try:
+            result = c.soft('worktree.sh', 'remove', c.n, path)
+        except _Invalid as exc:
+            c.warn('premise checkout not removed: ' + str(exc))
+            return
+        if result.timed_out or result.rc != 0:
+            c.warn('premise checkout not removed: ' + ('timed out' if result.timed_out else
+                                                       _first_line(result.stderr) or 'exit %d' % result.rc))
 
     # dispatch ---------------------------------------------------------------------------------------------
     def _read_card(self, c):
@@ -927,9 +1019,10 @@ class CardDriver:
         self._launch(run)
         return 'session'
 
-    def _open_cards(self, c):
+    def _open_cards(self, c, with_state=False):
         """One `#<n> <title>` line per card that is not done or wont_do, the card itself left out; `none` when
-        there are none or the board cannot be listed."""
+        there are none or the board cannot be listed. With `with_state` each line is `#<n> <state> <title>`, and
+        ` PR <url>` follows it for a card that has one."""
         # a read-only listing for the prompt, not a step of the card's action: it goes straight to the script
         result = scripts.run(c.d.root, 'board-list.sh', '--all', timeout=60, env=c.d.env)
         if result.timed_out or result.rc != 0:
@@ -947,7 +1040,13 @@ class CardDriver:
             for item in items if isinstance(items, list) else ():
                 if (isinstance(item, dict) and type(item.get('number')) is int and item['number'] != c.n
                         and isinstance(item.get('title'), str)):
-                    out.append((item['number'], ' '.join(item['title'].split())))
+                    title = ' '.join(item['title'].split())
+                    if with_state:
+                        state_name = item.get('state') if isinstance(item.get('state'), str) else 'unknown'
+                        title = '%s %s' % (state_name, title)
+                        if isinstance(item.get('pr_url'), str) and item['pr_url']:
+                            title += ' PR ' + item['pr_url']
+                    out.append((item['number'], title))
         return '\n'.join('#%d %s' % item for item in sorted(out)) or 'none'
 
     @staticmethod
@@ -1111,6 +1210,8 @@ class CardDriver:
 
     def _release(self, run):
         self._runs.pop(id(run.action), None)
+        if run.role == 'checker' and getattr(run, 'checkout', None):
+            self._remove_checkout(run.c, run.checkout)
         if run.action in self.state.actions_for(run.c.n):
             self.state.end(run.c.n, run.action)
         shutil.rmtree(run.c.tmp, ignore_errors=True)
@@ -1149,6 +1250,10 @@ class CardDriver:
             self.state.event('provider_failure', card=c.n, provider=run.dispatch.provider, reason=result.reason)
             self._give_back_attempt(run)
             return Outcome(c.n, False, False, run.dispatch.provider)
+        if run.role == 'checker' and self._card_digest(self._read_card(c)) != run.digest:
+            # the owner changed the card while the check ran: its verdict describes a card that is gone
+            self.state.event('premise', card=c.n, message='premise verdict dropped: card changed')
+            return Outcome(c.n, False, False, None)
         if run.script:
             return self._reconcile_script(run, result)
         if result.failure:
@@ -1191,6 +1296,8 @@ class CardDriver:
 
     def _rejected_twice(self, run, lines, message):
         c = run.c
+        if run.role == 'checker':
+            message = self._check_failure(message)
         entry = {'role': run.role, 'round': run.round if run.round is not None else 0,
                  'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(self.clock())), 'errors': lines[:20]}
         self.state.event('action_failed', card=c.n, action=c.row['action'], error=message)
@@ -1211,7 +1318,7 @@ class CardDriver:
     def _check(self, run, report, allow, script=None):
         c = run.c
         flags = self._commits_since_review(run) if script is None else []
-        if run.role == 'merger':
+        if run.role in ('merger', 'checker'):
             flags = ['--mode', run.mode]
         result = c.soft('parse-report.sh', '--role', run.role, *(flags + [report]))
         if result.timed_out:
@@ -1234,6 +1341,7 @@ class CardDriver:
         parsed = _json(result.stdout) if result.rc == 0 else None
         if not isinstance(parsed, dict):
             raise _Fail('parse-report.sh exited %d' % result.rc if result.rc else 'parse-report.sh printed no JSON')
+        run.report_file = report
         self._apply(run, parsed, script)
         return Outcome(c.n, True, False, None)
 
@@ -1257,6 +1365,8 @@ class CardDriver:
         c, role, status = run.c, run.role, parsed.get('status')
         if role == 'merger':
             return self._apply_merger(run, parsed)
+        if role == 'checker':
+            return self._settle_premise(c, run, parsed)
         note = c.note()
         patch = {'last_verified': (parsed.get('verified') or {}).get('line')}
         final = dict(_RESET)
@@ -1280,6 +1390,20 @@ class CardDriver:
                 patch['review_passes'] = passes
                 patch['reviews'][run.stage] = dict(patch['last_review'], **{'pass': number})
                 patch['last_review'] = patch['reviews'][run.stage]
+            # finding_rounds: per reviewer, the rounds in which it reported Critical or Important findings. One
+            # more per card round (last_round keeps a repeat report of the same round from counting twice, as a
+            # required_passes pass does), never fewer; a clean report and an advisory stage leave it alone
+            stage_row = c.row.get('stage') if isinstance(c.row.get('stage'), dict) else {}
+            record = patch['last_review']
+            if (record['critical'] or record['important']) and stage_row.get('advisory') is not True \
+                    and isinstance(run.round, int):
+                counts = dict(note.get('finding_rounds')) if isinstance(note.get('finding_rounds'), dict) else {}
+                mine = counts.get(run.stage or 'evidence')
+                mine = mine if isinstance(mine, dict) else {}
+                if not (isinstance(mine.get('last_round'), int) and mine['last_round'] >= run.round):
+                    counts[run.stage or 'evidence'] = {'count': (mine.get('count') if isinstance(mine.get('count'), int)
+                                                                 else 0) + 1, 'last_round': run.round}
+                    patch['finding_rounds'] = counts
             # A card a person moved out of Blocked still has state blocked in its note; this review is the one
             # the planner asked for, so record the column the card is in, or the planner plans it again
             if note.get('state') == 'blocked' and status != 'blocked' and run.prior in c.states() \
@@ -1310,6 +1434,143 @@ class CardDriver:
         elif status == 'not_reproducible':
             final['last_fix'] = {'status': 'not_reproducible', 'round': run.round}
         (c.merge if role == 'fixer' else c.merge_soft)(final)
+
+    def _settle_premise(self, c, run, parsed):
+        """Act on a checker's verdict. Its follow-up lines (Out of scope, Bugs found) are ignored: a check files
+        nothing. `go` and `needs` settle on their own; `built` and `stale` reach the owner as one proposal to decide
+        (only a person approves or confirms it, with premise-settle.sh)."""
+        status = parsed.get('status')
+        try:
+            c.comment(Path(run.report_file).read_text())
+        except (OSError, _Fail) as exc:
+            c.warn('checker report not posted: %s' % exc)
+        if status == 'needs':
+            return self._premise_needs(c, parsed)
+        if status == 'built':
+            return self._premise_built(c, run, parsed)
+        if status == 'stale':
+            return self._premise_stale(c, run, parsed)
+        if status != 'go':
+            raise _Fail('verdict %s is not handled' % status)
+        c.step('premise.sh', 'stamp', c.n, '--by', 'check', '--sha', run.head)
+        c.merge(dict(_RESET, premise_check={'head': run.head, 'verdict': status, 'at': _iso(self.clock())}))
+
+    def _premise_card(self, c, number):
+        """Another card as board-read.sh prints it, or None when the board does not hold it."""
+        result = c.soft('board-read.sh', number)
+        if result.timed_out:
+            raise _Fail('board-read.sh timed out')
+        if result.rc != 0:
+            if 'not found' in (result.stderr or ''):
+                return None
+            raise _Fail(_first_line(result.stderr) or 'board-read.sh exited %d' % result.rc)
+        card = _json(result.stdout)
+        if not isinstance(card, dict):
+            raise _Fail('board-read.sh printed no card')
+        return card
+
+    def _premise_needs(self, c, parsed):
+        """A needs verdict: add the named card as a dependency when it is on its way to being built, else ask."""
+        m = parsed.get('card')
+        if not _posint(m):
+            raise _Fail('the needs verdict names no card')
+        if m == c.n:
+            return self._premise_question(c, 'needs #%d, which is the card itself' % m)
+        other = self._premise_card(c, m)
+        if other is None:
+            return self._premise_question(c, 'needs #%d, which does not exist' % m)
+        state = other.get('state')
+        in_flight = state in ('ready', 'in_progress', 'in_review', 'merging', 'human_qa') \
+            or (isinstance(state, str) and state.startswith('review_'))
+        if not in_flight:
+            return self._premise_question(c, 'needs #%d, which is %s' % (m, state))
+        own = self._premise_card(c, c.n) or {}
+        if m in (own.get('blocked_by') or []):
+            return self._premise_question(c, 'needs #%d, which is already a dependency of this card' % m)
+        seen, todo = set(), [m]
+        while todo:
+            number = todo.pop()
+            if number in seen:
+                continue
+            seen.add(number)
+            card = other if number == m else self._premise_card(c, number)
+            for dep in (card or {}).get('blocked_by') or []:
+                if dep == c.n:
+                    return self._premise_question(c, 'needs #%d, which depends on this card' % m)
+                todo.append(dep)
+        c.step('premise.sh', 'add-dep', c.n, m)
+        c.comment('Premise check: needs #%d, which is %s. Added as a dependency.' % (m, state))
+        c.merge(dict(_RESET))
+
+    def _premise_question(self, c, text, proposal=None, title=_PREMISE_UNSETTLED):
+        """Block the card for a person: the check could not settle it, or found a proposal for them to decide.
+        The proposal is stored first, so a card is never Blocked with a question and no proposal to answer."""
+        if proposal is not None:
+            c.step('premise-settle.sh', 'propose', c.n, c._file(proposal))
+        c.move('blocked')
+        c.merge(dict(_RESET, state='blocked', blocked_from='ready'))
+        c.comment('%s\n\n%s' % (title, text))
+
+    @staticmethod
+    def _scope_section(body):
+        """The text of a body's `## Scope` section, ignoring headings inside a code fence."""
+        out, fence, inside = [], False, False
+        for line in (body or '').split('\n'):
+            if re.match(r'^ {0,3}(```|~~~)', line):
+                fence = not fence
+            elif not fence and re.match(r'^##[ \t]+Scope[ \t]*$', line) and not inside:
+                inside = True
+                continue
+            elif not fence and re.match(r'^##[ \t]', line) and inside:
+                break
+            if inside:
+                out.append(line)
+        return '\n'.join(out).strip()
+
+    def _premise_built(self, c, run, parsed):
+        """A built verdict: with evidence for every acceptance item, a close proposal for a person to confirm."""
+        card = self._premise_card(c, c.n) or {}
+        items = [a for a in (card.get('acceptance') or []) if isinstance(a, str)]
+        evidence = [e for e in (parsed.get('evidence') or []) if isinstance(e, dict)]
+        got = sorted({e.get('item') for e in evidence if _posint(e.get('item'))})
+        missing = [i for i in range(1, len(items) + 1) if i not in got]
+        unknown = [i for i in got if i > len(items)]
+        if not items or missing or unknown:
+            problems = []
+            if missing:
+                problems.append('no evidence for acceptance item %s' % ', '.join(str(i) for i in missing))
+            if unknown:
+                problems.append('evidence for item %s, which the card does not have' % ', '.join(str(i) for i in unknown))
+            return self._premise_question(c, 'The check reported the card as already built, but %s.'
+                                          % ('; '.join(problems) or 'the card has no acceptance items'))
+        lines = ['The check found that every acceptance item already holds on the default branch (%s).' % run.head[:7], '']
+        for e in sorted(evidence, key=lambda e: e['item']):
+            lines += ['%d. %s' % (e['item'], items[e['item'] - 1]),
+                      '   command: `%s`' % e.get('command', ''), '   output: %s' % e.get('output', '')]
+        lines += ['', 'Run `premise-settle.sh confirm %d` in a terminal (or use the board page) to close it as built, '
+                      'or move the card to Ready to reject this and start it anyway.' % c.n]
+        proposal = {'kind': 'close', 'head': run.head,
+                    'evidence': [{'item': e['item'], 'command': e.get('command', ''), 'output': e.get('output', '')}
+                                 for e in evidence]}
+        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_CLOSE)
+
+    def _premise_stale(self, c, run, parsed):
+        """A stale verdict: a rewrite proposal when the checker gave one, else its summary as a plain question."""
+        summary = (parsed.get('summary') or '').strip()
+        proposed = parsed.get('proposal')
+        if not isinstance(proposed, dict):
+            return self._premise_question(c, summary or 'The check found the card stale and proposed no rewrite.')
+        card = self._premise_card(c, c.n) or {}
+        current = [a for a in (card.get('acceptance') or []) if isinstance(a, str)]
+        acceptance = [a for a in (proposed.get('acceptance') or []) if isinstance(a, str)]
+        scope = proposed.get('scope') or ''
+        lines = [summary, '', 'Current Scope:', self._scope_section(card.get('body')), '',
+                 'Current acceptance:'] + ['- ' + a for a in current] + [
+                 '', 'Proposed Scope:', scope, '', 'Proposed acceptance:'] + ['- ' + a for a in acceptance] + [
+                 '', 'Run `premise-settle.sh approve %d` in a terminal (or use the board page) to apply it, '
+                     'or move the card to Ready to reject it and start it as it is.' % c.n]
+        proposal = {'kind': 'rewrite', 'head': run.head, 'scope': scope, 'acceptance': acceptance, 'summary': summary}
+        return self._premise_question(c, '\n'.join(lines), proposal, _PREMISE_REWRITE)
 
     def _blocked(self, run, parsed, final):
         c = run.c
@@ -1422,7 +1683,8 @@ class CardDriver:
         pr = c.pr(c.note().get('pr') if c.row.get('pr') is None else None)
         c.step('worktree.sh', 'create', c.n, branch, worktree)
         c.step('update-branch.sh', c.n, pr, branch, worktree)
-        c.merge_soft(dict(_RESET))
+        # a clean update merged everything, so a conflict recorded earlier is stale
+        c.merge_soft(dict(_RESET, conflicted_files=None))
 
     def _do_land(self, c):
         # stack-land.sh: exit 3 (the parent has not landed on the default branch yet) and 4 (it set stack.attention
@@ -1438,7 +1700,8 @@ class CardDriver:
             return
         if result.rc != 0:
             raise _Fail(_first_line(result.stderr) or 'stack-land.sh exited %d' % result.rc)
-        c.merge_soft(dict(_RESET))
+        # a landing merged the parent and updated the branch cleanly: a conflict recorded before it is stale
+        c.merge_soft(dict(_RESET, conflicted_files=None))
 
     def _do_block(self, c):
         reason = c.row.get('reason')

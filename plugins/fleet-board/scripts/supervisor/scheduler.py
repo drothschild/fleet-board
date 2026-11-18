@@ -16,7 +16,7 @@ _ACTION_CLASS = {
     'continue_implementor': 0, 'fix': 0, 'review': 0, 'review_stage': 0,
     'start_review': 1, 'unblock': 1, 'update_branch': 1, 'land': 1, 'advance_stage': 1, 'move_to_review': 1, 'to_human_qa': 1,
     'mark_ready': 1, 'verify_main': 1, 'finish': 1, 'block': 1, 'file_pending': 1, 'merge': 1,
-    'after_merge': 1, 'merge_refusal': 1,
+    'after_merge': 1, 'merge_refusal': 1, 'check_premise': 1, 'rerun_checks': 1, 'checks_failed': 1,
     'start': 2,
 }
 # Planned actions that are never admitted and never attention. skip_* and wait become
@@ -29,7 +29,7 @@ _WORK_CLASS = 1
 # checks_failed record touches only the card's own PR and note. They take a slot and wait for their
 # own card, but neither wait on another card's scope nor block one, so a writer never holds them up.
 SCOPE_FREE_ACTIONS = frozenset({'start_review', 'review', 'review_stage', 'update_branch', 'land', 'after_merge', 'merge_refusal', 'merge',
-                               'rerun_checks', 'checks_failed'})
+                               'rerun_checks', 'checks_failed', 'check_premise'})
 # The review actions a card may run together: they read the PR and write nothing a sibling reads, so one card's
 # `review`, `review_stage` and `start_review` rows share its slot rules. Every other action of a card runs alone.
 REVIEWER_ACTIONS = frozenset({'start_review', 'review', 'review_stage'})
@@ -89,6 +89,8 @@ def _ancestors(row):
     """The card numbers (as strings) of a stacked candidate's `stack.ancestors`; none for any other row."""
     stack = row.get('stack')
     found = stack.get('ancestors') if isinstance(stack, dict) else None
+    if found is None:   # a reservation or running claim carries its card's ancestors directly
+        found = row.get('ancestors')
     return {str(x) for x in found} if isinstance(found, list) else set()
 
 
@@ -388,6 +390,7 @@ class Scheduler:
             exempt = _ancestors(c)   # a stacked child's start is not held by its ancestors' scope
             reserved = None if free or read_only else next((x for x in reservations if str(x.get('card', x.get('number'))) != str(number)
                              and str(x.get('card', x.get('number'))) not in exempt
+                             and str(number) not in _ancestors(x)   # a card stacked on this one never holds it
                              and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                              and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore))), None)
             if reserved:
@@ -396,6 +399,7 @@ class Scheduler:
             conflict = next((x for x in occupied if (same_card(x, number) and not _share_card(c, x))
                              or (not free and not read_only and x.get('action') not in SCOPE_FREE_ACTIONS
                                  and str(x.get('number')) not in exempt
+                                 and str(number) not in _ancestors(x)
                                  and scopes.same_repo(c.get('repo'), x.get('repo'), home_repo)
                                  and scopes.overlap(paths, scopes.drop_ignored(x.get('paths'), ignore)))), None)
             if conflict:
