@@ -130,6 +130,10 @@ several doing one field each.
 - `FLEET_TEST_ONLY=<test name>` runs one test in `test-supervisor-driver.sh`, `-merging.sh`, `-loop.sh` and
   `-stuck.sh` (a `driver_cases.py` function or a unittest method name; an unknown name runs none). This
   repo's `commands.test_case` uses it so a reviewer's mutant runs one test, not the whole suite.
+  It also selects one check, by its exact quoted name, in the tick-plan suites (`test-tick-plan-ready.sh`,
+  `-review.sh`, `-merging.sh`, `-followups.sh`, `-scope.sh`, `-stages.sh`, via `tick-plan-lib.sh`): the
+  scenario holding that check runs, other helper calls do nothing, and a name matching no check or more
+  than one exits 5.
 - To run or author a primitive free of the local setup, use `claude -p --bare` with a
   fresh empty `CLAUDE_CONFIG_DIR`. Plain `--bare` still loads installed user plugins.
   Assert on the session's `system/init` event that no user plugin loaded.
