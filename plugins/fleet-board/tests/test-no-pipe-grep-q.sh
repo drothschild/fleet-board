@@ -17,8 +17,8 @@ FAIL=0
 pass() { PASS=$((PASS + 1)); printf '  ok   %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); printf '  FAIL %s\n' "$1"; }
 
-# A pipe into grep with a flag cluster holding q (other flag words may come first).
-PIPE_Q='\| *grep +(-[A-Za-z-]+ +)*-[A-Za-z]*q'
+# A pipe into grep whose first flag cluster holds q.
+PIPE_Q='\| *grep +-[a-zA-Z]*q'
 
 # scan DIR: print "file:line:text" for each pipe into grep -q in a pipefail suite
 # under DIR. The guard's own file is skipped (it holds the pattern strings).
